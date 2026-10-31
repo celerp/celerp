@@ -47,6 +47,8 @@ class FakeStore:
         self.timeout_after_create = False
         self.disabled_on_read: set[int] = set()
         self.before_create = None
+        self.down = False
+        self.lists = 0
 
     @staticmethod
     def _shown(hook: dict) -> dict:
@@ -69,6 +71,9 @@ class FakeStore:
             self.pause_list = None
             entered.set()
             await go.wait()
+        self.lists += 1
+        if self.down:
+            return httpx.Response(503, json={})
         page = int(request.url.params.get("page", "1"))
         body = [self._shown(h) for h in self.hooks.values()] if page == 1 else []
         return httpx.Response(200, json=body)
@@ -249,6 +254,31 @@ async def test_a_direction_change_is_reconciled_within_one_sweeper_tick(store):
         assert _ORDER_TOPICS <= set(fake.topics()), f"order hooks missing after the sweep: {fake.topics()}"
         assert await _webhooks_dirty(factory, company_id) is False
     assert ungated == set()
+
+
+async def test_a_reconcile_that_keeps_failing_waits_for_its_backoff(store):
+    """The store is down: the sweeper's reconcile of the dirty webhooks fails, and the
+    next tick leaves it alone until the failed attempt's retry time, as for a recorded
+    rerun. Once due it runs again, and with the store back it clears the mark."""
+    from connector_test_support import retry_due
+    from celerp.connectors.execution import sweep_reruns
+
+    fake, factory = store
+    company_id = await _connected(factory, fake, _NO_ORDERS)
+    await _set_orders_inbound(factory, company_id)
+    fake.down = True
+
+    await asyncio.wait_for(sweep_reruns(), timeout=10)
+    tried = fake.lists
+    assert tried >= 1 and await _webhooks_dirty(factory, company_id)
+    await asyncio.wait_for(sweep_reruns(), timeout=10)
+    assert fake.lists == tried, "a failing reconcile was retried on the next tick, before its backoff"
+
+    fake.down = False
+    await retry_due(company_id)
+    await asyncio.wait_for(sweep_reruns(), timeout=10)
+    assert fake.lists > tried and await _webhooks_dirty(factory, company_id) is False
+    assert _ORDER_TOPICS <= set(fake.topics())
 
 
 async def test_two_reconcilers_over_duplicates_leave_exactly_the_lowest_hook_per_topic(store):

@@ -578,7 +578,7 @@ async def _release(ex: Execution, resources: list[str], connector=None) -> dict[
     """Release ``resources`` and return the ones kept, each with the rerun generation the
     holder is to run. With ``connector``, a resource whose pending rerun may run now (past
     any retry time a failed attempt set; for
-    the webhooks, also a dirty mark on the config) is kept for the holder to run before
+    the webhooks, also a dirty mark on the config, past the same retry time) is kept for the holder to run before
     it releases it; the request stays pending until that work completes (``_ack_rerun``),
     so a holder that dies first leaves it to the sweeper. A rerun the directions no
     longer call for is acknowledged (dropped). Released resources leave ``ex.resources``
@@ -596,18 +596,19 @@ async def _release(ex: Execution, resources: list[str], connector=None) -> dict[
                 "SELECT resource FROM connector_execution_leases WHERE company_id = :c "
                 "AND connector = :k AND resource IN :r" + lock).bindparams(_IN), key)
             beats = (await s.execute(sa.text(
-                "SELECT resource, holder, rerun_requested FROM connector_execution_heartbeats "
+                "SELECT resource, holder, rerun_requested, rerun_done FROM connector_execution_heartbeats "
                 "WHERE company_id = :c AND connector = :k AND resource IN :r "
-                "AND rerun_requested > rerun_done "
                 "AND (rerun_retry_at IS NULL OR rerun_retry_at <= now())" + lock).bindparams(_IN), key)).all()
+            due = {b.resource for b in beats}
             generation = {b.resource: int(b.rerun_requested) for b in beats
-                          if b.holder is not None and uuid.UUID(str(b.holder)) == ex.holder}
+                          if b.rerun_requested > b.rerun_done
+                          and b.holder is not None and uuid.UUID(str(b.holder)) == ex.holder}
             pending = list(generation)
             config = None
             if connector is not None and not ex.lost and (pending or WEBHOOKS in resources):
                 config = await s.scalar(sa.select(ConnectorConfig).where(
                     ConnectorConfig.company_id == ex.company_id, ConnectorConfig.connector == ex.connector))
-                if WEBHOOKS in resources and WEBHOOKS not in pending and config is not None \
+                if WEBHOOKS in due and WEBHOOKS not in pending and config is not None \
                         and config.webhooks_dirty:
                     pending.append(WEBHOOKS)
             if pending and config is not None:
@@ -724,7 +725,8 @@ async def _rerun(connector, ex: Execution, resource: str) -> None:
 
 async def sweep_reruns() -> None:
     """Start an execution for each recorded rerun, and each connection whose webhooks
-    are marked dirty, that no live execution holds and whose connection may run it; the execution runs it as it releases. A busy or
+    are marked dirty, that no live execution holds, whose connection may run it and that is past any retry time a failed
+    attempt set; the execution runs it as it releases. A busy or
     refused one waits for the next tick; one the directions no longer call for is
     dropped. A first sync left starting or running, unchanged for longer than a lease
     lasts and with no live execution on its connection, was abandoned by a stopped
@@ -767,6 +769,7 @@ async def sweep_reruns() -> None:
                 "AND h.connector = c.connector AND h.resource = :w "
                 "WHERE c.webhooks_dirty = :dirty AND f.state NOT IN (:new) "
                 "AND (h.holder IS NULL OR h.expires_at <= now()) "
+                "AND (h.rerun_retry_at IS NULL OR h.rerun_retry_at <= now()) "
                 "ORDER BY 1, 2, 3"), {"w": WEBHOOKS, "done": "completed", "new": "pending",
                                       "dirty": True})).all()
             await s.commit()
