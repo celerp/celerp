@@ -47,7 +47,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.ai.files import AGENT_UPLOAD_TYPES, XLSX_CONTENT_TYPE
 from celerp.ai.service import PROPOSAL_TTL_S
-from celerp.ai.tools import keyed_error
 from celerp.config import settings
 from celerp.db import get_session
 from celerp.routers.auth import limiter as _limiter
@@ -167,6 +166,7 @@ def _attachment_kinds(file_ids: list[str] | None, company_id, user_id) -> set[st
 
 
 def _conflict(code: str, key: str) -> HTTPException:
+    from celerp.ai.tools import keyed_error
     return HTTPException(status_code=409, detail=keyed_error(code, key))
 
 
@@ -832,6 +832,7 @@ def _resolve_action_arguments(records: list, record: dict) -> tuple[dict | None,
     source action has completed and persisted the requested result key; until then the
     error says why.
     """
+    from celerp.ai.tools import keyed_error
     arguments = copy.deepcopy(record.get("arguments") or {})
     by_id = {r.get("id"): r for r in records if isinstance(r, dict) and r.get("id")}
     for binding in record.get("bindings") or []:
@@ -872,6 +873,7 @@ async def _resolved_action_arguments(
     dependent proposal. Ownership is checked through the conversation itself.
     """
     from celerp.ai.conversations import get_conversation, get_message
+    from celerp.ai.tools import keyed_error
     conv = await get_conversation(session, conversation_id, company_id, user_id)
     if conv is None:
         return None, keyed_error("action_not_pending", "ai.action_not_pending"), None
@@ -958,7 +960,7 @@ async def _run_confirmed_action(
     route enforces every module permission.
     """
     from celerp.ai.conversations import claim_tool_call, finalize_tool_call
-    from celerp.ai.tools import execute_agent_capability
+    from celerp.ai.tools import execute_agent_capability, keyed_error
     resolved_arguments, dependency_error, dependency_record = await _resolved_action_arguments(
         session, conversation_id=conversation_id, message_id=message_id,
         tool_call_id=tool_call_id, company_id=company_id, user_id=user_id,
@@ -1058,6 +1060,7 @@ def _action_error(result: dict) -> dict | None:
     executor's own keyed error, or the rejecting route's refusal. A route's plain text
     is the app's own, already in the user's language; field validation and a reply
     with no reason get their catalog text, so the reply always says the reason."""
+    from celerp.ai.tools import keyed_error
     if result.get("ok"):
         return None
     if result.get("error"):
