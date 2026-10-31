@@ -100,14 +100,25 @@ async def run_connector_sync(
         phases: dict[str, bool] = {}
         last_of = {_resource_of(entity): entity for entity in plan}
         dependencies = getattr(connector, "outbound_dependencies", {})
+        # A dependency outside a resource-limited plan counts as completed when its own
+        # latest run since the connection was made completed.
+        outside = {dep for entity in plan for dep in dependencies.get(entity, ()) if dep not in plan}
+        if outside:
+            completed.update(await _completed_since_reset(company_id, connector.name, outside))
         for entity in plan:
             phase = _resource_of(entity)
             if first_sync is not None and phase in first_sync.completed:
                 completed[entity] = True
                 continue
             # An entity whose dependency did not complete does not run; the rest still do.
-            if any(completed.get(dep) is not True for dep in dependencies.get(entity, ())):
+            waits_for = sorted(dep for dep in dependencies.get(entity, ()) if completed.get(dep) is not True)
+            if waits_for:
                 completed[entity] = False
+                if outside.intersection(waits_for):
+                    # Nothing in this run answers for that dependency: the skip itself is
+                    # incomplete work, so a rerun stays pending until the dependency completes.
+                    results.append(SyncResult(entity=entity, direction=entity_direction(entity),
+                                              errors=[f"{entity} waits for {', '.join(waits_for)} to complete"]))
             else:
                 result = await run_sync(connector, company_id, entity, purpose=purpose,
                                         reconcile=reconcile, first_sync=first_sync)
@@ -117,6 +128,22 @@ async def run_connector_sync(
             if first_sync is not None and last_of[phase] == entity:
                 await _record_phase(company_id, connector.name, phase, phases[phase])
     return results
+
+
+async def _completed_since_reset(company_id, connector_name: str, entities) -> dict[str, bool]:
+    """Whether each entity's latest run since the connection's last reset completed."""
+    import sqlalchemy as sa
+
+    from celerp.db import get_session_ctx
+
+    latest = (sa.select(SyncRun.entity, SyncRun.status,
+                        sa.func.row_number().over(partition_by=SyncRun.entity,
+                                                  order_by=SyncRun.started_at.desc()).label("n"))
+              .where(*_since_reset(str(company_id), connector_name), SyncRun.entity.in_(sorted(entities)))
+              .subquery())
+    async with get_session_ctx() as session:
+        rows = (await session.execute(sa.select(latest.c.entity, latest.c.status).where(latest.c.n == 1))).all()
+    return {entity: status == "success" for entity, status in rows}
 
 
 async def _directions(company_id, connector_name: str) -> dict:

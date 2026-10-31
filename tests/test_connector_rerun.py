@@ -526,3 +526,57 @@ async def test_a_delivery_the_connection_can_no_longer_run_is_dropped_by_the_swe
     await _outside(sweep_reruns())
     assert stub.calls == []
     assert await _pending(cid, stub.name) == 0
+
+
+def _dependent_entities() -> list[tuple[str, str]]:
+    from celerp.connectors import registry
+
+    return [(name, entity) for name, connector in sorted(registry._registry.items())
+            for entity in sorted(getattr(connector, "outbound_dependencies", {}))]
+
+
+@pytest.mark.parametrize("like, entity", _dependent_entities())
+async def test_a_rerun_of_one_resource_runs_a_dependent_entity_only_once_its_dependencies_completed(
+        real_engine, monkeypatch, like, entity):
+    """A rerun runs only the syncs of its resource. An entity whose dependency has not completed
+    since the connection was made does not run, and the rerun answers incomplete, naming the
+    dependency, so it stays pending; once a run has completed the dependencies, it runs."""
+    from unittest.mock import AsyncMock
+
+    from celerp.connectors import registry
+    from celerp.connectors.execution import execution_resource, incomplete
+    from celerp.connectors.sync_runner import _SYNC_METHODS, implements, run_connector_sync
+    from connector_test_support import stand_in_connector
+
+    connector = registry.get(stand_in_connector(monkeypatch, "deps", like=like))
+    ran: list[str] = []
+
+    def _sync(name):
+        async def _run(ctx, since=None, **_):
+            ran.append(name)
+            return SyncResult(entity=name)
+        return _run
+
+    for name, method in _SYNC_METHODS.items():
+        if implements(connector, name):
+            monkeypatch.setattr(connector, method, _sync(name))
+    monkeypatch.setattr(connector, "before_outbound", AsyncMock())
+    monkeypatch.setattr("celerp.connectors.ownership._lock_active_company", AsyncMock(return_value=None))
+    monkeypatch.setattr("celerp.connectors.relay_token.fetch_context", AsyncMock(
+        side_effect=lambda company_id, *_a, **_k: ConnectorContext(company_id=str(company_id), access_token="t")))
+    cid = str(uuid.uuid4())
+    await connected(cid, connector, {kind: "both" for kind in connector.entity_flows})
+    resource = execution_resource("entity", entity)
+    dependencies = connector.outbound_dependencies[entity]
+
+    results = await _outside(run_connector_sync(connector, cid, purpose="rerun", reconcile=True, resource=resource))
+    assert entity not in ran
+    reason = incomplete(results)
+    assert reason is not None and any(dep in reason for dep in dependencies), reason
+
+    await _outside(run_connector_sync(connector, cid, purpose="manual_sync"))
+    assert dependencies <= set(ran)
+    ran.clear()
+    results = await _outside(run_connector_sync(connector, cid, purpose="rerun", reconcile=True, resource=resource))
+    assert entity in ran
+    assert incomplete(results) is None
