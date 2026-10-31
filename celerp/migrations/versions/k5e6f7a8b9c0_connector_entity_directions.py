@@ -48,15 +48,14 @@ def _per_record(connector: str, direction: str) -> dict[str, str]:
     return out
 
 
-def _single(directions: dict) -> str:
-    ways = set()
-    for value in directions.values():
-        ways |= {_IN, _OUT} if value == "both" else ({value} if value in (_IN, _OUT) else set())
-    if ways == {_IN}:
-        return _IN
-    if ways == {_OUT}:
-        return _OUT
-    return "both"
+def _old_direction(connector: str, directions: dict) -> str:
+    """The one direction whose upgrade gives exactly ``directions``. A setting no single
+    direction holds (one record kind stopped, or every kind off) has no old form: a
+    downgrade refuses it rather than widen it."""
+    for direction in (_IN, _OUT, "both"):
+        if _per_record(connector, direction) == directions:
+            return direction
+    raise RuntimeError(f"{connector} directions {directions} have no single direction")
 
 
 def upgrade() -> None:
@@ -75,15 +74,26 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.add_column("connector_configs", sa.Column(
-        "direction", sa.String(16), nullable=False, server_default="both"))
+    """Every connection goes back to the one direction it was upgraded from. A setting
+    changed since that no single direction holds stops the downgrade before the schema
+    changes, naming the connections to set back first."""
     bind = op.get_bind()
     lock_tables(bind, "connector_configs")
-    for row_id, directions in bind.execute(sa.text(
-            "SELECT id, entity_directions FROM connector_configs")).all():
+    old, refused = {}, []
+    for row_id, company_id, connector, directions in bind.execute(sa.text(
+            "SELECT id, company_id, connector, entity_directions FROM connector_configs")).all():
         values = directions if isinstance(directions, dict) else json.loads(directions)
+        try:
+            old[row_id] = _old_direction(connector, values)
+        except RuntimeError as exc:
+            refused.append(f"company {company_id}: {exc}")
+    if refused:
+        raise RuntimeError("Cannot downgrade connector directions: " + "; ".join(refused))
+    op.add_column("connector_configs", sa.Column(
+        "direction", sa.String(16), nullable=False, server_default="both"))
+    for row_id, direction in old.items():
         bind.execute(sa.text("UPDATE connector_configs SET direction = :d WHERE id = :id"),
-                     {"d": _single(values), "id": row_id})
+                     {"d": direction, "id": row_id})
     op.drop_column("connector_configs", "connect_lapsed_at")
     op.drop_column("connector_configs", "orders_from")
     op.drop_column("connector_configs", "entity_directions")

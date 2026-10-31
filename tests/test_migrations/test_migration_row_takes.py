@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import sys
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from alembic.script import ScriptDirectory
@@ -56,6 +57,8 @@ def _company_with_chart_and_work_centers(async_url: str, sync_url: str) -> None:
     from types import SimpleNamespace
 
     from celerp.models.connector_config import ConnectorConfig
+    from celerp.models.connector_first_sync import ConnectorFirstSync
+    from celerp.models.sync_run import SyncRun
     from celerp.models.migration import MigrationEntityMap, MigrationRun
     from celerp.services.migration_core_sink import deterministic_id
     from celerp_accounting.routes import THAI_CHART_OF_ACCOUNTS, _seeded_account
@@ -86,6 +89,11 @@ def _company_with_chart_and_work_centers(async_url: str, sync_url: str) -> None:
                                            source_external_id="xero-sales", target_entity_type="account",
                                            target_entity_id=code, status="created"))
             session.add(ConnectorConfig(company_id=ids["company"], connector="shopify"))
+            # A connection that has synced (each first-sync backfill reads its run): one
+            # waiting on its first sync stops a downgrade.
+            session.add(ConnectorFirstSync(company_id=ids["company"], connector="shopify", state="completed"))
+            session.add(SyncRun(company_id=ids["company"], connector="shopify", entity="products",
+                                started_at=datetime(2026, 3, 1, tzinfo=timezone.utc), status="success"))
     finally:
         eng.dispose()
 

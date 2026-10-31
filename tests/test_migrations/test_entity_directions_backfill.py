@@ -10,6 +10,7 @@ and a connection that already synced counts its first sync as done.
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import uuid
@@ -192,3 +193,107 @@ def test_downgrade_restores_a_single_direction(cfg_db):
         back = dict(conn.execute(text("SELECT company_id, direction FROM connector_configs")).all())
     assert {d: back[c] for d, c in rows.items()} == {"inbound": "inbound", "outbound": "outbound",
                                                        "both": "both"}
+
+
+def _combinations(connector: str):
+    """Every per-record setting a connection of ``connector`` can hold."""
+    import itertools
+
+    mig = importlib.import_module(f"celerp.migrations.versions.{MODULE}")
+    kinds = mig._FLOWS[connector]
+    choices = {
+        kind: ["off", *ways, *(["both"] if len(ways) == 2 else [])] for kind, ways in kinds.items()
+    }
+    for values in itertools.product(*choices.values()):
+        yield dict(zip(choices, values))
+
+
+@pytest.mark.parametrize("connector", sorted(OLD_PLANS))
+def test_a_downgrade_takes_back_only_what_one_direction_says_exactly(connector):
+    """Every setting a connection can hold: one old direction gives back exactly that
+    setting, or the downgrade refuses it; it never widens it (an all-off connection
+    never becomes both)."""
+    mig = importlib.import_module(f"celerp.migrations.versions.{MODULE}")
+    exact = {json.dumps(mig._per_record(connector, d), sort_keys=True): d
+             for d in ("inbound", "outbound", "both")}
+    for directions in _combinations(connector):
+        expected = exact.get(json.dumps(directions, sort_keys=True))
+        if expected is None:
+            with pytest.raises(RuntimeError):
+                mig._old_direction(connector, directions)
+        else:
+            assert mig._old_direction(connector, directions) == expected, directions
+
+
+def test_a_downgrade_with_a_setting_one_direction_cannot_hold_changes_nothing(cfg_db):
+    with cfg_db.begin() as conn:
+        kept = _add_config(conn, "shopify", "both")
+        stopped = _add_config(conn, "woocommerce", "both")
+    run_migration_ops(cfg_db, MODULE)
+    off = {"products": "off", "stock": "off", "orders": "off", "customers": "off"}
+    with cfg_db.begin() as conn:
+        conn.execute(text("UPDATE connector_configs SET entity_directions = CAST(:d AS json) "
+                          "WHERE company_id = :c"), {"d": json.dumps(off), "c": stopped})
+
+    with pytest.raises(RuntimeError, match="woocommerce"):
+        run_migration_ops(cfg_db, MODULE, "downgrade")
+
+    with cfg_db.connect() as conn:
+        columns = {r[0] for r in conn.execute(text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'connector_configs' AND table_schema = current_schema()"))}
+        assert "direction" not in columns and "entity_directions" in columns
+        assert _directions(conn, stopped) == off
+        assert _directions(conn, kept)["products"] == "both"
+
+
+@pytest.mark.parametrize("state", ["pending", "starting", "running", "failed"])
+def test_a_downgrade_refuses_a_first_sync_that_is_not_done(cfg_db, state):
+    """The old schema has no first sync: a connection waiting on its review would start
+    syncing unreviewed, and one part-way through (or failed with its import kept) would
+    lose what it needs to resume or undo. The downgrade stops before changing anything."""
+    with cfg_db.begin() as conn:
+        done = _add_config(conn, "woocommerce", "both")
+        _add_run(conn, done, "woocommerce", "products", datetime(2026, 3, 1, tzinfo=timezone.utc))
+        waiting = _add_config(conn, "shopify", "both")
+    run_migration_ops(cfg_db, MODULE)
+    run_migration_ops(cfg_db, FIRST_SYNC_MODULE)
+    with cfg_db.begin() as conn:
+        conn.execute(text("UPDATE connector_first_syncs SET state = :s WHERE company_id = :c"),
+                     {"s": state, "c": waiting})
+
+    with pytest.raises(RuntimeError, match="shopify"):
+        run_migration_ops(cfg_db, FIRST_SYNC_MODULE, "downgrade")
+
+    with cfg_db.connect() as conn:
+        assert conn.execute(text("SELECT state FROM connector_first_syncs WHERE company_id = :c"),
+                            {"c": waiting}).scalar_one() == state
+
+
+def test_a_downgrade_refuses_while_connector_work_holds_its_lease(cfg_db):
+    with cfg_db.begin() as conn:
+        done = _add_config(conn, "quickbooks", "both")
+    run_migration_ops(cfg_db, MODULE)
+    run_migration_ops(cfg_db, FIRST_SYNC_MODULE)
+    with cfg_db.begin() as conn:
+        conn.execute(text("INSERT INTO connector_execution_leases (company_id, connector, resource, holder) "
+                          "VALUES (:c, 'quickbooks', 'invoices', :h)"), {"c": done, "h": str(uuid.uuid4())})
+
+    with pytest.raises(RuntimeError, match="quickbooks"):
+        run_migration_ops(cfg_db, FIRST_SYNC_MODULE, "downgrade")
+
+
+def test_settled_connections_downgrade_to_their_one_direction(cfg_db):
+    """Completed first syncs and no running work: both revisions go back, and each
+    connection holds the direction it was upgraded from."""
+    with cfg_db.begin() as conn:
+        rows = {d: _add_config(conn, "quickbooks", d) for d in ("inbound", "outbound", "both")}
+    run_migration_ops(cfg_db, MODULE)
+    run_migration_ops(cfg_db, FIRST_SYNC_MODULE)
+
+    run_migration_ops(cfg_db, FIRST_SYNC_MODULE, "downgrade")
+    run_migration_ops(cfg_db, MODULE, "downgrade")
+
+    with cfg_db.connect() as conn:
+        back = dict(conn.execute(text("SELECT company_id, direction FROM connector_configs")).all())
+    assert {d: back[c] for d, c in rows.items()} == {d: d for d in rows}
