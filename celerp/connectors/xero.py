@@ -285,7 +285,7 @@ class XeroConnector(ConnectorBase):
     @needs_modules("celerp-docs")
     async def sync_orders(
         self, ctx: ConnectorContext, since: datetime | None = None,
-        orders_from: datetime | None = None,
+        orders_from: datetime | None = None, first_sync: FirstSync | None = None,
     ) -> SyncResult:
         """
         Pull Xero Invoices (ACCREC type) -> Celerp documents, none dated before
@@ -322,7 +322,7 @@ class XeroConnector(ConnectorBase):
                 result.skipped += 1
                 continue
             try:
-                result.record(await _upsert.upsert_invoice_from_xero(ctx.company_id, inv))
+                result.record(await _upsert.upsert_invoice_from_xero(ctx.company_id, inv, first_sync))
             except Exception as exc:
                 errors.append(f"Invoice {inv.get('InvoiceNumber')}: {exc}")
 

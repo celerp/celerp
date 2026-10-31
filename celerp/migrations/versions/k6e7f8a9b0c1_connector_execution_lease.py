@@ -65,6 +65,7 @@ def upgrade() -> None:
             sa.Column("match", sa.String(16), nullable=True),
             sa.Column("preview_version", sa.String(64), nullable=True),
             sa.Column("batch_id", sa.String(64), nullable=True),
+            sa.Column("operation_id", sa.String(64), nullable=True),
             sa.Column("progress", sa.JSON(), nullable=False, server_default="{}"),
             sa.Column("undo", sa.JSON(), nullable=True),
             sa.Column("error", sa.JSON(), nullable=True),

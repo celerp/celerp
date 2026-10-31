@@ -529,7 +529,8 @@ class WooCommerceConnector(ConnectorBase):
     ) -> None:
         """Pull images and certificate metafields onto an already-resolved item. Each
         image is pulled once, recognised by its WooCommerce image id. The files a first
-        sync pulls onto an item it created join its import, so its undo removes them."""
+        sync pulls onto an item it created join its import, and those it pulls onto an item it
+        linked join that link's undo record, so either undo removes them."""
         from celerp.db import get_session_ctx as get_async_session
         from celerp.models.projections import Projection
         from celerp.connectors.images import download_and_emit_file, _CERT_TAGS
@@ -799,6 +800,7 @@ class WooCommerceConnector(ConnectorBase):
         attention: list[dict] | None = None,
         reconcile: bool = False,
         orders_from: datetime | None = None,
+        first_sync: FirstSync | None = None,
     ) -> SyncResult:
         """Pull WooCommerce orders -> Celerp documents. Orders placed before
         ``orders_from``, the connection's earliest order date, are not fetched.
@@ -832,7 +834,7 @@ class WooCommerceConnector(ConnectorBase):
             ):
                 pending[order_id] = entry
             try:
-                result.record(await _upsert.upsert_order_from_woocommerce(ctx.company_id, order))
+                result.record(await _upsert.upsert_order_from_woocommerce(ctx.company_id, order, first_sync))
             except Exception as exc:
                 log.warning("woocommerce.sync_orders order %s needs attention: %s", order_id, exc)
                 pending[order_id] = {

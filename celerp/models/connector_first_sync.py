@@ -31,6 +31,7 @@ class ConnectorFirstSync(Base):
     match: Mapped[str | None] = mapped_column(sa.String(16), nullable=True)
     preview_version: Mapped[str | None] = mapped_column(sa.String(64), nullable=True)
     batch_id: Mapped[str | None] = mapped_column(sa.String(64), nullable=True)
+    operation_id: Mapped[str | None] = mapped_column(sa.String(64), nullable=True)
     progress: Mapped[dict] = mapped_column(sa.JSON, nullable=False, default=dict, server_default="{}")
     undo: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
     error: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)

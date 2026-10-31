@@ -246,7 +246,7 @@ async def _connector_entity_id(
 async def connector_upsert(
     session, *, company_id, entity_type: str, event_type: str, idem_key: str, data: dict,
     external_identity: tuple[str, str] | None = None, on_create: dict | None = None,
-    update=None,
+    update=None, metadata_: dict | None = None,
 ) -> str:
     """Create-or-update a projection from a connector payload.
 
@@ -266,6 +266,9 @@ async def connector_upsert(
     would: ``await update(session, entity_id, data, event_idem)`` writes the change
     under ``event_idem`` and returns False when nothing differs. Without it the
     caller's ``event_type`` is emitted for the existing projection too.
+
+    ``metadata_`` goes on the creating event only (where the record came from, such as
+    the first sync that imported it); an update of an existing projection carries none.
     """
     import hashlib
     import json as _json
@@ -309,7 +312,7 @@ async def connector_upsert(
         location_id=None,
         source="connector",
         idempotency_key=event_idem,
-        metadata_={},
+        metadata_={} if existing_id else dict(metadata_ or {}),
     )
     return "updated" if existing_id else "created"
 

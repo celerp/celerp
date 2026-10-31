@@ -207,9 +207,11 @@ class ExternalImportRecord:
     """What a connector's product import did, for its attention list and its undo.
 
     ``created``: (entity id, ledger key of its creation) for each item it created.
-    ``linked``: {"entity_id", "restore"} for each existing item it newly linked by SKU;
-    ``restore`` holds the item's values before the store's replaced them, or None when
-    the item kept its own. ``conflicts``: {"entity_id", "fields"} for each linked item
+    ``linked``: {"entity_id", "remote", "restore", "applied"} for each existing item it
+    newly linked by SKU: ``remote`` the store product's identity it linked to, ``restore``
+    the item's values before the store's replaced them and ``applied`` the store's values
+    written (both None when the item kept its own). A first sync adds ``files``, the ids
+    of the files it pulled onto the item, and its undo an ``outcome``. ``conflicts``: {"entity_id", "fields"} for each linked item
     whose field changed in both systems, each field with both values.
 
     ``first_sync``: (company id, connector) when the import is that connection's first
@@ -259,9 +261,12 @@ class ExternalImportRecord:
     async def attribute_files(self, entity_id: str, platform: str) -> None:
         """In a short transaction of its own, after the files were pulled: the files the
         store's product brought onto an item this first sync created join its import batch,
-        found by their ledger key, so a pull a stop interrupted is recorded on the retry."""
+        and those it brought onto an item it linked join that link's undo record, found by
+        their ledger key, so a pull a stop interrupted is recorded on the retry."""
         if self.first_sync is None:
             return
+        import uuid
+
         import sqlalchemy as sa
 
         from celerp.connectors.sync_runner import _first_sync_batch, _locked_first_sync
@@ -270,17 +275,29 @@ class ExternalImportRecord:
 
         async with get_session_ctx() as session:
             row = await _locked_first_sync(session, *self.first_sync)
-            batch = None if row is None else await _first_sync_batch(session, row)
-            if batch is None or entity_id not in batch.entity_ids:
+            if row is None:
                 return
-            keys = (await session.scalars(sa.select(LedgerEntry.idempotency_key).where(
-                LedgerEntry.company_id == batch.company_id, LedgerEntry.entity_id == entity_id,
+            batch = await _first_sync_batch(session, row)
+            links = list((row.undo or {}).get("links") or [])
+            at = next((i for i, link in enumerate(links) if link["entity_id"] == entity_id), None)
+            if (batch is None or entity_id not in batch.entity_ids) and at is None:
+                return
+            pulled = (await session.execute(sa.select(LedgerEntry.idempotency_key, LedgerEntry.data).where(
+                LedgerEntry.company_id == uuid.UUID(str(row.company_id)), LedgerEntry.entity_id == entity_id,
                 LedgerEntry.event_type == "item.file.attached",
                 LedgerEntry.idempotency_key.startswith(f"connector-file:{platform}:{entity_id}:", autoescape=True),
             ).order_by(LedgerEntry.id))).all()
-            new = [key for key in keys if key not in batch.idempotency_keys]
+            if at is None:
+                new = [key for key, _data in pulled if key not in batch.idempotency_keys]
+                if new:
+                    batch.idempotency_keys = [*batch.idempotency_keys, *new]
+            else:
+                files = list(links[at].get("files") or [])
+                new = [data["file_id"] for _key, data in pulled if data["file_id"] not in files]
+                if new:
+                    links[at] = {**links[at], "files": [*files, *new]}
+                    row.undo = {**row.undo, "links": links}
             if new:
-                batch.idempotency_keys = [*batch.idempotency_keys, *new]
                 await session.commit()
 
 
@@ -293,12 +310,23 @@ class FirstSync:
     Celerp are created (only when products come in). ``batch_id``: the import batch
     the items it creates join, so its undo removes them with their opening stock.
     ``record``: the ExternalImportRecord the pass fills in, bound to the first sync.
+    ``operation``: the first sync's own id, put on the creation of each document it
+    imports (``first_sync_metadata``) so its summary lists them.
     ``completed``: the resources an earlier attempt completed, which this one skips."""
     match: str
     create: bool
     batch_id: str | None
     record: ExternalImportRecord
+    operation: str
     completed: frozenset[str] = frozenset()
+
+
+FIRST_SYNC_METADATA_KEY = "first_sync"
+
+
+def first_sync_metadata(operation: str | None) -> dict:
+    """The metadata of a record's creating event naming the first sync that imported it."""
+    return {FIRST_SYNC_METADATA_KEY: operation} if operation else {}
 
 
 @dataclass

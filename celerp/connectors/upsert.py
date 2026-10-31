@@ -67,6 +67,11 @@ def carried_attention(attention: list[dict] | None, pending: dict, processed: se
     ]
 
 
+def _operation(first_sync) -> str | None:
+    """The first sync a document import belongs to, recorded on the document's creation."""
+    return None if first_sync is None else first_sync.operation
+
+
 async def upsert_item(company_id: str, item, first_sync=None) -> str:
     """One accounting item, recorded on a first sync when it creates one."""
     from celerp_inventory import services as items_svc
@@ -76,24 +81,24 @@ async def upsert_item(company_id: str, item, first_sync=None) -> str:
         company_id, item, record=first_sync.record, opening_operation=first_sync.batch_id)
 
 
-async def upsert_order_from_shopify(company_id: str, order: dict) -> str:
+async def upsert_order_from_shopify(company_id: str, order: dict, first_sync=None) -> str:
     from celerp_docs import doc_service as docs_svc
-    return await docs_svc.upsert_order_from_shopify(company_id, order)
+    return await docs_svc.upsert_order_from_shopify(company_id, order, operation=_operation(first_sync))
 
 
-async def upsert_invoice_from_quickbooks(company_id: str, invoice: dict) -> str:
+async def upsert_invoice_from_quickbooks(company_id: str, invoice: dict, first_sync=None) -> str:
     from celerp_docs import doc_service as docs_svc
-    return await docs_svc.upsert_invoice_from_quickbooks(company_id, invoice)
+    return await docs_svc.upsert_invoice_from_quickbooks(company_id, invoice, operation=_operation(first_sync))
 
 
-async def upsert_invoice_from_xero(company_id: str, invoice: dict) -> str:
+async def upsert_invoice_from_xero(company_id: str, invoice: dict, first_sync=None) -> str:
     from celerp_docs import doc_service as docs_svc
-    return await docs_svc.upsert_invoice_from_xero(company_id, invoice)
+    return await docs_svc.upsert_invoice_from_xero(company_id, invoice, operation=_operation(first_sync))
 
 
-async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
+async def upsert_order_from_woocommerce(company_id: str, order: dict, first_sync=None) -> str:
     from celerp_docs import doc_service as docs_svc
-    return await docs_svc.upsert_order_from_woocommerce(company_id, order)
+    return await docs_svc.upsert_order_from_woocommerce(company_id, order, operation=_operation(first_sync))
 
 
 def woocommerce_reconciliation_signature(order: dict) -> str:

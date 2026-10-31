@@ -284,7 +284,7 @@ class QuickBooksConnector(ConnectorBase):
     @needs_modules("celerp-docs")
     async def sync_orders(
         self, ctx: ConnectorContext, since: datetime | None = None,
-        orders_from: datetime | None = None,
+        orders_from: datetime | None = None, first_sync: FirstSync | None = None,
     ) -> SyncResult:
         """
         Pull QuickBooks Invoices -> Celerp documents, none dated before ``orders_from``.
@@ -308,7 +308,7 @@ class QuickBooksConnector(ConnectorBase):
 
         for inv in invoices:
             try:
-                result.record(await _upsert.upsert_invoice_from_quickbooks(ctx.company_id, inv))
+                result.record(await _upsert.upsert_invoice_from_quickbooks(ctx.company_id, inv, first_sync))
             except Exception as exc:
                 errors.append(f"Invoice {inv.get('DocNumber')}: {exc}")
 

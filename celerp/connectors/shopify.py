@@ -233,7 +233,7 @@ class ShopifyConnector(ConnectorBase):
     @needs_modules("celerp-docs")
     async def sync_orders(
         self, ctx: ConnectorContext, since: datetime | None = None,
-        orders_from: datetime | None = None,
+        orders_from: datetime | None = None, first_sync: FirstSync | None = None,
     ) -> SyncResult:
         """
         Pull Shopify orders -> Celerp documents (type=invoice, status=unpaid/paid).
@@ -263,7 +263,7 @@ class ShopifyConnector(ConnectorBase):
 
         for order in orders:
             try:
-                result.record(await _upsert.upsert_order_from_shopify(ctx.company_id, order))
+                result.record(await _upsert.upsert_order_from_shopify(ctx.company_id, order, first_sync))
             except Exception as exc:
                 msg = f"Order {order.get('name')}: {exc}"
                 log.warning("shopify.sync_orders error: %s", msg)

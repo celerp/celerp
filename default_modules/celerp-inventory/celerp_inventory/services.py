@@ -1550,10 +1550,15 @@ async def upsert_external_product(
             if not link_only:
                 apply = dict(remote_fields)
             if record is not None:
-                restore = {key: state.get(key) for key in apply}
+                applied = dict(apply)
                 if "sale_price" in apply:
-                    restore["retail_price"] = state.get("retail_price")
-                await record.attribute(session, linked={"entity_id": entity_id, "restore": restore or None})
+                    applied["retail_price"] = apply["sale_price"]
+                restore = {key: state.get(key) for key in applied}
+                remote = {"product_id": product_id}
+                if variation_id:
+                    remote[_external_variant_key(platform)] = variation_id
+                await record.attribute(session, linked={
+                    "entity_id": entity_id, "remote": remote, "restore": restore or None, "applied": applied or None})
         links[platform] = {
             **previous_link,
             **incoming_link,
@@ -1736,6 +1741,89 @@ async def detach_external_link(
         metadata_={},
     )
     return True
+
+
+async def undo_external_link(
+    session: AsyncSession, company_id, platform: str, link: dict, *, role: str, settings: dict | None,
+    actor_id=None, source: str = "connector_ui",
+) -> dict:
+    """Reverse one link a connector's import made to an item Celerp had (its undo record:
+    ExternalImportRecord.linked), in the caller's transaction, as far as it is still the
+    import's: the link is detached when the item still holds the product it was linked to,
+    each field the store's value replaced comes back unless the item changed it since, and
+    each file pulled onto the item is removed unless changed since. What is kept is
+    returned with both values, so a later edit is never overwritten. A restored price needs
+    set_inventory_prices and an amount edit_inventory_amounts, as for any item edit (403).
+
+    Returns {"outcome", "kept", "files"}: outcome "undone", "relinked" (the item now holds
+    another product: nothing is changed) or "gone" (the item no longer exists)."""
+    from celerp.connectors.product_links import external_link_for_state
+    from celerp.services.field_fingerprints import fingerprint
+    from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS
+    from celerp.services.permissions import missing_permission, reject_price_change
+    from celerp.services.pricing import is_price_item_key
+
+    cid = uuid.UUID(str(company_id))
+    entity_id = link["entity_id"]
+    await lock_external_identity_namespace(session, cid, platform)
+    row = await session.get(Projection, {"company_id": cid, "entity_id": entity_id},
+                            with_for_update=True, populate_existing=True)
+    if row is None or row.entity_type != "item" or is_deleted(row.state or {}):
+        return {"outcome": "gone", "kept": {}, "files": []}
+    state = dict(row.state or {})
+    current = external_link_for_state(state, platform)
+    remote = link.get("remote") or {}
+    if current and not _same_external_identity(
+            platform, current, remote.get("product_id"), remote.get(_external_variant_key(platform))):
+        return {"outcome": "relinked", "kept": {}, "files": []}
+
+    applied = link.get("applied") or {}
+    restore, kept = {}, {}
+    for key, before in (link.get("restore") or {}).items():
+        if key in applied and fingerprint(state.get(key)) == fingerprint(applied[key]):
+            restore[key] = before
+        elif fingerprint(state.get(key)) != fingerprint(before):
+            kept[key] = {"before": before, "current": state.get(key)}
+    price_lists, _base, _ = await get_price_config(session, cid)
+    reject_price_change({key for key in restore if is_price_item_key(key, price_lists)}, role, settings)
+    if AMOUNT_EDIT_GATED_KEYS & set(restore) and not role_has_permission(settings, role, "edit_inventory_amounts"):
+        raise missing_permission("edit_inventory_amounts")
+
+    if current:
+        await detach_external_link(session, cid, entity_id, platform, actor_id=actor_id, source=source)
+    if restore:
+        row = await session.get(Projection, {"company_id": cid, "entity_id": entity_id}, populate_existing=True)
+        state = dict(row.state or {})
+        if "sku" in restore and normalize_sku(state.get("sku")) != normalize_sku(restore["sku"]):
+            await stamp_catalog_family_members(session, cid, entity_id, source=source)
+        await emit_event(
+            session, company_id=cid, entity_id=entity_id, entity_type="item", event_type="item.updated",
+            data={"fields_changed": {key: {"old": state.get(key), "new": value} for key, value in restore.items()}},
+            actor_id=actor_id, location_id=None, source=source,
+            idempotency_key=f"external-link-undo:{platform}:{entity_id}:v{row.version}", metadata_={},
+        )
+
+    kept_files = []
+    on_item = {f.get("id") for f in (await session.get(Projection, {"company_id": cid, "entity_id": entity_id},
+                                                        populate_existing=True)).state.get("files") or []}
+    for file_id in link.get("files") or []:
+        if file_id not in on_item:
+            continue
+        changed = await session.scalar(select(LedgerEntry.id).where(
+            LedgerEntry.company_id == cid, LedgerEntry.entity_id == entity_id,
+            LedgerEntry.event_type != "item.file.attached",
+            LedgerEntry.data["file_id"].as_string() == file_id).limit(1))
+        if changed:
+            kept_files.append(file_id)
+            continue
+        filename = next((f.get("filename") for f in state.get("files") or [] if f.get("id") == file_id), None)
+        await emit_event(
+            session, company_id=cid, entity_id=entity_id, entity_type="item", event_type="item.file.deleted",
+            data={"entity_id": entity_id, "entity_type": "item", "file_id": file_id, "filename": filename},
+            actor_id=actor_id, location_id=None, source=source,
+            idempotency_key=f"external-link-undo-file:{platform}:{entity_id}:{file_id}", metadata_={},
+        )
+    return {"outcome": "undone", "kept": kept, "files": kept_files}
 
 
 async def detach_external_links_for_platform(

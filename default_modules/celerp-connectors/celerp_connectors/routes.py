@@ -23,10 +23,11 @@ from celerp.db import get_session
 from celerp.modules.boundary import company_settings, needs_modules_for, require_on
 from celerp.services.auth import (
     get_current_company_id,
+    get_current_role,
     get_current_user,
     require_install_owner,
 )
-from celerp.services.permissions import require_permission
+from celerp.services.permissions import get_current_company_settings, require_permission
 from ui.i18n import t
 
 log = logging.getLogger(__name__)
@@ -135,7 +136,9 @@ def _execution_refusals(connector):
 async def _products_work(session: AsyncSession, company_id, connector_name: str, purpose: str):
     """A person's change to the connection's products, run inside its execution of the
     products resource, as a products sync runs: refused as busy while one runs. The
-    request's transaction ends first, so the work's own transactions begin inside it."""
+    request's transaction ends first, so the work's own transactions begin inside it. Work
+    that fails rolls the request's transaction back before the execution is released, so
+    the release never waits on the rows the failed work still held."""
     from celerp import connectors
     from celerp.connectors.execution import connector_execution
 
@@ -146,7 +149,11 @@ async def _products_work(session: AsyncSession, company_id, connector_name: str,
     await session.commit()
     with _execution_refusals(connector):
         async with connector_execution(company_id, connector, purpose, ["products"]) as ex:
-            yield ex
+            try:
+                yield ex
+            except BaseException:
+                await session.rollback()
+                raise
 
 
 async def _first_sync_row(session: AsyncSession, company_id, connector_name: str, *, for_update: bool = False):
@@ -859,14 +866,16 @@ async def first_sync_summary(
 ) -> dict:
     """What the first sync did and how to undo it: its state (with the reason when it needs
     attention), the import of the products it created,
-    the links it made (with whether they were undone), and the invoices it imported,
-    newest first. Invoices are voided one by one, which keeps their audit trail."""
+    each link it made (with its undo's outcome and what that undo kept), and the
+    invoices whose creation names it (first_sync_metadata), newest first. Invoices are voided one by one, which keeps their audit trail."""
     import uuid
 
     import sqlalchemy as sa
 
     from celerp import connectors
+    from celerp.connectors.base import FIRST_SYNC_METADATA_KEY
     from celerp.models.import_batch import ImportBatch
+    from celerp.models.ledger import LedgerEntry
     from celerp.models.projections import Projection
 
     try:
@@ -877,20 +886,25 @@ async def first_sync_summary(
     first_sync = await _first_sync_row(session, company_id, connector_name)
     undo = dict((first_sync.undo if first_sync is not None else None) or {})
     batch = None
-    batch_ids: list[str] = []
     if first_sync is not None and first_sync.batch_id:
         row = await session.get(ImportBatch, uuid.UUID(first_sync.batch_id))
         if row is not None:
             batch = {"id": str(row.id), "rows": row.row_count, "status": row.status}
-            batch_ids = list(row.entity_ids or [])
+    links = list(undo.get("links") or [])
+    items = {row.entity_id: row.state or {} for row in (await session.execute(sa.select(Projection).where(
+        Projection.company_id == uuid.UUID(str(company_id)),
+        Projection.entity_id.in_([link["entity_id"] for link in links])))).scalars()} if links else {}
     invoices = []
-    if batch_ids and connector.imported_doc_marker:
+    if first_sync is not None and first_sync.operation_id:
+        # The documents whose creation names this first sync (first_sync_metadata).
+        cid = uuid.UUID(str(company_id))
+        created = sa.select(LedgerEntry.entity_id).where(
+            LedgerEntry.company_id == cid, LedgerEntry.entity_type == "doc",
+            LedgerEntry.event_type == "doc.created",
+            LedgerEntry.metadata_[FIRST_SYNC_METADATA_KEY].as_string() == first_sync.operation_id)
         rows = (await session.execute(sa.select(Projection).where(
-            Projection.company_id == uuid.UUID(str(company_id)),
-            Projection.entity_type == "doc",
-            Projection.entity_id.in_(batch_ids),
-            Projection.state[connector.imported_doc_marker].as_string().is_not(None),
-        ).order_by(Projection.created_at.desc()))).scalars().all()
+            Projection.company_id == cid, Projection.entity_type == "doc", Projection.entity_id.in_(created),
+        ).order_by(Projection.created_at.desc(), Projection.entity_id.desc()))).scalars().all()
         invoices = [{"entity_id": r.entity_id,
                      "number": (r.state or {}).get("doc_number") or (r.state or {}).get("ref_id"),
                      "total": (r.state or {}).get("total"), "status": (r.state or {}).get("status")}
@@ -900,10 +914,21 @@ async def first_sync_summary(
         "state": first_sync.state if first_sync is not None else None,
         "error": first_sync.error if first_sync is not None else None,
         "batch": batch,
-        "links": len(undo.get("links") or []),
+        "links": [_link_summary(link, items.get(link["entity_id"])) for link in links],
         "links_undone_at": undo.get("links_undone_at"),
         "invoices": invoices,
     }
+
+
+def _link_summary(link: dict, item: dict | None) -> dict:
+    """One link on the first sync's summary: the item (its SKU and name now; None once it
+    is gone), its undo outcome (None while still to undo), the fields and files its undo
+    kept because they changed since, and how many files the first sync pulled onto it."""
+    kept = link.get("kept") or {}
+    return {"entity_id": link["entity_id"], "sku": (item or {}).get("sku"), "name": (item or {}).get("name"),
+            "outcome": link.get("outcome"),
+            "fields": kept.get("fields") or {}, "kept_files": kept.get("files") or [],
+            "files": len(link.get("files") or [])}
 
 
 async def _owned_config(session: AsyncSession, company_id, connector):
@@ -993,6 +1018,7 @@ async def start_first_sync(
     first_sync.started_by = str(user.id)
     first_sync.started_at = now
     first_sync.batch_id = batch_id
+    first_sync.operation_id = str(uuid.uuid4())
     first_sync.undo = {"links": []}
     first_sync.error = None
     if config.webhook_secret:
@@ -1053,16 +1079,21 @@ async def undo_first_sync_links(
     connector_name: str,
     company_id: Annotated[str, Depends(get_current_company_id)],
     user=Depends(get_current_user),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
     _: None = require_permission("manage_integrations"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Undo the links the first sync made to items Celerp already had: each link is
-    detached and, where the first sync took the store's values, the item's own values
-    come back. The items the first sync created are undone in Import History."""
-    from celerp.events.engine import emit_event
-    from celerp.models.projections import Projection
+    """Undo the links the first sync made to items Celerp already had, as far as each is
+    still the first sync's (celerp_inventory.services.undo_external_link): a value or file
+    changed since, or a link the item no longer holds, is kept and listed in ``kept``. Each
+    link's outcome is saved on the undo record in the same transaction, so a failed undo
+    changes nothing and its repeat settles only the links still open. The items the first
+    sync created are undone in Import History."""
     require_on(await company_settings(company_id), "celerp-inventory")
-    from celerp_inventory.services import detach_external_link
+    from datetime import datetime, timezone
+
+    from celerp_inventory import services as inventory
 
     from celerp.services.company_lock import lock_company
 
@@ -1074,31 +1105,22 @@ async def undo_first_sync_links(
         if undo.get("links_undone_at") or not undo.get("links"):
             await session.rollback()
             raise HTTPException(status_code=409, detail=t("connectors.err_no_links_to_undo"))
-        undone = 0
-        for link in undo["links"]:
-            entity_id = link["entity_id"]
-            if not await detach_external_link(
-                session, company_id, entity_id, connector_name, actor_id=user.id, source="connector_ui"
-            ):
-                continue
-            undone += 1
-            if link.get("restore"):
-                row = await session.get(Projection, {"company_id": __import__("uuid").UUID(str(company_id)),
-                                                     "entity_id": entity_id})
-                state = (row.state or {}) if row is not None else {}
-                await emit_event(
-                    session, company_id=company_id, entity_id=entity_id, entity_type="item",
-                    event_type="item.updated",
-                    data={"fields_changed": {key: {"old": state.get(key), "new": value}
-                                             for key, value in link["restore"].items()}},
-                    actor_id=user.id, location_id=None, source="connector_ui",
-                    idempotency_key=f"first-sync-restore:{connector_name}:{entity_id}:v{row.version}",
-                    metadata_={},
-                )
-        from datetime import datetime, timezone
-        first_sync.undo = {**undo, "links_undone_at": datetime.now(timezone.utc).isoformat()}
+        undone, kept, links = 0, [], []
+        for link in sorted(undo["links"], key=lambda link: link["entity_id"]):
+            if "outcome" not in link:
+                result = await inventory.undo_external_link(
+                    session, company_id, connector_name, link, role=role, settings=settings,
+                    actor_id=user.id, source="connector_ui")
+                link = {**link, "outcome": result["outcome"], "kept": {
+                    "fields": result["kept"], "files": result["files"]}}
+                undone += result["outcome"] == "undone"
+                if result["outcome"] != "undone" or result["kept"] or result["files"]:
+                    kept.append({"entity_id": link["entity_id"], "outcome": result["outcome"],
+                                 "fields": result["kept"], "files": result["files"]})
+            links.append(link)
+        first_sync.undo = {**undo, "links": links, "links_undone_at": datetime.now(timezone.utc).isoformat()}
         await session.commit()
-        return {"undone": undone}
+        return {"undone": undone, "kept": kept}
 
 
 class ConflictChoice(BaseModel):

@@ -80,6 +80,7 @@ async def _started(name: str, directions: dict, *, match: str = "take") -> uuid.
         config.orders_from = now - timedelta(days=30)
         config.first_sync.directions = dict(directions)
         config.first_sync.batch_id, config.first_sync.match = str(batch.id), match
+        config.first_sync.operation_id = str(uuid.uuid4())
         config.first_sync.started_at = config.first_sync.watermark = now
         config.first_sync.undo = {"links": []}
         config.first_sync.progress = {}

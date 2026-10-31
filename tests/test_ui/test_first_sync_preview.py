@@ -107,7 +107,9 @@ def test_summary_offers_every_way_back():
 
     html = to_xml(first_sync_summary_card("woocommerce", {
         "started_at": "2026-09-01T00:00:00+00:00", "batch": {"id": "b1", "rows": 3, "status": "active"},
-        "links": 2, "links_undone_at": None,
+        "links": [{"entity_id": "item:a", "sku": "A-1", "name": "A", "outcome": None, "fields": {}, "kept_files": [], "files": 0},
+                  {"entity_id": "item:b", "sku": "B-1", "name": "B", "outcome": None, "fields": {}, "kept_files": [], "files": 1}],
+        "links_undone_at": None,
         "invoices": [{"entity_id": "doc:woocommerce:order:10", "number": "INV-1", "total": 40.0, "status": "final"}],
     }, "en"))
     assert 'href="/settings/inventory?tab=import-history"' in html

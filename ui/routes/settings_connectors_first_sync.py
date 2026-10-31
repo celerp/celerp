@@ -200,8 +200,8 @@ def first_sync_summary_card(platform: str, summary: dict, lang: str, error: str 
         return Span(error, cls="flash flash--warning") if error else Span()
     service = get_connector(platform).display_name
     batch = summary.get("batch")
-    links = summary.get("links") or 0
-    undone = summary.get("links_undone_at")
+    links = summary.get("links") or []
+    undone = summary.get("links_undone_at") or all(link.get("outcome") for link in links)
     invoices = summary.get("invoices") or []
     return Div(
         P(t("connectors.first_sync_title", lang), cls="settings-section-title"),
@@ -218,13 +218,14 @@ def first_sync_summary_card(platform: str, summary: dict, lang: str, error: str 
         if batch else Span(),
         Div(
             P(t("connectors.first_sync_links_undone" if undone else "connectors.first_sync_links",
-                lang, n=links, service=service)),
+                lang, n=len(links), service=service)),
             *([] if undone else [Button(
                 t("connectors.first_sync_undo_links", lang), cls="btn btn--sm btn--outline",
                 hx_post=f"/settings/connectors/{platform}/first-sync/undo-links",
                 hx_target=f"#first-sync-summary-{platform}", hx_swap="outerHTML",
-                hx_confirm=t("connectors.first_sync_undo_links_confirm", lang, n=links, service=service),
+                hx_confirm=t("connectors.first_sync_undo_links_confirm", lang, n=len(links), service=service),
             )]),
+            _kept_links(links, service, lang),
         ) if links else Span(),
         Div(
             P(t("connectors.first_sync_invoices", lang, n=len(invoices))),
@@ -242,6 +243,38 @@ def first_sync_summary_card(platform: str, summary: dict, lang: str, error: str 
         id=f"first-sync-summary-{platform}",
         cls="settings-card",
     )
+
+
+# The link record keeps the price under both item keys; both read as the price.
+_LINK_FIELD_LABEL = {"retail_price": "sale_price"}
+
+
+def _kept_links(links: list[dict], service: str, lang: str) -> FT:
+    """The items an undo of the links left as they are, each with why: linked to another
+    product since, no longer in Celerp, or a value or file changed since the first sync
+    (both values shown, so the person can set the earlier one back on the item)."""
+    rows = []
+    for link in links:
+        outcome = link.get("outcome")
+        if outcome is None or (outcome == "undone" and not link.get("fields") and not link.get("kept_files")):
+            continue
+        reasons = []
+        if outcome in ("relinked", "gone"):
+            reasons.append(t(f"connectors.first_sync_link_{outcome}", lang, service=service))
+        labels: dict[str, str] = {}
+        for key, both in (link.get("fields") or {}).items():
+            label = t(f"connectors.conflict_field_{_LINK_FIELD_LABEL.get(key, key)}", lang)
+            labels.setdefault(label, t("connectors.first_sync_link_kept_field", lang, field=label,
+                                       current=_cell(both.get("current")), before=_cell(both.get("before"))))
+        reasons.extend(labels.values())
+        if link.get("kept_files"):
+            reasons.append(t("connectors.first_sync_link_kept_files", lang, n=len(link["kept_files"])))
+        item = " ".join(str(v) for v in (link.get("sku"), link.get("name")) if v) or "--"
+        rows.append(Li(A(item, href=f"/inventory/{link['entity_id']}") if outcome != "gone" else item,
+                       ": ", "; ".join(reasons)))
+    if not rows:
+        return Span()
+    return Div(P(t("connectors.first_sync_links_kept", lang)), Ul(*rows))
 
 
 def _failure_reason(error: dict | None, lang: str) -> str:

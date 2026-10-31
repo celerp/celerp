@@ -47,7 +47,7 @@ def _source_rate(value, *, invert: bool = False):
 WOOCOMMERCE_ISSUED_STATUSES = frozenset({"processing", "completed"})
 
 
-async def upsert_order_from_shopify(company_id: str, order: dict) -> str:
+async def upsert_order_from_shopify(company_id: str, order: dict, operation: str | None = None) -> str:
     """
     Create/update a doc (invoice) from a Shopify order dict.
     Returns "created", "updated", or "noop".
@@ -93,7 +93,7 @@ async def upsert_order_from_shopify(company_id: str, order: dict) -> str:
             "currency": currency,
             "shopify_order_id": str(order["id"]),
         }
-        return await _emit_doc(session, company_id, data, idem_key)
+        return await _emit_doc(session, company_id, data, idem_key, operation=operation)
 
 
 def _imported_invoice_markers() -> tuple[str, ...]:
@@ -194,17 +194,19 @@ async def mark_doc_pushed(
 
 async def _emit_doc(
     session, company_id: str, data: dict, idem_key: str,
-    external_identity: tuple[str, str] | None = None,
+    external_identity: tuple[str, str] | None = None, operation: str | None = None,
 ) -> str:
+    # ``operation``: the first sync importing the document, recorded on its creation only.
     # connector_upsert keys the projection on idem_key (the unique platform id), NOT the
     # human ref_id/DocNumber — two source invoices can share a DocNumber (QB allows it)
     # and would otherwise collapse into one doc. A changed re-import updates the same doc.
     # Returns "created", "updated", or "noop".
+    from celerp.connectors.base import first_sync_metadata
     from celerp.events.engine import connector_upsert
     outcome = await connector_upsert(
         session, company_id=company_id, entity_type="doc",
         event_type="doc.created", idem_key=idem_key, data=data,
-        external_identity=external_identity,
+        external_identity=external_identity, metadata_=first_sync_metadata(operation),
     )
     await session.commit()
     return outcome
@@ -513,7 +515,7 @@ async def _notify_goods_taken(session, company_id, moved: list[dict]) -> None:
             i18n={"title": title, "body": "documents.cost_moved_with_goods", "params": params})
 
 
-async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
+async def upsert_order_from_woocommerce(company_id: str, order: dict, operation: str | None = None) -> str:
     """Reconcile one WooCommerce order through Celerp's canonical sales lifecycle.
 
     Draft source data may be refreshed until issuance. Once finalized, commercial
@@ -525,6 +527,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
     from sqlalchemy import select
 
     from celerp.db import SessionLocal
+    from celerp.connectors.base import first_sync_metadata
     from celerp.events.engine import connector_upsert, emit_event, find_event_by_idempotency
     from celerp.models.accounting import UserCompany
     from celerp.models.company import Company
@@ -965,6 +968,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
             outcome = await connector_upsert(
                 session, company_id=cid, entity_type="doc",
                 event_type="doc.created", idem_key=idem_key, data=data,
+                metadata_=first_sync_metadata(operation),
             )
             existing = await session.get(
                 Projection,
@@ -1179,7 +1183,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
         return "updated" if changed else "noop"
 
 
-async def upsert_invoice_from_quickbooks(company_id: str, invoice: dict) -> str:
+async def upsert_invoice_from_quickbooks(company_id: str, invoice: dict, operation: str | None = None) -> str:
     """
     Create/update a doc (invoice) from a QuickBooks Invoice dict.
     Returns "created", "updated", or "noop".
@@ -1233,11 +1237,11 @@ async def upsert_invoice_from_quickbooks(company_id: str, invoice: dict) -> str:
         # An invoice Celerp pushed carries this id already; the import leaves it as is.
         return await _emit_doc(
             session, company_id, data, idem_key,
-            external_identity=("quickbooks_invoice_id", str(invoice["Id"])),
+            external_identity=("quickbooks_invoice_id", str(invoice["Id"])), operation=operation,
         )
 
 
-async def upsert_invoice_from_xero(company_id: str, invoice: dict) -> str:
+async def upsert_invoice_from_xero(company_id: str, invoice: dict, operation: str | None = None) -> str:
     """
     Create/update a doc (invoice) from a Xero Invoice dict (ACCREC).
     Returns "created", "updated", or "noop".
@@ -1288,5 +1292,5 @@ async def upsert_invoice_from_xero(company_id: str, invoice: dict) -> str:
         # An invoice Celerp pushed carries this id already; the import leaves it as is.
         return await _emit_doc(
             session, company_id, data, idem_key,
-            external_identity=("xero_invoice_id", str(invoice["InvoiceID"])),
+            external_identity=("xero_invoice_id", str(invoice["InvoiceID"])), operation=operation,
         )
