@@ -536,6 +536,45 @@ async def _merge_parts(session: AsyncSession, company_id, entity_id: str) -> lis
     return list(parts) if isinstance(parts, list) and parts else None
 
 
+def _landed_only(state: dict) -> bool:
+    """A lot holding units whose whole value is landed cost: no goods value under its freight."""
+    landed = sum(float(v or 0) for v in (state.get("landed_costs") or {}).values())
+    return (float(state.get("quantity") or 0) != 0 and landed > 0
+            and round_basis(float(recorded_value(state)) - landed) == 0)
+
+
+async def cost_review_ids(session: AsyncSession, company_id, entity_ids: list[str]) -> set[str]:
+    """The lots among ``entity_ids`` whose goods cost an owner should check: those whose
+    goods cost is unknown, those holding units whose value is landed cost only (a goods
+    cost cleared while the lot carried freight), and merge results whose cost is still the
+    merge's own although a lot they were made from had no goods cost. Lots costed before
+    goods costs could be unknown keep their value; this lists them instead of revaluing
+    them. Backs the item list's ``filter=cost_review``."""
+    if not entity_ids:
+        return set()
+    states = {eid: state for eid, state in (await session.execute(
+        select(Projection.entity_id, Projection.state).where(
+            Projection.company_id == company_id, Projection.entity_type == "item",
+            Projection.entity_id.in_(entity_ids),
+        ))).all()}
+    review = {eid for eid, state in states.items() if not goods_cost_known(state) or _landed_only(state)}
+    merged = [eid for eid, metadata in (await session.execute(
+        select(LedgerEntry.entity_id, LedgerEntry.metadata_).where(
+            LedgerEntry.company_id == company_id, LedgerEntry.event_type == "item.created",
+            LedgerEntry.entity_id.in_([eid for eid in states if eid not in review]),
+        ))).all() if (metadata or {}).get("merged_from")]
+    for eid in merged:
+        parts = await _merge_parts(session, company_id, eid)
+        if not parts:
+            continue
+        part_states = (await session.execute(
+            select(Projection.state).where(
+                Projection.company_id == company_id, Projection.entity_id.in_(parts)))).scalars().all()
+        if any(not goods_cost_known(p) and not goods_cost_empty(p) for p in part_states):
+            review.add(eid)
+    return review
+
+
 @dataclass
 class _Sale:
     """Where a sold lot's cost went: the invoice whose cost of goods sold carries it,

@@ -1413,6 +1413,15 @@ async def query_items(
         removable = set(await untouched_demo_item_ids(session, company_id))
         result = [r for r in result if r.get("id") in removable]
 
+    # Semantic "cost review" filter: lots whose goods cost is unknown or was carried
+    # from before goods costs could be unknown. Membership reads the cost, so a role
+    # that cannot see costs gets none (listing them would disclose which lots they are).
+    if f.filter == "cost_review":
+        from celerp_inventory.services import cost_review_ids
+        review = (await cost_review_ids(session, company_id, [r["id"] for r in result if r.get("id")])
+                  if can_see_costs else set())
+        result = [r for r in result if r.get("id") in review]
+
     not_found: list[str] = []
     if f.q:
         # Shared q parse + filter + q_match attachment (single-sourced in
@@ -1502,6 +1511,9 @@ async def list_items(
             reorder point (see celerp.services.reorder.is_below_reorder).
             "demo" keeps only setup's samples that were never edited or used
             (see celerp.services.demo.untouched_demo_item_ids).
+            "cost_review" keeps only lots whose goods cost is worth checking
+            (see celerp_inventory.services.cost_review_ids); none without
+            view_inventory_costs.
     on_memo_to: customer contact_id. Scope to items currently out on memo to that
             customer, valued (holding_value) at the price they were quoted.
     consigned_from: supplier contact_id. Scope to items currently held on

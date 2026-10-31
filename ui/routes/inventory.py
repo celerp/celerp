@@ -811,12 +811,26 @@ def _holdings_scope_banner(p: dict, holdings_total: float | None, currency: str 
     return _scope_banner(label, basis, total_el)
 
 
-def _demo_scope_banner(p: dict) -> FT | str:
-    """Banner for the demo items list, so the filter stays visible after the hint is
-    closed and the list can be left for all inventory."""
-    if p.get("filter") != DEMO_ITEMS_FILTER:
+# The item list's ?filter= value for lots whose goods cost is worth checking. The API owns
+# its meaning (query_items, celerp_inventory.services.cost_review_ids); this mirrors it.
+COST_REVIEW_FILTER = "cost_review"
+COST_REVIEW_URL = f"/inventory?filter={COST_REVIEW_FILTER}"
+
+# A semantic filter's banner (label, basis) and its empty-list message.
+_FILTER_SCOPES = {
+    DEMO_ITEMS_FILTER: ("inventory.demo_scope_label", "inventory.demo_scope_basis", "inventory.no_demo_items"),
+    COST_REVIEW_FILTER: ("inventory.cost_review_scope_label", "inventory.cost_review_scope_basis",
+                         "inventory.no_cost_review_items"),
+}
+
+
+def _filter_scope_banner(p: dict) -> FT | str:
+    """Banner for a semantic filter's list (demo items, costs to check), so the filter
+    stays visible and the list can be left for all inventory."""
+    scope = _FILTER_SCOPES.get(p.get("filter") or "")
+    if not scope:
         return ""
-    return _scope_banner(t("inventory.demo_scope_label"), t("inventory.demo_scope_basis"))
+    return _scope_banner(t(scope[0]), t(scope[1]))
 
 
 def _scope_banner(label: str, basis: str, total_el: FT | str = "") -> FT:
@@ -1218,7 +1232,7 @@ async def _inventory_content(
 
     return Div(
         _holdings_scope_banner(p, holdings_total, currency, holdings_missing),
-        _demo_scope_banner(p),
+        _filter_scope_banner(p),
         _category_tabs(category_counts, p, total_scoped=total_scoped, label_map=category_label_map),
         _inventory_type_tabs(p),
         _valuation_bar(aggregates, currency, lang),
@@ -5426,8 +5440,9 @@ def _inventory_empty_state(p: dict) -> FT:
     """Context-aware empty state: only show import CTA on unfiltered views."""
     active_status = p.get("status", "")
     active_q = p.get("q", "")
-    if p.get("filter") == DEMO_ITEMS_FILTER:
-        return Div(P(t("inventory.no_demo_items"), cls="empty-state-msg"), cls="empty-state", id="data-table")
+    scope = _FILTER_SCOPES.get(p.get("filter") or "")
+    if scope:
+        return Div(P(t(scope[2]), cls="empty-state-msg"), cls="empty-state", id="data-table")
     if active_status:
         label = display_enum(active_status, domain="item_status")
         return Div(P(t("inventory.no_status_items", status=label.lower()), cls="empty-state-msg"), cls="empty-state", id="data-table")
@@ -7738,7 +7753,9 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
             total_save = {"name": f"{conventional_key}_total", **_save,
                           "hx_include": f"this, #{_PRICING_OPENED[False]}, #{_PRICING_OPENED_VERSION}"}
             carried = (*(() if goods_cost_known(item) or item.get("cost_total") is None
-                         else _cost_total_view(item, currency)), *_pricing_cost_opened(item, currency))
+                         else (*_cost_total_view(item, currency),
+                               A(t("inventory.cost_review_link"), href=COST_REVIEW_URL, cls="link"))),
+                       *_pricing_cost_opened(item, currency))
         else:
             # Editing the total back-fills the unit, then re-fires its autosave.
             total_save = {"onchange": f"document.getElementById('{unit_id}').dispatchEvent(new Event('change'))"}
