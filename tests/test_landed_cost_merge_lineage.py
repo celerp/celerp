@@ -450,3 +450,91 @@ async def test_a_bill_whose_goods_all_went_back_reverts_as_before(client, sessio
     assert await _pools(session, auth, bill, parcel) == [0.0]
     assert await _b(session, auth, "1130-FRT", "1130-P") == {"1130-FRT": 0.0, "1130-P": 0.0}
     await assert_settled(client, session, auth)
+
+
+# ── validation: lots from several receipts, partial returns, repeated finalizing, reversal ──
+
+async def test_a_merged_lot_from_two_bills_gives_each_its_own_freight_back(client, session, auth):
+    """One lot received from two bills (30 and 20 shipping over 30 units), 10 of it merged with
+    other stock: each bill's freight on the merged lot is its own share, and taking each bill
+    back in turn takes only that bill's share off, leaving nothing behind and the books tied."""
+    await _seed(session, auth)
+    first, lot = await _shared_lot(client, auth)
+    second = await _po_into(client, auth, lot, 10, 10.0, shipping=20.0)
+    [part] = await _split(client, auth, lot, 10)
+    x = await _merge(client, auth, [part, await _like(client, session, auth, lot, 5, 50.0)])
+    assert await _pools(session, auth, first, x) == [10.0]
+    assert await _pools(session, auth, second, x) == [round(20.0 * 10 / 30, 2)]
+    before = await _b(session, auth, "5100")
+    await _send_back_and_revert(client, auth, first, lot)
+    assert await _pools(session, auth, first, x, lot) == [0.0, 0.0]
+    assert await _pools(session, auth, second, x) == [round(20.0 * 10 / 30, 2)]
+    await _send_back_and_revert(client, auth, second, lot)
+    assert await _pools(session, auth, second, x, lot) == [0.0, 0.0]
+    assert await _b(session, auth, "5100") == before
+    await assert_settled(client, session, auth)
+
+
+async def test_a_bills_units_sent_back_in_parts_revert_like_one_return(client, session, auth):
+    """The bill's 10 units go back in two returns (4, then 6): the revert then takes the freight
+    off the merged lot exactly as after one return of all 10."""
+    await _seed(session, auth)
+    doc, lot = await _shared_lot(client, auth)
+    [part] = await _split(client, auth, lot, 10)
+    x = await _merge(client, auth, [part, await _like(client, session, auth, lot, 5, 50.0)])
+    before = await _b(session, auth, "5100")
+    for qty in (4, 6):
+        r = await _return(client, auth, doc, lot, qty)
+        assert r.status_code == 200, r.text
+        await assert_settled(client, session, auth)
+    assert (await _post(client, auth, doc, "revert-to-draft")).status_code == 200
+    assert await _pools(session, auth, doc, x, lot) == [0.0, 0.0]
+    assert await _b(session, auth, "5100") == before
+    await assert_settled(client, session, auth)
+
+
+async def test_finalizing_two_merged_bills_again_capitalises_each_once(client, session, auth):
+    """Two orders received, merged before either is finalized, each finalized twice: each bill's
+    freight sits on the merged lot once, and the second finalizes write nothing."""
+    await _seed(session, auth)
+    first, lot = await _ordered(client, session, auth)
+    second, other = await _ordered(client, session, auth, qty=5, freight=20.0)
+    x = await _merge(client, auth, [lot, other])
+    await _finalize(client, auth, first)
+    await _finalize(client, auth, second)
+    held = (await _pools(session, auth, first, x), await _pools(session, auth, second, x))
+    assert held == ([FREIGHT], [20.0])
+    books = await _b(session, auth, "5100", "1130-FRT")
+    for doc in (first, second, first):
+        await _post(client, auth, doc, "finalize")
+    assert (await _pools(session, auth, first, x), await _pools(session, auth, second, x)) == held
+    assert await _b(session, auth, "5100", "1130-FRT") == books
+    await assert_settled(client, session, auth)
+
+
+async def test_reverting_and_finalizing_again_twice_conserves_the_freight(client, session, auth):
+    """Units sold from the merged lot, then the bill sent back, taken back and finalized again,
+    twice over: each cycle leaves the same freight held and the same books, and the freight held
+    plus the freight expensed is the bill's freight throughout."""
+    await _seed(session, auth)
+    doc, lot = await _shared_lot(client, auth)
+    [part] = await _split(client, auth, lot, 10)
+    x = await _merge(client, auth, [part, await _like(client, session, auth, lot, 5, 50.0)])
+    before = await _b(session, auth, "5100")
+    [freight_on_x] = await _pools(session, auth, doc, x)
+    goods_cost = round(((await _state(session, auth, x))["cost_total"] - freight_on_x) / 15 * 3, 2)  # 3 of 15 units
+    await _sell(client, auth, x, 3)
+    expensed = round((await _b(session, auth, "5100"))["5100"] - before["5100"] - goods_cost, 2)
+    assert round(sum(await _pools(session, auth, doc, x, lot)) + expensed, 2) == FREIGHT
+    r = await _return(client, auth, doc, lot, 10)
+    assert r.status_code == 200, r.text
+    held = await _pools(session, auth, doc, x)
+    books = await _b(session, auth, "5100", "6970", "1130-FRT")
+    for _ in range(2):
+        assert (await _post(client, auth, doc, "revert-to-draft")).status_code == 200
+        assert await _pools(session, auth, doc, x) == [0.0]
+        await assert_settled(client, session, auth)
+        await _finalize(client, auth, doc)
+        assert await _pools(session, auth, doc, x) == held
+        assert await _b(session, auth, "5100", "6970", "1130-FRT") == books
+    await assert_settled(client, session, auth)
