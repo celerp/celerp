@@ -42,7 +42,7 @@ from celerp.services.demo import delete_untouched_demo_items
 from celerp.services.goods_cost import (GOODS_COST_UNKNOWN, clears_goods_cost, event_goods_costs, lot_label,
                                        negative_cost_error, writes_goods_cost)
 from celerp.services.cost_visibility import COST_ITEM_KEYS
-from celerp.services.money import BASIS_DP, allocate_pro_rata, round_basis, to_decimal
+from celerp.services.money import allocate_pro_rata, round_basis, to_decimal
 from celerp.services.company_lock import holds_company_lock, lock_company, lock_projections, locked_company
 from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.services.lot_origin import (
@@ -516,24 +516,32 @@ async def _cost_is_traceable(session: AsyncSession, company_id, entity_id: str, 
 
 
 async def _merge_parts(session: AsyncSession, company_id, entity_id: str) -> list[str] | None:
-    """The lots a merge result was made from, while its cost is still the merge's own
-    (no cost was set on it since); else None. A correction carried into it from a part
-    (restated_from) and a merge's own cost write (reason from_merge) are the merge's."""
-    rows = (await session.execute(
-        select(LedgerEntry.event_type, LedgerEntry.data, LedgerEntry.metadata_)
-        .where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id == entity_id)
-        .order_by(LedgerEntry.id)
-    )).all()
-    if not rows or rows[0][0] != "item.created":
-        return None
-    for event_type, data, metadata in rows[1:]:
-        metadata = metadata or {}
-        if metadata.get("restated_from") or metadata.get("reason") == "from_merge":
+    """The lots a merge result was made from, while its cost is still the merge's own; else None."""
+    return (await _merge_parts_of(session, company_id, [entity_id])).get(entity_id)
+
+
+async def _merge_parts_of(session: AsyncSession, company_id, entity_ids: list[str]) -> dict[str, list[str]]:
+    """The lots each of ``entity_ids`` was made from by a merge, for those whose cost is
+    still the merge's own (no cost was set on it since), read in one query. A correction
+    carried into it from a part (restated_from) and a merge's own cost write (reason
+    from_merge) are the merge's."""
+    history: dict[str, list] = {}
+    for entity_id, event_type, data, metadata in (await session.execute(
+        select(LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.data, LedgerEntry.metadata_)
+        .where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(entity_ids))
+        .order_by(LedgerEntry.entity_id, LedgerEntry.id)
+    )).all():
+        history.setdefault(entity_id, []).append((event_type, data or {}, metadata or {}))
+    out: dict[str, list[str]] = {}
+    for entity_id, rows in history.items():
+        if rows[0][0] != "item.created" or any(
+                writes_goods_cost(event_type, data) for event_type, data, metadata in rows[1:]
+                if not (metadata.get("restated_from") or metadata.get("reason") == "from_merge")):
             continue
-        if writes_goods_cost(event_type, data or {}):
-            return None
-    parts = (rows[0][2] or {}).get("merged_from")
-    return list(parts) if isinstance(parts, list) and parts else None
+        parts = rows[0][2].get("merged_from")
+        if isinstance(parts, list) and parts:
+            out[entity_id] = list(parts)
+    return out
 
 
 def _landed_only(state: dict) -> bool:
@@ -563,15 +571,13 @@ async def cost_review_ids(session: AsyncSession, company_id, entity_ids: list[st
             LedgerEntry.company_id == company_id, LedgerEntry.event_type == "item.created",
             LedgerEntry.entity_id.in_([eid for eid in states if eid not in review]),
         ))).all() if (metadata or {}).get("merged_from")]
-    for eid in merged:
-        parts = await _merge_parts(session, company_id, eid)
-        if not parts:
-            continue
-        part_states = (await session.execute(
-            select(Projection.state).where(
-                Projection.company_id == company_id, Projection.entity_id.in_(parts)))).scalars().all()
-        if any(not goods_cost_known(p) and not goods_cost_empty(p) for p in part_states):
-            review.add(eid)
+    parts_of = await _merge_parts_of(session, company_id, merged) if merged else {}
+    unknown_parts = {eid for eid, state in (await session.execute(
+        select(Projection.entity_id, Projection.state).where(
+            Projection.company_id == company_id,
+            Projection.entity_id.in_({p for parts in parts_of.values() for p in parts}),
+        ))).all() if not goods_cost_known(state) and not goods_cost_empty(state)} if parts_of else set()
+    review.update(eid for eid, parts in parts_of.items() if unknown_parts.intersection(parts))
     return review
 
 
@@ -742,7 +748,7 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
                 f"{label} was merged, and a merge result's cost is the sum of its parts, so clearing "
                 "the cost of one part cannot be carried automatically; correct the merge result's cost instead")
         seen = {entity_id}
-        prev_id, prev_basis, prev_state = entity_id, new_basis, new
+        prev_id, prev_state = entity_id, new
         current, next_id = label, old.get("merged_into") if status == "merged" else None
         if status == "merged" and not next_id:
             raise CostRestatementConflict(f"{label} is merged, but its merge lineage is not recorded")
@@ -784,7 +790,7 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
                 adjusted[GOODS_COST_UNKNOWN] = not known
             if not delta and (parts is None or adjusted[GOODS_COST_UNKNOWN] == (not goods_cost_known(state))):
                 break  # neither its value nor its known-ness moves, so nothing further down does
-            prev_id, prev_basis = next_id, adjusted["cost_total"]
+            prev_id = next_id
             prev_state = apply_item_event(state, "item.cost_adjusted", adjusted)
             successors.append((next_id, adjusted))
             restated.append((next_id, state, prev_state))
@@ -2940,6 +2946,7 @@ class ImportBuild:
     errors: list[dict]              # {"row", "field", "code", "message"}
     locations_to_create: list[str]
     rows: list[dict]                # input rows with each category resolved to its canonical key
+    cost_refused: set[tuple[int, str]]  # (row, cost column) of each cost cell refused unread
 
 
 def import_created_item_id(company_id, key: str) -> str:
@@ -2954,6 +2961,7 @@ async def build_import_records(
     *,
     upsert: bool,
     create_missing_locations: bool = False,
+    can_change_costs: bool = False,
     create_key: str | None = None,
     skip: frozenset[int] = frozenset(),
 ) -> ImportBuild:
@@ -2968,6 +2976,10 @@ async def build_import_records(
     accepted only when the caller is authorised to create company locations; a
     row naming one keeps ``location_id`` empty until import_items creates it.
     An upsert that omits ``location_name`` preserves the target location.
+
+    Unless ``can_change_costs``, a row that updates an existing item and gives a
+    cost is refused as soon as its target is found (COST_CHANGE_PERMISSION), and
+    its (row, cost column) pairs are reported in ``cost_refused``.
 
     ``create_key`` is the import's operation key. Items this same import created
     are never upsert targets, so an exact retry plans every row against the state
@@ -3059,6 +3071,7 @@ async def build_import_records(
     records: list[dict] = []
     record_rows: list[int] = []
     errors: list[dict] = []
+    cost_refused: set[tuple[int, str]] = set()
     resolved_rows: list[dict] = []
     for i, row in enumerate(rows):
         if i + 1 in skip:
@@ -3123,6 +3136,11 @@ async def build_import_records(
                     "message": f"SKU '{sku}' matches multiple lots; include a barcode to choose one",
                 })
                 continue
+
+        if target is not None and not can_change_costs and (given := _cost_cells(row, _COST_COLUMNS)):
+            errors.extend({"row": i + 1, **_permission_error(col, COST_CHANGE_PERMISSION)} for col in given)
+            cost_refused.update((i + 1, col) for col in given)
+            continue
 
         # Location is required for a new item. Upsert without an explicit location
         # preserves the target's current location rather than inventing a default.
@@ -3396,7 +3414,7 @@ async def build_import_records(
 
     return ImportBuild(
         records=records, record_rows=record_rows, errors=errors,
-        locations_to_create=loc_names_needed, rows=resolved_rows,
+        locations_to_create=loc_names_needed, rows=resolved_rows, cost_refused=cost_refused,
     )
 
 
@@ -3519,6 +3537,28 @@ def _source_field(row: dict, key: str) -> str:
     return next((k for k in _AMOUNT_SOURCE_KEYS if _to_float(row.get(k)) is not None), key)
 
 
+# Changing an existing item's cost through any import takes view_inventory_costs. A row or
+# record that gives an existing item a cost as a role without it is refused before its cost is
+# read: the refusal names the permission and the cell, never anything that depends on the
+# cost the item holds or the one proposed, so no import outcome discloses that cost.
+COST_CHANGE_PERMISSION = "view_inventory_costs"
+# The item file's cost columns, the cells an import row gives a cost in.
+_COST_COLUMNS = ("cost_price", "cost_price_total")
+
+
+def _cost_cells(values: dict, keys) -> list[str]:
+    """The ``keys`` that ``values`` gives a cost in, at the top level or under attributes
+    (the item read model lifts those to the top level). Any text counts, so a cell is never
+    read to decide whether the rule applies."""
+    nested = values.get("attributes")
+    scopes = [values, *([nested] if isinstance(nested, dict) else [])]
+    return sorted({k for scope in scopes for k in keys if scope.get(k) not in (None, "")})
+
+
+def _permission_error(field: str, permission: str) -> dict:
+    return {"field": field, "code": "permission_denied", "message": f"Setting {field} requires the {permission} permission"}
+
+
 def _permission_errors(
     record: dict, row: dict, price_lists: list[dict], *, can_set_prices: bool, can_edit_amounts: bool,
 ) -> list[dict]:
@@ -3531,10 +3571,7 @@ def _permission_errors(
         ]
     if record["event_type"] == "item.patched" and not can_edit_amounts:
         gated += [(_source_field(row, key), "edit_inventory_amounts") for key in sorted(AMOUNT_ITEM_KEYS & set(data))]
-    return [
-        {"field": field, "code": "permission_denied", "message": f"Setting {field} requires the {permission} permission"}
-        for field, permission in dict(gated).items()
-    ]
+    return [_permission_error(field, permission) for field, permission in dict(gated).items()]
 
 
 def _pop_cost_change(data: dict, state: dict) -> dict | None:
@@ -3560,24 +3597,15 @@ def _pop_cost_change(data: dict, state: dict) -> dict | None:
                              opened=exported, now=exported, per_unit=per_unit)
 
 
-# A row's cost refusal as a role that may not see costs is told it: the reason, never an amount.
-_UNDISCLOSED_COST_REFUSALS = {
-    "cost_below_landed": "The cost total can't be less than the landed cost this item carries.",
-    "cost_not_carried": "This cost change can't be carried automatically through the merges, sales "
-                        "and write-offs that used this item.",
-}
-
-
-async def _planned_cost_change(session: AsyncSession, company_id, record: dict, row: dict, *,
-                               disclose: bool) -> tuple[dict | None, dict | None]:
+async def _planned_cost_change(session: AsyncSession, company_id, record: dict,
+                               row: dict) -> tuple[dict | None, dict | None]:
     """The cost a planned patch writes, found without writing: (the writer's refusal, or None;
     the change as {"old", "new"} whole values in the item file's terms, or None).
 
     The writer applies the patch and then restates the cost against the patched
     item; this runs the same restatement check against the item as the patch
-    would leave it. Unless ``disclose`` (the importer may see costs), no change is
-    built and a refusal names no amount: the importer learns that a cost is refused
-    and why, never what the lot's cost is.
+    would leave it. Only a role that may see costs reaches it with a cost: for any
+    other the builder refused the row (COST_CHANGE_PERMISSION).
     """
     if record["event_type"] != "item.patched" or not COST_ITEM_KEYS & set(record["data"]):
         return None, None
@@ -3593,8 +3621,7 @@ async def _planned_cost_change(session: AsyncSession, company_id, record: dict, 
     given = next((k for k in ("cost_total", "cost_price") if data.get(k) not in (None, "")), "cost_total")
 
     def _refused(code: str, exc: Exception) -> dict:
-        message = str(exc) if disclose else _UNDISCLOSED_COST_REFUSALS.get(code, str(exc))
-        return {"field": _source_field(row, given), "code": code, "message": message}
+        return {"field": _source_field(row, given), "code": code, "message": str(exc)}
 
     try:
         cost_change = _pop_cost_change(data, stored.state or {})
@@ -3610,8 +3637,6 @@ async def _planned_cost_change(session: AsyncSession, company_id, record: dict, 
                            {entity_id: patched})
     except CostRestatementConflict as exc:
         return _refused("cost_not_carried", exc), None
-    if not disclose:
-        return None, None
     landed = sum(float(v or 0) for v in ((stored.state or {}).get("landed_costs") or {}).values())
     return None, {"old": exported_cost_text(stored.state or {}),
                   "new": cost_text(round_basis(cost_change["cost_total"]["new"] + landed))}
@@ -3780,8 +3805,11 @@ async def build_import_plan(
     build = await build_import_records(
         session, company_id, rows, upsert=upsert,
         create_missing_locations=role_has_permission(settings, role, "manage_company_settings"),
+        can_change_costs=role_has_permission(settings, role, COST_CHANGE_PERMISSION),
         create_key=operation_key, skip=frozenset(excluded),
     )
+    # A refused cost cell is not read, so nothing the cell holds is reported about it.
+    errors = [e for e in errors if (e["row"], e["field"]) not in build.cost_refused]
     errors.extend(build.errors)
 
     # A SKU shared by rows the import creates is either several lots of one
@@ -3816,7 +3844,6 @@ async def build_import_plan(
 
     can_set_prices = role_has_permission(settings, role, "set_inventory_prices")
     can_edit_amounts = role_has_permission(settings, role, "edit_inventory_amounts")
-    can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
     cost_changes: list[dict] = []
     for rec, row_no in zip(build.records, build.record_rows):
         errors.extend(
@@ -3824,8 +3851,7 @@ async def build_import_plan(
                 rec, rows[row_no - 1], price_lists, can_set_prices=can_set_prices, can_edit_amounts=can_edit_amounts,
             )
         )
-        cost_error, cost_change = await _planned_cost_change(session, company_id, rec, rows[row_no - 1],
-                                                           disclose=can_see_costs)
+        cost_error, cost_change = await _planned_cost_change(session, company_id, rec, rows[row_no - 1])
         if cost_error:
             errors.append({"row": row_no, **cost_error})
         if cost_change:
@@ -4096,6 +4122,7 @@ async def write_import_batch(
     unit_map = build_unit_map(units)
     price_lists = (await get_price_config(session, company_id))[0]
     derived_keys = derived_price_keys(price_lists)
+    can_change_costs = role_has_permission(settings, role, COST_CHANGE_PERMISSION)
 
     outcome = ImportOutcome()
     created_entity_ids: list[str] = []
@@ -4129,6 +4156,14 @@ async def write_import_batch(
         entity_id = rec.entity_id
         idem_key = rec.idempotency_key
         primary = existing.get(idem_key)
+        # A cost for an existing item is refused before anything compares it with the item's
+        # (a retry check, a replay), so the outcome never depends on the cost the item holds.
+        if not can_change_costs and (given := _cost_cells(data, COST_ITEM_KEYS)):
+            target = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+            if target is not None:
+                named = {**data, "sku": data.get("sku") or (target.state or {}).get("sku")}
+                outcome.add(entity_id, "rejected", _row_refused(named, _needs_permission(given, COST_CHANGE_PERMISSION)))
+                continue
 
         try:
             reject_system_item_fields(data)

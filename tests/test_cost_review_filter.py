@@ -61,3 +61,37 @@ async def test_cost_review_lists_nothing_to_a_role_that_cannot_see_costs(client,
     assert unknown in await _listed(client, auth["headers"])
     operator = await _user_with_role(client, session, auth["headers"], "operator")
     assert await _listed(client, operator) == set()
+
+
+async def _statements(session, auth, ids: list[str]) -> tuple[set[str], int]:
+    """cost_review_ids over ``ids`` and the number of SQL statements it ran."""
+    from celerp_inventory.services import cost_review_ids
+    from sqlalchemy import event
+    engine = session.bind.sync_engine
+    ran: list[str] = []
+
+    def record(conn, cursor, statement, *args):
+        ran.append(statement)
+
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        review = await cost_review_ids(session, auth["company_id"], ids)
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+    return review, len(ran)
+
+
+async def test_cost_review_reads_merged_lots_in_a_fixed_number_of_queries(client, session, auth):
+    await _seed(session, auth)
+    merges: list[str] = []
+    counts = []
+    for _ in range(2):
+        for _ in range(3):
+            merge = await _merge(client, auth, [await _item(client, auth, qty=2, cost_total=50.0),
+                                                await _item(client, auth, qty=3)])
+            await _as_before_this_change(session, auth, merge, **{MARK: None})
+            merges.append(merge)
+        review, ran = await _statements(session, auth, merges)
+        assert review == set(merges)
+        counts.append(ran)
+    assert counts[0] == counts[1], counts

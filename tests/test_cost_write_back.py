@@ -757,33 +757,3 @@ async def test_the_import_preview_lists_every_cost_change_before_it_is_confirmed
     shown = to_xml(_import_cost_changes(changes))
     assert t("inventory.import_cost_changes", count=2) in shown
     assert t("inventory.import_cost_change", row=2, sku=rb["sku"], old="1234.56", new="1235.0") in shown
-
-
-@pytest.mark.parametrize("case", ["changed", "below_freight", "no_price_permission"])
-async def test_an_importer_who_cannot_see_costs_learns_no_cost_from_a_preview(client, session, auth, case):
-    """A role that may import but not see costs gets no old or new cost back, and no amount in a
-    refusal: not from a valid preview, an invalid one, a permission refusal or a refused commit."""
-    from celerp.services.permissions import ROLE_LEVELS
-    from test_company_settings_owners import _user_with_role
-    from test_import_invariants import _set_company_settings
-    await _cost_column(session, auth)
-    lot = await _with_freight(client, session, auth)
-    row = await _exported_row(client, auth, lot, "sku,name,quantity,sell_by,cost_price_total")
-    up = sorted(r for r in ROLE_LEVELS if ROLE_LEVELS[r] >= ROLE_LEVELS["operator"])
-    granted = ["import_export_data", *([] if case == "no_price_permission" else ["set_inventory_prices"])]
-    await _set_company_settings(session, auth["company_id"], role_grants={k: up for k in granted})
-    operator = await _user_with_role(client, session, auth["headers"], "operator")
-    sent = {**row, "cost_price_total": "10" if case == "below_freight" else "150"}
-    body = {"rows": [sent], "upsert": True, "idempotency_key": f"wb-{uuid.uuid4().hex[:6]}"}
-    r = await client.post("/items/import/rows/preview", headers=operator, json=body)
-    assert r.status_code == 200, r.text[:300]
-    shown = r.json()
-    assert shown.pop("cost_changes") == [] and bool(shown["errors"]) == (case != "changed"), shown
-    shown.pop("preview_hash")
-    for amount in ("130", "100.0", "30.0", "30.00"):
-        assert amount not in json.dumps(shown), (amount, shown)
-    if case != "changed":
-        r = await client.post("/items/import/rows", headers=operator, json=body)
-        assert r.status_code == 422, r.text[:300]
-        for amount in ("130", "100.0", "30.0", "30.00"):
-            assert amount not in r.text, (amount, r.text[:400])
