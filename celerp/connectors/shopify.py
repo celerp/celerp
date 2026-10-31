@@ -79,6 +79,12 @@ class ShopifyConnector(ConnectorBase):
         "orders": EntityFlow(inbound=("orders",)),
         "customers": EntityFlow(inbound=("contacts",)),
     }
+    # An order's payment state (financial_status), which the preview shows.
+    order_statuses = {
+        "pending": "pending", "authorized": "authorized", "partially_paid": "partially_paid", "paid": "paid",
+        "partially_refunded": "partially_refunded", "refunded": "refunded", "voided": "voided",
+        "expired": "expired",
+    }
     category = ConnectorCategory.WEBSITE
     conflict_strategy = {
         SyncEntity.PRODUCTS: "newest",

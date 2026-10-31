@@ -1298,6 +1298,78 @@
     "connectors.err_unpublish_shopify": {
       "en": "Celerp cannot unpublish a Shopify product. Use Stop to stop pushing it to Shopify.",
       "params": []
+    },
+    "connectors.err_flow_needs": {
+      "en": "{entity} can only be sent to {service} together with {needed}. Send {needed} as well, or turn {entity} off.",
+      "params": [
+        "entity",
+        "needed",
+        "service"
+      ]
+    },
+    "connectors.err_flow_waits": {
+      "en": "{entity} will be sent to {service} once {needed} have been sent.",
+      "params": [
+        "entity",
+        "needed",
+        "service"
+      ]
+    },
+    "connectors.order_status_pending": {
+      "en": "Pending payment",
+      "params": []
+    },
+    "connectors.order_status_processing": {
+      "en": "Processing",
+      "params": []
+    },
+    "connectors.order_status_on_hold": {
+      "en": "On hold",
+      "params": []
+    },
+    "connectors.order_status_completed": {
+      "en": "Completed",
+      "params": []
+    },
+    "connectors.order_status_cancelled": {
+      "en": "Cancelled",
+      "params": []
+    },
+    "connectors.order_status_refunded": {
+      "en": "Refunded",
+      "params": []
+    },
+    "connectors.order_status_failed": {
+      "en": "Failed",
+      "params": []
+    },
+    "connectors.order_status_draft": {
+      "en": "Draft",
+      "params": []
+    },
+    "connectors.order_status_authorized": {
+      "en": "Payment authorized",
+      "params": []
+    },
+    "connectors.order_status_partially_paid": {
+      "en": "Partially paid",
+      "params": []
+    },
+    "connectors.order_status_paid": {
+      "en": "Paid",
+      "params": []
+    },
+    "connectors.order_status_partially_refunded": {
+      "en": "Partially refunded",
+      "params": []
+    },
+    "connectors.order_status_voided": {
+      "en": "Voided",
+      "params": []
+    },
+    "connectors.order_status_expired": {
+      "en": "Expired",
+      "params": []
     }
   }
 }

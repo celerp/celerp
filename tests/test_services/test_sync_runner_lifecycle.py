@@ -67,6 +67,7 @@ class _Stub:
     name = "stub_lifecycle"
     store_scoped_ids = False
     entity_flows = {"orders": EntityFlow(inbound=("orders",))}
+    outbound_dependencies: dict = {}
     default_directions = {"orders": "inbound"}
 
     def __init__(self, on_run=None, boom=False):
@@ -147,6 +148,7 @@ class _AttentionStub:
     name = "stub_attention"
     store_scoped_ids = False
     entity_flows = {"orders": EntityFlow(inbound=("orders",))}
+    outbound_dependencies: dict = {}
     default_directions = {"orders": "inbound"}
 
     def __init__(self, returns):
@@ -292,6 +294,7 @@ class _ProductsStub:
     name = "stub_products"
     store_scoped_ids = False
     entity_flows = {"products": EntityFlow(inbound=("products",), outbound=("products_out",))}
+    outbound_dependencies: dict = {}
     default_directions = {"products": "both"}
 
     def __init__(self):

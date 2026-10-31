@@ -131,9 +131,34 @@ def entity_flow_label(key: str, lang: str | None = None) -> str:
     return t(f"connectors.flow_{key}", lang)
 
 
+def flow_of(connector: "ConnectorBase", entity: str) -> str | None:
+    """The kind of record whose direction runs the sync ``entity``."""
+    return next((key for key, flow in connector.entity_flows.items()
+                 if entity in (*flow.inbound, *flow.outbound)), None)
+
+
+def dependency_message(connector: "ConnectorBase", entity: str, needed: str, lang: str | None = None) -> str:
+    """Why the sync ``entity`` cannot run while the sync it needs, ``needed``, is Off."""
+    from ui.i18n import t
+
+    return t("connectors.err_flow_needs", lang, entity=entity_flow_label(flow_of(connector, entity), lang),
+             needed=entity_flow_label(flow_of(connector, needed), lang), service=connector.display_name)
+
+
+def waits_message(connector: "ConnectorBase", entity: str, needed: list[str], lang: str | None = None) -> str:
+    """Why the sync ``entity`` waits: the syncs it needs have not completed since the
+    connection was made."""
+    from ui.i18n import t
+
+    return t("connectors.err_flow_waits", lang, entity=entity_flow_label(flow_of(connector, entity), lang),
+             needed=", ".join(entity_flow_label(flow_of(connector, dep), lang) for dep in needed),
+             service=connector.display_name)
+
+
 def validate_directions(connector: "ConnectorBase", directions: dict) -> dict[str, str]:
     """Return a full per-record direction map for ``connector``, every record named.
-    Raises DirectionError naming the record and the direction it cannot take."""
+    Raises DirectionError naming the record and the direction it cannot take, or a
+    record sent while a record it needs is Off."""
     from ui.i18n import t
 
     unknown = set(directions) - set(connector.entity_flows)
@@ -154,6 +179,10 @@ def validate_directions(connector: "ConnectorBase", directions: dict) -> dict[st
                 service=connector.display_name,
             ))
         out[key] = value.value
+    runs = {entity for key, flow in connector.entity_flows.items() for entity in flow.runs(SyncDirection(out[key]))}
+    for entity, needs in sorted(connector.outbound_dependencies.items()):
+        if entity in runs and (off := sorted(needs - runs)):
+            raise DirectionError(dependency_message(connector, entity, off[0]))
     return out
 
 
@@ -417,6 +446,12 @@ class ConnectorBase(ABC):
     entity_flows: dict[str, EntityFlow]
     category: ConnectorCategory
     conflict_strategy: dict[str, str]
+    # Syncs that send records referring to records another sync sends (a journal names
+    # its contacts): each runs only once the syncs it needs have completed.
+    outbound_dependencies: dict[str, frozenset[str]] = {}
+    # The platform's words for an order's status, each with the label a person reads it
+    # by (connectors.order_status_<label>); a status not named reads as the platform's word.
+    order_statuses: dict[str, str] = {}
 
     @property
     def default_directions(self) -> dict[str, str]:

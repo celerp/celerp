@@ -134,7 +134,8 @@ def _section(platform: str, preview: dict, show: str, lang: str) -> FT:
             [(t("connectors.preview_order", lang), False), (t("connectors.status", lang), False),
              (t("connectors.preview_placed", lang), False), (t("connectors.preview_total", lang), True),
              (t("connectors.preview_effect", lang), False)],
-            [[_cell(r.get("number")), _cell(r.get("status")), _when(r.get("created")),
+            [[_cell(r.get("number")), _cell(t(r["status_key"], lang) if r.get("status_key") else r.get("status")),
+              _when(r.get("created")),
               _cell(fmt_price(r.get("total"), None, r.get("currency"))),
               t("connectors.preview_issued", lang) if r.get("posts") else t("connectors.preview_recorded", lang)]
              for r in preview["orders"]], lang)

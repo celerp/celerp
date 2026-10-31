@@ -34,6 +34,7 @@ class _Stub:
     store_scoped_ids = False
     reviewed_first_sync = True
     entity_flows = {"orders": EntityFlow(inbound=("orders",))}
+    outbound_dependencies: dict = {}
     default_directions = {"orders": "inbound"}
 
     def __init__(self):
@@ -532,7 +533,7 @@ def _dependent_entities() -> list[tuple[str, str]]:
     from celerp.connectors import registry
 
     return [(name, entity) for name, connector in sorted(registry._registry.items())
-            for entity in sorted(getattr(connector, "outbound_dependencies", {}))]
+            for entity in sorted(connector.outbound_dependencies)]
 
 
 @pytest.mark.parametrize("like, entity", _dependent_entities())
@@ -544,6 +545,7 @@ async def test_a_rerun_of_one_resource_runs_a_dependent_entity_only_once_its_dep
     from unittest.mock import AsyncMock
 
     from celerp.connectors import registry
+    from celerp.connectors.base import waits_message
     from celerp.connectors.execution import execution_resource, incomplete
     from celerp.connectors.sync_runner import _SYNC_METHODS, implements, run_connector_sync
     from connector_test_support import stand_in_connector
@@ -572,7 +574,8 @@ async def test_a_rerun_of_one_resource_runs_a_dependent_entity_only_once_its_dep
     results = await _outside(run_connector_sync(connector, cid, purpose="rerun", reconcile=True, resource=resource))
     assert entity not in ran
     reason = incomplete(results)
-    assert reason is not None and any(dep in reason for dep in dependencies), reason
+    assert reason in {waits_message(connector, entity, sorted(dependencies)), *(
+        waits_message(connector, entity, [dep]) for dep in dependencies)}, reason
 
     await _outside(run_connector_sync(connector, cid, purpose="manual_sync"))
     assert dependencies <= set(ran)
@@ -580,3 +583,56 @@ async def test_a_rerun_of_one_resource_runs_a_dependent_entity_only_once_its_dep
     results = await _outside(run_connector_sync(connector, cid, purpose="rerun", reconcile=True, resource=resource))
     assert entity in ran
     assert incomplete(results) is None
+
+
+def _off_dependencies() -> list[tuple[str, str, str]]:
+    from celerp.connectors import registry
+
+    return [(name, entity, needed) for name, connector in sorted(registry._registry.items())
+            for entity, needs in sorted(connector.outbound_dependencies.items()) for needed in sorted(needs)]
+
+
+@pytest.mark.parametrize("like, entity, needed", _off_dependencies())
+async def test_a_stored_map_that_sends_a_record_without_one_it_needs_is_refused_not_retried(
+        real_engine, monkeypatch, like, entity, needed):
+    """A map saved before the directions were checked can send a sync while the one it needs is
+    Off. Neither a full sync nor a rerun runs it; the skip is a refusal only the person can end,
+    in their words, so a recorded rerun is not retried forever."""
+    from unittest.mock import AsyncMock
+
+    from celerp.connectors import registry
+    from celerp.connectors.base import dependency_message, flow_of
+    from celerp.connectors.execution import execution_resource, incomplete
+    from celerp.connectors.sync_runner import _SYNC_METHODS, implements, run_connector_sync
+    from connector_test_support import stand_in_connector
+
+    connector = registry.get(stand_in_connector(monkeypatch, "offdeps", like=like))
+    ran: list[str] = []
+
+    def _sync(name):
+        async def _run(ctx, since=None, **_):
+            ran.append(name)
+            return SyncResult(entity=name)
+        return _run
+
+    for name, method in _SYNC_METHODS.items():
+        if implements(connector, name):
+            monkeypatch.setattr(connector, method, _sync(name))
+    monkeypatch.setattr(connector, "before_outbound", AsyncMock())
+    monkeypatch.setattr("celerp.connectors.ownership._lock_active_company", AsyncMock(return_value=None))
+    monkeypatch.setattr("celerp.connectors.relay_token.fetch_context", AsyncMock(
+        side_effect=lambda company_id, *_a, **_k: ConnectorContext(company_id=str(company_id), access_token="t")))
+    directions = {kind: flow.widest().value for kind, flow in connector.entity_flows.items()}
+    directions[flow_of(connector, needed)] = "off"
+    cid = str(uuid.uuid4())
+    await connected(cid, connector, directions)
+
+    for run in (dict(purpose="manual_sync"),
+                dict(purpose="rerun", reconcile=True, resource=execution_resource("entity", entity))):
+        ran.clear()
+        results = await _outside(run_connector_sync(connector, cid, **run))
+        assert entity not in ran and needed not in ran
+        assert incomplete(results) is None, run
+        refused = [r for r in results if r.final and r.errors]
+        assert any(r.errors == [dependency_message(connector, entity, off)] for r in refused
+                   for off in connector.outbound_dependencies[entity]), [r.errors for r in results]

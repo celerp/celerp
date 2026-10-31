@@ -966,6 +966,11 @@ async def test_preview_counts_orders_and_accounting_effect(woo, connector_sessio
     assert preview.order_effect == t("connectors.preview_orders_post", n=2, service="WooCommerce")
     # Newest first.
     assert [o["number"] for o in preview.orders] == ["1012", "1011", "1010", "1013"]
+    # Each reads by a Celerp label, not the store's word for it.
+    assert {o["status"]: o["status_key"] for o in preview.orders} == {
+        status: f"connectors.order_status_{label}" for status, label in (
+            ("processing", "processing"), ("completed", "completed"), ("pending", "pending"),
+            ("cancelled", "cancelled"))}
 
 
 # -- Publishing --

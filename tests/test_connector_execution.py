@@ -21,6 +21,7 @@ class _Stub:
     store_scoped_ids = False
     reviewed_first_sync = False
     entity_flows = {"orders": EntityFlow(inbound=("orders",))}
+    outbound_dependencies: dict = {}
     default_directions = {"orders": "inbound"}
 
     def __init__(self):

@@ -20,7 +20,9 @@ from celerp.connectors.base import (
     SyncDirection,
     SyncEntity,
     SyncResult,
+    dependency_message,
     entity_allowed,
+    waits_message,
 )
 from celerp.connectors.relay_token import ConnectorUpgradeRequired, ConnectRequired
 from celerp.modules.boundary import ModuleBusy, ModuleRefused
@@ -88,6 +90,7 @@ async def run_connector_sync(
     plan = sync_plan(connector, directions)
     if "products" not in plan and _links_products(connector, "products", directions, first_sync):
         plan.insert(0, "products")
+    full = set(plan)
     resources = sorted({_resource_of(entity) for entity in plan} | set(plan_resources(connector, directions)))
     if resource is not None:
         plan = [entity for entity in plan if _resource_of(entity) == resource]
@@ -99,10 +102,11 @@ async def run_connector_sync(
         completed: dict[str, bool] = {}
         phases: dict[str, bool] = {}
         last_of = {_resource_of(entity): entity for entity in plan}
-        dependencies = getattr(connector, "outbound_dependencies", {})
+        dependencies = connector.outbound_dependencies
         # A dependency outside a resource-limited plan counts as completed when its own
-        # latest run since the connection was made completed.
-        outside = {dep for entity in plan for dep in dependencies.get(entity, ()) if dep not in plan}
+        # latest run since the connection was made completed. One the directions leave
+        # Off never runs (a map saved before validate_directions checked dependencies).
+        outside = {dep for entity in plan for dep in dependencies.get(entity, ()) if dep not in plan and dep in full}
         if outside:
             completed.update(await _completed_since_reset(company_id, connector.name, outside))
         for entity in plan:
@@ -114,11 +118,16 @@ async def run_connector_sync(
             waits_for = sorted(dep for dep in dependencies.get(entity, ()) if completed.get(dep) is not True)
             if waits_for:
                 completed[entity] = False
-                if outside.intersection(waits_for):
+                if off := [dep for dep in waits_for if dep not in full]:
+                    # Only the person can end this, by sending the dependency or turning
+                    # the entity off: a refusal, not work a retry can deliver.
+                    results.append(SyncResult(entity=entity, direction=entity_direction(entity),
+                                              errors=[dependency_message(connector, entity, off[0])], final=True))
+                elif outside.intersection(waits_for):
                     # Nothing in this run answers for that dependency: the skip itself is
                     # incomplete work, so a rerun stays pending until the dependency completes.
                     results.append(SyncResult(entity=entity, direction=entity_direction(entity),
-                                              errors=[f"{entity} waits for {', '.join(waits_for)} to complete"]))
+                                              errors=[waits_message(connector, entity, waits_for)]))
             else:
                 result = await run_sync(connector, company_id, entity, purpose=purpose,
                                         reconcile=reconcile, first_sync=first_sync)

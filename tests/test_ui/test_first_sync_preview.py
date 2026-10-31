@@ -102,6 +102,38 @@ async def test_the_orders_tab_states_the_accounting_effect_once():
     assert html.count(PREVIEW["order_effect"]) == 1
 
 
+@pytest.mark.asyncio
+async def test_the_orders_tab_names_each_status_in_the_persons_language():
+    """A status the connector knows reads by its Celerp label; a store's own custom status,
+    which no label names, reads as the store's word."""
+    orders = [{**PREVIEW["orders"][1], "status_key": "connectors.order_status_processing"},
+              {**PREVIEW["orders"][0], "status": "awaiting-pickup", "status_key": None}]
+    preview = AsyncMock(return_value={**PREVIEW, "orders": orders})
+    html = (await _client_get("/settings/connectors/woocommerce/first-sync?show=orders", preview=preview)).text
+    assert f"<td>{t('connectors.order_status_processing')}</td>" in html
+    assert "<td>awaiting-pickup</td>" in html and "<td>processing</td>" not in html
+
+
+@pytest.mark.parametrize("name", ["woocommerce", "shopify"])
+def test_every_store_status_a_connector_names_has_a_label(name):
+    """The order statuses each first-sync connector reads, every one with a label in every
+    language file, including each status the accounting effect line names."""
+    import json
+    from pathlib import Path
+
+    from celerp.connectors.registry import get
+
+    connector = get(name)
+    assert connector.reviewed_first_sync and connector.order_statuses
+    for path in Path("ui/locales").glob("*.json"):
+        keys = json.loads(path.read_text())
+        assert {f"connectors.order_status_{label}" for label in connector.order_statuses.values()} <= set(keys), path
+    if name == "woocommerce":
+        from celerp_docs.doc_service import WOOCOMMERCE_ISSUED_STATUSES
+
+        assert set(WOOCOMMERCE_ISSUED_STATUSES) <= set(connector.order_statuses)
+
+
 @pytest.mark.parametrize("posting, total, key, n", [
     (1, 3, "connectors.preview_orders_post_one", 1), (2, 3, "connectors.preview_orders_post", 2),
     (0, 1, "connectors.preview_orders_record_one", 1), (0, 4, "connectors.preview_orders_record", 4)])

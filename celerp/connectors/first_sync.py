@@ -94,6 +94,13 @@ def order_effect(posting: int, total: int, service: str) -> str:
         return t("connectors.preview_orders_post" + ("_one" if posting == 1 else ""), n=posting, service=service)
     return t("connectors.preview_orders_record" + ("_one" if total == 1 else ""), n=total, service=service)
 
+def _status_key(connector: ConnectorBase, status: str) -> str | None:
+    """The key of the label an order's status reads by, or None for a status the
+    connector does not name (a store's own custom status)."""
+    label = connector.order_statuses.get(status)
+    return f"connectors.order_status_{label}" if label else None
+
+
 async def build_preview(
     connector: ConnectorBase, ctx: ConnectorContext, directions: dict, orders_from: datetime, config_id: int
 ) -> FirstSyncPreview:
@@ -110,6 +117,7 @@ async def build_preview(
         orders = await connector.preview_orders(ctx, orders_from)
         preview.orders = _newest_first([
             {"id": o.id, "number": o.number, "status": o.status, "created": o.created,
+             "status_key": _status_key(connector, o.status),
              "total": o.total, "currency": o.currency, "posts": o.posts} for o in orders
         ], key="created")
         preview.orders_by_status = dict(Counter(o.status for o in orders))

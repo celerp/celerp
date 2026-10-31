@@ -181,6 +181,11 @@ class WooCommerceConnector(ConnectorBase):
         "orders": EntityFlow(inbound=("orders",)),
         "customers": EntityFlow(),
     }
+    order_statuses = {
+        "pending": "pending", "processing": "processing", "on-hold": "on_hold", "completed": "completed",
+        "cancelled": "cancelled", "refunded": "refunded", "failed": "failed", "draft": "draft",
+        "checkout-draft": "draft",
+    }
     # A new connection publishes Celerp's catalog and stock and takes in new orders.
     default_directions = {
         "products": "outbound", "stock": "outbound", "orders": "inbound", "customers": "off",
