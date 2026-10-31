@@ -23,8 +23,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.ai import jobs
 from celerp.models.ai import AIConversation, AIMessage
 from celerp.ai.service import NEW_QUESTION_ERRORS
+from celerp.ai.tools import keyed_error
 from celerp.ai.usage import record_usage
-from ui.i18n import t
 
 log = logging.getLogger(__name__)
 
@@ -36,8 +36,6 @@ _CHARS_PER_TOKEN = 4  # conservative estimate
 # as retryable: every agent mutation is compiled only after proving canonical
 # idempotency, so the same tool-call id can be retried safely.
 EXECUTING_STALE_S = 5 * 60
-def unfinished_action_text() -> str:
-    return t("ai.action_unfinished")
 
 
 async def _protected_conversation_ids(
@@ -532,7 +530,8 @@ def pending_actions(tools_called: list | None) -> list[dict]:
         elif isinstance(record, dict) and record.get("status") == "retryable":
             out.append(record)
         elif _stale_executing(record, now):
-            out.append({**record, "status": "retryable", "error": unfinished_action_text()})
+            out.append({**record, "status": "retryable",
+                        "error": keyed_error("action_unfinished", "ai.action_unfinished")})
     return out
 
 
@@ -619,9 +618,12 @@ async def finalize_tool_call(
     tool_call_id: str,
     status: Literal["completed", "failed", "retryable", "dismissed"],
     result: dict | None,
-    error: str | None = None,
+    error: dict | None = None,
 ) -> None:
-    """Persist action state while retaining the immutable proposal/audit record."""
+    """Persist action state while retaining the immutable proposal/audit record.
+
+    ``error`` is kept whole ({code, message, message_key, params}), so the reloaded
+    thread reads it in its reader's language, as the live reply did."""
     msg = await session.get(AIMessage, message_id)
     if msg is None or not msg.tools_called:
         return

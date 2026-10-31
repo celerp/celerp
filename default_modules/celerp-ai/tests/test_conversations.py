@@ -19,10 +19,11 @@ from celerp.models.company import Company, User
 from celerp.models.ai import AIBatchJob, AIConversation, AIMessage
 from types import SimpleNamespace
 
+from celerp.ai.tools import keyed_error
+
 from celerp.ai.conversations import (
     EXECUTING_STALE_S,
     MAX_CONVERSATIONS_PER_USER,
-    unfinished_action_text,
     MAX_MESSAGES_PER_CONVERSATION,
     HISTORY_TOKEN_BUDGET,
     _CHARS_PER_TOKEN,
@@ -411,7 +412,7 @@ def test_pending_actions_reports_stale_executing_as_retryable():
     result = pending_actions([stale])
     assert result[0]["id"] == "lost"
     assert result[0]["status"] == "retryable"
-    assert result[0]["error"] == unfinished_action_text()
+    assert result[0]["error"]["message_key"] == "ai.action_unfinished"
     history = build_history_context([SimpleNamespace(role="assistant", content="hi", tools_called=[stale])])
     assert "[action awaiting retry: create_contact]" in history[0]["content"]
 
@@ -511,7 +512,8 @@ async def test_retryable_action_reclaims_same_tool_call(session, company, user, 
     )
     await finalize_tool_call(
         session, message_id=msg.id, tool_call_id="call_1", status="retryable",
-        result={"ok": False, "status": 503}, error="temporarily unavailable",
+        result={"ok": False, "status": 503},
+        error=keyed_error("route_error", "ai.action_request_failed", status=503),
     )
     await session.commit()
 

@@ -15,11 +15,12 @@ import fastapi.routing
 import httpx
 from fastapi.routing import APIRoute
 
+from celerp.accounting_roles import refusal
 from celerp.ai import deadlines
 from celerp.modules.loader import loaded_modules
 from celerp.modules.registry import uses_module
 from celerp.services.permissions import PERMISSIONS, is_permission_key, role_has_permission
-from ui.i18n import current_lang
+from ui.i18n import current_lang, t
 
 
 # ---------------------------------------------------------------------------
@@ -32,8 +33,18 @@ AGENT_RESULT_MAX_BYTES = 64 * 1024
 _LOCAL_REF_PREFIX = "#/components/schemas/"
 
 
-def _agent_error(code: str, message: str, *, status: int = 0) -> dict[str, Any]:
-    return {"ok": False, "status": status, "error": {"code": code, "message": message}}
+def keyed_error(code: str, key: str, message: str | None = None, /, **params) -> dict[str, Any]:
+    """An AI error a person may read: ``code`` for the program, and the keyed refusal
+    (celerp.accounting_roles.refusal) so every reader sees it in their own language.
+    ``message`` is the English text, the en catalog's when not given."""
+    return {"code": code, **refusal(key, t(key, "en", **params) if message is None else message, **params)}
+
+
+def _agent_error(code: str, key: str, message: str | None = None, /, *, http_status: int = 0,
+                 **params) -> dict[str, Any]:
+    """A capability call that produced no route result. The English ``message`` also
+    tells the model what to change."""
+    return {"ok": False, "status": http_status, "error": keyed_error(code, key, message, **params)}
 
 
 def _inline_local_refs(value: Any, schemas: dict[str, Any], seen: tuple[str, ...] = ()) -> Any:
@@ -348,9 +359,10 @@ async def execute_agent_capability(
 ) -> dict[str, Any]:
     """Invoke one compiled capability through the same FastAPI app as the user."""
     if not authorization:
-        return _agent_error("missing_authorization", "The user authorization context is unavailable.")
+        return _agent_error("missing_authorization", "ai.err_no_authorization",
+                            "The user authorization context is unavailable.")
     if not isinstance(arguments, dict):
-        return _agent_error("invalid_arguments", "Tool arguments must be a JSON object.")
+        return _agent_error("invalid_arguments", "ai.err_invalid_arguments", "Tool arguments must be a JSON object.")
 
     allowed_sections = {
         section for section, present in (
@@ -361,31 +373,31 @@ async def execute_agent_capability(
     }
     unknown_sections = set(arguments) - allowed_sections
     if unknown_sections:
-        return _agent_error("invalid_arguments", "Tool arguments contain unsupported sections.")
+        return _agent_error("invalid_arguments", "ai.err_invalid_arguments", "Tool arguments contain unsupported sections.")
 
     path_values = arguments.get("path") or {}
     query_values = arguments.get("query") or {}
     body = arguments.get("body") if capability.get("expects_body") else None
     if not isinstance(path_values, dict) or not isinstance(query_values, dict):
-        return _agent_error("invalid_arguments", "Path/query arguments must be JSON objects.")
+        return _agent_error("invalid_arguments", "ai.err_invalid_arguments", "Path/query arguments must be JSON objects.")
     if capability.get("expects_body") and not isinstance(body, dict):
-        return _agent_error("invalid_arguments", "Request body must be a JSON object.")
+        return _agent_error("invalid_arguments", "ai.err_invalid_arguments", "Request body must be a JSON object.")
 
     path_names = set(capability.get("path_names") or ())
     query_names = set(capability.get("query_names") or ())
     if set(path_values) - path_names or set(query_values) - query_names:
-        return _agent_error("invalid_arguments", "Tool arguments contain unknown path/query parameters.")
+        return _agent_error("invalid_arguments", "ai.err_invalid_arguments", "Tool arguments contain unknown path/query parameters.")
     if path_names - set(path_values):
-        return _agent_error("invalid_arguments", "A required path parameter is missing.")
+        return _agent_error("invalid_arguments", "ai.err_invalid_arguments", "A required path parameter is missing.")
 
     url_path = str(capability["path"])
     for name in capability.get("path_names") or ():
         raw = str(path_values[name])
         if "/" in raw or "\\" in raw:
-            return _agent_error("invalid_path_parameter", "Path parameters cannot contain path separators.")
+            return _agent_error("invalid_path_parameter", "ai.err_invalid_arguments", "Path parameters cannot contain path separators.")
         url_path = url_path.replace("{" + name + "}", quote(raw, safe=""))
     if "{" in url_path or "}" in url_path:
-        return _agent_error("invalid_path_parameter", "A path parameter could not be resolved.")
+        return _agent_error("invalid_path_parameter", "ai.err_invalid_arguments", "A path parameter could not be resolved.")
 
     params: list[tuple[str, str]] = []
     for name, value in query_values.items():
@@ -418,17 +430,18 @@ async def execute_agent_capability(
             )
         except asyncio.TimeoutError:
             return _agent_error(
-                "capability_timeout",
+                "capability_timeout", "ai.err_capability_timeout",
                 f"The operation did not finish within {int(deadlines.TOOL_STEP_S)} seconds.",
+                seconds=int(deadlines.TOOL_STEP_S),
             )
 
     try:
         data = response.json()
     except Exception:
         return _agent_error(
-            "non_json_response",
+            "non_json_response", "ai.action_request_failed",
             "The capability returned a non-JSON response.",
-            status=response.status_code,
+            http_status=response.status_code, status=response.status_code,
         )
 
     encoded = json.dumps(data, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8")
@@ -442,8 +455,8 @@ async def execute_agent_capability(
                 "data": {"result_omitted": True, "detail": "Operation completed successfully."},
             }
         return _agent_error(
-            "result_too_large",
+            "result_too_large", "ai.err_too_much_data",
             "The capability result is too large; narrow the query or use pagination.",
-            status=response.status_code,
+            http_status=response.status_code,
         )
     return {"ok": response.is_success, "status": response.status_code, "data": data}

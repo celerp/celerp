@@ -216,15 +216,19 @@ async def test_long_search_says_how_long(client):
 
 def test_ai_errors_are_translated():
     import asyncio
-    from celerp.ai.service import _CallerRefused, _user_error
-    assert _user_error(asyncio.TimeoutError()) == t("ai.err_timeout", "en")
-    assert _user_error(_CallerRefused("session_expired")) == t("error.session_expired", "en")
-    assert _user_error(_CallerRefused("read_refused")) == t("ai.err_read_refused", "en")
+    from celerp.ai.service import _CallerRefused, user_error
+    assert user_error(asyncio.TimeoutError()) == t("ai.err_timeout", "en")
+    assert user_error(_CallerRefused("session_expired")) == t("error.session_expired", "en")
+    assert user_error(_CallerRefused("read_refused")) == t("ai.err_read_refused", "en")
 
 
 def test_unfinished_action_says_retry_is_safe():
-    from celerp.ai.conversations import unfinished_action_text
-    assert unfinished_action_text() == t("ai.action_unfinished", "en")
+    from datetime import datetime, timedelta, timezone
+    from celerp.ai.conversations import EXECUTING_STALE_S, pending_actions
+    from ui.i18n import refusal_text
+    since = (datetime.now(timezone.utc) - timedelta(seconds=EXECUTING_STALE_S + 1)).isoformat()
+    stale = {"id": "a", "name": "create_contact", "status": "executing", "executing_since": since}
+    assert refusal_text(pending_actions([stale])[0]["error"]) == t("ai.action_unfinished", "en")
 
 
 def test_batch_limit_says_remove_some():

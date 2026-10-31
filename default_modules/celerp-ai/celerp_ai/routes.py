@@ -47,6 +47,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.ai.files import AGENT_UPLOAD_TYPES, XLSX_CONTENT_TYPE
 from celerp.ai.service import PROPOSAL_TTL_S
+from celerp.ai.tools import keyed_error
 from celerp.config import settings
 from celerp.db import get_session
 from celerp.routers.auth import limiter as _limiter
@@ -55,7 +56,7 @@ from celerp.services.auth import (
 )
 from celerp.services.company_lock import hold_company
 from celerp.services.permissions import get_current_company_settings, require_permission
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 # AI routes count on Celerp's one limiter, per caller: tighter limits than the global
 # 60/min default, as LLM queries are expensive and uploads have file-size costs.
@@ -165,8 +166,8 @@ def _attachment_kinds(file_ids: list[str] | None, company_id, user_id) -> set[st
     return kinds
 
 
-def _conflict(code: str, message: str) -> HTTPException:
-    return HTTPException(status_code=409, detail={"code": code, "message": message})
+def _conflict(code: str, key: str) -> HTTPException:
+    return HTTPException(status_code=409, detail=keyed_error(code, key))
 
 
 async def _find_question(session: AsyncSession, conversation_id: uuid.UUID, question_id: uuid.UUID, request):
@@ -176,7 +177,7 @@ async def _find_question(session: AsyncSession, conversation_id: uuid.UUID, ques
     try:
         return await find_question(session, conversation_id, question_id, request)
     except QuestionIdConflict:
-        raise _conflict("operation_conflict", t("ai.err_operation_conflict")) from None
+        raise _conflict("operation_conflict", "ai.err_operation_conflict") from None
     except QuestionNotFound:
         await session.commit()      # the job a missing question ended
         raise HTTPException(status_code=404, detail=t("ai.err_question_not_found")) from None
@@ -408,7 +409,7 @@ class ConversationQueryRequest(BaseModel):
     @model_validator(mode="after")
     def _require_query_or_files(self) -> "ConversationQueryRequest":
         if not self.query.strip() and not self.file_ids:
-            raise ValueError("A question or at least one file is required.")
+            raise ValueError(t("ai.question_or_file_required"))
         return self
 
 
@@ -651,7 +652,7 @@ async def delete_conv(
     try:
         found = await delete_conversation(session, conversation_id, company_id, user.id)
     except ConversationBusy:
-        raise _conflict("conversation_busy", t("ai.err_conversation_busy")) from None
+        raise _conflict("conversation_busy", "ai.err_conversation_busy") from None
     if not found:
         raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
     await session.commit()
@@ -747,7 +748,7 @@ async def query_in_conversation(
                 raise HTTPException(status_code=400, detail=str(exc))
             except IntegrityError:
                 await session.rollback()
-                raise _conflict("question_in_progress", t("ai.err_question_in_progress"))
+                raise _conflict("question_in_progress", "ai.err_question_in_progress")
             await session.refresh(job)
             jobs.start_job(job.id)
         return JSONResponse(
@@ -769,7 +770,7 @@ async def query_in_conversation(
         await session.commit()
     except IntegrityError:
         await session.rollback()
-        raise _conflict("question_in_progress", t("ai.err_question_in_progress"))
+        raise _conflict("question_in_progress", "ai.err_question_in_progress")
     if not reopened:
         # A runner holds it, or answered it after this send read the thread: that
         # answer, never a second run. Or the conversation was deleted meanwhile.
@@ -777,7 +778,7 @@ async def query_in_conversation(
         if job.conversation_id is None:
             raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
         if jobs.outcome(job) != "completed":
-            raise _conflict("question_in_progress", t("ai.err_question_in_progress"))
+            raise _conflict("question_in_progress", "ai.err_question_in_progress")
         answer = await jobs.answer_message(session, job)
         if answer is None:
             raise HTTPException(status_code=404, detail=t("ai.err_question_not_found"))
@@ -824,34 +825,32 @@ async def question_state(
     }
 
 
-def _resolve_action_arguments(records: list, record: dict) -> tuple[dict | None, str | None]:
+def _resolve_action_arguments(records: list, record: dict) -> tuple[dict | None, dict | None]:
     """Resolve server-authored action-result bindings into a fresh arguments dict.
 
     Bindings are never model-controlled. A dependent action stays pending until each
-    source action has completed and persisted the requested result key.
+    source action has completed and persisted the requested result key; until then the
+    error says why.
     """
     arguments = copy.deepcopy(record.get("arguments") or {})
     by_id = {r.get("id"): r for r in records if isinstance(r, dict) and r.get("id")}
     for binding in record.get("bindings") or []:
         if not isinstance(binding, dict):
-            return None, "This action has an invalid dependency."
+            return None, keyed_error("action_dependency_not_ready", "ai.action_dependency_invalid")
         source = by_id.get(binding.get("source_action_id"))
         key = binding.get("source_result_key")
         path = binding.get("target_path")
         if not isinstance(source, dict):
-            return None, "This action has an invalid dependency."
+            return None, keyed_error("action_dependency_not_ready", "ai.action_dependency_invalid")
         if source.get("status") in {"dismissed", "failed"}:
-            return None, (
-                "The required earlier action was not applied. Dismiss this proposal "
-                "or ask the assistant to recreate it."
-            )
+            return None, keyed_error("action_dependency_not_ready", "ai.action_dependency_not_applied")
         if source.get("status") != "completed":
-            return None, "Confirm the required earlier action first."
+            return None, keyed_error("action_dependency_not_ready", "ai.action_dependency_confirm_first")
         summary = source.get("result_summary")
         if not isinstance(summary, dict) or key not in summary:
-            return None, "The earlier action completed without the result this action needs."
+            return None, keyed_error("action_dependency_not_ready", "ai.action_dependency_no_result")
         if not isinstance(path, list) or not path or not all(isinstance(p, str) and p for p in path):
-            return None, "This action has an invalid dependency target."
+            return None, keyed_error("action_dependency_not_ready", "ai.action_dependency_invalid_target")
         target = arguments
         for part in path[:-1]:
             child = target.get(part)
@@ -875,16 +874,16 @@ async def _resolved_action_arguments(
     from celerp.ai.conversations import get_conversation, get_message
     conv = await get_conversation(session, conversation_id, company_id, user_id)
     if conv is None:
-        return None, {"code": "action_not_pending", "message": "This action is no longer pending."}, None
+        return None, keyed_error("action_not_pending", "ai.action_not_pending"), None
     msg = await get_message(session, message_id, conversation_id)
     if msg is None or not msg.tools_called:
-        return None, {"code": "action_not_pending", "message": "This action is no longer pending."}, None
+        return None, keyed_error("action_not_pending", "ai.action_not_pending"), None
     record = next((r for r in msg.tools_called if isinstance(r, dict) and r.get("id") == tool_call_id), None)
     if record is None:
-        return None, {"code": "action_not_pending", "message": "This action is no longer pending."}, None
+        return None, keyed_error("action_not_pending", "ai.action_not_pending"), None
     arguments, error = _resolve_action_arguments(msg.tools_called, record)
     if error:
-        return None, {"code": "action_dependency_not_ready", "message": error}, record
+        return None, error, record
     return arguments, None, record
 
 
@@ -987,23 +986,21 @@ async def _run_confirmed_action(
     if record is None:
         return {
             "tool_call_id": tool_call_id, "ok": False, "status": 409, "data": None,
-            "error": {"code": "action_not_pending", "message": "This action is no longer pending."},
+            "error": keyed_error("action_not_pending", "ai.action_not_pending"),
         }
     await session.commit()
 
     capability = capabilities.get(record["name"])
     if capability is None:
+        unavailable = keyed_error("capability_unavailable", "ai.action_unavailable")
         await finalize_tool_call(
             session, message_id=message_id, tool_call_id=tool_call_id,
-            status="failed", result=None, error="This action is no longer available or permitted.",
+            status="failed", result=None, error=unavailable,
         )
         await session.commit()
         return {
             "tool_call_id": tool_call_id, "ok": False, "status": 409, "data": None,
-            "error": {
-                "code": "capability_unavailable",
-                "message": "This action is no longer available or permitted.",
-            },
+            "error": unavailable,
         }
 
     result = await execute_agent_capability(
@@ -1022,10 +1019,7 @@ async def _run_confirmed_action(
         except Exception:
             result = {
                 "ok": False, "status": 503, "data": None,
-                "error": {
-                    "code": "receipt_attachment_pending",
-                    "message": "The bill was created, but its source receipt was not attached. Retry this action.",
-                },
+                "error": keyed_error("receipt_attachment_pending", "ai.action_receipt_not_attached"),
             }
     action_error = _action_error(result)
     action_status = (
@@ -1035,8 +1029,7 @@ async def _run_confirmed_action(
     )
     await finalize_tool_call(
         session, message_id=message_id, tool_call_id=tool_call_id,
-        status=action_status, result=result,
-        error=(action_error or {}).get("message") if action_error else None,
+        status=action_status, result=result, error=action_error,
     )
     await session.commit()
     return {
@@ -1061,8 +1054,10 @@ def _retryable_action_result(result: dict) -> bool:
 
 
 def _action_error(result: dict) -> dict | None:
-    """Why a confirmed action failed, as {code, message}: the executor's own
-    error, or the rejecting route's detail, so the reply always says the reason."""
+    """Why a confirmed action failed, as {code, message, message_key, params}: the
+    executor's own keyed error, or the rejecting route's refusal. A route's plain text
+    is the app's own, already in the user's language; field validation and a reply
+    with no reason get their catalog text, so the reply always says the reason."""
     if result.get("ok"):
         return None
     if result.get("error"):
@@ -1071,11 +1066,14 @@ def _action_error(result: dict) -> dict | None:
     detail = data.get("detail") if isinstance(data, dict) else None
     if isinstance(detail, dict):
         return {"code": detail.get("code") or "route_error",
-                "message": detail.get("message") or detail.get("code") or str(detail)}
+                "message": detail.get("message") or detail.get("code") or str(detail),
+                **{k: detail[k] for k in ("message_key", "params") if k in detail}}
     if isinstance(detail, list):
-        detail = "; ".join(str(e.get("msg") if isinstance(e, dict) else e) for e in detail)
-    return {"code": "route_error",
-            "message": str(detail) if detail else f"The request failed with status {result.get('status')}."}
+        return keyed_error("invalid_arguments", "ai.err_invalid_arguments",
+                           "; ".join(str(e.get("msg") if isinstance(e, dict) else e) for e in detail))
+    if detail:
+        return {"code": "route_error", "message": str(detail)}
+    return keyed_error("route_error", "ai.action_request_failed", status=result.get("status"))
 
 
 _ACTION_STATE_CODES = frozenset({"action_not_pending", "capability_unavailable"})
@@ -1127,7 +1125,7 @@ async def dismiss_action(
         tool_call_id=body.tool_call_id, company_id=company_id, user_id=user.id,
     )
     if not dismissed:
-        raise _conflict("action_not_pending", "This action is no longer pending.")
+        raise _conflict("action_not_pending", "ai.action_not_pending")
     await session.commit()
     return {"dismissed": True, "tool_call_id": body.tool_call_id}
 
@@ -1202,7 +1200,7 @@ async def confirm_all(
         raise HTTPException(status_code=404, detail=t("ai.err_message_not_found"))
     ids = _selected_action_ids(pending_actions(msg.tools_called), body.tool_call_ids)
     if not ids:
-        raise _conflict("action_not_pending", "Nothing is pending on this message.")
+        raise _conflict("action_not_pending", "ai.action_none_pending")
 
     capabilities = compile_agent_capabilities(request.app, company_settings, role)
     results = []
@@ -1291,15 +1289,15 @@ class _Lookups:
     def has(self, name: str) -> bool:
         return name in self._capabilities
 
-    async def rows(self, name: str, query: dict) -> list[dict] | str:
-        """Result rows of a list capability, or the error message when it failed."""
+    async def rows(self, name: str, query: dict) -> list[dict] | dict:
+        """Result rows of a list capability, or why it failed (``_action_error``)."""
         from celerp.ai.tools import execute_agent_capability
         result = await execute_agent_capability(
             self._app, self._authorization, self._capabilities[name],
             {"query": query}, f"lookup_{secrets.token_hex(8)}",
         )
         if not result["ok"]:
-            return str((result.get("error") or {}).get("message") or "lookup failed")
+            return _action_error(result)
         data = result.get("data") or {}
         return [r for r in (data.get("items") or []) if isinstance(r, dict)]
 
@@ -1312,14 +1310,14 @@ class _Lookups:
         if not self.has(_CONTACTS_LIST):
             return None
         rows = await self.rows(_CONTACTS_LIST, {"q": vendor, "limit": 20})
-        if isinstance(rows, str):
-            warnings.append(f"Contact lookup failed: {rows}")
+        if isinstance(rows, dict):
+            warnings.append(t("ai.receipt_contact_lookup_failed", reason=refusal_text(rows)))
             return None
         matches = [r for r in rows if _same_text(r.get("name"), vendor)]
         if len(matches) == 1:
             return str(matches[0].get("id"))
         if matches:
-            warnings.append(f"{len(matches)} contacts are named {vendor}; pick one on the bill.")
+            warnings.append(t("ai.receipt_contacts_same_name", count=len(matches), vendor=vendor))
             return None
         return False
 
@@ -1329,7 +1327,7 @@ class _Lookups:
             return None
         for query in ({"sku": description}, {"q": description, "limit": 20}):
             rows = await self.rows(_ITEMS_LIST, query)
-            if isinstance(rows, str):
+            if isinstance(rows, dict):
                 return None
             for row in rows:
                 if _same_text(row.get("sku"), description) or _same_text(row.get("name"), description):
@@ -1338,7 +1336,9 @@ class _Lookups:
 
 
 async def _bill_proposals(lookups: _Lookups, entry: dict, extraction: dict, now: datetime) -> tuple[list[dict], str]:
-    """Proposal records for one read receipt plus a one-line summary."""
+    """Proposal records for one read receipt plus a one-line summary, written in the
+    asker's language and kept as written: a proposal reads in the language it was
+    proposed in, whatever language its reader later switches to."""
     file_id = str(entry.get("file_id"))
     filename = entry.get("filename") or file_id
     warnings: list[str] = []
@@ -1355,16 +1355,16 @@ async def _bill_proposals(lookups: _Lookups, entry: dict, extraction: dict, now:
                 vendor_create = _proposal_record(
                     _CONTACTS_CREATE,
                     {"body": {"name": vendor, "contact_type": "vendor"}},
-                    title=f"Create vendor {vendor}", warnings=[], file_id=file_id, now=now,
+                    title=t("ai.receipt_create_vendor", vendor=vendor), warnings=[], file_id=file_id, now=now,
                 )
                 records.append(vendor_create)
             else:
                 vendor_unlinked = True
-                warnings.append("No matching vendor contact exists and you cannot create one from this review.")
+                warnings.append(t("ai.receipt_vendor_cannot_create"))
         elif found:
             contact_id = found
     else:
-        warnings.append("No vendor name was found on the receipt.")
+        warnings.append(t("ai.receipt_no_vendor"))
 
     line_items: list[dict] = []
     subtotal = 0.0
@@ -1375,7 +1375,7 @@ async def _bill_proposals(lookups: _Lookups, entry: dict, extraction: dict, now:
         quantity = _num(raw.get("quantity"))
         unit_price = _num(raw.get("unit_price"))
         if not description or quantity is None or unit_price is None:
-            warnings.append(f"A line could not be read in full: {raw}.")
+            warnings.append(t("ai.receipt_line_unreadable", line=raw))
             continue
         line = {
             "name": description, "description": description,
@@ -1389,26 +1389,26 @@ async def _bill_proposals(lookups: _Lookups, entry: dict, extraction: dict, now:
         subtotal += quantity * unit_price
     subtotal = round(subtotal, 2)
     if not line_items:
-        warnings.append("No line items were read; the bill has the total only.")
+        warnings.append(t("ai.receipt_no_lines"))
 
     tax = _num(extraction.get("tax")) or 0.0
     total = _num(extraction.get("total"))
     if total is None:
         total = round(subtotal + tax, 2)
-        warnings.append("No total was found on the receipt; the lines and tax were added up.")
+        warnings.append(t("ai.receipt_no_total"))
     elif line_items and abs(subtotal + tax - total) > 0.01:
-        warnings.append(
-            f"The lines and tax add up to {subtotal + tax:.2f} but the receipt total is {total:.2f}."
-        )
+        warnings.append(t(
+            "ai.receipt_total_mismatch", lines_total=f"{subtotal + tax:.2f}", total=f"{total:.2f}",
+        ))
     if not line_items and total:
         subtotal = round(total - tax, 2)
 
     issue_date = _iso_date(extraction.get("date"))
     if issue_date is None:
-        warnings.append("No date was found; the bill is dated today.")
+        warnings.append(t("ai.receipt_no_date"))
 
     reference = str(extraction.get("reference") or "").strip()
-    notes = f"Vendor reference: {reference}" if reference else ""
+    notes = t("ai.receipt_vendor_reference", reference=reference) if reference else ""
 
     body: dict = {
         "doc_type": "bill",
@@ -1436,16 +1436,33 @@ async def _bill_proposals(lookups: _Lookups, entry: dict, extraction: dict, now:
         }]
     records.append(_proposal_record(
         _DOCS_CREATE, {"body": body},
-        title=f"Create bill from {label}", warnings=warnings, file_id=file_id, now=now,
+        title=t("ai.receipt_create_bill", label=label), warnings=warnings, file_id=file_id, now=now,
         bindings=bindings,
     ))
     amount = f"{total:.2f} {currency}".strip()
-    summary = f"{filename}: bill for {label}, {amount}, {len(line_items)} line(s)."
+    summary = t("ai.receipt_summary_one" if len(line_items) == 1 else "ai.receipt_summary",
+                filename=filename, label=label, amount=amount, count=len(line_items))
     if vendor_unlinked:
-        summary += " No existing vendor contact was linked; the draft carries the vendor name only."
+        summary += " " + t("ai.receipt_summary_unlinked")
     if warnings:
-        summary += f" {len(warnings)} point(s) need your attention."
+        key = "ai.receipt_summary_attention_one" if len(warnings) == 1 else "ai.receipt_summary_attention"
+        summary += " " + t(key, count=len(warnings))
     return records, summary
+
+
+def _unproposed_line(entry: dict) -> str | None:
+    """Why a read file got no bill proposal, as its line in the reply; None when
+    it is a receipt or invoice to propose a bill from."""
+    filename = entry.get("filename") or entry.get("file_id")
+    extraction = entry.get("extraction")
+    if entry.get("status") != "success":
+        return " ".join(filter(None, (t("ai.receipt_file_unreadable", filename=filename), entry.get("error"))))
+    if not isinstance(extraction, dict):
+        return t("ai.receipt_file_no_details", filename=filename)
+    if extraction.get("document_kind") not in _BILL_KINDS:
+        kind = "statement" if extraction.get("document_kind") == "statement" else "other"
+        return t(f"ai.receipt_file_{kind}", filename=filename)
+    return None
 
 
 def _refresh_expired_proposals(records: list, now: datetime) -> list:
@@ -1525,10 +1542,12 @@ async def propose_from_job(
     if job is None:
         raise HTTPException(status_code=404, detail=t("ai.err_job_not_found"))
     if jobs.liveness(job) != "ended":
-        raise _conflict("job_not_finished", "The files are still being read.")
+        raise _conflict("job_not_finished", "ai.receipt_files_reading")
     result_files = [jobs.file_view(step) for step in (await jobs.job_steps(session, [job.id]))[job.id]]
     if jobs.outcome(job) == "failed" and not any(entry.get("status") == "success" for entry in result_files):
-        raise _conflict("job_failed", job.error or "None of the files could be read.")
+        if job.error:  # written in its asker's language when the job failed
+            raise HTTPException(status_code=409, detail={"code": "job_failed", "message": job.error})
+        raise _conflict("job_failed", "ai.receipt_files_none_read")
 
     existing_id = (job.results or {}).get("proposal_message_id")
     if existing_id:
@@ -1559,24 +1578,18 @@ async def propose_from_job(
 
     capabilities = compile_agent_capabilities(request.app, company_settings, role)
     if _DOCS_CREATE not in capabilities:
-        raise _conflict("capability_unavailable", "The documents module is not enabled, so bills cannot be created.")
+        raise _conflict("capability_unavailable", "ai.receipt_documents_off")
 
     lookups = _Lookups(request.app, request.headers.get("authorization", ""), capabilities)
     now = datetime.now(timezone.utc)
     records: list[dict] = []
     lines: list[str] = []
     for entry in result_files:
-        filename = entry.get("filename") or entry.get("file_id")
-        extraction = entry.get("extraction")
-        if entry.get("status") != "success":
-            lines.append(f"{filename}: could not be read. {entry.get('error') or ''}".strip())
-        elif not isinstance(extraction, dict):
-            lines.append(f"{filename}: no receipt details could be read from this file.")
-        elif extraction.get("document_kind") not in _BILL_KINDS:
-            kind = extraction.get("document_kind") or "document"
-            lines.append(f"{filename}: read as a {kind}, so no bill was proposed.")
+        line = _unproposed_line(entry)
+        if line is not None:
+            lines.append(line)
         else:
-            new_records, summary = await _bill_proposals(lookups, entry, extraction, now)
+            new_records, summary = await _bill_proposals(lookups, entry, entry["extraction"], now)
             records.extend(new_records)
             lines.append(summary)
 
@@ -1691,7 +1704,7 @@ async def _job_action(action, job_id: uuid.UUID, company_id, user, session: Asyn
     if await jobs.owned_job(session, job_id, company_id=company_id, user_id=user.id) is None:
         raise HTTPException(status_code=404, detail=t("ai.err_job_not_found"))
     if await action(job_id, company_id, user.id) in (None, False):
-        raise _conflict("job_not_open", t("ai.err_job_not_open"))
+        raise _conflict("job_not_open", "ai.err_job_not_open")
     return JSONResponse(status_code=202, content={"job_id": str(job_id)})
 
 

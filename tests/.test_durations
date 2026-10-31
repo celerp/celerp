@@ -551,7 +551,7 @@
     "default_modules/celerp-ai/tests/test_agent_loop.py::test_request_size_with_every_real_tool_fits_a_model_call": 7.097,
     "default_modules/celerp-ai/tests/test_agent_loop.py::test_reservation_id_threaded_between_turns": 0.0031135709141381085,
     "default_modules/celerp-ai/tests/test_agent_loop.py::test_retry_and_new_question_failures_are_disjoint": 0.004,
-    "default_modules/celerp-ai/tests/test_agent_loop.py::test_service_unavailable_message_survives_agent_boundary": 0.0035016590263694525,
+    "default_modules/celerp-ai/tests/test_agent_loop.py::test_a_service_outage_reads_as_an_outage_never_as_the_service_wrote_it": 0.0035016590263694525,
     "default_modules/celerp-ai/tests/test_agent_loop.py::test_tool_404_surfaces_to_model_not_as_run_error": 0.003590929030906409,
     "default_modules/celerp-ai/tests/test_agent_loop.py::test_tool_calls_per_run_cap_drops_overflow": 0.003508275025524199,
     "default_modules/celerp-ai/tests/test_agent_loop.py::test_tool_calls_per_turn_cap": 0.0030066300532780588,

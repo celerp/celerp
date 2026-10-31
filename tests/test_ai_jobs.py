@@ -136,6 +136,56 @@ async def test_a_killed_reading_job_resumes_and_no_file_runs_twice_under_one_id(
     assert (job["status"], job["completed_files"], job["failed_files"]) == ("completed", 98, 2)
 
 
+@pytest.fixture
+def long_tag_catalog():
+    """A module catalog under a long, valid BCP-47 tag, removed after the test without
+    clearing the catalogs the module loader registered."""
+    from ui import i18n
+    tag = "sl-rozaj-biske-1994"
+    i18n.register_catalog(tag, {"ai.file_lost": "Datoteka je bila izgubljena."})
+    yield tag
+    i18n._registry.pop(tag, None)
+    i18n._invalidate_cache()
+
+
+@pytest.mark.parametrize("asker_lang", ["th", "sl-rozaj-biske-1994"])
+async def test_a_reading_job_resumed_after_a_restart_writes_in_its_askers_language(
+        client, owner, cloud, session, request, asker_lang):
+    """A job started in the asker's language and resumed by a restart, which has no
+    request to take a language from, still writes its file errors in that language, and
+    its notification keeps the keys every reader's language is shown from. A language tag
+    of any length is kept whole."""
+    from ui.i18n import set_lang, t
+    if asker_lang != "th":
+        request.getfixturevalue("long_tag_catalog")
+    token, company_id, user_id = owner
+    conv = await _conversation(client, token)
+    file_ids = _files(company_id, user_id, 2)
+    job_id = uuid.uuid4()
+    lost = str(jobs.file_operation_id(job_id, file_ids[1], 0))
+    cloud.held(lost, end="lost_uncharged")
+    r = await client.post(f"/ai/conversations/{conv}/query", headers={**AUTH(token), "Accept-Language": asker_lang}, json={
+        "query": "Read these receipts", "file_ids": file_ids, "document_mode": "receipts",
+        "operation_id": str(job_id)})
+    assert r.status_code == 202, r.text
+    await until(lambda: lost in cloud.arrived)
+
+    async def _first_read():
+        return _by_file(await _job(client, token, job_id))[file_ids[0]]["status"] == "success"
+    await until(_first_read)
+
+    set_lang("en")
+    await _kill_and_restart()
+    job = await _finished(client, token, job_id)
+
+    assert t("ai.file_lost", asker_lang) != t("ai.file_lost", "en")
+    assert _by_file(job)[file_ids[1]]["error"] == t("ai.file_lost", asker_lang)
+    assert (await session.get(AIBatchJob, job_id, populate_existing=True)).lang == asker_lang
+    notes = (await session.execute(select(Notification).where(Notification.company_id == company_id))).scalars().all()
+    assert [n.i18n for n in notes] == [{"title": "ai.files_read.title", "body": "ai.files_read.body",
+                                        "params": {"completed": 1, "failed": 1, "total": 2}}]
+
+
 async def test_the_job_progress_is_read_from_its_steps(client, owner, cloud, session):
     """One source: the job's files and counts come from ai_job_steps."""
     token, company_id, user_id = owner
@@ -583,6 +633,51 @@ async def test_a_question_past_p_is_promoted_notified_and_resumes_from_its_journ
     assert len(notes) == 1
 
 
+@pytest.mark.parametrize("end", ["store", "lost_uncharged"])
+async def test_a_background_question_resumed_after_a_restart_answers_in_its_askers_language(
+        client, owner, cloud, session, monkeypatch, end):
+    """A question asked in Thai, promoted, and resumed by a restart, which has no request
+    to take a language from, still tells the model to answer in Thai, and an answer that
+    cannot be recovered is stored in Thai."""
+    from ui.i18n import set_lang, t
+    monkeypatch.setattr(deadlines, "PROMOTE_AFTER_S", 0.2)
+    monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: _CAPS)
+
+    async def _exec(app, authz, capability, arguments, call_id, *, result_max_bytes=None):
+        return {"ok": True, "status": 200, "data": {"pages": ["contacts.add-supplier"]}}
+    monkeypatch.setattr(service, "execute_agent_capability", _exec)
+    token, company_id, user_id = owner
+    conv = await _conversation(client, token)
+    qid = uuid.uuid4()
+    cloud.script = lambda identity, body: (tool_turn(("help_search", {"query": {"q": "supplier"}}, "call-1"))
+                                           if identity == str(qid) else answer("เปิดผู้ติดต่อ"))
+    second = str(jobs.step_id(qid, turn=1, generation=0))
+    cloud.held(second, end=end)
+    r = await client.post(f"/ai/conversations/{conv}/query", headers={**AUTH(token), "Accept-Language": "th"},
+                          json={"query": "How do I add a supplier?", "operation_id": str(qid)})
+    assert r.status_code == 202, r.text
+    await until(lambda: second in cloud.arrived)
+    await asyncio.sleep(0.3)
+    assert (await _question(client, token, conv, qid))["promoted"] is True
+
+    set_lang("en")
+    await _kill_and_restart()
+    await until(lambda: cloud.sends[second] == 2)
+
+    async def _ended():
+        return (await _question(client, token, conv, qid))["state"] in ("answered", "failed")
+    await until(_ended)
+    state = await _question(client, token, conv, qid)
+    resent = [b for b in cloud.bodies if b.get("step_id") == second][-1]
+    system = next(m["content"] for m in resent["messages"] if m.get("role") == "system")
+    assert service.agent_system_prompt("th") in system
+    if end == "store":
+        assert (state["state"], state["message"]["content"]) == ("answered", "เปิดผู้ติดต่อ")
+    else:
+        assert t("ai.err_outcome_unknown", "th") != t("ai.err_outcome_unknown", "en")
+        assert (state["state"], state["message"]["content"]) == ("failed", t("ai.err_outcome_unknown", "th"))
+
+
 async def test_an_interactive_question_at_restart_ends_interrupted_and_ask_again_is_charged_once(
         client, owner, cloud, session):
     token, company_id, user_id = owner
@@ -769,11 +864,11 @@ async def test_a_finished_jobs_notification_is_written_under_the_company_lock(cl
     import mutation_observer
     _token, company_id, user_id = owner
     with mutation_observer.serving("POST", "/ai/conversations/{conversation_id}/query"):
-        await jobs.notify(company_id, user_id, None, "2 of 2 file(s) read", "Open the conversation.")
+        await jobs.notify(company_id, user_id, None, "ai.files_read", completed=2, failed=0, total=2)
     findings = mutation_observer.CENSUS.findings
     assert findings == [], mutation_observer.explain(findings)
     notes = (await session.execute(select(Notification).where(Notification.company_id == company_id))).scalars().all()
-    assert [n.title for n in notes] == ["2 of 2 file(s) read"]
+    assert [n.title for n in notes] == ["2 of 2 files read"]
 
 
 @pytest.mark.parametrize("write", ["claim", "fenced", "end_unheld"])

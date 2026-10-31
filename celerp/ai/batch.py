@@ -32,7 +32,7 @@ import httpx
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.ai import jobs, llm
+from celerp.ai import jobs, llm, service
 from celerp.ai.files import load_file_for_llm
 from celerp.ai.llm import RelayError
 from ui.i18n import t
@@ -104,12 +104,18 @@ def parse_extraction(answer: str) -> dict | None:
 def _file_error(exc: BaseException) -> str:
     """The user-facing reason a single file could not be read."""
     if isinstance(exc, HTTPException) and exc.status_code == 402:
-        return "You are out of AI credits. Add credits and resend this file."
+        return t("ai.file_out_of_credits")
+    # A free account's read is refused while free questions are paused. The relay's
+    # other free refusal (text too long) cannot reach a read: its text is the prompt.
+    if isinstance(exc, HTTPException) and isinstance(exc.detail, dict) and exc.detail.get("code") == "free_paused":
+        return t("ai.free_paused", date=str(exc.detail.get("resets_at") or "")[:10])
     if isinstance(exc, RelayError):
-        return str(exc)
+        if exc.code in service.NEW_QUESTION_ERRORS:  # its read cannot be taken again; a retry reads it anew
+            return t("ai.file_lost")
+        return service.user_error(exc, unknown="ai.file_unreadable")
     if isinstance(exc, asyncio.TimeoutError):
-        return "The model did not answer in time for this file. Resend it to try again."
-    return "This file could not be read. Check that it is a clear image or PDF and resend it."
+        return t("ai.file_timeout")
+    return t("ai.file_unreadable")
 
 
 
@@ -203,7 +209,7 @@ async def create_batch_job(
                               conversation_id=conversation_id, query=query, file_ids=tuple(file_ids))
     file_ids = list(dict.fromkeys(file_ids))
     if not file_ids:
-        raise ValueError("Attach at least one file")
+        raise ValueError(t("ai.attach_one_file"))
     if len(file_ids) > MAX_BATCH_FILES:
         raise ValueError(t("error.batch_too_many", max=MAX_BATCH_FILES))
     job, steps = jobs.documents_job(request=request, file_ids=file_ids, job_id=job_id)
@@ -235,12 +241,8 @@ async def publish_progress(run: FileRun, file_id: str, state: str) -> None:
 
 async def notify_finished(run: FileRun, completed: int, failed: int) -> None:
     """The notification a finished reading job leaves for its user."""
-    if completed == 0:
-        title = f"Could not read {failed} file(s)"
-        body = "None of the attached files could be read. Open the conversation for details."
-    else:
-        title = f"{completed} of {completed + failed} file(s) read"
-        body = f"{completed} read, {failed} could not be read. Open the conversation to review the proposed entries."
-    await jobs.notify(run.company_id, run.user_id, run.conversation_id, title, body)
+    key = "ai.files_read" if completed else "ai.files_none_read"
+    await jobs.notify(run.company_id, run.user_id, run.conversation_id, key + ("_one" if completed + failed == 1 else ""),
+                      completed=completed, failed=failed, total=completed + failed)
 
 
