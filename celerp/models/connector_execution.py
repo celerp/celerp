@@ -28,7 +28,9 @@ class ConnectorExecutionLease(Base):
 
 
 class ConnectorExecutionHeartbeat(Base):
-    """Until when the holder's lease is valid, and the reruns asked for while it runs."""
+    """Until when the holder's lease is valid, and the reruns asked for. A rerun is pending
+    while ``rerun_requested`` (the newest request's generation) is above ``rerun_done`` (the
+    newest one whose work completed); a failed attempt waits until ``rerun_retry_at``."""
     __tablename__ = "connector_execution_heartbeats"
 
     company_id: Mapped[str] = mapped_column(sa.String(64), primary_key=True)
@@ -36,4 +38,7 @@ class ConnectorExecutionHeartbeat(Base):
     resource: Mapped[str] = mapped_column(sa.String(32), primary_key=True)
     holder: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid, nullable=True)
     expires_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
-    rerun_requested: Mapped[list] = mapped_column(sa.JSON, nullable=False, default=list, server_default="[]")
+    rerun_requested: Mapped[int] = mapped_column(sa.BigInteger, nullable=False, default=0, server_default="0")
+    rerun_done: Mapped[int] = mapped_column(sa.BigInteger, nullable=False, default=0, server_default="0")
+    rerun_attempts: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0, server_default="0")
+    rerun_retry_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)

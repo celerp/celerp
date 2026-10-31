@@ -101,6 +101,7 @@ async def handle_webhook(
         connector_execution,
         execution_resource,
         first_sync_state,
+        incomplete,
         record_rerun,
     )
     from celerp.connectors.ownership import ConnectorOwnershipError
@@ -145,7 +146,7 @@ async def handle_webhook(
             if store_matches is not None and not store_matches(ex.ctx.store_handle):
                 log.info("webhook: %s delivery for another store, dropped", event.platform)
                 return
-            handled = modules_busy = False
+            handled = rerun_needed = False
             if event.platform == "woocommerce" and normalized_topic == "product.deleted":
                 try:
                     # A deletion matters to every linked product, whichever way products sync.
@@ -157,7 +158,7 @@ async def handle_webhook(
                     # finds the product the store no longer returns.
                     await record_refused_run(company_id, event.platform, entity, exc)
                     handled = True
-                    modules_busy = isinstance(exc, ModuleBusy)
+                    rerun_needed = isinstance(exc, ModuleBusy)
             if not handled:
                 result = await run_sync(
                     connector, company_id, entity, purpose="webhook",
@@ -165,7 +166,7 @@ async def handle_webhook(
                     # finds every imported order the store no longer returns.
                     reconcile=event.platform == "woocommerce" and normalized_topic == "order.deleted",
                 )
-                modules_busy = modules_busy or result.busy
+                rerun_needed = rerun_needed or incomplete([result]) is not None
     except (ExecutionBusy, AdmissionBusy):
         await record_rerun(company_id, event.platform, resource)
         log.info("webhook: %s %s busy, rerun recorded", event.platform, resource)
@@ -178,11 +179,12 @@ async def handle_webhook(
     except (ConnectorOwnershipError, ConnectRequired, ConnectorUpgradeRequired) as exc:
         log.info("webhook: %s/%s not synced: %s", event.platform, event.topic, exc)
         return
-    if modules_busy:
-        # Recorded once the execution has released, so the sweeper runs it after the
-        # change settles rather than the holder at once.
+    if rerun_needed:
+        # Refused while modules change, or ran and failed: not delivered. Recorded once the
+        # execution has released, so the sweeper runs it after the change settles or the
+        # failure's cause clears, rather than the holder at once.
         await record_rerun(company_id, event.platform, resource)
-        log.info("webhook: %s %s refused while modules change, rerun recorded", event.platform, resource)
+        log.info("webhook: %s %s not completed, rerun recorded", event.platform, resource)
         return
     log.info("webhook: processed %s/%s for %s", event.platform, event.topic, company_id)
 

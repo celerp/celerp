@@ -441,14 +441,11 @@ async def _history(company_id: str) -> list[dict]:
 
 
 async def _reruns(company_id: str) -> list[str]:
-    import sqlalchemy as sa
+    from celerp.connectors.execution import pending_reruns
     from celerp.db import get_session_ctx
 
     async with get_session_ctx() as session:
-        rows = (await session.execute(sa.text(
-            "SELECT rerun_requested FROM connector_execution_heartbeats WHERE company_id = :c"),
-            {"c": company_id})).all()
-    return [r for row in rows for r in (row[0] or [])]
+        return await pending_reruns(session, company_id, "woocommerce")
 
 
 async def _outside(coro):

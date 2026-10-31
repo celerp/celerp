@@ -70,7 +70,7 @@ _PURE = frozenset({
     "count", "date", "date_trunc", "extract", "greatest", "json_agg", "json_build_object",
     "jsonb_agg", "jsonb_build_object", "jsonb_extract_path_text", "jsonb_array_elements",
     "jsonb_array_length", "jsonb_typeof", "least", "length", "lower", "max", "min", "now",
-    "nullif", "round", "row_number", "string_agg", "substr", "substring", "sum", "trim",
+    "nullif", "power", "round", "row_number", "string_agg", "substr", "substring", "sum", "trim",
     "upper", "current_date", "current_timestamp", "hashtext", "hashtextextended",
     # string, json and set functions
     "array_position", "convert_to", "encode", "format", "gen_random_uuid", "generate_series",
@@ -173,7 +173,8 @@ UNDER_ROW_LOCK: dict[tuple[str, str], RowLocked] = {
 # names the only functions that may write it; the same write from anywhere else is judged
 # as usual.
 _LEASE_SITES = tuple(f"celerp/connectors/execution.py {name}" for name in (
-    "_ensure_rows", "_acquire", "_renew_once", "_release", "sweep_reruns", "record_rerun"))
+    "_ensure_rows", "_acquire", "_renew_once", "_release", "_ack_rerun", "_settle_rerun", "sweep_reruns",
+    "record_rerun"))
 LEASE_STATE: dict[str, Judged] = {
     "connector_execution_leases": Judged(
         _LEASE_SITES, "a connector execution's fenced generation and holder, taken and given back"),

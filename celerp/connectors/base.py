@@ -250,6 +250,10 @@ class SyncResult:
     # The run did not go ahead because modules were being changed (ModuleBusy): the same
     # run can succeed when tried again.
     busy: bool = False
+    # The run was refused for a reason only the company can clear (a module turned off, the
+    # direction, a changed store, a lapsed connection, no such sync): kept on the history as
+    # an actionable failure, never retried on its own.
+    final: bool = False
 
     @property
     def ok(self) -> bool:

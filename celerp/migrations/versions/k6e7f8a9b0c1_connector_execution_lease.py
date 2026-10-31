@@ -47,7 +47,10 @@ def upgrade() -> None:
             "connector_execution_heartbeats", *_key_columns(),
             sa.Column("holder", sa.Uuid(), nullable=True),
             sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
-            sa.Column("rerun_requested", sa.JSON(), nullable=False, server_default="[]"),
+            sa.Column("rerun_requested", sa.BigInteger(), nullable=False, server_default="0"),
+            sa.Column("rerun_done", sa.BigInteger(), nullable=False, server_default="0"),
+            sa.Column("rerun_attempts", sa.Integer(), nullable=False, server_default="0"),
+            sa.Column("rerun_retry_at", sa.DateTime(timezone=True), nullable=True),
         )
     if "connector_first_syncs" not in tables:
         op.create_table(

@@ -67,11 +67,10 @@ async def _connected(stub) -> str:
 
 
 async def _reruns(cid, connector) -> list:
+    from celerp.connectors.execution import pending_reruns
+
     async with get_session_ctx() as s:
-        rows = (await s.execute(sa.text(
-            "SELECT rerun_requested FROM connector_execution_heartbeats "
-            "WHERE company_id = :c AND connector = :k"), {"c": cid, "k": connector})).all()
-    return [r for row in rows for r in (row[0] or [])]
+        return await pending_reruns(s, cid, connector)
 
 
 async def _outside(coro):
@@ -214,3 +213,78 @@ async def test_the_sweeper_leaves_a_live_holders_rerun_to_the_holder(stub):
         from celerp.connectors.sync_runner import run_sync
         await run_sync(stub, cid, "orders", purpose="manual_sync")
     assert stub.calls == [{"reconcile": False}, {"reconcile": True}]
+
+
+async def _failing(stub):
+    async def _fails(ctx, since=None, reconcile=False):
+        stub.calls.append({"reconcile": reconcile})
+        return SyncResult(entity=SyncEntity.ORDERS, errors=["the store answered 500"])
+    stub.sync_orders = _fails
+
+
+async def test_a_rerun_taken_by_a_holder_that_dies_before_running_it_is_not_lost(stub, monkeypatch):
+    """The holder takes the rerun as it releases, then the process ends before the work
+    runs: the request is still pending, and the sweeper runs it."""
+    from celerp.connectors import execution
+
+    cid = await _connected(stub)
+    await execution.record_rerun(cid, stub.name, "orders")
+
+    async def _killed(connector, ex, resource):
+        raise asyncio.CancelledError  # the worker is killed between taking and running
+
+    rerun = execution._rerun
+    monkeypatch.setattr(execution, "_rerun", _killed)
+    with pytest.raises(asyncio.CancelledError):
+        async with execution.connector_execution(cid, stub, "undo", ["orders"]):
+            pass
+    assert await _reruns(cid, stub.name) == ["orders"]
+
+    monkeypatch.setattr(execution, "_rerun", rerun)  # the next process runs the real work
+    await execution.sweep_reruns()
+    assert stub.calls == [{"reconcile": True}]
+    assert await _reruns(cid, stub.name) == []
+
+
+async def test_a_request_recorded_while_its_rerun_runs_stays_pending_when_that_rerun_ends(stub, monkeypatch):
+    """Acknowledging the rerun that ran never acknowledges a newer request."""
+    from celerp.connectors import execution
+
+    cid = await _connected(stub)
+    await execution.record_rerun(cid, stub.name, "orders")
+
+    async def _newer():
+        await _outside(execution.record_rerun(cid, stub.name, "orders"))
+
+    stub.during = _newer
+    monkeypatch.setattr(execution, "_RERUN_ROUNDS", 1)
+    async with execution.connector_execution(cid, stub, "undo", ["orders"]):
+        pass
+    assert stub.calls == [{"reconcile": True}]
+    assert await _reruns(cid, stub.name) == ["orders"]
+
+
+async def test_a_rerun_whose_sync_fails_stays_pending_until_its_retry_time(stub):
+    """A reconciliation that ran but failed was not delivered: it stays pending, and the
+    sweeper waits for its retry time rather than looping on it."""
+    from celerp.connectors import execution
+
+    cid = await _connected(stub)
+    await execution.record_rerun(cid, stub.name, "orders")
+    await _failing(stub)
+    async with execution.connector_execution(cid, stub, "undo", ["orders"]):
+        pass
+    assert stub.calls == [{"reconcile": True}]
+    assert await _reruns(cid, stub.name) == ["orders"]
+
+    await execution.sweep_reruns()
+    assert stub.calls == [{"reconcile": True}]
+
+
+async def test_a_webhook_whose_sync_fails_records_a_rerun(stub):
+    """A delivery whose sync ran and failed asks for the work again, as a busy one does."""
+    cid = await _connected(stub)
+    await _failing(stub)
+    await _webhook(stub, cid)
+    assert stub.calls == [{"reconcile": False}]
+    assert await _reruns(cid, stub.name) == ["orders"]

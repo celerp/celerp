@@ -396,7 +396,8 @@ async def record_refused_run(company_id, connector_name: str, entity: str, exc: 
     direction = entity_direction(entity)
     started_at = datetime.now(timezone.utc)
     run_id = await _begin_run(str(company_id), connector_name, entity, direction.value, started_at)
-    result = SyncResult(entity=entity, direction=direction, errors=[str(exc)], busy=isinstance(exc, ModuleBusy))
+    result = SyncResult(entity=entity, direction=direction, errors=[str(exc)], busy=isinstance(exc, ModuleBusy),
+                        final=not isinstance(exc, ModuleBusy))
     await _finish_run(run_id, str(company_id), connector_name, entity, result, started_at,
                       datetime.now(timezone.utc), "failed")
 
@@ -452,6 +453,7 @@ async def run_sync(
                     entity=entity_enum,
                     direction=effective_direction,
                     errors=[f"{entity} sync blocked by direction setting"],
+                    final=True,
                 )
             else:
                 if since is None and entity not in OUTBOUND_ENTITIES and use_watermark:
@@ -476,12 +478,13 @@ async def run_sync(
             raise
         except (ConnectorStoreChangedError, ConnectorUpgradeRequired, ConnectRequired, ModuleRefused) as exc:
             result = SyncResult(entity=entity, direction=effective_direction, errors=[str(exc)],
-                                busy=isinstance(exc, ModuleBusy))
+                                busy=isinstance(exc, ModuleBusy), final=not isinstance(exc, ModuleBusy))
         except NotImplementedError:
             result = SyncResult(
                 entity=entity,
                 direction=effective_direction,
                 errors=[f"{connector.name} does not support {entity} sync"],
+                final=True,
             )
         except Exception as exc:
             result = SyncResult(
