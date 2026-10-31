@@ -17,6 +17,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from test_helpers import make_test_token
+from ui.components.doc_money import EVENT as DOC_MONEY_EVENT
 from ui.i18n import t
 
 MEMO = "doc:memo-1"
@@ -59,6 +60,41 @@ def test_memo_totals_say_what_is_still_on_an_open_memo_only(status, still, shown
     assert (t("documents.memo_still_on_memo") in rows) == (shown is not None)
     if shown:
         assert shown in rows
+
+
+@pytest.mark.parametrize(("takes", "still"), [([], 40.0), ([{"invoice_id": "doc:inv-1", "doc_number": "PF-1",
+                                                               "shipping": 0, "discount": 0, "tax": 0}], 30.0)])
+def test_a_live_memo_always_says_what_is_still_on_it(takes, still):
+    """A live memo never drawn, or drawn 1 of 4 with no shipping, discount or tax, still shows the
+    Still on memo row in its totals, with no row of fixed amounts taken."""
+    memo = _memo(memo_fixed_amounts={"shipping": 0, "discount": 0, "tax": 0, "takes": takes, "still_on_memo": still})
+    html = _html(memo)
+    panel = re.search(r'<div[^>]*id="doc-total-panel".*', html, re.S).group(0)
+    shown = re.search(r'id="doc-still-on-memo"[^>]*>([^<]*)<', panel)
+    assert shown and shown.group(1) == f"${still:.2f}"
+    assert t("documents.memo_still_on_memo") in panel and t("documents.memo_fixed_taken") not in panel
+
+
+def test_every_preview_then_confirm_form_carries_an_operation_key():
+    """Each form confirming a preview (one per previewed write of the docs module) sends an
+    operation key, so a retried submit is the same write, answered as the first was."""
+    import ast
+    import inspect
+    import typing
+
+    from celerp_docs.routes import router
+    from pydantic import BaseModel
+    from ui.routes import documents
+
+    previewed = {route.path for route in router.routes
+                 for hint in typing.get_type_hints(getattr(route, "endpoint", None) or (lambda: None)).values()
+                 if isinstance(hint, type) and issubclass(hint, BaseModel) and "dry_run" in hint.model_fields}
+    forms = [node for node in ast.walk(ast.parse(inspect.getsource(documents)))
+             if isinstance(node, ast.Call) and any(k.arg is None and getattr(k.value, "id", "") == "CONFIRMS_PREVIEW"
+                                                   for k in node.keywords)]
+    assert len(forms) == len(previewed), (len(forms), previewed)
+    for form in forms:
+        assert "operation_key_input()" in ast.unparse(form), ast.unparse(form)[:200]
 
 
 @pytest.mark.parametrize(("left", "takes", "names"), [
@@ -147,17 +183,27 @@ async def test_memo_rate_cell_ui(ui_client):
         early = await ui_client.patch(f"/docs/{MEMO}/field/tax_rate", data={"value": "8"})
         assert t("documents.memo_rate_wait_for_preview") in early.text and rate.await_count == 0
 
-        saved = await ui_client.patch(f"/docs/{MEMO}/field/tax_rate", data={"value": "8", "binding": "b-8"})
-        assert saved.status_code == 200 and "28.00" in saved.text
-        assert rate.await_count == 1 and rate.await_args.args[1:] == (MEMO, 8.0, "b-8")
-        assert t("documents.memo_tax_rate_set").split("{")[0].strip() in saved.headers.get("HX-Trigger", "")
+        # The Rate form carries its operation key, and a save without one is never written.
+        key = re.search(r'name="idempotency_key" value="([^"]+)"', editor.text).group(1)
+        keyless = await ui_client.patch(f"/docs/{MEMO}/field/tax_rate", data={"value": "8", "binding": "b-8"})
+        assert "cell-error" in keyless.text and rate.await_count == 0
+
+        # The save swaps nothing itself: it asks the page to redraw every money figure, so the
+        # totals and Outstanding come from the one renderer the page loads with.
+        saved = await ui_client.patch(f"/docs/{MEMO}/field/tax_rate",
+                                      data={"value": "8", "binding": "b-8", "idempotency_key": key})
+        assert saved.status_code == 200 and saved.text == "" and saved.headers.get("HX-Reswap") == "none"
+        assert rate.await_count == 1 and rate.await_args.args[1:] == (MEMO, 8.0, "b-8", key)
+        trigger = saved.headers.get("HX-Trigger", "")
+        assert t("documents.memo_tax_rate_set").split("{")[0].strip() in trigger and DOC_MONEY_EVENT in trigger
 
     from ui.api_client import APIError
     refused = AsyncMock(side_effect=APIError(409, "This memo has no tax amount without a rate.",
                                                    {"message_key": "docs.memo_rate_no_unrated_tax"}))
     with patch("ui.api_client.get_doc", new=get_doc), patch("ui.api_client.get_company", new=AsyncMock(return_value={})), \
             patch("ui.api_client.set_memo_tax_rate", new=refused):
-        r = await ui_client.patch(f"/docs/{MEMO}/field/tax_rate", data={"value": "9", "binding": "b-9"})
+        r = await ui_client.patch(f"/docs/{MEMO}/field/tax_rate",
+                                  data={"value": "9", "binding": "b-9", "idempotency_key": "k-9"})
     assert 'cell-error' in r.text and refused.await_count == 1
 
     for doc in ({**issued, "doc_type": "invoice"}, _memo(tax_rate=7, tax=24.5)):

@@ -63,7 +63,7 @@ async def test_draw_refuses_target_with_different_terms(client, session, case):
     text = r.json()["detail"]["message"]
     assert "new invoice" in text
     if case.startswith("draft_unrated"):
-        assert "a tax amount of 20.00 with no rate" in text
+        assert "a tax amount of $20.00 with no rate" in text
     await nothing_written(client, h, memo, lots[0], pf, before)
 
 

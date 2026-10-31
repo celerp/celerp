@@ -894,6 +894,7 @@ th.cell--number { font-family: inherit; }
 /* doc-lines column widths — fixed layout, all px, must sum to ≤ table width */
 .doc-lines th.col-checkbox,    .doc-lines td.col-checkbox    { width: 36px;  padding: 0 4px; text-align: center; }
 .doc-lines th.col-item-status, .doc-lines td.col-item-status { width: 160px; }
+.doc-lines th.col-shipped-label, .doc-lines td.col-shipped-label { width: 120px; }
 .doc-lines th.col-sku,         .doc-lines td.col-sku         { width: 70px;  }
 .doc-lines th.col-desc,        .doc-lines td.col-desc        { width: 300px; }
 .doc-lines th.col-cat,         .doc-lines td.col-cat         { width: 60px;  }
@@ -929,8 +930,7 @@ th.cell--number { font-family: inherit; }
 .doc-lines--audit tr.data-row--audited { --audit-row-bg: rgba(14,165,122,0.14); }
 .doc-lines--audit tr.data-row--adjusted { --audit-row-bg: var(--c-blue-light); }
 .doc-lines--invoice th.col-qty, .doc-lines--invoice td.col-qty { width: 75px; }
-/* "From memo M-12" under a drawn line's quantity wraps inside the narrow column instead of being cut off. */
-.doc-lines td.col-qty .drawn-from { white-space: normal; overflow-wrap: anywhere; font-size: 11px; line-height: 1.3; }
+.drawn-from { font-size: 11px; line-height: 1.3; }
 /* Draft tables showing the item Status column: the badge column's width comes out of the
    description column (the flexible one), so every other column keeps its usual width and
    the proportional column-resize headroom is unchanged. Placed after the --invoice desc
@@ -993,6 +993,12 @@ th.cell--number { font-family: inherit; }
 .doc-lines th.col-tax,         .doc-lines td.col-tax         { width: 50px;  text-align: right; }
 .doc-lines th.col-account,     .doc-lines td.col-account     { width: 100px; }
 .doc-lines th.col-total,       .doc-lines td.col-total       { width: 100px; text-align: right; padding-right: 8px; }
+/* A line cell holding badges or links (a line's status, what became of a memo line, the memo an
+   invoice line came from) wraps them inside the column, whatever its width, so each shows whole.
+   After the column rules so it wins over their nowrap at equal specificity. */
+.doc-lines td.cell-badges { white-space: normal; overflow: visible; text-overflow: clip; }
+.cell-badges .badge, .cell-badges .drawn-from { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.cell-badges .badge + .badge { margin-top: 2px; }
 /* Audit columns. Without explicit widths these (under table-layout:fixed) soaked up all the space
    freed by the hidden money columns, dwarfing qty and breaking proportional resize. */
 .doc-lines th.col-onhand,      .doc-lines td.col-onhand      { width: 92px;  text-align: right; }

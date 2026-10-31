@@ -78,6 +78,7 @@ from celerp_contacts.references import (
     contact_accepts, contact_snapshot, lock_contacts, party_name_sql,
 )
 from celerp.output.document_context import prepare_document_output
+from celerp.output.doc_print import fmt_money
 from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, DRAFT_REVERT_RETURNED, DRAFT_REVERT_STATUSES, INBOUND_DRAFT_REVERT_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, CREDIT_APPLICATION_METHODS, CONVERTIBLE_STATUSES
 from celerp.services.record_quantities import FULFILLABLE_STATUSES, QUOTATION_SPENT_STATUSES, RECEIVABLE_STATUSES, sent_out_by
 from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, MEMO_DRAW_STATUSES, doc_value, is_awaiting_payment, is_open_credit, is_overdue_document, is_owed, is_paid_document, outstanding_balance
@@ -477,10 +478,12 @@ def preview_binding(rows: list[Projection | None], body: BaseModel) -> str:
 
 class MemoTaxRateBody(BaseModel):
     """A tax rate for an issued memo. ``dry_run`` returns the figures it gives with their
-    ``binding``; the write sends that binding back and stores only that preview."""
+    ``binding``; the write sends that binding back and stores only that preview.
+    ``idempotency_key`` names one submission: sending it again returns the first result."""
     tax_rate: FiniteFloat = Field(gt=0, le=100)
     dry_run: bool = False
     binding: str | None = None
+    idempotency_key: str | None = None
 
     @model_validator(mode="after")
     def _confirms_a_preview(self):
@@ -3551,6 +3554,11 @@ async def set_memo_tax_rate(
         # Company, then the memo: the order every writer of these rows takes.
         await locked_company(session, company_id)
     row = await _get_doc(session, company_id, entity_id, for_update=not body.dry_run)
+    key, digest = _operation("memo-tax-rate", entity_id, body)
+    if not body.dry_run and (done := await _earlier_run(session, company_id, key, event_type="doc.updated",
+                                                       entity_id=entity_id, digest=digest,
+                                                       with_event_id=True)) is not None:
+        return {"version": done["event_id"], **done}
     if problems := _memo_rate_problems(row):
         raise HTTPException(status_code=409, detail={**problems[0], "also": problems[1:]})
     binding = preview_binding([row], body)
@@ -3567,12 +3575,13 @@ async def set_memo_tax_rate(
     previous = row.state.get("tax")
     fields = {k: {"old": row.state.get(k), "new": v} for k, v in {"tax_rate": body.tax_rate, **figures}.items()
               if row.state.get(k) != v}
+    result = {"tax_rate": body.tax_rate, "previous_tax": previous, **figures}
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.updated",
         data={"fields_changed": fields}, actor_id=user.id, location_id=None, source="memo_tax_rate",
-        idempotency_key=str(uuid.uuid4()), metadata_={})
+        idempotency_key=key, metadata_={"request": digest, "result": result})
     await session.commit()
-    return {"event_id": entry.id, "version": entry.id, "tax_rate": body.tax_rate, "previous_tax": previous, **figures}
+    return {"event_id": entry.id, "version": entry.id, **result}
 
 
 @router.post("/{entity_id}/revert-to-draft")
@@ -7536,7 +7545,7 @@ async def _refuse_void_under_supplier_credit(session, company_id, note: dict) ->
         Projection.entity_type == "doc"))).scalars().all()} if targets else {}
     bills = ", ".join(sorted(str(r.state.get("doc_number") or r.state.get("ref_id") or eid)
                              for eid, r in rows.items())) or "--"
-    refunds = ", ".join(f"{float(p.get('amount') or 0):,.2f} on {p.get('payment_date') or '--'}"
+    refunds = ", ".join(f"{_money_text(p.get('amount') or 0, note.get('currency'))} on {p.get('payment_date') or '--'}"
                         for p in live if p.get("method") == "refund") or "--"
     raise HTTPException(status_code=409, detail=refusal(
         "docs.void_under_supplier_credit",
@@ -11301,13 +11310,15 @@ def _ref(row: Projection) -> str:
     return str(row.state.get("ref_id") or row.state.get("doc_number") or row.entity_id)
 
 
-def _money_text(amount) -> str:
-    return f"{float(amount):,.2f}"
+def _money_text(amount, currency: str | None) -> str:
+    """An amount in refusal copy, at the document currency's precision with its symbol: the one
+    formatter every page figure uses, so a refusal never reads 1.12 for a KWD 1.125."""
+    return fmt_money(amount, currency)
 
 
 def _memo_payments_text(state: dict) -> str:
-    """The payments standing on a document, as "50.00 on 2026-03-02", joined."""
-    return ", ".join(f"{_money_text(p.get('amount'))} on {p.get('payment_date') or ''}".strip()
+    """The payments standing on a document, as "$50.00 on 2026-03-02", joined."""
+    return ", ".join(f"{_money_text(p.get('amount'), state.get('currency'))} on {p.get('payment_date') or ''}".strip()
                      for p in state.get("payments") or []
                      if p.get("status", "active") == "active" and float(p.get("amount") or 0) > 0)
 
@@ -11317,13 +11328,13 @@ def _memo_payment_refusal(row: Projection, key: str, then: str) -> dict | None:
     memo, memo_ref = row.state, _ref(row)
     if float(memo.get("amount_paid") or 0) <= 0:
         return None
-    paid, payments = _money_text(memo.get("amount_paid")), _memo_payments_text(memo)
+    paid, payments = _money_text(memo.get("amount_paid"), memo.get("currency")), _memo_payments_text(memo)
     return refusal(key, f"Memo {memo_ref} has {paid} paid on it ({payments}). Refund or void what was paid on the "
                         f"memo first, then {then}.", memo=memo_ref, amount=paid, payments=payments)
 
 
-def _terms_text(terms: dict) -> str:
-    """Document terms (document_terms) as a phrase."""
+def _terms_text(terms: dict, currency: str | None) -> str:
+    """Document terms (document_terms) as a phrase, amounts in ``currency``."""
     parts = []
     if terms["discount_pct"] is not None:
         parts.append(f"a {terms['discount_pct']:g}% discount")
@@ -11332,7 +11343,7 @@ def _terms_text(terms: dict) -> str:
     if terms["tax_rate"]:
         parts.append(f"a tax rate of {terms['tax_rate']:g}%")
     if terms["unrated_tax"]:
-        parts.append(f"a tax amount of {_money_text(terms['unrated_tax'])} with no rate")
+        parts.append(f"a tax amount of {_money_text(terms['unrated_tax'], currency)} with no rate")
     return ", ".join(parts) or "no discount or tax"
 
 
@@ -11343,7 +11354,7 @@ def draw_problems(snap: _DrawSnapshot, body: InvoiceLinesRequest, *,
     from stops the check there: nothing else about it means anything. ``everything``: the draw
     is Invoice all, so no line chosen means nothing is out."""
     memo, target = snap.memo.state, snap.target
-    memo_ref = _ref(snap.memo)
+    memo_ref, currency = _ref(snap.memo), snap.memo.state.get("currency")
     problems: list[dict] = []
     if body.binding is not None and body.binding != preview_binding([snap.memo, snap.target], body):
         problems.append(refusal(
@@ -11420,14 +11431,14 @@ def draw_problems(snap: _DrawSnapshot, body: InvoiceLinesRequest, *,
             shown = target_terms if memo_terms != target_terms else {**target_terms, "discount_pct": to_decimal(st.get("discount") or 0)}
             problems.append(refusal(
                 "docs.draw_terms_differ",
-                f"{_ref(target)} has {_terms_text(shown)}, and memo {memo_ref} has {_terms_text(memo_terms)}. "
+                f"{_ref(target)} has {_terms_text(shown, currency)}, and memo {memo_ref} has {_terms_text(memo_terms, currency)}. "
                 f"Invoice these products onto a new invoice, which takes the memo's terms. Changing the terms "
                 f"of {_ref(target)} would also change the lines already on it.",
-                target=_ref(target), memo=memo_ref, target_terms=_terms_text(shown), memo_terms=_terms_text(memo_terms)))
+                target=_ref(target), memo=memo_ref, target_terms=_terms_text(shown, currency), memo_terms=_terms_text(memo_terms, currency)))
     if fixed["tax"] > 0:
         taken = dict(picks)
         full = not snap.loose and all(abs(taken.get(i, 0) - snap.out(i)) <= 1e-9 for i in snap.lots)
-        amount = _money_text(fixed["tax"])
+        amount = _money_text(fixed["tax"], currency)
         if not full:
             problems.append(refusal(
                 "docs.draw_unrated_tax_partial",

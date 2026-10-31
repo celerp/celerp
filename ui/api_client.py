@@ -2683,11 +2683,12 @@ async def back_to_memo(token: str, entity_id: str, *, line_ids: list[str] | None
             "idempotency_key": idempotency_key})).json()
 
 
-async def set_memo_tax_rate(token: str, memo_id: str, rate: float, binding: str) -> dict:
+async def set_memo_tax_rate(token: str, memo_id: str, rate: float, binding: str, idempotency_key: str) -> dict:
     """Set the tax rate of an issued memo whose tax was entered as an amount, confirming the
-    preview whose ``binding`` is sent."""
+    preview whose ``binding`` is sent; the same ``idempotency_key`` sent again returns the first result."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/docs/{memo_id}/tax-rate", json={"tax_rate": rate, "binding": binding})).json()
+        return _raise(await c.post(f"/docs/{memo_id}/tax-rate", json={
+            "tax_rate": rate, "binding": binding, "idempotency_key": idempotency_key})).json()
 
 
 async def memo_tax_rate_preview(token: str, memo_id: str, rate: float) -> dict:

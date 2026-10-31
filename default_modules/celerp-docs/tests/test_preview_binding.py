@@ -61,3 +61,20 @@ async def test_every_previewed_write_refuses_a_binding_it_did_not_preview(client
         await ok(await client.post(url, headers=h, json={**shown, "binding": preview["binding"],
                                                          "idempotency_key": uuid.uuid4().hex}))
 
+
+
+async def test_every_previewed_write_replays_its_first_result(client, session):
+    """A confirmed preview sent again under the same operation key (an answer lost, the request
+    retried) answers what the first did and writes nothing more."""
+    writes = _previewed_writes()
+    h = await auth(session)
+    for path, case in _CASES.items():
+        assert "idempotency_key" in writes[path].model_fields, path
+        url, memo, shown, _changed, _refusal = await case(client, h)
+        preview = await ok(await client.post(url, headers=h, json={**shown, "dry_run": True}))
+        body = {**shown, "binding": preview["binding"], "idempotency_key": uuid.uuid4().hex}
+        first = await ok(await client.post(url, headers=h, json=body))
+        after = await state(client, h, memo)
+        again = await ok(await client.post(url, headers=h, json=body))
+        assert again == first, (path, first, again)
+        assert await state(client, h, memo) == after, path

@@ -46,6 +46,7 @@ from celerp.output.document_context import prepare_document_output
 from ui.components.activity import activity_table
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import files_error, files_section as _shared_doc_files_section, files_session_expired
+from ui.components.doc_money import ATTRS as DOC_MONEY_ATTRS, redraw_trigger as doc_money_redraw
 from ui.components.preview_confirm import FORM_ATTRS as CONFIRMS_PREVIEW, PREVIEW_ATTRS, binding_input, confirmed_binding
 from ui.components.operation_key import (
     operation_key_attrs, operation_key_input, operation_key_vals, required_operation_key, submitted_operation_key,
@@ -879,6 +880,17 @@ _STATUS_BADGE: dict[str, tuple[str, str]] = {
 }
 
 
+# Header fields whose save changes a figure the page works out from the document's money (the
+# totals, their currency, the conversion note, Outstanding): the save redraws those figures.
+DOC_MONEY_FIELDS = frozenset({"currency", "conversion_rate", "tax_rate"})
+
+
+def _badge_cell(*content, cls: str) -> FT:
+    """A line table cell holding badges or links. Every such cell is made here, so one rule
+    (.cell-badges) wraps them inside the column, whatever its width, and each shows whole."""
+    return Td(*content, cls=f"{cls} cell-badges")
+
+
 def _item_status_badge_cell(status_val: str, eid: str, status_doc: tuple[str, str] | None = None,
                             held: tuple[float, float] | None = None) -> FT:
     """Status column cell for a document line: linked badge when the item's status is
@@ -913,7 +925,7 @@ def _item_status_badge_cell(status_val: str, eid: str, status_doc: tuple[str, st
                 A(Span(label, cls=f"badge {badge_cls} badge--link"), href=f"/inventory/{eid}", title=t("documents.view_in_catalog"))
                 if eid else Span(label, cls=f"badge {badge_cls}")
             )
-        return Td(badge_el, cls="col-item-status")
+        return _badge_cell(badge_el, cls="col-item-status")
     return Td(Span("-", cls="muted"), cls="col-item-status")
 
 
@@ -2695,16 +2707,17 @@ celerpUpdateBulkAlloc();
 
     async def _set_memo_rate(token: str, entity_id: str, memo: dict, value: str, form):
         """Set an issued memo's tax rate from its Rate cell, confirming the preview on screen, and
-        put its tax rows and total back in place, with a notice of the tax before and after that
-        stays until closed."""
-        from starlette.responses import HTMLResponse as _HR
+        redraw every figure of the page that comes from its money, with a notice of the tax before
+        and after that stays until closed."""
+        from starlette.responses import Response as _R
         try:
             rate = float(value)
         except ValueError:
             return P(t("documents.enter_a_number"), cls="cell-error")
         try:
             result = await api.set_memo_tax_rate(
-                token, entity_id, rate, confirmed_binding(form, t("documents.memo_rate_wait_for_preview")))
+                token, entity_id, rate, confirmed_binding(form, t("documents.memo_rate_wait_for_preview")),
+                required_operation_key(form))
         except ValueError as exc:
             return P(str(exc), cls="cell-error")
         except APIError as e:
@@ -2712,17 +2725,13 @@ celerpUpdateBulkAlloc();
                 raise
             return P(error_message(e), cls="cell-error")
         currency = memo.get("currency") or "USD"
-        doc = {**memo, **{k: result[k] for k in ("tax_rate", "tax", "total", "subtotal", "discount_amount", "version")
-                          if k in result}, "tax_amount": result.get("tax")}
-        tax_rows, _ = _doc_tax_rows(doc, currency, False)
-        total = Span(fmt_money(float(doc.get("total") or 0), currency), id="doc-total",
-                     cls="total-value total-value--final", hx_swap_oob="true")
         notice = t("documents.memo_tax_rate_set", memo=memo.get("ref_id") or memo.get("doc_number") or "",
                    rate=f"{rate:g}", old=fmt_money(float(result.get("previous_tax") or 0), currency),
                    new=fmt_money(float(result.get("tax") or 0), currency))
-        return _HR(to_xml(tax_rows) + to_xml(total), headers={
-            "HX-Retarget": "#doc-tax-rows", "HX-Reswap": "outerHTML",
-            **toast_header(notice, "success", persist=True, celerpListVersion={"version": result.get("version")})})
+        return _R("", status_code=200, headers={
+            "HX-Reswap": "none",
+            **toast_header(notice, "success", persist=True, celerpListVersion={"version": result.get("version")},
+                           **doc_money_redraw())})
 
     @app.post("/docs/{entity_id}/tax-rate/preview")
     async def memo_tax_rate_preview(request: Request, entity_id: str):
@@ -2775,6 +2784,7 @@ celerpUpdateBulkAlloc();
                 Input(type="number", name="value", step="any", min="0", cls="cell-input", autofocus=True,
                       onkeydown=esc_js),
                 Input(type="hidden", name="currency", value=doc.get("currency") or ""),
+                operation_key_input(),
                 Button(t("btn.save"), type="submit", cls="btn btn--primary btn--sm", disabled=True),
                 Span(cls="memo-rate-preview", hx_post=f"/docs/{entity_id}/tax-rate/preview",
                      hx_trigger="input delay:400ms from:closest form", hx_include="closest form", **PREVIEW_ATTRS),
@@ -3022,6 +3032,7 @@ celerpUpdateBulkAlloc();
             media_type="text/html",
             headers={"HX-Trigger": _json.dumps({
                 "celerpListVersion": {"version": doc.get("version")},
+                **(doc_money_redraw() if field in DOC_MONEY_FIELDS else {}),
             })},
         )
 
@@ -6208,7 +6219,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
         history_table,
         summary_line,
         add_form,
-        cls="doc-section payment-section",
+        id="doc-payments", cls="doc-section payment-section", **DOC_MONEY_ATTRS,
     )
 
 
@@ -6964,21 +6975,22 @@ def _fixed_amounts_text(amounts: dict | None, currency: str) -> str:
 
 
 def _memo_take_rows(doc: dict, currency: str) -> list:
-    """Totals rows naming the fixed amounts invoices took from a memo: on a memo, each invoice
-    holding some and what is still on the memo; on an invoice, what it took from each memo."""
+    """Totals rows of what invoices took from a memo: on a memo, each invoice holding some of its
+    fixed amounts, then what is still on the memo; on an invoice, what it took from each memo."""
     if doc.get("doc_type") == "memo":
         fixed = doc.get("memo_fixed_amounts") or {}
         takes = [tk for tk in fixed.get("takes") or [] if _fixed_amounts_text(tk, currency)]
-        if not takes:
-            return []
-        return [Div(Span(t("documents.memo_fixed_taken"), cls="total-label"), cls="total-row"),
-                *(Div(Span(A(tk.get("doc_number") or tk.get("invoice_id"), href=doc_href(tk.get("invoice_id")),
-                             cls="auth-link"), cls="total-label"),
-                      Span(_fixed_amounts_text(tk, currency), cls="total-value"), cls="total-row") for tk in takes),
-                # None on a memo no draw can come from (closed, void): nothing is still on it to bill.
-                *([Div(Span(t("documents.memo_still_on_memo"), cls="total-label"),
-                       Span(fmt_money(float(fixed["still_on_memo"]), currency), cls="total-value"),
-                       cls="total-row")] if fixed.get("still_on_memo") is not None else [])]
+        taken = [Div(Span(t("documents.memo_fixed_taken"), cls="total-label"), cls="total-row"),
+                 *(Div(Span(A(tk.get("doc_number") or tk.get("invoice_id"), href=doc_href(tk.get("invoice_id")),
+                              cls="auth-link"), cls="total-label"),
+                       Span(_fixed_amounts_text(tk, currency), cls="total-value"), cls="total-row")
+                   for tk in takes)] if takes else []
+        # None on a memo no draw can come from (draft, closed, void): nothing is still on it to bill.
+        still = ([Div(Span(t("documents.memo_still_on_memo"), cls="total-label"),
+                      Span(fmt_money(float(fixed["still_on_memo"]), currency), id="doc-still-on-memo",
+                           cls="total-value"), cls="total-row")]
+                 if fixed.get("still_on_memo") is not None else [])
+        return [*taken, *still]
     return [Div(A(t("documents.invoice_amount_from_memo", amounts=_fixed_amounts_text(tk, currency),
                     memo=tk.get("memo_number") or tk.get("memo_id")), href=doc_href(tk.get("memo_id"))),
                 cls="total-row total-label--conversion")
@@ -8090,10 +8102,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 elif li.get("drawn_from"):
                     # A line invoiced from a memo keeps the quantity it was drawn with until it goes
                     # back to the memo: plain text, the stored figure kept for the line save.
-                    cells.append(Td(Div(Span(f"{float(qty or 0):g}"),
-                                        Input(type="hidden", value=str(qty), data_name="quantity"),
-                                        _unit_span, cls="qty-unit-wrap"),
-                                    _from_memo_link(li), cls="col-qty"))
+                    cells.append(_badge_cell(Div(Span(f"{float(qty or 0):g}"),
+                                                 Input(type="hidden", value=str(qty), data_name="quantity"),
+                                                 _unit_span, cls="qty-unit-wrap"),
+                                             _from_memo_link(li), cls="col-qty"))
                 elif doc_type in _INVOICE_LAYOUT_DOC_TYPES:
                     # Quantity and its (read-only) unit share one cell; only the number edits.
                     # Invoice layout has NO standalone unit column (the header skips it and the
@@ -10371,7 +10383,7 @@ async function celerpCsvImport(input, entityId) {{
                 if _is_vendor_doc and line_receive_kind(li) != "stock":
                     cells.append(Td("", cls="col-item-status"))
                 elif _is_vendor_doc:
-                    cells.append(Td(_vendor_line_badge(li, status), cls="col-item-status"))
+                    cells.append(_badge_cell(_vendor_line_badge(li, status), cls="col-item-status"))
                 else:
                     status_val = item_status_map.get(li_eid, "") if item_status_map else ""
                     cells.append(_item_status_badge_cell(
@@ -10387,7 +10399,7 @@ async function celerpCsvImport(input, entityId) {{
                 _line_qty = float(li.get("quantity") or 0)
                 if _lbl == "On Memo" and 1e-9 < _still_out < _line_qty - 1e-9:
                     _text = t("documents.line_label_on_memo_part", out=f"{_still_out:g}", qty=f"{_line_qty:g}")
-                cells.append(Td(
+                cells.append(_badge_cell(
                     *_memo_take_labels(li) if li.get("invoiced_on") else
                     [Span(_text, cls="badge badge--inactive") if _text else "--"],
                     cls="col-shipped-label",
@@ -10438,8 +10450,9 @@ async function celerpCsvImport(input, entityId) {{
                     cls="li-return-qty", style="display:none;",
                     title=t("documents.memo_return_prompt", qty=f"{_out_qty:g}"))
             cells.extend([
-                Td(qty_label({**li, "unit": display_unit(li.get("unit") or li.get("sell_by"))}), _return_qty,
-                   _from_memo_link(li), cls="col-qty"),
+                (_badge_cell if li.get("drawn_from") else Td)(
+                    qty_label({**li, "unit": display_unit(li.get("unit") or li.get("sell_by"))}), _return_qty,
+                    _from_memo_link(li), cls="col-qty"),
                 Td(fmt_rate(li.get("unit_price"), currency), cls="cell--number col-unit-price"),
                 Td(f"{discount_pct:.1f}%" if discount_pct else "--", cls="col-disc"),
                 Td(format_value(float(line_tax_rate(li)) or None), cls="col-tax"),
@@ -10769,7 +10782,7 @@ async function celerpCsvImport(input, entityId) {{
             ),
         ] if _can_discount else []),
         _totals_pending_note,
-        cls="total-panel",
+        id="doc-total-panel", cls="total-panel", **DOC_MONEY_ATTRS,
     )
     # No-money types (production_order, transfer, audit) carry no totals panel.
     is_no_money = pol["no_money"]
@@ -10784,7 +10797,7 @@ async function celerpCsvImport(input, entityId) {{
                 Span(fmt_money(float(subtotal_value or 0), currency), id="doc-total", cls="total-value total-value--final"),
                 cls="total-row total-row--final"),
             _totals_pending_note,
-            cls="total-panel",
+            id="doc-total-panel", cls="total-panel", **DOC_MONEY_ATTRS,
         )
 
     contact_label = {
@@ -10821,7 +10834,7 @@ async function celerpCsvImport(input, entityId) {{
             _rate_display = str(_rate_val) if _rate_val else "--"
             _contact_rows.append(Div(Div(t("label.conversion_rate"), cls="form-label"), _cell("conversion_rate", _rate_display), cls="form-group"))
         if not is_list and outstanding_value is not None:
-            _contact_rows.append(Div(Div(t("doc.outstanding"), cls="form-label"), Span(fmt_money(float(outstanding_value or 0), currency), id="doc-outstanding", cls="meta-value"), cls="form-group"))
+            _contact_rows.append(Div(Div(t("doc.outstanding"), cls="form-label"), Span(fmt_money(float(outstanding_value or 0), currency), id="doc-outstanding", cls="meta-value", **DOC_MONEY_ATTRS), cls="form-group"))
 
     _is_sub_template = doc_type in ("subscription_invoice", "subscription_po")
 
