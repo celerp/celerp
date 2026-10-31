@@ -1125,9 +1125,20 @@ async def client(session: AsyncSession):
     # a transaction per request. A request the app makes into itself joins the outer one.
     stack = app.middleware_stack or app.build_middleware_stack()
 
+    shared = id((await (await session.connection()).get_raw_connection()).dbapi_connection)
+
     async def _request_scoped(scope, receive, send):
         if scope["type"] != "http" or _IN_REQUEST.get():
-            await stack(scope, receive, send)
+            if scope["type"] != "http" or _REQUEST_TASK.get() is asyncio.current_task():
+                await stack(scope, receive, send)
+                return
+            # A task a request started (an AI job) inherits its context, but the request it
+            # makes into the app (a tool call) has a session of its own in production, closed
+            # at its end: what that request took ends with it.
+            try:
+                await stack(scope, receive, send)
+            finally:
+                _lock_rank.RECORDER.end_flow(shared)
             return
         # Production gives each request a session of its own, closed at the end, so a
         # request never joins its caller's transaction and keeps nothing it did not
