@@ -48,3 +48,10 @@ class ConnectorFirstSync(Base):
             name="ck_connector_first_sync_state",
         ),
     )
+
+    @property
+    def links_holding_store_values(self) -> int:
+        """The items it linked that still hold values it took from the store: a link
+        whose undo has not run and that replaced at least one of the item's values."""
+        links = (self.undo or {}).get("links") or []
+        return sum(1 for link in links if "outcome" not in link and link.get("restore"))

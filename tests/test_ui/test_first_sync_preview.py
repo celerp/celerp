@@ -124,3 +124,33 @@ def test_a_refused_undo_is_shown_even_when_there_is_no_first_sync_to_summarize()
 
     html = to_xml(first_sync_summary_card("woocommerce", {}, "en", "Connect web access first"))
     assert "Connect web access first" in html and "flash--warning" in html
+
+
+def test_summary_lists_what_each_undo_kept_and_drops_undo_once_every_link_is_settled():
+    from fasthtml.common import to_xml
+
+    from ui.routes.settings_connectors_first_sync import first_sync_summary_card
+
+    html = to_xml(first_sync_summary_card("woocommerce", {
+        "started_at": "2026-09-01T00:00:00+00:00", "batch": None,
+        "links": [{"entity_id": "item:a", "sku": "A-1", "name": "A", "outcome": "relinked", "fields": {},
+                   "kept_files": [], "files": 0},
+                  {"entity_id": "item:b", "sku": "B-1", "name": "B", "outcome": "undone",
+                   "fields": {"name": {"before": "Old", "current": "New"}}, "kept_files": ["f1"], "files": 1}],
+        "links_undone_at": None, "invoices": [],
+    }, "en"))
+    assert t("connectors.first_sync_links_kept", "en") in html
+    assert t("connectors.first_sync_link_relinked", "en", service="WooCommerce") in html
+    assert t("connectors.first_sync_link_kept_field", "en", field=t("connectors.conflict_field_name", "en"),
+             current="New", before="Old") in html
+    assert t("connectors.first_sync_link_kept_files", "en", n=1) in html
+    assert "first-sync/undo-links" not in html
+
+
+def test_disconnect_confirm_names_the_items_that_keep_the_stores_values():
+    from ui.routes.settings_connectors import _disconnect_confirm
+
+    assert _disconnect_confirm("woocommerce", "en", kept=2) == " ".join((
+        t("connectors.disconnect_confirm", "en"),
+        t("connectors.disconnect_keeps_store_values", "en", n=2, service="WooCommerce")))
+    assert _disconnect_confirm("woocommerce", "en", kept=0) == t("connectors.disconnect_confirm", "en")

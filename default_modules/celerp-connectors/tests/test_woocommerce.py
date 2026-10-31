@@ -292,7 +292,7 @@ async def test_sync_orders_attention_carries_the_reconciliation_signature(woo, c
     clears the previous one."""
     from celerp_docs.doc_service import WooCommerceReconciliationRequired
 
-    async def _upsert(company_id, order):
+    async def _upsert(company_id, order, first_sync):
         if order["id"] == 1:
             raise WooCommerceReconciliationRequired("has a refund", "sig-1")
         raise ValueError("no stock")
@@ -343,7 +343,7 @@ async def test_sync_orders_retries_carried_attention_by_id(woo, ctx):
          "reconciled": True},
     ]
 
-    async def _upsert(company_id, order):
+    async def _upsert(company_id, order, first_sync):
         if order["id"] == 8:
             raise ValueError("still no stock")
         return "created"
@@ -443,7 +443,7 @@ async def test_sync_orders_keeps_a_reconciled_entry_until_the_order_changes(woo,
         for order_id, signature in reviewed.items()
     ]
 
-    async def _upsert(company_id, order):
+    async def _upsert(company_id, order, first_sync):
         if order["id"] == 23:
             raise WooCommerceReconciliationRequired("has another refund", signature="new")
         return "noop"
@@ -501,7 +501,7 @@ async def test_sync_orders_carried_fetch_failing_midway_keeps_retried_outcomes(w
         first_page = request.url.params.get("page", "1") == "1"
         return httpx.Response(200, json=[{"id": order_id}] if first_page else [])
 
-    async def _upsert(company_id, order):
+    async def _upsert(company_id, order, first_sync):
         if order["id"] == 7:
             raise WooCommerceReconciliationRequired("has another refund", signature="new")
         return "updated"

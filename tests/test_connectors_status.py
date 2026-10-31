@@ -352,7 +352,7 @@ def test_pending_oauth_connector_exposes_disconnect():
         None,
         "https://relay.example",
         "company-1",
-        config=SimpleNamespace(entity_directions={}, sync_frequency="manual"),
+        config=SimpleNamespace(entity_directions={}, sync_frequency="manual", links_holding_store_values=0),
     )
     html = to_xml(card)
     assert '/settings/connectors/quickbooks/oauth-redirect' in html
@@ -376,7 +376,7 @@ def test_pending_apikey_connector_exposes_disconnect():
         None,
         "https://relay.example",
         "company-1",
-        config=SimpleNamespace(entity_directions={}, sync_frequency="realtime"),
+        config=SimpleNamespace(entity_directions={}, sync_frequency="realtime", links_holding_store_values=0),
     )
     html = to_xml(card)
     assert '/settings/connectors/woocommerce/connect-apikey' in html

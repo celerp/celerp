@@ -602,6 +602,8 @@ async def revoke_credentials(
     A normal disconnect first confirms the store's webhooks are removed. With
     `force`, it disconnects even when that cannot be confirmed and records
     that it was forced. Imported records keep their store of origin either way.
+    ``kept_store_values`` counts the items still holding values the first sync took
+    from the store, whose undo record goes with the connection.
     """
     from celerp.connectors.ownership import (
         RESET_STATUS_DISCONNECTED,
@@ -641,6 +643,9 @@ async def revoke_credentials(
     ):
         return failure
 
+    # Read before the release forgets the first sync's undo record with the connection.
+    first_sync = await _first_sync_row(session, company_id, connector_name)
+    kept = first_sync.links_holding_store_values if first_sync is not None else 0
     try:
         await release_connector_ownership(
             session, company_id, connector_name,
@@ -650,7 +655,7 @@ async def revoke_credentials(
     except Exception as exc:
         await session.rollback()
         return {"ok": False, "error": "local_cleanup_failed", "detail": str(exc)}
-    return {"ok": True}
+    return {"ok": True, "kept_store_values": kept}
 
 
 async def _revoke_remote(

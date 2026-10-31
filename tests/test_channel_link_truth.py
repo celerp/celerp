@@ -147,6 +147,8 @@ EXTERNAL_LINK_CALLERS: dict[tuple[str, str], tuple[str, str]] = {
     (f"{INVENTORY}/services.py", "resolve_external_product"): ("SYNC", _SYNC),
     (f"{INVENTORY}/services.py", "set_external_link"): ("SYNC", _SYNC),
     (f"{INVENTORY}/services.py", "set_external_link_state"): ("SYNC", _SYNC),
+    (f"{INVENTORY}/services.py", "undo_external_link"):
+        ("SYNC", "undoes a first sync's link inside the owned connector's products execution, only while it is the one it made"),
     (f"{INVENTORY}/services.py", "upsert_external_product"): ("SYNC", _SYNC),
 }
 
@@ -410,7 +412,7 @@ async def test_disconnect_detaches_identity_and_allows_merge(client, session, co
     assert r.status_code == 409 and r.json()["detail"] == t("inventory.err_merge_linked", "en", stores="Shopify"), r.text
     with patch("celerp.connectors.remote_state.revoke_connector_remote_state", AsyncMock()):
         r = await client.delete("/connectors/shopify/credentials", headers=h)
-    assert r.status_code == 200 and r.json() == {"ok": True}, r.text
+    assert r.status_code == 200 and r.json() == {"ok": True, "kept_store_values": 0}, r.text
     assert (await _state(session, cid, a))["external_links"]["shopify"] == {"detached": True}
     assert await session.get(ConnectorFirstSync, (cid, "shopify"), populate_existing=True) is None
     r = await _merge(client, h, a, b)

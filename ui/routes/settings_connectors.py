@@ -745,7 +745,7 @@ def _connector_detail_body(
         t("connectors.disconnect", lang),
         cls="btn btn--sm btn--outline btn--danger", style="margin-left:8px;",
         hx_delete=f"/settings/connectors/{cid}/disconnect?redirect=1",
-        hx_confirm=_disconnect_confirm(cid, lang),
+        hx_confirm=_disconnect_confirm(cid, lang, kept=_links_holding_store_values(config)),
         hx_target=f"#connector-disconnect-result-{cid}",
         hx_swap="innerHTML",
     )
@@ -805,11 +805,20 @@ def _first_sync_link(cid: str, lang: str) -> FT:
              cls="btn btn--sm btn--primary")
 
 
-def _disconnect_confirm(platform: str, lang: str, *, anyway: bool = False) -> str:
+def _links_holding_store_values(config) -> int:
+    return config.links_holding_store_values if config is not None else 0
+
+
+def _disconnect_confirm(platform: str, lang: str, *, anyway: bool = False, kept: int = 0) -> str:
     """What a Disconnect asks before it goes. The accountant connection has no store and
-    no webhooks, so it asks in its own words."""
+    no webhooks, so it asks in its own words. ``kept``: items still holding values the
+    first sync took from the store; disconnecting forgets its undo record, so it says so."""
     key = "disconnect_anyway_confirm" if anyway else "disconnect_confirm"
-    return t(f"connectors.{'peer_' if platform == 'celerp' else ''}{key}", lang)
+    text = t(f"connectors.{'peer_' if platform == 'celerp' else ''}{key}", lang)
+    if not kept:
+        return text
+    service = get_connector(platform).display_name
+    return f"{text} {t('connectors.disconnect_keeps_store_values', lang, n=kept, service=service)}"
 
 
 def _disconnect_failed(
@@ -923,7 +932,7 @@ def _connector_card(
                 hx_delete=f"/settings/connectors/{cid}/disconnect",
                 hx_target=f"#connector-card-{cid}",
                 hx_swap="outerHTML",
-                hx_confirm=_disconnect_confirm(cid, lang),
+                hx_confirm=_disconnect_confirm(cid, lang, kept=_links_holding_store_values(config)),
             ),
             cls="connector-action-area",
         )
@@ -952,7 +961,7 @@ def _connector_card(
                 hx_delete=f"/settings/connectors/{cid}/disconnect",
                 hx_target=f"#connector-card-{cid}",
                 hx_swap="outerHTML",
-                hx_confirm=_disconnect_confirm(cid, lang),
+                hx_confirm=_disconnect_confirm(cid, lang, kept=_links_holding_store_values(config)),
             )] if c.get("local_claim") else []),
             cls="connector-action-area",
         )
@@ -1017,7 +1026,7 @@ def _connector_card(
                 hx_delete=f"/settings/connectors/{cid}/disconnect",
                 hx_target=f"#connector-card-{cid}",
                 hx_swap="outerHTML",
-                hx_confirm=_disconnect_confirm(cid, lang),
+                hx_confirm=_disconnect_confirm(cid, lang, kept=_links_holding_store_values(config)),
             )
             if config is not None else None
         )

@@ -55,6 +55,7 @@ def _revision(value: str = "rev-1", status: int = 200):
 
 def _session():
     session = AsyncMock()
+    session.get = AsyncMock(return_value=None)  # holds no first-sync record
     session.commit = AsyncMock()
     session.rollback = AsyncMock()
     return session
@@ -297,7 +298,7 @@ async def test_revoke_woocommerce_removes_webhooks_before_the_credential():
             "woocommerce", "company-test", None, session
         )
 
-    assert result == {"ok": True}
+    assert result == {"ok": True, "kept_store_values": 0}
     cleanup.assert_awaited_once()
     assert cleanup.await_args.args[1:] == (f"{RELAY}/webhooks/woocommerce/events", ["11"])
     assert delete_called_at_cleanup == [False]
@@ -337,7 +338,7 @@ async def test_revoke_while_linked_twice_still_disconnects():
     session = _session()
     with patches[0], patches[1], patches[2], patches[3]:
         result = await revoke_credentials("woocommerce", "company-test", None, session)
-    assert result == {"ok": True}
+    assert result == {"ok": True, "kept_store_values": 0}
     remote.assert_awaited_once_with("company-test", "woocommerce", webhook_ids=["11"], force=False)
     release.assert_awaited_once()
     assert session.commit.await_count == 1
@@ -352,7 +353,7 @@ async def test_revoke_own_and_legacy_claim_revokes_every_webhook():
     ]})
     with patches[0], patches[1], patches[2], patches[3]:
         result = await revoke_credentials("woocommerce", "company-test", None, _session())
-    assert result == {"ok": True}
+    assert result == {"ok": True, "kept_store_values": 0}
     remote.assert_awaited_once_with(
         "company-test", "woocommerce", webhook_ids=["11", "12"], force=False
     )
@@ -440,7 +441,7 @@ async def test_forced_revoke_disconnects_and_records_that_it_was_forced(token_re
             "woocommerce", "company-test", None, session, force=True
         )
 
-    assert result == {"ok": True}
+    assert result == {"ok": True, "kept_store_values": 0}
     assert delete.calls.last.request.headers["X-Celerp-Connector-Revision"] == "forced-revision"
     assert len(revision.calls) == 2
     assert release.await_args.kwargs["status"] == RESET_STATUS_FORCED
@@ -507,7 +508,7 @@ async def test_accountant_disconnect_goes_ahead_when_the_relay_is_out_of_reach()
         session = _session()
         result = await revoke_credentials("celerp", "company-test", None, session)
 
-    assert result == {"ok": True}
+    assert result == {"ok": True, "kept_store_values": 0}
     assert release.await_args.kwargs["status"] == RESET_STATUS_DISCONNECTED
     session.rollback.assert_not_awaited()
     assert session.commit.await_count == 1
@@ -569,7 +570,7 @@ def _ui_connect_patches(start):
 
     catalog = [{"id": "woocommerce", "name": "WooCommerce", "category": "website",
                 "connected": True, "auth_type": "api_key", "entities": []}]
-    config = SimpleNamespace(connector="woocommerce", entity_directions=dict(WOO_DEFAULTS),
+    config = SimpleNamespace(connector="woocommerce", links_holding_store_values=0, entity_directions=dict(WOO_DEFAULTS),
                              first_sync_state="pending", sync_frequency="realtime", connect_lapsed_at=None)
     return (
         patch("ui.api_client.get_company", AsyncMock(return_value={

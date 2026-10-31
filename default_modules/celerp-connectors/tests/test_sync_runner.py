@@ -84,7 +84,7 @@ async def test_a_paused_connection_says_so_on_its_card():
     from fasthtml.common import to_xml
     from ui.routes.settings_connectors import _connector_card
 
-    config = SimpleNamespace(entity_directions=WOO, first_sync_state="completed",
+    config = SimpleNamespace(entity_directions=WOO, first_sync_state="completed", links_holding_store_values=0,
                              sync_frequency="realtime", connect_lapsed_at=datetime.now(timezone.utc))
     html = to_xml(_connector_card({"id": "woocommerce", "name": "WooCommerce", "connected": True,
                                    "auth_type": "api_key"}, None, RELAY, "c1", config=config))

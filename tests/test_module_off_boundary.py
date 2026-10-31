@@ -724,7 +724,7 @@ async def test_disconnecting_a_store_before_inventory_starts(client, session, mo
             ConnectorConfig.company_id == linked[1])) == 1
 
         r = await client.delete("/connectors/woocommerce/credentials", headers=plain[0])
-    assert r.status_code == 200 and r.json() == {"ok": True}, r.text
+    assert r.status_code == 200 and r.json() == {"ok": True, "kept_store_values": 0}, r.text
 
 
 @pytest.mark.asyncio

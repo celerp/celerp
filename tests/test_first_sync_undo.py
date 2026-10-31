@@ -293,3 +293,23 @@ async def test_an_imported_invoice_is_voided_through_its_document(real_engine, r
             "SELECT event_type FROM ledger WHERE company_id = :c AND entity_id = :d ORDER BY id"),
             {"c": cid, "d": doc_id})).scalars().all()
     assert events[0] == "doc.created" and "doc.voided" in events, events
+
+
+async def test_disconnect_says_which_items_keep_the_stores_values(real_engine, real_client, store, monkeypatch):
+    """Disconnecting forgets the first sync's undo record: its count of items still holding
+    values taken from the store is on the connection and in the disconnect's answer; an item
+    whose link was undone no longer counts."""
+    from unittest.mock import AsyncMock
+
+    from celerp.db import get_session_ctx
+    from celerp.models.connector_config import ConnectorConfig
+
+    monkeypatch.setattr("celerp.connectors.remote_state.revoke_connector_remote_state", AsyncMock())
+    cid, uid = await _linked("UndoDisconnect")
+    h = await _headers(real_engine, cid, uid)
+    async with get_session_ctx() as session:
+        config = await session.scalar(sa.select(ConnectorConfig).where(
+            ConnectorConfig.company_id == str(cid), ConnectorConfig.connector == "woocommerce"))
+        assert config.links_holding_store_values == 2
+    r = await real_client.delete("/connectors/woocommerce/credentials", headers=h)
+    assert r.status_code == 200 and r.json() == {"ok": True, "kept_store_values": 2}, r.text

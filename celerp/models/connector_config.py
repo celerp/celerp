@@ -68,6 +68,11 @@ class ConnectorConfig(Base):
         return self.first_sync.state if self.first_sync is not None else None
 
     @property
+    def links_holding_store_values(self) -> int:
+        """Items the first sync linked that still hold values it took from the store."""
+        return self.first_sync.links_holding_store_values if self.first_sync is not None else 0
+
+    @property
     def webhook_ids(self) -> list[str]:
         if not self.webhook_ids_json:
             return []
