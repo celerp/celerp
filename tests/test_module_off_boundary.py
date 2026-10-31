@@ -882,7 +882,7 @@ _REVIEWED: dict[tuple[str, str], str] = {
         "upsert_contact_from_quickbooks", "upsert_contact_from_xero",
         "import_store_product", "list_items_with_external_id",
         "list_item_for_external_identity", "list_items_modified_since_last_sync",
-        "list_unsynced_invoices", "invoice_for_push", "mark_doc_pushed")},
+        "record_link_push", "list_unsynced_invoices", "invoice_for_push", "mark_doc_pushed")},
     ("celerp/connectors/product_links.py", "detach_product_links"):
         "imports Inventory only while it runs in this process, after "
         "refuse_while_links_cannot_detach has judged the company",
