@@ -413,6 +413,7 @@ _SLOT_CONTRIBUTIONS = _nav_slot_contributions() + [
         "contrib": {
             "handler": "celerp_accounting.routes:default_bank_follows_books_hook",
             "_module": "celerp-accounting",
+            "_first_party": True,
         },
     },
     {

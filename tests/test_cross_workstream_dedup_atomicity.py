@@ -170,19 +170,17 @@ async def test_quotation_to_invoice_duplicate_is_atomic(client, session):
 
 @pytest.mark.asyncio
 async def test_memo_to_invoice_duplicate_is_atomic(client, session):
-    """memo->invoice conversion CANNOT construct a duplicate target line by its
+    """memo->invoice (Invoice all) CANNOT construct a duplicate target line by its
     own construction, so this asserts the nearest real invariant.
 
-    The memo path does not copy the memo's line_items: it rebuilds the invoice
-    from the memo's allocation set (every backing lot), keyed by each lot's own
-    distinct entity_id (routes.py memo branch, billed_by_bound_eid). Two lines of
-    one SKU bill two distinct lot entity_ids, so the target can never carry the
-    same linked id twice and the duplicate guard is structurally unreachable on
-    this path. Rather than fake a duplicate, this test proves the real invariant
-    the path does enforce: a memo with no memo_out backing is rejected 422 and no
-    invoice is materialized. The duplicate-guard coverage for memos is proven at
-    the event boundary by test_document_item_dedup (doc.created on the rebuilt
-    invoice would trip the same guard if a duplicate id ever reached it).
+    Invoice all draws each memo line once onto its own invoice line, held by the
+    lots stamped out for that line, so the target can never carry the same linked
+    id twice and the duplicate guard is structurally unreachable on this path.
+    Rather than fake a duplicate, this test proves the real invariant the path does
+    enforce: a memo with nothing out is refused and no invoice is materialized. The
+    duplicate-guard coverage for memos is proven at the event boundary by
+    test_document_item_dedup (doc.created on the drawn invoice would trip the same
+    guard if a duplicate id ever reached it).
     """
     t = await _register(client)
     cid = await _company_id(session)
@@ -197,7 +195,8 @@ async def test_memo_to_invoice_duplicate_is_atomic(client, session):
 
     r = await client.post(f"/docs/{memo_id}/convert", headers=_h(t))
 
-    assert r.status_code == 422, r.text
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["message_key"] == "documents.err_memo_nothing_out", r.text
     # Atomicity: no invoice materialized, memo unchanged.
     assert await _target_doc_count(session, cid, "invoice") == before_invoices
     src = await _doc_state(session, cid, memo_id)

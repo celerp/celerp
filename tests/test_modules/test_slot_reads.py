@@ -116,6 +116,25 @@ def test_turn_off_preflight_slot_is_first_party():
     assert loader._CALLABLE_SLOTS["turn_off_preflight"] == ("handler", True)
 
 
+def test_books_currency_slot_is_first_party():
+    assert "on_books_currency_set" in slots.FIRST_PARTY_SLOTS
+
+
+@pytest.mark.parametrize("slot", sorted(slots.FIRST_PARTY_SLOTS))
+def test_a_module_not_celerps_own_filling_a_first_party_slot_is_refused(slot, tmp_path):
+    with pytest.raises(loader.ModuleLoadError, match="filled by Celerp's own modules only"):
+        loader._check_slot_contracts(tmp_path, {slot: {"handler": "acme.hooks:handler"}}, first_party=False)
+
+
+def test_celerps_accounting_module_fills_the_books_currency_slot():
+    """Control: the bundled accounting module passes the same check as Celerp's own."""
+    package = loader.BUNDLED_SOURCE_DIR / "celerp-accounting"
+    manifest = loader.read_manifest(package)
+    assert "on_books_currency_set" in manifest["slots"]
+    assert loader.is_first_party(package)
+    loader._check_slot_contracts(package, manifest["slots"], first_party=True)
+
+
 def test_fixed_asset_rules_slot_is_open_to_every_module():
     assert "fixed_asset_rules" in slots.SLOT_NAMES and "fixed_asset_rules" not in slots.FIRST_PARTY_SLOTS
     # A rule is a class or plain function core calls without awaiting.

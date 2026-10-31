@@ -490,6 +490,52 @@ def test_older_backup_restored_and_migrated_forward(scratch, tmp_path, monkeypat
     assert (OPENED_KEY, RUNNING) in after["instance_meta"]
 
 
+_NEWER_TOOLS_PREAMBLE = """--
+-- PostgreSQL database dump
+--
+
+-- Dumped by pg_dump version 99.0
+
+SET statement_timeout = 0;
+SET lock_timeout = '4321ms';
+SET celerp_setting_from_newer_tools = 0;
+SET client_encoding = 'UTF8';
+SELECT pg_catalog.set_config('search_path', '', false);
+SET client_min_messages = warning;
+
+CREATE TABLE public.zz_restored AS SELECT current_setting('lock_timeout') AS lock_timeout;
+SET default_tablespace = '';
+"""
+
+
+def test_a_restore_script_from_newer_tools_restores_into_this_server(scratch, tmp_path, monkeypatch):
+    """pg_restore newer than the server opens its script with settings the server does not
+    know (pg_restore 17 and later set transaction_timeout, unknown to a 16 server). The
+    restore drops only those, from the opening SET block, and applies every setting the
+    server knows; the body after the block is left byte for byte."""
+    from celerp.config import settings
+    from celerp.services import backup
+    target = scratch(None, None)
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    monkeypatch.setattr(settings, "database_url", target)
+    script = tmp_path / "restore.sql"
+    script.write_bytes(_NEWER_TOOLS_PREAMBLE.encode())
+    body = _NEWER_TOOLS_PREAMBLE.split("CREATE TABLE", 1)[1]
+
+    backup.run_restore_script(script, target)
+
+    engine = sa.create_engine(sync_url(target), poolclass=NullPool)
+    with engine.connect() as conn:
+        assert conn.execute(sa.text("SELECT lock_timeout FROM zz_restored")).scalar_one() == "4321ms"
+    engine.dispose()
+    written = script.read_text()
+    lines = written.splitlines()
+    assert [line for line in lines if "newer_tools" in line] == ["--  celerp_setting_from_newer_tools = 0;"]
+    assert "SET lock_timeout = '4321ms';" in lines and "SET client_encoding = 'UTF8';" in lines
+    assert written.split("CREATE TABLE", 1)[1] == body
+    assert len(written) == len(_NEWER_TOOLS_PREAMBLE)
+
+
 def test_current_database_start_changes_nothing(scratch, tmp_path, monkeypatch):
     """A database this version already opened: the start's migrate step is a no-op."""
     from celerp.cli import _migrate_to_head

@@ -301,7 +301,8 @@
     "query:status_in": "Set of status values to include in the result.",
     "query:unfulfilled_only": "Whether to return only documents with quantities still awaiting fulfillment.",
     "query:awaiting_only": "Whether to return only issued documents still awaiting payment, by the statuses of each document type.",
-    "query:paid_only": "Whether to return only documents of a type that awaits payment that are paid in full."
+    "query:paid_only": "Whether to return only documents of a type that awaits payment that are paid in full.",
+    "query:currency": "Currency code; only documents stored in exactly this currency are returned."
   },
   "GET /docs/{entity_id}": {
     "path:entity_id": "Identifier of the requested Celerp record."
@@ -345,7 +346,8 @@
     "query:status_in": "Set of status values to include in the result.",
     "query:unfulfilled_only": "Whether to return only documents with quantities still awaiting fulfillment.",
     "query:awaiting_only": "Whether to return only issued documents still awaiting payment, by the statuses of each document type.",
-    "query:paid_only": "Whether to return only documents of a type that awaits payment that are paid in full."
+    "query:paid_only": "Whether to return only documents of a type that awaits payment that are paid in full.",
+    "query:currency": "Currency code; only documents stored in exactly this currency are returned."
   },
   "GET /docs/numbered": {
     "query:doc_type": "Document type to limit the match to, such as invoice or bill. Omit to match every type.",
@@ -376,7 +378,8 @@
     "query:status_in": "Set of status values to include in the result.",
     "query:unfulfilled_only": "Whether to return only documents with quantities still awaiting fulfillment.",
     "query:awaiting_only": "Whether to return only issued documents still awaiting payment, by the statuses of each document type.",
-    "query:paid_only": "Whether to return only documents of a type that awaits payment that are paid in full."
+    "query:paid_only": "Whether to return only documents of a type that awaits payment that are paid in full.",
+    "query:currency": "Currency code; only documents stored in exactly this currency are returned."
   },
   "GET /fixed-assets/api/assets": {
     "query:class_id": "Keeps only assets in this asset class.",
@@ -1546,5 +1549,14 @@
   },
   "POST /ai/jobs/{job_id}/retry-failed": {
     "path:job_id": "Identifier of the AI processing job."
+  },
+  "POST /docs/{entity_id}/back-to-memo": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /docs/{entity_id}/invoice-lines": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /docs/{entity_id}/tax-rate": {
+    "path:entity_id": "Identifier of the requested Celerp record."
   }
 }

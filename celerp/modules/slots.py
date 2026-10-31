@@ -38,7 +38,8 @@ on_company_created Async callback(session, company_id) fired after a new company
 on_modules_ready   Async callback(session) fired once after every module has loaded
 on_books_currency_set
                    Async callback(session, company_id) fired, before commit, whenever a
-                   company's books currency is set or changed
+                   company's books currency is set or changed. Filled by Celerp's own
+                   modules only (FIRST_PARTY_SLOTS)
 doc_finalize_hook  Async callback fired when a document is finalized, before commit
 on_doc_payment     Async callback fired after a payment is recorded on a document
 inventory_in_production
@@ -170,7 +171,7 @@ SLOT_NAMES = frozenset({
 # Slots only Celerp's own (first-party) modules may fill; admission refuses any
 # other module that fills one.
 FIRST_PARTY_SLOTS = frozenset({"inventory_in_production", "demo_records", "background_loop",
-                               "doc_asset_lines", "turn_off_preflight"})
+                               "doc_asset_lines", "turn_off_preflight", "on_books_currency_set"})
 
 # projection_handler prefixes core handles itself: system events (registered at
 # startup, celerp.main) and the core-folded connectors' declared prefixes.

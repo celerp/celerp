@@ -133,14 +133,9 @@ async def test_revert_sibling_leaves_doc_status_coherent(client):
 
 @pytest.mark.asyncio
 async def test_cross_lot_convert_bills_sku_rollup(client):
-    """Converting a cross-lot memo bills the memo line for the FULL still-out quantity of
-    its SKU (bound lot A + sibling B) at the line's unit price, settles both lots, and a
-    later re-convert does not re-bill the settled SKU.
-
-    At merge-base convert enumerates only line_items, so B's still-out quantity is never
-    billed: the invoice carries only A's quantity (or 422s if A was already returned).
-    Post-fix the invoice line carries the summed still-out quantity across the allocation
-    set (2 units) at the line's unit price, and both lots pass to the invoice."""
+    """Invoice all on a cross-lot memo bills the memo line for every unit it has out (bound
+    lot A + sibling B, each held for the line by its stamp) on one invoice line, hands both
+    lots to the invoice, and a second Invoice all finds nothing left out."""
     token = await _register(client)
     h = _h(token)
     memo, lot_a, lot_b = await _cross_lot_memo(client, h, "XC-SPAN", unit_price=10)
@@ -162,7 +157,7 @@ async def test_cross_lot_convert_bills_sku_rollup(client):
     for lot in (lot_a, lot_b):
         assert (await client.get(f"/items/{lot}", headers=h)).json().get("status_doc_id") == target_id
 
-    # A re-convert finds nothing still memo_out and must refuse (no double-billing).
+    # A second Invoice all finds nothing still out and is refused (no double-billing).
     r2 = await client.post(f"/docs/{memo}/convert", headers=h)
-    assert r2.status_code == 422, (
-        f"a second convert must refuse (nothing left On Memo); got {r2.status_code}: {r2.text}")
+    assert r2.status_code == 409, r2.text
+    assert r2.json()["detail"]["message_key"] == "documents.err_memo_nothing_out", r2.text

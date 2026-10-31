@@ -898,6 +898,9 @@ _REVIEWED: dict[tuple[str, str], str] = {
         "costs a document line from its lots: reached from Documents, which needs Inventory, and "
         "from the boot COGS backfill, which fails without writing and retries at a later boot",
     ("celerp/services/auto_je.py", "create_for_online_fees"): _PAYMENT_STEP,
+    ("celerp/services/document_lines.py", "_memo_takes_by_line"):
+        "reads what invoices took from a memo, and imports Documents only for a memo, which only "
+        "Documents writes",
     ("celerp/services/payments.py", "_apply_refund"): _PAYMENT_STEP,
     ("celerp/services/payments.py", "_apply_release"): _PAYMENT_STEP,
     ("celerp/services/payments.py", "record_unmatched_payment"): _PAYMENT_STEP,

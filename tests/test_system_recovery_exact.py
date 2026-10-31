@@ -2188,8 +2188,7 @@ async def test_a_backup_from_a_sql_ascii_install_with_thai_text_is_restored(
         legacy = tmp_path / "legacy.dump"
         members = _members(source)
         legacy.write_bytes(members["database.dump"])
-        subprocess.run([backup._find_pg_tool("pg_restore"), "--no-owner", "-d",
-                        url.render_as_string(hide_password=False), str(legacy)], check=True)
+        backup.restore_database_file(legacy, url.render_as_string(hide_password=False))
         backup.dump_database(url.render_as_string(hide_password=False), legacy)
         script = subprocess.run([backup._find_pg_tool("pg_restore"), "-f", "-", str(legacy)],
                                 capture_output=True, check=True).stdout

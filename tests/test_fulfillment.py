@@ -580,8 +580,8 @@ async def test_memo_to_invoice_fails_when_no_memo_out_items(client, session, aut
 
     # Don't fulfill - all items still available
     r = await client.post(f"/docs/{doc_id}/convert", headers=auth["headers"])
-    assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("documents.err_memo_nothing_out", "en")
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["message"] == t("documents.err_memo_nothing_out", "en")
 
 
 @pytest.mark.asyncio
@@ -3134,20 +3134,12 @@ async def test_finalize_sells_the_source_memo_lot_on_the_invoice_number(client, 
     """An invoice made from a memo whose lot is still out on that memo (a memo converted
     before conversion settled its lots) sells the lot at finalize, stamped with the
     finalized invoice number, not the draft PF number."""
-    from celerp.events.engine import emit_event
+    from memo_draw_support import legacy_convert
 
     sku = f"ONMEMO-S-{uuid.uuid4().hex[:6]}"
-    eid, memo_id, memo_no = await _lot_out_on_memo(client, auth, sku)
-    r = await client.post(f"/docs/{memo_id}/convert", headers=auth["headers"])
-    assert r.status_code == 200, r.text
-    invoice_id = r.json()["target_doc_id"]
-    # The lot as an older conversion left it: still out on the memo.
-    await emit_event(
-        session, company_id=_setup_ids["company_id"], entity_id=eid, entity_type="item",
-        event_type="item.status.set", data={"new_status": "memo_out", "source_doc_id": memo_id, "doc_number": memo_no},
-        actor_id=_setup_ids["user_id"], location_id=None, source="test",
-        idempotency_key=str(uuid.uuid4()), metadata_={})
-    await session.commit()
+    eid, memo_id, _memo_no = await _lot_out_on_memo(client, auth, sku)
+    # Converted the old way with the lot left as an older conversion left it: out on the memo.
+    invoice_id = await legacy_convert(client, session, {**_setup_ids, "headers": auth["headers"]}, memo_id, [])
 
     r = await client.post(f"/docs/{invoice_id}/finalize", headers=auth["headers"])
     assert r.status_code == 200, r.text
