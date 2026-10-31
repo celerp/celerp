@@ -414,13 +414,14 @@ async def _lock_job(session, job_id: uuid.UUID):
 
 
 def _under_lock(session):
-    """The condition a claim or a fenced write puts on a job row: its company is one
-    whose lock this transaction holds. With none held, the write is refused outright."""
+    """The condition a claim or a fenced write puts on a job row: its company is the one
+    whose lock this transaction holds (lock_for_ai), named by equality so the statement
+    names its company. With none held, or several, the write is refused outright."""
     from celerp.models.ai import AIBatchJob
-    held = noted(session, "locked")
-    if not held:
-        raise RuntimeError("an AI job row written without its company lock (lock_for_ai)")
-    return AIBatchJob.company_id.in_([uuid.UUID(str(c)) for c in held])
+    held = {str(c) for c in noted(session, "locked")}
+    if len(held) != 1:
+        raise RuntimeError("an AI job row written without its company lock (lock_for_ai), or under several")
+    return AIBatchJob.company_id == uuid.UUID(held.pop())
 
 
 async def _hold(session, claim) -> None:
@@ -937,7 +938,7 @@ async def _set_step(session, claim, step_pk: uuid.UUID, *, credits: int | None =
     if credits is not None:
         # A retried file keeps what its earlier generations were charged.
         values["credits"] = AIJobStep.credits + credits
-    await session.execute(update(AIJobStep).where(AIJobStep.id == step_pk).values(
+    await session.execute(update(AIJobStep).where(AIJobStep.id == step_pk, AIJobStep.job_id == claim.job_id).values(
         updated_at=datetime.now(timezone.utc), **values))
 
 

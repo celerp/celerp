@@ -1420,6 +1420,18 @@ def pytest_runtest_setup(item):
     _lock_rank.RECORDER.test = item.nodeid
 
 
+_AI_ROWS = ("row:ai_conversations", "row:ai_messages", "row:ai_batch_jobs", "row:ai_job_steps", "row:ai_usage")
+
+
+@pytest.fixture(autouse=True)
+def _ai_rows_taken_under_their_company_lock():
+    """Every test is a census of the AI rows the AI's code takes: one taken outside its
+    company's lock and held while its transaction waits on more (not a leaf) fails the test."""
+    with _lock_rank.ungated_takes(_AI_ROWS, "celerp/ai/", "default_modules/celerp-ai/") as found:
+        yield
+    assert sorted(found) == [], "AI row takes outside the company lock:\n" + "\n".join(sorted(found))
+
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_call(item):
     if item.get_closest_marker("observer_control"):

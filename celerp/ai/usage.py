@@ -49,7 +49,9 @@ async def record_usage(
     commits. ``known``: ``credits`` is the operation's whole charge, named by the
     service; otherwise ``credits`` were added by the replies this run received.
     ``send_bytes``: the question is about to be sent with a body of that size, so the
-    row is pending again until the service has ended and settled that send."""
+    row is pending again until the service has ended and settled that send. Under the
+    company's lock (lock_for_ai, a retake for a caller that holds it)."""
+    await jobs.lock_for_ai(session, company_id)
     now = datetime.now(timezone.utc)
     values: dict = {"credits": credits if known else AIUsage.credits + credits}
     if known:
@@ -121,7 +123,7 @@ async def reconcile_usage(session: AsyncSession) -> None:
                                "credits": status["credits"] if status["state"] == "charged" else 0}
                 await session.execute(
                     update(AIUsage)
-                    .where(AIUsage.id == row.id, AIUsage.pending, ~AIUsage.unresolved,
+                    .where(AIUsage.id == row.id, AIUsage.company_id == company_id, AIUsage.pending, ~AIUsage.unresolved,
                            AIUsage.reconcile_at == row.reconcile_at)
                     .values(**settled))
             await session.commit()

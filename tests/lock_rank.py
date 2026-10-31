@@ -1409,13 +1409,20 @@ def _row_locks(statement: str) -> tuple[tuple[tuple[str, str, tuple[int, ...] | 
                 numbers = [_params(v) for v in values]
                 if numbers and all(n and len(n) == 1 for n in numbers):
                     company = tuple(n[0] for n in numbers)
-            # A one-row insert into a table whose rows are their parent's company names the parent
-            # by its link column (as _parent_param does for a WHERE clause).
+            # An insert into a table whose rows are their parent's company names the parent by its
+            # link column (as _parent_param does for a WHERE clause), when every row binds it: the
+            # rows name one parent when their parameters bind one value (_company).
             link = _company_link(table)
-            parent = _params(rows[0]["List"]["items"][cols.index(link[0])]) \
-                if link and link[1] != "companies" and len(rows) == 1 and link[0] in cols else None
+            linked = [_params(r["List"]["items"][cols.index(link[0])]) for r in rows] \
+                if link and link[1] != "companies" and link[0] in cols else []
+            parent = tuple(n[0] for n in linked) if linked and all(n and len(n) == 1 for n in linked) else None
+            # A one-row insert binding the row's primary key and its company names that row's
+            # company, as an UPDATE by both does: its children are judged under that company.
+            key_column = _row_key_column(table)
+            row = _params(rows[0]["List"]["items"][cols.index(key_column)]) \
+                if company and len(rows) == 1 and key_column in cols else None
             if not _insert_waits_on_no_key(table) and (_serial_keyed(table) is None or _serial_keyed(table) in cols):
-                out.append((f"row:{table}", "insert", None, company, None, parent))
+                out.append((f"row:{table}", "insert", None, company, row, parent))
             for col, ref in fks.items():
                 if cols and col not in cols:
                     continue

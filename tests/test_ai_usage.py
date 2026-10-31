@@ -453,7 +453,9 @@ async def test_question_sent_twice_at_once_is_refused_once(client, session, owne
     real_add = conversations.add_message
 
     async def _add_after_the_other_send(sess, conversation_id, role, content, **kw):
-        # The other send stores the question between this send's check and its save.
+        # The other send stores the question between this send's check and its save, under
+        # the conversation's lock, as every writer of its messages does.
+        await conversations._lock_conversation(sess, conversation_id)
         await sess.execute(AIMessage.__table__.insert().values(
             id=question, conversation_id=uuid.UUID(conv), role="user", content="supplier?",
             credits_used=0, created_at=datetime.now(timezone.utc)))
