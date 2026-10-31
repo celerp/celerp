@@ -689,7 +689,9 @@ class Recorder:
             # R4t: a row of a table this transaction holds EXCLUSIVE or stronger: no other
             # transaction holds one of its rows while that is held, so the take waits on none.
             lock.cls.startswith(("row:", "key:"))
-            and self._table_held_exclusively(conn_key, lock.cls.split(":", 1)[1]))
+            and self._table_held_exclusively(conn_key, lock.cls.split(":", 1)[1])) and not (
+            # A shared take of a key every taker takes shared: no holder conflicts with it.
+            lock.cls in _SHARED_ONLY and not _exclusive(lock.mode))
         if lock.cls in _TRY_ONLY and waits:
             self._violate("try-only", lock)
         if lock.cls in _SHARED_ONLY and _exclusive(lock.mode):

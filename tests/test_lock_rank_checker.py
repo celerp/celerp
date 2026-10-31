@@ -424,6 +424,20 @@ def test_a_key_every_taker_takes_shared_may_be_held_while_waiting_on_another_con
     assert not {k for k, _ in _kinds(recorder)} & {"cross-connection", "self-deadlock"}
 
 
+def test_a_shared_take_of_a_key_every_taker_takes_shared_waits_on_nothing_held_elsewhere(tmp_path):
+    """A recovery holds the connector key on its own connection while the transactions it
+    opens join the version fence: the fence is only ever taken shared, so that take waits on
+    no one and cannot wait on what the task holds."""
+    recorder = Recorder()
+
+    async def body():
+        recorder.acquire(1, _lock("adv:connector-runtime", "session exclusive wait"), 0.0)
+        recorder.acquire(2, _lock("adv:version-fence", "xact shared wait"), 0.0)
+
+    asyncio.run(body())
+    assert ("cross-connection", "adv:version-fence") not in _offline_kinds(recorder, tmp_path)
+
+
 def test_an_exclusive_take_of_a_key_every_taker_should_take_shared_fails():
     recorder = Recorder()
     recorder.acquire(1, _lock("adv:version-fence", "xact exclusive wait"), 0.0)
