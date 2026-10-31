@@ -18,7 +18,7 @@ from celerp.events.schemas import ItemPricingSet
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.activity_redaction import redact_event_costs
-from test_helpers import perm_setup
+from test_helpers import merge_items, perm_setup
 from test_landed_cost_pools import _goods, _received
 from ui.components.activity import detail_from_entry
 
@@ -79,6 +79,18 @@ async def test_a_unit_cost_change_on_a_stocked_lot_replaces_its_goods_unit_cost(
     item = await _item(client, auth["headers"], quantity=10, cost_total=500)
     await _price(client, auth["headers"], item, "cost_price", 60)
     assert (await _pricing_rows(session, item))[-1]["old_price"] == 50
+
+
+@pytest.mark.parametrize("price_type", ["cost_price", "cost_total"])
+async def test_a_goods_cost_change_on_a_lot_of_unknown_goods_cost_replaced_no_cost(client, session, auth, price_type):
+    # A merge of a costed lot and an uncosted one keeps the value but no known goods cost.
+    a = await _item(client, auth["headers"], quantity=2, cost_total=100)
+    b = await _item(client, auth["headers"], quantity=3)
+    r = await merge_items(client, headers=auth["headers"], json={"source_entity_ids": [a, b], "target_sku_from": a})
+    assert r.status_code == 200, r.text
+    lot = r.json()["id"]
+    await _price(client, auth["headers"], lot, price_type, 30)
+    assert (await _pricing_rows(session, lot))[-1]["old_price"] is None
 
 
 async def test_a_garbage_stored_price_reads_as_no_previous_price(client, session, auth):

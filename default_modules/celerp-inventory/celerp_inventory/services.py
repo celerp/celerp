@@ -206,8 +206,10 @@ def goods_basis(state: dict) -> float | None:
 def replaced_price(state: dict, price_type: str) -> float | None:
     """The value an item.pricing.set of ``price_type`` replaces, in the unit of its
     new_price, or None when the item has none: the goods basis for cost_total, the
-    goods unit cost for cost_price, a cost list's own key, else the item's price on
-    that list."""
+    goods unit cost for cost_price (neither when the goods cost is not known), a cost
+    list's own key, else the item's price on that list."""
+    if price_type in ("cost_total", "cost_price") and not goods_cost_known(state):
+        return None
     if price_type == "cost_total":
         return goods_basis(state)
     if price_type == "cost_price":
