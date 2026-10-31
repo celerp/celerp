@@ -6713,7 +6713,6 @@
   "ai.receipt_no_date": "No date was found; the bill is dated today.",
   "ai.receipt_vendor_reference": "Vendor reference: {reference}",
   "ai.receipt_contact_lookup_failed": "Contact lookup failed: {reason}",
-  "ai.receipt_lookup_failed": "lookup failed",
   "ai.receipt_contacts_same_name": "{count} contacts are named {vendor}; pick one on the bill.",
   "ai.receipt_summary": "{filename}: bill for {label}, {amount}, {count} lines.",
   "ai.receipt_summary_one": "{filename}: bill for {label}, {amount}, 1 line.",

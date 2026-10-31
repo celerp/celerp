@@ -6713,7 +6713,6 @@
   "ai.receipt_no_date": "日付が見つからなかったため、仕入請求書の日付を今日に設定しました。",
   "ai.receipt_vendor_reference": "仕入先の参照番号：{reference}",
   "ai.receipt_contact_lookup_failed": "連絡先の検索に失敗しました：{reason}",
-  "ai.receipt_lookup_failed": "検索に失敗しました",
   "ai.receipt_contacts_same_name": "「{vendor}」という名前の連絡先が{count}件あります。仕入請求書で1件選択してください。",
   "ai.receipt_summary": "{filename}：{label}の仕入請求書、金額{amount}、明細{count}件。",
   "ai.receipt_summary_one": "{filename}：{label}の仕入請求書、金額{amount}、明細1件。",

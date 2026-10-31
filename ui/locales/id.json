@@ -6713,7 +6713,6 @@
   "ai.receipt_no_date": "Tanggal tidak ditemukan; tagihan pemasok diberi tanggal hari ini.",
   "ai.receipt_vendor_reference": "Referensi pemasok: {reference}",
   "ai.receipt_contact_lookup_failed": "Pencarian kontak gagal: {reason}",
-  "ai.receipt_lookup_failed": "Pencarian gagal",
   "ai.receipt_contacts_same_name": "Ada {count} kontak bernama {vendor}; pilih salah satu pada tagihan pemasok.",
   "ai.receipt_summary": "{filename}: tagihan pemasok untuk {label}, {amount}, {count} baris.",
   "ai.receipt_summary_one": "{filename}: tagihan pemasok untuk {label}, {amount}, 1 baris.",

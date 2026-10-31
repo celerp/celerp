@@ -1165,6 +1165,14 @@ def _keyed(refusal) -> dict | str | None:
     return None
 
 
+def _action_error_text(action: dict, otherwise: str | None, lang: str) -> str:
+    """A stored action's error as ``_error_text`` reads it (a record written before
+    errors were kept whole holds its text, shown as written), else ``otherwise``."""
+    if action.get("error"):
+        return _error_text(action["error"], lang)
+    return t(otherwise, lang) if otherwise else ""
+
+
 def _outcome_text(outcome: dict, lang: str = "en") -> tuple[bool, str]:
     """(ok, text) for one confirmed action's outcome, success or failure."""
     if outcome.get("ok"):
@@ -1287,12 +1295,12 @@ def _action_card(conversation_id: str, message_id: str, action: dict, lang: str 
     retryable = status == "retryable"
     if failed:
         badge = Span(t("ai.action_failed_badge", lang), cls="badge badge--error")
-        footer = Div(action.get("error") or t("ai.action_failed", lang), cls="ai-action__error")
+        footer = Div(_action_error_text(action, "ai.action_failed", lang), cls="ai-action__error")
     else:
         badge = Span(t("btn.retry", lang) if retryable else t("ai.action_proposal", lang),
                      cls="badge badge--proposal")
         footer = Div(
-            P(action.get("error") or t("ai.action_hint", lang),
+            P(_action_error_text(action, "ai.action_hint", lang),
               cls="ai-action__error" if retryable else "ai-action__hint"),
             Div(
                 Form(
@@ -1396,10 +1404,10 @@ def _action_status_cell(action: dict, lang: str = "en") -> list:
     status = action.get("status", "pending")
     if status == "failed":
         return [Span(t("ai.action_failed_badge", lang), cls="badge badge--error"),
-                Span(action.get("error") or t("ai.action_failed", lang), cls="ai-action__error")]
+                Span(_action_error_text(action, "ai.action_failed", lang), cls="ai-action__error")]
     if status == "retryable":
         return [Span(t("btn.retry", lang), cls="badge badge--proposal"),
-                Span(action.get("error") or "", cls="ai-action__error")]
+                Span(_action_error_text(action, None, lang), cls="ai-action__error")]
     return [Span(t("ai.action_proposal", lang), cls="badge badge--proposal")]
 
 

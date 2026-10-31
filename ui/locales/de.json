@@ -6713,7 +6713,6 @@
   "ai.receipt_no_date": "Es wurde kein Datum gefunden; die Lieferantenrechnung erhält das heutige Datum.",
   "ai.receipt_vendor_reference": "Lieferantenreferenz: {reference}",
   "ai.receipt_contact_lookup_failed": "Kontaktsuche fehlgeschlagen: {reason}",
-  "ai.receipt_lookup_failed": "Suche fehlgeschlagen",
   "ai.receipt_contacts_same_name": "{count} Kontakte haben den Namen {vendor}; wählen Sie auf der Lieferantenrechnung einen aus.",
   "ai.receipt_summary": "{filename}: Lieferantenrechnung für {label}, {amount}, {count} Positionen.",
   "ai.receipt_summary_one": "{filename}: Lieferantenrechnung für {label}, {amount}, 1 Position.",

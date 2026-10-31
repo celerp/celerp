@@ -6713,7 +6713,6 @@
   "ai.receipt_no_date": "لم يُعثر على تاريخ؛ لذا حُدّد تاريخ فاتورة المورد بتاريخ اليوم.",
   "ai.receipt_vendor_reference": "مرجع المورد: {reference}",
   "ai.receipt_contact_lookup_failed": "فشل البحث عن جهات الاتصال: {reason}",
-  "ai.receipt_lookup_failed": "فشل البحث",
   "ai.receipt_contacts_same_name": "توجد جهات اتصال باسم {vendor} عددها {count}؛ اختر واحدة منها في فاتورة المورد.",
   "ai.receipt_summary": "{filename}: فاتورة مورد تخص {label}، المبلغ {amount}، عدد البنود {count}.",
   "ai.receipt_summary_one": "{filename}: فاتورة مورد تخص {label}، المبلغ {amount}، بند واحد.",

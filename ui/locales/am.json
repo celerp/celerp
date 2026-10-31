@@ -6713,7 +6713,6 @@
   "ai.receipt_no_date": "ቀን አልተገኘም፤ የአቅራቢው የክፍያ መጠየቂያ የዛሬን ቀን ይይዛል።",
   "ai.receipt_vendor_reference": "የአቅራቢ ማጣቀሻ፦ {reference}",
   "ai.receipt_contact_lookup_failed": "የእውቂያ ፍለጋ አልተሳካም፦ {reason}",
-  "ai.receipt_lookup_failed": "ፍለጋው አልተሳካም",
   "ai.receipt_contacts_same_name": "{vendor} የሚባሉ {count} እውቂያዎች አሉ፤ በአቅራቢው የክፍያ መጠየቂያ ላይ አንዱን ይምረጡ።",
   "ai.receipt_summary": "{filename}፦ ለ{label} የአቅራቢ የክፍያ መጠየቂያ፣ መጠን {amount}፣ {count} የዝርዝር መስመሮች።",
   "ai.receipt_summary_one": "{filename}፦ ለ{label} የአቅራቢ የክፍያ መጠየቂያ፣ መጠን {amount}፣ 1 የዝርዝር መስመር።",

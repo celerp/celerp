@@ -6713,7 +6713,6 @@
   "ai.receipt_no_date": "Aucune date n'a été trouvée ; la facture fournisseur est datée d'aujourd'hui.",
   "ai.receipt_vendor_reference": "Référence fournisseur : {reference}",
   "ai.receipt_contact_lookup_failed": "Échec de la recherche de contacts : {reason}",
-  "ai.receipt_lookup_failed": "Échec de la recherche",
   "ai.receipt_contacts_same_name": "{count} contacts portent le nom {vendor} ; sélectionnez-en un sur la facture fournisseur.",
   "ai.receipt_summary": "{filename} : facture fournisseur pour {label}, {amount}, {count} lignes.",
   "ai.receipt_summary_one": "{filename} : facture fournisseur pour {label}, {amount}, 1 ligne.",

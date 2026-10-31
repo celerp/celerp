@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
+from celerp.accounting_roles import refusal as _refusal
 from celerp.ai import batch, jobs, llm, service
 from celerp_ai import routes, ui_routes
 from ui import i18n
@@ -49,8 +50,8 @@ class _Lookups(routes._Lookups):
         return True
 
     async def rows(self, name, query):
-        if isinstance(self._rows, str):
-            return self._rows
+        if isinstance(self._rows, dict):
+            return routes._action_error(self._rows)
         return [{"id": f"c{i}", "name": query["q"]} for i in range(self._rows)]
 
     async def item_id(self, description):
@@ -75,7 +76,9 @@ async def _proposal_texts(rows, extraction) -> list[str]:
     (0, {"vendor_name": "Kingfisher", "reference": "R1", "total": 99,
              "line_items": [{"description": "Box", "quantity": 1, "unit_price": 10}, {"description": "Tape"}]}),
     (2, {"vendor_name": "Kingfisher", "line_items": []}),
-    ("down", {"vendor_name": "Kingfisher", "date": "2026-10-31", "total": 5}),
+    ({"ok": False, "status": 0, "error": {"code": "capability_timeout", **_refusal(
+        "ai.err_capability_timeout", "The operation did not finish.", seconds=30)}},
+     {"vendor_name": "Kingfisher", "date": "2026-10-31", "total": 5}),
     (1, {}),
     (1, {"vendor_name": "Kingfisher", "total": 10, "line_items": [{"description": "Box", "quantity": 1,
                                                                    "unit_price": 10}]}),
@@ -84,6 +87,7 @@ async def test_receipt_proposals_read_in_the_reader_language(rows, extraction):
     texts = await _proposal_texts(rows, extraction)
     assert len(texts) > 1
     assert _english(texts) == []
+    assert not any("did not finish" in text for text in texts)
 
 
 def test_files_without_a_bill_say_why_in_the_reader_language():
@@ -107,8 +111,10 @@ def test_unmet_dependencies_are_refused_in_the_reader_language():
     errors.append(routes._resolve_action_arguments(
         [{"id": "a", "status": "completed", "result_summary": {"id": "1"}}, bad_target], bad_target)[1])
     errors.append(routes._resolve_action_arguments([{"id": "b", "bindings": ["x"]}], {"bindings": ["x"]})[1])
-    errors.append(routes._action_error({"ok": False, "status": 500})["message"])
-    assert _english(errors) == []
+    errors.append(routes._action_error({"ok": False, "status": 500}))
+    errors.append(routes._action_error({"ok": False, "status": 422, "data": {"detail": [{"msg": "Field required"}]}}))
+    assert all(e.get("message_key") for e in errors)
+    assert _english([i18n.refusal_text(e) for e in errors]) == []
 
 
 @pytest.mark.asyncio
@@ -267,3 +273,88 @@ def test_every_agent_error_names_a_catalog_key():
                 calls.append((f"{path.name}:{node.lineno}", getattr(key, "value", None)))
     assert len(calls) > 10
     assert [where for where, key in calls if key not in _EN] == []
+
+
+class _Store:
+    """The one message whose proposals a confirmed action finalizes, as the database
+    would hold it between a reply and a reload."""
+
+    def __init__(self, record):
+        self.message = type("Message", (), {"tools_called": [record]})()
+
+    async def get(self, model, message_id):
+        return self.message
+
+    def add(self, row):
+        pass
+
+    async def flush(self):
+        pass
+
+    async def commit(self):
+        pass
+
+
+async def _confirmed(monkeypatch, result) -> tuple[dict, dict]:
+    """(live outcome, stored record) of confirming one proposal whose capability call
+    returns ``result``, through the real confirm runner and store."""
+    from types import SimpleNamespace
+    from celerp.ai import conversations, tools
+    record = {"id": "call", "name": "create_contact", "status": "pending", "arguments": {}}
+    store = _Store(record)
+
+    async def resolved(session, **kw):
+        return {}, None, record
+
+    async def claim(session, **kw):
+        return record
+
+    async def execute(*args, **kw):
+        return result
+
+    monkeypatch.setattr(routes, "_resolved_action_arguments", resolved)
+    monkeypatch.setattr(conversations, "claim_tool_call", claim)
+    monkeypatch.setattr(tools, "execute_agent_capability", execute)
+    outcome = await routes._run_confirmed_action(
+        SimpleNamespace(app=None, headers={}), store, {"create_contact": {}},
+        conversation_id=uuid.uuid4(), message_id=uuid.uuid4(), tool_call_id="call",
+        company_id=uuid.uuid4(), user_id=uuid.uuid4(),
+    )
+    return outcome, store.message.tools_called[0]
+
+
+def _retryable_route_refusal() -> dict:
+    from celerp.accounting_roles import refusal
+    return {"ok": False, "status": 503, "data": {"detail": {
+        "code": "busy", **refusal("ai.err_busy", "The AI service is temporarily busy.")}}}
+
+
+@pytest.mark.asyncio
+async def test_a_failed_action_reads_the_same_in_the_reply_and_after_a_reload(monkeypatch):
+    """Class guard at the store: every executor error and a keyed route refusal that
+    comes back retryable is stored whole, so the reloaded thread says what the reply
+    said, in the reader's language, never the English source."""
+    from fasthtml.common import to_xml
+    from celerp.ai import tools
+    results = await _executor_errors(monkeypatch) + [_retryable_route_refusal()]
+    monkeypatch.setattr(tools, "execute_agent_capability", None)
+    i18n.clear_registry()
+    i18n._cached_load.cache_clear()
+    i18n.set_lang("th")
+    for result in results:
+        outcome, stored = await _confirmed(monkeypatch, result)
+        live = ui_routes._outcome_text(outcome, "th")[1]
+        english = (outcome["error"] or {}).get("message")
+        assert stored["error"]["message_key"] == outcome["error"]["message_key"]
+        reloaded = [to_xml(ui_routes._action_card("c", "m", stored, "th")),
+                    to_xml(ui_routes._action_status_cell(stored, "th")[1])]
+        assert all(live in text for text in reloaded), (outcome["error"]["code"], live)
+        assert english not in live and live != i18n.t("ai.err_unexpected", "th")
+
+
+@pytest.mark.asyncio
+async def test_a_failed_action_stored_before_errors_were_kept_whole_still_reads():
+    """An older record holds only its text: it is shown as written."""
+    from fasthtml.common import to_xml
+    stored = {"id": "call", "name": "create_contact", "status": "failed", "error": "ข้อความเดิม"}
+    assert "ข้อความเดิม" in to_xml(ui_routes._action_card("c", "m", stored, "qx"))

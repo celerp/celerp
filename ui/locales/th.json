@@ -6713,7 +6713,6 @@
   "ai.receipt_no_date": "ไม่พบวันที่ จึงกำหนดวันที่ของบิลผู้ขายเป็นวันนี้",
   "ai.receipt_vendor_reference": "เลขที่อ้างอิงของผู้ขาย: {reference}",
   "ai.receipt_contact_lookup_failed": "ค้นหาข้อมูลติดต่อไม่สำเร็จ: {reason}",
-  "ai.receipt_lookup_failed": "ค้นหาไม่สำเร็จ",
   "ai.receipt_contacts_same_name": "มีข้อมูลติดต่อชื่อ {vendor} จำนวน {count} รายการ โปรดเลือกหนึ่งรายการในบิลผู้ขาย",
   "ai.receipt_summary": "{filename}: บิลผู้ขายสำหรับ {label} ยอด {amount} จำนวน {count} รายการ",
   "ai.receipt_summary_one": "{filename}: บิลผู้ขายสำหรับ {label} ยอด {amount} จำนวน 1 รายการ",

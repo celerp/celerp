@@ -6713,7 +6713,6 @@
   "ai.receipt_no_date": "Không tìm thấy ngày; hóa đơn mua hàng được ghi ngày hôm nay.",
   "ai.receipt_vendor_reference": "Mã tham chiếu của nhà cung cấp: {reference}",
   "ai.receipt_contact_lookup_failed": "Tra cứu liên hệ không thành công: {reason}",
-  "ai.receipt_lookup_failed": "Tra cứu không thành công",
   "ai.receipt_contacts_same_name": "Có {count} liên hệ mang tên {vendor}; hãy chọn một liên hệ trên hóa đơn mua hàng.",
   "ai.receipt_summary": "{filename}: hóa đơn mua hàng của {label}, {amount}, {count} dòng.",
   "ai.receipt_summary_one": "{filename}: hóa đơn mua hàng của {label}, {amount}, 1 dòng.",

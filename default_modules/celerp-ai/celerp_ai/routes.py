@@ -47,6 +47,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.ai.files import AGENT_UPLOAD_TYPES, XLSX_CONTENT_TYPE
 from celerp.ai.service import PROPOSAL_TTL_S
+from celerp.ai.tools import keyed_error
 from celerp.config import settings
 from celerp.db import get_session
 from celerp.routers.auth import limiter as _limiter
@@ -55,7 +56,7 @@ from celerp.services.auth import (
 )
 from celerp.services.company_lock import hold_company
 from celerp.services.permissions import get_current_company_settings, require_permission
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 # AI routes count on Celerp's one limiter, per caller: tighter limits than the global
 # 60/min default, as LLM queries are expensive and uploads have file-size costs.
@@ -824,31 +825,32 @@ async def question_state(
     }
 
 
-def _resolve_action_arguments(records: list, record: dict) -> tuple[dict | None, str | None]:
+def _resolve_action_arguments(records: list, record: dict) -> tuple[dict | None, dict | None]:
     """Resolve server-authored action-result bindings into a fresh arguments dict.
 
     Bindings are never model-controlled. A dependent action stays pending until each
-    source action has completed and persisted the requested result key.
+    source action has completed and persisted the requested result key; until then the
+    error says why.
     """
     arguments = copy.deepcopy(record.get("arguments") or {})
     by_id = {r.get("id"): r for r in records if isinstance(r, dict) and r.get("id")}
     for binding in record.get("bindings") or []:
         if not isinstance(binding, dict):
-            return None, t("ai.action_dependency_invalid")
+            return None, keyed_error("action_dependency_not_ready", "ai.action_dependency_invalid")
         source = by_id.get(binding.get("source_action_id"))
         key = binding.get("source_result_key")
         path = binding.get("target_path")
         if not isinstance(source, dict):
-            return None, t("ai.action_dependency_invalid")
+            return None, keyed_error("action_dependency_not_ready", "ai.action_dependency_invalid")
         if source.get("status") in {"dismissed", "failed"}:
-            return None, t("ai.action_dependency_not_applied")
+            return None, keyed_error("action_dependency_not_ready", "ai.action_dependency_not_applied")
         if source.get("status") != "completed":
-            return None, t("ai.action_dependency_confirm_first")
+            return None, keyed_error("action_dependency_not_ready", "ai.action_dependency_confirm_first")
         summary = source.get("result_summary")
         if not isinstance(summary, dict) or key not in summary:
-            return None, t("ai.action_dependency_no_result")
+            return None, keyed_error("action_dependency_not_ready", "ai.action_dependency_no_result")
         if not isinstance(path, list) or not path or not all(isinstance(p, str) and p for p in path):
-            return None, t("ai.action_dependency_invalid_target")
+            return None, keyed_error("action_dependency_not_ready", "ai.action_dependency_invalid_target")
         target = arguments
         for part in path[:-1]:
             child = target.get(part)
@@ -872,16 +874,16 @@ async def _resolved_action_arguments(
     from celerp.ai.conversations import get_conversation, get_message
     conv = await get_conversation(session, conversation_id, company_id, user_id)
     if conv is None:
-        return None, {"code": "action_not_pending", "message": t("ai.action_not_pending")}, None
+        return None, keyed_error("action_not_pending", "ai.action_not_pending"), None
     msg = await get_message(session, message_id, conversation_id)
     if msg is None or not msg.tools_called:
-        return None, {"code": "action_not_pending", "message": t("ai.action_not_pending")}, None
+        return None, keyed_error("action_not_pending", "ai.action_not_pending"), None
     record = next((r for r in msg.tools_called if isinstance(r, dict) and r.get("id") == tool_call_id), None)
     if record is None:
-        return None, {"code": "action_not_pending", "message": t("ai.action_not_pending")}, None
+        return None, keyed_error("action_not_pending", "ai.action_not_pending"), None
     arguments, error = _resolve_action_arguments(msg.tools_called, record)
     if error:
-        return None, {"code": "action_dependency_not_ready", "message": error}, record
+        return None, error, record
     return arguments, None, record
 
 
@@ -984,23 +986,21 @@ async def _run_confirmed_action(
     if record is None:
         return {
             "tool_call_id": tool_call_id, "ok": False, "status": 409, "data": None,
-            "error": {"code": "action_not_pending", "message": t("ai.action_not_pending")},
+            "error": keyed_error("action_not_pending", "ai.action_not_pending"),
         }
     await session.commit()
 
     capability = capabilities.get(record["name"])
     if capability is None:
+        unavailable = keyed_error("capability_unavailable", "ai.action_unavailable")
         await finalize_tool_call(
             session, message_id=message_id, tool_call_id=tool_call_id,
-            status="failed", result=None, error=t("ai.action_unavailable"),
+            status="failed", result=None, error=unavailable,
         )
         await session.commit()
         return {
             "tool_call_id": tool_call_id, "ok": False, "status": 409, "data": None,
-            "error": {
-                "code": "capability_unavailable",
-                "message": t("ai.action_unavailable"),
-            },
+            "error": unavailable,
         }
 
     result = await execute_agent_capability(
@@ -1019,10 +1019,7 @@ async def _run_confirmed_action(
         except Exception:
             result = {
                 "ok": False, "status": 503, "data": None,
-                "error": {
-                    "code": "receipt_attachment_pending",
-                    "message": t("ai.action_receipt_not_attached"),
-                },
+                "error": keyed_error("receipt_attachment_pending", "ai.action_receipt_not_attached"),
             }
     action_error = _action_error(result)
     action_status = (
@@ -1032,8 +1029,7 @@ async def _run_confirmed_action(
     )
     await finalize_tool_call(
         session, message_id=message_id, tool_call_id=tool_call_id,
-        status=action_status, result=result,
-        error=(action_error or {}).get("message") if action_error else None,
+        status=action_status, result=result, error=action_error,
     )
     await session.commit()
     return {
@@ -1058,8 +1054,10 @@ def _retryable_action_result(result: dict) -> bool:
 
 
 def _action_error(result: dict) -> dict | None:
-    """Why a confirmed action failed, as {code, message}: the executor's own
-    error, or the rejecting route's detail, so the reply always says the reason."""
+    """Why a confirmed action failed, as {code, message, message_key, params}: the
+    executor's own keyed error, or the rejecting route's refusal. A route's plain text
+    is the app's own, already in the user's language; field validation and a reply
+    with no reason get their catalog text, so the reply always says the reason."""
     if result.get("ok"):
         return None
     if result.get("error"):
@@ -1071,9 +1069,11 @@ def _action_error(result: dict) -> dict | None:
                 "message": detail.get("message") or detail.get("code") or str(detail),
                 **{k: detail[k] for k in ("message_key", "params") if k in detail}}
     if isinstance(detail, list):
-        detail = "; ".join(str(e.get("msg") if isinstance(e, dict) else e) for e in detail)
-    return {"code": "route_error",
-            "message": str(detail) if detail else t("ai.action_request_failed", status=result.get("status"))}
+        return keyed_error("invalid_arguments", "ai.err_invalid_arguments",
+                           "; ".join(str(e.get("msg") if isinstance(e, dict) else e) for e in detail))
+    if detail:
+        return {"code": "route_error", "message": str(detail)}
+    return keyed_error("route_error", "ai.action_request_failed", status=result.get("status"))
 
 
 _ACTION_STATE_CODES = frozenset({"action_not_pending", "capability_unavailable"})
@@ -1289,15 +1289,15 @@ class _Lookups:
     def has(self, name: str) -> bool:
         return name in self._capabilities
 
-    async def rows(self, name: str, query: dict) -> list[dict] | str:
-        """Result rows of a list capability, or the error message when it failed."""
+    async def rows(self, name: str, query: dict) -> list[dict] | dict:
+        """Result rows of a list capability, or why it failed (``_action_error``)."""
         from celerp.ai.tools import execute_agent_capability
         result = await execute_agent_capability(
             self._app, self._authorization, self._capabilities[name],
             {"query": query}, f"lookup_{secrets.token_hex(8)}",
         )
         if not result["ok"]:
-            return str((result.get("error") or {}).get("message") or t("ai.receipt_lookup_failed"))
+            return _action_error(result)
         data = result.get("data") or {}
         return [r for r in (data.get("items") or []) if isinstance(r, dict)]
 
@@ -1310,8 +1310,8 @@ class _Lookups:
         if not self.has(_CONTACTS_LIST):
             return None
         rows = await self.rows(_CONTACTS_LIST, {"q": vendor, "limit": 20})
-        if isinstance(rows, str):
-            warnings.append(t("ai.receipt_contact_lookup_failed", reason=rows))
+        if isinstance(rows, dict):
+            warnings.append(t("ai.receipt_contact_lookup_failed", reason=refusal_text(rows)))
             return None
         matches = [r for r in rows if _same_text(r.get("name"), vendor)]
         if len(matches) == 1:
@@ -1327,7 +1327,7 @@ class _Lookups:
             return None
         for query in ({"sku": description}, {"q": description, "limit": 20}):
             rows = await self.rows(_ITEMS_LIST, query)
-            if isinstance(rows, str):
+            if isinstance(rows, dict):
                 return None
             for row in rows:
                 if _same_text(row.get("sku"), description) or _same_text(row.get("name"), description):
