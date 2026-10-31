@@ -335,6 +335,9 @@ class ItemCreate(BaseModel):
 class ItemPatch(BaseModel):
     fields_changed: dict[str, dict] = Field(default_factory=dict)
     idempotency_key: str | None = None
+    # The item version (the read's _version) a cost editor opened on; a cost change made from
+    # an older version is refused under the item's lock. A guard, never part of the event.
+    expected_version: int | None = None
 
 
 class TransferBody(BaseModel):
@@ -380,6 +383,7 @@ class TransformBody(BaseModel):
     child_weight_unit: str | None = None
     child_pieces: int | None = None
     child_cost_total: FiniteFloat | None = None  # final cost override (needs set_inventory_prices); None preserves parent cost
+    expected_version: int | None = None  # the parent's version the cost was typed against; refused if it moved
     idempotency_key: str | None = None
 
 
@@ -2203,6 +2207,7 @@ async def get_item(entity_id: str, company_id=Depends(get_current_company_id), r
         can_author_drafts=role_has_permission(settings, role, "edit_inventory"),
     )
     result = filtered[0]
+    result["_version"] = row.version  # sent back by a cost editor as the version it opened on
     if (str(row.state.get("status") or "").lower() == "sold" and row.state.get("status_doc_id")
             and role_has_permission(settings, role, "view_documents")):
         from celerp.services.holdings import sold_prices
@@ -2563,6 +2568,8 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     # a granted operator edits cost, an ungranted manager still cannot.
     restricted -= COST_ITEM_KEYS
     changed_keys = set(payload.fields_changed.keys())
+    if payload.expected_version is not None and not changed_keys & COST_ITEM_KEYS:
+        raise HTTPException(status_code=422, detail="expected_version is checked on cost changes only")
     reject_system_item_fields(dict.fromkeys(
         (changed_keys - {"attributes"}) | _changed_attribute_keys(_proj.state, payload.fields_changed)))
     _price_lists, _base_name, _ = await get_price_config(session, company_id)
@@ -2749,14 +2756,14 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     event = dict(
         entity_id=entity_id,
         event_type="item.updated",
-        data={**payload.model_dump(exclude_none=True),
+        data={**payload.model_dump(exclude_none=True, exclude={"expected_version"}),
               **(_kept((payload.fields_changed.get("status") or {}).get("new")) if "status" in changed_keys else {})},
         actor_id=user.id,
         source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
     )
     if changed_keys & COST_ITEM_KEYS:
-        return await _restate_cost_or_409(session, company_id, **event)
+        return await _restate_cost_or_409(session, company_id, expected_version=payload.expected_version, **event)
     entry = await emit_event(session, company_id=company_id, entity_type="item", location_id=None, metadata_={}, **event)
     await session.commit()
     return {"event_id": entry.id}
@@ -2765,11 +2772,13 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
 async def _restate_cost_or_409(session: AsyncSession, company_id, **event) -> dict:
     """Apply and commit a goods-cost change with its merge and COGS consequences (see
     restate_item_cost); returns the event id and what the change posted."""
-    from celerp_inventory.services import CostRestatementConflict, cost_correction_notice, restate_item_cost
+    from celerp_inventory.services import CostRefused, CostRestatementConflict, cost_correction_notice, restate_item_cost
     try:
         entry = await restate_item_cost(session, company_id, **event)
     except CostRestatementConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+    except CostRefused as exc:
+        raise HTTPException(status_code=409, detail=exc.detail)
     notice = await cost_correction_notice(session, company_id, entry)
     await session.commit()
     return {"event_id": entry.id, "cost_correction": notice}
@@ -3949,6 +3958,9 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     parent = (await _lock_items_for_physical_mutation(session, company_id, [entity_id])).get(entity_id)
     if parent is None or not is_item_available(parent.state):
         raise HTTPException(status_code=404, detail=t("inventory.err_item_unavailable"))
+    if payload.expected_version is not None and parent.version != payload.expected_version:
+        from celerp_inventory.services import CostVersionStale
+        raise HTTPException(status_code=409, detail=CostVersionStale().detail)
 
     # Validate
     if payload.child_quantity <= 0:

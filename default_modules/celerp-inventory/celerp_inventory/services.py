@@ -267,6 +267,15 @@ class CostChangedSinceOpened(CostRefused):
                          f"This cost changed since you opened it. It is now {now or '--'}.", now=now or "--")
 
 
+class CostVersionStale(CostRefused):
+    """A cost saved from an item version that has moved since its editor opened. It names no
+    value: a writer who may set costs without seeing them learns none from it."""
+
+    def __init__(self):
+        super().__init__("inventory.cost_version_stale",
+                         "This item changed since you opened it, so the cost was not saved. Open it again to see it as it is now.")
+
+
 _COST_NUMBER = re.compile(r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d*)?|\.\d+")
 COST_PLACEHOLDER = "--"
 
@@ -829,6 +838,15 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
     )
 
 
+def final_cost_event(event_type: str, data: dict, state: dict) -> dict:
+    """The goods-cost event as it is written to a lot in ``state``. Clearing the goods cost
+    of a lot that keeps freight leaves value the books carry: its goods part is unknown,
+    not a known 0. Every restatement reads this one event, from its plan to what it writes."""
+    if clears_goods_cost(event_type, data) and state.get("landed_costs"):
+        return {**data, GOODS_COST_UNKNOWN: True}
+    return data
+
+
 async def restate_item_cost(
     session: AsyncSession,
     company_id,
@@ -840,6 +858,7 @@ async def restate_item_cost(
     source: str,
     idempotency_key: str,
     day: str | None = None,
+    expected_version: int | None = None,
 ) -> LedgerEntry:
     """Apply a goods-cost change to an item and carry its consequences.
 
@@ -857,7 +876,10 @@ async def restate_item_cost(
     writer that books the value itself (lot_origin.self_booked, a production run) is
     left to its own entries. Every check runs before
     the first event is written: the change lands with all of its consequences in
-    the caller's transaction, or raises CostRestatementConflict.
+    the caller's transaction, or raises CostRestatementConflict. With
+    ``expected_version``, the version of the item its editor opened, a lot whose version
+    has moved since is refused under its lock with CostVersionStale, before anything is
+    written; a replay of a written change is answered first, so a retry stays one write.
     """
     from celerp.services import auto_je
 
@@ -868,22 +890,28 @@ async def restate_item_cost(
         return replay
 
     # Company, then the invoices the change adjusts, then the lots: the order every
-    # invoice lifecycle action takes. The first reading names the invoices and lots;
-    # the second repeats it under their locks and must name no others.
+    # invoice lifecycle action takes. The event is made final once, before the first
+    # reading; that reading names the invoices and lots, and the second repeats it under
+    # their locks and must name no others and make the same event.
     await lock_company(session, company_id)
+    asked = data
+    root = (await session.execute(
+        select(Projection).where(Projection.company_id == company_id, Projection.entity_id == entity_id)
+        .execution_options(populate_existing=True)
+    )).scalars().first()
+    data = final_cost_event(event_type, asked, (root.state or {}) if root is not None else {})
     unlocked = await _restatement(session, company_id, entity_id, event_type, data, {})
     await lock_projections(session, company_id, [*unlocked.docs, *unlocked.lists])
     lots = await lock_projections(session, company_id, unlocked.lots)
+    if expected_version is not None and lots[entity_id].version != expected_version:
+        raise CostVersionStale()
     plan = await _restatement(session, company_id, entity_id, event_type, data, lots)
     if (not set(plan.docs) <= set(unlocked.docs) or not set(plan.lots) <= set(unlocked.lots)
-            or not set(plan.lists) <= set(unlocked.lists)):
+            or not set(plan.lists) <= set(unlocked.lists)
+            or final_cost_event(event_type, asked, lots[entity_id].state or {}) != data):
         raise CostRestatementConflict(
             f"{plan.label} changed while the correction was being applied; try again")
     successors, repriced, label = plan.successors, plan.repriced, plan.label
-    # Clearing the goods cost of a lot that keeps freight leaves value the books carry:
-    # its goods part is unknown, not a known 0.
-    if clears_goods_cost(event_type, data) and (lots[entity_id].state or {}).get("landed_costs"):
-        data = {**data, GOODS_COST_UNKNOWN: True}
 
     def _metadata(lot_id: str, base: dict) -> dict:
         return {**base, "cogs_repriced": repriced[lot_id]} if lot_id in repriced else base
@@ -3504,13 +3532,24 @@ def _pop_cost_change(data: dict, state: dict) -> dict | None:
                              opened=exported, now=exported, per_unit=per_unit)
 
 
-async def _planned_cost_change(session: AsyncSession, company_id, record: dict, row: dict) -> tuple[dict | None, dict | None]:
+# A row's cost refusal as a role that may not see costs is told it: the reason, never an amount.
+_UNDISCLOSED_COST_REFUSALS = {
+    "cost_below_landed": "The cost total can't be less than the landed cost this item carries.",
+    "cost_not_carried": "This cost change can't be carried automatically through the merges, sales "
+                        "and write-offs that used this item.",
+}
+
+
+async def _planned_cost_change(session: AsyncSession, company_id, record: dict, row: dict, *,
+                               disclose: bool) -> tuple[dict | None, dict | None]:
     """The cost a planned patch writes, found without writing: (the writer's refusal, or None;
     the change as {"old", "new"} whole values in the item file's terms, or None).
 
     The writer applies the patch and then restates the cost against the patched
     item; this runs the same restatement check against the item as the patch
-    would leave it.
+    would leave it. Unless ``disclose`` (the importer may see costs), no change is
+    built and a refusal names no amount: the importer learns that a cost is refused
+    and why, never what the lot's cost is.
     """
     if record["event_type"] != "item.patched" or not COST_ITEM_KEYS & set(record["data"]):
         return None, None
@@ -3524,24 +3563,30 @@ async def _planned_cost_change(session: AsyncSession, company_id, record: dict, 
     if stored is None:
         return None, None
     given = next((k for k in ("cost_total", "cost_price") if data.get(k) not in (None, "")), "cost_total")
+
+    def _refused(code: str, exc: Exception) -> dict:
+        message = str(exc) if disclose else _UNDISCLOSED_COST_REFUSALS.get(code, str(exc))
+        return {"field": _source_field(row, given), "code": code, "message": message}
+
     try:
         cost_change = _pop_cost_change(data, stored.state or {})
     except CostRefused as exc:
-        code = "cost_below_landed" if isinstance(exc, CostTotalBelowLanded) else "cost_not_number"
-        return {"field": _source_field(row, given), "code": code, "message": str(exc)}, None
+        return _refused("cost_below_landed" if isinstance(exc, CostTotalBelowLanded) else "cost_not_number", exc), None
     if cost_change is None:
         return None, None
-    landed = sum(float(v or 0) for v in ((stored.state or {}).get("landed_costs") or {}).values())
-    change = {"old": exported_cost_text(stored.state or {}),
-              "new": cost_text(round_basis(cost_change["cost_total"]["new"] + landed))}
     patched = SimpleNamespace(entity_type=stored.entity_type,
                               state=apply_item_event(stored.state or {}, "item.patched", data))
     try:
         await _restatement(session, company_id, entity_id, "item.updated",
-                           {"fields_changed": cost_change}, {entity_id: patched})
+                           final_cost_event("item.updated", {"fields_changed": cost_change}, patched.state),
+                           {entity_id: patched})
     except CostRestatementConflict as exc:
-        return {"field": _source_field(row, given), "code": "cost_not_carried", "message": str(exc)}, None
-    return None, change
+        return _refused("cost_not_carried", exc), None
+    if not disclose:
+        return None, None
+    landed = sum(float(v or 0) for v in ((stored.state or {}).get("landed_costs") or {}).values())
+    return None, {"old": exported_cost_text(stored.state or {}),
+                  "new": cost_text(round_basis(cost_change["cost_total"]["new"] + landed))}
 
 
 def _semantic_fingerprint(build: ImportBuild, errors: list[dict], decisions: dict) -> str:
@@ -3743,6 +3788,7 @@ async def build_import_plan(
 
     can_set_prices = role_has_permission(settings, role, "set_inventory_prices")
     can_edit_amounts = role_has_permission(settings, role, "edit_inventory_amounts")
+    can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
     cost_changes: list[dict] = []
     for rec, row_no in zip(build.records, build.record_rows):
         errors.extend(
@@ -3750,7 +3796,8 @@ async def build_import_plan(
                 rec, rows[row_no - 1], price_lists, can_set_prices=can_set_prices, can_edit_amounts=can_edit_amounts,
             )
         )
-        cost_error, cost_change = await _planned_cost_change(session, company_id, rec, rows[row_no - 1])
+        cost_error, cost_change = await _planned_cost_change(session, company_id, rec, rows[row_no - 1],
+                                                           disclose=can_see_costs)
         if cost_error:
             errors.append({"row": row_no, **cost_error})
         if cost_change:

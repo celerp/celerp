@@ -341,6 +341,33 @@ async def test_a_correction_reaches_the_second_generation(client, session, auth)
     assert st["cost_total"] == 170.0 and MARK not in st, st
 
 
+async def test_clearing_a_freight_only_parts_cost_makes_every_merge_after_it_unknown(client, session, auth):
+    """A part of goods cost 0 carrying freight 30, merged twice with known lots: clearing its goods
+    cost moves no value, only whether it is known, so both merge results turn unknown and the
+    books are untouched."""
+    from stock_books import assert_books_carry_stock
+    await _seed(session, auth)
+    lot = await _item(client, auth, qty=1, cost_total=10.0)
+    await _po_into(client, auth, lot, 9, 10.0, shipping=30.0)
+    await _set_cost(client, auth, lot, 0.0)
+    st = await _state(session, auth, lot)
+    assert st["cost_base"] == 0.0 and sum(st["landed_costs"].values()) == 30.0 and MARK not in st, st
+    k1 = await _item(client, auth, qty=2, cost_total=100.0)
+    k2 = await _item(client, auth, qty=1, cost_total=10.0)
+    x = await _merge(client, auth, [lot, k1])
+    y = await _merge(client, auth, [x, k2])
+    assert MARK not in await _state(session, auth, x) and MARK not in await _state(session, auth, y)
+    values = {e: (await _state(session, auth, e))["cost_total"] for e in (x, y)}
+    jes = (await _counts(session, auth, lot))[1]
+    await _set_cost(client, auth, lot, None)
+    assert (await _state(session, auth, lot))[MARK] is True
+    for e in (x, y):
+        st = await _state(session, auth, e)
+        assert st.get(MARK) is True and st["cost_total"] == values[e], (e, st)
+    assert (await _counts(session, auth, lot))[1] == jes
+    await assert_books_carry_stock(session, auth["company_id"])
+
+
 @pytest.mark.parametrize("confirmed", ["result", "part"])
 async def test_confirming_a_part_at_the_value_it_carries_makes_every_merge_after_it_known(client, session, auth, confirmed):
     """The merged lot confirmed at its value, or its part without cost confirmed at the nothing it
