@@ -246,6 +246,8 @@ class Recorder:
     # own. On one of these each task is its own transaction, keyed (connection, flow).
     shared: set[int] = field(default_factory=set)
     flows: weakref.WeakKeyDictionary = field(default_factory=weakref.WeakKeyDictionary)
+    # The sessions with a transaction open in each recorded transaction (one, or a finding).
+    flow_sessions: dict = field(default_factory=dict)
 
     # Per transaction (connection): what it holds by (class, key) -> strengths, the
     # strengths of its explicit locks per class, and the last explicit key per class.
@@ -338,19 +340,25 @@ class Recorder:
             self._end(key)
         self._end(conn_key)
 
+    def end_block(self, block: int) -> None:
+        """A block session closed: every transaction recorded under it ended."""
+        states = (*self._transaction_state(), self.savepoints, self.leaves)
+        for key in [k for k in {k for state in states for k in state} if isinstance(k, tuple) and block in k[2:]]:
+            self._end(key)
+
     def end_flow(self, conn_key: int) -> None:
         """A session's transaction on ``conn_key`` ended: the running flow's."""
         self._end(self.flow(conn_key))
 
     def _end(self, key) -> None:
-        for state in (*self._transaction_state(), self.savepoints):
+        for state in (*self._transaction_state(), self.savepoints, self.flow_sessions):
             state.pop(key, None)
         for info, _, sites in self.leaves.pop(key, ()):
             info.setdefault("leaf_sites", set()).update(sites)
 
     def clear_transactions(self) -> None:
         self._holders_wait(list(self.taken))
-        for state in (*self._transaction_state(), self.savepoints):
+        for state in (*self._transaction_state(), self.savepoints, self.flow_sessions):
             state.clear()
         self._spoil_leaves()
 
@@ -1662,6 +1670,7 @@ def install() -> None:
         if transaction.parent is not None or transaction.nested:
             return
         for conn in list(getattr(transaction, "_lock_rank_conns", ())):
+            RECORDER.flow_sessions.get(RECORDER.flow(conn), weakref.WeakSet()).discard(session)
             RECORDER.end_flow(conn)
 
     @event.listens_for(Session, "after_begin")
@@ -1678,6 +1687,36 @@ def install() -> None:
             conns = set()
             root._lock_rank_conns = conns
         conns.add(key)
+        # A transaction ends with its session (_session_end): a second session in one recorded
+        # transaction would end the first's locks with its own.
+        sessions = RECORDER.flow_sessions.setdefault(RECORDER.flow(key), weakref.WeakSet())
+        if any(other is not session and other.in_transaction() for other in sessions):
+            RECORDER.violations.append({"kind": "shared-flow", "cls": "session", "site": _site(), "test": RECORDER.test,
+                                        "held": "session", "held_site": None})
+        sessions.add(session)
+
+    # A session the code opens for one block on another session's connection (in production,
+    # a connection of its own) is a transaction of its own (Recorder.block), ending with it.
+    from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
+
+    real_aenter, real_aexit = AsyncSession.__aenter__, AsyncSession.__aexit__
+
+    async def _aenter(self):
+        if isinstance(self.bind, AsyncConnection):
+            block = next(_FLOW_IDS)
+            self._lock_rank_block = (block, _BLOCKS.set((*_BLOCKS.get(), block)))
+        return await real_aenter(self)
+
+    async def _aexit(self, *exc):
+        try:
+            return await real_aexit(self, *exc)
+        finally:
+            block = self.__dict__.pop("_lock_rank_block", None)
+            if block is not None:
+                _BLOCKS.reset(block[1])
+                RECORDER.end_block(block[0])
+
+    AsyncSession.__aenter__, AsyncSession.__aexit__ = _aenter, _aexit
 
 
 def dump(path: Path) -> None:

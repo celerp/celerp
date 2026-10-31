@@ -2012,3 +2012,42 @@ def test_rolling_back_to_a_savepoint_puts_back_exactly_the_state_it_was_made_wit
     recorder.acquire(1, _lock("row:connector_configs", "no key update wait", key="b"), 0.0)
     recorder.statement(1, "ROLLBACK TO SAVEPOINT sa_1", None, 0.0)
     assert _transaction(recorder) == before
+
+
+async def test_a_session_opened_on_another_sessions_connection_ends_alone(session, auth):
+    """A session the code opens on another session's bind (migration_core_sink.stage_file_cleanup)
+    is, in production, a transaction on a connection of its own. Its commit ends what it took,
+    never the company lock its caller still holds."""
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from celerp.services.company_lock import lock_company
+
+    lock_rank.RECORDER.clear_transactions()
+    await lock_company(session, auth["company_id"])
+    conn = id((await (await session.connection()).get_raw_connection()).dbapi_connection)
+    key = ("row:companies", repr((str(auth["company_id"]),)))
+
+    def held() -> bool:
+        return any(k == key for k in lock_rank.RECORDER.taken.get(lock_rank.RECORDER.flow(conn), {}))
+
+    assert held()
+    async with AsyncSession(bind=session.bind) as other:
+        await other.execute(text("SELECT 1"))
+        await other.commit()
+    assert held()
+
+
+async def test_a_second_session_left_open_in_the_same_transaction_is_a_finding(session, auth):
+    """A second session on the shared connection that is not opened as a block would merge
+    into its task's recorded transaction, so its end would end the other's locks: refused."""
+    from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    await session.execute(text("SELECT 1"))
+    other = AsyncSession(bind=session.bind)
+    try:
+        await other.execute(text("SELECT 1"))
+        assert [v["kind"] for v in lock_rank.RECORDER.take_violations()] == ["shared-flow"]
+    finally:
+        await other.close()
