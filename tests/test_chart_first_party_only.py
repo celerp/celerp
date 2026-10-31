@@ -164,7 +164,8 @@ async def test_a_third_party_module_cannot_register_a_chart(tmp_path):
     before = journal_accounts.chart_access()
     with pytest.raises(journal_accounts.UntrustedChartError):
         journal_accounts.register_chart(journal_accounts.ChartAccess(
-            lock_accounts=books.lock, list_accounts=books.chart, add_account=books.add))
+            lock_accounts=books.lock, list_accounts=books.chart, add_account=books.add,
+            guard_journal_change=books.add))
     assert journal_accounts.chart_access() is before is not None
 
 

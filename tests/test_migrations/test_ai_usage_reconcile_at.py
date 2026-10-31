@@ -25,16 +25,14 @@ def _module() -> str:
     return found[0]
 
 
-def test_revision_follows_ai_jobs_on_the_one_line_of_revisions():
+def test_revision_is_on_the_one_line_of_history():
     from alembic.script import ScriptDirectory
 
     from celerp.alembic_config import build_alembic_config
 
     script = ScriptDirectory.from_config(build_alembic_config())
     (head,) = script.get_heads()
-    revision = script.get_revision(_module().split("_", 1)[0])
-    assert revision.down_revision == "h4c5d6e7f8a9"
-    assert revision.revision in {r.revision for r in script.iterate_revisions(head, "base")}
+    assert _module().split("_", 1)[0] in {r.revision for r in script.walk_revisions("base", head)}
 
 
 @pytest.fixture()

@@ -67,7 +67,7 @@ jsDelivr URL, so renaming or removing a file breaks that page.
 <!-- PRESS_KIT:page-sets-table start -->
 | Page | Folder | Screens | CDN base |
 |---|---|---|---|
-| Accountants | `accountants/` | `migration-verify`, `new-company`, `company-backup`, `client-companies`, `fixed-assets`, `bank-reconciliation` | .../screenshots/accountants/`<name>.webp` |
+| Accountants | `accountants/` | `migration-verify`, `new-company`, `company-backup`, `client-companies`, `fixed-assets`, `bank-reconciliation`, `ai-receipt-review` | .../screenshots/accountants/`<name>.webp` |
 <!-- PRESS_KIT:page-sets-table end -->
 
 ## Artwork (hand-illustrated brand graphics)

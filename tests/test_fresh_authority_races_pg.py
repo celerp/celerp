@@ -518,7 +518,7 @@ async def _manual_journal(factory, client, c):
 async def _reconciliation_match(factory, client, c):
     await _books(factory, c)
     bank = await _owner_post(client, c, "/accounting/bank-accounts", {
-        "bank_name": "Main", "account_number": "1", "bank_type": "checking", "currency": "THB",
+        "bank_name": "Main", "account_number": "1", "bank_type": "checking", "currency": "USD",
         "opening_balance": 100.0})
     je = (await _owner_post(client, c, "/accounting/journal-entries",
                             _journal(bank["chart_account_code"], "4100")))["je_id"]

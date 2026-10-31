@@ -3748,6 +3748,18 @@ async def _books_still_kept(session, company_id, doc_state: dict, books: tuple[s
     return base, float(rate)
 
 
+async def require_payment_bank_currency(session, company_id, bank_code: str, doc_currency: str, base: str) -> None:
+    """Refuse a payment or refund of a *doc_currency* document through a bank account kept
+    in a third currency: the bank line carries the amount in the account's own currency
+    (auto_je.payment_bank_fx), known only when that is the document's or the books'."""
+    from celerp.services.journal_accounts import bank_currencies
+    bank_currency = (await bank_currencies(session, company_id)).get(bank_code)
+    if bank_currency and bank_currency not in (str(doc_currency).upper(), str(base).upper()):
+        raise HTTPException(status_code=422, detail=t(
+            "documents.err_payment_bank_currency", bank_currency=bank_currency,
+            doc_currency=str(doc_currency).upper(), base=base))
+
+
 async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
                             *, source: str, actor_id, idempotency_key: str,
                             request: str | None = None, commit: bool = True, moves_cash: bool = True,
@@ -3846,6 +3858,8 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
             status_code=422,
             detail=t("error.rate_not_one_for_base", base=_base_currency, raw=body["conversion_rate"]),
         )
+    if moves_cash:
+        await require_payment_bank_currency(session, company_id, bank_code, doc_currency, _base_currency)
     body["remaining_balance"] = to_stored_float(max(Decimal(0), outstanding_d - amount_d))
     payment_index = await _alloc_payment_index(
         session, company_id, doc_state.get("payments", []),
@@ -4352,11 +4366,10 @@ async def delete_payment(
     refund), delete tombstones the payment on the doc projection and voids the original
     JE so it disappears from all reports. Use only for payments that were never real.
 
-    Blocked if the payment JE has been reconciled in a closed reconciliation session.
-    If reconciled in an open session, the JE is automatically un-matched first.
+    A bank reconciliation that counts the payment's entry refuses the void, and with it
+    the whole deletion, until the entry is unmatched there.
     """
     from celerp.services import auto_je
-    from celerp_accounting.models import ReconciliationSession, BankStatementLine  # noqa: PLC0415
 
     await lock_recorded_unmatched(session, company_id, entity_id)  # a deleted one goes back to them
     row = await _get_doc(session, company_id, entity_id, for_update=True)
@@ -4430,19 +4443,6 @@ async def delete_payment(
         je_row = _owners[0] if len(_owners) == 1 else None
         je_id = je_row.entity_id if je_row is not None else je_id
 
-    # Check reconciliation status - query all sessions that include this JE
-    recon_result = await session.execute(
-        _sa.select(ReconciliationSession).where(
-            ReconciliationSession.company_id == company_id,
-        )
-    )
-    recon_sessions = [r for r in recon_result.scalars().all() if je_id in (r.reconciled_je_ids or [])]
-    if any(recon.status == "closed" for recon in recon_sessions):
-        raise HTTPException(
-            status_code=409,
-            detail=t("documents.err_payment_reconciled"),
-        )
-
     # Emit doc.payment.deleted first - projection tombstones the row in place.
     # Every refusal the event carries lands before anything else is changed.
     # tombstone marks the new reducer semantics (pre-flag events compacted, and
@@ -4457,20 +4457,6 @@ async def delete_payment(
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=key, metadata_={"request": digest},
     )
-
-    for recon in recon_sessions:
-        # Open session - auto-unmatch
-        recon.reconciled_je_ids = [j for j in (recon.reconciled_je_ids or []) if j != je_id]
-        # Clear matched_je_id on any statement line pointing to this JE
-        sl_result = await session.execute(
-            _sa.select(BankStatementLine).where(
-                BankStatementLine.reconciliation_session_id == recon.id,
-                BankStatementLine.matched_je_id == je_id,
-            )
-        )
-        for sl in sl_result.scalars().all():
-            sl.matched_je_id = None
-            sl.status = "unmatched"
 
     # Void the original payment JE so it disappears from the bank ledger
     # and reports. The void carries the entry's own date, so an entry inside a
@@ -4750,6 +4736,7 @@ async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Dep
     _refund_company = await session.get(Company, company_id)
     _refund_base_currency = (_refund_company.settings.get("currency", "USD") if _refund_company else "USD")
     _refund_rate = float(_require_doc_rate_http(cn, _refund_base_currency))
+    await require_payment_bank_currency(session, company_id, bank_code, currency, _refund_base_currency)
     payment_index = await _alloc_payment_index(session, company_id, cn.get("payments", []),
                                                key_doc_id=entity_id, key_type="invoice.paid")
     entry = await emit_event(

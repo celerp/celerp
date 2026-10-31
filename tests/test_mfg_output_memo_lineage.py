@@ -15,6 +15,7 @@ import pytest
 from sqlalchemy import select
 
 from celerp.models.projections import Projection
+from celerp.services.ledger_display import run_reference
 from celerp_manufacturing.routes import _all_item_states, _in_progress_by_item, _stock_by_product
 from mfg_runs import refusal, snapshot
 from stock_books import assert_settled
@@ -138,6 +139,7 @@ async def test_a_return_of_open_output_sold_waits_for_completion(client, session
     detail = refusal(await back(), 409, "output_cost_pending")
     await session.rollback()
     assert sku in detail["message"] and "still open" in detail["message"], detail
+    assert f"production run {run_reference(order)}" in detail["message"] and order not in detail["message"], detail
     assert await snapshot(session, auth, order, lot, note) == before
     assert await _supply(session, auth, made) == (0.0, 2.0)
 

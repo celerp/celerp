@@ -12,8 +12,8 @@ run, so its scheduled syncs carry on.
 The record kinds are written out here as they stood when this revision was made,
 so the upgrade does not change if a connector later carries more.
 
-Revision ID: j5d6e7f8a9b0
-Revises: i3b4c5d6e7f8
+Revision ID: k5e6f7a8b9c0
+Revises: j5d6e7f8a9b0
 """
 import json
 
@@ -21,8 +21,8 @@ import sqlalchemy as sa
 from alembic import op
 from celerp.migrations._locks import lock_tables
 
-revision = "j5d6e7f8a9b0"
-down_revision = "i3b4c5d6e7f8"
+revision = "k5e6f7a8b9c0"
+down_revision = "j5d6e7f8a9b0"
 branch_labels = None
 depends_on = None
 

@@ -36,6 +36,9 @@ projection_handler Maps event-type prefixes to a handler function. Each event ty
                    and ledger feeds leave them out for a role without it
 on_company_created Async callback(session, company_id) fired after a new company is persisted
 on_modules_ready   Async callback(session) fired once after every module has loaded
+on_books_currency_set
+                   Async callback(session, company_id) fired, before commit, whenever a
+                   company's books currency is set or changed
 doc_finalize_hook  Async callback fired when a document is finalized, before commit
 on_doc_payment     Async callback fired after a payment is recorded on a document
 inventory_in_production
@@ -158,7 +161,7 @@ from typing import Callable
 SLOT_NAMES = frozenset({
     "nav", "bulk_action", "send_to_targets", "catalog_channel", "item_action",
     "pricing_action", "doc_detail_actions", "doc_detail_badges", "category_schema",
-    "projection_handler", "on_company_created", "on_modules_ready", "doc_finalize_hook",
+    "projection_handler", "on_company_created", "on_modules_ready", "on_books_currency_set", "doc_finalize_hook",
     "on_doc_payment", "search_provider", "inventory_in_production", "item_lineage_guard",
     "demo_records", "background_loop", "doc_asset_lines", "fixed_asset_rules", "label_source",
     "import_target", "turn_off_preflight",

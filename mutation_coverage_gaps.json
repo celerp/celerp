@@ -171,16 +171,11 @@
  },
  {
   "route": "ui POST /accounting/reconcile/start",
-  "class": "never requested",
-  "reason": "No test requests this route; its source reaches api POST."
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
  },
  {
   "route": "ui POST /accounting/reconcile/{session_id}/auto-match",
-  "class": "never requested",
-  "reason": "No test requests this route; its source reaches api POST."
- },
- {
-  "route": "ui POST /accounting/reconcile/{session_id}/bulk-confirm",
   "class": "never requested",
   "reason": "No test requests this route; its source reaches api POST."
  },
@@ -190,24 +185,9 @@
   "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
  },
  {
-  "route": "ui POST /accounting/reconcile/{session_id}/lines/{line_id}/create-confirm",
-  "class": "never requested",
-  "reason": "No test requests this route; its source reaches api POST."
- },
- {
   "route": "ui POST /accounting/reconcile/{session_id}/lines/{line_id}/skip",
   "class": "never requested",
   "reason": "No test requests this route; its source reaches api PATCH."
- },
- {
-  "route": "ui POST /accounting/reconcile/{session_id}/lines/{line_id}/split-confirm",
-  "class": "never requested",
-  "reason": "No test requests this route; its source reaches api POST."
- },
- {
-  "route": "ui POST /accounting/reconcile/{session_id}/write-off",
-  "class": "never requested",
-  "reason": "No test requests this route; its source reaches api POST."
  },
  {
   "route": "ui POST /accounting/sync-accounts/added/{item_id}",
@@ -801,11 +781,6 @@
  },
  {
   "route": "ui POST /settings/accountant-access/grants",
-  "class": "never requested",
-  "reason": "No test requests this route; its source reaches api POST."
- },
- {
-  "route": "ui POST /settings/accounting/bank-accounts/new",
   "class": "never requested",
   "reason": "No test requests this route; its source reaches api POST."
  },

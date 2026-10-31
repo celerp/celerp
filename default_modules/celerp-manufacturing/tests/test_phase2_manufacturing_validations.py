@@ -59,7 +59,7 @@ async def test_complete_with_waste_posts_balanced_je(client):
 
     ledger = (await client.get("/ledger?entity_type=journal_entry", headers=_h(token))).json()["items"]
     jes = [e["data"]["entries"] for e in ledger
-           if run in (e["data"].get("memo") or "") and e["event_type"] == "acc.journal_entry.created"]
+           if e["entity_id"].startswith(f"je:auto:{run}:") and e["event_type"] == "acc.journal_entry.created"]
     # Issued from opening stock into work in progress, received as produced stock, waste to cost of goods sold.
     assert {x["account"] for entries in jes for x in entries} == {"1130-OB", "1130-WIP", "1130-P", "5100"}
     assert any(x["account"] == "5100" and float(x.get("debit", 0) or 0) > 0 for entries in jes for x in entries)

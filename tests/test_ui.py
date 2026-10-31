@@ -17852,12 +17852,12 @@ class TestInventoryImportDraftReview:
 
     @pytest.mark.asyncio
     async def test_confirm_refused_as_changed_reopens_the_review_with_the_draft(self, ui_client):
-        from ui.api_client import APIError
+        from ui.api_client import _api_error
         from ui.i18n import t
         from celerp.services.import_stage import read_draft
         ref = self._draft([{"sku": "X12", "name": "Ring", "sell_by": "piece", "quantity": "1"}])
         ui_client.cookies.update(_authed())
-        with patch("ui.api_client.import_rows", new=AsyncMock(side_effect=APIError(409, "stale"))), \
+        with patch("ui.api_client.import_rows", new=AsyncMock(side_effect=_api_error(409, {"detail": {"code": "preview_stale"}}, ""))), \
              patch("ui.api_client.plan_import_rows", new=AsyncMock(return_value=_CLEAN_ROWS_PREVIEW)), \
              patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])):
             r = await ui_client.post("/inventory/import/confirm", data={"csv_ref": ref, "preview_hash": "f" * 64})

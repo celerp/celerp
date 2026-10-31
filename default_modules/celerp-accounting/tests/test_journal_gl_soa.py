@@ -583,7 +583,7 @@ async def test_journal_source_typing(client):
     from_id = banks[0]["id"]
     r = await client.post("/accounting/bank-accounts", headers=_h(tok), json={
         "bank_name": "SCB", "account_number": "9876543210",
-        "currency": "THB", "bank_type": "savings"})
+        "currency": "USD", "bank_type": "savings"})
     assert r.status_code == 200, r.text
     to_id = r.json()["id"]
     r = await client.post("/accounting/transfers", headers=_h(tok), json={
@@ -1252,7 +1252,8 @@ async def test_manual_je_token_reuse_with_different_payload_conflicts(client):
     assert r1.status_code == 200
     r2 = await _post_manual_je(client, tok, _bal(99.0), token=shared)
     assert r2.status_code == 409
-    assert "already posted" in r2.json()["detail"].lower()
+    assert r2.json()["detail"]["code"] == "idempotency_conflict"
+    assert "already posted" in r2.json()["detail"]["message"].lower()
     # The books still hold only the original entry
     entries = [e for e in (await _journal(client, tok))["entries"] if e not in start["entries"]]
     assert len(entries) == 1

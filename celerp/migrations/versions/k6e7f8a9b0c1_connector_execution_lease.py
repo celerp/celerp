@@ -9,14 +9,14 @@ first sync. The store's webhooks are marked current. Re-running the upgrade chan
 nothing that is already there.
 
 Revision ID: k6e7f8a9b0c1
-Revises: j5d6e7f8a9b0
+Revises: k5e6f7a8b9c0
 """
 import sqlalchemy as sa
 from alembic import op
 from celerp.migrations._locks import lock_tables
 
 revision = "k6e7f8a9b0c1"
-down_revision = "j5d6e7f8a9b0"
+down_revision = "k5e6f7a8b9c0"
 branch_labels = None
 depends_on = None
 

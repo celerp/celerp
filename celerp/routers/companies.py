@@ -88,9 +88,20 @@ async def _maybe_apply_regime(session: AsyncSession, company_id, address: dict |
     regime = get_regime(country)
     settings = dict(company.settings)
     settings["taxes"] = copy.deepcopy(regime["taxes"])
-    if "currency" not in settings:
+    seeds_currency = "currency" not in settings
+    if seeds_currency:
         settings["currency"] = regime["currency"]
     company.settings = settings
+    if seeds_currency:
+        await _books_currency_set(session, company_id)
+
+
+async def _books_currency_set(session: AsyncSession, company_id) -> None:
+    """Tell every module the books' currency was just set, so what it keeps in the
+    books' currency (the default bank account) follows."""
+    from celerp.modules.slots import fire_lifecycle
+    await session.flush()
+    await fire_lifecycle("on_books_currency_set", session=session, company_id=company_id)
 
 
 class CompanyPatch(BaseModel):
@@ -430,9 +441,9 @@ async def patch_books(
             changed.add(key)
     company.settings = settings
     if "currency" in changed:
+        await _books_currency_set(session, company_id)
         # Sample records follow the books' currency while the company keeps no books of its own.
         from celerp.modules.slots import fire_lifecycle
-        await session.flush()
         await fire_lifecycle("demo_records", session=session, company_id=company_id, user_id=user.id)
     await session.commit()
     return {key: settings.get(key) for key in sorted(BOOKS_KEYS)}
