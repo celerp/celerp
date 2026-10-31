@@ -787,3 +787,23 @@ async def test_a_job_row_is_never_claimed_or_ended_without_its_company_lock(sess
              "end_unheld": lambda: jobs._end_unheld(session, AIBatchJob.id == job_id)}
     with pytest.raises(RuntimeError, match="without its company lock"):
         await calls[write]()
+
+
+async def test_moving_a_question_to_the_background_names_its_company_in_the_write(client, owner, cloud):
+    """Promoting a running question writes its job row under the company lock it took
+    first, and the write names that company, so the lock checker judges it under the lock
+    instead of counting it as a take of no known company."""
+    import sys
+    token, *_ = owner
+    conv = await _conversation(client, token)
+    qid = uuid.uuid4()
+    cloud.held(str(qid))
+    r = await client.post(f"/ai/conversations/{conv}/query", headers=AUTH(token),
+                          json={"query": "How do I add a supplier?", "operation_id": str(qid)})
+    assert r.status_code == 202, r.text
+    await until(lambda: str(qid) in cloud.arrived)
+    recorder = sys.modules["lock_rank"].RECORDER
+    before = recorder.ungated_sites({"row:ai_batch_jobs"}, "celerp/ai/jobs.py")
+    await jobs.promote(qid)
+    cloud.release(str(qid))
+    assert recorder.ungated_sites({"row:ai_batch_jobs"}, "celerp/ai/jobs.py") - before == set()

@@ -1211,7 +1211,7 @@ async def promote(job_id: uuid.UUID) -> None:
         if await _lock_job(session, job_id) is None:
             return
         await session.execute(
-            update(AIBatchJob).where(AIBatchJob.id == job_id, AIBatchJob.promoted_at.is_(None))
+            update(AIBatchJob).where(AIBatchJob.id == job_id, _under_lock(session), AIBatchJob.promoted_at.is_(None))
             .values(mode="background", promoted_at=datetime.now(timezone.utc)))
         await session.commit()
 
