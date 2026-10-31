@@ -57,7 +57,7 @@ AI_BATCH_ACTIVE = ("Wait for the assistant to finish its work before resetting t
                    "Nothing was deleted.")
 # Another transaction in the way: the reset rolls back and is refused as busy.
 _LEASE_TABLES = ("connector_execution_leases", "connector_execution_heartbeats")
-_BUSY = ("40P01", "40001", "55P03")  # deadlock, serialization failure, lock wait timed out
+BUSY = ("40P01", "40001", "55P03")  # deadlock, serialization failure, lock wait timed out
 _LOCK_NOT_AVAILABLE = "55P03"
 # How long a reset keeps trying tables another transaction is writing, and how often.
 _LOCK_PATIENCE_S = 2.0
@@ -191,7 +191,7 @@ def _lock_writers(schema: dict) -> list[str]:
 
     NOWAIT: the reset already holds its company's key exclusively, and a transaction writing
     one of these tables may go on to share that key (a notice naming the company, a row
-    referring to it), so waiting here could close a cycle (_lock_without_waiting)."""
+    referring to it), so waiting here could close a cycle (lock_without_waiting)."""
     writable = sorted(set(schema) & (INSTALL_WIDE.keys() | {SessionRegistry.__tablename__}))
     company = sorted(set(schema) - set(writable) - {Company.__tablename__})
     keyed = sorted(set(schema) & {Company.__tablename__})
@@ -254,7 +254,7 @@ def _company_deletes(schema: dict) -> list[str]:
             for name, where in reversed(_company_rows(schema).items())]
 
 
-async def _lock_without_waiting(session: AsyncSession, schema: dict, cid: str) -> None:
+async def lock_without_waiting(session: AsyncSession, schema: dict, cid: str) -> None:
     """Take the reset's table locks (_lock_writers), then the company's connector lease rows,
     never waiting on another transaction. A connector execution's release takes its lease
     row, then its heartbeat row, then writes them, which the table locks make wait: the rows
@@ -264,7 +264,9 @@ async def _lock_without_waiting(session: AsyncSession, schema: dict, cid: str) -
     Each attempt runs in a savepoint and fails at once (NOWAIT) on a lock another transaction
     holds, which its rollback gives back. The tables are shared by every company, so another
     company's write ordinarily commits within moments: the reset tries again for a short while,
-    and only a transaction still in the way after that refuses it as busy, with nothing changed."""
+    and only a transaction still in the way after that refuses it as busy, with nothing changed.
+    A migration's discard deletes a whole company too, so it takes the same locks (raising the
+    DBAPIError of a lock still unavailable for its caller to refuse as busy)."""
     deadline = time.monotonic() + _LOCK_PATIENCE_S
     while True:
         try:
@@ -298,7 +300,7 @@ async def _company_schema(session: AsyncSession, cid: str) -> dict:
         raise _changed_outside("partition_key", await db_catalog.label(session, tables[0]))
     _placed(schema)
     _company_rows(schema)
-    await _lock_without_waiting(session, schema, cid)
+    await lock_without_waiting(session, schema, cid)
     if await db_catalog.read(session) != schema:  # a table or key added before the lock
         raise _busy()
     if changed := await db_catalog.changed_outside(session, schema):
@@ -349,7 +351,7 @@ async def reset(session: AsyncSession, company: Company, typed_name: str,
     try:
         keys = await _company_schema(session, cid)
     except DBAPIError as exc:
-        if sqlstate(exc) not in _BUSY:
+        if sqlstate(exc) not in BUSY:
             raise
         raise _busy() from exc
     connected = sorted(set((await session.scalars(
@@ -402,7 +404,7 @@ async def reset(session: AsyncSession, company: Company, typed_name: str,
     except HTTPException as exc:  # the next session refused: a sign-out came first
         raise ResetRefused(exc.status_code, exc.detail, closure) from exc
     except SQLAlchemyError as exc:
-        if isinstance(exc, DBAPIError) and sqlstate(exc) in _BUSY:
+        if isinstance(exc, DBAPIError) and sqlstate(exc) in BUSY:
             raise ResetRefused(409, _busy().detail, closure) from exc
         raise ResetRefused(500, t("settings.reset_not_done"), closure) from exc
     return Reset(task.id, closure, issued)

@@ -5651,6 +5651,7 @@
   "inventory.not_saved_quantity_positive": "Not saved: quantity must be a number greater than zero.",
   "migration.discard_partition_key": "This migration cannot be discarded because the table {table} was changed outside Celerp (by an installed module or a direct database change) in a way discarding cannot safely handle. Nothing was deleted. Ask whoever installed that module or changed the database to fix it.",
   "migration.discard_outside_reference": "This migration cannot be discarded because the table {table}, which was added outside Celerp (by an installed module or a direct database change), refers to Celerp's records. Nothing was deleted. Ask whoever installed that module or changed the database to remove that reference.",
+  "migration.discard_busy": "This migration could not be discarded because other changes were being saved at the same time. Nothing was deleted. Try again.",
   "migration.discard_unsafe_data": "This migration cannot be discarded because the table {table} holds records of this company that are not part of the migration, so discarding cannot safely remove them. They usually come from an installed module or a direct database change. Nothing was deleted. Ask whoever installed that module or changed the database to remove those records, then discard again.",
   "posting.section_title": "Posting accounts",
   "posting.section_hint": "Choose the account each kind of entry posts to. Where your chart has no suitable account, choose Add account in its list.",

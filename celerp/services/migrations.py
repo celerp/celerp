@@ -35,7 +35,7 @@ from functools import lru_cache, partial
 from fastapi import HTTPException
 from sqlalchemy import Select, cast, delete, select, text, update
 from sqlalchemy.dialects.postgresql import JSONB, insert as pg_insert
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp import db_catalog
@@ -48,6 +48,7 @@ from celerp.importers.adapters.base import (
     SourceRevisionError,
 )
 from celerp.config import read_config
+from celerp.db import sqlstate
 from celerp.events.engine import find_event_by_idempotency, write_period_lock
 from celerp.importers.adapters.registry import get_adapter
 from celerp.importers.schema import (
@@ -89,6 +90,7 @@ from celerp.services import migration_templates
 from celerp.services import posting_readiness
 from celerp.services.auth import first_usable_company_link, normalize_role
 from celerp.services.company_files import delete_company_data
+from celerp.services.company_reset import BUSY, lock_without_waiting
 from celerp.services.company_lock import judge_without_company_lock, lock_company
 from celerp.services.lot_origin import place_company_stock
 from celerp.services.csv_export import csv_safe
@@ -1182,10 +1184,15 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
     The run is removed, so it is locked FOR UPDATE (its key) up front, never upgraded
     from the NO KEY UPDATE of _lock_run after the company's other rows are deleted. A
     bootstrap discard deletes its owner's login last, so it holds the login before the
-    company (hold_owner): the delete then waits only on the login's key."""
+    company (hold_owner): the delete then waits only on the login's key. The company's rows
+    go under the reset's locks: the connector maintenance fence before the company, as a
+    reset takes it, then every table it can read, taken without waiting (company_reset.lock_without_waiting)."""
+    from celerp.connectors.ownership import lock_connector_maintenance
+
     bootstrap = bool(run.source_summary.get("bootstrap"))
     if bootstrap:
         await hold_owner(session, run.created_by_user_id)
+    await lock_connector_maintenance(session)
     await lock_company(session, run.company_id)
     (await session.execute(select(MigrationRun)
                            .where(MigrationRun.id == run.id, MigrationRun.company_id == run.company_id)
@@ -1199,6 +1206,21 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
         await db_catalog.pin(session)
     except db_catalog.TableElsewhere as exc:
         raise MigrationError(409, _changed_outside("partition_key", exc.table)) from None
+    # A transaction holding a row of one of these tables may go on to share the company's
+    # key, held here, so they are taken without waiting. A table this connection cannot read
+    # is never deleted from: one holding records of the company is refused below.
+    schema = await db_catalog.read(session)
+    hidden = set(await db_catalog.hidden(session))
+    try:
+        await lock_without_waiting(session, {k: v for k, v in schema.items() if k not in hidden},
+                                   str(run.company_id))
+    except DBAPIError as exc:
+        if sqlstate(exc) not in BUSY:
+            raise
+        raise MigrationError(409, refusal(
+            "migration.discard_busy",
+            "This migration could not be discarded because other changes were being saved at the "
+            "same time. Nothing was deleted. Try again.")) from None
     await _refuse_changed_outside(session)
     present = await company_tables(session)
     for table in present:
