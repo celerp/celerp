@@ -2067,3 +2067,15 @@ async def test_a_second_session_left_open_in_the_same_transaction_is_a_finding(s
         assert [v["kind"] for v in lock_rank.RECORDER.take_violations()] == ["shared-flow"]
     finally:
         await other.close()
+
+
+@pytest.mark.parametrize("mode, violates", [("exclusive nowait", False), ("share row exclusive nowait", True)])
+def test_a_row_of_a_table_held_exclusive_waits_on_nothing(mode, violates):
+    """R4t: while a transaction holds a table EXCLUSIVE, no other holds a row of it (every row
+    lock takes ROW SHARE on its table), so a row it then takes there orders nothing. SHARE ROW
+    EXCLUSIVE lets a row locker in, so the same take after a higher class still violates."""
+    recorder = Recorder()
+    recorder.acquire(1, _lock("row:ledger", "update wait", key="e"), 0.0)
+    recorder.acquire(1, _lock("tbl:projections", mode), 0.0)
+    recorder.acquire(1, _lock("row:projections", "write", key="item"), 0.0)
+    assert (("order", "row:projections") in _kinds(recorder)) is violates

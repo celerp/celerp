@@ -175,13 +175,18 @@ def _lock_writers(schema: dict) -> list[str]:
     KEY SHARE, which waits for the reset, and a sign-out during the reset only deletes them.
     Concurrent resets take it in the same order, one after the other.
 
+    A company table is held EXCLUSIVE: that also keeps out a transaction that holds a row of
+    it without having written yet (FOR UPDATE, or a key share a reference takes), which would
+    otherwise make the deletes below wait on a row while its holder's next write waits on the
+    table. So no row the reset takes ever waits on another transaction.
+
     NOWAIT: the reset already holds its company's key exclusively, and a transaction writing
     one of these tables may go on to share that key (a notice naming the company, a row
     referring to it), so waiting here could close a cycle. A busy table refuses the reset."""
     writable = sorted(set(schema) & (INSTALL_WIDE.keys() | {SessionRegistry.__tablename__}))
     company = sorted(set(schema) - set(writable))
     return [f"LOCK TABLE {', '.join(map(db_catalog.ident, names))} IN {mode} MODE NOWAIT"
-            for names, mode in ((company, "SHARE ROW EXCLUSIVE"), (writable, "ROW EXCLUSIVE")) if names]
+            for names, mode in ((company, "EXCLUSIVE"), (writable, "ROW EXCLUSIVE")) if names]
 
 
 def _held_elsewhere(schema: dict) -> str:

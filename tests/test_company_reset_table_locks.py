@@ -57,3 +57,36 @@ async def test_a_reset_never_waits_for_a_table_another_company_is_writing(
     again = await real_client.post(RESET, json={"company_name": NAME}, headers=auth(tok))
     assert again.status_code == 200, again.text
     assert await count(real_engine, "companies", "id = :c", c=str(a)) == 0
+
+
+_WAITING_ON_ANY_LOCK = ("SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
+                        "AND wait_event_type = 'Lock'")
+
+
+async def test_a_reset_never_waits_for_a_row_another_transaction_holds(
+        real_engine, real_client, tmp_path, monkeypatch):
+    """A transaction holding one of the company's rows, with nothing written yet, may go on to
+    write it, which waits on the reset's table lock: the reset refuses at once instead of
+    waiting on the row."""
+    _local_files(monkeypatch, tmp_path)
+    shared, solo, a, b = await _two_companies(real_engine, tmp_path)
+    tok = await token(real_engine, shared, a)
+    holder = maker(real_engine)()
+    try:
+        await holder.execute(text("SELECT 1 FROM locations WHERE company_id = :a FOR UPDATE"), {"a": str(a)})
+        before = await snapshot(real_engine)
+        reset = asyncio.create_task(real_client.post(RESET, json={"company_name": NAME}, headers=auth(tok)))
+        waited = False
+        while not reset.done() and not waited:
+            async with real_engine.connect() as conn:
+                waited = bool((await conn.execute(text(_WAITING_ON_ANY_LOCK))).scalar_one())
+            await asyncio.sleep(0.02)
+        await holder.commit()
+        r = await reset
+    finally:
+        await holder.close()
+
+    assert not waited
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == company_reset._busy().detail
+    assert await snapshot(real_engine) == before
