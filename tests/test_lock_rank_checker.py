@@ -1235,6 +1235,19 @@ def test_the_census_names_the_production_writers_the_record_sites():
     assert "celerp/services/company_lock.py lock_company" in writers["row:companies"]
 
 
+def test_the_census_writers_are_production_files_whatever_a_test_patches():
+    """The writers are computed once per process and dumped with every worker's record, so a
+    census hook a test patches (as this file's fixture does) must not change which files they
+    come from: a test file in them would read as a writer no test ran."""
+    lock_rank.static_writers.cache_clear()
+    try:
+        tests = sorted(w for found in lock_rank.static_writers().values() for w in found
+                       if "/tests/" in w or w.startswith("tests/"))
+    finally:
+        lock_rank.static_writers.cache_clear()
+    assert tests == []
+
+
 def test_the_census_reads_a_parent_rows_key_share_as_the_recorder_does(tmp_path):
     """A FOR KEY SHARE of a parent row is the foreign-key check's lock (key:<t>), so the census
     of row:<t> writers leaves it out, as the recorder never counts it there; a share of a

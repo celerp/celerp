@@ -1675,9 +1675,11 @@ def _production_site(site: str) -> bool:
 
 
 def _production_files():
+    """The files the census scans for writers, by their path alone: the writers are cached for
+    the process, so they must not follow a census hook a test patches (``_production_site``)."""
     root = Path(_ROOT)
     yield from sorted(p for p in [*root.joinpath("celerp").rglob("*.py"), *root.joinpath("default_modules").rglob("*.py")]
-                      if _production_site(os.path.relpath(p, _ROOT)))
+                      if _PRODUCTION_PATH.match(os.path.relpath(p, _ROOT)))
 
 
 def _model_tables(trees) -> dict[str, str]:
