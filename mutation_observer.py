@@ -40,6 +40,7 @@ import os
 import re
 import sys
 import weakref
+from collections.abc import ValuesView
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field, replace
@@ -773,14 +774,38 @@ def _session_for(conn) -> Session | None:
     return sessions[0] if sessions and len(sessions) == 1 else None
 
 
-def _proofs(request: dict, session) -> list:
-    """The lock proofs the session holds that were taken while this request was served."""
-    inherited = request["inherited"].get(session, {})
-    return [p for p in session.info.get(_PROOFS, ()) if id(p) not in inherited]
+# How many savepoint rollbacks have filtered the session's proofs in place.
+_PROOFS_FILTERED = "mutation_observer_proofs_filtered"
 
 
-def _here(request: dict, session, kind: str) -> list:
-    return [key for k, key, _ in _proofs(request, session) if k == kind]
+@event.listens_for(Session, "after_soft_rollback")
+def _proofs_filtered(session, transaction) -> None:
+    session.info[_PROOFS_FILTERED] = session.info.get(_PROOFS_FILTERED, 0) + 1
+
+
+def _here(request: dict, session, kind: str) -> ValuesView:
+    """The distinct keys of *kind* the session holds that were taken while this request was
+    served. It is read after every statement and a long request takes the same lock thousands
+    of times, so it reads only the proofs noted since its last read (starting over when the
+    list is replaced or a savepoint rollback filtered it) and keeps each key once."""
+    proofs = session.info.get(_PROOFS, ())
+    filtered = session.info.get(_PROOFS_FILTERED, 0)
+    index = request.setdefault("proofs_read", weakref.WeakKeyDictionary())
+    read = index.get(session)
+    if read is None or read["list"] is not proofs or read["filtered"] != filtered or read["upto"] > len(proofs):
+        read = index[session] = {"list": proofs, "filtered": filtered, "upto": 0, "keys": {}}
+    if read["upto"] < len(proofs):
+        inherited = request["inherited"].get(session, {})
+        for proof in proofs[read["upto"]:]:
+            if id(proof) not in inherited:
+                key = proof[1]
+                try:
+                    hash(key)
+                except TypeError:
+                    key = id(proof)
+                read["keys"].setdefault(proof[0], {}).setdefault(key, proof[1])
+        read["upto"] = len(proofs)
+    return read["keys"].get(kind, {}).values()
 
 
 def _holds(request: dict, session, company) -> bool:

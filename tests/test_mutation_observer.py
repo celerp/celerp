@@ -1126,3 +1126,32 @@ async def test_a_request_starting_meanwhile_leaves_background_work_its_own_edit(
     served.set()
     assert [p.name for p in await work] == ["Background"]
     assert mutation_observer.CENSUS.findings == []
+
+
+async def test_reading_the_proofs_costs_each_proof_once_however_long_the_request():
+    """A request that takes thousands of locks (a 1001-row import) reads its proofs after
+    every statement: each read must look only at the proofs noted since the last one and
+    keep a lock taken again once, or the observer's cost grows with the square of the
+    request's statements."""
+
+    class Counted(list):
+        visited = 0
+
+        def __iter__(self):
+            Counted.visited += len(self)
+            return super().__iter__()
+
+        def __getitem__(self, index):
+            got = super().__getitem__(index)
+            Counted.visited += len(got) if isinstance(index, slice) else 1
+            return got
+
+    class FakeSession:
+        info = {mutation_observer._PROOFS: Counted()}
+
+    session, request, n = FakeSession(), {"inherited": {}}, 2000
+    for i in range(n):
+        session.info[mutation_observer._PROOFS].append(("locked" if i % 2 else "row", str(i % 7), None))
+        mutation_observer._here(request, session, "locked")
+    assert list(mutation_observer._here(request, session, "locked")) == ["1", "3", "5", "0", "2", "4", "6"]
+    assert Counted.visited <= 3 * n
