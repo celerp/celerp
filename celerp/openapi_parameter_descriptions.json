@@ -1504,6 +1504,9 @@
   "POST /connectors/{connector_name}/first-sync": {
     "path:connector_name": "Connector name identifying the external integration."
   },
+  "POST /connectors/{connector_name}/first-sync/retry": {
+    "path:connector_name": "Connector name identifying the external integration."
+  },
   "POST /connectors/{connector_name}/first-sync/undo-links": {
     "path:connector_name": "Connector name identifying the external integration."
   },
