@@ -225,54 +225,145 @@ def goods_cost_empty(state: dict) -> bool:
     return round_basis(float(recorded_value(state)) - landed) == 0
 
 
-class CostTotalBelowLanded(ValueError):
-    """A cost total entered below the landed cost the lot carries; ``detail`` is the refusal."""
+class CostRefused(ValueError):
+    """A cost a door refuses to write; ``detail`` is the refusal, in the user's language."""
+
+    def __init__(self, key: str, message: str, **params):
+        self.detail = refusal(key, message, **params)
+        super().__init__(message)
+
+
+class CostTotalBelowLanded(CostRefused):
+    """A cost total entered below the landed cost the lot carries."""
 
     def __init__(self, landed: float):
-        self.detail = refusal(
-            "inventory.cost_total_below_landed",
-            f"The cost total can't be less than the landed cost of {landed:.2f} this item carries.",
-            landed=f"{landed:.2f}")
-        super().__init__(self.detail["message"])
+        super().__init__("inventory.cost_total_below_landed",
+                         f"The cost total can't be less than the landed cost of {landed:.2f} this item carries.",
+                         landed=f"{landed:.2f}")
 
 
-def cost_written_back(state: dict, typed: str, *, dp: int, per_unit: bool = False,
-                      confirm: bool = False) -> dict | None:
-    """The goods-cost change (``fields_changed`` of an item.updated) a cost the user wrote back
-    means, or None when it changes nothing. Every door that takes a cost as it was shown or
-    exported (inventory cells, the Pricing tab, the transform page, the item import) hands the
-    text it received here, never a number it parsed or compared itself.
+class CostTextInvalid(CostRefused):
+    """Text that is not a cost: not a number, negative, an exponent, or a decimal comma."""
 
-    ``typed`` is the lot's whole value as the user wrote it, landed cost included: a total, or
-    with ``per_unit`` that value per unit. It is no change when it equals what the lot carries
-    rounded to the decimals the door shows (``dp``) or the decimals typed, whichever are more:
-    the shown value saved back is no change, and any digit typed that differs is a change. With
-    ``confirm`` a lot whose goods cost is not known takes it as a deliberate set (its edit opens
-    empty, so what the user typed is what they know). Otherwise the goods cost is the total less
-    the landed cost the lot carries. A unit cost of a lot without stock is the cost its next
-    units wait at. Raises TypeError for a value that is not text, ValueError for text that is
-    not a number, and CostTotalBelowLanded for a total below the landed cost."""
-    if not isinstance(typed, str):
-        raise TypeError("cost_written_back takes the cost as the text the user typed")
-    shown = float(typed)
-    exact = Decimal(typed.strip())
-    exponent = exact.as_tuple().exponent
-    places = max(dp, -exponent if isinstance(exponent, int) else 0)
+    def __init__(self):
+        super().__init__("inventory.cost_text_invalid",
+                         "Enter the cost as a number, with a dot for decimals (for example 1234.56).")
+
+
+class CostNeedsQuantity(CostRefused):
+    """A unit cost typed on a lot holding no units."""
+
+    def __init__(self):
+        super().__init__("inventory.cost_unit_needs_quantity",
+                         "Set the quantity first: a unit cost needs units to apply to.")
+
+
+class CostChangedSinceOpened(CostRefused):
+    """The cost changed after the editor opened; ``now`` is the text the door shows now."""
+
+    def __init__(self, now: str):
+        self.now = now
+        super().__init__("inventory.cost_changed_since_opened",
+                         f"This cost changed since you opened it. It is now {now or '--'}.", now=now or "--")
+
+
+_COST_NUMBER = re.compile(r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d*)?|\.\d+")
+COST_PLACEHOLDER = "--"
+
+
+def parse_cost(text: str) -> Decimal | None:
+    """The one reading of a cost typed or shown at any door: digits with one dot, thousands
+    grouped by commas (1,234.56), after an optional currency symbol and around spaces. Empty
+    text and the "--" an empty cell shows read as no cost (None). A comma that does not group
+    thousands ("12,35"), an exponent, nan or inf, and a negative are refused (CostTextInvalid),
+    never read as some other number."""
+    if not isinstance(text, str):
+        raise TypeError("a cost is read from the text the door shows or the user typed")
+    s = text.strip()
+    if s in ("", COST_PLACEHOLDER):
+        return None
+    s = s.lstrip("".join(c for c in s if unicodedata.category(c) == "Sc")).strip()
+    if not _COST_NUMBER.fullmatch(s):
+        raise CostTextInvalid()
+    return Decimal(s.replace(",", ""))
+
+
+def cost_written_back(state: dict, typed: str, *, opened: str, now: str, per_unit: bool = False) -> dict | None:
+    """The goods-cost change (``fields_changed`` of an item.updated) a cost written back at a
+    door means, or None when it changes nothing. Every door (inventory cells, the Pricing tab,
+    the transform page, the item import) hands over the text the user sent (``typed``), the
+    text its editor opened with (``opened``), and the text it shows for the lot now (``now``),
+    both of those from the one formatter that renders the door. No precision is involved.
+
+    The text the editor opened with sent back is no change, and so is the text the door shows
+    now (a second Enter). Otherwise, when the lot no longer shows what the editor opened with,
+    someone changed it meanwhile: CostChangedSinceOpened, nothing written. Else the typed value
+    is applied exactly: the lot's whole value, landed cost included, or with ``per_unit`` that
+    value per unit (typed x quantity, in Decimal). Its goods cost is the total less the landed
+    cost the lot carries; an empty text clears it. A lot whose goods cost is not known opens its
+    editors empty, so any number sent there is a deliberate set and confirms it.
+
+    Raises TypeError for a value that is not text, CostTextInvalid for text that is not a cost,
+    CostNeedsQuantity for a unit cost on a lot without units, CostTotalBelowLanded for a total
+    below the landed cost."""
+    value, was, shown = parse_cost(typed), parse_cost(opened), parse_cost(now)
+    if value == was or value == shown:
+        return None
+    if was != shown:
+        raise CostChangedSinceOpened(now)
+    if value is None:
+        return {"cost_total": {"new": None}}
     qty = float(state.get("quantity") or 0)
     if per_unit and not qty:
-        carried = state.get("cost_price")
-    else:
-        carried = float(recorded_value(state)) / qty if per_unit else float(recorded_value(state))
-    if (carried is not None and round(shown, places) == round(float(carried), places)
-            and not (confirm and not goods_cost_known(state))):
-        return None
-    if per_unit and not qty:
-        return {"cost_price": {"new": shown}}
-    total = round_basis(float(exact * Decimal(repr(qty))) if per_unit else shown)
+        raise CostNeedsQuantity()
+    total = round_basis(value * Decimal(repr(qty)) if per_unit else value)
     landed = round_basis(sum(float(v or 0) for v in (state.get("landed_costs") or {}).values()))
     if total < landed:
         raise CostTotalBelowLanded(landed)
     return {"cost_total": {"new": round_basis(total - landed)}}
+
+
+def recipe_standard_unit_cost(state: dict) -> float | None:
+    """The rolled standard unit cost of a recipe-backed (manufactured) item, else None.
+
+    For a manufactured item the recipe's rolled ``unit_cost`` is the SINGLE source of truth for
+    cost — read at standard, never at a lingering build-lot ``cost_total``. Read ``recipe.unit_cost``
+    (not the ``cost_price`` field, which ``_recompute_cost`` can pop) so it is robust and stays
+    consistent with the manufacturing cost roll-up. Only a recipe with components carries a cost.
+    """
+    recipe = state.get("recipe") or {}
+    unit_cost = recipe.get("unit_cost") if recipe.get("components") else None
+    return float(unit_cost) if unit_cost is not None else None
+
+
+def shown_cost(state: dict) -> tuple[float | None, float | None]:
+    """A lot's cost as it is listed, shown and exported: (whole value, unit cost). A recipe-backed
+    item is costed at its rolled standard; a unit cost exists only where the goods cost is known
+    and there are units to divide by, or for an empty lot the cost its next units wait at."""
+    qty = float(state.get("quantity") or 0)
+    recipe_unit = recipe_standard_unit_cost(state)
+    if recipe_unit is not None:
+        # Never let a lingering build-lot cost_total silently override the standard.
+        return (round_basis(recipe_unit * qty) if qty else 0.0), recipe_unit
+    total = state.get("cost_total")
+    if total is not None:
+        return total, (round(float(total) / qty, 10) if qty and not state.get(GOODS_COST_UNKNOWN) else None)
+    if state.get(GOODS_COST_UNKNOWN) or state.get("cost_price") is None:
+        return None, None
+    return round_basis(float(state["cost_price"]) * qty), state["cost_price"]
+
+
+def cost_text(value: float) -> str:
+    """A stored cost as plain digits, never in exponent form (0.00001, not 1e-05)."""
+    return format(Decimal(repr(float(value))), "f")
+
+
+def exported_cost_text(state: dict, per_unit: bool = False) -> str:
+    """The item file's cost cell for a lot: its whole value, or its unit cost, as shown_cost
+    gives it ("" for none). The export writes it and the import reads a row against it, so a
+    cell saved back as exported is no change."""
+    value = shown_cost(state)[1 if per_unit else 0]
+    return "" if value is None else cost_text(value)
 
 
 def topped_up_cost(state: dict, added: float) -> dict:
@@ -3285,6 +3376,7 @@ class ImportPlan:
     decisions: dict                  # the canonical row decisions the plan applied
     summary_rows: list[int]          # rows named like a total, with no SKU
     duplicate_groups: list[dict]     # {"sku", "rows", "quantity", "conflict"} for each SKU on several rows
+    cost_changes: list[dict]         # {"row", "sku", "old", "new"}: each lot whose cost (whole value) the rows change
     operation_key: str
     semantic_fingerprint: str        # changes whenever what the rows would write changes
 
@@ -3392,31 +3484,36 @@ def _permission_errors(
 def _pop_cost_change(data: dict, state: dict) -> dict | None:
     """Take the goods cost out of patch data as the item page's cost edit.
 
-    A cost total is the lot's whole value as the export writes it, and a unit cost is that
-    value per unit, both at the export's BASIS_DP decimals, so both are read through
-    cost_written_back as the row holds them: a value equal to what the export holds for the
-    lot is no change.
+    The row is read against the lot's item file cell (exported_cost_text), the text a file
+    exported and imported back holds, so a cell left as exported is no change. A row's cost
+    total is read first: a unit cost on that row is never read (a row giving both is refused
+    when it is built), so a unit a spreadsheet rounded cannot override the total.
     Returns ``fields_changed`` for an item.updated restatement, or None when the row
-    changes no cost. Raises TypeError or ValueError for a cost that is not a number, and
-    CostTotalBelowLanded for a total below the lot's landed cost.
+    changes no cost. Raises CostRefused (CostTextInvalid, CostNeedsQuantity,
+    CostTotalBelowLanded) for a cost the lot cannot take.
     """
     cost_total, cost_price = data.pop("cost_total", None), data.pop("cost_price", None)
     if cost_total not in (None, ""):
-        return cost_written_back(state, str(cost_total), dp=BASIS_DP)
-    if cost_price in (None, ""):
+        cell, per_unit = cost_total, False
+    elif cost_price not in (None, ""):
+        cell, per_unit = cost_price, True
+    else:
         return None
-    return cost_written_back(state, str(cost_price), dp=BASIS_DP, per_unit=True)
+    exported = exported_cost_text(state, per_unit)
+    return cost_written_back(state, cell if isinstance(cell, str) else cost_text(cell),
+                             opened=exported, now=exported, per_unit=per_unit)
 
 
-async def _cost_restatement_error(session: AsyncSession, company_id, record: dict, row: dict) -> dict | None:
-    """The writer's cost-restatement refusal for a planned patch, found without writing.
+async def _planned_cost_change(session: AsyncSession, company_id, record: dict, row: dict) -> tuple[dict | None, dict | None]:
+    """The cost a planned patch writes, found without writing: (the writer's refusal, or None;
+    the change as {"old", "new"} whole values in the item file's terms, or None).
 
     The writer applies the patch and then restates the cost against the patched
     item; this runs the same restatement check against the item as the patch
     would leave it.
     """
     if record["event_type"] != "item.patched" or not COST_ITEM_KEYS & set(record["data"]):
-        return None
+        return None, None
     from celerp_inventory.projections import apply_item_event
 
     data = dict(record["data"])
@@ -3425,24 +3522,26 @@ async def _cost_restatement_error(session: AsyncSession, company_id, record: dic
         select(Projection).where(Projection.company_id == company_id, Projection.entity_id == entity_id)
     )).scalars().first()
     if stored is None:
-        return None
+        return None, None
+    given = next((k for k in ("cost_total", "cost_price") if data.get(k) not in (None, "")), "cost_total")
     try:
         cost_change = _pop_cost_change(data, stored.state or {})
-    except CostTotalBelowLanded as exc:
-        return {"field": _source_field(row, "cost_total"), "code": "cost_below_landed", "message": str(exc)}
-    except (TypeError, ValueError):
-        return None  # the cell checks report a cost that is not a number
+    except CostRefused as exc:
+        code = "cost_below_landed" if isinstance(exc, CostTotalBelowLanded) else "cost_not_number"
+        return {"field": _source_field(row, given), "code": code, "message": str(exc)}, None
     if cost_change is None:
-        return None
+        return None, None
+    landed = sum(float(v or 0) for v in ((stored.state or {}).get("landed_costs") or {}).values())
+    change = {"old": exported_cost_text(stored.state or {}),
+              "new": cost_text(round_basis(cost_change["cost_total"]["new"] + landed))}
     patched = SimpleNamespace(entity_type=stored.entity_type,
                               state=apply_item_event(stored.state or {}, "item.patched", data))
     try:
         await _restatement(session, company_id, entity_id, "item.updated",
                            {"fields_changed": cost_change}, {entity_id: patched})
     except CostRestatementConflict as exc:
-        given = next(k for k in ("cost_total", "cost_price") if record["data"].get(k) not in (None, ""))
-        return {"field": _source_field(row, given), "code": "cost_not_carried", "message": str(exc)}
-    return None
+        return {"field": _source_field(row, given), "code": "cost_not_carried", "message": str(exc)}, None
+    return None, change
 
 
 def _semantic_fingerprint(build: ImportBuild, errors: list[dict], decisions: dict) -> str:
@@ -3644,21 +3743,24 @@ async def build_import_plan(
 
     can_set_prices = role_has_permission(settings, role, "set_inventory_prices")
     can_edit_amounts = role_has_permission(settings, role, "edit_inventory_amounts")
+    cost_changes: list[dict] = []
     for rec, row_no in zip(build.records, build.record_rows):
         errors.extend(
             {"row": row_no, **e} for e in _permission_errors(
                 rec, rows[row_no - 1], price_lists, can_set_prices=can_set_prices, can_edit_amounts=can_edit_amounts,
             )
         )
-        cost_error = await _cost_restatement_error(session, company_id, rec, rows[row_no - 1])
+        cost_error, cost_change = await _planned_cost_change(session, company_id, rec, rows[row_no - 1])
         if cost_error:
             errors.append({"row": row_no, **cost_error})
+        if cost_change:
+            cost_changes.append({"row": row_no, "sku": str(rows[row_no - 1].get("sku") or ""), **cost_change})
     errors.sort(key=lambda e: e["row"])
     return ImportPlan(
         rows=build.rows, records=build.records, record_rows=build.record_rows, errors=errors,
         locations_to_create=build.locations_to_create, decisions=decisions,
-        summary_rows=summary_rows, duplicate_groups=duplicate_groups, operation_key=operation_key,
-        semantic_fingerprint=_semantic_fingerprint(build, errors, decisions),
+        summary_rows=summary_rows, duplicate_groups=duplicate_groups, cost_changes=cost_changes,
+        operation_key=operation_key, semantic_fingerprint=_semantic_fingerprint(build, errors, decisions),
     )
 
 
@@ -4148,11 +4250,8 @@ async def write_import_batch(
         if event_type == "item.patched" and stored_proj is not None and COST_ITEM_KEYS & set(data):
             try:
                 cost_change = _pop_cost_change(data, stored_proj.state or {})
-            except CostTotalBelowLanded as exc:
+            except CostRefused as exc:
                 outcome.add(entity_id, "rejected", _row_refused(named, exc.detail))
-                continue
-            except (TypeError, ValueError):
-                outcome.add(entity_id, "rejected", _row_refused(named, refusal("import.row.cost_not_number", "cost must be a number")))
                 continue
 
         try:

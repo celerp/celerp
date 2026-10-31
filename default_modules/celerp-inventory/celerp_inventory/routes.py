@@ -36,6 +36,8 @@ from celerp.inventory_codes import (
 from celerp.models.projections import Projection
 from .services import (
     HIDDEN_STATUSES,
+    exported_cost_text,
+    shown_cost,
     goods_cost_empty,
     goods_cost_known,
     IDENTIFIER_TIERS,
@@ -193,19 +195,6 @@ def _parse_uuid(value: str | None) -> uuid.UUID | None:
         return None
 
 
-def _recipe_standard_unit_cost(state: dict) -> float | None:
-    """The rolled standard unit cost of a recipe-backed (manufactured) item, else None.
-
-    For a manufactured item the recipe's rolled ``unit_cost`` is the SINGLE source of truth for
-    cost — read at standard, never at a lingering build-lot ``cost_total``. Read ``recipe.unit_cost``
-    (not the ``cost_price`` field, which ``_recompute_cost`` can pop) so it is robust and stays
-    consistent with the manufacturing cost roll-up. Only a recipe with components carries a cost.
-    """
-    recipe = state.get("recipe") or {}
-    unit_cost = recipe.get("unit_cost") if recipe.get("components") else None
-    return float(unit_cost) if unit_cost is not None else None
-
-
 # Companion keys whose visibility follows a schema field they mirror, so field-level
 # visibility strips them with their source. qty_each is derived from quantity and
 # pieces (a role denied either source cannot recover it from the ratio); location_id
@@ -289,23 +278,13 @@ def flatten_item(state: dict, entity_id: str, location_id: str | None = None, lo
     else:
         pieces = _read_pieces(flat) or 0
         flat["qty_each"] = round(qty / pieces, 10) if pieces > 1 else qty
-    _recipe_unit = _recipe_standard_unit_cost(flat)
-    if _recipe_unit is not None:
-        # Recipe-backed item: derive cost from the rolled standard (single source of truth); never
-        # let a lingering build-lot cost_total silently override it. See _recipe_standard_unit_cost.
-        flat["cost_price"] = _recipe_unit
-        flat["cost_total"] = round_basis(_recipe_unit * qty) if qty else 0.0
-    elif flat.get("cost_total") is not None:
-        # A unit cost only where the goods cost is known and there are units to divide by.
-        if qty and not state.get(GOODS_COST_UNKNOWN):
-            flat["cost_price"] = round(float(flat["cost_total"]) / qty, 10)
-        else:
-            flat.pop("cost_price", None)
-    elif state.get(GOODS_COST_UNKNOWN):
+    total, unit = shown_cost(flat)
+    if total is not None:
+        flat["cost_total"] = total
+    if unit is None:
         flat.pop("cost_price", None)
-    elif flat.get("cost_price") is not None:
-        flat["cost_total"] = round_basis(float(flat["cost_price"]) * qty)
-    # else: both remain absent (item has no cost set)
+    else:
+        flat["cost_price"] = unit
     if price_config is not None:
         inject_derived_prices(flat, *price_config)
     return flat
@@ -1874,6 +1853,7 @@ class InventoryImportRowsPreview(BaseModel):
     counts: dict[str, int]
     summary_rows: list[int]
     duplicate_groups: list[dict]
+    cost_changes: list[dict]
     decisions: dict
     preview_hash: str
 
@@ -1907,7 +1887,7 @@ async def import_rows_preview(
         errors=plan.errors,
         locations_to_create=plan.locations_to_create,
         counts=plan.counts, summary_rows=plan.summary_rows, duplicate_groups=plan.duplicate_groups,
-        decisions=plan.decisions,
+        cost_changes=plan.cost_changes, decisions=plan.decisions,
         preview_hash=_rows_preview_hash(body.rows, body.upsert, body.idempotency_key, plan),
     )
 
@@ -5361,13 +5341,15 @@ async def export_items_csv(
     def _rows():
         for it in listed["items"]:
             row = dict(it)
-            # A virtual total the row does not carry is what the table shows: the stored cost_total
+            if row.get("cost_price") is not None:
+                row["cost_price"] = exported_cost_text(row, per_unit=True)
+            # A virtual total the row does not carry is what the table shows: the lot's whole value
             # for the cost total, else the price times the quantity, at the currency's precision.
             for total_key, price_col in virtual.items():
                 if total_key in row:
                     continue
                 if total_key == "cost_price_total" and row.get("cost_total") not in (None, ""):
-                    row[total_key] = row["cost_total"]
+                    row[total_key] = exported_cost_text(row)
                 elif row.get(price_col) not in (None, ""):
                     row[total_key] = to_stored_float(round_money(
                         to_decimal(row[price_col]) * to_decimal(row.get("quantity") or 0), currency))

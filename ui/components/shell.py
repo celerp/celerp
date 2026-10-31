@@ -293,6 +293,13 @@ function showGlobalUiError(message) {
    The editor is removed, so its pending blur save never fires. */
 var _cellBeforeEdit = null;
 document.addEventListener('htmx:beforeSwap', function(e) {
+  /* A refusal the server marks as an answer (a cost changed since its editor opened) is
+     swapped in like any answer, so the editor shows what changed. */
+  var x = e.detail.xhr;
+  if (x && x.status === 409 && x.getResponseHeader('X-Swap-Refusal') === '1') {
+    e.detail.shouldSwap = true;
+    e.detail.isError = false;
+  }
   var t = e.detail.target;
   _cellBeforeEdit = (t && t.matches && t.matches('td.cell:not(.cell--editing)')) ? t.outerHTML : null;
 });

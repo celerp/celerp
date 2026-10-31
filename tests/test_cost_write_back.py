@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import ast
 import csv
+import html
 import io
+import json
 import math
 import re
 import uuid
@@ -52,32 +54,59 @@ def _functions_where(paths: list[Path], hit) -> set[tuple[str, str]]:
 # ── one owner ────────────────────────────────────────────────────────────────
 
 _INV = "default_modules/celerp-inventory/celerp_inventory/services.py"
-_DOORS = {(_INV, "_pop_cost_change"), ("ui/routes/inventory.py", "_field_patch"),
-          ("ui/routes/inventory.py", "item_price"), ("ui/routes/inventory.py", "bulk_item_transform")}
+_UI_INV = "ui/routes/inventory.py"
+_UI_DOORS = {(_UI_INV, "_write_cost_cell"), (_UI_INV, "item_price"), (_UI_INV, "bulk_item_transform")}
+# Every function that renders a UI cost door's text (and so the text its save is read against).
+_RENDERERS = {(_UI_INV, "_edit_cell"), (_UI_INV, "_row"), (_UI_INV, "_pricing_cost_opened"),
+              (_UI_INV, "_pricing_cost_stale"), (_UI_INV, "bulk_transform_preview"), (_UI_INV, "_cost_written_back")}
+
+
+def _calls(name: str):
+    return lambda n: isinstance(n, ast.Call) and getattr(n.func, "id", getattr(n.func, "attr", None)) == name
+
+
+def _code() -> list[Path]:
+    return [p for p in ROOT.rglob("*.py") if "tests" not in p.parts and ".venv" not in p.parts
+            and "site-packages" not in p.parts]
 
 
 def test_every_cost_door_reads_the_cost_through_its_one_owner():
-    calls = _functions_where(
-        [p for p in ROOT.rglob("*.py") if "tests" not in p.parts and ".venv" not in p.parts
-         and "site-packages" not in p.parts],
-        lambda n: isinstance(n, ast.Call) and getattr(n.func, "id", getattr(n.func, "attr", None)) == "cost_written_back")
-    assert calls == _DOORS
+    """The item import and the UI wrapper call the owner; every UI door calls the wrapper,
+    which reads the save against the door's own render helper."""
+    assert _functions_where(_code(), _calls("cost_written_back")) == {(_INV, "_pop_cost_change"), (_UI_INV, "_cost_written_back")}
+    assert _functions_where(_code(), _calls("_cost_written_back")) == _UI_DOORS
+
+
+def test_no_cost_door_passes_a_precision_and_each_renders_through_one_helper():
+    """No precision exists to drift from what a door shows: the owner takes none, no caller
+    passes one, and every UI cost door's text comes from _cost_door_text (the CSV's from
+    exported_cost_text, the cells the export writes)."""
+    import inspect
+    from celerp_inventory.services import cost_written_back
+    assert set(inspect.signature(cost_written_back).parameters) == {"state", "typed", "opened", "now", "per_unit"}
+
+    def _precision(n) -> bool:
+        return (_calls("cost_written_back")(n) or _calls("_cost_written_back")(n)) and any(
+            k.arg in ("dp", "places", "precision", "confirm") for k in n.keywords)
+    assert _functions_where(_code(), _precision) == set()
+    assert _functions_where(_code(), _calls("_cost_door_text")) == _RENDERERS
+    assert _functions_where(_code(), _calls("exported_cost_text")) >= {
+        (_INV, "_pop_cost_change"), ("default_modules/celerp-inventory/celerp_inventory/routes.py", "_rows")}
 
 
 def test_every_cost_door_hands_the_owner_the_text_the_user_typed():
-    """No door compares or parses the cost itself: each passes the owner the text it received,
-    so the owner judges "no change" at the decimals the user typed."""
+    """No door compares or parses the cost itself: each passes the owner the text it received."""
     def _parsed(n) -> bool:
-        if not (isinstance(n, ast.Call) and getattr(n.func, "id", getattr(n.func, "attr", None)) == "cost_written_back"):
+        if not (_calls("cost_written_back")(n) or _calls("_cost_written_back")(n)):
             return False
         shown = n.args[1]
         return isinstance(shown, ast.Constant) or (
             isinstance(shown, ast.Call) and getattr(shown.func, "id", None) in ("float", "round", "int", "Decimal"))
-    paths = [ROOT / _INV, ROOT / "ui/routes/inventory.py"]
+    paths = [ROOT / _INV, ROOT / _UI_INV]
     assert _functions_where(paths, _parsed) == set()
     from celerp_inventory.services import cost_written_back
     with pytest.raises(TypeError):
-        cost_written_back({"quantity": 1, "cost_total": 1.0}, 1.0, dp=2)
+        cost_written_back({"quantity": 1, "cost_total": 1.0}, 1.0, opened="1.00", now="1.00")
 
 
 def test_no_ui_route_builds_a_cost_patch_itself():
@@ -92,6 +121,158 @@ def test_no_ui_route_builds_a_cost_patch_itself():
                     return True
         return False
     assert _functions_where(_UI, _sets_cost) == set()
+
+
+# ── the rule, by property over every door ────────────────────────────────────
+
+# Every door, as the text it opens with for a lot: the UI doors through their one render helper
+# (the AST guard above ties each door to it), the item file through the cell its export writes.
+_RULE_DOORS = {
+    "cell_unit": ("ui", True), "cell_total": ("ui", False), "cost_total_field": ("ui", False),
+    "pricing_unit": ("ui", True), "pricing_total": ("ui", False), "transform": ("ui", False),
+    "import_unit": ("csv", True), "import_total": ("csv", False),
+}
+
+
+def _opening(door: str, flat: dict) -> str:
+    from celerp_inventory.services import exported_cost_text
+    from ui.routes.inventory import _cost_door_text
+    kind, per_unit = _RULE_DOORS[door]
+    return _cost_door_text(flat, "USD", per_unit) if kind == "ui" else exported_cost_text(flat, per_unit)
+
+
+def _flat(qty: float, total: float | None, landed: float = 0.0, **extra) -> dict:
+    from celerp_inventory.routes import flatten_item
+    state = {"sku": "P", "quantity": qty, **({"cost_total": total} if total is not None else {}),
+             **({"landed_costs": {"freight": landed}} if landed else {}), **extra}
+    return flatten_item(state, "item:p")
+
+
+def _carried(rng) -> tuple[float, float, float]:
+    """A generated lot: (quantity, whole value, freight), dividing by its quantity or not, at 1 to
+    10 decimals, quantities from a fraction of a unit to 100000."""
+    qty = rng.choice([1, 2, 3, 7, 12.5, 0.37, 0.3, 100, 1000, 99999, 100000])
+    places = rng.randint(1, 10)
+    if rng.random() < 0.5:
+        unit = Decimal(rng.randint(1, 10 ** 7)).scaleb(-places)
+        total = float(round(unit * Decimal(repr(float(qty))), 10))
+    else:
+        total = float(Decimal(rng.randint(1, 10 ** 9)).scaleb(-places))
+    landed = rng.choice([0.0, 0.0, round(total * 0.1, 2)])
+    return qty, total, landed
+
+
+def _variants(opened: str, rng) -> list[str]:
+    """Typed texts around an opening text: some with its value, most without."""
+    d = Decimal(opened)
+    places = max(-d.as_tuple().exponent, 0)
+    same = [opened, f"  {opened} ", f"${opened}", f"{opened}0" if "." in opened else f"{opened}.0"]
+    other = [f"{d + Decimal(1).scaleb(-places):f}", f"{d + Decimal(1).scaleb(-places - 1):f}",
+             f"{round(d, 2):.2f}", f"{round(d, 1):.1f}", f"{d + 1:f}", f"{round(d * Decimal('1.1'), 3):f}",
+             str(rng.randint(1, 10 ** 6)), f"{Decimal(rng.randint(1, 10 ** 8)).scaleb(-rng.randint(1, 10)):f}"]
+    return same + [t for t in other if Decimal(t) != d and Decimal(t) >= 0]
+
+
+def _expected(typed: str, qty: float, landed: float, per_unit: bool):
+    from celerp.services.money import round_basis
+    total = round_basis(Decimal(typed.strip().lstrip("$")) * Decimal(repr(float(qty))) if per_unit
+                        else Decimal(typed.strip().lstrip("$")))
+    return None if total < round_basis(landed) else {"cost_total": {"new": round_basis(total - round_basis(landed))}}
+
+
+def test_a_cost_written_back_is_read_against_the_text_its_door_opened_with():
+    """Generated: every door x lots (dividing or not, 1 to 10 decimals, quantities 0.3 to 100000,
+    with and without freight) x typed texts. The opening text sent back, however spaced, with a
+    currency symbol or a trailing zero, is no change; any text of a different value is applied
+    exactly (a unit door: typed x quantity), and the text the door then opens with is no change
+    again. Nothing is compared at a precision."""
+    import random
+    from celerp_inventory.services import CostTotalBelowLanded, cost_written_back
+    rng = random.Random(412)
+    checked = 0
+    for _ in range(300):
+        qty, total, landed = _carried(rng)
+        flat = _flat(qty, total, landed)
+        for door, (_, per_unit) in _RULE_DOORS.items():
+            opened = _opening(door, flat)
+            assert opened, (door, qty, total)
+            for typed in _variants(opened, rng):
+                case = (door, qty, total, landed, opened, typed)
+                if Decimal(typed.strip().lstrip("$")) == Decimal(opened):
+                    assert cost_written_back(flat, typed, opened=opened, now=opened, per_unit=per_unit) is None, case
+                    continue
+                want = _expected(typed, qty, landed, per_unit)
+                if want is None:
+                    with pytest.raises(CostTotalBelowLanded):
+                        cost_written_back(flat, typed, opened=opened, now=opened, per_unit=per_unit)
+                    continue
+                got = cost_written_back(flat, typed, opened=opened, now=opened, per_unit=per_unit)
+                assert got == want, case
+                after = _flat(qty, round(want["cost_total"]["new"] + landed, 10), landed,
+                              cost_base=want["cost_total"]["new"])
+                reopened = _opening(door, after)
+                assert cost_written_back(after, reopened, opened=reopened, now=reopened, per_unit=per_unit) is None, case
+                checked += 1
+    assert checked > 5000, checked
+
+
+@pytest.mark.parametrize("door", sorted(_RULE_DOORS))
+def test_placeholders_unknown_costs_empty_lots_and_stale_editors_at_every_door(door):
+    """An empty editor or the "--" an empty cell shows, sent back, is no change. A lot whose goods
+    cost is not known opens every editor empty, so any number sent there sets (confirms) it. A
+    unit typed on a lot without units is refused. An editor opened on a cost that changed since
+    is refused (nothing written) unless it sends back what it opened with or what is there now."""
+    from celerp_inventory.services import CostChangedSinceOpened, CostNeedsQuantity, cost_written_back
+    kind, per_unit = _RULE_DOORS[door]
+    for empty in ("", "  ", "--", " -- "):
+        assert cost_written_back(_flat(3, None), empty, opened="", now="", per_unit=per_unit) is None
+    if kind == "ui":
+        marked = _flat(3, 100.0, **{MARK: True})
+        assert _opening(door, marked) == ""
+        for empty in ("", "--"):
+            assert cost_written_back(marked, empty, opened="", now="", per_unit=per_unit) is None
+        typed, total = ("33.333333", 99.999999) if per_unit else ("100", 100.0)
+        assert cost_written_back(marked, typed, opened="", now="", per_unit=per_unit) == {"cost_total": {"new": total}}
+    empty_lot = _flat(0, None, cost_price=12.0)
+    if per_unit:
+        with pytest.raises(CostNeedsQuantity):
+            cost_written_back(empty_lot, "13", opened=_opening(door, empty_lot), now=_opening(door, empty_lot), per_unit=True)
+    else:
+        assert cost_written_back(_flat(0, None), "50", opened="", now="", per_unit=False) == {"cost_total": {"new": 50.0}}
+    opened, now = ("12.3456", "15.00") if per_unit else ("1234.56", "1500.00")
+    lot = _flat(100, float(Decimal(now) * (100 if per_unit else 1)))
+    assert cost_written_back(lot, opened, opened=opened, now=now, per_unit=per_unit) is None
+    assert cost_written_back(lot, now, opened=opened, now=now, per_unit=per_unit) is None
+    with pytest.raises(CostChangedSinceOpened) as stale:
+        cost_written_back(lot, "13", opened=opened, now=now, per_unit=per_unit)
+    assert stale.value.now == now
+
+
+_PARSED = [("12.30", Decimal("12.30")), (" 12.30 ", Decimal("12.30")), ("$1,234.56", Decimal("1234.56")),
+           ("1,234,567.5", Decimal("1234567.5")), ("\u0e3f 99", Decimal("99")), ("\u20ac12.5", Decimal("12.5")),
+           (".5", Decimal(".5")), ("\u0661\u0662", Decimal("12")), ("7.", Decimal("7")), ("0", Decimal("0")),
+           ("", None), ("   ", None), ("--", None)]
+_REFUSED = ["12,35", "1,23", "1,2345.6", "1e3", "1E-2", "nan", "NaN", "inf", "-inf", "-5", "- 5", "12.3.4",
+            "abc", "$", "1 000", "0x10", "12..3"]
+
+
+@pytest.mark.parametrize("text,value", _PARSED)
+def test_the_one_cost_parser_reads(text, value):
+    from celerp_inventory.services import parse_cost
+    assert parse_cost(text) == value
+
+
+@pytest.mark.parametrize("text", _REFUSED)
+def test_the_one_cost_parser_refuses_and_says_how_to_write_a_cost(text):
+    """A decimal comma, an exponent, nan or inf and a negative are refused, never read as some
+    other number; the refusal says to use a dot for decimals. Every door reads through it."""
+    from celerp_inventory.services import CostTextInvalid, cost_written_back, parse_cost
+    with pytest.raises(CostTextInvalid) as refused:
+        parse_cost(text)
+    assert "dot" in refused.value.detail["message"]
+    for per_unit in (False, True):
+        with pytest.raises(CostTextInvalid):
+            cost_written_back(_flat(3, 100.0), text, opened="100.00", now="100.00", per_unit=per_unit)
 
 
 # ── saved as shown, at every door ────────────────────────────────────────────
@@ -270,13 +451,13 @@ async def test_the_transform_page_cost_sent_back_as_shown_keeps_the_parent_cost(
         assert (child.get("landed_costs") or {}) == (parent.get("landed_costs") or {}), child
 
 
-async def _children(session, auth, sku: str) -> list[dict]:
+async def _children(session, auth, sku: str | None) -> list[dict]:
     from celerp.models.projections import Projection
     from sqlalchemy import select
     session.expire_all()
     rows = (await session.scalars(select(Projection).where(
         Projection.company_id == auth["company_id"], Projection.entity_type == "item"))).all()
-    return [r.state for r in rows if (r.state or {}).get("sku") == sku]
+    return [r.state for r in rows if sku is None or (r.state or {}).get("sku") == sku]
 
 
 # ── a changed value ──────────────────────────────────────────────────────────
@@ -294,22 +475,18 @@ async def test_the_pricing_tab_writes_a_changed_cost_as_the_whole_value(client, 
     assert (await _state(session, auth, lot))["cost_base"] == 130.0
 
 
-_CONFIRM_DOORS = ["cell_total", "cell_unit", "cell_unit_empty", "pricing_unit", "pricing_total", "transform"]
+_CONFIRM_DOORS = ["cell_total", "cell_unit", "pricing_unit", "pricing_total", "transform"]
 
 
 @pytest.mark.parametrize("door", _CONFIRM_DOORS)
 async def test_typing_the_carried_value_on_a_marked_lot_confirms_it(client, session, auth, door):
     """A lot of unknown goods cost opens its cost edit empty, so the value the user types there
-    is what they know, even when it is the value the lot carries: every door confirms it, and
-    an emptied lot confirms the unit cost its next units wait at."""
+    is what they know, even when it is the value the lot carries: every door confirms it."""
     await _seed(session, auth)
     await _cost_column(session, auth)
     m = await _marked(client, auth)
-    if door == "cell_unit_empty":
-        assert (await client.post(f"/items/{m}/adjust", headers=auth["headers"], json={"new_qty": 0})).status_code == 200
     parent = await _state(session, auth, m)
-    assert parent[MARK] is True and parent["cost_total" if door != "cell_unit_empty" else "cost_price"] == (
-        100.0 if door != "cell_unit_empty" else 20.0), parent
+    assert parent[MARK] is True and parent["cost_total"] == 100.0, parent
     async with _browser(_token(auth)) as ui:
         if door == "transform":
             page = (await ui.get("/api/items/bulk/transform-preview", params={"entity_id": m})).text
@@ -320,15 +497,13 @@ async def test_typing_the_carried_value_on_a_marked_lot_confirms_it(client, sess
                 "child_category": parent["category"], "child_sell_by": parent["sell_by"], "child_cost_total": "100"})
         elif door.startswith("cell"):
             field = "cost_price_total" if door == "cell_total" else "cost_price"
-            if door == "cell_unit_empty":
-                assert _input((await ui.get(f"/api/items/{m}/field/{field}/edit")).text, name="value") == ""
             r = await ui.patch(f"/api/items/{m}/field/{field}", data={"value": "100" if door == "cell_total" else "20"})
         else:
             r = await ui.post(f"/api/items/{m}/price",
                               data={"cost_price_total": "100"} if door == "pricing_total" else {"cost_price": "20"})
     assert r.status_code == 200, r.text[:300]
     st = next(iter(await _children(session, auth, sku))) if door == "transform" else await _state(session, auth, m)
-    assert MARK not in st and (st["cost_price"] == 20.0 if door == "cell_unit_empty" else st["cost_total"] == 100.0), (door, st)
+    assert MARK not in st and st["cost_total"] == 100.0, (door, st)
 
 
 async def test_a_transform_without_a_cost_keeps_the_parent_cost_unknown(client, session, auth):
@@ -347,13 +522,24 @@ async def test_a_transform_without_a_cost_keeps_the_parent_cost_unknown(client, 
     assert child[MARK] is True and child["cost_total"] == 100.0, child
 
 
-async def test_a_lot_without_stock_keeps_a_unit_cost_from_the_pricing_tab_as_its_waiting_cost(client, session, auth):
+@pytest.mark.parametrize("door", ["cell_unit", "pricing_unit"])
+async def test_a_unit_cost_typed_on_a_lot_without_units_is_refused(client, session, auth, door):
+    """A unit cost needs units to apply to: on an empty lot it is refused with "set the quantity
+    first" and nothing is written; a total is taken."""
     await _seed(session, auth)
     await _cost_column(session, auth)
     lot = await _item(client, auth, qty=0)
+    before = _cost_fields(await _state(session, auth, lot))
     async with _browser(_token(auth)) as ui:
-        await ui.post(f"/api/items/{lot}/price", data={"cost_price": "12.5"})
-    assert (await _state(session, auth, lot))["cost_price"] == 12.5
+        if door == "cell_unit":
+            r = await ui.patch(f"/api/items/{lot}/field/cost_price", data={"value": "12.5"})
+            assert "cell--error" in r.text
+        else:
+            r = await ui.post(f"/api/items/{lot}/price", data={"cost_price": "12.5"})
+        assert r.status_code == 200 and t("inventory.cost_unit_needs_quantity") in r.text, r.text[:300]
+        assert _cost_fields(await _state(session, auth, lot)) == before
+        await ui.post(f"/api/items/{lot}/price", data={"cost_price_total": "50"})
+    assert (await _state(session, auth, lot))["cost_total"] == 50.0
 
 
 # ── every surface that shows a lot's cost ────────────────────────────────────
@@ -378,3 +564,193 @@ async def test_every_surface_shows_the_value_a_marked_lot_carries(client, sessio
         }
     for surface, page in pages.items():
         assert re.search(rf'class="cell-money">[^<]*100\.00</span>\s*<span class="cell-price-unit">{label}<', page), surface
+
+
+# ── the editor's text, its staleness, and text that is no cost, at the HTTP doors ──
+
+_UI_EDITORS = ["cell_unit", "cell_total", "cost_total_field", "pricing_unit", "pricing_total", "transform"]
+_CELL_FIELD = {"cell_unit": "cost_price", "cell_total": "cost_price_total", "cost_total_field": "cost_total"}
+
+
+async def _opened_at(ui, door: str, lot: str) -> str:
+    """The text the door's editor opens with, as the page holds it."""
+    if door in _CELL_FIELD:
+        page = (await ui.get(f"/api/items/{lot}/field/{_CELL_FIELD[door]}/edit")).text
+        value = _input(page, name="value")
+        sent = re.search(r'hx-vals=\'(\{[^\']*\})\'', page) or re.search(r'hx-vals="([^"]*)"', page)
+        assert sent and json.loads(html.unescape(sent.group(1)))["opened"] == value, page
+        return value
+    if door == "transform":
+        page = (await ui.get("/api/items/bulk/transform-preview", params={"entity_id": lot})).text
+        assert _input(page, name="child_cost_total_opened") == _input(page, name="child_cost_total")
+        return _input(page, name="child_cost_total")
+    page = (await ui.get(f"/inventory/{lot}?tab=pricing")).text
+    which = "unit" if door == "pricing_unit" else "total"
+    assert _input(page, id=f"opened_{which}_cost_price") == _input(page, id=f"{which}_cost_price")
+    return _input(page, id=f"{which}_cost_price")
+
+
+async def _send(ui, door: str, lot: str, typed: str, opened: str | None, state: dict | None = None):
+    """Send ``typed`` at the door, with the text its editor opened with."""
+    extra = {} if opened is None else {"opened": opened}
+    if door in _CELL_FIELD:
+        return await ui.patch(f"/api/items/{lot}/field/{_CELL_FIELD[door]}", data={"value": typed, **extra})
+    if door == "transform":
+        return await ui.post("/api/items/bulk/transform", data={
+            "entity_id": lot, "child_sku": f"T-{uuid.uuid4().hex[:6]}", "child_qty": str(state["quantity"]),
+            "child_category": state.get("category") or "", "child_sell_by": state.get("sell_by") or "",
+            "child_cost_total": typed, **({} if opened is None else {"child_cost_total_opened": opened})})
+    return await ui.post(f"/api/items/{lot}/price", data={
+        "cost_price" if door == "pricing_unit" else "cost_price_total": typed, **extra})
+
+
+@pytest.mark.parametrize("door", _UI_EDITORS)
+async def test_every_cost_editor_of_a_lot_of_unknown_goods_cost_opens_empty(client, session, auth, door):
+    """Its editor offers no number to confirm by accident; empty or "--" sent back changes nothing."""
+    await _seed(session, auth)
+    await _cost_column(session, auth)
+    m = await _marked(client, auth)
+    before = _cost_fields(await _state(session, auth, m))
+    async with _browser(_token(auth)) as ui:
+        assert await _opened_at(ui, door, m) == ""
+        if door != "transform":
+            for empty in ("", "--"):
+                r = await _send(ui, door, m, empty, "")
+                assert r.status_code == 200, r.text[:300]
+    assert _cost_fields(await _state(session, auth, m)) == before
+
+
+@pytest.mark.parametrize("door", _UI_EDITORS)
+async def test_a_cost_that_changed_since_its_editor_opened_is_not_overwritten(client, session, auth, door):
+    """Two staff on one lot: one opens the cost, the other sets 15.00 a unit. The first one's
+    untouched text sent back writes nothing (no revert); a new value typed over the stale one is
+    refused (409, nothing written) with the cost as it is now in the editor; sent again from
+    there it is applied."""
+    await _seed(session, auth)
+    await _cost_column(session, auth)
+    lot = await _item(client, auth, qty=100, cost_total=1234.56)
+    async with _browser(_token(auth)) as clerk, _browser(_token(auth)) as buyer:
+        opened = await _opened_at(clerk, door, lot)
+        assert (await buyer.post(f"/api/items/{lot}/price", data={"cost_price": "15"})).status_code == 200
+        assert (await _state(session, auth, lot))["cost_total"] == 1500.0
+        events = await _cost_events(session, auth, lot)
+        if door != "transform":
+            r = await _send(clerk, door, lot, opened, opened)
+            assert r.status_code == 200, r.text[:300]
+            assert (await _state(session, auth, lot))["cost_total"] == 1500.0
+            assert await _cost_events(session, auth, lot) == events
+        typed = "13" if door.endswith("unit") else "1300"
+        r = await _send(clerk, door, lot, typed, opened, await _state(session, auth, lot))
+        now = "15.00" if door.endswith("unit") else "1500.00"
+        assert t("inventory.cost_changed_since_opened", now=now) in r.text, r.text[:400]
+        if door != "transform":
+            assert r.status_code == 409 and r.headers.get("X-Swap-Refusal") == "1"
+        assert (await _state(session, auth, lot))["cost_total"] == 1500.0
+        assert await _cost_events(session, auth, lot) == events
+        if door in _CELL_FIELD:
+            assert _input(r.text, name="value") == now
+        reopened = await _opened_at(clerk, door, lot)
+        assert reopened == now
+        r = await _send(clerk, door, lot, typed, reopened, await _state(session, auth, lot))
+        assert r.status_code == 200, r.text[:300]
+    if door == "transform":
+        return
+    assert (await _state(session, auth, lot))["cost_total"] == 1300.0
+
+
+@pytest.mark.parametrize("text", ["nan", "inf", "12,35", "1e3", "-5", "abc"])
+@pytest.mark.parametrize("door", _UI_EDITORS)
+async def test_text_that_is_no_cost_is_refused_at_every_door_and_nothing_is_written(client, session, auth, door, text):
+    """Not a 500 and never some other number: the cell keeps its editor open in its invalid-input
+    state with the reason, the Pricing tab and transform page say why, and nothing is written."""
+    await _seed(session, auth)
+    await _cost_column(session, auth)
+    lot = await _item(client, auth, qty=10, cost_total=100.0)
+    state, lots = await _state(session, auth, lot), len(await _children(session, auth, None))
+    async with _browser(_token(auth)) as ui:
+        r = await _send(ui, door, lot, text, None, state)
+    assert r.status_code == 200 and t("inventory.cost_text_invalid") in r.text, (door, r.status_code, r.text[:300])
+    if door in _CELL_FIELD:
+        assert "cell--error" in r.text and _input(r.text, name="value") == text
+    assert _cost_fields(await _state(session, auth, lot)) == _cost_fields(state)
+    assert len(await _children(session, auth, None)) == lots
+
+
+# ── the round-3 cases: a unit typed coarser than the editor opened ───────────
+
+@pytest.mark.parametrize("door", ["cell_unit", "pricing_unit"])
+@pytest.mark.parametrize("qty,value,typed,want", [(100, 1234.56, "12.35", 1235.0), (100000, 1234560.0, "12.35", 1235000.0),
+                                                  (3, 100.0, "33.33", 99.99)])
+async def test_a_unit_typed_coarser_than_its_editor_opened_is_applied(client, session, auth, door, qty, value, typed, want):
+    """The unit editor opens on the lot's unit as the cell shows it (12.3456); 12.35 typed over
+    it is the lot's new value, 12.35 x the quantity, at the list cell as on the Pricing tab."""
+    await _seed(session, auth)
+    await _cost_column(session, auth)
+    lot = await _item(client, auth, qty=qty, cost_total=value)
+    async with _browser(_token(auth)) as ui:
+        opened = await _opened_at(ui, door, lot)
+        assert Decimal(opened) != Decimal(typed)
+        r = await _send(ui, door, lot, typed, opened)
+        assert r.status_code == 200, r.text[:300]
+        if door == "cell_unit":
+            assert _money_text((await ui.get(f"/api/items/{lot}/field/cost_price/display")).text) == typed
+    assert (await _state(session, auth, lot))["cost_total"] == want, opened
+
+
+async def test_the_cost_total_field_opens_on_the_total_it_shows_and_a_different_one_is_applied(client, session, auth):
+    """The cost_total field door opens at the currency's precision like the total cell (100.00
+    for 100.004); saved back that is no change, and 100.01 typed is the lot's value."""
+    await _seed(session, auth)
+    await _cost_column(session, auth)
+    lot = await _item(client, auth, qty=3, cost_total=100.004)
+    async with _browser(_token(auth)) as ui:
+        opened = await _opened_at(ui, "cost_total_field", lot)
+        assert opened == "100.00"
+        await _send(ui, "cost_total_field", lot, opened, opened)
+        assert (await _state(session, auth, lot))["cost_total"] == 100.004
+        await _send(ui, "cost_total_field", lot, "100.01", opened)
+    assert (await _state(session, auth, lot))["cost_total"] == 100.01
+
+
+# ── the item file: a total read first, and every cost change listed before import ──
+
+async def test_the_import_reads_a_rows_total_first_and_refuses_a_row_giving_both(client, session, auth):
+    """A spreadsheet can round a unit it saves back, so a row's total decides: the importer never
+    reads a unit cost beside it (the owner reads the total first, the builder refuses both)."""
+    from celerp_inventory.services import _pop_cost_change
+    state = _flat(3, 100.0)
+    assert _pop_cost_change({"cost_total": 100.0, "cost_price": 33.33}, state) is None
+    assert _pop_cost_change({"cost_total": 120.0, "cost_price": 33.33}, state) == {"cost_total": {"new": 120.0}}
+    await _cost_column(session, auth)
+    await _seed(session, auth)
+    lot = await _item(client, auth, qty=3, cost_total=100.0)
+    row = await _exported_row(client, auth, lot, "sku,name,quantity,sell_by,cost_price,cost_price_total")
+    r = await _import(client, auth, {**row, "cost_price": "33.33", "cost_price_total": "100"})
+    assert any(e.get("code") == "price_unit_total_conflict" for e in r.json()["detail"]["errors"]), r.text[:300]
+    assert (await _state(session, auth, lot))["cost_total"] == 100.0
+
+
+async def test_the_import_preview_lists_every_cost_change_before_it_is_confirmed(client, session, auth):
+    """Old and new whole values per lot, the unchanged rows not listed, on the API preview and on
+    the importer's review page."""
+    await _cost_column(session, auth)
+    await _seed(session, auth)
+    a = await _item(client, auth, qty=3, cost_total=100.0)
+    b = await _item(client, auth, qty=100, cost_total=1234.56)
+    cols = "sku,name,quantity,sell_by,cost_price_total"
+    ra, rb = await _exported_row(client, auth, a, cols), await _exported_row(client, auth, b, "sku,name,quantity,sell_by,cost_price")
+    r = await client.post("/items/import/rows/preview", headers=auth["headers"], json={
+        "rows": [{**ra, "cost_price_total": "120"}, {**rb, "cost_price": "12.35"}], "upsert": True,
+        "idempotency_key": f"wb-{uuid.uuid4().hex[:6]}"})
+    assert r.status_code == 200, r.text[:300]
+    changes = r.json()["cost_changes"]
+    assert changes == [{"row": 1, "sku": ra["sku"], "old": "100.0", "new": "120.0"},
+                       {"row": 2, "sku": rb["sku"], "old": "1234.56", "new": "1235.0"}], changes
+    r = await client.post("/items/import/rows/preview", headers=auth["headers"], json={
+        "rows": [ra, rb], "upsert": True, "idempotency_key": f"wb-{uuid.uuid4().hex[:6]}"})
+    assert r.json()["cost_changes"] == []
+    from ui.routes.inventory import _import_cost_changes
+    from fasthtml.common import to_xml
+    shown = to_xml(_import_cost_changes(changes))
+    assert t("inventory.import_cost_changes", count=2) in shown
+    assert t("inventory.import_cost_change", row=2, sku=rb["sku"], old="1234.56", new="1235.0") in shown
