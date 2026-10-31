@@ -46,7 +46,9 @@ async def _member(factory) -> tuple[uuid.UUID, uuid.UUID]:
 async def _held_by(factory, cid):
     """A session holding the company's membership rows, as a role change in flight does."""
     writer = factory()
-    await writer.execute(select(UserCompany).where(UserCompany.company_id == cid).with_for_update())
+    # The role change is another request's, so it takes its rows in a task of its own.
+    await asyncio.create_task(writer.execute(
+        select(UserCompany).where(UserCompany.company_id == cid).with_for_update()))
     return writer
 
 

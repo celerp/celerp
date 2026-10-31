@@ -280,7 +280,7 @@ async def test_records_checked_for_the_replace_cannot_change_until_it_commits(re
     reset = cb._reset_replaced
     edits: list[str] = []
 
-    async def edit_then_reset(session, company, *args):
+    async def edit():
         async with real_engine.connect() as conn:
             await conn.execute(text("SET lock_timeout = '300ms'"))
             try:
@@ -292,6 +292,10 @@ async def test_records_checked_for_the_replace_cannot_change_until_it_commits(re
             except DBAPIError:
                 edits.append("waited")
             await conn.rollback()
+
+    async def edit_then_reset(session, company, *args):
+        # The edit is another request's, so it runs in a task of its own.
+        await asyncio.create_task(edit())
         return await reset(session, company, *args)
 
     monkeypatch.setattr(cb, "_reset_replaced", edit_then_reset)
