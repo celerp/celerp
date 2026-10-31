@@ -564,7 +564,7 @@ def _contact_ledger_table(ledger: list[dict], docs_on: bool) -> FT:
     return activity_table(ledger, max_display=10, docs_on=docs_on)
 
 
-def _contacts_bulk_toolbar(contact_type: str) -> FT:
+def _contacts_bulk_toolbar() -> FT:
     """Sticky bulk action toolbar for the contacts list. Hidden until rows are selected."""
     return Div(
         Span(t("doc.0_selected"), id="contact-bulk-count", cls="bulk-count"),
@@ -588,18 +588,18 @@ def _contacts_bulk_toolbar(contact_type: str) -> FT:
         ),
         Div(id="contact-bulk-context"),
         Div(id="bulk-action-result"),
-        _contact_bulk_templates(contact_type),
+        _contact_bulk_templates(),
         id="contact-bulk-toolbar",
         cls="bulk-toolbar",
     )
 
 
-def _contact_bulk_templates(contact_type: str) -> FT:
+def _contact_bulk_templates() -> FT:
     """Hidden <template> elements for contact bulk action context UI."""
     from fasthtml.common import Template as _Tpl
     merge_tpl = _Tpl(
         Div(
-            P(t("contacts.merge_prompt", type=contact_type),
+            P(t("contacts.merge_prompt"),
               cls="meta-value", style="margin-bottom:0.5rem;font-size:0.85rem;"),
             Div(id="contact-merge-radio-list",
                 data_merge_failed=t("contacts.merge_failed")),
@@ -622,7 +622,7 @@ def _contact_bulk_templates(contact_type: str) -> FT:
       document.getElementById('contact-merge-confirm-btn').disabled = false;
     });
     label.appendChild(radio);
-    label.appendChild(document.createTextNode((meta.name || id) + (meta.contact_type ? ' (' + meta.contact_type + ')' : '')));
+    label.appendChild(document.createTextNode(meta.name || id));
     list.appendChild(label);
   });
   window.contactMergeSubmit = function() {
@@ -676,10 +676,11 @@ def _contacts_content(
     link_fn = {"name": "/contacts/{id}", "company_name": "/contacts/{id}"}
 
     if not contacts:
+        label = display_enum(contact_type, "contact_type")
         table_content = Div(
             empty_state_cta(
-                t("contacts.empty_none", type=contact_type),
-                t("contacts.add_type", type=contact_type.title()),
+                t("contacts.empty_none", type=label),
+                t("contacts.add_type", type=label),
                 create_url,
                 hx_post=True,
             ),
@@ -741,7 +742,7 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
             A(import_icon(), t("btn.import"), href="/crm/import/contacts", cls="btn btn--secondary", data_import_hint=True) if _can_import_export else "",
         ),
         Div(column_manager(schema, et), cls="column-manager-row"),
-        _contacts_bulk_toolbar(contact_type),
+        _contacts_bulk_toolbar(),
         _contacts_content(contact_type, contacts, q, page, total, per_page, sort, sort_dir, currency),
         Script(f"""
 (function(){{
