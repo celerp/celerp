@@ -393,6 +393,13 @@ def _case_turn_off_preflight_not_first_party(base, marker, monkeypatch):
                              ), "is filled by Celerp's own modules only"
 
 
+def _case_periodic_operation_not_first_party(base, marker, monkeypatch):
+    return _migrating_module(base, f"acme-{_uid()}", marker,
+                             slots={"periodic_operation": {"handler": "{inner}.ops:run", "module": "acme"}},
+                             code={"ops.py": "async def run(*, session, company_id, today, budget):\n    return None\n"}
+                             ), "is filled by Celerp's own modules only"
+
+
 def _case_readable_when_off_not_bool(base, marker, monkeypatch):
     return _migrating_module(base, f"acme-{_uid()}", marker, readable_when_off="yes"), "must be true or false"
 
@@ -855,6 +862,7 @@ async def test_ordinary_attribute_writes_and_an_early_star_import_are_admitted(
     _case_in_production_wrong_arity,
     _case_in_production_not_first_party,
     _case_turn_off_preflight_not_first_party,
+    _case_periodic_operation_not_first_party,
     _case_readable_when_off_not_bool,
     _case_readable_when_off_not_first_party,
     _case_projection_prefix_twice,
