@@ -1102,7 +1102,7 @@
       "params": []
     },
     "subscriptions.history_hint": {
-      "en": "These documents were made before this agreement tracked its periods, and Celerp could not match them to a period on its own. Place each one in the period it billed. Until every one is placed, earlier periods are not billed and automatic billing waits.",
+      "en": "These documents were made before this agreement tracked its periods, and Celerp could not match them to a period on its own. Place each one in the period it billed, or set it aside if it billed no period of its own, such as a duplicate. Until every one is handled, earlier periods are not billed and automatic billing waits.",
       "params": []
     },
     "subscriptions.history_place": {
@@ -1112,11 +1112,27 @@
       ]
     },
     "subscriptions.history_no_period": {
-      "en": "This document is missing or has no issue date, so it can't be placed in a period.",
+      "en": "This document is missing or has no issue date, so it can't be placed in a period. Set it aside to finish the review.",
       "params": []
     },
     "subscriptions.history_withdraw": {
       "en": "Withdraw placement",
+      "params": []
+    },
+    "subscriptions.history_set_aside": {
+      "en": "Set aside",
+      "params": []
+    },
+    "subscriptions.history_set_aside_title": {
+      "en": "Use this for a duplicate, or a document that no longer exists. It will not be linked to any period.",
+      "params": []
+    },
+    "subscriptions.history_set_aside_row": {
+      "en": "Set aside, no period",
+      "params": []
+    },
+    "subscriptions.history_return": {
+      "en": "Return to review",
       "params": []
     }
   }

@@ -1553,9 +1553,13 @@
     "path:entity_id": "Identifier of the requested Celerp record.",
     "path:doc_id": "Identifier of the earlier document waiting in the agreement's history review."
   },
-  "POST /subscriptions/{entity_id}/history/{doc_id}/withdraw": {
+  "POST /subscriptions/{entity_id}/history/{doc_id}/set-aside": {
     "path:entity_id": "Identifier of the requested Celerp record.",
     "path:doc_id": "Identifier of the earlier document waiting in the agreement's history review."
+  },
+  "POST /subscriptions/{entity_id}/history/{doc_id}/withdraw": {
+    "path:entity_id": "Identifier of the requested Celerp record.",
+    "path:doc_id": "Identifier of the earlier document placed in a period or set aside in the agreement's history review."
   },
   "POST /subscriptions/{entity_id}/periods/{k}/reopen": {
     "path:entity_id": "Identifier of the requested Celerp record.",

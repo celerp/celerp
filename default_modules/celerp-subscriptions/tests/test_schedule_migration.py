@@ -238,3 +238,41 @@ async def test_history_confirm_and_withdraw(client, session, auth, monkeypatch):
     assert (await generate_due(client, hd, tid)).json()["period_index"] == 0
     late = await client.post(f"/subscriptions/{tid}/history/{mar}/withdraw", headers=hd)
     assert late.status_code == 409
+
+
+async def test_history_set_aside_clears_documents_no_period_can_take(client, session, auth, monkeypatch):
+    """A deleted document and the second of two in one period cannot be placed; setting each
+    aside lets review finish, and withdrawing puts it back."""
+    _today(monkeypatch, "2026-04-15")
+    hd = auth["headers"]
+    cid = auth["company_id"]
+    tid, (mar, gone) = await _legacy(session, auth, next_run="2026-04-01", doc_dates=["2026-03-01"], missing=1)
+    dtid, (feb1, feb15, dmar) = await _legacy(session, auth, next_run="2026-04-01",
+                                              doc_dates=["2026-02-01", "2026-02-15", "2026-03-01"])
+    await _migrate(session, cid)
+
+    def act(t_id, doc, action, **body):
+        return client.post(f"/subscriptions/{t_id}/history/{doc}/{action}", headers=hd, json=body or None)
+
+    assert (await act(tid, "doc:UNLISTED", "set-aside")).status_code == 409
+    assert (await act(tid, gone, "set-aside")).status_code == 200
+    assert (await act(tid, gone, "set-aside")).status_code == 200  # a repeat returns the state it is in
+    assert (await act(tid, mar, "confirm", period_index=-1)).status_code == 200
+    state = await _state(session, cid, tid)
+    assert not state.get("history_review")
+    assert [r["doc_id"] for r in state["history_set_aside"]] == [gone]
+    shown = (await client.get(f"/subscriptions/{tid}/periods", headers=hd)).json()
+    assert [r["doc_id"] for r in shown["set_aside"]] == [gone]
+
+    assert (await act(tid, gone, "withdraw")).status_code == 200
+    state = await _state(session, cid, tid)
+    assert [r["doc_id"] for r in state["history_review"]] == [gone] and not state.get("history_set_aside")
+    assert (await act(tid, gone, "set-aside")).status_code == 200
+
+    assert (await act(dtid, feb1, "confirm", period_index=-2)).status_code == 200
+    assert (await act(dtid, feb15, "confirm", period_index=-2)).status_code == 409  # that period is claimed
+    assert (await act(dtid, feb15, "set-aside")).status_code == 200
+    assert (await act(dtid, dmar, "confirm", period_index=-1)).status_code == 200
+    assert not (await _state(session, cid, dtid)).get("history_review")
+    assert (await generate_due(client, hd, dtid)).json()["period_index"] == 0
+    assert (await act(dtid, feb15, "withdraw")).status_code == 409  # a later period is billed

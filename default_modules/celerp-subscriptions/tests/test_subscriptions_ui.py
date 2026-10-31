@@ -271,3 +271,18 @@ class TestBillingPages:
         assert confirm.await_args.args[2:] == ("doc:old", "confirm", {"period_index": -2})
         r = await owner_ui.post(f"/subscriptions/{eid}/history/doc:old/withdraw")
         assert t("subscriptions.err_history_not_confirmed", "en") in json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"]
+
+    async def test_history_review_sets_aside_a_document_no_period_can_take(self, owner_ui):
+        eid = await _active_subscription(owner_ui)
+        review = {"next_bill_date": None, "rows": [], "review": [{"doc_id": "doc:gone", "ref_id": None, "candidates": []}],
+                  "set_aside": [{"doc_id": "doc:dup", "ref_id": "INV-DUP"}]}
+        with patch("ui.api_client.get_subscription_periods", new=AsyncMock(return_value=review)):
+            html = (await owner_ui.get(f"/subscriptions/{eid}")).text
+        assert html.count(t("subscriptions.history_set_aside", "en")) >= 1 and "no issue date" in html
+        assert f'hx-post="/subscriptions/{eid}/history/doc:gone/set-aside"' in html
+        assert "INV-DUP" in html and f'hx-post="/subscriptions/{eid}/history/doc:dup/withdraw"' in html
+        action = AsyncMock(return_value={"ok": True})
+        with patch("ui.api_client.subscription_history_action", new=action):
+            r = await owner_ui.post(f"/subscriptions/{eid}/history/doc:gone/set-aside")
+        assert r.headers["HX-Redirect"] == f"/subscriptions/{eid}#history-review"
+        assert action.await_args.args[2:] == ("doc:gone", "set-aside", None)

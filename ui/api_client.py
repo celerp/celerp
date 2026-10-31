@@ -2143,7 +2143,7 @@ async def update_subscription_schedule(token: str, entity_id: str, changes: dict
         return _raise(await c.patch(f"/subscriptions/{entity_id}/schedule", json=changes)).json()
 
 
-HISTORY_ACTIONS = ("confirm", "withdraw")
+HISTORY_ACTIONS = ("confirm", "set-aside", "withdraw")
 
 
 async def subscription_history_action(token: str, entity_id: str, doc_id: str, action: str,

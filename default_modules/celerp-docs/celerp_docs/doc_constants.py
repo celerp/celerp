@@ -77,7 +77,7 @@ LEGACY_CONTACT_FIELDS: dict[str, str] = {
 # history review and the unattended modes with their consents.
 SCHEDULE_OWNED_FIELDS: frozenset[str] = frozenset({
     "source_agreement", "period_index", "service_start", "service_end",
-    "periods", "history_review", "consents", "generation_mode", "auto_send",
+    "periods", "history_review", "history_set_aside", "consents", "generation_mode", "auto_send",
 })
 # An agreement's schedule terms: changed only through its schedule, which checks them
 # against the periods already claimed. A draft may carry them when it is created.

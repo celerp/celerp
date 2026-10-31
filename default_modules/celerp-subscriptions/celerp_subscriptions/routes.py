@@ -472,6 +472,35 @@ def _build_router() -> APIRouter:
                      drop=() if review else ("history_review",))
         return {"ok": True}
 
+    @router.post("/{entity_id}/history/{doc_id}/set-aside")
+    async def set_aside_history(
+        entity_id: str,
+        doc_id: str,
+        company_id: uuid.UUID = Depends(get_current_company_id),
+        _: None = require_permission("edit_documents"),
+        user=Depends(get_current_user),
+        session: AsyncSession = Depends(get_session),
+    ) -> dict:
+        """Record that an earlier document billed no period of its own (a duplicate, or one that
+        no longer exists), so review can finish without it."""
+        proj = await billing.locked_agreement(session, company_id, entity_id)
+        aside = list(proj.state.get("history_set_aside") or [])
+        if any(r.get("doc_id") == doc_id for r in aside):
+            return {"ok": True}
+        review = list(proj.state.get("history_review") or [])
+        row = next((r for r in review if r.get("doc_id") == doc_id), None)
+        if row is None:
+            raise HTTPException(status_code=409, detail=t("subscriptions.err_history_not_candidate"))
+        review = [r for r in review if r is not row]
+        periods = _periods(proj.state)
+        _settle(periods, review)
+        aside.append({"doc_id": doc_id, "candidates": row.get("candidates") or [],
+                      "by": str(user.id), "at": billing.now_stamp()})
+        await _write(session, company_id, entity_id,
+                     {"periods": periods, "history_set_aside": aside, **_review_change(review)}, user,
+                     drop=() if review else ("history_review",))
+        return {"ok": True}
+
     @router.post("/{entity_id}/history/{doc_id}/withdraw")
     async def withdraw_history(
         entity_id: str,
@@ -481,22 +510,33 @@ def _build_router() -> APIRouter:
         user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
-        """Undo a confirmation while no later period is billed: the document waits for review again."""
+        """Undo a placement or a set-aside while no later period is billed: the document waits
+        for review again."""
         proj = await billing.locked_agreement(session, company_id, entity_id)
         periods = _periods(proj.state)
+        aside = list(proj.state.get("history_set_aside") or [])
+        set_aside = next((r for r in aside if r.get("doc_id") == doc_id), None)
         k = next((int(i) for i, e in periods.items() if e.get("history") and e.get("doc_id") == doc_id
                   and e.get("state") == BILLED), None)
-        if k is None:
+        if set_aside is not None:
+            candidates = set_aside.get("candidates") or []
+        elif k is not None:
+            candidates = periods[str(k)].get("candidates") or [k]
+        else:
             raise HTTPException(status_code=409, detail=t("subscriptions.err_history_not_confirmed"))
-        if any(int(i) > k and e.get("state") == BILLED and not e.get("history") for i, e in periods.items()):
+        earliest = min([*candidates, *([k] if k is not None else [])], default=None)
+        if earliest is not None and any(int(i) > earliest and e.get("state") == BILLED and not e.get("history")
+                                        for i, e in periods.items()):
             raise HTTPException(status_code=409, detail=t("subscriptions.err_history_later_billed"))
-        candidates = periods[str(k)].get("candidates") or [k]
         for c in candidates:
             entry = periods.get(str(c)) or {}
             if c == k or entry.get("state") in (None, RELEASED):
                 periods[str(c)] = {"state": UNRESOLVED, "release_count": entry.get("release_count", 0)}
         review = [*(proj.state.get("history_review") or []), {"doc_id": doc_id, "candidates": candidates}]
-        await _write(session, company_id, entity_id, {"periods": periods, "history_review": review}, user)
+        aside = [r for r in aside if r is not set_aside]
+        await _write(session, company_id, entity_id,
+                     {"periods": periods, "history_review": review, **({"history_set_aside": aside} if aside else {})},
+                     user, drop=("history_set_aside",) if set_aside is not None and not aside else ())
         return {"ok": True}
 
     @router.post("/{entity_id}/pause")

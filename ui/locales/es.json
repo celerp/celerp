@@ -6769,8 +6769,12 @@
   "subscriptions.consent_sending": "Automatic sending authorized on {date}",
   "subscriptions.consent_collection": "Automatic collection authorized on {date}",
   "subscriptions.history_heading": "Earlier documents to place",
-  "subscriptions.history_hint": "These documents were made before this agreement tracked its periods, and Celerp could not match them to a period on its own. Place each one in the period it billed. Until every one is placed, earlier periods are not billed and automatic billing waits.",
+  "subscriptions.history_hint": "These documents were made before this agreement tracked its periods, and Celerp could not match them to a period on its own. Place each one in the period it billed, or set it aside if it billed no period of its own, such as a duplicate. Until every one is handled, earlier periods are not billed and automatic billing waits.",
   "subscriptions.history_place": "Place in {period}",
-  "subscriptions.history_no_period": "This document is missing or has no issue date, so it can't be placed in a period.",
-  "subscriptions.history_withdraw": "Withdraw placement"
+  "subscriptions.history_no_period": "This document is missing or has no issue date, so it can't be placed in a period. Set it aside to finish the review.",
+  "subscriptions.history_withdraw": "Withdraw placement",
+  "subscriptions.history_set_aside": "Set aside",
+  "subscriptions.history_set_aside_title": "Use this for a duplicate, or a document that no longer exists. It will not be linked to any period.",
+  "subscriptions.history_set_aside_row": "Set aside, no period",
+  "subscriptions.history_return": "Return to review"
 }

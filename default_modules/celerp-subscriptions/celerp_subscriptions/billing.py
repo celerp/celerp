@@ -232,9 +232,10 @@ def _period_row(schedule: Schedule, k: int) -> dict:
 async def period_list(session: AsyncSession, company_id, state: dict, today: date, *, limit: int = 24) -> dict:
     """An agreement's periods from its lowest to the one after today (and any claimed later),
     newest first, at most ``limit``, with each claim's state and document; its next bill date;
-    and the earlier documents waiting for history review, each with its candidate periods."""
+    the earlier documents waiting for history review, each with its candidate periods; and the
+    ones set aside as billing no period of their own."""
     if not state.get("anchor_date"):
-        return {"next_bill_date": None, "rows": [], "review": []}
+        return {"next_bill_date": None, "rows": [], "review": [], "set_aside": []}
     schedule = Schedule.from_state(state)
     nxt = schedule.next_bill_date(floor=review_floor(state))
     first = schedule.first()
@@ -253,7 +254,10 @@ async def period_list(session: AsyncSession, company_id, state: dict, today: dat
     review = [{"doc_id": r.get("doc_id"), "ref_id": await doc_ref(session, company_id, r.get("doc_id")),
                "candidates": [_period_row(schedule, c) for c in r.get("candidates") or []]}
               for r in state.get("history_review") or []]
-    return {"next_bill_date": nxt.isoformat() if nxt else None, "rows": rows, "review": review}
+    set_aside = [{"doc_id": r.get("doc_id"), "ref_id": await doc_ref(session, company_id, r.get("doc_id"))}
+                 for r in state.get("history_set_aside") or []]
+    return {"next_bill_date": nxt.isoformat() if nxt else None, "rows": rows, "review": review,
+            "set_aside": set_aside}
 
 
 def due_periods(state: dict, today: date) -> tuple[Schedule, list[int]] | None:

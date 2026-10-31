@@ -517,26 +517,39 @@ def _billing_section(entity_id: str, sub: dict) -> FT:
     )
 
 
-def _history_review(entity_id: str, review: list[dict]) -> FT | str:
+def _history_review(entity_id: str, review: list[dict], set_aside: list[dict]) -> FT | str:
     """Earlier documents that could not be matched to a period on their own: place each in
-    the period it billed. Placing one can be withdrawn from the Periods table."""
-    if not review:
+    the period it billed, or set it aside when it billed no period of its own. Placing one
+    can be withdrawn from the Periods table; a set-aside one returns to review from here."""
+    if not review and not set_aside:
         return ""
+
+    def _doc(r: dict) -> FT:
+        return A(r.get("ref_id") or r["doc_id"], href=f"/docs/{r['doc_id']}")
+
+    def _action(label: str, doc_id: str, action: str, **attrs) -> FT:
+        return Button(label, cls="btn btn--secondary btn--sm", hx_swap="none",
+                      hx_post=f"/subscriptions/{entity_id}/history/{doc_id}/{action}", **attrs)
 
     def _row(r: dict) -> FT:
         doc_id = r["doc_id"]
-        doc = A(r.get("ref_id") or doc_id, href=f"/docs/{doc_id}")
-        places = [Button(t("subscriptions.history_place", period=_period_text(c)), cls="btn btn--secondary btn--sm",
-                         hx_post=f"/subscriptions/{entity_id}/history/{doc_id}/confirm",
-                         hx_vals={"period_index": c["period_index"]}, hx_swap="none")
+        places = [_action(t("subscriptions.history_place", period=_period_text(c)), doc_id, "confirm",
+                          hx_vals={"period_index": c["period_index"]})
                   for c in r.get("candidates") or []]
-        return Tr(Td(doc), Td(*places) if places else Td(t("subscriptions.history_no_period")))
+        aside = _action(t("subscriptions.history_set_aside"), doc_id, "set-aside",
+                        title=t("subscriptions.history_set_aside_title"))
+        note = [] if places else [Span(t("subscriptions.history_no_period"), cls="text-muted")]
+        return Tr(Td(_doc(r)), Td(*note, *places, aside))
+
+    def _aside_row(r: dict) -> FT:
+        return Tr(Td(_doc(r)), Td(Span(t("subscriptions.history_set_aside_row"), cls="text-muted"),
+                                  _action(t("subscriptions.history_return"), r["doc_id"], "withdraw")))
 
     return Div(
         H3(t("subscriptions.history_heading")),
         P(t("subscriptions.history_hint"), cls="text-muted"),
-        Table(Thead(Tr(Th(t("th.document")), Th(t("th.period")))), Tbody(*[_row(r) for r in review]),
-              cls="data-table"),
+        Table(Thead(Tr(Th(t("th.document")), Th(t("th.period")))),
+              Tbody(*[_row(r) for r in review], *[_aside_row(r) for r in set_aside]), cls="data-table"),
         id="history-review", cls="mt-lg",
     )
 
@@ -907,7 +920,7 @@ def setup_routes(app) -> None:
                 suppress_pdf=True,
             ),
             _billing_section(entity_id, doc),
-            _history_review(entity_id, schedule.get("review") or []),
+            _history_review(entity_id, schedule.get("review") or [], schedule.get("set_aside") or []),
             _periods_table(entity_id, schedule.get("rows") or []),
             title=f"{type_label} {ref} - Celerp",
             nav_active="subscriptions_sales" if direction == "sales" else "subscriptions_purchasing",
