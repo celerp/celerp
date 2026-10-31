@@ -6623,6 +6623,8 @@
   "connectors.preview_celerp_name": "Celerp name",
   "connectors.preview_store_name": "{service} name",
   "connectors.preview_differences": "Differences",
+  "connectors.preview_stock": "ክምችት",
+  "connectors.preview_stock_changes": "የመጀመሪያው ማመሳሰል ከእነዚህ ምርቶች የ{n}ቱን የ{service} ክምችት ወደ Celerp ቁጥር ያስተካክላል።",
   "connectors.preview_difference": "{field}: Celerp {celerp}, store {remote}",
   "connectors.preview_changed": "Last changed in {service}",
   "connectors.preview_celerp_changed": "Last changed in Celerp",

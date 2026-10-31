@@ -910,6 +910,43 @@ async def test_preview_writes_nothing(woo, connector_session):
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_preview_shows_store_and_celerp_stock_and_what_goes_out(woo, connector_session):
+    """Each store product shows the stock the store counts; a match whose stock goes out
+    shows the store's count becoming Celerp's sellable quantity, and the preview counts
+    them. A product the store does not count stock for changes nothing."""
+    from celerp.connectors.first_sync import build_preview
+
+    session = connector_session
+    cid = await seed_company(session, "PreviewStock")
+    await add_item(session, cid, "item:counted", "COUNT-1", quantity=4)
+    await add_item(session, cid, "item:same", "SAME-1", quantity=7)
+    await add_item(session, cid, "item:uncounted", "FREE-1", quantity=3)
+    await connect(session, cid, "woocommerce", _WIDEST)
+    ctx = ConnectorContext(company_id=str(cid), access_token="ck:cs", store_handle="https://store.example.com")
+    respx.get("https://store.example.com/wp-json/wc/v3/products").mock(return_value=httpx.Response(200, json=[
+        {"id": 1, "sku": "COUNT-1", "name": "COUNT-1", "manage_stock": True, "stock_quantity": 9},
+        {"id": 2, "sku": "SAME-1", "name": "SAME-1", "manage_stock": True, "stock_quantity": 7},
+        {"id": 3, "sku": "FREE-1", "name": "FREE-1", "manage_stock": False, "stock_quantity": None},
+        {"id": 4, "sku": "NEW-9", "name": "New", "manage_stock": True, "stock_quantity": 5},
+    ]))
+    respx.get("https://store.example.com/wp-json/wc/v3/orders").mock(return_value=httpx.Response(200, json=[]))
+
+    preview = await build_preview(woo, ctx, _WIDEST, datetime(2026, 9, 1, tzinfo=timezone.utc))
+    by_sku = {m["sku"]: m for m in preview.matches}
+    assert by_sku["COUNT-1"]["stock"] == 9 and by_sku["COUNT-1"]["celerp_stock"] == 4
+    assert by_sku["COUNT-1"]["stock_change"] == {"store": 9, "celerp": 4}
+    assert by_sku["SAME-1"]["stock_change"] is None
+    assert by_sku["FREE-1"]["stock"] is None and by_sku["FREE-1"]["stock_change"] is None
+    assert [(n["sku"], n["stock"]) for n in preview.new] == [("NEW-9", 5)]
+    assert preview.stock_changes == 1
+
+    preview = await build_preview(woo, ctx, {**_WIDEST, "stock": "off"}, datetime(2026, 9, 1, tzinfo=timezone.utc))
+    assert preview.stock_changes == 0
+    assert all(m["stock_change"] is None for m in preview.matches)
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_preview_counts_orders_and_accounting_effect(woo, connector_session):
     from celerp.connectors.first_sync import build_preview
 

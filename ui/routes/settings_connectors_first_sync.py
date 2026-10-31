@@ -13,7 +13,7 @@ from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 
-from ui.components.activity import fmt_price, relative_time
+from ui.components.activity import fmt_price, fmt_qty, relative_time
 from ui.i18n import get_lang, refusal_text, t
 
 
@@ -69,6 +69,14 @@ def _differences(differences: dict, lang: str) -> str:
     )
 
 
+def _stock(row: dict) -> str:
+    """A match's store stock, and the count the stock push gives it when that differs."""
+    change = row.get("stock_change")
+    if change:
+        return f"{fmt_qty(change['store'])} \u2192 {fmt_qty(change['celerp'])}"
+    return "--" if row.get("stock") is None else fmt_qty(row["stock"])
+
+
 def _section(platform: str, preview: dict, show: str, lang: str) -> FT:
     service = get_connector(platform).display_name
     directions = preview.get("directions") or {}
@@ -79,10 +87,14 @@ def _section(platform: str, preview: dict, show: str, lang: str) -> FT:
             [(t("connectors.preview_sku", lang), False), (t("connectors.preview_celerp_name", lang), False),
              (t("connectors.preview_store_name", lang, service=service), False),
              (t("connectors.preview_differences", lang), False),
+             (t("connectors.preview_stock", lang), True),
              (t("connectors.preview_changed", lang, service=service), False)],
             [[_cell(r.get("sku")), _cell(r.get("celerp_name")), _cell(r.get("name")),
-              _differences(r.get("differences") or {}, lang), _when(r.get("modified"))]
+              _differences(r.get("differences") or {}, lang), _stock(r), _when(r.get("modified"))]
              for r in preview["matches"]], lang)
+        if preview.get("stock_changes"):
+            hint = Span(hint, " ", t("connectors.preview_stock_changes", lang, n=preview["stock_changes"],
+                                     service=service))
     elif show == "new":
         hint = t("connectors.preview_new_created" if products_in else "connectors.preview_new_left",
                  lang, service=service)

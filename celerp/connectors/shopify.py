@@ -186,6 +186,8 @@ class ShopifyConnector(ConnectorBase):
                     variation_id=str(variant["id"]), sku=(variant.get("sku") or "").strip(),
                     name=name, description=None, price=money(variant.get("price")),
                     modified=_when(variant.get("updated_at") or product.get("updated_at")),
+                    stock=(float(variant.get("inventory_quantity") or 0)
+                           if variant.get("inventory_management") == "shopify" else None),
                     extra={"inventory_quantity": variant.get("inventory_quantity"),
                            "inventory_management": variant.get("inventory_management"),
                            "product": product},

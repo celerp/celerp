@@ -6623,6 +6623,8 @@
   "connectors.preview_celerp_name": "Celerp name",
   "connectors.preview_store_name": "{service} name",
   "connectors.preview_differences": "Differences",
+  "connectors.preview_stock": "Stock",
+  "connectors.preview_stock_changes": "La première synchronisation règle le stock {service} de {n} de ces produits sur la quantité de Celerp.",
   "connectors.preview_difference": "{field}: Celerp {celerp}, store {remote}",
   "connectors.preview_changed": "Last changed in {service}",
   "connectors.preview_celerp_changed": "Last changed in Celerp",

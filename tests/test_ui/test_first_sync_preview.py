@@ -18,7 +18,9 @@ PREVIEW = {
     "directions": WOO, "orders_from": "2026-09-01T00:00:00+00:00",
     "matches": [{"key": "1", "sku": "MATCH-1", "name": "Store shirt", "celerp_name": "Celerp shirt",
                  "modified": "2026-09-02T10:00:00+00:00", "entity_id": "item:m",
-                 "differences": {"sale_price": [25.0, 30.0]}}],
+                 "differences": {"sale_price": [25.0, 30.0]},
+                 "stock": 7.0, "celerp_stock": 3.0, "stock_change": {"store": 7.0, "celerp": 3.0}}],
+    "stock_changes": 1,
     "new": [{"key": "2", "sku": "NEW-1", "name": None, "price": 8.0, "modified": None}],
     "no_sku": [{"key": "3", "sku": None, "name": "Untitled", "modified": None}],
     "problems": [], "to_publish": [{"entity_id": "item:o", "sku": "ONLY-1", "name": "Only", "modified": None}],
@@ -74,6 +76,15 @@ async def test_preview_shows_counts_tables_and_start():
     assert PREVIEW["order_effect"] in html
     assert t("connectors.start_first_sync") in html
     assert 'href="/settings/connectors/woocommerce"' in html  # cancel goes back, nothing changed
+
+
+@pytest.mark.asyncio
+async def test_matches_show_the_store_stock_and_what_the_stock_push_sets():
+    r = await _client_get("/settings/connectors/woocommerce/first-sync?show=matches")
+    html = r.text
+    assert t("connectors.preview_stock") in html
+    assert "7 \u2192 3" in html
+    assert t("connectors.preview_stock_changes", n=1, service="WooCommerce") in html
 
 
 @pytest.mark.asyncio

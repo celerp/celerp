@@ -1459,6 +1459,7 @@
     "connectors.preview_recorded",
     "connectors.preview_sku",
     "connectors.preview_start_hint",
+    "connectors.preview_stock",
     "connectors.preview_store_name",
     "connectors.preview_tab_matches",
     "connectors.preview_tab_new",

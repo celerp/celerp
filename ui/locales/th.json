@@ -6623,6 +6623,8 @@
   "connectors.preview_celerp_name": "Celerp name",
   "connectors.preview_store_name": "{service} name",
   "connectors.preview_differences": "Differences",
+  "connectors.preview_stock": "สต็อก",
+  "connectors.preview_stock_changes": "การซิงค์ครั้งแรกจะตั้งสต็อกใน {service} ของสินค้า {n} รายการนี้ให้ตรงกับจำนวนใน Celerp",
   "connectors.preview_difference": "{field}: Celerp {celerp}, store {remote}",
   "connectors.preview_changed": "Last changed in {service}",
   "connectors.preview_celerp_changed": "Last changed in Celerp",

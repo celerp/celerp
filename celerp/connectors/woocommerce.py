@@ -139,6 +139,13 @@ class LinkNeedsConfirmation(ValueError):
         super().__init__(t("connectors.link_confirm", name=self.remote_name, service=connector.display_name))
 
 
+def _counted_stock(product: dict) -> float | None:
+    """The stock WooCommerce counts for a product or variation; None when it counts none
+    (manage_stock false, or a variation whose parent counts it)."""
+    quantity = product.get("stock_quantity")
+    return float(quantity) if product.get("manage_stock") is True and quantity is not None else None
+
+
 # The WooCommerce field each sent item field goes to.
 _WOO_FIELDS = {"sku": "sku", "description": "description", "sale_price": "regular_price", "name": "name"}
 
@@ -425,7 +432,7 @@ class WooCommerceConnector(ConnectorBase):
                         sku=(var.get("sku") or "").strip(),
                         name=f"{name} - {opts}" if opts else name,
                         description=var.get("description") or description,
-                        price=_price(var), modified=_modified(var),
+                        price=_price(var), modified=_modified(var), stock=_counted_stock(var),
                         extra={
                             "manage_stock": var.get("manage_stock"),
                             "stock_quantity": var.get("stock_quantity"),
@@ -441,7 +448,7 @@ class WooCommerceConnector(ConnectorBase):
             out.append(RemoteProduct(
                 key=pid, product_id=pid, variation_id=None,
                 sku=(product.get("sku") or "").strip(), name=name, description=description,
-                price=_price(product), modified=_modified(product),
+                price=_price(product), modified=_modified(product), stock=_counted_stock(product),
                 extra={
                     "manage_stock": product.get("manage_stock"),
                     "stock_quantity": product.get("stock_quantity"),

@@ -6623,6 +6623,8 @@
   "connectors.preview_celerp_name": "Celerp name",
   "connectors.preview_store_name": "{service} name",
   "connectors.preview_differences": "Differences",
+  "connectors.preview_stock": "在庫",
+  "connectors.preview_stock_changes": "最初の同期で、これらの商品のうち {n} 件の {service} の在庫が Celerp の数量に設定されます。",
   "connectors.preview_difference": "{field}: Celerp {celerp}, store {remote}",
   "connectors.preview_changed": "Last changed in {service}",
   "connectors.preview_celerp_changed": "Last changed in Celerp",

@@ -186,6 +186,7 @@ class RemoteProduct:
     description: str | None
     price: float | None
     modified: datetime | None   # when the platform last changed it
+    stock: float | None = None  # the platform's stock count; None when it does not count it
     extra: dict = field(default_factory=dict)  # platform fields only its sync reads
 
 

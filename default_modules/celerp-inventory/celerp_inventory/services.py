@@ -2341,6 +2341,15 @@ def _outbound_totals(
     return family_keys, sellable_by_family, roots_by_sku
 
 
+async def sellable_quantities(session: AsyncSession, company_id) -> dict[str, float]:
+    """Each item's sellable quantity as the stock push sends it: its catalog family's total."""
+    rows = list((await session.execute(select(Projection).where(
+        Projection.company_id == uuid.UUID(str(company_id)), Projection.entity_type == "item",
+    ))).scalars().all())
+    family_keys, sellable_by_family, _ = _outbound_totals(rows)
+    return {r.entity_id: sellable_by_family.get(family_keys.get(r.entity_id), 0.0) for r in rows}
+
+
 def _outbound_rows(
     rows: list[Projection], anchors: list[Projection], platform: str
 ) -> list[dict]:

@@ -6,8 +6,9 @@ writing to either.
 A connector reads its platform's products and orders (ConnectorBase.preview_products,
 preview_orders); this module lays them against the company's catalog the way the first
 sync will: products that match by SKU and how their values differ, products new to
-Celerp, products with no SKU, Celerp products the store does not have, and the orders
-from the chosen date with what importing them does to the books.
+Celerp, products with no SKU, Celerp products the store does not have, the store stock the
+stock push would change, and the orders from the chosen date with what importing them
+does to the books.
 """
 from __future__ import annotations
 
@@ -35,6 +36,7 @@ class FirstSyncPreview:
     orders_by_status: dict[str, int] = field(default_factory=dict)
     posting_orders: int = 0
     order_effect: str = ""
+    stock_changes: int = 0  # matches whose store stock becomes Celerp's
 
 
 def _newest_first(rows: list[dict], key: str = "modified") -> list[dict]:
@@ -88,16 +90,19 @@ async def _preview_products(
         catalog_product_rows,
         normalize_sku,
         resolve_external_product,
+        sellable_quantities,
     )
     from celerp.connectors.product_links import external_link_for_state
 
     remote_products = await connector.preview_products(ctx)
     cid = uuid.UUID(str(ctx.company_id))
     store_skus = set()
+    stock_goes_out = entity_allowed(connector, "inventory_out", directions)
     async with get_session_ctx() as session:
+        sellable = await sellable_quantities(session, cid)
         for remote in remote_products:
             row = {"key": remote.key, "sku": remote.sku or None, "name": remote.name or None,
-                   "modified": remote.modified, "price": remote.price}
+                   "modified": remote.modified, "price": remote.price, "stock": remote.stock}
             if not remote.sku:
                 preview.no_sku.append(row)
                 continue
@@ -112,9 +117,16 @@ async def _preview_products(
                 preview.new.append(row)
                 continue
             state = found.state or {}
+            celerp_stock = sellable.get(found.entity_id, 0.0)
+            # The stock push sets the store's count to Celerp's sellable quantity.
+            stock_change = ({"store": remote.stock, "celerp": celerp_stock}
+                            if stock_goes_out and remote.stock is not None and remote.stock != celerp_stock
+                            else None)
+            preview.stock_changes += stock_change is not None
             preview.matches.append({**row, "entity_id": found.entity_id,
                                     "celerp_name": state.get("name"),
-                                    "differences": _differences(state, remote)})
+                                    "differences": _differences(state, remote),
+                                    "celerp_stock": celerp_stock, "stock_change": stock_change})
         if entity_allowed(connector, "products_out", directions):
             for item in await catalog_product_rows(session, cid):
                 state = item.state or {}
