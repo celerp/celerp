@@ -7019,7 +7019,7 @@
     "tests/test_first_sync_preview_receipt.py::test_start_records_the_reviewed_version_and_products": 0.45298033405561,
     "tests/test_first_sync_preview_receipt.py::test_start_refuses_a_preview_that_changed": 0.7168582187732682,
     "tests/test_first_sync_preview_receipt.py::test_start_refuses_after_a_reconnect": 0.3667299250373617,
-    "tests/test_first_sync_preview_receipt.py::test_start_without_a_preview_version_is_refused": 0.2399640860967338,
+    "tests/test_first_sync_preview_receipt.py::test_start_without_a_preview_version_is_refused_as_a_changed_preview": 0.2399640860967338,
     "tests/test_first_sync_recovery.py::test_a_failed_first_sync_retries_with_its_original_batch_and_cutoff": 0.9467614538734779,
     "tests/test_first_sync_recovery.py::test_a_failed_phase_stops_only_the_phases_that_depend_on_it": 0.005744574009440839,
     "tests/test_first_sync_recovery.py::test_a_first_sync_still_starting_or_recently_changed_is_left_alone": 0.21154437807854265,

@@ -676,9 +676,9 @@ def test_first_sync_requires_preview_inputs():
     with pytest.raises(ValidationError):
         FirstSyncRequest(directions=WOO_DEFAULTS, match="merge", preview_version="v" * 64)
     with pytest.raises(ValidationError):
-        FirstSyncRequest(directions=WOO_DEFAULTS, match="keep")
-    with pytest.raises(ValidationError):
-        FirstSyncRequest(directions=WOO_DEFAULTS, match="keep", preview_version="v" * 63)
+        FirstSyncRequest(directions=WOO_DEFAULTS, match="keep", preview_version="v" * 65)
+    # A missing version parses; Start refuses it as a changed preview.
+    assert FirstSyncRequest(directions=WOO_DEFAULTS, match="keep").preview_version == ""
     assert FirstSyncRequest(directions=WOO_DEFAULTS, match="keep", preview_version="v" * 64).orders_from is None
 
 
