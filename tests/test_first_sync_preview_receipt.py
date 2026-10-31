@@ -183,7 +183,12 @@ async def test_start_records_the_reviewed_version_and_products(store):
     assert record.reviewed == {"1": None, "2": "item:store-2"}
 
 
-async def test_start_without_a_preview_version_is_refused(store):
+async def test_start_without_a_preview_version_is_refused_as_a_changed_preview(store):
+    """The preview did not load, so Start carries no version: it is refused with the same
+    message as a changed preview, which reloads the preview with its version."""
+    from ui.i18n import t
+
     r = await store.start("")
-    assert r.status_code == 422, r.text
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == t("connectors.err_preview_changed", service="WooCommerce")
     assert (await store.record()).state == "pending"

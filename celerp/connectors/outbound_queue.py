@@ -18,6 +18,7 @@ from celerp.models.company import Company
 from celerp.models.connector_config import ConnectorConfig, OutboundQueue
 from celerp.models.projections import Projection
 from celerp.services.company_lock import lock_company
+from ui.i18n import t
 
 
 log = logging.getLogger(__name__)
@@ -253,10 +254,13 @@ _UNRESOLVED_CREATE = (
     OutboundQueue.entity_type == "invoice",
     OutboundQueue.payload_json.is_not(None),
 )
-_DISCONNECTED = (
-    "Xero was disconnected before Celerp knew whether this invoice reached Xero. "
-    "Check Xero for the invoice; if it is missing, connect Xero again in Web Access and sync again."
-)
+
+
+def _unresolved(*, gone: bool) -> str:
+    """Why a Xero invoice create whose outcome is unknown was parked: the connection is
+    gone, or it no longer sends invoices."""
+    return t("connectors.err_xero_disconnected_unresolved" if gone
+             else "connectors.err_xero_invoices_off_unresolved")
 
 
 async def _hold_company(session, company_id) -> bool:
@@ -266,7 +270,7 @@ async def _hold_company(session, company_id) -> bool:
     return await lock_company(session, uuid.UUID(str(company_id)))
 
 
-async def _release_rows(session, company_id, *where, message: str = _DISCONNECTED) -> None:
+async def _release_rows(session, company_id, *where, message: str | None = None) -> None:
     """Drop the company's queued work matching `where`, except a Xero invoice create
     that may have reached Xero: that row is its only record, so it is kept and parked
     until a manual sync settles it."""
@@ -274,7 +278,7 @@ async def _release_rows(session, company_id, *where, message: str = _DISCONNECTE
     await session.execute(
         sa.update(OutboundQueue)
         .where(*where, *_UNRESOLVED_CREATE)
-        .values(status="blocked", next_retry_at=None, error_message=message)
+        .values(status="blocked", next_retry_at=None, error_message=message or _unresolved(gone=True))
     )
     await session.execute(
         sa.delete(OutboundQueue).where(*where, sa.not_(sa.and_(*_UNRESOLVED_CREATE)))
@@ -433,7 +437,7 @@ async def process_outbound_identity(
             if await _hold_company(session, company_id):
                 await _release_rows(
                     session, company_id, *identity_rows, OutboundQueue.status == "pending",
-                    message="Sending invoices to Xero was turned off while invoice creation was unresolved.",
+                    message=_unresolved(gone=False),
                 )
                 await session.commit()
         return OutboundOutcome(error=exc.reason)
@@ -475,7 +479,7 @@ async def _deliver(company_id, connector_name, entity_type, identity, identity_r
             if locked_rows and not parked and not _pushes(config, entity_type):
                 await _release_rows(
                     session, company_id, OutboundQueue.id.in_([row.id for row in locked_rows]),
-                    message="Sending invoices to Xero was turned off while invoice creation was unresolved.",
+                    message=_unresolved(gone=config is None),
                 )
                 await session.commit()
                 return OutboundOutcome(rows=len(locked_rows))

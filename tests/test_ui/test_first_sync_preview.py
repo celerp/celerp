@@ -29,7 +29,7 @@ PREVIEW = {
                {"id": "10", "number": "1010", "status": "processing", "created": None, "total": 40.0,
                 "currency": "USD", "posts": True}],
     "orders_by_status": {"pending": 1, "processing": 1}, "posting_orders": 1,
-    "order_effect": "1 orders in Processing or Completed will be issued as invoices and post revenue and stock.",
+    "order_effect": t("connectors.preview_orders_post_one", n=1, service="WooCommerce"),
 }
 
 
@@ -85,6 +85,30 @@ async def test_matches_show_the_store_stock_and_what_the_stock_push_sets():
     assert t("connectors.preview_stock") in html
     assert "7 \u2192 3" in html
     assert t("connectors.preview_stock_changes", n=1, service="WooCommerce") in html
+
+
+@pytest.mark.asyncio
+async def test_a_price_difference_shows_through_the_price_formatter():
+    from ui.components.activity import fmt_price
+
+    html = (await _client_get("/settings/connectors/woocommerce/first-sync?show=matches")).text
+    assert t("connectors.preview_difference", field=t("connectors.conflict_field_sale_price"),
+             celerp=fmt_price(25.0, "sale_price"), remote=fmt_price(30.0, "sale_price")) in html
+
+
+@pytest.mark.asyncio
+async def test_the_orders_tab_states_the_accounting_effect_once():
+    html = (await _client_get("/settings/connectors/woocommerce/first-sync?show=orders")).text
+    assert html.count(PREVIEW["order_effect"]) == 1
+
+
+@pytest.mark.parametrize("posting, total, key, n", [
+    (1, 3, "connectors.preview_orders_post_one", 1), (2, 3, "connectors.preview_orders_post", 2),
+    (0, 1, "connectors.preview_orders_record_one", 1), (0, 4, "connectors.preview_orders_record", 4)])
+def test_the_order_effect_counts_one_order_in_the_singular(posting, total, key, n):
+    from celerp.connectors.first_sync import order_effect
+
+    assert order_effect(posting, total, "WooCommerce") == t(key, n=n, service="WooCommerce")
 
 
 @pytest.mark.asyncio

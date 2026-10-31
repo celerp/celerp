@@ -59,12 +59,17 @@ def _table(headers: list[tuple[str, bool]], rows: list[list], lang: str) -> FT:
     )
 
 
+def _value(field: str, value) -> str:
+    """A compared field's value; a price through the price formatter."""
+    return fmt_price(value, field) if field.endswith("price") and value is not None else _cell(value)
+
+
 def _differences(differences: dict, lang: str) -> str:
     if not differences:
         return "--"
     return "; ".join(
         t("connectors.preview_difference", lang, field=t(f"connectors.conflict_field_{key}", lang),
-          celerp=_cell(both[0]), remote=_cell(both[1]))
+          celerp=_value(key, both[0]), remote=_value(key, both[1]))
         for key, both in differences.items()
     )
 
@@ -124,7 +129,7 @@ def _section(platform: str, preview: dict, show: str, lang: str) -> FT:
             [[_cell(r.get("sku")), _cell(r.get("name")), _when(r.get("modified"))]
              for r in preview["to_publish"]], lang)
     else:
-        hint = preview.get("order_effect") or ""
+        hint = ""  # the accounting effect stands above the tabs
         table = _table(
             [(t("connectors.preview_order", lang), False), (t("connectors.status", lang), False),
              (t("connectors.preview_placed", lang), False), (t("connectors.preview_total", lang), True),
@@ -133,7 +138,7 @@ def _section(platform: str, preview: dict, show: str, lang: str) -> FT:
               _cell(fmt_price(r.get("total"), None, r.get("currency"))),
               t("connectors.preview_issued", lang) if r.get("posts") else t("connectors.preview_recorded", lang)]
              for r in preview["orders"]], lang)
-    return Div(P(hint, cls="settings-hint"), table, cls="first-sync-section")
+    return Div(P(hint, cls="settings-hint") if hint else Span(), table, cls="first-sync-section")
 
 
 def _available(preview: dict) -> list[str]:

@@ -86,6 +86,14 @@ def _version(connector: ConnectorBase, ctx: ConnectorContext, config_id: int, pr
     return hashlib.sha256(json.dumps(facts, sort_keys=True, default=str).encode()).hexdigest()
 
 
+
+def order_effect(posting: int, total: int, service: str) -> str:
+    """What the first sync does to the books with the orders it imports: issued as invoices
+    when any posts, else recorded; one order is counted in the singular."""
+    if posting:
+        return t("connectors.preview_orders_post" + ("_one" if posting == 1 else ""), n=posting, service=service)
+    return t("connectors.preview_orders_record" + ("_one" if total == 1 else ""), n=total, service=service)
+
 async def build_preview(
     connector: ConnectorBase, ctx: ConnectorContext, directions: dict, orders_from: datetime, config_id: int
 ) -> FirstSyncPreview:
@@ -106,11 +114,7 @@ async def build_preview(
         ], key="created")
         preview.orders_by_status = dict(Counter(o.status for o in orders))
         preview.posting_orders = sum(1 for o in orders if o.posts)
-        preview.order_effect = (
-            t("connectors.preview_orders_post", n=preview.posting_orders, service=connector.display_name)
-            if preview.posting_orders else
-            t("connectors.preview_orders_record", n=len(orders), service=connector.display_name)
-        )
+        preview.order_effect = order_effect(preview.posting_orders, len(orders), connector.display_name)
     preview.version = _version(connector, ctx, config_id, preview)
     return preview
 

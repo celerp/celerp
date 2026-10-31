@@ -451,3 +451,23 @@ async def test_execution_links_only_reviewed_pairs(real_engine, store):
     assert {k: waiting[k]["kind"] for k in ("2", "3")} == {"2": "unreviewed", "3": "unreviewed"}
     assert waiting["2"]["reason"] == t("connectors.attention_unreviewed", service="WooCommerce")
     assert (await _first_sync(cid)).state == "completed"
+
+
+
+async def test_a_first_sync_completed_after_admission_is_refused_as_not_started(real_engine, store, monkeypatch):
+    """Another run completed the first sync between admission and its locked read: the run
+    gets the refusal admission gives for a first sync not started, never untranslated prose,
+    and changes nothing."""
+    from celerp.connectors import execution
+    from celerp.connectors.sync_runner import execute_first_sync
+
+    cid = await _started("Twice", DIRECTIONS)
+    await execute_first_sync(cid, "woocommerce")
+    assert (await _first_sync(cid)).state == "completed"
+    admit = execution.eligible
+    monkeypatch.setattr(execution, "eligible", lambda c, cfg, fs, purpose, r: (
+        None if purpose == "first_sync" else admit(c, cfg, fs, purpose, r)))
+    with pytest.raises(execution.ExecutionRefused) as refused:
+        await execute_first_sync(cid, "woocommerce")
+    assert refused.value.reason == "first_sync_not_started"
+    assert (await _first_sync(cid)).state == "completed"

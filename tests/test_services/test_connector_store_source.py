@@ -337,3 +337,26 @@ async def test_every_new_connection_checks_the_store_again(session):
     await session.flush()
     with _store([]), pytest.raises(ConnectorStoreChangedError, match="does not have them"):
         await _bind(session, cid, WooCommerceConnector(), ctx)
+
+
+@pytest.mark.parametrize("origin", [None, "https://a.example"])
+async def test_the_store_changed_refusal_is_in_the_company_language(session, origin):
+    """The refusal reaches the 409, the first sync's error and the sync history, so it is
+    read from the catalog in the request's language, naming the recorded store when known."""
+    from ui.i18n import set_lang, t
+
+    cid = await _company(session)
+    await _imported_order(session, cid)
+    if origin:
+        session.add(ConnectorSource(company_id=str(cid), connector="woocommerce",
+                                    store_handle=origin, bound_at=datetime.now(timezone.utc)))
+        await session.flush()
+    set_lang("th")
+    try:
+        with _store([]), pytest.raises(ConnectorStoreChangedError) as refused:
+            await _bind(session, cid, WooCommerceConnector(), _ctx(cid, "https://other.example"))
+    finally:
+        set_lang("en")
+    key = "error.store_changed_from" if origin else "error.store_changed"
+    assert str(refused.value) == t(key, "th", service="WooCommerce", origin=origin,
+                                   store="https://other.example")

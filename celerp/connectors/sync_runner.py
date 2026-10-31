@@ -168,14 +168,14 @@ async def run_first_sync(connector: ConnectorBase, ctx: ConnectorContext) -> lis
     resources that did not complete. The record becomes ``completed`` only when every
     resource completed (an import batch then still empty is removed), else ``failed``
     with the reason."""
-    from celerp.connectors.execution import plan_resources
+    from celerp.connectors.execution import ExecutionRefused, plan_resources
     from celerp.db import get_session_ctx
 
     key = (str(ctx.company_id), connector.name)
     async with get_session_ctx() as session:
         row = await _locked_first_sync(session, *key)
         if row is None or row.state not in ("starting", "running"):
-            raise ValueError(f"The first sync of {connector.display_name} has not been started")
+            raise ExecutionRefused("first_sync_not_started")
         row.state = "running"
         directions = dict(row.directions or {})
         resources = plan_resources(connector, directions)

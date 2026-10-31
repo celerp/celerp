@@ -639,12 +639,10 @@ async def _confirm_store(connector, ctx, samples: list[tuple[str, dict]], origin
                 t("error.store_unchecked", store=ctx.store_handle, service=connector.display_name)
             ) from exc
         if not confirmed:
-            origin = f" from {origin}" if origin else ""
-            raise ConnectorStoreChangedError(
-                f"This company already has {connector.display_name} records"
-                f"{origin}, and {ctx.store_handle} does not have them. Connect the store they "
-                f"came from, or use a separate company for {ctx.store_handle}."
-            )
+            raise ConnectorStoreChangedError(t(
+                "error.store_changed_from" if origin else "error.store_changed",
+                service=connector.display_name, origin=origin, store=ctx.store_handle,
+            ))
     return [entity_id for entity_id, _ in samples]
 
 

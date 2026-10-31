@@ -677,3 +677,32 @@ async def test_a_push_from_the_sync_request_whose_answer_is_lost_keeps_one_row(
     rows = await _rows(company)
     assert len(rows) == 1 and rows[0].status == "pending"
     assert json.loads(rows[0].payload_json)["idempotency_key"] == xero.put_keys()[0]
+
+
+@pytest.mark.asyncio
+async def test_a_create_left_unresolved_when_invoices_are_turned_off_is_parked_with_a_keyed_reason(
+        relay, company, monkeypatch):
+    """Sending invoices is turned off while a create's outcome is unknown: the row is parked
+    with the reason in the company's language, and a connection gone at that read is told
+    it was disconnected, not turned off."""
+    from celerp.connectors import outbound_queue
+    from ui.i18n import set_lang, t
+
+    from celerp.db import get_session_ctx
+
+    with _Xero(put=[LOST]):
+        await _sync(company)
+    async with get_session_ctx() as session:
+        await session.execute(sa.update(OutboundQueue).where(
+            OutboundQueue.company_id == str(company)).values(next_retry_at=None))
+        await session.commit()
+    monkeypatch.setattr(outbound_queue, "_pushes", lambda *_a: False)
+    set_lang("th")
+    try:
+        await process_outbound_queue_once()
+    finally:
+        set_lang("en")
+    rows = await _rows(company)
+    assert len(rows) == 1 and rows[0].status == "blocked"
+    assert rows[0].error_message == t("connectors.err_xero_invoices_off_unresolved", "th")
+    assert outbound_queue._unresolved(gone=True) == t("connectors.err_xero_disconnected_unresolved")

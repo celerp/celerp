@@ -981,8 +981,9 @@ class FirstSyncRequest(BaseModel):
     match: Literal["keep", "take"]
     # The earliest order date to import; none starts at the first sync itself.
     orders_from: date | None = None
-    # The version of the preview the person reviewed: Start refuses once it changed.
-    preview_version: str = Field(min_length=64, max_length=64)
+    # The version of the preview the person reviewed: Start refuses once it changed, and
+    # without one (the preview never loaded) as if it had.
+    preview_version: str = Field(default="", max_length=64)
 
 
 @router.post("/{connector_name}/first-sync")
