@@ -125,6 +125,7 @@ _RELAY_ERROR_KEY = {
     "unexpected_reply": "ai.err_bad_reply",
     "continuation_expired": "ai.err_step_expired",
     "gateway_error": "ai.err_unavailable",
+    "service_unavailable": "ai.err_service_issue",
     "outcome_unknown": "ai.err_outcome_unknown",
     "operation_expired": "ai.err_question_expired",
     "operation_mismatch": "ai.err_operation_mismatch",
@@ -166,8 +167,10 @@ def _error_code(exc: BaseException) -> str:
     return "unexpected"
 
 
-def _user_error(exc: BaseException) -> str:
-    """Map an exception to user-safe text by type, never by message substring."""
+def user_error(exc: BaseException, unknown: str = "ai.err_unexpected") -> str:
+    """Map an exception to user-safe text in the reader's language by its code, never by
+    its message: a relay's message is English and never shown. ``unknown`` is the key for
+    a failure no code names."""
     code = _error_code(exc)
     if code == "timeout":
         return t("ai.err_timeout")
@@ -177,13 +180,11 @@ def _user_error(exc: BaseException) -> str:
         return t("ai.err_read_refused")
     if code == "stopped":
         return t("ai.question_stopped")
-    if code == "service_unavailable":
-        return str(exc)
     if code in ("busy", "operation_in_progress"):
         return t("ai.err_busy")
     if code in _RELAY_ERROR_KEY:
         return t(_RELAY_ERROR_KEY[code])
-    return t("ai.err_unexpected")
+    return t(unknown)
 
 
 # -- Prompts ----------------------------------------------------------------
@@ -385,7 +386,7 @@ def failure(exc: BaseException, tally: RunTally) -> AgentResult:
     what the run was charged so far."""
     return tally.result(
         answer="", model_used="", tools_called=[], pending_actions=[],
-        error=_user_error(exc), error_code=_error_code(exc),
+        error=user_error(exc), error_code=_error_code(exc),
     )
 
 

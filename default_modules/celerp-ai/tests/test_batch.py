@@ -261,7 +261,7 @@ async def test_batch_creates_notification_on_complete(session, db_factory, compa
     # create(session, company_id, category, title, body, ...)
     mock_create_notif.assert_called_once()
     call_args = mock_create_notif.call_args
-    assert call_args[0][3] == "2 of 2 file(s) read"
+    assert call_args[0][3] == "2 of 2 files read"
     assert call_args[1]["priority"] == "high"
     assert call_args[1]["action_url"] == f"/ai?conversation={conv.id}"
 
@@ -376,7 +376,7 @@ async def test_batch_credits_from_relay_usage(session, db_factory, company, user
 
     steps = await _files_of(db_factory, job.id)
     assert [(s.state, s.credits) for s in steps] == [("done", 2), ("done", 2), ("failed", 0)]
-    assert steps[2].result["error"] == "The file could not be read."
+    assert steps[2].result["error"] == t("ai.file_unreadable")
 
 
 @pytest.mark.asyncio

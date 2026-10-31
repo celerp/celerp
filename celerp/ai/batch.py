@@ -32,7 +32,7 @@ import httpx
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.ai import jobs, llm
+from celerp.ai import jobs, llm, service
 from celerp.ai.files import load_file_for_llm
 from celerp.ai.llm import RelayError
 from ui.i18n import t
@@ -106,7 +106,7 @@ def _file_error(exc: BaseException) -> str:
     if isinstance(exc, HTTPException) and exc.status_code == 402:
         return t("ai.file_out_of_credits")
     if isinstance(exc, RelayError):
-        return str(exc)
+        return service.user_error(exc, unknown="ai.file_unreadable")
     if isinstance(exc, asyncio.TimeoutError):
         return t("ai.file_timeout")
     return t("ai.file_unreadable")
@@ -236,11 +236,12 @@ async def publish_progress(run: FileRun, file_id: str, state: str) -> None:
 async def notify_finished(run: FileRun, completed: int, failed: int) -> None:
     """The notification a finished reading job leaves for its user."""
     if completed == 0:
-        title = t("ai.files_none_read_title", failed=failed)
-        body = t("ai.files_none_read_body")
+        title = "ai.files_none_read_title_one" if failed == 1 else "ai.files_none_read_title"
+        body = "ai.files_none_read_body"
     else:
-        title = t("ai.files_read_title", completed=completed, total=completed + failed)
-        body = t("ai.files_read_body", completed=completed, failed=failed)
-    await jobs.notify(run.company_id, run.user_id, run.conversation_id, title, body)
+        title = "ai.files_read_title_one" if completed + failed == 1 else "ai.files_read_title"
+        body = "ai.files_read_body"
+    await jobs.notify(run.company_id, run.user_id, run.conversation_id, title, body,
+                      completed=completed, failed=failed, total=completed + failed)
 
 

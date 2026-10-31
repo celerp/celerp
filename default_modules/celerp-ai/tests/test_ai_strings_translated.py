@@ -76,6 +76,8 @@ async def _proposal_texts(rows, extraction) -> list[str]:
     (2, {"vendor_name": "Kingfisher", "line_items": []}),
     ("down", {"vendor_name": "Kingfisher", "date": "2026-10-31", "total": 5}),
     (1, {}),
+    (1, {"vendor_name": "Kingfisher", "total": 10, "line_items": [{"description": "Box", "quantity": 1,
+                                                                   "unit_price": 10}]}),
 ])
 async def test_receipt_proposals_read_in_the_reader_language(rows, extraction):
     texts = await _proposal_texts(rows, extraction)
@@ -112,21 +114,35 @@ def test_unmet_dependencies_are_refused_in_the_reader_language():
 async def test_file_reading_results_read_in_the_reader_language(monkeypatch):
     sent = []
 
-    async def notify(company_id, user_id, conversation_id, title, body):
-        sent.extend([title, body])
+    async def notify(company_id, user_id, conversation_id, title_key, body_key, **params):
+        sent.extend([i18n.t(title_key, **params), i18n.t(body_key, **params)])
 
     monkeypatch.setattr(jobs, "notify", notify)
     run = batch.FileRun(job_id=uuid.uuid4(), company_id=uuid.uuid4(), user_id=uuid.uuid4(),
                         conversation_id=None, query="")
-    await batch.notify_finished(run, 0, 2)
-    await batch.notify_finished(run, 1, 1)
+    for completed, failed in ((0, 1), (0, 2), (1, 0), (1, 1)):
+        await batch.notify_finished(run, completed, failed)
     errors = [batch._file_error(e) for e in (HTTPException(402), asyncio.TimeoutError(), ValueError())]
     assert _english(sent + errors) == []
 
 
-def test_answer_errors_read_in_the_reader_language():
+# Every failure code the AI service reports (celerp.ai.llm.RelayError).
+_RELAY_CODES = ("no_session", "no_account", "unexpected_reply", "continuation_expired", "service_unavailable",
+                "outcome_unknown", "operation_in_progress", "operation_expired", "operation_mismatch", "busy",
+                "gateway_error")
+
+
+@pytest.mark.parametrize("code", _RELAY_CODES)
+def test_a_service_failure_reads_in_the_reader_language_never_as_the_service_wrote_it(code):
     from celerp.ai.llm import RelayError
-    texts = [service._user_error(RelayError("busy", "x")), service._user_error(RuntimeError())]
+    exc = RelayError(code, "Service text in English")
+    texts = [service.user_error(exc), batch._file_error(exc)]
+    assert _english(texts) == []
+    assert service._error_code(exc) == code
+
+
+def test_answer_errors_read_in_the_reader_language():
+    texts = [service.user_error(RuntimeError()), service.user_error(asyncio.TimeoutError())]
     assert _english(texts) == []
 
 

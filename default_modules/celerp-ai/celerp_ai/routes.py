@@ -1335,7 +1335,9 @@ class _Lookups:
 
 
 async def _bill_proposals(lookups: _Lookups, entry: dict, extraction: dict, now: datetime) -> tuple[list[dict], str]:
-    """Proposal records for one read receipt plus a one-line summary."""
+    """Proposal records for one read receipt plus a one-line summary, written in the
+    asker's language and kept as written: a proposal reads in the language it was
+    proposed in, whatever language its reader later switches to."""
     file_id = str(entry.get("file_id"))
     filename = entry.get("filename") or file_id
     warnings: list[str] = []
@@ -1437,11 +1439,13 @@ async def _bill_proposals(lookups: _Lookups, entry: dict, extraction: dict, now:
         bindings=bindings,
     ))
     amount = f"{total:.2f} {currency}".strip()
-    summary = t("ai.receipt_summary", filename=filename, label=label, amount=amount, count=len(line_items))
+    summary = t("ai.receipt_summary_one" if len(line_items) == 1 else "ai.receipt_summary",
+                filename=filename, label=label, amount=amount, count=len(line_items))
     if vendor_unlinked:
         summary += " " + t("ai.receipt_summary_unlinked")
     if warnings:
-        summary += " " + t("ai.receipt_summary_attention", count=len(warnings))
+        key = "ai.receipt_summary_attention_one" if len(warnings) == 1 else "ai.receipt_summary_attention"
+        summary += " " + t(key, count=len(warnings))
     return records, summary
 
 

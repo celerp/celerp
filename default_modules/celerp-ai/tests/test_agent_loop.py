@@ -640,7 +640,8 @@ async def test_relay_busy_maps_to_retry_text(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_service_unavailable_message_survives_agent_boundary(monkeypatch):
+async def test_a_service_outage_reads_as_an_outage_never_as_the_service_wrote_it(monkeypatch):
+    """The service's own message is English; the reader gets the outage in their language."""
     message = (
         "Celerp AI is temporarily unavailable due to a service issue. "
         "Our team has already been notified of the issue. Please try again later."
@@ -652,7 +653,7 @@ async def test_service_unavailable_message_survives_agent_boundary(monkeypatch):
     monkeypatch.setattr(service, "complete", _raise)
     monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: CAPS)
     result = await _run()
-    assert result.error == message
+    assert result.error == t("ai.err_service_issue")
 
 
 @pytest.mark.asyncio

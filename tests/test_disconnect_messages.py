@@ -74,6 +74,6 @@ async def test_unconfirmed_disconnect_names_the_connector(monkeypatch):
 
 
 def test_ai_signed_out_says_where():
-    from celerp.ai.service import RelayError, _user_error
-    assert _user_error(RelayError("no_session", "no session")) == t("error.ai_signed_out", "en")
+    from celerp.ai.service import RelayError, user_error
+    assert user_error(RelayError("no_session", "no session")) == t("error.ai_signed_out", "en")
 

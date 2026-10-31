@@ -80,7 +80,7 @@ from sqlalchemy import and_, or_, select, update
 from celerp.ai import deadlines
 from celerp.db import SessionLocal
 from celerp.services.company_lock import lock_company, noted
-from ui.i18n import t
+from ui.i18n import current_lang, set_lang, t
 
 log = logging.getLogger(__name__)
 
@@ -471,7 +471,7 @@ def documents_job(*, request: JobRequest, file_ids: list[str], job_id: uuid.UUID
                      conversation_id=request.conversation_id,
                      question_id=job_id if request.conversation_id else None, kind="documents", mode="background",
                      status="pending", query=request.query, file_ids=list(file_ids),
-                     request_digest=request.digest())
+                     request_digest=request.digest(), lang=current_lang())
     hold(job)
     steps = []
     for seq, file_id in enumerate(file_ids):
@@ -625,9 +625,13 @@ async def _after_failure(job_id: uuid.UUID, runner_id: str) -> None:
 
 
 async def _run(job_id: uuid.UUID, runner_id: str) -> None:
+    """Run the job in the language of whoever last asked it, which a job resumed after
+    a restart has no request to take from."""
     from celerp.models.ai import AIBatchJob
     async with SessionLocal() as session:
-        kind = (await session.execute(select(AIBatchJob.kind).where(AIBatchJob.id == job_id))).scalar_one_or_none()
+        row = (await session.execute(select(AIBatchJob.kind, AIBatchJob.lang).where(AIBatchJob.id == job_id))).first()
+    kind, lang = row if row is not None else (None, "en")
+    set_lang(lang)
     await (_run_question if kind == "question" else _run_job)(job_id, runner_id)
 
 
@@ -730,7 +734,7 @@ async def _recover_company(session, company_id: uuid.UUID) -> list[uuid.UUID]:
         # as its answer (``_JobJournal.admit``).
         refusal = await _refusal(session, job.company_id, job.user_id) if job.kind == "documents" else None
         if refusal is not None:
-            job.status, job.error = "failed", t(refusal)
+            job.status, job.error = "failed", t(refusal, job.lang)
             job.completed_at = _now()
             continue
         ops = (await session.execute(
@@ -768,7 +772,7 @@ async def _reopen(job_id: uuid.UUID, company_id: uuid.UUID, user_id: uuid.UUID, 
                 step.operation_id = step.step_id = file_operation_id(job_id, step.key, step.generation)
                 step.state, step.result, step.charge_known = "pending", None, False
         if not await _claim(session, job_id, reopenable(), status="running", error=None, completed_at=None,
-                            cancel_requested_at=None):
+                            cancel_requested_at=None, lang=current_lang()):
             await session.rollback()        # another send took it first, or its conversation is gone
             return None
         await session.commit()
@@ -1002,16 +1006,18 @@ async def send_step(call: Callable[[], Awaitable], *, resend: bool,
 
 
 async def notify(company_id: uuid.UUID, user_id: uuid.UUID, conversation_id: uuid.UUID | None,
-                 title: str, body: str) -> None:
-    """The notification a finished background job leaves for its user (best effort)."""
+                 title_key: str, body_key: str, **params) -> None:
+    """The notification a finished background job leaves for its user (best effort),
+    from catalog messages: stored in English with their keys, so each reader sees it in
+    their own language."""
     try:
         from celerp.notifications.service import create as create_notification
         async with SessionLocal() as session:
             await lock_for_ai(session, company_id)
             await create_notification(
-                session, company_id, "ai", title, body, user_id=user_id,
-                action_url=f"/ai?conversation={conversation_id}" if conversation_id else "/ai",
-                priority="high",
+                session, company_id, "ai", t(title_key, "en", **params), t(body_key, "en", **params),
+                user_id=user_id, action_url=f"/ai?conversation={conversation_id}" if conversation_id else "/ai",
+                priority="high", i18n={"title": title_key, "body": body_key, "params": params},
             )
             await session.commit()
     except Exception:
@@ -1222,7 +1228,7 @@ def question_job(*, job_id: uuid.UUID, request: JobRequest, auth_nonce: str | No
                      conversation_id=request.conversation_id,
                      question_id=job_id if request.conversation_id else None, kind="question", mode="interactive",
                      status="pending", query=request.query, file_ids=list(request.file_ids),
-                     request_digest=request.digest(), auth_nonce=auth_nonce)
+                     request_digest=request.digest(), auth_nonce=auth_nonce, lang=current_lang())
     hold(job)
     return job
 
@@ -1236,7 +1242,7 @@ async def reopen_question(session, job_id: uuid.UUID, auth_nonce: str | None) ->
     one that runs, or one whose conversation is gone, is never reopened; False then."""
     return await _claim(session, job_id, reopenable(),
                         status="pending", results=None, error=None, completed_at=None, cancel_requested_at=None,
-                        auth_nonce=auth_nonce)
+                        auth_nonce=auth_nonce, lang=current_lang())
 
 
 def _bearer(job, role: str) -> Callable[[], str] | None:
@@ -1396,7 +1402,7 @@ async def _finish_question(job_id: uuid.UUID, result, refusal, runner_id: str) -
     _background.discard(job_id)
     if promoted:
         key = "ai.question_failed_title" if failed else "ai.question_answered_title"
-        await notify(company_id, user_id, conversation_id, t(key), t("ai.question_done_body"))
+        await notify(company_id, user_id, conversation_id, key, "ai.question_done_body")
 
 
 async def wait_for_job(job_id: uuid.UUID, *, started: float) -> bool:

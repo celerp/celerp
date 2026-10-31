@@ -136,6 +136,38 @@ async def test_a_killed_reading_job_resumes_and_no_file_runs_twice_under_one_id(
     assert (job["status"], job["completed_files"], job["failed_files"]) == ("completed", 98, 2)
 
 
+async def test_a_reading_job_resumed_after_a_restart_writes_in_its_askers_language(client, owner, cloud, session):
+    """A job started in Thai and resumed by a restart, which has no request to take a
+    language from, still writes its file errors in Thai, and its notification keeps the
+    keys every reader's language is shown from."""
+    from ui.i18n import set_lang, t
+    token, company_id, user_id = owner
+    conv = await _conversation(client, token)
+    file_ids = _files(company_id, user_id, 2)
+    job_id = uuid.uuid4()
+    lost = str(jobs.file_operation_id(job_id, file_ids[1], 0))
+    cloud.held(lost, end="lost_uncharged")
+    r = await client.post(f"/ai/conversations/{conv}/query", headers={**AUTH(token), "Accept-Language": "th"}, json={
+        "query": "Read these receipts", "file_ids": file_ids, "document_mode": "receipts",
+        "operation_id": str(job_id)})
+    assert r.status_code == 202, r.text
+    await until(lambda: lost in cloud.arrived)
+
+    async def _first_read():
+        return _by_file(await _job(client, token, job_id))[file_ids[0]]["status"] == "success"
+    await until(_first_read)
+
+    set_lang("en")
+    await _kill_and_restart()
+    job = await _finished(client, token, job_id)
+
+    assert _by_file(job)[file_ids[1]]["error"] == t("ai.err_outcome_unknown", "th")
+    assert (await session.get(AIBatchJob, job_id, populate_existing=True)).lang == "th"
+    notes = (await session.execute(select(Notification).where(Notification.company_id == company_id))).scalars().all()
+    assert [n.i18n for n in notes] == [{"title": "ai.files_read_title", "body": "ai.files_read_body",
+                                        "params": {"completed": 1, "failed": 1, "total": 2}}]
+
+
 async def test_the_job_progress_is_read_from_its_steps(client, owner, cloud, session):
     """One source: the job's files and counts come from ai_job_steps."""
     token, company_id, user_id = owner
@@ -769,11 +801,12 @@ async def test_a_finished_jobs_notification_is_written_under_the_company_lock(cl
     import mutation_observer
     _token, company_id, user_id = owner
     with mutation_observer.serving("POST", "/ai/conversations/{conversation_id}/query"):
-        await jobs.notify(company_id, user_id, None, "2 of 2 file(s) read", "Open the conversation.")
+        await jobs.notify(company_id, user_id, None, "ai.files_read_title", "ai.files_read_body",
+                          completed=2, failed=0, total=2)
     findings = mutation_observer.CENSUS.findings
     assert findings == [], mutation_observer.explain(findings)
     notes = (await session.execute(select(Notification).where(Notification.company_id == company_id))).scalars().all()
-    assert [n.title for n in notes] == ["2 of 2 file(s) read"]
+    assert [n.title for n in notes] == ["2 of 2 files read"]
 
 
 @pytest.mark.parametrize("write", ["claim", "fenced", "end_unheld"])
