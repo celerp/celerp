@@ -97,6 +97,12 @@ def input_money(value: str | float, currency: str | None = None) -> str:
         return ""
 
 
+def money_step(currency: str | None) -> str:
+    """The ``step`` of a money input: one minor unit of the currency (0.01, 0.001, 1)."""
+    from celerp.services.money import currency_dp as _cdp
+    return f"{Decimal(1).scaleb(-_cdp(currency or 'USD')):f}"
+
+
 def _signed(value: float, digits: str, currency: str | None) -> str:
     """``digits`` after the currency symbol, with the minus sign in front of both
     (-$50.00, not $-50.00); a figure that shows as zero carries no sign."""

@@ -7,7 +7,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -15,6 +15,7 @@ from starlette.responses import RedirectResponse, Response
 
 from celerp.accounting_roles import account_label
 from celerp.importers import tabular
+from celerp.output.doc_print import money_step
 from celerp.services.business_time import business_today
 import ui.api_client as api
 from ui.components.icons import import_icon
@@ -23,7 +24,7 @@ from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, flash, page_header, page_title
 from ui.components.table import (
     EMPTY, PARTY_PRELOAD, PARTY_SEARCH_URL, add_new_option, display_enum, fmt_money,
-    party_options, searchable_select,
+    party_options, searchable_select, status_cards,
 )
 from ui.config import get_token as _token
 from ui.i18n import t
@@ -106,14 +107,17 @@ if (!window._reconScrollHook) {
 
 # ── Statement line row ────────────────────────────────────────────────────────
 
-def _stmt_line_row(line: dict, session_id: str, currency: str) -> FT:
+def _stmt_line_row(line: dict, session_id: str, currency: str, *, read_only: bool = False,
+                   reason: str | None = None) -> FT:
+    """One statement line. A *read_only* line (of a completed reconciliation) has no
+    actions; *reason* is the key of why a bulk confirm left the line unmatched."""
     lid = line["id"]
     status = line.get("status", "unmatched")
     row_cls = "recon-row " + _STATUS_CLS.get(status, "")
     amount = float(line.get("amount", 0))
     amt_cls = "cell--number " + ("recon-amount--credit" if amount >= 0 else "recon-amount--debit")
 
-    selectable = status in ("unmatched", "suggested")
+    selectable = not read_only and status in ("unmatched", "suggested")
     actions = []
     if selectable:
         actions += [
@@ -150,7 +154,7 @@ def _stmt_line_row(line: dict, session_id: str, currency: str) -> FT:
                 cls="btn btn--xs btn--outline",
             )
         )
-    elif status in ("matched", "created"):
+    elif not read_only and status in ("matched", "created"):
         actions.append(
             Button(t("btn.undo"),
                 hx_post=f"/accounting/reconcile/{session_id}/lines/{lid}/unmatch",
@@ -176,6 +180,7 @@ def _stmt_line_row(line: dict, session_id: str, currency: str) -> FT:
             ),
             cls="recon-row-main",
         ),
+        P(t(reason), cls="flash flash--warning") if reason else None,
         Div(id=f"recon-expand-{lid}", cls="recon-row-expand"),
         id=f"stmt-line-{lid}",
         cls=row_cls + (" recon-row--selectable" if selectable else ""),
@@ -183,10 +188,37 @@ def _stmt_line_row(line: dict, session_id: str, currency: str) -> FT:
     )
 
 
+# ── Exchange rate (bank kept in another currency than the books) ─────────────
+
+def _rate_field(bank: dict) -> FT | None:
+    """The rate an entry booked on *bank* converts at into the books' currency, asked
+    only when the account is kept in another currency than the books'."""
+    if bank["currency"] == bank["books_currency"]:
+        return None
+    return Div(
+        Label(t("recon.rate_label", currency=bank["currency"], base=bank["books_currency"]), cls="form-label"),
+        Input(type="number", name="rate", step="any", min="0", required=True, cls="form-input max-w-sm"),
+        cls="form-field",
+    )
+
+
+def _form_rate(form, data: dict) -> str | None:
+    """Put the form's rate into *data*; the refusal to show when it is not a number."""
+    raw = str(form.get("rate", "")).strip()
+    if not raw:
+        return None
+    try:
+        data["rate"] = float(raw)
+    except ValueError:
+        return t("acct.err_bank_rate_invalid", raw=raw)
+    return None
+
+
 # ── Create expense form (inline partial) ─────────────────────────────────────
 
-def _create_form(session_id: str, line_id: str, line: dict, chart: list[dict], currency: str,
+def _create_form(session_id: str, line_id: str, line: dict, chart: list[dict], bank: dict,
                  contacts: list[dict] | None = None) -> FT:
+    currency = bank["currency"]
     amount = abs(float(line.get("amount", 0)))
     contact_opts = party_options(contacts or [])
     account_options = [
@@ -219,9 +251,10 @@ def _create_form(session_id: str, line_id: str, line: dict, chart: list[dict], c
             Div(
                 Label(t("label.amount"), cls="form-label"),
                 Input(type="number", name="amount", value=str(amount),
-                      step="0.01", cls="form-input"),
+                      step=money_step(currency), cls="form-input"),
                 cls="form-field",
             ),
+            _rate_field(bank),
             Div(
                 Button(t("btn.create_match"), type="submit", cls="btn btn--primary btn--sm"),
                 Button(t("btn.cancel"), type="button",
@@ -239,8 +272,9 @@ def _create_form(session_id: str, line_id: str, line: dict, chart: list[dict], c
 
 # ── Split form (inline partial) ───────────────────────────────────────────────
 
-def _split_form(session_id: str, line_id: str, line: dict, chart: list[dict], currency: str,
+def _split_form(session_id: str, line_id: str, line: dict, chart: list[dict], bank: dict,
                 contacts: list[dict] | None = None) -> FT:
+    currency = bank["currency"]
     amount = abs(float(line.get("amount", 0)))
     contact_opts = party_options(contacts or [])
     account_options = [
@@ -260,7 +294,7 @@ def _split_form(session_id: str, line_id: str, line: dict, chart: list[dict], cu
                         Select(*account_options, _acct_opt, name="account_code_0",
                                cls="form-input cell-input--select w-auto", onchange=_acct_js),
                         Input(type="number", name="amount_0", placeholder=t("label.amount"),
-                              step="0.01", cls="form-input max-w-sm"),
+                              step=money_step(currency), cls="form-input max-w-sm"),
                         searchable_select("contact_0", contact_opts,
                                           placeholder=t("acct.je_line_party"),
                                           cls_extra="form-input", search_url=PARTY_SEARCH_URL),
@@ -269,6 +303,7 @@ def _split_form(session_id: str, line_id: str, line: dict, chart: list[dict], cu
                     )
                 ],
             ),
+            _rate_field(bank),
             Div(
                 Button(t("btn.split_match"), type="submit", cls="btn btn--primary btn--sm"),
                 Button(t("btn.cancel"), type="button",
@@ -314,7 +349,14 @@ def _workspace_view(
     book_entries: list[dict],
     currency: str,
     notice: str | None = None,
+    notice_kind: str = "error",
+    skipped_reasons: dict[str, str] | None = None,
 ) -> FT:
+    # A completed reconciliation is the closed record of a bank statement, so it shows
+    # no edit controls (GDR 2e, owner decision): its one way to change, Reopen, sits on
+    # the banner, and the server still refuses and explains any change to it.
+    read_only = recon.get("status") == "completed"
+    skipped_reasons = skipped_reasons or {}
     total = len(lines)
     matched = sum(1 for l in lines if l["status"] in ("matched", "created"))
     suggested = sum(1 for l in lines if l["status"] == "suggested")
@@ -322,14 +364,20 @@ def _workspace_view(
     unmatched = total - matched - suggested - skipped
 
     stmt_bal = float(recon.get("statement_balance", 0))
-    difference = recon.get("difference", 0)
+    # The server rounds the difference at the account currency and says whether the
+    # session balances; the screen judges on that flag alone, exactly as completion does.
+    # A difference of None is unknown: an entry has no amount in the account's currency.
+    difference = recon.get("difference")
+    balanced = bool(recon.get("balanced"))
     tol = float(recon.get("tolerance", 1.0))
-    diff_cls = "recon-diff--ok" if abs(float(difference)) < 0.01 else (
-        "recon-diff--warn" if abs(float(difference)) <= tol else "recon-diff--bad"
-    )
+    writable_off = not balanced and difference is not None and abs(float(difference)) <= tol
+    diff_cls = "recon-diff--ok" if balanced else ("recon-diff--warn" if writable_off else "recon-diff--bad")
 
     # Build sets for unmatched book entries
     matched_je_ids = {l["matched_je_id"] for l in lines if l.get("matched_je_id")}
+    # Entries the session counts with no statement line holding them (matched through
+    # the API): shown as matched, each with its own Undo.
+    held = set(recon.get("reconciled_je_ids") or []) - matched_je_ids
     unmatched_entries = sorted(
         (e for e in book_entries if e["je_id"] not in matched_je_ids),
         key=lambda e: e.get("ts") or "", reverse=True,
@@ -342,10 +390,12 @@ def _workspace_view(
         Div(
             H2(t("recon.title", bank=bank_name, account=acc_num), cls="recon-title"),
             Span(t("recon.statement_date", date=recon.get("statement_date", "--")), cls="text-muted"),
+            A(t("recon.history"), href=f"/accounting/reconcile/history/{bank.get('id', '')}",
+              cls="btn btn--secondary btn--sm"),
         ),
         Div(
             Span(t("recon.statement_balance", amount=fmt_money(stmt_bal, currency)), cls="val-chip"),
-            Span(t("recon.difference", amount=fmt_money(float(difference), currency)), cls=f"val-chip {diff_cls}"),
+            Span(t("recon.difference", amount=fmt_money(difference, currency)), cls=f"val-chip {diff_cls}"),
         ),
         cls="recon-header",
     )
@@ -373,29 +423,32 @@ def _workspace_view(
                 hx_swap="outerHTML",
                 cls="btn btn--primary btn--sm",
             )]
-            if abs(float(difference)) < 0.01 else
-            [Button(t("btn.write_off_diff"),
+            if balanced else
+            [Form(
+                _rate_field(bank),
+                Button(t("btn.write_off_diff"), type="submit", cls="btn btn--outline btn--sm"),
                 hx_post=f"/accounting/reconcile/{session_id}/write-off",
                 hx_target="#recon-workspace",
                 hx_swap="outerHTML",
-                cls="btn btn--outline btn--sm",
+                cls="flex-row gap-sm",
             )]
-            if abs(float(difference)) <= tol else []
+            if writable_off else []
         ),
         cls="recon-toolbar",
-    )
+    ) if not read_only else None
 
     bank_panel = Div(
         H3(t("page.bank_statement"), cls="recon-panel-title"),
         _recon_progress(total, matched, created=sum(1 for l in lines if l["status"] == "created"),
                         skipped=skipped),
         Div(
-            *[_stmt_line_row(l, session_id, currency) for l in lines],
+            *[_stmt_line_row(l, session_id, currency, read_only=read_only,
+                             reason=skipped_reasons.get(l["id"])) for l in lines],
             id="stmt-lines-panel",
             cls="recon-panel-body",
         ) if lines else Div(
             P(t("acct.no_statement_lines_imported_yet"), cls="empty-state"),
-            Form(
+            None if read_only else Form(
                 Div(
                     Label(t("label.upload_csv"), cls="form-label"),
                     Input(type="file", name="csv_file", accept=".csv", cls="form-input", required=True),
@@ -413,7 +466,7 @@ def _workspace_view(
 
     book_panel = Div(
         H3(t("page.book_entries"), cls="recon-panel-title"),
-        P(t("recon.book_match_hint"), cls="recon-panel-hint text-muted"),
+        None if read_only else P(t("recon.book_match_hint"), cls="recon-panel-hint text-muted"),
         Input(type="search", placeholder=t("label.search"),
               oninput="reconFilterBook(this)",
               cls="form-input recon-book-filter") if unmatched_entries else None,
@@ -429,9 +482,14 @@ def _workspace_view(
                         Span(fmt_money(e.get("amount", 0), currency), cls="cell--number"),
                         cls="recon-row-right",
                     ),
-                    cls="recon-row recon-row--unmatched recon-book-entry",
+                    Button(t("btn.undo"),
+                           hx_post=f"/accounting/reconcile/{session_id}/entries/{e['je_id']}/unmatch",
+                           hx_target="#recon-workspace", hx_swap="outerHTML",
+                           cls="btn btn--xs btn--outline") if e["je_id"] in held and not read_only else None,
+                    cls="recon-row recon-row--matched recon-book-entry" if e["je_id"] in held
+                    else "recon-row recon-row--unmatched recon-book-entry",
                     id=f"book-entry-{e['je_id']}",
-                    onclick="reconMatchEntry(this)",
+                    onclick=None if read_only or e["je_id"] in held else "reconMatchEntry(this)",
                 )
                 for e in unmatched_entries
             ],
@@ -443,8 +501,6 @@ def _workspace_view(
         cls="recon-panel recon-panel--book",
     )
 
-    # A completed reconciliation still shows every action: each one explains that it
-    # must be reopened first (GDR 2e), and Reopen sits right here.
     completed = Div(
         Span(t("recon.completed_banner", date=(recon.get("completed_at") or "")[:10] or EMPTY)),
         Button(
@@ -452,13 +508,16 @@ def _workspace_view(
             hx_post=f"/accounting/reconcile/{session_id}/reopen",
             hx_target="#recon-workspace",
             hx_swap="outerHTML",
+            hx_confirm=t("recon.reopen_confirm"),
             cls="btn btn--secondary btn--sm",
         ),
         cls="flash flash--success recon-completed",
-    ) if recon.get("status") == "completed" else None
+    ) if read_only else None
 
     return Div(
         completed,
+        _relabel_notice(bank, f"/accounting/reconcile/{session_id}"),
+        P(t("recon.needs_review"), cls="flash flash--warning") if recon.get("needs_review") else None,
         header,
         toolbar,
         Div(
@@ -470,7 +529,7 @@ def _workspace_view(
         ),
         Div(bank_panel, book_panel, cls="recon-panels"),
         Script(_RECON_MATCH_JS),
-        Script(f"celerpToast({json.dumps(notice)}, 'error');") if notice else None,
+        Script(f"celerpToast({json.dumps(notice)}, {json.dumps(notice_kind)});") if notice else None,
         id="recon-workspace",
         cls="recon-workspace",
         **{"data-session-id": session_id,
@@ -478,28 +537,91 @@ def _workspace_view(
     )
 
 
-async def _fresh_workspace(token: str, session_id: str, notice: str | None = None):
+def _relabel_notice(bank: dict, back: str) -> FT | None:
+    """The account is labelled in another currency than the books' while every entry on
+    it carries a books-currency amount only, so none of its amounts can be read. Says so
+    and offers the correction: setting the account to the books' currency changes no
+    amount, and setting it back in the account's settings undoes it."""
+    base = bank.get("relabel_to")
+    if not base:
+        return None
+    return Div(
+        Span(t("recon.relabel_notice", currency=bank.get("currency", ""), base=base)),
+        Form(
+            Input(type="hidden", name="next", value=back),
+            Button(t("recon.relabel_button", base=base), type="submit", cls="btn btn--primary btn--sm"),
+            method="post", action=f"/accounting/reconcile/relabel/{bank.get('id', '')}",
+        ),
+        cls="flash flash--warning recon-relabel",
+    )
+
+
+# ── Reconciliation history ───────────────────────────────────────────────────
+
+# Session statuses in the order the history filter cards show them, with their colour.
+_SESSION_STATUSES = {"open": "yellow", "completed": "green"}
+
+
+def _history_table(items: list[dict], currency: str) -> FT:
+    """An account's reconciliations, newest statement first (the API's order)."""
+    headers = (Th(t("label.statement_date")), Th(t("label.statement_closing_balance"), cls="cell--number"),
+               Th(t("th.status")), Th(t("th.completed")))
+
+    def _rows(i: dict) -> tuple[FT, ...]:
+        row = Tr(
+            Td(A(i["statement_date"], href=f"/accounting/reconcile/{i['id']}")),
+            Td(fmt_money(i["statement_balance"], currency), cls="cell--number"),
+            Td(display_enum(i["status"], "recon_session_status")),
+            Td((i.get("completed_at") or "")[:10] or EMPTY),
+        )
+        if not i.get("needs_review"):
+            return (row,)
+        # The note spans the row below so it wraps instead of widening a column.
+        return row, Tr(Td(P(t("recon.needs_review"), cls="flash flash--warning"),
+                          colspan=str(len(headers)), cls="cell--note"))
+    return Table(
+        Thead(Tr(*headers)),
+        Tbody(*[r for i in items for r in _rows(i)]),
+        cls="data-table",
+    )
+
+
+def _book_entries(recon: dict) -> list[dict]:
+    """The book entries the workspace lists: those not yet counted, plus those the session
+    counts by their own match (not the opening balance), so each can be undone."""
+    held = set(recon.get("reconciled_je_ids") or [])
+    return recon.get("unreconciled_entries", []) + [e for e in recon.get("reconciled_entries", []) if e["je_id"] in held]
+
+
+async def _fresh_workspace(token: str, session_id: str, notice: str | None = None, **view):
     """Re-render the whole workspace from fresh API state.
 
     Every reconciliation mutation returns this, so the book panel, stats bar,
     difference chip, and toolbar can never drift out of step with the lines.
+    *view* passes the notice kind and skipped-line reasons on to the view.
     """
     try:
-        company = await api.get_company(token)
-        currency = company.get("currency", "")
         recon = await api.get_reconciliation(token, session_id)
         lines = (await api.get_statement_lines(token, session_id)).get("items", [])
     except APIError as e:
         if e.status == 401:
             return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         return P(str(e.detail), cls="error-banner")
-    bank = recon.get("bank_account", {})
-    book_entries = recon.get("unreconciled_entries", [])
-    return _workspace_view(session_id, recon, bank, lines, book_entries, currency,
-                           notice=notice)
+    bank = recon["bank_account"]
+    book_entries = _book_entries(recon)
+    return _workspace_view(session_id, recon, bank, lines, book_entries, bank["currency"],
+                           notice=notice, **view)
 
 
 # ── CSV import helpers ────────────────────────────────────────────────────────
+
+def _page_flashes(request: Request) -> tuple:
+    """What the page was sent back with: ``msg`` is a refusal, ``done`` an action that
+    went through."""
+    msg = request.query_params.get("msg", "").strip()
+    done = request.query_params.get("done", "").strip()
+    return (flash(msg) if msg else None, flash(done, "success") if done else None)
+
 
 def _workspace_redirect(session_id: str, msg: str = "") -> Response:
     """204 + HX-Redirect back to the workspace so htmx navigates the browser
@@ -579,7 +701,6 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         company = await _get_company(token)
-        currency = company.get("currency", "")
         try:
             banks = (await api.get_bank_accounts(token)).get("items", [])
         except APIError as e:
@@ -587,8 +708,13 @@ def setup_routes(app):
                 return RedirectResponse("/login", status_code=302)
             banks = []
 
+        chosen = request.query_params.get("bank_id", "")
+        # One minor unit of the finest currency among the accounts offered, so any of
+        # their statement balances can be typed; the server judges at the chosen one.
+        balance_step = min((money_step(b.get("currency")) for b in banks if b.get("is_active", True)),
+                           key=float, default=money_step(company.get("currency")))
         bank_options = [
-            Option(f"{b['bank_name']} {b.get('account_number', '')}", value=b["id"])
+            Option(f"{b['bank_name']} {b.get('account_number', '')}", value=b["id"], selected=b["id"] == chosen)
             for b in banks if b.get("is_active", True)
         ]
         _bank_opt, _bank_js = add_new_option(t("recon.add_new_bank_account"), "/settings/accounting?tab=bank-accounts")
@@ -616,14 +742,16 @@ def setup_routes(app):
                 Div(
                     Label(t("label.statement_date"), cls="form-label"),
                     Input(type="date", name="statement_date",
-                          value=business_today(company.get("timezone")).isoformat(),
+                          value=(request.query_params.get("statement_date")
+                                 or business_today(company.get("timezone")).isoformat()),
                           cls="form-input", required=True),
                     cls="form-field",
                 ),
                 Div(
                     Label(t("label.statement_closing_balance"), cls="form-label"),
-                    Input(type="number", name="statement_balance", step="0.01",
-                          placeholder="0.00", cls="form-input", required=True),
+                    Input(type="number", name="statement_balance", step=balance_step,
+                          value=request.query_params.get("statement_balance", ""),
+                          placeholder="0", cls="form-input", required=True),
                     cls="form-field",
                 ),
                 Div(
@@ -636,9 +764,11 @@ def setup_routes(app):
             cls="settings-card",
         )
 
+        msg = request.query_params.get("msg", "").strip()
         return await base_shell(
             page_header(t("btn.start_reconciliation"),
                         A(t("btn.back"), href="/settings/accounting?tab=bank-accounts", cls="btn btn--secondary")),
+            flash(msg) if msg else None,
             form,
             title=page_title("btn.start_reconciliation"),
             nav_active="accounting",
@@ -668,7 +798,74 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            return RedirectResponse("/accounting/reconcile/start", status_code=302)
+            entered = {"bank_id": bank_id, "statement_date": stmt_date, "statement_balance": stmt_bal_raw}
+            return RedirectResponse(
+                "/accounting/reconcile/start?" + urlencode({"msg": str(e.detail), **entered}), status_code=302)
+
+    @app.get("/accounting/reconcile/history/{bank_id}")
+    async def reconcile_history(request: Request, bank_id: str):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            bank = await api.get_bank_account(token, bank_id)
+            items = (await api.get_bank_reconciliations(token, bank_id)).get("items", [])
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            return RedirectResponse(
+                "/settings/accounting?tab=bank-accounts&msg=" + quote(str(e.detail), safe=""),
+                status_code=302,
+            )
+        status = request.query_params.get("status", "")
+        if status not in _SESSION_STATUSES:
+            status = ""
+        base = f"/accounting/reconcile/history/{bank_id}"
+        reconcile = A(t("acct.reconcile"), href=f"/accounting/reconcile/start?bank_id={bank_id}",
+                      cls="btn btn--primary")
+        cards = status_cards(
+            [{"label": display_enum(s, "recon_session_status"),
+              "count": sum(1 for i in items if i["status"] == s), "total": None, "status": s,
+              "color": color} for s, color in _SESSION_STATUSES.items()],
+            base, status or None)
+        shown = [i for i in items if not status or i["status"] == status]
+        return await base_shell(
+            *_page_flashes(request),
+            page_header(f"{t('recon.history')}: {bank.get('bank_name', '')}",
+                        A(t("btn.back"), href="/settings/accounting?tab=bank-accounts", cls="btn btn--secondary"),
+                        reconcile),
+            P(t("recon.history_intro"), cls="text-muted"),
+            _relabel_notice(bank, base),
+            cards,
+            _history_table(shown, bank["currency"]) if items else Div(
+                P(t("recon.history_empty"), cls="empty-state"), reconcile, cls="settings-card"),
+            title=page_title("recon.history"),
+            nav_active="accounting",
+            request=request,
+        )
+
+    @app.post("/accounting/reconcile/relabel/{bank_id}")
+    async def relabel_bank(request: Request, bank_id: str):
+        """Set an account to the books' currency (``_relabel_notice``), then return to the
+        page the notice was on, saying what changed and how to change it back."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        back = str((await request.form()).get("next", ""))
+        if not back.startswith("/accounting/reconcile/") or "//" in back or "\\" in back:
+            back = f"/accounting/reconcile/history/{bank_id}"
+        try:
+            bank = await api.get_bank_account(token, bank_id)
+            base = bank.get("relabel_to")
+            if base:
+                await api.patch_bank_account(token, bank_id, {"currency": base})
+                done = t("recon.relabel_done", currency=bank["currency"], base=base)
+                return RedirectResponse(back + "?done=" + quote(done, safe=""), status_code=303)
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            return RedirectResponse(back + "?msg=" + quote(str(e.detail), safe=""), status_code=303)
+        return RedirectResponse(back, status_code=303)
 
     @app.get("/accounting/reconcile/{session_id}")
     async def reconcile_workspace(request: Request, session_id: str):
@@ -676,13 +873,11 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         try:
-            company = await api.get_company(token)
-            currency = company.get("currency", "")
             recon = await api.get_reconciliation(token, session_id)
             lines_data = await api.get_statement_lines(token, session_id)
             lines = lines_data.get("items", [])
-            bank = recon.get("bank_account", {})
-            book_entries = recon.get("unreconciled_entries", [])
+            bank = recon["bank_account"]
+            book_entries = _book_entries(recon)
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
@@ -691,10 +886,9 @@ def setup_routes(app):
                 status_code=302,
             )
 
-        msg = request.query_params.get("msg", "").strip()
-        workspace = _workspace_view(session_id, recon, bank, lines, book_entries, currency)
+        workspace = _workspace_view(session_id, recon, bank, lines, book_entries, bank["currency"])
         return await base_shell(
-            flash(msg) if msg else None,
+            *_page_flashes(request),
             workspace,
             title=page_title("recon.workspace_title"),
             nav_active="accounting",
@@ -782,8 +976,7 @@ def setup_routes(app):
         if not token:
             return P(t("error.session_expired"), cls="error-banner")
         try:
-            company = await api.get_company(token)
-            currency = company.get("currency", "")
+            bank = (await api.get_reconciliation(token, session_id))["bank_account"]
             lines_data = await api.get_statement_lines(token, session_id)
             line = next((l for l in lines_data.get("items", []) if l["id"] == line_id), None)
             if not line:
@@ -793,7 +986,7 @@ def setup_routes(app):
             contacts = (await api.list_contacts(token, {"limit": PARTY_PRELOAD})).get("items") or []
         except APIError:
             return P(t("acct.error_loading_data"), cls="error-banner")
-        return _create_form(session_id, line_id, line, chart, currency, contacts)
+        return _create_form(session_id, line_id, line, chart, bank, contacts)
 
     @app.get("/accounting/reconcile/{session_id}/lines/{line_id}/split-form")
     async def split_form_partial(request: Request, session_id: str, line_id: str):
@@ -801,8 +994,7 @@ def setup_routes(app):
         if not token:
             return P(t("error.session_expired"), cls="error-banner")
         try:
-            company = await api.get_company(token)
-            currency = company.get("currency", "")
+            bank = (await api.get_reconciliation(token, session_id))["bank_account"]
             lines_data = await api.get_statement_lines(token, session_id)
             line = next((l for l in lines_data.get("items", []) if l["id"] == line_id), None)
             if not line:
@@ -812,7 +1004,7 @@ def setup_routes(app):
             contacts = (await api.list_contacts(token, {"limit": PARTY_PRELOAD})).get("items") or []
         except APIError:
             return P(t("acct.error_loading_data"), cls="error-banner")
-        return _split_form(session_id, line_id, line, chart, currency, contacts)
+        return _split_form(session_id, line_id, line, chart, bank, contacts)
 
     @app.post("/accounting/reconcile/{session_id}/lines/{line_id}/match-confirm")
     async def match_confirm(request: Request, session_id: str, line_id: str):
@@ -854,6 +1046,8 @@ def setup_routes(app):
                 data["amount"] = float(amount_raw)
             except ValueError:
                 pass
+        if refused := _form_rate(form, data):
+            return await _fresh_workspace(token, session_id, notice=refused)
         try:
             await api.create_recon_expense(token, session_id, line_id, data)
         except APIError as e:
@@ -888,8 +1082,11 @@ def setup_routes(app):
         if not splits:
             return await _fresh_workspace(token, session_id,
                                           notice=t("acct.at_least_one_split_entry_required"))
+        extra: dict = {}
+        if refused := _form_rate(form, extra):
+            return await _fresh_workspace(token, session_id, notice=refused)
         try:
-            await api.split_recon_line(token, session_id, line_id, splits)
+            await api.split_recon_line(token, session_id, line_id, {"splits": splits, **extra})
         except APIError as e:
             if e.status == 401:
                 return Response("", status_code=401, headers={"HX-Redirect": "/login"})
@@ -922,6 +1119,19 @@ def setup_routes(app):
             return await _fresh_workspace(token, session_id, notice=str(e.detail))
         return await _fresh_workspace(token, session_id)
 
+    @app.post("/accounting/reconcile/{session_id}/entries/{je_id}/unmatch")
+    async def unmatch_entry(request: Request, session_id: str, je_id: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.session_expired"), cls="error-banner")
+        try:
+            await api.unmatch_reconciliation(token, session_id, [je_id])
+        except APIError as e:
+            if e.status == 401:
+                return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+            return await _fresh_workspace(token, session_id, notice=str(e.detail))
+        return await _fresh_workspace(token, session_id)
+
     @app.post("/accounting/reconcile/{session_id}/auto-match")
     async def trigger_auto_match(request: Request, session_id: str):
         token = _token(request)
@@ -941,12 +1151,17 @@ def setup_routes(app):
         if not token:
             return P(t("error.session_expired"), cls="error-banner")
         try:
-            await api.bulk_confirm_recon(token, session_id)
+            result = await api.bulk_confirm_recon(token, session_id)
         except APIError as e:
             if e.status == 401:
                 return Response("", status_code=401, headers={"HX-Redirect": "/login"})
             return await _fresh_workspace(token, session_id, notice=str(e.detail))
-        return await _fresh_workspace(token, session_id)
+        skipped = {s["line_id"]: s["reason"] for s in result.get("skipped", [])}
+        if not skipped:
+            return await _fresh_workspace(token, session_id)
+        key = "recon.bulk_confirm_skipped_one" if len(skipped) == 1 else "recon.bulk_confirm_skipped"
+        return await _fresh_workspace(token, session_id, notice=t(key, count=len(skipped)),
+                                      notice_kind="warning", skipped_reasons=skipped)
 
     @app.post("/accounting/reconcile/{session_id}/complete")
     async def complete_recon(request: Request, session_id: str):
@@ -993,8 +1208,11 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return P(t("error.session_expired"), cls="error-banner")
+        data: dict = {}
+        if refused := _form_rate(await request.form(), data):
+            return await _fresh_workspace(token, session_id, notice=refused)
         try:
-            await api.write_off_recon(token, session_id, {})
+            await api.write_off_recon(token, session_id, data)
         except APIError as e:
             if e.status == 401:
                 return Response("", status_code=401, headers={"HX-Redirect": "/login"})

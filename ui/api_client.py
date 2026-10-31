@@ -407,6 +407,15 @@ def error_message(e: APIError) -> str:
     return text or t("error.unexpected_error_body")
 
 
+def error_code(e: APIError) -> str:
+    """The machine code a refusal carries (``detail.code``), else "". Pages branch on
+    this, never on the status alone: one status can carry several refusals."""
+    for source in (e.data, e.detail):
+        if isinstance(source, dict) and source.get("code"):
+            return str(source["code"])
+    return ""
+
+
 def refusal_response(e: APIError) -> PlainTextResponse:
     """The reply a UI route gives for an APIError it caught: the refusal as short plain
     text with its status, which the page's error banner shows. An ended session is raised
@@ -1903,6 +1912,11 @@ async def get_bank_account(token: str, bank_id: str) -> dict:
         return _raise(await c.get(f"/accounting/bank-accounts/{bank_id}")).json()
 
 
+async def get_bank_reconciliations(token: str, bank_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/accounting/bank-accounts/{bank_id}/reconciliations")).json()
+
+
 async def create_bank_account(token: str, data: dict) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post("/accounting/bank-accounts", json=data)).json()
@@ -1969,6 +1983,11 @@ async def match_recon_line(token: str, session_id: str, line_id: str, je_id: str
         )).json()
 
 
+async def unmatch_reconciliation(token: str, session_id: str, je_ids: list[str]) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/accounting/reconciliation/{session_id}/unmatch", json={"je_ids": je_ids})).json()
+
+
 async def unmatch_recon_line(token: str, session_id: str, line_id: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(f"/accounting/reconciliation/{session_id}/lines/{line_id}/unmatch")).json()
@@ -1982,11 +2001,11 @@ async def create_recon_expense(token: str, session_id: str, line_id: str, data: 
         )).json()
 
 
-async def split_recon_line(token: str, session_id: str, line_id: str, splits: list[dict]) -> dict:
+async def split_recon_line(token: str, session_id: str, line_id: str, data: dict) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(
             f"/accounting/reconciliation/{session_id}/lines/{line_id}/split",
-            json={"splits": splits},
+            json=data,
         )).json()
 
 
