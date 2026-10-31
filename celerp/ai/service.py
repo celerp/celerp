@@ -318,20 +318,20 @@ def _parse_call(call: dict, capabilities: dict) -> tuple[str, str, dict | None, 
     error: dict | None = None
     arguments: dict | None = None
     if not isinstance(raw_args, str) or len(raw_args.encode("utf-8")) > MAX_ARGUMENT_BYTES:
-        error = _agent_error("invalid_arguments", "Tool arguments were missing or too large.")
+        error = _agent_error("invalid_arguments", "ai.err_invalid_arguments", "Tool arguments were missing or too large.")
     else:
         try:
             arguments = json.loads(raw_args)
         except Exception:
-            error = _agent_error("invalid_arguments", "Tool arguments were not valid JSON.")
+            error = _agent_error("invalid_arguments", "ai.err_invalid_arguments", "Tool arguments were not valid JSON.")
         else:
             if not isinstance(arguments, dict):
-                error = _agent_error("invalid_arguments", "Tool arguments must be a JSON object.")
+                error = _agent_error("invalid_arguments", "ai.err_invalid_arguments", "Tool arguments must be a JSON object.")
                 arguments = None
 
     capability = capabilities.get(name)
     if error is None and capability is None:
-        error = _agent_error("unknown_capability", f"No capability named {name!r} is available.")
+        error = _agent_error("unknown_capability", "ai.action_unavailable", f"No capability named {name!r} is available.")
     return call_id, name, capability, arguments, error
 
 
@@ -541,7 +541,7 @@ async def _agent_loop(
                 tool_result: dict = error
             elif capability.get("requires_confirmation", False):
                 tool_result = _agent_error(
-                    "mixed_turn",
+                    "mixed_turn", "ai.err_mixed_turn",
                     "Changes are proposed on a turn of their own. Use the read results "
                     "from this turn, then propose the change again.",
                 )
@@ -560,7 +560,7 @@ async def _agent_loop(
             messages.append({"role": "tool", "tool_call_id": call_id, "content": encoded})
         for call in dropped:
             dropped_result = _agent_error(
-                "call_limit",
+                "call_limit", "ai.err_step_limit",
                 f"This call was not executed: at most {MAX_TOOL_CALLS_PER_TURN} calls run per turn "
                 f"and {MAX_TOOL_CALLS_PER_RUN} per question. Answer with the data you have.",
             )

@@ -201,3 +201,69 @@ def test_proposal_card_field_names_and_values_read_in_the_reader_language():
     texts += [ui_routes._fmt_scalar("doc_type", "bill", None), ui_routes._fmt_scalar("contact_type", "vendor", None)]
     assert _english(texts) == []
     assert ui_routes._fmt_scalar("name", "Kingfisher Packaging", None) == "Kingfisher Packaging"
+
+
+async def _executor_errors(monkeypatch) -> list[dict]:
+    """One failed capability call for every error the executor reports, each from the
+    real executor against a small app."""
+    from fastapi import FastAPI
+    from fastapi.responses import PlainTextResponse
+    from celerp.ai import deadlines, tools
+
+    app = FastAPI()
+
+    @app.get("/slow")
+    async def slow():
+        await asyncio.sleep(1)
+
+    @app.get("/text", response_class=PlainTextResponse)
+    async def text():
+        return "plain"
+
+    @app.get("/big")
+    async def big():
+        return {"value": "x" * 200}
+
+    def cap(path, **extra):
+        return {"method": "GET", "path": path, "path_names": [], "query_names": [], "expects_body": False, **extra}
+
+    thing = cap("/thing/{item_id}", path_names=["item_id"])
+    run = tools.execute_agent_capability
+    results = [
+        await run(app, "", cap("/text"), {}, "c"),
+        await run(app, "Bearer t", cap("/text"), {"body": {}}, "c"),
+        await run(app, "Bearer t", thing, {"path": {"item_id": "a/b"}}, "c"),
+        await run(app, "Bearer t", cap("/text"), {}, "c"),
+        await run(app, "Bearer t", cap("/big"), {}, "c", result_max_bytes=32),
+    ]
+    monkeypatch.setattr(deadlines, "TOOL_STEP_S", 0.01)
+    results.append(await run(app, "Bearer t", cap("/slow"), {}, "c"))
+    return results
+
+
+_EXECUTOR_CODES = set(re.findall(r'_agent_error\(\s*"(\w+)"', Path(service._agent_error.__code__.co_filename)
+                                 .read_text(encoding="utf-8")))
+
+
+@pytest.mark.asyncio
+async def test_every_executor_error_is_a_keyed_refusal_that_reads_in_the_reader_language(monkeypatch):
+    results = await _executor_errors(monkeypatch)
+    errors = [r["error"] for r in results]
+    assert {e["code"] for e in errors} == _EXECUTOR_CODES
+    assert all(not r["ok"] and e.get("message_key") in _EN for r, e in zip(results, errors))
+    assert _english([i18n.refusal_text(e) for e in errors]) == []
+
+
+def test_every_agent_error_names_a_catalog_key():
+    """Class guard: every _agent_error call under celerp/ai names a catalog key, so no
+    reader of a failed capability call is left with the model's English."""
+    import ast
+    from celerp import ai
+    calls = []
+    for path in sorted(Path(ai.__file__).parent.glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "_agent_error":
+                key = node.args[1] if len(node.args) > 1 else None
+                calls.append((f"{path.name}:{node.lineno}", getattr(key, "value", None)))
+    assert len(calls) > 10
+    assert [where for where, key in calls if key not in _EN] == []
