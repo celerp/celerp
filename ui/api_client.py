@@ -2683,18 +2683,17 @@ async def back_to_memo(token: str, entity_id: str, *, line_ids: list[str] | None
             "idempotency_key": idempotency_key})).json()
 
 
-async def set_memo_tax_rate(token: str, memo_id: str, rate: float, version: int | None) -> dict:
-    """Set the tax rate of an issued memo whose tax was entered as an amount."""
+async def set_memo_tax_rate(token: str, memo_id: str, rate: float, binding: str) -> dict:
+    """Set the tax rate of an issued memo whose tax was entered as an amount, confirming the
+    preview whose ``binding`` is sent."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/docs/{memo_id}/tax-rate", json={
-            "tax_rate": rate, "expected_version": version})).json()
+        return _raise(await c.post(f"/docs/{memo_id}/tax-rate", json={"tax_rate": rate, "binding": binding})).json()
 
 
-async def memo_tax_rate_preview(token: str, memo_id: str, rate: float, version: int | None) -> dict:
-    """The tax and total a memo tax rate would give (a dry run; nothing is saved)."""
+async def memo_tax_rate_preview(token: str, memo_id: str, rate: float) -> dict:
+    """The tax and total a memo tax rate would give, with their binding (a dry run; nothing is saved)."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/docs/{memo_id}/tax-rate", json={
-            "tax_rate": rate, "expected_version": version, "dry_run": True})).json()
+        return _raise(await c.post(f"/docs/{memo_id}/tax-rate", json={"tax_rate": rate, "dry_run": True})).json()
 
 
 async def create_shipment_from_docs(token: str, doc_ids: list[str]) -> dict:

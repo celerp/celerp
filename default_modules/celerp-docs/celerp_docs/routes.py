@@ -69,7 +69,7 @@ from celerp.services.auth import AuthContext, get_auth_context, get_current_comp
 from celerp.services.permissions import assert_role_permission, get_current_company_settings, locked_authority, reject_price_change, require_permission, role_has_permission
 from celerp_docs.sequences import next_doc_ref, next_draft_ref, peek_draft_ref, require_doc_type, get_all_sequences, update_sequence, list_sequence_key
 from celerp_docs.search import doc_q_clause
-from celerp.services.units import build_unit_map, default_receive_as, get_company_units, is_non_stock_line, is_pieces_unit, is_weight_unit, line_receive_kind, require_moving_fits_units, validate_line_quantity
+from celerp.services.units import build_unit_map, default_receive_as, get_company_units, is_non_stock_line, is_pieces_unit, is_weight_unit, line_receive_kind, require_moving_fits_units, sum_quantities, unit_decimals, validate_line_quantity
 from celerp.services.money import allocate_pro_rata, books_currency, checked_exchange_rate, discount_from_inputs, doc_rate, document_line_amount, document_line_unit, require_doc_rate, received_share, round_basis, round_money, round_rate, to_base, to_decimal, to_stored_float
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, line_price_list, price_keys_in, resolve_price
 from celerp.services.terms import resolve_document_terms
@@ -459,10 +459,34 @@ class DocReopenBody(BaseModel):
     idempotency_key: str | None = None
 
 
+# ── Preview, then confirm ─────────────────────────────────────────────────────
+# A write with a preview (``dry_run``) confirms only the preview shown: the preview answers
+# with a binding, and the write refuses a binding that differs from what it would write now.
+
+# Request fields that never change what a write does; every other field is bound to its preview.
+PREVIEW_UNBOUND_FIELDS = frozenset({"idempotency_key", "dry_run", "binding"})
+
+
+def preview_binding(rows: list[Projection | None], body: BaseModel) -> str:
+    """What a preview shows, as one digest: each record the write changes with its version (none:
+    a record it makes) and every field of the request that changes what it writes."""
+    shown = {"rows": [[row.entity_id, row.version] if row else None for row in rows],
+             "request": body.model_dump(mode="json", exclude=set(PREVIEW_UNBOUND_FIELDS))}
+    return hashlib.sha256(json.dumps(shown, sort_keys=True).encode()).hexdigest()
+
+
 class MemoTaxRateBody(BaseModel):
+    """A tax rate for an issued memo. ``dry_run`` returns the figures it gives with their
+    ``binding``; the write sends that binding back and stores only that preview."""
     tax_rate: FiniteFloat = Field(gt=0, le=100)
-    expected_version: int
     dry_run: bool = False
+    binding: str | None = None
+
+    @model_validator(mode="after")
+    def _confirms_a_preview(self):
+        if not self.dry_run and self.binding is None:
+            raise ValueError("Send the binding of the preview this rate confirms.")
+        return self
 
 
 class DocRevertBody(BaseModel):
@@ -1787,17 +1811,12 @@ async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_
             for li in doc.get("line_items") or []:
                 li.pop("shipped_label", None)
         # How much of each line is still out (on memo or sold), the most Set as available
-        # can take back on it.
-        out, line_of = await _lots_out(session, company_id, entity_id, row.state,
-                                       await _memo_allocation_items(session, company_id, entity_id))
-        out_by_line: dict[int, float] = {}
-        for eid, idx in line_of.items():
-            if idx is not None:
-                out_by_line[idx] = out_by_line.get(idx, 0.0) + float(out[eid].state.get("quantity") or 0)
+        # can take back on it: read as a draw reads it.
+        snap = await _draw_snapshot(session, company_id, row, None, lock=False)
         lines = list(doc.get("line_items") or [])
-        for i, qty in out_by_line.items():
+        for i in snap.lots:
             if i < len(lines):
-                lines[i] = {**lines[i], "out_quantity": qty}
+                lines[i] = {**lines[i], "out_quantity": snap.out(i)}
         doc["line_items"] = lines
         await _attach_memo_takes(session, company_id, doc, row.state)
     elif doc.get("doc_type") == "invoice":
@@ -3525,19 +3544,26 @@ async def set_memo_tax_rate(
 ) -> dict:
     """Work out the tax of an issued memo, entered as an amount with no rate, at a rate instead
     (memo_tax_rate_money), so part of the memo can be invoiced. With ``dry_run``, the figures it
-    would store, writing nothing and holding no lock."""
+    would store and their binding, writing nothing and holding no lock. A memo whose rate cannot
+    be set is refused for that alone (its preview was refused too, so there is no binding to
+    compare); otherwise the write stores only the preview whose binding it sends."""
     if not body.dry_run:
         # Company, then the memo: the order every writer of these rows takes.
         await locked_company(session, company_id)
     row = await _get_doc(session, company_id, entity_id, for_update=not body.dry_run)
-    if row.version != body.expected_version:
-        raise _stale_doc("documents.err_doc_changed")
     if problems := _memo_rate_problems(row):
         raise HTTPException(status_code=409, detail={**problems[0], "also": problems[1:]})
+    binding = preview_binding([row], body)
     money = memo_tax_rate_money(row.state, body.tax_rate)
     figures = {k: money[k] for k in ("tax", "total", "subtotal", "discount_amount")}
     if body.dry_run:
-        return figures
+        return {**figures, "binding": binding}
+    if body.binding != binding:
+        memo_ref = _ref(row)
+        raise HTTPException(status_code=409, detail=refusal(
+            "docs.memo_rate_preview_differs",
+            f"Memo {memo_ref} or the rate entered changed after the preview. Check the new preview, then save again.",
+            memo=memo_ref))
     previous = row.state.get("tax")
     fields = {k: {"old": row.state.get(k), "new": v} for k, v in {"tax_rate": body.tax_rate, **figures}.items()
               if row.state.get(k) != v}
@@ -11211,7 +11237,7 @@ class InvoiceLinesRequest(RevertLinesRequest):
     ``target_doc_id`` names a draft invoice of the same customer to add them to; without it
     a new invoice is made. ``dry_run`` returns what the draw would bill and leave on the memo
     without writing anything, with its ``binding``; sending that ``binding`` back with the draw
-    refuses it unless it is exactly the draw the preview showed (draw_binding)."""
+    refuses it unless it is exactly the draw the preview showed (preview_binding)."""
     target_doc_id: str | None = None
     dry_run: bool = False
     binding: str | None = None
@@ -11229,14 +11255,16 @@ class InvoiceLinesRequest(RevertLinesRequest):
 @dataclass(frozen=True)
 class _DrawSnapshot:
     """A memo and the target as a draw reads them: the lots each memo line (by index) has
-    out, and the lots out on the memo that no line records."""
+    out, the decimal places of each line's unit, and the lots out on the memo that no line records."""
     memo: Projection
     target: Projection | None
     lots: dict[int, list[Projection]]
     loose: list[Projection]
+    decimals: dict[int, int | None]
 
     def out(self, index: int) -> float:
-        return sum(float(p.state.get("quantity") or 0) for p in self.lots.get(index, []))
+        """The units memo line ``index`` has out: its lots' quantities, summed exactly in its unit."""
+        return sum_quantities((p.state.get("quantity") for p in self.lots.get(index, [])), self.decimals.get(index))
 
     def out_by_line(self) -> dict[str, float]:
         lines = self.memo.state.get("line_items") or []
@@ -11263,7 +11291,10 @@ async def _draw_snapshot(session, company_id, memo: Projection, target: Projecti
     loose: list[Projection] = []
     for eid, index in sorted(line_of.items()):
         (loose if index is None else by_line.setdefault(index, [])).append(out[eid])
-    return _DrawSnapshot(memo, target, by_line, loose)
+    unit_map = await _get_unit_map(session, company_id)
+    lines = memo.state.get("line_items") or []
+    decimals = {i: unit_decimals(lines[i].get("sell_by"), unit_map) for i in by_line if i < len(lines)}
+    return _DrawSnapshot(memo, target, by_line, loose, decimals)
 
 
 def _ref(row: Projection) -> str:
@@ -11305,21 +11336,6 @@ def _terms_text(terms: dict) -> str:
     return ", ".join(parts) or "no discount or tax"
 
 
-# The draw request fields that do not change what it bills; every other field is bound to the preview.
-DRAW_UNBOUND_FIELDS = frozenset({"idempotency_key", "dry_run", "binding"})
-
-
-def draw_binding(snap: _DrawSnapshot, body: InvoiceLinesRequest) -> str:
-    """The draw a preview shows, as one digest: the memo and its version, the target and its
-    version (none: a new invoice), and every field of the request that changes what is billed,
-    lines in their order with their quantities."""
-    target = snap.target
-    shown = {"memo": [snap.memo.entity_id, snap.memo.version],
-             "target": [target.entity_id, target.version] if target else None,
-             "request": body.model_dump(mode="json", exclude=set(DRAW_UNBOUND_FIELDS))}
-    return hashlib.sha256(json.dumps(shown, sort_keys=True).encode()).hexdigest()
-
-
 def draw_problems(snap: _DrawSnapshot, body: InvoiceLinesRequest, *,
                   everything: bool = False) -> tuple[list[dict], list[tuple[int, float]]]:
     """Everything that stops this draw, in the one order the preview and the write report it,
@@ -11329,7 +11345,7 @@ def draw_problems(snap: _DrawSnapshot, body: InvoiceLinesRequest, *,
     memo, target = snap.memo.state, snap.target
     memo_ref = _ref(snap.memo)
     problems: list[dict] = []
-    if body.binding is not None and body.binding != draw_binding(snap, body):
+    if body.binding is not None and body.binding != preview_binding([snap.memo, snap.target], body):
         problems.append(refusal(
             "docs.draw_preview_differs",
             f"Memo {memo_ref}, the invoice or the lines and quantities chosen changed after the preview. "
@@ -11498,8 +11514,8 @@ async def _draw_preview(session, company_id, memo_id: str, body: InvoiceLinesReq
         invoice_id, doc_number = None, peek_draft_ref(company, "invoice")
     else:
         invoice_id, doc_number = target.entity_id, _ref(target)
-    preview = {"target": {"id": invoice_id, "ref_id": doc_number}, "binding": draw_binding(snap, body),
-               "problems": problems,
+    preview = {"target": {"id": invoice_id, "ref_id": doc_number},
+               "binding": preview_binding([snap.memo, snap.target], body), "problems": problems,
                "lines": [], "fixed_taken": {}, "tax": None, "totals_after": {}, "left_on_memo": {}}
     if problems:
         return preview

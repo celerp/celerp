@@ -13,6 +13,7 @@ from celerp_docs.doc_money import document_money
 from memo_draw_support import (
     auth, back_to_memo, draft, draw, drawn, drawn_lines, key_of, memo_out, ok, pay, service_line, state,
 )
+from memo_draw_support import rate as set_rate
 
 
 async def invoice_all(client, h, memo: str, key: str | None = None) -> str:
@@ -451,9 +452,7 @@ async def test_way_back_after_return_draft_with_other_lines(client, session, rat
         doc = await state(client, h, x)
         await ok(await client.patch(f"/docs/{x}", headers=h, json={
             "fields_changed": {"tax_rate": {"new": 7}}, "expected_version": doc["version"]}))
-        m = await state(client, h, memo)
-        await ok(await client.post(f"/docs/{memo}/tax-rate", headers=h, json={
-            "tax_rate": 7 if rate == "same" else 10, "expected_version": m["version"]}))
+        await ok(await set_rate(client, h, memo, 7 if rate == "same" else 10))
 
     full = await draw(client, h, memo, line_ids=lids, target=x)
     part = await draw(client, h, memo, {lids[0]: 1}, target=x)

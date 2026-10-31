@@ -10,18 +10,12 @@ import uuid
 import pytest
 
 from memo_draw_support import (
-    auth, draw, drawn, key_of, memo_out, ok, owner, pay, state,
+    auth, draw, drawn, key_of, memo_out, ok, owner, pay, rate, state,
 )
 
 
 async def _invoice_all(client, h, memo: str, key: str | None = None):
     return await client.post(f"/docs/{memo}/convert", headers=h, json={"idempotency_key": key or uuid.uuid4().hex})
-
-
-async def _rate(client, h, memo: str, rate: float = 7.0, *, dry_run: bool = False):
-    v = (await state(client, h, memo))["version"]
-    return await client.post(f"/docs/{memo}/tax-rate", headers=h,
-                             json={"tax_rate": rate, "expected_version": v, "dry_run": dry_run})
 
 
 async def _void_payments(client, h, memo: str) -> None:
@@ -118,7 +112,7 @@ async def test_payment_refusal_primary_for_every_payment_status(client, session,
     assert (await state(client, h, memo))["status"] == status
 
     if not held:
-        r = await _rate(client, h, memo, dry_run=True)
+        r = await rate(client, h, memo, 7.0, dry_run=True)
         assert r.status_code == 200, r.text
         await drawn(client, h, memo, line_ids=lids)
         return
@@ -128,7 +122,7 @@ async def test_payment_refusal_primary_for_every_payment_status(client, session,
         assert r.status_code == 409, r.text
         assert key_of(r) == "docs.draw_memo_has_payment"
     for dry in (True, False):
-        r = await _rate(client, h, memo, dry_run=dry)
+        r = await rate(client, h, memo, 7.0, dry_run=dry)
         assert r.status_code == 409, r.text
         assert key_of(r) == "docs.memo_rate_paid"
     assert await _snapshot(client, h, memo, lots[0]) == before

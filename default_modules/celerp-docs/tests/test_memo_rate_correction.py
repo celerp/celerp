@@ -11,18 +11,10 @@ import uuid
 import pytest
 
 from celerp.models.ledger import LedgerEntry
-from memo_draw_support import auth, auth_full, draft, draw, drawn, key_of, memo_out, ok, pay, state
+from memo_draw_support import auth, auth_full, draft, draw, drawn, key_of, memo_out, ok, pay, rate, state
 from sqlalchemy import func, select
 
 pytestmark = pytest.mark.asyncio
-
-
-async def rate(client, h, memo: str, value: float, *, version: int | None = None, dry_run: bool = False):
-    v = version if version is not None else (await state(client, h, memo))["version"]
-    body = {"tax_rate": value, "expected_version": v}
-    if dry_run:
-        body["dry_run"] = True
-    return await client.post(f"/docs/{memo}/tax-rate", headers=h, json=body)
 
 
 async def memo_m(client, h, **header):
@@ -83,11 +75,34 @@ async def test_memo_tax_rate_correction(client, session):
     await ok(await rate(client, h, held, 8))
     assert {k: (await state(client, h, inv_all))[k] for k in ("tax", "total")} == figures
 
-    # (6) a stale version
+    # (6) the memo changed after the preview: its save is refused, a new preview's is not
     stale, _, _ = await memo_m(client, h)
+    shown = await ok(await rate(client, h, stale, 8, dry_run=True))
     v = (await state(client, h, stale))["version"]
     await ok(await client.patch(f"/docs/{stale}", headers=h, json={"fields_changed": {"internal_note": {"new": "Back Friday"}}, "expected_version": v}))
-    assert (await rate(client, h, stale, 8, version=v)).status_code == 409
+    r = await rate(client, h, stale, 8, binding=shown["binding"])
+    assert r.status_code == 409 and key_of(r) == "docs.memo_rate_preview_differs", r.text
+    assert not (await state(client, h, stale)).get("tax_rate")
+    await ok(await rate(client, h, stale, 8))
+
+
+async def test_memo_tax_rate_save_is_the_rate_previewed(client, session):
+    """The save stores the rate whose preview is on screen, or nothing: another rate sent with
+    that preview's binding is refused, and a save with no binding never reaches the memo."""
+    h = await auth(session)
+    memo, _, _ = await memo_m(client, h)
+    before, count = await state(client, h, memo), await events(session, memo)
+    shown = await ok(await rate(client, h, memo, 10, dry_run=True))
+
+    r = await rate(client, h, memo, 20, binding=shown["binding"])
+    assert r.status_code == 409 and key_of(r) == "docs.memo_rate_preview_differs", r.text
+    assert "save again" in r.json()["detail"]["message"]
+    no_binding = await client.post(f"/docs/{memo}/tax-rate", headers=h, json={"tax_rate": 10})
+    assert no_binding.status_code == 422, no_binding.text
+    assert await state(client, h, memo) == before and await events(session, memo) == count
+
+    stored = await ok(await rate(client, h, memo, 10, binding=shown["binding"]))
+    assert (stored["tax_rate"], stored["tax"], stored["total"]) == (10, shown["tax"], shown["total"])
 
 
 @pytest.mark.parametrize(("header", "tax"), [({}, 28.0), ({"discount": 50.0, "discount_type": "flat"}, 24.0),
@@ -109,7 +124,6 @@ async def test_memo_tax_rate_correction_preview_matches_stored(client, session, 
     money = memo_tax_rate_money(before, 8)
     assert (money["tax"], money["total"]) == (stored["tax"], stored["total"])
     assert key_of(await rate(client, h, memo, 9, dry_run=True)) == "docs.memo_rate_no_unrated_tax"
-    assert (await rate(client, h, memo, 9, version=before["version"], dry_run=True)).status_code == 409
 
 
 @pytest.mark.parametrize("paid", ["part", "full"])

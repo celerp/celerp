@@ -46,8 +46,9 @@ from celerp.output.document_context import prepare_document_output
 from ui.components.activity import activity_table
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import files_error, files_section as _shared_doc_files_section, files_session_expired
+from ui.components.preview_confirm import FORM_ATTRS as CONFIRMS_PREVIEW, PREVIEW_ATTRS, binding_input, confirmed_binding
 from ui.components.operation_key import (
-    FIELD as OPERATION_KEY_FIELD, operation_key_attrs, operation_key_input, operation_key_vals, required_operation_key, submitted_operation_key,
+    operation_key_attrs, operation_key_input, operation_key_vals, required_operation_key, submitted_operation_key,
 )
 
 
@@ -2692,15 +2693,20 @@ celerpUpdateBulkAlloc();
             display_value = doc.get(field)
         return _doc_display_cell(entity_id, field, display_value)
 
-    async def _set_memo_rate(token: str, entity_id: str, memo: dict, value: str, version: int | None):
-        """Set an issued memo's tax rate from its Rate cell and put its tax rows and total back
-        in place, with a notice of the tax before and after that stays until closed."""
+    async def _set_memo_rate(token: str, entity_id: str, memo: dict, value: str, form):
+        """Set an issued memo's tax rate from its Rate cell, confirming the preview on screen, and
+        put its tax rows and total back in place, with a notice of the tax before and after that
+        stays until closed."""
         from starlette.responses import HTMLResponse as _HR
         try:
             rate = float(value)
-            result = await api.set_memo_tax_rate(token, entity_id, rate, version)
         except ValueError:
             return P(t("documents.enter_a_number"), cls="cell-error")
+        try:
+            result = await api.set_memo_tax_rate(
+                token, entity_id, rate, confirmed_binding(form, t("documents.memo_rate_wait_for_preview")))
+        except ValueError as exc:
+            return P(str(exc), cls="cell-error")
         except APIError as e:
             if e.status == 401:
                 raise
@@ -2726,8 +2732,7 @@ celerpUpdateBulkAlloc();
         form = await request.form()
         currency = str(form.get("currency") or "") or "USD"
         try:
-            result = await api.memo_tax_rate_preview(token, entity_id, float(str(form.get("value") or "")),
-                                                     _form_version(form))
+            result = await api.memo_tax_rate_preview(token, entity_id, float(str(form.get("value") or "")))
         except ValueError:
             return Span("")
         except APIError as e:
@@ -2735,7 +2740,8 @@ celerpUpdateBulkAlloc();
                 raise
             return Span(error_message(e), cls="cell-error")
         return Span(f"{t('doc.tax')} {fmt_money(float(result.get('tax') or 0), currency)}  "
-                    f"{t('doc.total')} {fmt_money(float(result.get('total') or 0), currency)}", cls="text-muted")
+                    f"{t('doc.total')} {fmt_money(float(result.get('total') or 0), currency)}",
+                    *binding_input(result), cls="text-muted")
 
     @app.get("/docs/{entity_id}/field/{field}/edit")
     async def doc_field_edit(request: Request, entity_id: str, field: str):
@@ -2763,21 +2769,19 @@ celerpUpdateBulkAlloc();
         enter_js = "if(event.key==='Enter'){event.preventDefault();this.blur();}"
         blur_restore = f"htmx.ajax('GET','{restore_url}',{{target:this.closest('.editable-cell'),swap:'outerHTML'}})"
         if field == "tax_rate" and _memo_rate_open(doc):
-            # Setting a memo's rate cannot be undone, so it waits for Save (never on blur) and
-            # shows the tax and total it gives first.
+            # Setting a memo's rate cannot be undone, so it waits for Save (never on blur), shows
+            # the tax and total it gives first, and saves only the rate whose preview is on screen.
             return Form(
                 Input(type="number", name="value", step="any", min="0", cls="cell-input", autofocus=True,
-                      onkeydown=esc_js, hx_post=f"/docs/{entity_id}/tax-rate/preview",
-                      hx_trigger="input changed delay:400ms", hx_target="next .memo-rate-preview",
-                      hx_include="closest form"),
-                Input(type="hidden", name="expected_version", value=str(doc.get("version") or "")),
+                      onkeydown=esc_js),
                 Input(type="hidden", name="currency", value=doc.get("currency") or ""),
-                Button(t("btn.save"), type="submit", cls="btn btn--primary btn--sm"),
-                Span(cls="memo-rate-preview"),
+                Button(t("btn.save"), type="submit", cls="btn btn--primary btn--sm", disabled=True),
+                Span(cls="memo-rate-preview", hx_post=f"/docs/{entity_id}/tax-rate/preview",
+                     hx_trigger="input delay:400ms from:closest form", hx_include="closest form", **PREVIEW_ATTRS),
                 cls="editable-cell", hx_patch=f"/docs/{entity_id}/field/{field}",
                 hx_target="this", hx_swap="outerHTML",
                 # The preview swaps its own answer into its span; the form's swap is Save's alone.
-                hx_disinherit="hx-swap",
+                hx_disinherit="hx-swap hx-target", **CONFIRMS_PREVIEW,
             )
         if field == "company_address":
             # Re-editing the From address must re-open the location picker (the same control shown on
@@ -2953,7 +2957,7 @@ celerpUpdateBulkAlloc();
             except APIError as e:
                 return P(error_message(e), cls="cell-error")
             if _memo_rate_open(doc):
-                return await _set_memo_rate(token, entity_id, doc, value, _form_version(form))
+                return await _set_memo_rate(token, entity_id, doc, value, form)
         try:
             patch = {field: value}
             # A contact change sends only the contact: the backend copies its details, terms,
@@ -3566,9 +3570,7 @@ celerpUpdateBulkAlloc();
         form = await request.form()
         try:
             # The draw confirms the preview on screen: its binding, or nothing at all.
-            binding = str(form.get("binding") or "").strip()
-            if not binding:
-                raise ValueError(t("documents.draw_wait_for_preview"))
+            binding = confirmed_binding(form, t("documents.draw_wait_for_preview"))
             body = {**_draw_picks(form), "binding": binding,
                     "idempotency_key": required_operation_key(form, "invoice-lines")}
             result = await api.invoice_lines(token, entity_id, body)
@@ -6996,14 +6998,14 @@ def _draw_panel(entity_id: str, doc: dict, targets: list | None, unit_map: dict)
         Input(type="hidden", name="currency", value=doc.get("currency") or ""),
         Div(Label(t("documents.invoice_target"), cls="form-label"),
             searchable_select("target_doc_id", options, value=""), cls="inline-form-row"),
-        # A newer preview cancels an older one still on the way, so an older answer never lands last.
         Div(id="draw-preview", hx_post=f"/docs/{entity_id}/invoice-lines/preview", hx_include="#draw-panel",
             hx_trigger="change from:#draw-panel, input delay:400ms from:#draw-panel, celerpDrawOpen",
-            hx_sync="this:replace"),
+            **PREVIEW_ATTRS),
         operation_key_input(),
-        # Enabled only by a preview of the current selection (the page script's _drawHold).
+        # Enabled only by a preview of the current selection (ui.components.preview_confirm).
         _line_action_submit(t("btn.invoice_selected"), "btn btn--primary btn--sm", disabled=True),
         id="draw-panel", style="display:none", hx_post=f"/docs/{entity_id}/invoice-lines", hx_swap="none",
+        **CONFIRMS_PREVIEW,
         hx_disabled_elt="find button[type=submit]",
         # The preview inside swaps its own answer in; the form's swap and disabled element are the draw's alone.
         hx_disinherit="hx-swap hx-disabled-elt",
@@ -7016,7 +7018,7 @@ def _draw_panel_preview(memo: dict, preview: dict) -> FT:
     the memo. Carries the preview's binding, which the confirm sends so the draw is refused
     unless it is exactly the one shown."""
     currency = memo.get("currency") or ""
-    binding = [Input(type="hidden", name="binding", value=preview["binding"])] if preview.get("binding") else []
+    binding = binding_input(preview)
     if preview.get("problems"):
         return Div(*binding, P(refusal_text(preview["problems"]), cls="cell-error"))
     taken = _fixed_amounts_text(preview.get("fixed_taken"), currency)
@@ -10562,36 +10564,6 @@ async function celerpCsvImport(input, entityId) {{
   var reserveBtn=document.getElementById('li-bulk-reserve-btn');
   var revertBtn=document.getElementById('li-bulk-revert-btn');
   var drawPanel=document.getElementById('draw-panel');
-  // Invoice selected confirms only the preview on screen: a change to the selection holds the
-  // button until the preview of the new selection answers with its binding.
-  function _drawAsk(){{
-    var f=new FormData(drawPanel); f.delete('binding'); f.delete({OPERATION_KEY_FIELD!r});
-    return new URLSearchParams(f).toString();
-  }}
-  var _drawShown=null;  // the selection the preview on screen was worked out for
-  function _drawHold(){{
-    if(!drawPanel||_drawAsk()===_drawShown) return;
-    _drawShown=null;
-    var btn=drawPanel.querySelector('button[type=submit]');
-    if(btn) btn.disabled=true;
-    drawPanel.querySelectorAll('#draw-preview input[name=binding]').forEach(function(el){{el.remove();}});
-  }}
-  if(drawPanel){{
-    drawPanel.addEventListener('input',_drawHold);
-    drawPanel.addEventListener('change',_drawHold);
-    drawPanel.addEventListener('htmx:beforeRequest',function(e){{
-      if(e.detail.elt.id!=='draw-preview') return;
-      e.detail.elt._celerpAsk=_drawAsk();
-      _drawHold();
-    }});
-    drawPanel.addEventListener('htmx:afterSwap',function(e){{
-      if(e.detail.elt.id!=='draw-preview') return;
-      var current=e.detail.elt._celerpAsk===_drawAsk()&&!!e.detail.elt.querySelector('input[name=binding]');
-      _drawShown=current?e.detail.elt._celerpAsk:null;
-      var btn=drawPanel.querySelector('button[type=submit]');
-      if(btn) btn.disabled=!current;
-    }});
-  }}
   function _hideBtns(){{
     if(labelsBtn) labelsBtn.style.display='none';
     if(fulfillBtn) fulfillBtn.style.display='none';

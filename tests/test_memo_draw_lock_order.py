@@ -10,7 +10,7 @@ import re
 import pytest
 from sqlalchemy import event
 
-from memo_draw_support import auth, back_to_memo, contact, draft, draw, drawn, drawn_lines, memo_out, ok, pay, state, service_line
+from memo_draw_support import auth, back_to_memo, contact, draft, draw, drawn, drawn_lines, memo_out, ok, pay, rate, state, service_line
 
 pytestmark = pytest.mark.asyncio
 
@@ -124,9 +124,8 @@ async def test_writers_take_company_lock_first_new_writers(client, session, writ
         back = [li["line_id"] for li in drawn_lines(await state(client, h, inv))]
         call = lambda: back_to_memo(client, h, inv, back)
     else:
-        version = (await state(client, h, memo))["version"]
-        call = lambda: client.post(f"/docs/{memo}/tax-rate", headers=h,
-                                   json={"tax_rate": 8, "expected_version": version, "dry_run": False})
+        binding = (await ok(await rate(client, h, memo, 8, dry_run=True)))["binding"]
+        call = lambda: rate(client, h, memo, 8, binding=binding)
 
     with _Recorder(session, labels) as rec:
         r = await call()

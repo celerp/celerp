@@ -256,7 +256,7 @@ async def test_memo_line_with_draws_operations_boundary(client, session):
         ("close", {}, "docs.close_goods_out"),
         ("payment", {"amount": 10.0, "payment_date": "2026-03-02", "bank_account": "1111"},
          "docs.memo_payment_while_drawn"),
-        ("tax-rate", {"tax_rate": 8, "expected_version": m["version"]}, "docs.memo_rate_no_unrated_tax"),
+        ("tax-rate", {"tax_rate": 8, "binding": ""}, "docs.memo_rate_no_unrated_tax"),
     ):
         r = await client.post(f"/docs/{s.memo}/{path}", headers=h, json=body)
         assert r.status_code == 409 and key_of(r) == refusal, (path, r.text)

@@ -144,6 +144,39 @@ def drawn_lines(doc: dict, memo: str | None = None) -> list[dict]:
             if li.get("drawn_from") and (memo is None or li["drawn_from"].get("memo_id") == memo)]
 
 
+async def rate(client, h, memo: str, value: float, *, dry_run: bool = False, binding: str | None = None):
+    """POST a tax rate onto an issued memo. A write sends ``binding``, or by default the one the
+    preview of this rate answers with now (an empty one when the preview is refused)."""
+    body: dict = {"tax_rate": value}
+    if dry_run:
+        body["dry_run"] = True
+    else:
+        if binding is None:
+            preview = await client.post(f"/docs/{memo}/tax-rate", headers=h, json={**body, "dry_run": True})
+            binding = (preview.json().get("binding") if preview.status_code == 200 else None) or ""
+        body["binding"] = binding
+    return await client.post(f"/docs/{memo}/tax-rate", headers=h, json=body)
+
+
+async def carat_line_in_two_lots(client, h, *, price: float = 100.35) -> tuple[str, str, str]:
+    """An issued memo of one carat line of 0.6 at an odd price, invoiced 0.3 then 0.2, the 0.2
+    sent back: 0.1 and 0.2 are out in two lots. Returns the memo, its line id and the first invoice."""
+    sku = f"MC-{uuid.uuid4().hex[:6]}"
+    lot_id = (await ok(await client.post("/items", headers=h, json={
+        "sku": sku, "name": sku, "quantity": 0.6, "weight": 0.6, "sell_by": "carat", "status": "available",
+        "cost_total": 60.0, "retail_price": price})))["id"]
+    memo = (await ok(await client.post("/docs", headers=h, json={"doc_type": "memo", "line_items": [{
+        "item_id": lot_id, "sku": sku, "description": sku, "quantity": 0.6, "unit_price": price,
+        "sell_by": "carat"}]})))["id"]
+    await ok(await client.post(f"/docs/{memo}/finalize", headers=h))
+    lid = (await state(client, h, memo))["line_items"][0]["line_id"]
+    await ok(await client.post(f"/docs/{memo}/fulfill-lines", headers=h, json={"line_ids": [lid]}))
+    first = await drawn(client, h, memo, {lid: 0.3})
+    second = await drawn(client, h, memo, {lid: 0.2})
+    await ok(await back_to_memo(client, h, second, [li["line_id"] for li in drawn_lines(await state(client, h, second))]))
+    return memo, lid, first
+
+
 async def pay(client, h, doc_id: str, amount: float, date: str = "2026-03-02"):
     return await client.post(f"/docs/{doc_id}/payment", headers=h, json={
         "amount": amount, "payment_date": date, "bank_account": "1111"})

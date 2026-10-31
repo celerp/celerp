@@ -14,7 +14,7 @@ from celerp.projections.engine import ProjectionEngine
 from celerp.models.ledger import LedgerEntry
 from memo_draw_support import (
     also_keys, auth, auth_full, contact, draft, draw, drawn, drawn_lines, item, key_of, lot, memo_out, ok, owner,
-    pay, revoke, service_line, state,
+    pay, rate, revoke, service_line, state,
 )
 
 
@@ -286,15 +286,13 @@ async def test_draw_validation_order_reports_every_problem(client, session, full
     assert [p["message_key"] for p in preview["problems"]] == order
     await nothing_written(client, h, memo, lots[0] + lots[1], None, before)
 
-    v = (await state(client, h, memo))["version"]
-    rate = await client.post(f"/docs/{memo}/tax-rate", headers=h, json={"tax_rate": 7, "expected_version": v})
-    assert key_of(rate) == "docs.memo_rate_paid", rate.text
-    assert not also_keys(rate)
+    refused = await rate(client, h, memo, 7)
+    assert key_of(refused) == "docs.memo_rate_paid", refused.text
+    assert not also_keys(refused)
     for p in (await state(client, h, memo)).get("payments") or []:
         if p.get("status", "active") == "active" and p.get("amount", 0) > 0:
             await ok(await client.post(f"/docs/{memo}/void-payment", headers=h, json={"payment_index": p["index"]}))
-    v = (await state(client, h, memo))["version"]
-    await ok(await client.post(f"/docs/{memo}/tax-rate", headers=h, json={"tax_rate": 7, "expected_version": v}))
+    await ok(await rate(client, h, memo, 7))
 
 
 async def test_draw_validation_order_status_refusal_alone(client, session):
@@ -468,13 +466,13 @@ def _mutations(lids: list[str], other_draft: str) -> dict:
 
 
 async def test_every_billing_field_of_the_draw_is_bound_to_the_preview(client, session):
-    from celerp_docs.routes import DRAW_UNBOUND_FIELDS, InvoiceLinesRequest
+    from celerp_docs.routes import PREVIEW_UNBOUND_FIELDS, InvoiceLinesRequest
 
     h = await auth(session)
     memo, lids, lots = await memo_out(client, h, [(4, 10.0), (3, 20.0)], lots_per_line=1)
     pf, other = await draft(client, h, lines=[service_line()]), await draft(client, h, lines=[service_line()])
     mutations = _mutations(lids, other)
-    assert _NOT_BILLED == DRAW_UNBOUND_FIELDS
+    assert _NOT_BILLED == PREVIEW_UNBOUND_FIELDS
     assert set(mutations) == set(InvoiceLinesRequest.model_fields) - _NOT_BILLED, \
         "a new draw request field must be bound to the preview or named in _NOT_BILLED"
     shown = {"line_ids": [lids[0]], "quantities": {lids[0]: 2}, "target_doc_id": pf}
