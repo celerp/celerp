@@ -15,6 +15,23 @@ log = logging.getLogger(__name__)
 
 _DEFAULT_MAX_RETRIES = 3
 _DEFAULT_BACKOFF_BASE = 2.0
+_ERROR_TEXT_LIMIT = 300
+
+
+def raise_for_store_status(resp: httpx.Response, store_reason: Callable[[object], str | None]) -> None:
+    """Raise for a failed store reply, keeping the store's own reason (``store_reason``
+    of the parsed body, trimmed) so the person sees why it refused. Credentials travel
+    only in headers and never appear here."""
+    if resp.is_success:
+        return
+    try:
+        body = resp.json()
+    except ValueError:
+        body = None
+    text = f"HTTP {resp.status_code} {store_reason(body) or resp.reason_phrase or 'error'}"
+    if len(text) > _ERROR_TEXT_LIMIT:
+        text = text[:_ERROR_TEXT_LIMIT - 1] + "…"
+    raise httpx.HTTPStatusError(text, request=resp.request, response=resp)
 
 
 class RateLimitedClient:

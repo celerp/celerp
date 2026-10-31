@@ -19,7 +19,7 @@ import httpx
 
 import json
 
-from celerp.connectors.http import RateLimitedClient
+from celerp.connectors.http import RateLimitedClient, raise_for_store_status
 from celerp.services.outbound_url import validate_public_base_url
 from celerp.connectors.util import money
 from celerp.connectors.base import (
@@ -74,27 +74,15 @@ def webhook_delivery_url() -> str:
     return f"{relay_http_url().rstrip('/')}/webhooks/woocommerce/events"
 
 
-# Longest store error text kept with a failed record.
-_ERROR_TEXT_LIMIT = 300
-
-
 def _raise_for_status(resp: httpx.Response) -> None:
-    """Raise for a failed store reply, keeping WooCommerce's own error code and message
-    (trimmed) so the person sees why it refused. Credentials travel only in the
-    Basic auth header and never appear here."""
-    if resp.is_success:
-        return
-    try:
-        body = resp.json()
-    except ValueError:
-        body = None
-    reason = resp.reason_phrase or "error"
+    """Raise for a failed WooCommerce reply with its own error code and message."""
+    raise_for_store_status(resp, _woo_reason)
+
+
+def _woo_reason(body) -> str | None:
     if isinstance(body, dict) and (body.get("code") or body.get("message")):
-        reason = ": ".join(str(part) for part in (body.get("code"), body.get("message")) if part)
-    text = f"HTTP {resp.status_code} {reason}"
-    if len(text) > _ERROR_TEXT_LIMIT:
-        text = text[:_ERROR_TEXT_LIMIT - 1] + "…"
-    raise httpx.HTTPStatusError(text, request=resp.request, response=resp)
+        return ": ".join(str(part) for part in (body.get("code"), body.get("message")) if part)
+    return None
 
 
 def _gmt(value) -> datetime | None:
@@ -1020,7 +1008,7 @@ class WooCommerceConnector(ConnectorBase):
                 if not send and not updates:
                     continue
                 try:
-                    await self._save_push(ctx, item, link, {LINK_KEY: agreed, **updates})
+                    await _upsert.record_link_push(ctx, self.name, item, link, {LINK_KEY: agreed, **updates})
                 except Exception as exc:
                     errors.append(f"WooCommerce product {product_id}: {exc}")
                     continue
@@ -1029,22 +1017,6 @@ class WooCommerceConnector(ConnectorBase):
         result.errors = errors or None
         result.attention = attention
         return result
-
-    @needs_modules("celerp-inventory")
-    async def _save_push(self, ctx: ConnectorContext, item: dict, link: dict, updates: dict) -> None:
-        """Record on the link what the store now holds, so the next run sends only changes."""
-        from celerp.db import SessionLocal as AsyncSessionLocal
-        from celerp_inventory.services import set_external_link_state
-
-        async with AsyncSessionLocal() as session:
-            await set_external_link_state(
-                session, ctx.company_id, item["entity_id"], "woocommerce", link_updates=updates,
-                expected_identity=(
-                    str(link.get("product_id") or ""),
-                    str(link.get("variation_id")) if link.get("variation_id") not in (None, "") else None,
-                ),
-            )
-            await session.commit()
 
     async def _sync_inventory_items_out(
         self, ctx: ConnectorContext, items: list[dict], *, max_retries: int = 3

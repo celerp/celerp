@@ -375,3 +375,98 @@ async def test_pulled_image_sent_by_id(connector_session, monkeypatch):
 
     assert [_json.loads(c.request.content) for c in put.calls] == [{"images": [{"id": 11}]}]
     mint.assert_not_awaited()
+
+
+# -- Shopify sync_products_out: the image ids Shopify returns are recorded --
+
+_SHOPIFY_API = "https://test-store.myshopify.com/admin/api/2024-01"
+
+
+async def _shopify_linked(session, company: str, entity_id: str, product_id: str, files: list, **item):
+    cid = await seed_company(session, company)
+    link = {"product_id": product_id, "sync_enabled": True, "remote_deleted": False}
+    await add_item(session, cid, entity_id, item.pop("sku"), external_links={"shopify": link},
+                   files=files, **item)
+    from celerp.connectors.ownership import lock_connector_key
+    from celerp.events.engine import emit_event
+    await lock_connector_key(session, "shopify")  # as set_item_sync does: the Shopify fence first
+    await emit_event(session, company_id=cid, entity_id=entity_id, entity_type="item",
+                     event_type="shop.sync.enabled", data={}, actor_id=None, location_id=None,
+                     source="api", idempotency_key=f"shop-sync:{entity_id}", metadata_={})
+    await session.commit()  # a person turns on the item's store sync in its own request
+    await connect(session, cid, "shopify", _OUT)
+    return cid, ConnectorContext(company_id=str(cid), access_token="shpat_test",
+                                 store_handle="test-store.myshopify.com")
+
+
+def _shopify_put(product_id: str, images_status: int = 200, images_body=None):
+    def reply(request):
+        body = _json.loads(request.content)["product"]
+        if "images" in body:
+            if images_status != 200:
+                return httpx.Response(images_status, json=images_body)
+            return httpx.Response(200, json={"product": {"id": int(product_id), "images": [
+                {"id": image.get("id") or 5000 + i, "position": i + 1} for i, image in enumerate(body["images"])]}})
+        return httpx.Response(200, json={"product": {"id": int(product_id)}})
+    return respx.put(f"{_SHOPIFY_API}/products/{product_id}.json").mock(side_effect=reply)
+
+
+_SHOPIFY_FILES = [{"id": "f1", "filename": "f1.jpg", "mime": "image/jpeg", "is_hero": True,
+                   "document_tag": "product_images", "url": "/static/attachments/c/f1.jpg"}]
+
+
+@pytest.mark.usefixtures("inside_execution")
+@pytest.mark.asyncio
+@respx.mock
+async def test_shopify_records_the_image_ids_it_returns(connector_session, monkeypatch):
+    """A sent image is recorded by the id Shopify gives it, so the next run sends that
+    id and never uploads the image again."""
+    from celerp.connectors.images import store_images
+    from celerp.connectors.product_links import external_link_for_state
+
+    session = connector_session
+    mint = AsyncMock(return_value="https://share.example.com/m/tok/f1.jpg")
+    monkeypatch.setattr("celerp.services.relay_share.mint_media_url", mint)
+    monkeypatch.setattr("celerp.services.attachments.company_file_size", AsyncMock(return_value=1024))
+    cid, ctx = await _shopify_linked(session, "ShopifyImageIds", "item:s1", "701", _SHOPIFY_FILES,
+                                     sku="S-1", name="Vase")
+    put = _shopify_put("701")
+
+    result = await ShopifyConnector().sync_products_out(ctx)
+
+    assert result.updated == 1 and not result.errors and not result.attention
+    assert {"src": "https://share.example.com/m/tok/f1.jpg"} in _json.loads(
+        put.calls[-1].request.content)["product"]["images"]
+    link = external_link_for_state(await item_state(session, cid, "item:s1"), "shopify")
+    assert link["media_ids"] == {"f1": "5000"}
+    images, unsent = await store_images(ctx, "shopify", "Shopify", _SHOPIFY_FILES, link)
+    assert (images, unsent) == ([{"id": 5000}], None)
+    assert mint.await_count == 1
+
+
+@pytest.mark.usefixtures("inside_execution")
+@pytest.mark.asyncio
+@respx.mock
+async def test_shopify_image_refusal_waits_on_a_person_and_records_nothing(connector_session, monkeypatch):
+    """Shopify refusing an image (a link the relay cannot serve reaches Shopify as its
+    own fetch error) leaves the fields sent and the image waiting on a person, with no
+    image id recorded."""
+    from celerp.connectors.product_links import external_link_for_state
+
+    session = connector_session
+    monkeypatch.setattr("celerp.services.relay_share.mint_media_url",
+                        AsyncMock(return_value="https://share.example.com/m/tok/f1.jpg"))
+    monkeypatch.setattr("celerp.services.attachments.company_file_size", AsyncMock(return_value=1024))
+    cid, ctx = await _shopify_linked(session, "ShopifyImageRefused", "item:s2", "702", _SHOPIFY_FILES,
+                                     sku="S-2", name="Bowl")
+    put = _shopify_put("702", images_status=422, images_body={"errors": {"image": ["Image URL is invalid"]}})
+
+    result = await ShopifyConnector().sync_products_out(ctx)
+
+    bodies = [_json.loads(c.request.content)["product"] for c in put.calls]
+    assert "images" not in bodies[0] and bodies[0]["title"] == "Bowl"
+    assert result.updated == 1 and not result.errors
+    assert [(e["id"], e["kind"]) for e in result.attention] == [("702", "image")]
+    assert "Image URL is invalid" in result.attention[0]["reason"]
+    link = external_link_for_state(await item_state(session, cid, "item:s2"), "shopify")
+    assert not link.get("media_ids")

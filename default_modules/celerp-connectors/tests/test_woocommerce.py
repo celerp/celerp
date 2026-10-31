@@ -594,7 +594,7 @@ async def test_sync_products_out_uses_nested_variation_endpoint(woo, ctx):
             route = respx.put(
                 "https://store.example.com/wp-json/wc/v3/products/20/variations/201"
             ).mock(return_value=httpx.Response(200, json={}))
-            with patch.object(woo, "_save_push", new=AsyncMock()) as saved:
+            with patch("celerp.connectors.upsert.record_link_push", new=AsyncMock()) as saved:
                 result = await woo.sync_products_out(ctx)
     assert result.updated == 1
     saved.assert_awaited_once()
@@ -619,7 +619,7 @@ async def test_sync_products_out_simple_product_includes_core_fields(woo, ctx):
             route = respx.put(
                 "https://store.example.com/wp-json/wc/v3/products/10"
             ).mock(return_value=httpx.Response(200, json={}))
-            with patch.object(woo, "_save_push", new=AsyncMock()):
+            with patch("celerp.connectors.upsert.record_link_push", new=AsyncMock()):
                 result = await woo.sync_products_out(ctx)
     assert result.updated == 1
     assert len(route.calls) == 1  # no images of its own: the store's are left alone

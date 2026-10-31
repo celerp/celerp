@@ -21,7 +21,7 @@ from typing import Any
 
 import httpx
 
-from celerp.connectors.http import RateLimitedClient
+from celerp.connectors.http import RateLimitedClient, raise_for_store_status
 from celerp.connectors.util import money
 from celerp.connectors.base import (
     ConnectorBase,
@@ -360,11 +360,13 @@ class ShopifyConnector(ConnectorBase):
 
     @needs_modules("celerp-inventory")
     async def sync_products_out(self, ctx: ConnectorContext) -> SyncResult:
-        """Push Celerp item updates -> Shopify products (fields and images). An image
-        goes by Shopify's own id when Shopify holds it, by a short-lived public link
-        otherwise; when one cannot be shared the images are left as they are and the
-        product waits on a person."""
-        from celerp.connectors.images import store_images
+        """Push Celerp item updates -> Shopify products. Images go in a request of their
+        own after the fields, by Shopify's own id when Shopify holds them and by a
+        short-lived public link otherwise, so an image Shopify refuses (or one whose
+        link it cannot fetch) never holds back the fields; it waits on a person with
+        Shopify's reason. The ids Shopify returns are recorded on the link, so the next
+        run sends ids and never uploads an image again."""
+        from celerp.connectors.images import product_image_files, store_images
 
         result = SyncResult(entity=SyncEntity.PRODUCTS, direction=SyncDirection.OUTBOUND)
         errors: list[str] = []
@@ -382,30 +384,44 @@ class ShopifyConnector(ConnectorBase):
                 if not product_id:
                     result.skipped += 1
                     continue
+                url = f"{_base_url(ctx)}/products/{product_id}.json"
+                label = item.get("name") or item.get("sku")
+                fields: dict = {}
+                if item.get("name"):
+                    fields["title"] = item["name"]
+                if item.get("description"):
+                    fields["body_html"] = item["description"]
+                if item.get("sale_price") is not None:
+                    fields["variants"] = [{"price": str(item["sale_price"])}]
                 try:
-                    payload: dict = {"product": {}}
-                    if item.get("name"):
-                        payload["product"]["title"] = item["name"]
-                    if item.get("description"):
-                        payload["product"]["body_html"] = item["description"]
-                    if item.get("sale_price") is not None:
-                        payload["product"]["variants"] = [{"price": str(item["sale_price"])}]
+                    _raise_for_status(await client.put(url, headers=_headers(ctx), json={"product": fields}))
+                except Exception as exc:
+                    errors.append(f"Product {product_id}: {exc}")
+                    continue
+                result.updated += 1
 
-                    images, unsent = await store_images(
-                        ctx, self.name, self.display_name, item.get("files") or [], item.get("external_link") or {})
-                    if unsent:
-                        attention.append({"id": str(product_id), "label": item.get("name") or item.get("sku"),
-                                          "kind": "image", "reason": unsent})
-                    elif images:
-                        payload["product"]["images"] = images
-
-                    resp = await client.put(
-                        f"{_base_url(ctx)}/products/{product_id}.json",
-                        headers=_headers(ctx),
-                        json=payload,
-                    )
-                    resp.raise_for_status()
-                    result.updated += 1
+                link = dict(item.get("external_link") or {})
+                images, unsent = await store_images(ctx, self.name, self.display_name, item.get("files") or [], link)
+                if unsent:
+                    attention.append({"id": str(product_id), "label": label, "kind": "image", "reason": unsent})
+                    continue
+                if not images:
+                    continue  # an item with no images of its own never clears Shopify's
+                try:
+                    resp = await client.put(url, headers=_headers(ctx),
+                                            json={"product": {"id": int(product_id), "images": images}})
+                    _raise_for_status(resp)
+                except Exception as exc:
+                    attention.append({"id": str(product_id), "label": label, "kind": "image",
+                                      "reason": t("connectors.attention_image_refused",
+                                                  service=self.display_name, detail=exc)})
+                    continue
+                image_ids = [f["id"] for f in product_image_files(item.get("files") or [])]
+                returned = (resp.json().get("product") or {}).get("images") or []
+                media_ids = {**(link.get("media_ids") or {}),
+                             **{fid: str(img["id"]) for fid, img in zip(image_ids, returned) if img.get("id")}}
+                try:
+                    await _upsert.record_link_push(ctx, self.name, item, link, {"media_ids": media_ids})
                 except Exception as exc:
                     errors.append(f"Product {product_id}: {exc}")
 
@@ -416,6 +432,19 @@ class ShopifyConnector(ConnectorBase):
             ctx.company_id, result.updated, result.skipped, len(errors),
         )
         return result
+
+
+def _raise_for_status(resp: httpx.Response) -> None:
+    """Raise for a failed Shopify reply with Shopify's own errors."""
+    raise_for_store_status(resp, _shopify_reason)
+
+
+def _shopify_reason(body) -> str | None:
+    errors = body.get("errors") if isinstance(body, dict) else None
+    if isinstance(errors, dict):
+        return "; ".join(f"{field}: {', '.join(map(str, v)) if isinstance(v, list) else v}"
+                         for field, v in errors.items())
+    return str(errors) if errors else None
 
 
 # -- Pagination helper ---------------------------------------------------------

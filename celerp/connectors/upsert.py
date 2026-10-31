@@ -162,6 +162,21 @@ async def list_items_modified_since_last_sync(company_id: str, platform: str) ->
     return await items_svc.list_items_modified_since_last_sync(company_id, platform=platform)
 
 
+async def record_link_push(ctx, platform: str, item: dict, link: dict, updates: dict) -> None:
+    """Record on an item's store link what the store now holds after a push (agreed field
+    fingerprints, the image ids it returned), so the next run sends only changes and
+    images by id. Refused when the link was moved to another store product meanwhile."""
+    from celerp.db import SessionLocal as AsyncSessionLocal
+    from celerp_inventory.services import external_identity_key, set_external_link_state
+
+    async with AsyncSessionLocal() as session:
+        await set_external_link_state(
+            session, ctx.company_id, item["entity_id"], platform, link_updates=updates,
+            expected_identity=external_identity_key(platform, link),
+        )
+        await session.commit()
+
+
 async def list_unsynced_invoices(company_id: str, platform: str) -> list:
     from celerp_docs import doc_service as docs_svc
     return await docs_svc.list_unsynced_invoices(company_id, platform=platform)
