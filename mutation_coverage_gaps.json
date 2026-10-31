@@ -1473,6 +1473,24 @@
   "reason": "Runs only from rerun_sweeper_loop, the background sweeper main.py starts: it clears a rerun the directions no longer call for. Driven by tests/test_module_off_boundary.py::test_an_order_webhook_for_a_company_that_turned_documents_off_is_not_handled_again."
  },
  {
+  "site": "celerp/connectors/execution.py record_rerun execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: a webhook delivery, the webhook reconciler or the daily scheduler records a rerun when the connection's execution is busy, outside any request. Driven by tests/test_connector_rerun.py::test_a_busy_webhook_runs_after_a_long_running_sync_ends."
+ },
+ {
+  "site": "celerp/services/connector_media.py issue_media_token execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: a connector's outbound product sync issues one media token per image it sends to the store, outside any request. Driven by default_modules/celerp-connectors/tests/test_media_tokens.py::test_a_media_token_has_the_relays_shape_and_only_its_hash_is_kept."
+ },
+ {
+  "site": "celerp/services/connector_media.py issue_media_token add",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: a connector's outbound product sync issues one media token per image it sends to the store, outside any request. Driven by default_modules/celerp-connectors/tests/test_media_tokens.py::test_a_token_names_one_company_image_and_expires."
+ },
+ {
   "site": "celerp/connectors/outbound_queue.py defer execute",
   "count": 1,
   "class": "not reached from a route",
