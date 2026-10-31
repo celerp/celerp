@@ -204,6 +204,7 @@ async def test_a_failed_rebuild_settles_nothing_and_the_next_start_rebuilds_then
     assert await _meta(session, PROJECTION_SEMANTICS_KEY) == str(PROJECTION_SEMANTICS)
     assert _issued(await _run(session, old, "dup_issued"), old["items"]["A"]) == 3
     assert Decimal(str((await _run(session, old, "settle"))["wip_issued"])) == Decimal("13")
+    assert not await _held_back(session, old["company_id"])  # the start that brought it current cleared the notice
 
 
 def assemble_gadget(state: dict, event_type: str, data: dict) -> dict:

@@ -6,7 +6,8 @@ and that no test made write durably, and a write site no observed request write 
 through, unless the coverage-gap baseline (mutation_coverage_gaps.json) names it. The
 baseline does not grow, holds no entry that no longer matches a gap, and holds no entry the
 base branch's copy does not, nor a site entry counting more sites than its copy there: a change
-may drop entries or lower a count, never add, swap in or raise one."""
+may drop entries or lower a count, never add, swap in or raise one, except a write site no route
+reaches in the static call graph, which no request test can pass through."""
 
 from __future__ import annotations
 
@@ -222,6 +223,75 @@ def test_a_base_without_the_gaps_file_compares_nothing(tmp_path, monkeypatch):
     assert mutation_coverage_gaps.gaps_at("HEAD", str(tmp_path / "gaps.json")) is None
     with pytest.raises(subprocess.CalledProcessError):
         mutation_coverage_gaps.gaps_at("no-such-ref", str(tmp_path / "gaps.json"))
+
+
+BACKGROUND = SOURCE + '''
+
+async def sweep(session, row):
+    session.delete(row)
+'''
+SWEEP = "celerp/routers/x.py sweep delete"
+
+
+def _background_gap(site=SWEEP, cls="not reached from a route") -> dict:
+    return {"site": site, "count": 1, "class": cls,
+            "reason": "runs only from the sweeper loop; tests/t.py::test_sweep drives it"}
+
+
+def test_an_added_entry_for_a_site_no_route_reaches_passes(tmp_path, monkeypatch):
+    """A write only a background job, startup or the migration runner makes: no request test
+    can pass through it, so a change may accept it, held to the static graph."""
+    status, text = _census(tmp_path, monkeypatch, routes=WROTE, sites=PASSED, gaps=[_background_gap()],
+                           base_gaps=[], source=BACKGROUND)
+    assert status == 0, text
+    assert f"| site | {SWEEP} | not reached from a route | matched |" in text
+
+
+def test_an_added_entry_for_a_site_a_route_reaches_fails(tmp_path, monkeypatch):
+    status, text = _census(tmp_path, monkeypatch, routes=WROTE, gaps=[{**_site_gap(), "class": "not reached from a route"}],
+                           base_gaps=[], source=BACKGROUND)
+    assert status == 1
+    assert f"| site | {SITE} | not reached from a route | class is reached from a route |" in text
+
+
+def test_an_added_entry_classed_as_reached_from_a_route_fails(tmp_path, monkeypatch):
+    status, text = _census(tmp_path, monkeypatch, routes=WROTE, gaps=[_site_gap(SITE)], base_gaps=[], source=BACKGROUND)
+    assert status == 1
+    assert f"| site | {SITE} | reached from a route | not in the list at HEAD |" in text
+
+
+def test_an_added_route_entry_fails_whatever_its_class(tmp_path, monkeypatch):
+    status, text = _census(tmp_path, monkeypatch, sites=PASSED, gaps=[_route_gap()], base_gaps=[])
+    assert status == 1
+    assert "| route | api POST /new | never requested | not in the list at HEAD |" in text
+
+
+def test_an_added_entry_fails_as_soon_as_a_route_reaches_its_site(tmp_path, monkeypatch):
+    """The preview route starts calling the sweep: the entry no longer holds."""
+    source = BACKGROUND.replace('    return {"total": sum(data)}', '    await sweep(None, data)\n    return {"total": sum(data)}')
+    status, text = _census(tmp_path, monkeypatch, routes=WROTE, sites=PASSED, gaps=[_background_gap()],
+                           base_gaps=[], source=source)
+    assert status == 1
+    assert f"| site | {SWEEP} | not reached from a route | class is reached from a route |" in text
+
+
+SPAWNS = {
+    # A task in a context of its own carries none of the request's state: the request never makes its writes.
+    "fresh context": ("    context = contextvars.Context()\n"
+                      "    context.run(asyncio.get_running_loop().create_task, sweep(None, data))\n",
+                      "not reached from a route"),
+    # A plain task copies the request's context, so the request's write tracking follows it.
+    "copied context": ("    asyncio.get_running_loop().create_task(sweep(None, data))\n", "reached from a route"),
+}
+
+
+@pytest.mark.parametrize("spawn, cls", SPAWNS.values(), ids=SPAWNS.keys())
+def test_a_task_a_route_starts_in_a_context_of_its_own_is_not_reached_from_the_route(tmp_path, monkeypatch, spawn, cls):
+    source = BACKGROUND.replace('    return {"total": sum(data)}', spawn + '    return {"total": sum(data)}')
+    source += "\nimport asyncio\nimport contextvars\n"
+    status, text = _census(tmp_path, monkeypatch, routes=WROTE, sites=PASSED, gaps=[_background_gap(cls=cls)],
+                           base_gaps=[_background_gap(cls=cls)], source=source)
+    assert f"| site | {SWEEP} | {cls} | matched |" in text, text
 
 
 def test_the_checked_in_coverage_gaps_load_and_do_not_grow():

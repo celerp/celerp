@@ -1175,14 +1175,14 @@
  {
   "site": "celerp/services/migrations.py _checkpoint execute",
   "count": 1,
-  "class": "reached from a route",
-  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+  "class": "not reached from a route",
+  "reason": "Runs only inside the migration runner, which schedule_run starts in a task and a context of its own, outside the request that asked for the run. Driven by tests/test_migration_attachment_durability.py::test_a_batch_names_its_company_in_every_run_and_cleanup_write."
  },
  {
   "site": "celerp/services/migrations.py _record_mappings execute",
   "count": 1,
-  "class": "reached from a route",
-  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+  "class": "not reached from a route",
+  "reason": "Runs only inside the migration runner, which schedule_run starts in a task and a context of its own, outside the request that asked for the run. Driven by tests/test_migration_attachment_durability.py::test_a_batch_names_its_company_in_every_run_and_cleanup_write."
  },
  {
   "site": "celerp/services/migrations.py discard execute",
@@ -1465,5 +1465,41 @@
   "count": 1,
   "class": "not reached from a route",
   "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/connectors/execution.py sweep_reruns execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "Runs only from rerun_sweeper_loop, the background sweeper main.py starts: it clears a rerun the directions no longer call for. Driven by tests/test_module_off_boundary.py::test_an_order_webhook_for_a_company_that_turned_documents_off_is_not_handled_again."
+ },
+ {
+  "site": "celerp/connectors/outbound_queue.py defer execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "Runs only from process_outbound_queue_once, the background outbound queue worker; a sync request delivers parked work without reaching it. Driven by tests/test_services/test_outbound_queue.py::test_a_busy_or_failing_identity_waits_under_its_company_lock."
+ },
+ {
+  "site": "celerp/connectors/outbound_queue.py process_outbound_identity execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "Runs only from process_outbound_queue_once, the background outbound queue worker; a sync request delivers parked work without reaching it. Driven by tests/test_services/test_outbound_queue.py::test_a_busy_or_failing_identity_waits_under_its_company_lock."
+ },
+ {
+  "site": "celerp/notifications/service.py clear_every_company execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "Runs only at app startup (main.py), clearing the held-back notice once a start brings the records current. Driven by tests/test_projection_semantics_upgrade.py::test_a_failed_rebuild_settles_nothing_and_the_next_start_rebuilds_then_settles."
+ },
+ {
+  "site": "celerp/services/migration_core_sink.py stage_file_cleanup add",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "Runs only inside the migration runner, which schedule_run starts in a task and a session of its own, outside the request that asked for the run. Driven by tests/test_migration_attachment_durability.py::test_a_batch_names_its_company_in_every_run_and_cleanup_write."
+ },
+ {
+  "site": "celerp/services/migrations.py _run_locked execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "Runs only inside the migration runner, which schedule_run starts in a task and a session of its own, outside the request that asked for the run: the batch checkpoint deletes the linked files' cleanup tasks. Driven by tests/test_migration_attachment_durability.py::test_a_batch_names_its_company_in_every_run_and_cleanup_write."
  }
 ]

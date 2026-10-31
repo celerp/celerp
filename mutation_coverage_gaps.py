@@ -18,11 +18,12 @@ import subprocess
 GAPS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mutation_coverage_gaps.json")
 ROUTE_CLASSES = ("never requested", "requested, no durable write")
 SITE_CLASSES = ("not reached from a route", "reached from a route")  # by the static call graph
-# The checked-in entries at most: closing a gap lowers it in the same change, and nothing raises it.
+# The checked-in entries at most: closing a gap lowers it in the same change; only a write site no
+# route reaches may be added below it.
 GAPS_CEILING = 300
 # The branch whose list of gaps a change may only shrink: an entry it does not hold, or a site
 # entry counting more sites than its copy there, is a newly untested writer, even when the
-# change drops another entry to keep the count.
+# change drops another entry to keep the count. The exception is a site no route reaches.
 GAPS_BASE = "origin/main"
 
 

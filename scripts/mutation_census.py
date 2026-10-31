@@ -32,7 +32,10 @@ With --enforce the exit status is 1 when the observer made any finding, a read r
 coverage gap has no entry, or a coverage-gap entry no longer matches its gap, is not in the
 base branch's list or counts more write sites than the base branch's copy: the list and each
 site entry's count only shrink, so a newly untested writer cannot take the place of an accepted
-one or join one."""
+one or join one. The one entry a change may add is a write site no route reaches in the static
+call graph (a background job, startup, the migration runner), which no request test can pass
+through; its class is checked against the graph like every site entry's, so it fails as soon
+as a route reaches it."""
 
 from __future__ import annotations
 
@@ -103,6 +106,12 @@ def _read_noted(graph, route: str) -> set[str]:
     return {key for key, fn in graph.functions.items() if f"{fn.path} {fn.qualname.rpartition('.')[2]}" in sites}
 
 
+def _handler(row, graph):
+    """The function a served route's handler is in the static call graph, or None."""
+    rel, _, line = row["source"].rpartition(":")
+    return graph.by_source.get((rel, int(line))) if line.isdigit() else None
+
+
 def routes_that_write(rows, graph) -> dict[tuple, list]:
     """Each route among *rows* whose handler the static call graph shows reaching a write
     (a session write, a commit, a company lock or a mutating API request), with one chain to
@@ -110,8 +119,7 @@ def routes_that_write(rows, graph) -> dict[tuple, list]:
     has for it."""
     found = {}
     for (app, method, path), row in rows.items():
-        rel, _, line = row["source"].rpartition(":")
-        handler = graph.by_source.get((rel, int(line))) if line.isdigit() else None
+        handler = _handler(row, graph)
         if handler is not None:
             stop = set(READ_SAFE) | (_read_noted(graph, f"{method} {path}") if method in READING else set())
             chains = graph.doing([handler.key], lambda what: True, stop=stop)
@@ -308,9 +316,16 @@ def report(folders, out, coverage_path=None, gaps=mutation_coverage_gaps.GAPS_PA
     route_gaps = {("route", f"{_APP_LABEL.get(a, a)} {m} {p}"): (cls, f"| {_APP_LABEL.get(a, a)} | {m} {p} | {src} | {cls} |")
                   for cls in mutation_coverage_gaps.ROUTE_CLASSES for a, m, p, src, _ in classes.get(cls, [])
                   if (a, m, p) in reaching}
-    site_gaps = defaultdict(list)
-    for rel, start, _, fn, name, _ in missed:
-        site_gaps[("site", f"{rel} {fn} {name}")].append(start)
+    site_gaps, site_class = defaultdict(list), {}
+    reached = graph.closure([h.key for row in inventory.values() if (h := _handler(row, graph)) is not None])
+    for rel, start, _, fn, name, (first, _) in missed:
+        key = ("site", f"{rel} {fn} {name}")
+        site_gaps[key].append(start)
+        function = graph.by_source.get((rel, first))
+        if function is not None and function.key in reached:
+            site_class[key] = "reached from a route"
+        else:
+            site_class.setdefault(key, "not reached from a route")
     known_sites = {("site", f"{rel} {fn} {name}") for rel, _, _, fn, name, _ in static_sites}
     served = {("route", f"{_APP_LABEL.get(a, a)} {m} {p}") for a, m, p in mutating}
     gap_entries = mutation_coverage_gaps.load_gaps(gaps)
@@ -337,14 +352,18 @@ def report(folders, out, coverage_path=None, gaps=mutation_coverage_gaps.GAPS_PA
             status = "matched" if route_gaps[k][0] == entry["class"] else f"class is {route_gaps[k][0]}"
         elif k in site_gaps:
             n = len(site_gaps[k])
-            status = "matched" if n == entry["count"] else f"{n} site(s), entry says {entry['count']}"
+            status = ("matched" if n == entry["count"] else f"{n} site(s), entry says {entry['count']}") \
+                if site_class[k] == entry["class"] else f"class is {site_class[k]}"
         elif k in served or k in known_sites:
             status = "stale: covered"
         else:
             status = "stale: no such gap"
-        if base_entries is not None and k not in base_entries:
+        added = base_entries is not None and k not in base_entries
+        # A change may add a write site no route reaches (a background job, startup, the migration
+        # runner): no request test can pass through it. The class check above holds it to the graph.
+        if added and entry["class"] != "not reached from a route":
             status = f"not in the list at {base}"
-        elif base_entries is not None and k[0] == "site" and entry["count"] > base_entries[k]["count"]:
+        elif base_entries is not None and not added and k[0] == "site" and entry["count"] > base_entries[k]["count"]:
             status = f"{entry['count']} site(s), the list at {base} holds {base_entries[k]['count']}"
         gap_failing += status != "matched"
         lines.append(f"| {k[0]} | {k[1]} | {entry['class']} | {status} |")
