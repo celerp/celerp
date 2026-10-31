@@ -348,4 +348,32 @@ async def test_store_proof_makes_no_network_call_under_the_company_lock(unbound_
     with pytest.raises(ExecutionRefused) as refused:
         async with connector_execution(cid, "woocommerce", "manual_sync", ["orders"]):
             pass
-    assert refused.value.reason == "store_changed"
+    # Not proof the store is another one: a later check can bind it, so it is retried.
+    assert refused.value.reason == "store_unchecked"
+
+
+async def test_a_rerun_the_store_check_refuses_parks_until_the_store_is_bound(unbound_shop, monkeypatch):
+    """A store without the company's records parks a pending rerun: the sweeper asks it once,
+    not every tick, and the rerun runs once the right store is bound."""
+    from celerp.connectors import execution
+    from celerp.connectors.base import SyncEntity, SyncResult
+    from celerp.db import get_session_ctx
+    from celerp.connectors.woocommerce import WooCommerceConnector
+
+    cid, _ = unbound_shop
+    same_store = AsyncMock(return_value=False)
+    monkeypatch.setattr(WooCommerceConnector, "same_store", same_store)
+    synced = AsyncMock(return_value=SyncResult(entity=SyncEntity.ORDERS, created=0, updated=0))
+    monkeypatch.setattr(WooCommerceConnector, "sync_orders", synced)
+    await execution.record_rerun(cid, "woocommerce", "orders")
+    for _ in range(3):
+        await asyncio.create_task(execution.sweep_reruns(), context=contextvars.Context())
+    assert (same_store.await_count, synced.await_count) == (1, 0)
+
+    same_store.return_value = True
+    async with execution.connector_execution(cid, "woocommerce", "manual_sync", ["products"]):
+        pass
+    await asyncio.create_task(execution.sweep_reruns(), context=contextvars.Context())
+    assert synced.await_count == 1
+    async with get_session_ctx() as session:
+        assert await execution.pending_reruns(session, cid, "woocommerce") == []

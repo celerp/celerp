@@ -231,7 +231,9 @@ async def execute_first_sync(company_id, connector_name: str, *, admission_wait:
     import sqlalchemy as sa
 
     from celerp import connectors
-    from celerp.connectors.execution import WEBHOOKS, ExecutionRefused, connector_execution, plan_resources
+    from celerp.connectors.execution import (
+        STORE_REFUSALS, WEBHOOKS, ExecutionRefused, connector_execution, plan_resources,
+    )
     from celerp.connectors.webhook_reconcile import reconcile_webhooks
     from celerp.db import get_session_ctx
     from celerp.models.connector_first_sync import ConnectorFirstSync
@@ -252,7 +254,7 @@ async def execute_first_sync(company_id, connector_name: str, *, admission_wait:
                 raise
     except ExecutionRefused as exc:
         # A store that is not the one the records came from: only the company can clear it.
-        if exc.reason == "store_changed":
+        if exc.reason in STORE_REFUSALS:
             await fail_first_sync(company_id, connector_name, exc)
         raise
 
@@ -509,13 +511,13 @@ async def _sync_execution(connector, company_id, purpose: str, resources: list[s
     """The execution a sync runs in. When the store is not the one the company's records
     came from, the refusal is recorded on each entity's sync history in the store check's
     own words, so the person sees why, and reaches the caller."""
-    from celerp.connectors.execution import ExecutionRefused, connector_execution
+    from celerp.connectors.execution import STORE_REFUSALS, ExecutionRefused, connector_execution
 
     try:
         async with connector_execution(company_id, connector, purpose, resources) as ex:
             yield ex
     except ExecutionRefused as exc:
-        if exc.reason == "store_changed":
+        if exc.reason in STORE_REFUSALS:
             for entity in entities:
                 await record_refused_run(company_id, connector.name, entity, exc)
         raise

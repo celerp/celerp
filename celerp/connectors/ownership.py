@@ -34,6 +34,11 @@ class ConnectorStoreChangedError(ConnectorOwnershipError):
     """The store differs from the one this company's imported records came from."""
 
 
+class ConnectorStoreUncheckedError(ConnectorStoreChangedError):
+    """The store could not be asked whether it holds this company's imported records, or
+    they changed while it was asked: a later check can still prove it."""
+
+
 # Connectors that publish catalog products, and so carry an item's external links.
 PRODUCT_CHANNEL_PLATFORMS = ("shopify", "woocommerce")
 # Connecting one of them, or choosing which items sync with it, writes links on
@@ -635,7 +640,7 @@ async def _confirm_store(connector, ctx, samples: list[tuple[str, dict]], origin
                 connector.same_store(ctx, [state for _, state in samples]), STORE_PROOF_TIMEOUT_S
             )
         except Exception as exc:
-            raise ConnectorStoreChangedError(
+            raise ConnectorStoreUncheckedError(
                 t("error.store_unchecked", store=ctx.store_handle, service=connector.display_name)
             ) from exc
         if not confirmed:
@@ -685,7 +690,8 @@ async def bind_connector_store(session: AsyncSession, company_id, connector, ctx
     exist yet or when it still holds a sample of them: ``proven``, the sample
     ``prove_store`` confirmed. Under the company lock the sample is read again and
     must be the same; no network call is made here. Each new connection is
-    checked once, even when the store address is unchanged. Caller commits."""
+    checked once, even when the store address is unchanged. The connection's waiting
+    reruns are tried at the next sweeper tick. Caller commits."""
     from datetime import datetime, timezone
 
     from celerp.models.connector_source import ConnectorSource
@@ -699,7 +705,7 @@ async def bind_connector_store(session: AsyncSession, company_id, connector, ctx
         return
     samples, _ = await _store_samples(session, company_id, connector)
     if [entity_id for entity_id, _ in samples] != list(proven):
-        raise ConnectorStoreChangedError(
+        raise ConnectorStoreUncheckedError(
             t("error.store_unchecked", store=store_handle, service=connector.display_name)
         )
     source = await session.get(ConnectorSource, key)
@@ -718,3 +724,7 @@ async def bind_connector_store(session: AsyncSession, company_id, connector, ctx
         source.store_handle = store_handle
         source.bound_at = now
         source.config_id = config_id
+    from celerp.connectors.execution import resume_reruns
+
+    # A rerun parked or waiting because the store was not the company's is tried again.
+    await resume_reruns(session, key[0], connector.name)

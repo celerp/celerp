@@ -1467,10 +1467,10 @@
   "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
  },
  {
-  "site": "celerp/connectors/execution.py sweep_reruns execute",
+  "site": "celerp/connectors/execution.py settle_unrun execute",
   "count": 1,
   "class": "not reached from a route",
-  "reason": "Runs only from rerun_sweeper_loop, the background sweeper main.py starts: it clears a rerun the directions no longer call for. Driven by tests/test_module_off_boundary.py::test_an_order_webhook_for_a_company_that_turned_documents_off_is_not_handled_again."
+  "reason": "Runs only from the background rerun sweeper and a webhook delivery, outside any request: it drops a rerun the directions or the connection no longer call for. Driven by tests/test_module_off_boundary.py::test_an_order_webhook_for_a_company_that_turned_documents_off_is_not_handled_again."
  },
  {
   "site": "celerp/connectors/execution.py record_rerun scalar",

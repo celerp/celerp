@@ -72,6 +72,7 @@ async def handle_webhook(
         incomplete,
         record_rerun,
         settle_rerun,
+        settle_unrun,
     )
     from celerp.connectors.ownership import ConnectorOwnershipError
     from celerp.connectors.relay_token import ConnectorUpgradeRequired, ConnectRequired
@@ -137,8 +138,13 @@ async def handle_webhook(
             await settle_rerun(ex, resource, generation, failed=not done, alone=True)
     except (ExecutionBusy, AdmissionBusy, ExecutionRefused, ConnectorOwnershipError, ConnectRequired,
             ConnectorUpgradeRequired) as exc:
-        log.info("webhook: %s/%s not run now, left to the rerun sweeper: %s", event.platform, event.topic, exc)
+        # Paced as the sweeper paces it: dropped, parked, backed off, or (busy) left as it is.
+        log.info("webhook: %s/%s not run now: %s", event.platform, event.topic, exc)
+        await settle_unrun(company_id, event.platform, resource, exc)
         return
+    except Exception as exc:
+        await settle_unrun(company_id, event.platform, resource, exc)
+        raise
     if not done:
         log.info("webhook: %s %s not completed, rerun pending", event.platform, resource)
         return

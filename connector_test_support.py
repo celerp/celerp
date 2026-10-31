@@ -211,7 +211,8 @@ def stand_in_execution(monkeypatch, ctx=None):
 
 
 async def retry_due(company_id) -> None:
-    """A sweeper tick later: every failed rerun attempt of the company is due again."""
+    """A sweeper tick later: every failed rerun attempt of the company is due again (a
+    parked one waits for the person, not for time)."""
     import sqlalchemy as sa
 
     from celerp.connectors.execution import _internal
@@ -221,5 +222,6 @@ async def retry_due(company_id) -> None:
         async with get_session_ctx() as session:
             await session.execute(sa.text(
                 "UPDATE connector_execution_heartbeats SET rerun_retry_at = now() "
-                "WHERE company_id = :c AND rerun_retry_at IS NOT NULL"), {"c": str(company_id)})
+                "WHERE company_id = :c AND rerun_retry_at IS NOT NULL AND rerun_retry_at <> 'infinity'"),
+                {"c": str(company_id)})
             await session.commit()

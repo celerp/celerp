@@ -506,10 +506,10 @@ async def test_a_later_delivery_runs_the_one_a_killed_worker_left_before_it_rele
 
 
 @pytest.mark.parametrize("final", ["connect_ended", "upgrade_required", "not_this_company"])
-async def test_a_delivery_the_connection_can_no_longer_run_is_dropped_by_the_sweeper(stub, monkeypatch, final):
+async def test_a_delivery_the_connection_can_no_longer_run_is_dropped(stub, monkeypatch, final):
     """Connect ended, the relay needs a newer Celerp, or the connection is not this company's:
-    the delivery stays recorded until the sweeper meets the same answer, then it is dropped
-    rather than retried every tick (the daily sync runs after a renewal)."""
+    the delivery's own attempt meets the answer and drops it, as the sweeper would, rather
+    than leaving it to be retried (the daily sync runs after a renewal)."""
     from unittest.mock import AsyncMock
 
     from celerp.connectors.execution import sweep_reruns
@@ -521,7 +521,7 @@ async def test_a_delivery_the_connection_can_no_longer_run_is_dropped_by_the_swe
               "not_this_company": ConnectorOwnershipError("not here")}[final]
     monkeypatch.setattr("celerp.connectors.relay_token.fetch_context", AsyncMock(side_effect=answer))
     await _webhook(stub, cid)
-    assert await _pending(cid, stub.name) == 1
+    assert await _pending(cid, stub.name) == 0
 
     await _outside(sweep_reruns())
     assert stub.calls == []
