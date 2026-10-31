@@ -203,12 +203,21 @@ _SHARED_ONLY = ("adv:version-fence",)
 _NEVER_WAITED = _TRY_ONLY + _SHARED_ONLY
 
 
-def _copy_state(value):
-    """One connection's transaction state, copied for a savepoint: its containers and their
-    sets of strengths. A Lock is never changed once a transaction holds it, so it is shared."""
-    if isinstance(value, dict):
-        return {k: set(v) if isinstance(v, set) else v for k, v in value.items()}
-    return type(value)(value)
+# The transaction states (Recorder._transaction_state), by position.
+_HELD, _TAKEN, _EXPLICIT, _LAST_KEY, _OWN, _COMPANY_ROWS, _ROWS, _TAKEN_CLASSES = range(8)
+_ABSENT = object()
+
+
+@dataclass
+class _Savepoint:
+    """An open savepoint: what ROLLBACK TO it puts back. A transaction's state only grows (held
+    runs are appended, entries added or set), so it keeps the held runs' length and, for each
+    entry changed since it was made, the entry as it was before the first change: undoing those
+    costs what changed, not what the transaction holds."""
+    name: str
+    present: tuple  # whether each transaction state had the transaction when it was made
+    runs: int       # the length of its held runs then
+    undo: dict = field(default_factory=dict)  # (state, key) -> the entry before (_ABSENT: none)
 
 
 _FLOW_IDS = itertools.count(1)
@@ -260,9 +269,39 @@ class Recorder:
     # transaction never waits holding that row, so at its end the take is proof-neutral; one
     # still open when the graph is read counts as ungated.
     leaves: dict[int, list[tuple[dict, str, set[str]]]] = field(default_factory=lambda: defaultdict(list))
+    # Per transaction: the strengths it holds of each class, whatever the key (``taken`` by class).
+    taken_classes: dict[int, dict[str, set[str]]] = field(default_factory=lambda: defaultdict(dict))
 
     def _transaction_state(self) -> tuple:
-        return self.held, self.taken, self.explicit, self.last_key, self.own, self.company_rows, self.rows
+        return (self.held, self.taken, self.explicit, self.last_key, self.own, self.company_rows, self.rows,
+                self.taken_classes)
+
+    def _changing(self, conn_key, state: int, key) -> None:
+        """Before an entry of a transaction state changes: the innermost open savepoint keeps
+        the entry as it was, the first time it changes since that savepoint was made."""
+        stack = self.savepoints.get(conn_key)
+        if not stack or (state, key) in stack[-1].undo:
+            return
+        entries = self._transaction_state()[state].get(conn_key, {})
+        if state == _OWN:
+            before = key in entries
+        else:
+            before = entries.get(key, _ABSENT)
+            before = set(before) if isinstance(before, set) else before
+        stack[-1].undo[(state, key)] = before
+
+    def _add(self, conn_key, state: int, key, strength: str) -> None:
+        """Add ``strength`` to the set a transaction state keeps for ``key``."""
+        self._changing(conn_key, state, key)
+        self._transaction_state()[state][conn_key].setdefault(key, set()).add(strength)
+
+    def _put(self, conn_key, state: int, key, value) -> None:
+        """Set a transaction state's entry for ``key`` (``own``: add ``key``)."""
+        self._changing(conn_key, state, key)
+        if state == _OWN:
+            self.own[conn_key].add(key)
+        else:
+            self._transaction_state()[state][conn_key][key] = value
 
     def flow(self, conn_key: int):
         """The transaction a statement on ``conn_key`` belongs to: the connection's, or on a
@@ -327,10 +366,9 @@ class Recorder:
         holding what it took: no class it holds is one whose holders never wait. Rows it only
         inserted are counted apart: until it commits, only an insert of the same key waits on them."""
         for key in keys:
-            strengths = defaultdict(set)
-            for (cls, _), taken in self.taken.get(key, {}).items():
-                strengths[cls] |= taken
-            for h in [*self.session_held.get(key, ()), *self.held.get(key, ())]:
+            # Every held run was taken (_take), so taken_classes covers it.
+            strengths = defaultdict(set, {cls: set(taken) for cls, taken in self.taken_classes.get(key, {}).items()})
+            for h in self.session_held.get(key, ()):
                 strengths[h.cls].add(_strength(h))
             for cls, taken in strengths.items():
                 info = self.classes.setdefault(cls, {"count": 0, "modes": set(), "sites": set()})
@@ -350,22 +388,14 @@ class Recorder:
         words = statement.split()
         upper = [w.upper() for w in words]
         if upper[:1] == ["SAVEPOINT"] and len(words) == 2:
-            snapshot = tuple(_copy_state(state[conn_key]) if conn_key in state else None
-                             for state in self._transaction_state())
-            self.savepoints[conn_key].append((words[1], snapshot))
+            present = tuple(conn_key in state for state in self._transaction_state())
+            self.savepoints[conn_key].append(_Savepoint(words[1], present, len(self.held.get(conn_key, ()))))
             return True
         if upper[:2] == ["RELEASE", "SAVEPOINT"] and len(words) == 3:
             self._unwind(self._savepoint_owner(conn_key, words[2]), words[2], keep=False)
             return True
         if upper[:3] == ["ROLLBACK", "TO", "SAVEPOINT"] and len(words) == 4:
-            conn_key = self._savepoint_owner(conn_key, words[3])
-            snapshot = self._unwind(conn_key, words[3], keep=True)
-            if snapshot is not None:
-                for state, before in zip(self._transaction_state(), snapshot):
-                    if before is None:
-                        state.pop(conn_key, None)
-                    else:
-                        state[conn_key] = _copy_state(before)
+            self._unwind(self._savepoint_owner(conn_key, words[3]), words[3], keep=True)
             return True
         return False
 
@@ -373,22 +403,46 @@ class Recorder:
         """The transaction that made the savepoint ``name``: on a shared connection the flow
         whose savepoints hold it, which need not be the running task's (AsyncSession.close()
         runs shielded, in a task of its own). Savepoint names are unique on a connection."""
-        if not isinstance(conn_key, tuple) or any(n == name for n, _ in self.savepoints.get(conn_key, ())):
+        if not isinstance(conn_key, tuple) or any(sp.name == name for sp in self.savepoints.get(conn_key, ())):
             return conn_key
         return next((key for key, stack in self.savepoints.items()
-                     if isinstance(key, tuple) and key[0] == conn_key[0] and any(n == name for n, _ in stack)),
+                     if isinstance(key, tuple) and key[0] == conn_key[0] and any(sp.name == name for sp in stack)),
                     conn_key)
 
-    def _unwind(self, conn_key: int, name: str, *, keep: bool) -> tuple | None:
-        """Drop the savepoints made after ``name`` (and ``name`` itself unless ``keep``);
-        the state ``name`` was made with, or None when it is not open."""
+    def _unwind(self, conn_key: int, name: str, *, keep: bool) -> None:
+        """ROLLBACK TO ``name`` (``keep``): put the transaction state back as it was when
+        ``name`` was made and drop the savepoints made after it. RELEASE ``name``: drop it and
+        those after it, their kept entries passing to the savepoint before (each entry's earliest
+        wins). Nothing when ``name`` is not open."""
         stack = self.savepoints.get(conn_key, [])
-        for i in range(len(stack) - 1, -1, -1):
-            if stack[i][0] == name:
-                snapshot = stack[i][1]
-                del stack[i + 1 if keep else i:]
-                return snapshot
-        return None
+        i = next((i for i in range(len(stack) - 1, -1, -1) if stack[i].name == name), None)
+        if i is None:
+            return
+        if not keep:
+            if i:
+                for sp in stack[i:]:
+                    for entry, before in sp.undo.items():
+                        stack[i - 1].undo.setdefault(entry, before)
+            del stack[i:]
+            return
+        states = self._transaction_state()
+        for sp in reversed(stack[i:]):
+            for (state, key), before in sp.undo.items():
+                entries = states[state][conn_key]
+                if state == _OWN:
+                    (entries.add if before else entries.discard)(key)
+                elif before is _ABSENT:
+                    entries.pop(key, None)
+                else:
+                    entries[key] = before
+        savepoint = stack[i]
+        savepoint.undo = {}
+        del stack[i + 1:]
+        if conn_key in self.held:
+            del self.held[conn_key][savepoint.runs:]
+        for state, present in zip(states, savepoint.present):
+            if not present:
+                state.pop(conn_key, None)
 
     def statement(self, conn_key: int, statement: str, parameters, waited: float) -> None:
         head = statement.lstrip()[:20].upper()
@@ -420,14 +474,14 @@ class Recorder:
                 # A statement binding a row's key and its company, or its parent's, names that
                 # row's company, as an ORM write does (name_row): a later statement naming the
                 # row by its key alone, and its children, are judged under that company.
-                self.rows[conn_key][(table, row)] = company
+                self._put(conn_key, _ROWS, (table, row), company)
             self.acquire(conn_key, Lock(cls, mode, site, origin, key, in_execution, company, row=row), waited)
 
     def name_row(self, conn_key: int, table: str, row: str, company: str) -> None:
         """The ORM is about to write ``table``'s row ``row`` (its primary key), which belongs
         to ``company``: the UPDATE or DELETE that names the row by its key alone is judged
         under that company."""
-        self.rows[self.flow(conn_key)][(table, str(row))] = str(company)
+        self._put(self.flow(conn_key), _ROWS, (table, str(row)), str(company))
 
     def _own(self, conn_key: int, lock: Lock) -> bool:
         """R1: a row of a company this transaction inserted and has not committed. Nobody else
@@ -484,7 +538,7 @@ class Recorder:
         if table == "companies":
             company = _companies_row(lock)
             if company:
-                self.company_rows[conn_key].setdefault(company, set()).add(_strength(lock))
+                self._add(conn_key, _COMPANY_ROWS, company, _strength(lock))
             return
         if not lock.cls.startswith(("row:", "key:")) or not _company_owned(table):
             return
@@ -518,16 +572,14 @@ class Recorder:
         row of the table: a row taken under it never waits on a row, and a gated taker of the
         table waits on the table lock, ranked as every table lock is, before it holds any row."""
         exclusive = {f"t{TABLE_MODES.index(m)}" for m in ("exclusive", "access exclusive")}
-        return any(cls == f"tbl:{table}" and strengths & exclusive
-                   for (cls, _), strengths in self.taken[conn_key].items())
+        return bool(self.taken_classes[conn_key].get(f"tbl:{table}", set()) & exclusive)
 
     def _gate_held(self, conn_key: int, table: str) -> bool:
         """R4g: whether this transaction holds a row of the table's own gate (ROW_GATES) FOR
         UPDATE. Every writer of the table takes it first, so a taker of the same rows waits on
         the gate before it holds one, as it would on the company's lock."""
         gate = ROW_GATES.get(table)
-        return gate is not None and any(cls == gate and "update" in strengths
-                                        for (cls, _), strengths in self.taken[conn_key].items())
+        return gate is not None and "update" in self.taken_classes[conn_key].get(gate, ())
 
     def _retake(self, conn_key: int, lock: Lock) -> bool:
         """Whether this connection already holds what ``lock`` asks for: the same key at no
@@ -554,13 +606,16 @@ class Recorder:
         """Note what this transaction now holds. A row named by its primary key is also held by
         that key alone, as a foreign-key share of it binds it: the share is then granted at once.
         A lock naming several values holds each value's rows as a lock naming it alone would."""
-        self.taken[conn_key].setdefault((lock.cls, lock.key), set()).add(_strength(lock))
+        strength = _strength(lock)
+        self._add(conn_key, _TAKEN, (lock.cls, lock.key), strength)
+        self._add(conn_key, _TAKEN_CLASSES, lock.cls, strength)
         values = _row_values(lock) if _explicit(lock.mode) else ()
         for value in values if len(values) > 1 else ():
-            self.taken[conn_key].setdefault((lock.cls, repr((value,))), set()).add(_strength(lock))
+            self._add(conn_key, _TAKEN, (lock.cls, repr((value,))), strength)
         if lock.row:
             parent = "key:" + lock.cls.split(":", 1)[1]
-            self.taken[conn_key].setdefault((parent, repr((lock.row,))), set()).add(_strength(lock))
+            self._add(conn_key, _TAKEN, (parent, repr((lock.row,))), strength)
+            self._add(conn_key, _TAKEN_CLASSES, parent, strength)
 
     def _serial_gates(self) -> set[str]:
         """R5: the fixed keys this flow of control holds exclusively at session level, on any
@@ -605,7 +660,7 @@ class Recorder:
             kind = "gated" if lock.gated else "ungated"
             info[kind] = info.get(kind, 0) + 1
         if lock.cls == "row:companies" and lock.mode == "insert" and lock.company:
-            self.own[conn_key].add(lock.company)
+            self._put(conn_key, _OWN, lock.company, True)
         if self._retake(conn_key, lock):
             # Granted at once: it waits for nothing, so it orders nothing.
             info["retakes"] = info.get("retakes", 0) + 1
@@ -665,8 +720,8 @@ class Recorder:
             return
         self._take(conn_key, lock)
         if _explicit(lock.mode):
-            self.explicit[conn_key].setdefault(lock.cls, set()).add(_strength(lock))
-            self.last_key[conn_key][lock.cls] = lock.key
+            self._add(conn_key, _EXPLICIT, lock.cls, _strength(lock))
+            self._put(conn_key, _LAST_KEY, lock.cls, lock.key)
         runs = self.held[conn_key]
         if not runs or runs[-1].cls != lock.cls or _exclusive(lock.mode) and not _exclusive(runs[-1].mode) \
                 or runs[-1].gated and not lock.gated:
@@ -929,8 +984,12 @@ def _strength(lock: Lock) -> str:
     """The lock strength that decides conflicts: shared/exclusive for advisory locks,
     PostgreSQL's four row-lock strengths for rows (an UPDATE takes NO KEY UPDATE, a
     DELETE takes UPDATE), ``insert`` for a unique-key wait, t1..t8 for table modes."""
-    mode = lock.mode
-    if lock.cls.startswith("tbl:"):
+    return _mode_strength(lock.cls.startswith("tbl:"), lock.mode)
+
+
+@functools.lru_cache(maxsize=None)
+def _mode_strength(table: bool, mode: str) -> str:
+    if table:
         return "t" + str(TABLE_MODES.index(mode.rsplit(" ", 1)[0]))
     if mode.startswith(("xact", "session")):
         return "shared" if "shared" in mode else "exclusive"

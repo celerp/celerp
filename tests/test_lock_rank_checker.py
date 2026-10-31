@@ -1949,3 +1949,66 @@ def test_a_session_row_taken_under_its_logins_generation_is_no_companys_take(mon
     rec.statement(1, _UPDATE_LOCATION, ("Main", "Default"), 0.0)
     classes = rec.dump()["classes"]
     assert sorted(classes["row:session_registry"].get("ungated_takes", [])) == counted
+
+
+
+def _recorder_calls(takes: int) -> int:
+    """Function calls the recorder makes for ``takes`` row locks of alternating classes, each in
+    a savepoint released after it (as an import's sinks take one per record), in one transaction."""
+    import sys
+
+    recorder = Recorder()
+    calls = 0
+
+    def count(frame, event, arg):
+        nonlocal calls
+        calls += event in ("call", "c_call")
+
+    sys.setprofile(count)
+    try:
+        for i in range(takes):
+            recorder.statement(1, f"SAVEPOINT sa_{i}", None, 0.0)
+            cls = ("row:notifications", "row:connector_configs")[i % 2]
+            recorder.acquire(1, _lock(cls, "no key update wait", key=str(i)), 0.0)
+            recorder.statement(1, f"RELEASE SAVEPOINT sa_{i}", None, 0.0)
+    finally:
+        sys.setprofile(None)
+    return calls
+
+
+def test_the_recorder_does_per_take_work_that_does_not_grow_with_what_the_transaction_holds():
+    """A long migration transaction takes thousands of locks, each record in a savepoint: a
+    savepoint that copied the transaction's state, or a take that walked every lock held, made
+    the recorder quadratic and pushed a xero import test past its CI timeout. Four times the
+    takes must cost about four times the calls (quadratic work costs sixteen)."""
+    small, large = _recorder_calls(200), _recorder_calls(800)
+    assert large < 6 * small, (small, large)
+
+
+def _transaction(recorder: Recorder, conn_key: int = 1) -> list:
+    """A deep copy of what every transaction state holds for ``conn_key``."""
+    import copy
+
+    return [copy.deepcopy(state.get(conn_key)) for state in recorder._transaction_state()]
+
+
+def test_rolling_back_to_a_savepoint_puts_back_exactly_the_state_it_was_made_with():
+    """The savepoint journal: entries changed inside a savepoint, in one released into it, and
+    after a rollback to it, are all put back to what they were when it was made."""
+    recorder = Recorder()
+    recorder.acquire(1, _lock("row:notifications", "no key update wait", key="a"), 0.0)
+    recorder.name_row(1, "items", "1", "c1")
+    before = _transaction(recorder)
+    recorder.statement(1, "SAVEPOINT sa_1", None, 0.0)
+    recorder.acquire(1, _lock("row:notifications", "update wait", key="a"), 0.0)
+    recorder.statement(1, "SAVEPOINT sa_2", None, 0.0)
+    recorder.acquire(1, _lock("row:connector_configs", "no key update wait", key="b"), 0.0)
+    recorder.acquire(1, Lock("row:companies", "insert", "celerp/x.py:1 f", "test_x.py:1", "c2", company="c2"), 0.0)
+    recorder.name_row(1, "items", "1", "c3")
+    recorder.statement(1, "RELEASE SAVEPOINT sa_2", None, 0.0)
+    assert _transaction(recorder) != before
+    recorder.statement(1, "ROLLBACK TO SAVEPOINT sa_1", None, 0.0)
+    assert _transaction(recorder) == before
+    recorder.acquire(1, _lock("row:connector_configs", "no key update wait", key="b"), 0.0)
+    recorder.statement(1, "ROLLBACK TO SAVEPOINT sa_1", None, 0.0)
+    assert _transaction(recorder) == before
