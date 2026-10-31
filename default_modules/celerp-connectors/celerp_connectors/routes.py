@@ -928,7 +928,6 @@ async def first_sync_summary(
         "error": first_sync.error if first_sync is not None else None,
         "batch": batch,
         "links": [_link_summary(link, items.get(link["entity_id"])) for link in links],
-        "links_undone_at": undo.get("links_undone_at"),
         "invoices": invoices,
     }
 
@@ -1120,8 +1119,6 @@ async def undo_first_sync_links(
     changes nothing and its repeat settles only the links still open. The items the first
     sync created are undone in Import History."""
     require_on(await company_settings(company_id), "celerp-inventory")
-    from datetime import datetime, timezone
-
     from celerp_inventory import services as inventory
 
     from celerp.services.company_lock import lock_company
@@ -1131,7 +1128,7 @@ async def undo_first_sync_links(
         await lock_company(session, uuid.UUID(str(company_id)))
         first_sync = await _first_sync_row(session, company_id, connector_name, for_update=True)
         undo = dict((first_sync.undo if first_sync is not None else None) or {})
-        if undo.get("links_undone_at") or not undo.get("links"):
+        if all("outcome" in link for link in undo.get("links") or []):
             await session.rollback()
             raise HTTPException(status_code=409, detail=t("connectors.err_no_links_to_undo"))
         undone, kept, links = 0, [], []
@@ -1147,7 +1144,7 @@ async def undo_first_sync_links(
                     kept.append({"entity_id": link["entity_id"], "outcome": result["outcome"],
                                  "fields": result["kept"], "files": result["files"]})
             links.append(link)
-        first_sync.undo = {**undo, "links": links, "links_undone_at": datetime.now(timezone.utc).isoformat()}
+        first_sync.undo = {**undo, "links": links}
         await session.commit()
         return {"undone": undone, "kept": kept}
 

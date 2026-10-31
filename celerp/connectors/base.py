@@ -235,7 +235,8 @@ class ExternalImportRecord:
     async def attribute(self, session, *, created: tuple[str, str] | None = None,
                         linked: dict | None = None) -> None:
         """Record one creation or link in the caller's transaction, which ``hold`` began.
-        Recording one already there changes nothing."""
+        Recording one already there changes nothing; a link made again after its undo
+        settled is a new entry, so its own undo restores it."""
         if created is not None:
             self.created.append(created)
         if linked is not None:
@@ -250,7 +251,7 @@ class ExternalImportRecord:
         if linked is not None:
             undo = dict(row.undo or {})
             links = list(undo.get("links") or [])
-            if all(link["entity_id"] != linked["entity_id"] for link in links):
+            if not any(_open_link(link, linked["entity_id"], linked.get("remote")) for link in links):
                 undo["links"] = [*links, linked]
                 row.undo = undo
         batch = await _first_sync_batch(session, row) if created is not None else None
@@ -281,7 +282,7 @@ class ExternalImportRecord:
                 return
             batch = await _first_sync_batch(session, row)
             links = list((row.undo or {}).get("links") or [])
-            at = next((i for i, link in enumerate(links) if link["entity_id"] == entity_id), None)
+            at = next((i for i, link in enumerate(links) if _open_link(link, entity_id)), None)
             if (batch is None or entity_id not in batch.entity_ids) and at is None:
                 return
             pulled = (await session.execute(sa.select(LedgerEntry.idempotency_key, LedgerEntry.data).where(
@@ -301,6 +302,13 @@ class ExternalImportRecord:
                     row.undo = {**row.undo, "links": links}
             if new:
                 await session.commit()
+
+
+def _open_link(link: dict, entity_id: str, remote: dict | None = None) -> bool:
+    """Whether an undo record's link is the one for this item (and store product, when
+    given) that its undo has not settled yet."""
+    return (link["entity_id"] == entity_id and "outcome" not in link
+            and (remote is None or link.get("remote") == remote))
 
 
 @dataclass

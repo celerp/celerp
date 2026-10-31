@@ -17,7 +17,7 @@ import sqlalchemy as sa
 from company_backup_support import token
 from connector_test_support import add_item, item_state
 from migration_support import real_client, real_engine  # noqa: F401 - fixtures
-from test_first_sync_recovery import DIRECTIONS, _Crash, _execute, _first_sync, _lease_expired, _started, store  # noqa: F401
+from test_first_sync_recovery import DIRECTIONS, _Crash, _execute, _first_sync, _lease_expired, _retry, _started, store  # noqa: F401
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("connector_modules_running")]
 
@@ -189,7 +189,38 @@ async def test_an_interrupted_undo_changes_nothing_and_its_repeat_completes(real
     monkeypatch.setattr(services, "detach_external_link", original)
     r = await real_client.post(UNDO, headers=h)
     assert (r.status_code, r.json()["undone"]) == (200, 2), r.text
-    assert (await _first_sync(cid)).undo.get("links_undone_at")
+    assert all(link.get("outcome") for link in (await _first_sync(cid)).undo["links"])
+    r = await real_client.post(UNDO, headers=h)
+    assert r.status_code == 409, r.text
+
+
+async def test_a_retry_after_an_undo_records_its_links_and_their_undo_restores_them(real_engine, real_client, store):
+    """An undo on a failed first sync settles its links; Retry links the items again with the
+    store's values, each a new undo entry; the next undo brings Celerp's values back and the
+    one after it has nothing left."""
+    from celerp.db import get_session_ctx
+
+    cid, uid = await _linked("UndoThenRetry")
+    async with get_session_ctx() as session:
+        await session.execute(sa.text(
+            "UPDATE connector_first_syncs SET state = 'failed', progress = CAST(:p AS json) WHERE company_id = :c"),
+            {"c": str(cid), "p": '{"products": {"state": "failed"}}'})
+        await session.commit()
+    h = await _headers(real_engine, cid, uid)
+    r = await real_client.post(UNDO, headers=h)
+    assert (r.status_code, r.json()["undone"]) == (200, 2), r.text
+    assert (await _item(cid, "item:match"))["name"] == "Celerp name"
+    await _retry(cid)
+    await _execute(cid)
+    assert (await _item(cid, "item:match"))["name"] == "Store name"
+    links = (await _first_sync(cid)).undo["links"]
+    assert sorted(((link["entity_id"], link.get("outcome")) for link in links), key=lambda p: (p[0], p[1] or "")) == [
+        ("item:match", None), ("item:match", "undone"), ("item:match2", None), ("item:match2", "undone")], links
+    assert (await _first_sync(cid)).links_holding_store_values == 2
+    r = await real_client.post(UNDO, headers=h)
+    assert (r.status_code, r.json()["undone"]) == (200, 2), r.text
+    assert (await _item(cid, "item:match"))["name"] == "Celerp name"
+    assert not _linked_to_store(await _item(cid, "item:match"))
     r = await real_client.post(UNDO, headers=h)
     assert r.status_code == 409, r.text
 

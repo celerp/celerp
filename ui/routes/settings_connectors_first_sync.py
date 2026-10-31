@@ -218,7 +218,7 @@ def first_sync_summary_card(platform: str, summary: dict, lang: str, error: str 
     service = get_connector(platform).display_name
     batch = summary.get("batch")
     links = summary.get("links") or []
-    undone = summary.get("links_undone_at") or all(link.get("outcome") for link in links)
+    undone = all(link.get("outcome") for link in links)
     invoices = summary.get("invoices") or []
     return Div(
         P(t("connectors.first_sync_title", lang), cls="settings-section-title"),

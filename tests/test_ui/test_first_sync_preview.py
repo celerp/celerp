@@ -120,7 +120,6 @@ def test_summary_offers_every_way_back():
         "started_at": "2026-09-01T00:00:00+00:00", "batch": {"id": "b1", "rows": 3, "status": "active"},
         "links": [{"entity_id": "item:a", "sku": "A-1", "name": "A", "outcome": None, "fields": {}, "kept_files": [], "files": 0},
                   {"entity_id": "item:b", "sku": "B-1", "name": "B", "outcome": None, "fields": {}, "kept_files": [], "files": 1}],
-        "links_undone_at": None,
         "invoices": [{"entity_id": "doc:woocommerce:order:10", "number": "INV-1", "total": 40.0, "status": "final"}],
     }, "en"))
     assert 'href="/settings/inventory?tab=import-history"' in html
@@ -148,7 +147,7 @@ def test_summary_lists_what_each_undo_kept_and_drops_undo_once_every_link_is_set
                    "kept_files": [], "files": 0},
                   {"entity_id": "item:b", "sku": "B-1", "name": "B", "outcome": "undone",
                    "fields": {"name": {"before": "Old", "current": "New"}}, "kept_files": ["f1"], "files": 1}],
-        "links_undone_at": None, "invoices": [],
+        "invoices": [],
     }, "en"))
     assert t("connectors.first_sync_links_kept", "en") in html
     assert t("connectors.first_sync_link_relinked", "en", service="WooCommerce") in html
