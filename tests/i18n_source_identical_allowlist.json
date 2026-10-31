@@ -853,8 +853,7 @@
     "th.factor",
     "th.position",
     "th.sku",
-    "th.total",
-    "field.subtotal"
+    "th.total"
   ],
   "fr": [
     "acct.tab_journal",
@@ -1122,8 +1121,7 @@
     "th.sku",
     "th.source",
     "th.total",
-    "th.version",
-    "field.notes"
+    "th.version"
   ],
   "id": [
     "acct.source_manual",
@@ -1375,8 +1373,7 @@
     "th.ref",
     "th.sku",
     "th.status",
-    "th.total",
-    "field.subtotal"
+    "th.total"
   ],
   "it": [
     "attr.volume_l",
@@ -2029,8 +2026,7 @@
     "th.sku",
     "th.skuitem",
     "th.status",
-    "th.total",
-    "field.subtotal"
+    "th.total"
   ],
   "th": [
     "account.email_placeholder",

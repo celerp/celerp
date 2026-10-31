@@ -1067,7 +1067,7 @@ def _action_error(result: dict) -> dict | None:
     data = result.get("data")
     detail = data.get("detail") if isinstance(data, dict) else None
     if isinstance(detail, dict):
-        return {"code": detail.get("code") or "route_error",
+        return {**detail, "code": detail.get("code") or "route_error",
                 "message": detail.get("message") or detail.get("code") or str(detail)}
     if isinstance(detail, list):
         detail = "; ".join(str(e.get("msg") if isinstance(e, dict) else e) for e in detail)

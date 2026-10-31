@@ -653,7 +653,7 @@ async def test_a_service_outage_reads_as_an_outage_never_as_the_service_wrote_it
     monkeypatch.setattr(service, "complete", _raise)
     monkeypatch.setattr(service, "compile_agent_capabilities", lambda app, settings, role=None: CAPS)
     result = await _run()
-    assert result.error == t("ai.err_service_issue")
+    assert result.error == t("ai.err_unavailable")
 
 
 @pytest.mark.asyncio

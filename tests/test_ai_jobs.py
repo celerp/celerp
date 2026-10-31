@@ -161,10 +161,10 @@ async def test_a_reading_job_resumed_after_a_restart_writes_in_its_askers_langua
     await _kill_and_restart()
     job = await _finished(client, token, job_id)
 
-    assert _by_file(job)[file_ids[1]]["error"] == t("ai.err_outcome_unknown", "th")
+    assert _by_file(job)[file_ids[1]]["error"] == t("ai.file_lost", "th")
     assert (await session.get(AIBatchJob, job_id, populate_existing=True)).lang == "th"
     notes = (await session.execute(select(Notification).where(Notification.company_id == company_id))).scalars().all()
-    assert [n.i18n for n in notes] == [{"title": "ai.files_read_title", "body": "ai.files_read_body",
+    assert [n.i18n for n in notes] == [{"title": "ai.files_read.title", "body": "ai.files_read.body",
                                         "params": {"completed": 1, "failed": 1, "total": 2}}]
 
 
@@ -801,8 +801,7 @@ async def test_a_finished_jobs_notification_is_written_under_the_company_lock(cl
     import mutation_observer
     _token, company_id, user_id = owner
     with mutation_observer.serving("POST", "/ai/conversations/{conversation_id}/query"):
-        await jobs.notify(company_id, user_id, None, "ai.files_read_title", "ai.files_read_body",
-                          completed=2, failed=0, total=2)
+        await jobs.notify(company_id, user_id, None, "ai.files_read", completed=2, failed=0, total=2)
     findings = mutation_observer.CENSUS.findings
     assert findings == [], mutation_observer.explain(findings)
     notes = (await session.execute(select(Notification).where(Notification.company_id == company_id))).scalars().all()

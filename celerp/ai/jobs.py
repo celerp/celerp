@@ -1006,18 +1006,17 @@ async def send_step(call: Callable[[], Awaitable], *, resend: bool,
 
 
 async def notify(company_id: uuid.UUID, user_id: uuid.UUID, conversation_id: uuid.UUID | None,
-                 title_key: str, body_key: str, **params) -> None:
+                 key: str, **params) -> None:
     """The notification a finished background job leaves for its user (best effort),
-    from catalog messages: stored in English with their keys, so each reader sees it in
-    their own language."""
+    from catalog message *key* (``create_keyed``), so each reader sees it in their own
+    language."""
     try:
-        from celerp.notifications.service import create as create_notification
+        from celerp.notifications.service import create_keyed
         async with SessionLocal() as session:
             await lock_for_ai(session, company_id)
-            await create_notification(
-                session, company_id, "ai", t(title_key, "en", **params), t(body_key, "en", **params),
-                user_id=user_id, action_url=f"/ai?conversation={conversation_id}" if conversation_id else "/ai",
-                priority="high", i18n={"title": title_key, "body": body_key, "params": params},
+            await create_keyed(
+                session, company_id, "ai", key, params, user_id=user_id,
+                action_url=f"/ai?conversation={conversation_id}" if conversation_id else "/ai", priority="high",
             )
             await session.commit()
     except Exception:
@@ -1401,8 +1400,7 @@ async def _finish_question(job_id: uuid.UUID, result, refusal, runner_id: str) -
         await session.commit()
     _background.discard(job_id)
     if promoted:
-        key = "ai.question_failed_title" if failed else "ai.question_answered_title"
-        await notify(company_id, user_id, conversation_id, key, "ai.question_done_body")
+        await notify(company_id, user_id, conversation_id, "ai.question_failed" if failed else "ai.question_answered")
 
 
 async def wait_for_job(job_id: uuid.UUID, *, started: float) -> bool:

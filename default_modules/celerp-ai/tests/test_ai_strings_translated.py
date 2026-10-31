@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
-from celerp.ai import batch, jobs, service
+from celerp.ai import batch, jobs, llm, service
 from celerp_ai import routes, ui_routes
 from ui import i18n
 
@@ -114,8 +114,8 @@ def test_unmet_dependencies_are_refused_in_the_reader_language():
 async def test_file_reading_results_read_in_the_reader_language(monkeypatch):
     sent = []
 
-    async def notify(company_id, user_id, conversation_id, title_key, body_key, **params):
-        sent.extend([i18n.t(title_key, **params), i18n.t(body_key, **params)])
+    async def notify(company_id, user_id, conversation_id, key, **params):
+        sent.extend([i18n.t(f"{key}.title", **params), i18n.t(f"{key}.body", **params)])
 
     monkeypatch.setattr(jobs, "notify", notify)
     run = batch.FileRun(job_id=uuid.uuid4(), company_id=uuid.uuid4(), user_id=uuid.uuid4(),
@@ -126,10 +126,10 @@ async def test_file_reading_results_read_in_the_reader_language(monkeypatch):
     assert _english(sent + errors) == []
 
 
-# Every failure code the AI service reports (celerp.ai.llm.RelayError).
-_RELAY_CODES = ("no_session", "no_account", "unexpected_reply", "continuation_expired", "service_unavailable",
-                "outcome_unknown", "operation_in_progress", "operation_expired", "operation_mismatch", "busy",
-                "gateway_error")
+# Every failure code the AI service reports (celerp.ai.llm.RelayError): those its
+# replies map to, and those raised in celerp.ai.llm itself.
+_RELAY_CODES = sorted(set(llm._RELAY_CODES.values())
+                      | {"no_session", "no_account", "unexpected_reply", "gateway_error", "service_unavailable"})
 
 
 @pytest.mark.parametrize("code", _RELAY_CODES)
@@ -139,6 +139,18 @@ def test_a_service_failure_reads_in_the_reader_language_never_as_the_service_wro
     texts = [service.user_error(exc), batch._file_error(exc)]
     assert _english(texts) == []
     assert service._error_code(exc) == code
+    assert (texts[1] == i18n.t("ai.file_lost")) == (code in service.NEW_QUESTION_ERRORS)
+
+
+def test_ai_service_refusals_read_in_the_reader_language_never_as_the_service_wrote_them():
+    english = {"code": "plan_limit", "message": "This plan allows 3 file per question.", "max_files": 3}
+    files, _ = ui_routes._refusal_text(402, english, "qx")
+    texts = [files, ui_routes._refusal_text(402, {"code": "plan_limit"}, "qx")[0],
+             ui_routes._error_text(ui_routes._keyed({"code": "new_code", "message": "Service text"}), "qx"),
+             ui_routes._outcome_text({"ok": False, "error": {"code": "x", "message": "Route text",
+                                                              "message_key": "ai.err_unexpected"}}, "qx")[1]]
+    assert _english(texts) == []
+    assert "3" in files
 
 
 def test_answer_errors_read_in_the_reader_language():

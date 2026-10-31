@@ -106,6 +106,8 @@ def _file_error(exc: BaseException) -> str:
     if isinstance(exc, HTTPException) and exc.status_code == 402:
         return t("ai.file_out_of_credits")
     if isinstance(exc, RelayError):
+        if exc.code in service.NEW_QUESTION_ERRORS:  # its read cannot be taken again; a retry reads it anew
+            return t("ai.file_lost")
         return service.user_error(exc, unknown="ai.file_unreadable")
     if isinstance(exc, asyncio.TimeoutError):
         return t("ai.file_timeout")
@@ -235,13 +237,8 @@ async def publish_progress(run: FileRun, file_id: str, state: str) -> None:
 
 async def notify_finished(run: FileRun, completed: int, failed: int) -> None:
     """The notification a finished reading job leaves for its user."""
-    if completed == 0:
-        title = "ai.files_none_read_title_one" if failed == 1 else "ai.files_none_read_title"
-        body = "ai.files_none_read_body"
-    else:
-        title = "ai.files_read_title_one" if completed + failed == 1 else "ai.files_read_title"
-        body = "ai.files_read_body"
-    await jobs.notify(run.company_id, run.user_id, run.conversation_id, title, body,
+    key = "ai.files_read" if completed else "ai.files_none_read"
+    await jobs.notify(run.company_id, run.user_id, run.conversation_id, key + ("_one" if completed + failed == 1 else ""),
                       completed=completed, failed=failed, total=completed + failed)
 
 

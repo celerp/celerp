@@ -447,7 +447,7 @@ def test_action_card_formats_amounts_and_quantities():
     html = _card_html(action)
     assert "฿15.00" in html and "฿1.50" in html and "฿20.00" in html
     assert "Quantity: 1," in html
-    assert "Unit price: ฿10.00" in html and "Line total: ฿10.00" in html
+    assert f"{t('th.unit_price')}: ฿10.00" in html and f"{t('th.total')}: ฿10.00" in html
     assert ">15.0<" not in html and "1.0," not in html
 
 
@@ -830,10 +830,10 @@ async def test_thread_orders_jobs_between_messages_and_marks_errors(ui_client):
     finally:
         _stop(patches)
     assert r.status_code == 200
-    assert "Attached file(s)" in r.text
+    assert t("ai.attached_files") in r.text
     assert "1 of 1 files were read." in r.text
     assert "ai-msg--error" in r.text
-    assert r.text.index("Attached file(s)") < r.text.index("1 of 1 files") < r.text.index("timed out")
+    assert r.text.index(t("ai.attached_files")) < r.text.index("1 of 1 files") < r.text.index("timed out")
 
 
 def test_chat_view_has_no_gif_and_an_upload_error_slot():

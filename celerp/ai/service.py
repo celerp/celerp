@@ -125,7 +125,7 @@ _RELAY_ERROR_KEY = {
     "unexpected_reply": "ai.err_bad_reply",
     "continuation_expired": "ai.err_step_expired",
     "gateway_error": "ai.err_unavailable",
-    "service_unavailable": "ai.err_service_issue",
+    "service_unavailable": "ai.err_unavailable",
     "outcome_unknown": "ai.err_outcome_unknown",
     "operation_expired": "ai.err_question_expired",
     "operation_mismatch": "ai.err_operation_mismatch",

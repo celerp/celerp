@@ -136,7 +136,9 @@ def _refusal_text(status: int | None, data: dict, lang: str) -> tuple[str, bool]
     if status == 402 and code == "not_available":
         return t("ai.free_not_eligible", lang), True
     if status == 402 and code == "plan_limit":
-        return refusal_text(data) or t("error.unexpected_error_body", lang), True
+        if data.get("max_files") is not None:
+            return t("ai.err_plan_files", lang, max_files=int(data["max_files"])), True
+        return t("ai.err_plan_limit", lang), True
     if status == 402:
         return _credits_exhausted_text(data, lang), False
     if status == 503 and code == "free_paused":
@@ -164,7 +166,7 @@ async def _refused(token: str, status: int | None, data: dict, query: str, lang:
     if explained is None:
         if status == 429:
             return (_msg_bubble("ai", t("ai.busy", lang)),)
-        return (_msg_bubble("ai", str(data.get("message") or data.get("code") or ""), error=True),)
+        return (_msg_bubble("ai", _error_text(_keyed(data), lang), error=True),)
     text, is_error = explained
     bubble = _msg_bubble("ai", text, error=is_error)
     code = data.get("code")
@@ -565,7 +567,7 @@ def setup_ui_routes(app) -> None:
         try:
             job = await api.ai_batch_status(token, session_token, job_id)
         except APIError as e:
-            return _msg_bubble("ai", _api_error_text(e), error=True)
+            return _msg_bubble("ai", _error_text(e.detail, lang), error=True)
         if job.get("status") != "completed":
             return _job_bubble(job, conversation_id, lang)
 
@@ -574,7 +576,7 @@ def setup_ui_routes(app) -> None:
         except APIError as e:
             return (
                 _job_done_line(job, lang),
-                _msg_bubble("ai", _api_error_text(e), error=True),
+                _msg_bubble("ai", _error_text(e.detail, lang), error=True),
             )
         message_id = str(result.get("message_id", ""))
         actions = result.get("pending_actions") or []
@@ -600,7 +602,7 @@ def setup_ui_routes(app) -> None:
             if e.status == 404:
                 return HTMLResponse("")
             # The question's state could not be read this time: say so and read it again.
-            return _question_bubble({"notice": _api_error_text(e)}, conversation_id, question_id, lang)
+            return _question_bubble({"notice": _error_text(e.detail, lang)}, conversation_id, question_id, lang)
         return await _question_view(token, state, conversation_id, question_id, lang)
 
     @app.post("/ai/jobs-ui/{job_id}/{action}")
@@ -628,7 +630,7 @@ def setup_ui_routes(app) -> None:
                 return await _question_view(token, state, conversation_id, job_id, lang)
             return _job_bubble(await api.ai_batch_status(token, session_token, job_id), conversation_id, lang)
         except APIError as e:
-            return _msg_bubble("ai", _api_error_text(e), error=True)
+            return _msg_bubble("ai", _error_text(e.detail, lang), error=True)
 
     @app.post("/ai/conversations")
     async def ai_conversation_new(request: Request):
@@ -658,7 +660,7 @@ def setup_ui_routes(app) -> None:
         except APIError as e:
             if e.status == 409 and api.error_code(e) == "action_not_pending":
                 return _action_panel(t("ai.action_expired", lang), ok=False)
-            return _action_panel(_api_error_text(e), ok=False)
+            return _action_panel(_error_text(e.detail, lang), ok=False)
         if result.get("action_status") == "retryable":
             return _retry_action_panel(
                 conversation_id, message_id, tool_call_id,
@@ -693,7 +695,7 @@ def setup_ui_routes(app) -> None:
                 # Another tab may already have handled it. Its desired visible
                 # state is still "gone", so make dismissal idempotent in the UI.
                 return _R("")
-            return _action_panel(_api_error_text(e), ok=False)
+            return _action_panel(_error_text(e.detail, lang), ok=False)
         return _R("")
 
     @app.post("/ai/dismiss-all-ui/{conversation_id}/{message_id}")
@@ -715,7 +717,7 @@ def setup_ui_routes(app) -> None:
                 token, get_session_token(), conversation_id, message_id, selected,
             )
         except APIError as exc:
-            return _action_panel(_api_error_text(exc), ok=False)
+            return _action_panel(_error_text(exc.detail, get_lang(request)), ok=False)
         return _R("", headers={"HX-Refresh": "true"})
 
     @app.post("/ai/confirm-all-ui/{conversation_id}/{message_id}")
@@ -751,7 +753,7 @@ def setup_ui_routes(app) -> None:
             if e.status == 409 and api.error_code(e) == "action_not_pending":
                 error = t("ai.action_expired", lang)
             else:
-                error = _api_error_text(e)
+                error = _error_text(e.detail, lang)
             return _confirm_tail(conversation_id, message_id, view, [], tally, lang, error=error)
         outcomes = result.get("results") or []
         tally.add(outcomes)
@@ -871,7 +873,7 @@ def setup_ui_routes(app) -> None:
             session_token = get_session_token()
             await api.ai_memory_clear(token, session_token)
         except APIError as exc:
-            return P(_api_error_text(exc), cls="ai-settings__error")
+            return P(_error_text(exc.detail, get_lang(request)), cls="ai-settings__error")
         except Exception:
             return P(t("ai.memory_clear_failed"), cls="ai-settings__error")
         return P(t("msg.memory_cleared"), cls="ai-memory__empty")
@@ -1145,27 +1147,41 @@ def _failed_reply(user_bubble: FT, e: APIError, lang: str) -> tuple[FT, FT]:
     """
     if e.status == 429:
         return user_bubble, _msg_bubble("ai", t("ai.busy", lang))
-    return user_bubble, _msg_bubble("ai", _api_error_text(e), error=True)
+    return user_bubble, _msg_bubble("ai", _error_text(e.detail, lang), error=True)
 
 
-def _api_error_text(e: APIError) -> str:
-    detail = e.detail.get("message") or e.detail.get("code") if isinstance(e.detail, dict) else e.detail
-    return str(detail)
+def _error_text(detail, lang: str) -> str:
+    """An error the app returned, as ``refusal_text`` reads it, else the plain
+    unexpected-error text."""
+    return refusal_text(detail) or t("ai.err_unexpected", lang)
+
+
+def _keyed(refusal: dict) -> dict | None:
+    """An AI service refusal no code explains, kept only when it carries a catalog
+    message: the service's own text is English and never shown."""
+    return refusal if isinstance(refusal, dict) and refusal.get("message_key") else None
 
 
 def _outcome_text(outcome: dict, lang: str = "en") -> tuple[bool, str]:
     """(ok, text) for one confirmed action's outcome, success or failure."""
     if outcome.get("ok"):
         return True, _confirm_success_text(outcome.get("data"), lang)
-    error = outcome.get("error") or {}
-    message = (error.get("message") or error.get("code")) if isinstance(error, dict) else str(error)
-    return False, str(message)
+    return False, _error_text(outcome.get("error"), lang)
+
+
+# Proposal fields the app already names under another catalog key; every other field
+# reads as ``field.<key>``.
+_LABEL_KEYS = {
+    "doc_type": "label.document_type", "contact_type": "label.contact_type", "line_items": "th.items",
+    "unit_price": "th.unit_price", "line_total": "th.total", "subtotal": "label.subtotal",
+    "tax": "label.tax", "notes": "label.notes",
+}
 
 
 def _label(key: str) -> str:
-    """A field name as a person reads it: the app's own label for the field
-    (``field.<key>``), else the key itself, so contact_type becomes Contact type."""
-    return t_or(f"field.{key}", str(key).replace("_", " ").strip().capitalize())
+    """A field name as a person reads it: the app's own label for the field, else the
+    key itself, so an unnamed ship_via becomes Ship via."""
+    return t_or(_LABEL_KEYS.get(key, f"field.{key}"), str(key).replace("_", " ").strip().capitalize())
 
 
 def _fmt_scalar(key: str, value, currency: str | None) -> str:
@@ -1914,9 +1930,8 @@ def _message_parts(entry: dict, conversation_id: str, asked: dict | None, lang: 
     text = entry.get("content") or (t("ai.attached_files", lang) if entry.get("file_ids") else "")
     error = bool(entry.get("error"))
     if entry.get("refusal") is not None:
-        explained = _refusal_text(entry.get("refusal_status"), entry["refusal"], lang)
-        if explained is not None:
-            text, error = explained
+        text, error = (_refusal_text(entry.get("refusal_status"), entry["refusal"], lang)
+                       or (_error_text(_keyed(entry["refusal"]), lang), True))
     again = None
     if offer_again and error and asked is not None:
         again = _failure_action(entry, conversation_id, str(asked.get("id", "")),
