@@ -1756,7 +1756,8 @@ async def undo_external_link(
     set_inventory_prices and an amount edit_inventory_amounts, as for any item edit (403).
 
     Returns {"outcome", "kept", "files"}: outcome "undone", "relinked" (the item now holds
-    another product: nothing is changed) or "gone" (the item no longer exists)."""
+    another product: nothing is changed, and every store value and pulled file still on the
+    item is returned as kept) or "gone" (the item no longer exists)."""
     from celerp.connectors.product_links import external_link_for_state
     from celerp.services.field_fingerprints import fingerprint
     from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS
@@ -1775,7 +1776,15 @@ async def undo_external_link(
     remote = link.get("remote") or {}
     if current and not _same_external_identity(
             platform, current, remote.get("product_id"), remote.get(_external_variant_key(platform))):
-        return {"outcome": "relinked", "kept": {}, "files": []}
+        # Nothing is changed, so every store value and pulled file still on the item stays
+        # and is reported for the person to edit.
+        applied = link.get("applied") or {}
+        on_item = {f.get("id") for f in state.get("files") or []}
+        return {"outcome": "relinked",
+                "kept": {key: {"before": before, "current": state.get(key)}
+                         for key, before in (link.get("restore") or {}).items()
+                         if key in applied and fingerprint(state.get(key)) == fingerprint(applied[key])},
+                "files": [file_id for file_id in link.get("files") or [] if file_id in on_item]}
 
     applied = link.get("applied") or {}
     restore, kept = {}, {}

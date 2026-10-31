@@ -94,7 +94,7 @@ async def test_undo_after_a_later_sale_restores_only_the_first_syncs_values(real
 
 async def test_undo_reports_a_link_it_could_not_reverse_and_marks_only_the_rest(real_engine, real_client, store):
     """item:match was relinked to another store product since: its link and values stay and
-    it is reported; item:match2 is undone; the record keeps an outcome for each link."""
+    it is reported with each store value and file still on it; item:match2 is undone; the record keeps an outcome for each link."""
     from celerp.db import get_session_ctx
     from celerp.events.engine import emit_event
 
@@ -112,6 +112,10 @@ async def test_undo_reports_a_link_it_could_not_reverse_and_marks_only_the_rest(
     assert r.status_code == 200, r.text
     assert r.json()["undone"] == 1
     assert [k["entity_id"] for k in r.json()["kept"]] == ["item:match"]
+    record = {link["entity_id"]: link for link in (await _first_sync(cid)).undo["links"]}["item:match"]
+    left = r.json()["kept"][0]
+    assert left["fields"]["name"] == {"before": record["restore"]["name"], "current": "Store name"}, left
+    assert left["files"] == list(record.get("files") or []), left
     relinked, undone = await _item(cid, "item:match"), await _item(cid, "item:match2")
     assert relinked["name"] == "Store name" and relinked["external_links"]["woocommerce"]["product_id"] == 77
     assert undone["name"] == "Own second" and not _linked_to_store(undone)
