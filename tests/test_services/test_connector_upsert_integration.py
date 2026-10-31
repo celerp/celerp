@@ -2156,6 +2156,7 @@ async def _first_sync_then_undo(session, monkeypatch) -> None:
         config.first_sync.batch_id, config.first_sync.match = str(batch.id), "take"
         config.first_sync.started_at = datetime.now(timezone.utc)
         config.first_sync.undo = {"links": []}
+        config.first_sync.reviewed = {"1": "item:match", "2": None}  # as its preview showed the store
         await session.flush()
         session.add(batch)  # after the first-sync record is locked, as starting a first sync does
         await session.commit()

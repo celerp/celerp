@@ -15,12 +15,13 @@ async def import_store_product(
 ) -> str | None:
     """Import one store product for a product pull and return the item it landed on,
     or None when nothing more should happen to it (no SKU, refused, disabled, or left
-    alone by a first sync that creates nothing).
+    alone by a first sync that creates nothing or was not reviewed for it).
 
     A product with no SKU is not imported and waits on a person (``pending``, keyed
     by ``key``). A linked product changed in both systems keeps Celerp's values and
     waits on a person with both. ``first_sync`` carries the first sync's choices and
-    collects what it did."""
+    collects what it did; it acts only on the store products its preview showed, each
+    resolving to the item shown, and any other waits on a person."""
     from celerp.connectors.base import ExternalImportRecord
     from celerp_inventory.services import upsert_external_product
     from ui.i18n import t
@@ -31,20 +32,29 @@ async def import_store_product(
                         "reason": t("connectors.attention_no_sku", service=connector.display_name)}
         result.skipped += 1
         return None
+    # A store product the preview did not show (in the store since) is left alone.
+    outcome = "unreviewed" if first_sync is not None and key not in first_sync.reviewed else None
     record = ExternalImportRecord(first_sync=None if first_sync is None else first_sync.record.first_sync)
     options = {} if first_sync is None else {
         "link_only": first_sync.match == "keep",
         "create": first_sync.create,
         "opening_operation": first_sync.batch_id,
+        "expected_entity": first_sync.reviewed.get(key),
     }
+    entity_id = None
     try:
-        outcome, entity_id = await upsert_external_product(
-            ctx.company_id, platform=connector.name, sku=sku, record=record, **options, **fields,
-        )
+        if outcome is None:
+            outcome, entity_id = await upsert_external_product(
+                ctx.company_id, platform=connector.name, sku=sku, record=record, **options, **fields,
+            )
     except Exception as exc:
         errors.append(f"SKU {sku}: {exc}")
         return None
     result.record(outcome)
+    if outcome == "unreviewed":
+        pending[key] = {"id": key, "label": label, "kind": "unreviewed",
+                        "reason": t("connectors.attention_unreviewed", service=connector.display_name)}
+        return None
     if first_sync is not None:
         first_sync.record.created += record.created
         first_sync.record.linked += record.linked

@@ -1334,6 +1334,10 @@ def relinked_external_sync_enabled(link: dict | None) -> bool:
     return bool(link.get("sync_enabled", True))
 
 
+# upsert_external_product's expected_entity when no reviewed preview binds the product.
+ANY_ITEM = "*"
+
+
 async def upsert_external_product(
     company_id: str,
     *,
@@ -1353,6 +1357,7 @@ async def upsert_external_product(
     create: bool = True,
     record: "ExternalImportRecord | None" = None,
     opening_operation: str | None = None,
+    expected_entity: str | None = ANY_ITEM,
 ) -> tuple[str, str | None]:
     """Create or link one external product without making the connector an inventory engine.
 
@@ -1362,7 +1367,10 @@ async def upsert_external_product(
     ``record``. An existing item matched by SKU is linked keeping its own values
     (``link_only``), or taking the store's. With ``create`` False a product with no
     match is left alone ("skipped"). ``opening_operation`` names the operation that
-    books a created item's opening stock (a first sync's import batch)."""
+    books a created item's opening stock (a first sync's import batch).
+    ``expected_entity`` is the item a reviewed preview showed the product resolving to
+    (None: created); when the product now resolves otherwise nothing is written
+    ("unreviewed")."""
     from celerp.connectors.product_links import external_link_for_state
     from celerp.db import SessionLocal as AsyncSessionLocal
     from celerp.services.field_fingerprints import LINK_KEY, fingerprint
@@ -1385,6 +1393,11 @@ async def upsert_external_product(
         row = await resolve_external_product(
             session, cid, platform, product_id, variation_id, sku=sku
         )
+        resolved = row.entity_id if row is not None else None
+        # Shown as new and now the item this first sync created before a stop: as reviewed.
+        if expected_entity != ANY_ITEM and resolved != expected_entity and not (
+                expected_entity is None and record is not None and await record.created_here(session, resolved)):
+            return "unreviewed", None
         selected_by_identity = bool(
             row is not None
             and _same_external_identity(

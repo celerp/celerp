@@ -18,6 +18,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -232,6 +233,19 @@ class ExternalImportRecord:
 
             await _locked_first_sync(session, *self.first_sync)
 
+    async def created_here(self, session, entity_id: str | None) -> bool:
+        """Whether this first sync created the item, read in the transaction ``hold`` began:
+        its import batch lists it. The batch is only added to under the first sync's record,
+        which the caller holds, so it is read without a lock of its own."""
+        if self.first_sync is None or entity_id is None:
+            return False
+        from celerp.connectors.sync_runner import _locked_first_sync
+        from celerp.models.import_batch import ImportBatch
+
+        row = await _locked_first_sync(session, *self.first_sync)
+        batch = None if row is None or row.batch_id is None else await session.get(ImportBatch, uuid.UUID(row.batch_id))
+        return batch is not None and entity_id in batch.entity_ids
+
     async def attribute(self, session, *, created: tuple[str, str] | None = None,
                         linked: dict | None = None) -> None:
         """Record one creation or link in the caller's transaction, which ``hold`` began.
@@ -268,7 +282,6 @@ class ExternalImportRecord:
         an earlier connection pulled stays out and a pull a stop interrupted is recorded on the retry."""
         if self.first_sync is None:
             return
-        import uuid
 
         import sqlalchemy as sa
 
@@ -322,12 +335,15 @@ class FirstSync:
     ``record``: the ExternalImportRecord the pass fills in, bound to the first sync.
     ``operation``: the first sync's own id, put on the creation of each document it
     imports (``first_sync_metadata``) so its summary lists them.
-    ``completed``: the resources an earlier attempt completed, which this one skips."""
+    ``completed``: the resources an earlier attempt completed, which this one skips.
+    ``reviewed``: the store products its preview showed, remote key -> the item each links
+    to (None: created); the first sync acts on these only."""
     match: str
     create: bool
     batch_id: str | None
     record: ExternalImportRecord
     operation: str
+    reviewed: dict[str, str | None]
     completed: frozenset[str] = frozenset()
 
 

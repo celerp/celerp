@@ -156,10 +156,11 @@ async def run_first_sync(connector: ConnectorBase, ctx: ConnectorContext) -> lis
         completed = frozenset(r for r in resources if (progress.get(r) or {}).get("state") == "completed")
         row.progress = {r: progress[r] if r in completed else {"state": "running"} for r in resources}
         match, batch_id, operation = row.match or "keep", row.batch_id, row.operation_id
+        reviewed = dict(row.reviewed or {})
         await session.commit()
     first_sync = FirstSync(match=match, create=entity_allowed(connector, "products", directions),
                            batch_id=batch_id, record=ExternalImportRecord(first_sync=key), operation=operation,
-                           completed=completed)
+                           completed=completed, reviewed=reviewed)
     results = await run_connector_sync(connector, ctx.company_id, purpose="first_sync", first_sync=first_sync)
 
     async with get_session_ctx() as session:

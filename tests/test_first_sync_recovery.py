@@ -64,9 +64,10 @@ async def _company(name: str) -> uuid.UUID:
     return cid
 
 
-async def _started(name: str, directions: dict, *, match: str = "take") -> uuid.UUID:
+async def _started(name: str, directions: dict, *, match: str = "take", reviewed: dict | None = None) -> uuid.UUID:
     """A company with an item matching a store product by SKU and a WooCommerce first sync
-    started with ``directions``, as the start request saves it."""
+    started with ``directions``, as the start request saves it, reviewed for the store
+    products of ``reviewed`` (by default every product of the store as it is now)."""
     from celerp.db import get_session_ctx
     from celerp.models.import_batch import ImportBatch
 
@@ -84,6 +85,8 @@ async def _started(name: str, directions: dict, *, match: str = "take") -> uuid.
         config.first_sync.started_at = config.first_sync.watermark = now
         config.first_sync.undo = {"links": []}
         config.first_sync.progress = {}
+        config.first_sync.reviewed = reviewed if reviewed is not None else {
+            "1": "item:match", "2": None, "3": None}
         await session.flush()
         session.add(batch)
         await session.commit()
@@ -420,3 +423,31 @@ async def test_crash_at_every_commit_then_retry_equals_one_run(real_engine, stor
         got = await _snapshot(cid)
         await _disconnect(cid)
         assert got == expected, (n, got, expected)
+
+
+async def test_execution_links_only_reviewed_pairs(real_engine, store):
+    """The first sync does only what its preview showed. A store product the preview showed
+    as new that now matches an item made since, and one that appeared in the store after the
+    preview, are left alone and wait on a person, who brings them in with a normal sync; the
+    reviewed match links as shown."""
+    from celerp.db import get_session_ctx
+    from celerp.models.sync_run import SyncRun
+    from ui.i18n import t
+
+    cid = await _started("Reviewed", DIRECTIONS, reviewed={"1": "item:match", "2": None})
+    async with get_session_ctx() as session:
+        await add_item(session, cid, "item:late", "NEW-1", name="Made after the preview")
+    await _execute(cid)
+
+    async with get_session_ctx() as session:
+        assert (await item_state(session, cid, "item:match"))["name"] == "Store name"  # linked, taking the store's
+        late = await item_state(session, cid, "item:late")
+        assert late["name"] == "Made after the preview" and "woocommerce" not in str(late.get("external_links"))
+        for created in ("item:woocommerce:2", "item:woocommerce:3"):
+            assert await item_state(session, cid, created) == {}
+        run = (await session.scalars(sa.select(SyncRun).where(
+            SyncRun.company_id == str(cid), SyncRun.entity == "products").order_by(SyncRun.started_at.desc()))).first()
+    waiting = {e["id"]: e for e in run.attention}
+    assert {k: waiting[k]["kind"] for k in ("2", "3")} == {"2": "unreviewed", "3": "unreviewed"}
+    assert waiting["2"]["reason"] == t("connectors.attention_unreviewed", service="WooCommerce")
+    assert (await _first_sync(cid)).state == "completed"

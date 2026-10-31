@@ -6583,6 +6583,7 @@
   "connectors.review_first_sync": "Review first sync",
   "connectors.err_read_only_key": "This API key is read-only. In WooCommerce, create a key with Read/Write permission and connect again.",
   "connectors.attention_no_sku": "This product has no SKU, so it was not imported. Add a SKU in {service} to import it.",
+  "connectors.attention_unreviewed": "この商品は最初の同期のプレビュー後に{service}またはCelerpで変更されたため、最初の同期では変更していません。次回の同期でほかの商品と同じように取り込まれます。",
   "connectors.attention_conflict": "Changed in both Celerp and {service}: {fields}. Celerp kept its values until you choose.",
   "connectors.conflict_field_sku": "SKU",
   "connectors.conflict_field_name": "Name",

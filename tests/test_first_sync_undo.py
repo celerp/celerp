@@ -22,6 +22,8 @@ from test_first_sync_recovery import DIRECTIONS, _Crash, _execute, _first_sync, 
 pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("connector_modules_running")]
 
 UNDO = "/connectors/woocommerce/first-sync/undo-links"
+# The preview of a store whose NEW-1 matches item:match2, made after Celerp had it.
+REVIEWED = {"1": "item:match", "2": "item:match2", "3": None}
 
 
 class _Failed(RuntimeError):
@@ -33,7 +35,7 @@ async def _linked(name: str, *, settings: dict | None = None, role: str = "owner
     (MATCH-1) and ``item:match2`` (NEW-1, whose store image it pulled)."""
     from celerp.db import get_session_ctx
 
-    cid = await _started(name, DIRECTIONS)
+    cid = await _started(name, DIRECTIONS, reviewed=REVIEWED)
     async with get_session_ctx() as session:
         await add_item(session, cid, "item:match2", "NEW-1", name="Own second", sale_price=2.0)
         if settings:
@@ -141,7 +143,7 @@ async def test_undo_removes_only_the_files_its_own_first_sync_pulled(real_engine
     from celerp.db import get_session_ctx
     from celerp.services.attachments import attach_file
 
-    cid = await _started("UndoOwnFiles", DIRECTIONS)
+    cid = await _started("UndoOwnFiles", DIRECTIONS, reviewed=REVIEWED)
     async with get_session_ctx() as session:
         await add_item(session, cid, "item:match2", "NEW-1", name="Own second", sale_price=2.0)
         await attach_file(session, cid, "item", "item:match2", {
