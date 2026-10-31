@@ -90,11 +90,6 @@
   "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST, lock lock_company, lock locked_company."
  },
  {
-  "route": "api POST /connectors/{connector_name}/sync-plan",
-  "class": "requested, no durable write",
-  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches commit, lock lock_company, write session.add."
- },
- {
   "route": "api POST /items/import/preview",
   "class": "requested, no durable write",
   "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches lock lock_company, lock locked_company."
@@ -1100,18 +1095,6 @@
  },
  {
   "site": "celerp/connectors/outbound_queue.py enqueue_outbound add",
-  "count": 1,
-  "class": "not reached from a route",
-  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
- },
- {
-  "site": "celerp/connectors/outbound_queue.py retain execute",
-  "count": 1,
-  "class": "not reached from a route",
-  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
- },
- {
-  "site": "celerp/connectors/outbound_queue.py save execute",
   "count": 1,
   "class": "not reached from a route",
   "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."

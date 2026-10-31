@@ -225,17 +225,21 @@ class OutboundOperation:
     """One queued identity. `state` is what a handler persisted on an earlier
     attempt (for example the frozen request of an external create)."""
 
+    company_id: str
     row_id: int
     identity: str
     state: dict = field(default_factory=dict)
 
     async def save(self, state: dict) -> None:
         """Commit `state` before the caller contacts the platform, so a crash
-        after the call still finds it."""
+        after the call still finds it. Written under the company's lock, as every
+        other write of the company's queue rows."""
         async with get_session_ctx() as session:
+            if not await _hold_company(session, self.company_id):
+                raise RuntimeError("the queued change was removed")
             saved = await session.execute(
                 sa.update(OutboundQueue)
-                .where(OutboundQueue.id == self.row_id)
+                .where(OutboundQueue.company_id == str(self.company_id), OutboundQueue.id == self.row_id)
                 .values(payload_json=json.dumps(state))
             )
             await session.commit()
@@ -262,10 +266,11 @@ async def _hold_company(session, company_id) -> bool:
     return await lock_company(session, uuid.UUID(str(company_id)))
 
 
-async def _release_rows(session, *where, message: str = _DISCONNECTED) -> None:
-    """Drop queued work, except a Xero invoice create that may have reached Xero:
-    that row is its only record, so it is kept and parked until a manual sync
-    settles it."""
+async def _release_rows(session, company_id, *where, message: str = _DISCONNECTED) -> None:
+    """Drop the company's queued work matching `where`, except a Xero invoice create
+    that may have reached Xero: that row is its only record, so it is kept and parked
+    until a manual sync settles it."""
+    where = (OutboundQueue.company_id == str(company_id), *where)
     await session.execute(
         sa.update(OutboundQueue)
         .where(*where, *_UNRESOLVED_CREATE)
@@ -280,7 +285,7 @@ async def release_connector_queue(session, company_id, connector: str) -> None:
     """Release a company's queued work for a connector being disconnected."""
     await _release_rows(
         session,
-        OutboundQueue.company_id == str(company_id),
+        company_id,
         OutboundQueue.connector == connector,
     )
 
@@ -417,7 +422,7 @@ async def process_outbound_identity(
     except ConnectorOwnershipError as exc:
         async with get_session_ctx() as session:
             if await _hold_company(session, company_id):
-                await _release_rows(session, *identity_rows, OutboundQueue.status == "pending")
+                await _release_rows(session, company_id, *identity_rows, OutboundQueue.status == "pending")
                 await session.commit()
         return OutboundOutcome(error=str(exc))
     except ExecutionRefused as exc:
@@ -427,7 +432,7 @@ async def process_outbound_identity(
         async with get_session_ctx() as session:
             if await _hold_company(session, company_id):
                 await _release_rows(
-                    session, *identity_rows, OutboundQueue.status == "pending",
+                    session, company_id, *identity_rows, OutboundQueue.status == "pending",
                     message="Sending invoices to Xero was turned off while invoice creation was unresolved.",
                 )
                 await session.commit()
@@ -469,7 +474,7 @@ async def _deliver(company_id, connector_name, entity_type, identity, identity_r
                 ConnectorConfig.company_id == company_id, ConnectorConfig.connector == connector_name))
             if locked_rows and not parked and not _pushes(config, entity_type):
                 await _release_rows(
-                    session, OutboundQueue.id.in_([row.id for row in locked_rows]),
+                    session, company_id, OutboundQueue.id.in_([row.id for row in locked_rows]),
                     message="Sending invoices to Xero was turned off while invoice creation was unresolved.",
                 )
                 await session.commit()
@@ -527,6 +532,7 @@ async def _deliver(company_id, connector_name, entity_type, identity, identity_r
             return OutboundOutcome(rows=len(ids))
 
         operation = OutboundOperation(
+            company_id=company_id,
             row_id=keeper.id,
             identity=identity,
             state=json.loads(keeper.payload_json) if keeper.payload_json else {},
