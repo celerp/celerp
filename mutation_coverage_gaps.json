@@ -1449,12 +1449,6 @@
   "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
  },
  {
-  "site": "default_modules/celerp-inventory/celerp_inventory/services.py set_external_link emit_event",
-  "count": 1,
-  "class": "reached from a route",
-  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
- },
- {
   "site": "default_modules/celerp-inventory/celerp_inventory/services.py stamp_catalog_family_members emit_event",
   "count": 1,
   "class": "reached from a route",

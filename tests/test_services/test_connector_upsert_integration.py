@@ -2067,13 +2067,12 @@ async def test_reconcile_does_not_revert_unpushed_celerp_edit(use_test_session):
 
 @pytest.mark.parametrize("keep,name", [("store", "Store v3"), ("celerp", "Celerp v2")])
 @pytest.mark.asyncio
-async def test_conflict_choice_settles_the_field(use_test_session, monkeypatch, keep, name):
-    """Either choice settles the field: the next pull of the same store value leaves it."""
+async def test_conflict_choice_settles_the_field(use_test_session, client, signed_in_to_cloud, monkeypatch, keep, name):
+    """Either choice, made on the settings page, settles the field: the next pull of the
+    same store value leaves it."""
     from datetime import datetime, timezone
-    from types import SimpleNamespace
 
     from celerp.models.sync_run import SyncRun
-    from celerp_connectors.routes import ConflictChoice, resolve_product_conflict
     from celerp.connectors.base import ExternalImportRecord
     from celerp_inventory.services import upsert_external_product
     from connector_test_support import item_state
@@ -2100,10 +2099,13 @@ async def test_conflict_choice_settles_the_field(use_test_session, monkeypatch, 
                         attention_json=json.dumps([entry])))
     await session.commit()  # the sync's transaction ends before a person resolves the conflict
 
-    out = await resolve_product_conflict("woocommerce", "960", ConflictChoice(keep=keep), str(cid),
-                                         SimpleNamespace(id=None), None, session)
-
-    assert out["kept"] == keep
+    user_id = await session.scalar(select(UserCompany.user_id).where(UserCompany.company_id == cid))
+    async with ui_signed_in(await make_authed_token(session, str(user_id), str(cid), "owner")) as ui:
+        r = await ui.post("/settings/connectors/woocommerce/attention/960/resolve", data={"keep": keep},
+                          headers={"HX-Request": "true"})
+    assert r.status_code == 200, r.text
+    assert 'class="flash' not in r.text, r.text
+    session.expire_all()
     assert (await item_state(session, cid, entity_id))["name"] == name
     _, record = await pull("Store v3")
     assert record.conflicts == []
@@ -2199,7 +2201,7 @@ async def _first_sync_then_undo(session, monkeypatch) -> None:
 
         r = await ui.post("/settings/connectors/woocommerce/first-sync/undo-links", headers={"HX-Request": "true"})
         assert r.status_code == 200, r.text
-        assert "flash--warning" not in r.text, r.text
+        assert 'class="flash' not in r.text, r.text
     session.expire_all()
     state = await item_state(session, cid, "item:match")
     assert not external_link_for_state(state, "woocommerce")
