@@ -411,14 +411,16 @@ class Recorder:
             if cls == "-unlock":
                 self.release_session(conn_key, mode)
                 continue
-            if row and company:
-                # A statement binding both a row's key and its company names that row's company,
-                # as an ORM write does (name_row): its children are judged under that company.
-                self.rows[conn_key][(cls.split(":", 1)[1], row)] = company
-            elif row:
-                company = self.rows[conn_key].get((cls.split(":", 1)[1], row), "")
+            table = cls.split(":", 1)[1]
+            if row and not company:
+                company = self.rows[conn_key].get((table, row), "")
             if parent and not company:
-                company = self.rows[conn_key].get((_company_link(cls.split(":", 1)[1])[1], parent), "")
+                company = self.rows[conn_key].get((_company_link(table)[1], parent), "")
+            if row and company:
+                # A statement binding a row's key and its company, or its parent's, names that
+                # row's company, as an ORM write does (name_row): a later statement naming the
+                # row by its key alone, and its children, are judged under that company.
+                self.rows[conn_key][(table, row)] = company
             self.acquire(conn_key, Lock(cls, mode, site, origin, key, in_execution, company, row=row), waited)
 
     def name_row(self, conn_key: int, table: str, row: str, company: str) -> None:
@@ -1336,11 +1338,11 @@ def _column_name(node, qualifier: str | None = None) -> str | None:
 
 @functools.lru_cache(maxsize=None)
 def _row_key_column(table: str) -> str:
-    """The one-column primary key of a table whose rows each belong to one company (the
-    companies table aside), else ""."""
+    """The one-column primary key of a table whose rows each belong to one company, by their
+    company column or their parent's (the companies table aside), else ""."""
     mapped = _app_tables().get(table)
     pk = list(mapped.primary_key.columns) if mapped is not None else []
-    return pk[0].name if len(pk) == 1 and _has_company(table) and table != "companies" else ""
+    return pk[0].name if len(pk) == 1 and _company_owned(table) and table != "companies" else ""
 
 
 def _row_param(table: str, where, qualifier: str | None = None) -> tuple[int, ...] | None:
@@ -1388,8 +1390,11 @@ def _row_locks(statement: str) -> tuple[tuple[tuple[str, str, tuple[int, ...] | 
                 c = clause["LockingClause"]
                 mode = f"{_ROW_STRENGTH[c['strength']]} {_WAIT_POLICY[c.get('waitPolicy', 'LockWaitBlock')]}"
                 named = [r["RangeVar"]["relname"] for r in c.get("lockedRels", ())]
-                for t in ([tables.get(n, n) for n in named] if named else list(tables.values())):
-                    company, row, parent = _one_table(t, where) if len(tables) == 1 else (None, None, None)
+                for alias in named or list(tables):
+                    t = tables.get(alias, alias)
+                    # FOR UPDATE OF one table of a join: its own columns are the ones qualified by it.
+                    company, row, parent = (_one_table(t, where) if len(tables) == 1
+                                            else _one_table(t, where, alias) if named else (None, None, None))
                     shares_key = _foreign_key_share(t, _ROW_STRENGTH[c["strength"]])
                     out.append((f"{'key' if shares_key else 'row'}:{t}", mode, key, company, row, parent))
                     if mode.startswith("update ") and t in _parents():

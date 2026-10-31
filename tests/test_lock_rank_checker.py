@@ -1679,6 +1679,34 @@ def test_a_foreign_key_share_of_one_parent_is_judged_under_the_parents_company(r
     assert info.get("ungated_takes", []) == ([f"keyshare|{counted}"] if counted else [])
 
 
+_CLAIM = ("SELECT ai_messages.id, ai_messages.tools_called FROM ai_messages JOIN ai_conversations "
+          "ON ai_messages.conversation_id = ai_conversations.id WHERE ai_messages.id = $1::UUID "
+          "AND ai_messages.conversation_id = $2::UUID AND ai_conversations.company_id = $3::UUID "
+          "FOR UPDATE OF ai_messages")
+_CLAIMED = "UPDATE ai_messages SET tools_called=$1::JSONB WHERE ai_messages.id = $2::UUID"
+
+
+@pytest.mark.parametrize("named, counted", [
+    ("c1", None),          # the conversation was locked naming c1: the message is c1's, gated
+    (None, "unknown"),     # nothing names the conversation: unknown, never assumed gated
+])
+def test_a_child_row_locked_through_a_join_and_written_by_its_key_is_judged_under_its_parents_company(
+        recorder, named, counted):
+    """A confirmation locks the message FOR UPDATE OF its own table in a join with its
+    conversation, then writes it by its key alone: the lock names the row and its parent by
+    columns qualified by the locked table, and the write is judged under the company the lock
+    found, as the lock itself is."""
+    recorder.statement(1, _LOCK_COMPANY, ("c1",), 0.0)
+    if named:
+        recorder.statement(1, _CONVERSATION, ("v1", named), 0.0)
+    recorder.statement(1, _CLAIM, ("m1", "v1", "c1"), 0.0)
+    recorder.statement(1, _CLAIMED, ("[]", "m1"), 0.0)
+    recorder.statement(1, _JOB, ("c1",), 0.0)  # a lock that can wait follows: no leaf
+    sites = recorder.classes["row:ai_messages"].get("ungated_sites", set())
+    assert sorted(site.rsplit(" [", 1)[1] for site in sites) == (
+        [f"nokey|{counted}]", f"update|{counted}]"] if counted else [])
+
+
 def test_every_table_belongs_to_a_company_or_is_declared_an_installation_table():
     """The census measures a table only when it can name the company of its rows. A table
     with neither a company column nor one foreign key to a company's table would be left out
