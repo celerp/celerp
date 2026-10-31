@@ -817,6 +817,14 @@
     "subscriptions.summary_sending_lapsed": {
       "en": "Automatic sending stopped: authorization lapsed",
       "params": []
+    },
+    "subscriptions.notice_schedule_check_title": {
+      "en": "Check your subscription schedules",
+      "params": []
+    },
+    "subscriptions.notice_schedule_check_body": {
+      "en": "Some subscription periods point at a document that is missing, of the wrong type or billed twice, or a next bill date moved when templates were set up on schedules. The details are in the server log.",
+      "params": []
     }
   }
 }

@@ -6709,5 +6709,7 @@
   "subscriptions.summary_sent": "Sent {ref} automatically",
   "subscriptions.summary_send_failed": "Could not send {ref}: {error}",
   "subscriptions.summary_billing_lapsed": "Automatic billing stopped: authorization lapsed",
-  "subscriptions.summary_sending_lapsed": "Automatic sending stopped: authorization lapsed"
+  "subscriptions.summary_sending_lapsed": "Automatic sending stopped: authorization lapsed",
+  "subscriptions.notice_schedule_check_title": "Check your subscription schedules",
+  "subscriptions.notice_schedule_check_body": "Some subscription periods point at a document that is missing, of the wrong type or billed twice, or a next bill date moved when templates were set up on schedules. The details are in the server log."
 }
