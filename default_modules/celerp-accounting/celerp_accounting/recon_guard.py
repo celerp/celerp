@@ -140,7 +140,7 @@ async def guard_journal_change(
         return
 
     # Lock order: the company, then the touched bank accounts in id order. A completion
-    # holds its bank FOR UPDATE, so a change waits for it (or it for the change) and
+    # holds its bank FOR NO KEY UPDATE, so a change waits for it (or it for the change) and
     # each judges what the other committed.
     await lock_company(session, company_id)
     bank_ids = sorted(bank_id for code in banks for bank_id in codes[code])

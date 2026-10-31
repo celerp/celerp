@@ -358,7 +358,7 @@ async def default_bank_follows_books_hook(*, session: AsyncSession, company_id: 
     amount, so it moves with them and nothing is revalued."""
     bank = (await session.execute(select(BankAccount).where(
         BankAccount.company_id == company_id, BankAccount.chart_account_code == _DEFAULT_BANK_CODE,
-    ).with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
+    ).with_for_update(key_share=True).execution_options(populate_existing=True))).scalar_one_or_none()
     if bank is None:
         return
     await set_bank_currency(session, company_id, bank, await _base_currency(session, company_id))
@@ -2664,7 +2664,7 @@ async def _company_bank(
     *for_update*; 404 when the company has no such account."""
     query = select(BankAccount).where(BankAccount.id == bank_id, BankAccount.company_id == company_id)
     if for_update:
-        query = query.with_for_update().execution_options(populate_existing=True)
+        query = query.with_for_update(key_share=True).execution_options(populate_existing=True)
     bank = (await session.execute(query)).scalar_one_or_none()
     if not bank:
         raise HTTPException(status_code=404, detail=t("acct.err_bank_account_not_found"))
@@ -3065,7 +3065,7 @@ async def _lock_recon(
     bank = (await db.execute(
         select(BankAccount).where(BankAccount.id == recon.bank_account_id,
                                   BankAccount.company_id == company_id)
-        .with_for_update().execution_options(populate_existing=True)
+        .with_for_update(key_share=True).execution_options(populate_existing=True)
     )).scalar_one_or_none()
     if not bank:
         raise HTTPException(status_code=404, detail=t("acct.err_bank_account_not_found"))
