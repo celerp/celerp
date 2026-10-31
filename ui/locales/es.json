@@ -6744,10 +6744,10 @@
   "subscriptions.catchup_bill": "Bill selected",
   "subscriptions.catchup_skip": "Skip selected",
   "subscriptions.catchup_result": "Done {done}, refused {refused}.",
-  "subscriptions.summary_banner": "Since you last looked: generated {generated}, sent {sent}, failed to send {failed}.",
+  "subscriptions.summary_banner": "Since you last looked: generated {generated}, sent {sent}, sends to check {failed}.",
   "subscriptions.summary_open": "Open the summary",
   "subscriptions.summary_title": "Automatic billing summary",
-  "subscriptions.summary_counts": "Generated {generated}, sent {sent}, failed to send {failed}.",
+  "subscriptions.summary_counts": "Generated {generated}, sent {sent}, sends to check {failed}.",
   "subscriptions.summary_ack": "Mark as read",
   "subscriptions.summary_all": "Show all",
   "subscriptions.summary_unread": "Show unread",
@@ -6776,5 +6776,7 @@
   "subscriptions.history_set_aside": "Set aside",
   "subscriptions.history_set_aside_title": "Use this for a duplicate, or a document that no longer exists. It will not be linked to any period.",
   "subscriptions.history_set_aside_row": "Set aside, no period",
-  "subscriptions.history_return": "Return to review"
+  "subscriptions.history_return": "Return to review",
+  "subscriptions.summary_send_unconfirmed": "Sending {ref} was cut off, so it may not have arrived. Check with the customer before sending it again.",
+  "subscriptions.err_send_purchase": "Purchase orders are not emailed from Celerp, so a purchase agreement can't send itself."
 }

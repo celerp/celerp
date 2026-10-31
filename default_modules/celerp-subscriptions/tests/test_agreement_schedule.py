@@ -450,3 +450,15 @@ async def test_period_list_first_use_shows_first_bill_date():
     assert "First bill on" in r.text and "2026-06-01" in r.text
     assert "Generate Now" not in r.text and "Generate due" in r.text
 
+
+
+async def test_cancel_at_period_end_sent_again_keeps_the_chosen_end(client, session, monkeypatch):
+    """Choosing the end-of-period cancel again later is a repeat, not a new choice: the end
+    stays at the period it was first chosen in."""
+    freeze_day(monkeypatch, "2026-03-15")
+    hd = await register(client)
+    eid = await agreement(client, hd, start="2026-01-01")
+    assert (await schedule(client, hd, eid, cancel_at_period_end=True)).status_code == 200
+    freeze_day(monkeypatch, "2026-05-15")
+    assert (await schedule(client, hd, eid, cancel_at_period_end=True)).status_code == 200
+    assert (await template(client, hd, eid))["cancel_at_period_end"] == 2

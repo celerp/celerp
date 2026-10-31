@@ -37,6 +37,18 @@ logger = logging.getLogger(__name__)
 
 _PER_PAGE = 50
 
+
+def _signed_out(e: APIError) -> None:
+    """An ended session goes on to the app's sign-in redirect, never shown as a refusal."""
+    if e.status == 401:
+        raise e
+
+
+def _refused(e: APIError):
+    """The API's refusal of an action, shown where the user is."""
+    _signed_out(e)
+    return _action_error(refusal_text(e.data or e.detail))
+
 _FREQUENCIES = ["weekly", "biweekly", "monthly", "quarterly", "annually", "custom"]
 
 _STATUS_CSS = {
@@ -331,7 +343,7 @@ def _list_banners(catch_up: list[dict], summary: dict) -> list:
     counts = summary.get("counts") or {}
     if any(counts.values()):
         banners.append(Div(t("subscriptions.summary_banner", generated=counts.get("generated", 0),
-                             sent=counts.get("sent", 0), failed=counts.get("send_failed", 0)), " ",
+                             sent=counts.get("sent", 0), failed=_sends_to_check(counts)), " ",
                            A(t("subscriptions.summary_open"), href="/subscriptions/summary"),
                            cls="flash flash--info"))
     return banners
@@ -558,6 +570,11 @@ def _history_review(entity_id: str, review: list[dict], set_aside: list[dict]) -
 # Route setup
 # ---------------------------------------------------------------------------
 
+def _sends_to_check(counts: dict) -> int:
+    """Sends that failed or were cut off: each has a retry on the summary."""
+    return counts.get("send_failed", 0) + counts.get("send_unconfirmed", 0)
+
+
 async def _held_and_unread(token: str) -> tuple[list[dict], dict]:
     """The catch-up preview and this user's unread summary; neither shown when unavailable."""
     try:
@@ -602,7 +619,7 @@ def setup_routes(app) -> None:
             preview = await api.subscriptions_due(token)
             subs = await _agreements(token, direction)
         except APIError as e:
-            return _action_error(refusal_text(e.data or e.detail))
+            return _refused(e)
         return _due_panel(preview, subs)
 
     @app.post("/subscriptions/generate-due")
@@ -617,7 +634,7 @@ def setup_routes(app) -> None:
             result = await api.generate_all_due(token, ids)
             subs = await _agreements(token)
         except APIError as e:
-            return _action_error(refusal_text(e.data or e.detail))
+            return _refused(e)
         return _due_results(result, subs)
 
     @app.get("/subscriptions/catch-up")
@@ -631,6 +648,7 @@ def setup_routes(app) -> None:
             items = (await api.subscriptions_catch_up(token)).get("items") or []
             subs = await _agreements(token)
         except APIError as e:
+            _signed_out(e)
             items, subs = [], {}
             logger.warning("Catch-up preview unavailable: %s", e.detail)
         title = t("subscriptions.catchup_title")
@@ -660,11 +678,12 @@ def setup_routes(app) -> None:
                                                              {"reason": reason})
                         results.append({**item, "ok": True})
                     except APIError as e:
+                        _signed_out(e)
                         results.append({**item, "ok": False, "error": refusal_text(e.data or e.detail)})
             items = (await api.subscriptions_catch_up(token)).get("items") or []
             subs = await _agreements(token)
         except APIError as e:
-            return _action_error(refusal_text(e.data or e.detail))
+            return _refused(e)
         return _catch_up_card(items, subs, results)
 
     @app.get("/subscriptions/summary")
@@ -678,6 +697,7 @@ def setup_routes(app) -> None:
             summary = await api.subscriptions_summary(token, everything=all)
             subs = await _agreements(token)
         except APIError as e:
+            _signed_out(e)
             summary, subs = {}, {}
             logger.warning("Subscription summary unavailable: %s", e.detail)
         rows = summary.get("rows") or []
@@ -691,7 +711,7 @@ def setup_routes(app) -> None:
                                cls="btn btn--primary") if rows and not all else "",
                         toggle),
             P(t("subscriptions.summary_counts", generated=counts.get("generated", 0), sent=counts.get("sent", 0),
-                failed=counts.get("send_failed", 0)), cls="text-muted"),
+                failed=_sends_to_check(counts)), cls="text-muted"),
             _summary_table(rows, subs) if rows else empty_state_cta(
                 t("subscriptions.summary_empty"), t("subscriptions.summary_all"), "/subscriptions/summary?all=1"),
             cls="page-content",
@@ -706,7 +726,7 @@ def setup_routes(app) -> None:
         try:
             await api.acknowledge_subscriptions_summary(token)
         except APIError as e:
-            return _action_error(refusal_text(e.data or e.detail))
+            return _refused(e)
         return Response(status_code=204, headers={"HX-Redirect": "/subscriptions/summary"})
 
     # --- List page ---
@@ -818,6 +838,7 @@ def setup_routes(app) -> None:
             doc_id = result.get("entity_id") or result.get("id") or ""
             return _R("", status_code=204, headers={"HX-Redirect": f"/subscriptions/{doc_id}"})
         except APIError as e:
+            _signed_out(e)
             return _R("", status_code=204, headers={"HX-Redirect": f"/subscriptions?direction={direction}&error={e}"})
 
     # --- Detail page ---
@@ -941,7 +962,7 @@ def setup_routes(app) -> None:
         try:
             await api.subscription_action(token, entity_id, action, body)
         except APIError as e:
-            return _action_error(refusal_text(e.data or e.detail))
+            return _refused(e)
         return Response(status_code=204, headers={"HX-Redirect": f"/subscriptions/{entity_id}"})
 
     @app.post("/subscriptions/{entity_id}/periods/{k}/{action}")
@@ -957,7 +978,7 @@ def setup_routes(app) -> None:
             await api.subscription_period_action(token, entity_id, k, action,
                                                  {"reason": reason} if action == "skip" else None)
         except APIError as e:
-            return _action_error(refusal_text(e.data or e.detail))
+            return _refused(e)
         back = "/subscriptions/summary" if form.get("back") == "summary" else f"/subscriptions/{entity_id}"
         return Response(status_code=204, headers={"HX-Redirect": back})
 
@@ -975,7 +996,7 @@ def setup_routes(app) -> None:
             await api.subscription_history_action(token, entity_id, doc_id, action,
                                                   {"period_index": int(k)} if action == "confirm" else None)
         except APIError as e:
-            return _action_error(refusal_text(e.data or e.detail))
+            return _refused(e)
         return Response(status_code=204, headers={"HX-Redirect": f"/subscriptions/{entity_id}#history-review"})
 
     @app.patch("/subscriptions/{entity_id}/schedule/{field}")
@@ -993,11 +1014,11 @@ def setup_routes(app) -> None:
             return _action_error(t("subscriptions.err_custom_days" if field == "custom_interval_days"
                                    else "subscriptions.err_catchup_window"))
         except APIError as e:
-            return _action_error(refusal_text(e.data or e.detail))
+            return _refused(e)
         if field not in _BILLING_FIELDS:
             return Response(status_code=204)
         try:
             sub = await api.get_subscription(token, entity_id)
         except APIError as e:
-            return _action_error(refusal_text(e.data or e.detail))
+            return _refused(e)
         return _billing_section(entity_id, sub), _auto_badge(sub, oob=True)

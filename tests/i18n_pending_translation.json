@@ -985,7 +985,7 @@
       ]
     },
     "subscriptions.summary_banner": {
-      "en": "Since you last looked: generated {generated}, sent {sent}, failed to send {failed}.",
+      "en": "Since you last looked: generated {generated}, sent {sent}, sends to check {failed}.",
       "params": [
         "failed",
         "generated",
@@ -1001,7 +1001,7 @@
       "params": []
     },
     "subscriptions.summary_counts": {
-      "en": "Generated {generated}, sent {sent}, failed to send {failed}.",
+      "en": "Generated {generated}, sent {sent}, sends to check {failed}.",
       "params": [
         "failed",
         "generated",
@@ -1133,6 +1133,16 @@
     },
     "subscriptions.history_return": {
       "en": "Return to review",
+      "params": []
+    },
+    "subscriptions.summary_send_unconfirmed": {
+      "en": "Sending {ref} was cut off, so it may not have arrived. Check with the customer before sending it again.",
+      "params": [
+        "ref"
+      ]
+    },
+    "subscriptions.err_send_purchase": {
+      "en": "Purchase orders are not emailed from Celerp, so a purchase agreement can't send itself.",
       "params": []
     }
   }

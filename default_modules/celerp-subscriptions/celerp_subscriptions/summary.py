@@ -19,7 +19,9 @@ from celerp_subscriptions import billing
 from ui.i18n import t
 
 ACK_SETTING = "subscription_summary_ack"
-KINDS = ("generated", "sent", "send_failed", "billing_lapsed", "sending_lapsed")
+KINDS = ("generated", "sent", "send_failed", "send_unconfirmed", "billing_lapsed", "sending_lapsed")
+# A send recorded as going out with no outcome after it was cut off mid-send: it may or may not have arrived.
+_SEND_KINDS = {"sent": "sent", "failed": "send_failed", "sending": "send_unconfirmed"}
 _LAPSED = {"generation": "billing_lapsed", "sending": "sending_lapsed"}
 
 
@@ -55,10 +57,10 @@ async def report(session: AsyncSession, company_id, user_id, *, everything: bool
             if entry.get("state") == billing.BILLED and entry.get("auto") and (entry.get("at") or "") > since:
                 found.append({**base, "kind": "generated", "at": entry["at"]})
             send = entry.get("send") or {}
-            if send.get("state") in ("sent", "failed") and (send.get("at") or "") > since:
-                kind = "sent" if send["state"] == "sent" else "send_failed"
+            if send.get("state") in _SEND_KINDS and (send.get("at") or "") > since:
+                kind = _SEND_KINDS[send["state"]]
                 found.append({**base, "kind": kind, "at": send["at"], "error": send.get("error"),
-                              "retry_url": f"/subscriptions/{row.entity_id}/periods/{k}/send" if kind == "send_failed" else None})
+                              "retry_url": f"/subscriptions/{row.entity_id}/periods/{k}/send" if kind != "sent" else None})
         if state.get("status") != "active":
             continue
         for mode in billing.lapsed_modes(state):

@@ -286,3 +286,25 @@ class TestBillingPages:
             r = await owner_ui.post(f"/subscriptions/{eid}/history/doc:gone/set-aside")
         assert r.headers["HX-Redirect"] == f"/subscriptions/{eid}#history-review"
         assert action.await_args.args[2:] == ("doc:gone", "set-aside", None)
+
+
+@pytest.mark.parametrize("method,path,api_call,form", [
+    ("post", "/subscriptions/{eid}/periods/0/skip", "subscription_period_action", {"reason": "Closed"}),
+    ("patch", "/subscriptions/{eid}/schedule/generation_mode", "update_subscription_schedule", {"value": "manual_due"}),
+    ("post", "/subscriptions/generate-due", "generate_all_due", {"ids": ["{eid}"]}),
+    ("post", "/subscriptions/summary/ack", "acknowledge_subscriptions_summary", {}),
+    ("get", "/subscriptions/catch-up", "subscriptions_catch_up", None),
+    ("get", "/subscriptions/summary", "subscriptions_summary", None),
+])
+async def test_an_ended_session_on_a_billing_action_goes_to_sign_in(owner_ui, method, path, api_call, form):
+    """A billing action whose session has ended sends the browser to sign in, as every other
+    screen does, instead of showing the sign-in refusal as a failed action."""
+    from ui.api_client import APIError
+
+    eid = await _active_subscription(owner_ui)
+    sent = {} if form is None else {"data": {k: ([x.format(eid=eid) for x in v] if isinstance(v, list) else v)
+                                             for k, v in form.items()}, "headers": {"HX-Request": "true"}}
+    with patch(f"ui.api_client.{api_call}", AsyncMock(side_effect=APIError(401, "Session expired"))):
+        r = await getattr(owner_ui, method)(path.format(eid=eid), **sent)
+    to = r.headers.get("HX-Redirect") or r.headers.get("location", "")
+    assert to.startswith("/login"), (r.status_code, r.headers, r.text[:200])

@@ -22,6 +22,7 @@ from celerp.services.auth import get_current_company_id, get_current_role, get_c
 from celerp.services.business_time import company_today
 from celerp.services.company_lock import locked_company
 from celerp.services.permissions import missing_permission, require_permission, role_has_permission
+from celerp_docs.doc_constants import NO_SEND_DOC_TYPES
 from celerp_subscriptions import billing, summary
 from celerp_subscriptions.periods import BILLED, CLAIMED_STATES, FREQUENCIES, RELEASED, SKIPPED, TIMINGS, Schedule, UNRESOLVED
 from celerp_subscriptions.search import SUBSCRIPTION_DOC_TYPES, search_subscription_templates
@@ -380,10 +381,12 @@ def _build_router() -> APIRouter:
         k: int,
         company_id: uuid.UUID = Depends(get_current_company_id),
         _: None = require_permission("edit_documents"),
+        user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
-        """Send period ``k``'s document again after a failed send; once."""
-        return await billing.deliver(lambda: billing.same_session(session), company_id, entity_id, k, retry=True)
+        """Send period ``k``'s document again after a failed or cut-off send; once."""
+        return await billing.deliver(lambda: billing.same_session(session), company_id, entity_id, k,
+                                     retry_by=user.id)
 
     @router.patch("/{entity_id}/schedule")
     async def change_schedule(
@@ -419,10 +422,15 @@ def _build_router() -> APIRouter:
         claimed = [int(k) for k, e in (state.get("periods") or {}).items() if e.get("state") in CLAIMED_STATES]
         if claimed and any(f in changes and changes[f] != state.get(f) for f in PLACING_FIELDS):
             raise HTTPException(status_code=409, detail=t("subscriptions.err_schedule_claimed"))
+        if sent.get("auto_send") and billing.doc_kind(state) in NO_SEND_DOC_TYPES:
+            raise HTTPException(status_code=422, detail=t("subscriptions.err_send_purchase"))
         if "cancel_at_period_end" in changes:
-            # Stored as the last period kept, so the end is fixed when it is chosen and undone by clearing it.
+            # Stored as the last period kept, so the end is fixed when it is first chosen (choosing
+            # it again keeps it) and undone by clearing it.
+            chosen = state.get("cancel_at_period_end")
             changes["cancel_at_period_end"] = (
-                Schedule.from_state(state).current(await company_today(session, company_id))
+                (chosen if chosen is not None
+                 else Schedule.from_state(state).current(await company_today(session, company_id)))
                 if changes["cancel_at_period_end"] else None)
         merged = {**state, **changes}
         try:

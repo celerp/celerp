@@ -290,13 +290,20 @@ def outside_window(state: dict, schedule: Schedule, due: list[int], today: date)
     return bool(due) and latest is not None and latest - due[0] > int(state.get("catchup_periods") or 0)
 
 
+def unattended_due(state: dict, today: date) -> tuple[Schedule, list[int]] | None:
+    """The schedule and due periods of an agreement that bills itself, with no earlier
+    document waiting for review; None when it is not one or nothing is due."""
+    if state.get("generation_mode") not in AUTO_MODES or state.get("history_review"):
+        return None
+    found = due_periods(state, today)
+    return found if found and found[1] else None
+
+
 async def catch_up_preview(session: AsyncSession, company_id, today: date) -> list[dict]:
     """Unattended agreements behind by more than their catch-up window: billed only from here."""
     items = []
     for row in await agreements(session, company_id):
-        if row.state.get("generation_mode") not in AUTO_MODES or row.state.get("history_review"):
-            continue
-        found = due_periods(row.state, today)
+        found = unattended_due(row.state, today)
         if found and outside_window(row.state, *found, today):
             schedule, due = found
             items.append({"entity_id": row.entity_id, "periods": [_period_row(schedule, k) for k in due]})
@@ -337,41 +344,38 @@ def lapsed_modes(state: dict) -> list[str]:
 async def run_due(*, session: AsyncSession, company_id, today: date, budget: int) -> OperationReport:
     """The dispatcher's billing pass for one company (the ``periodic_operation`` slot)."""
     report = OperationReport()
-    company = await session.get(Company, company_id)
-    settings = (company.settings or {}) if company else {}
     held: list[int] = []  # due periods of each agreement held for the catch-up preview
     for row in await agreements(session, company_id):
         state = row.state
         for k, entry in (state.get("periods") or {}).items():
             if ((entry.get("send") or {}).get("state")) == "pending":
                 report.after_commit.append(_deliverer(company_id, row.entity_id, int(k)))
-        if state.get("generation_mode") not in AUTO_MODES or state.get("history_review"):
-            continue
-        found = due_periods(state, today)
-        if not found or not found[1]:
+        found = unattended_due(state, today)
+        if found is None:
             continue
         if outside_window(state, *found, today):
             held.append(len(found[1]))
             continue
-        if report.done >= budget:
-            continue
-        actor = await authorizer(session, company_id, settings, state, "generation")
-        if actor is None:
-            continue
-        send = bool(state.get("auto_send")) and await authorizer(session, company_id, settings, state, "sending") is not None
-        for k in found[1][:budget - report.done]:
+        while report.done < budget:
             try:
                 async with session.begin_nested():
+                    # Decided again from the agreement as locked: the read above may be stale.
                     company = await locked_company(session, company_id)
                     proj = await locked_agreement(session, company_id, row.entity_id)
-                    schedule = Schedule.from_state(proj.state)
-                    if (proj.state.get("status") != "active"
-                            or schedule.oldest_open(floor=review_floor(proj.state)) != k):
+                    found = unattended_due(proj.state, today)
+                    if found is None or outside_window(proj.state, *found, today):
                         break
-                    await _bill(session, company, company_id, row.entity_id, proj.state, schedule, k, actor,
+                    settings = company.settings or {}
+                    actor = await authorizer(session, company_id, settings, proj.state, "generation")
+                    if actor is None:
+                        break
+                    send = (bool(proj.state.get("auto_send"))
+                            and await authorizer(session, company_id, settings, proj.state, "sending") is not None)
+                    k = found[1][0]
+                    await _bill(session, company, company_id, row.entity_id, proj.state, found[0], k, actor,
                                 auto=True, send=send)
             except Exception:
-                log.exception("Unattended billing of %s period %s failed", row.entity_id, k)
+                log.exception("Unattended billing of %s failed", row.entity_id)
                 break
             report.done += 1
             if send:
@@ -398,10 +402,14 @@ def _deliverer(company_id, template_id: str, k: int):
     return _run
 
 
-async def deliver(factory, company_id, template_id: str, k: int, *, retry: bool = False) -> dict:
+async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=None) -> dict:
     """Email period ``k``'s document to the agreement's contact, once. The attempt is
     recorded and committed before the email goes, so two passes never both send it; the
-    outcome is recorded after. Only a pending send goes, or with ``retry`` a failed one."""
+    outcome is recorded after, and a sent email marks the document sent through its own
+    send transition. Only a pending send goes, or, retried by the member ``retry_by``, a
+    failed one or one cut off before its outcome was recorded."""
+    from celerp_docs.routes import DocSendBody, doc_email, mark_doc_sent
+
     async with factory() as session:
         proj = await locked_agreement(session, company_id, template_id)
         periods = periods_of(proj.state)
@@ -409,13 +417,13 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry: bool 
         send = dict(entry.get("send") or {})
         if entry.get("state") != BILLED:
             raise HTTPException(status_code=409, detail=t("subscriptions.err_send_not_billed"))
-        if send.get("state") == "sent" or send.get("state") not in (("pending", "failed", "sending") if retry else ("pending",)):
+        if send.get("state") not in (("pending", "failed", "sending") if retry_by else ("pending",)):
             return send
         doc = await session.get(Projection, {"company_id": company_id, "entity_id": entry["doc_id"]})
         contact_id = proj.state.get("contact_id")
         contact = (await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})) if contact_id else None
         to = ((contact.state or {}).get("email") if contact is not None else None) or ""
-        by = ((proj.state.get("consents") or {}).get("sending") or {}).get("by") or entry.get("by")
+        by = retry_by or ((proj.state.get("consents") or {}).get("sending") or {}).get("by") or entry.get("by")
         actor = SimpleNamespace(id=uuid.UUID(str(by)) if by else None)
         n = int(send.get("n") or 0) + 1
         if doc is None or (doc.state or {}).get("status") == "void" or not to:
@@ -426,13 +434,15 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry: bool 
             await write_agreement(session, company_id, template_id, {"periods": periods}, actor.id)
             await session.commit()
             return send
-        from celerp_docs.routes import doc_email
-
         message = await doc_email(session, company_id, entry["doc_id"], doc.state, to, actor)
         periods[str(k)]["send"] = {"state": "sending", "n": n, "at": now_stamp()}
         await write_agreement(session, company_id, template_id, {"periods": periods}, actor.id)
         await session.commit()
-    ok, detail = await email.send_email(**message)
+    try:
+        ok, detail = await email.send_email(**message)
+    except Exception as exc:
+        log.exception("Sending period %s of %s failed", k, template_id)
+        ok, detail = False, str(exc)
     async with factory() as session:
         proj = await locked_agreement(session, company_id, template_id)
         periods = periods_of(proj.state)
@@ -440,10 +450,14 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry: bool 
         periods[str(k)]["send"] = send
         await write_agreement(session, company_id, template_id, {"periods": periods}, actor.id)
         if ok:
-            await emit_event(session, company_id=company_id, entity_id=entry["doc_id"], entity_type="doc",
-                             event_type="doc.sent", data={"sent_via": "email", "sent_to": to},
-                             actor_id=actor.id, location_id=None, source="subscription",
-                             idempotency_key=f"send:{entry['doc_id']}:{n}")
+            try:
+                async with session.begin_nested():
+                    await mark_doc_sent(session, company_id, entry["doc_id"], actor, DocSendBody(
+                        sent_via="email", sent_to=to, idempotency_key=f"send:{entry['doc_id']}:{n}"),
+                        source="subscription")
+            except HTTPException as exc:
+                # Voided or closed while the email was on its way: the email went, the document keeps its state.
+                log.warning("Period %s of %s was emailed but not marked sent: %s", k, template_id, exc.detail)
         await session.commit()
     return send
 

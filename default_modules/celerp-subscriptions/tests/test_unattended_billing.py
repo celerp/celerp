@@ -196,3 +196,118 @@ async def test_module_disabled_skips_dispatch_keeps_records(client, session, mon
     assert {k: after.get(k) for k in kept} == {k: before.get(k) for k in kept}
     await tick(session, cid, "2026-08-01")  # back on: resumes within the catch-up window
     assert [d["period_index"] for d in await billed_docs(session, eid)] == [0, 1]
+
+
+async def test_unattended_rechecks_the_mode_under_the_lock(client, session, monkeypatch):
+    """A pass that read the agreement before the operator set billing back to manual bills
+    nothing: what it may bill is decided again from the agreement as locked."""
+    import copy
+    import uuid
+    from types import SimpleNamespace
+    from celerp_subscriptions import billing
+
+    freeze_day(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    eid = await _auto(client, hd, start="2026-07-01")
+    stale = [SimpleNamespace(entity_id=r.entity_id, state=copy.deepcopy(r.state))
+             for r in await billing.agreements(session, uuid.UUID(cid))]
+    assert (await schedule(client, hd, eid, generation_mode="manual_due")).status_code == 200
+
+    async def snapshot(_session, _company_id):
+        return stale
+
+    monkeypatch.setattr(billing, "agreements", snapshot)
+    await tick(session, cid, "2026-07-01")
+    assert await billed_docs(session, eid) == []
+
+
+async def test_a_document_voided_while_it_is_emailed_stays_void(client, session, monkeypatch, mail):
+    """The sent mark goes through the document's own send transition, which refuses a void
+    document: an email that crossed a void never turns the document back into a sent one."""
+    freeze_day(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    eid = await _auto(client, hd, start="2026-07-01", send=True,
+                      contact_id=await contact(client, hd, "member@example.test"))
+    real = mail.__call__
+
+    async def void_then_send(to, subject, body_html, body_text="", **kw):
+        [doc] = await billed_docs(session, eid)
+        r = await client.post(f"/docs/{doc['entity_id']}/void", headers=hd, json={"reason": "Wrong customer"})
+        assert r.status_code == 200, r.text
+        return await real(to, subject, body_html, body_text, **kw)
+
+    from celerp.services import email
+    monkeypatch.setattr(email, "send_email", void_then_send)
+    await tick(session, cid, "2026-07-01")
+    [doc] = await billed_docs(session, eid)
+    assert doc["status"] == "void"
+    assert (await summary(client, hd))["counts"]["sent"] == 1  # the email did go
+
+
+async def test_an_interrupted_send_is_shown_with_a_retry(client, session, monkeypatch, mail):
+    """A send cut off before its outcome was recorded (the process stopped mid-send) is not
+    left silent: the summary names it and offers the retry; a transport that raises records
+    a failed send."""
+    import asyncio
+
+    freeze_day(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    stopped = await _auto(client, hd, start="2026-07-01", send=True,
+                          contact_id=await contact(client, hd, "member@example.test"))
+
+    async def cut_off(*_, **__):
+        raise asyncio.CancelledError
+
+    from celerp.services import email
+    monkeypatch.setattr(email, "send_email", cut_off)
+    with pytest.raises(asyncio.CancelledError):
+        await tick(session, cid, "2026-07-01")
+    [row] = [r for r in (await summary(client, hd))["rows"] if r["kind"] == "send_unconfirmed"]
+    assert row["entity_id"] == stopped and row["retry_url"]
+    monkeypatch.setattr(email, "send_email", mail)
+    assert (await client.post(row["retry_url"], headers=hd)).status_code == 200
+    assert mail.sent == ["member@example.test"]
+
+    async def broken(*_, **__):
+        raise RuntimeError("relay unreachable")
+
+    monkeypatch.setattr(email, "send_email", broken)
+    raising = await _auto(client, hd, start="2026-07-01", send=True,
+                          contact_id=await contact(client, hd, "other@example.test"))
+    await tick(session, cid, "2026-07-01")
+    failed = [r for r in (await summary(client, hd))["rows"] if r["kind"] == "send_failed"]
+    assert [r["entity_id"] for r in failed] == [raising] and "relay unreachable" in failed[0]["message"]
+
+
+async def test_a_retried_send_is_recorded_as_the_person_who_retried(client, session, monkeypatch, mail):
+    from sqlalchemy import select
+    from celerp.models.ledger import LedgerEntry
+
+    freeze_day(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    manager, manager_id = await member(client, session, hd, "manager")
+    eid = await _auto(client, hd, start="2026-07-01", send=True,
+                      contact_id=await contact(client, hd, "member@example.test"))
+    mail.result = (False, "mailbox unavailable")
+    await tick(session, cid, "2026-07-01")
+    row = next(r for r in (await summary(client, hd))["rows"] if r["kind"] == "send_failed")
+    mail.result = (True, "accepted")
+    assert (await client.post(row["retry_url"], headers=manager)).status_code == 200
+    actors = (await session.execute(select(LedgerEntry.actor_id).where(
+        LedgerEntry.entity_id == row["doc_id"], LedgerEntry.event_type == "doc.sent"))).scalars().all()
+    assert [str(a) for a in actors] == [manager_id]
+
+
+async def test_purchase_agreements_are_not_emailed_unattended(client, session, monkeypatch):
+    """Purchase orders are never emailed from the app, so a purchase agreement cannot be set
+    to send itself."""
+    freeze_day(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    eid = await agreement(client, hd, start="2026-07-01", doc_type="subscription_po")
+    r = await schedule(client, hd, eid, auto_send=True)
+    assert r.status_code == 422, r.text
+    assert not (await template(client, hd, eid)).get("auto_send")
