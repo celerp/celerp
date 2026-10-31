@@ -72,21 +72,26 @@ async def lock_company(session: AsyncSession, *company_ids) -> bool:
     and only then is the request judged again (its membership row is read under the lock),
     so no company lock is waited on while a membership row is held. Returns whether every
     company row was there.
+
+    A company whose lock this transaction already holds (holds_company_lock: taken here or
+    in a savepoint still open under it) is not asked for again: PostgreSQL holds the lock
+    until the transaction ends or that savepoint rolls back, which drops the proof with it.
     """
     ids = sorted(set(company_ids), key=str)
     for company_id in ids:
         await judge_module_writes(session, company_id)
-    found = []
+    held = [c for c in ids if holds_company_lock(session, c)]
+    taken = []
     for company_id in ids:
-        if (await session.execute(
+        if company_id not in held and (await session.execute(
             select(Company.id).where(Company.id == company_id).with_for_update(key_share=True)
         )).first() is not None:
-            found.append(company_id)
-    for company_id in found:
+            taken.append(company_id)
+    for company_id in taken:
         note(session, "locked", company_id)
     for company_id in ids:
         await _judge_authority_again(session, company_id)
-    return len(found) == len(ids)
+    return len(held) + len(taken) == len(ids)
 
 
 def holds_company(session, company_id) -> bool:
