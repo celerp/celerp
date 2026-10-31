@@ -120,8 +120,8 @@ _ITEM_READ_AGENT = {
     "x-celerp-agent-result-permissions": ["edit_inventory", "view_documents", "view_inventory_costs"],
     "x-celerp-agent-field-visibility": True,
 }
-# An import's preview and commit price, count and file new locations by these.
-_IMPORT_PERMISSIONS = ["edit_inventory_amounts", "manage_company_settings", "set_inventory_prices"]
+# An import's preview and commit price, count, cost and file new locations by these.
+_IMPORT_PERMISSIONS = ["edit_inventory_amounts", "manage_company_settings", "set_inventory_prices", "view_inventory_costs"]
 
 
 # ---------------------------------------------------------------------------
@@ -1775,6 +1775,7 @@ async def items_metadata(payload: ItemsMetadataBody, company_id=Depends(get_curr
     for flat in flats:
         by_category.setdefault(flat.get("category"), []).append(flat)
 
+    versions = {row.entity_id: row.version for row in rows}
     result: dict = {}
     for category, group in by_category.items():
         field_schema = await get_effective_field_schema(session, company_id, category=category)
@@ -1782,7 +1783,7 @@ async def items_metadata(payload: ItemsMetadataBody, company_id=Depends(get_curr
             group, role, field_schema, can_see_costs, can_author_drafts=can_author_drafts,
         )
         for flat in filtered:
-            result[flat["id"]] = flat
+            result[flat["id"]] = {**flat, "_version": versions[flat["id"]]}
 
     return {"items": result}
 

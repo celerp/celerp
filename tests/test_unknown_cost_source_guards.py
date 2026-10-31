@@ -135,7 +135,7 @@ def test_the_projection_reads_the_mark_only_from_event_data():
 def test_the_merge_and_the_negative_cost_check_share_one_reading_of_a_cost_write():
     assert _called("written_goods_costs") >= {
         ("celerp/services/goods_cost.py", "writes_goods_cost"), ("celerp/services/goods_cost.py", "event_goods_costs")}
-    assert (f"{INV}/services.py", "_merge_parts") in _called("writes_goods_cost")
+    assert (f"{INV}/services.py", "_merge_parts_of") in _called("writes_goods_cost")
     assert ("celerp/events/engine.py", "emit_event") in _called("event_goods_costs")
 
 

@@ -2978,7 +2978,7 @@ async def build_import_records(
     An upsert that omits ``location_name`` preserves the target location.
 
     Unless ``can_change_costs``, a row that updates an existing item and gives a
-    cost is refused as soon as its target is found (COST_CHANGE_PERMISSION), and
+    cost is refused as soon as its target is found (view_inventory_costs), and
     its (row, cost column) pairs are reported in ``cost_refused``.
 
     ``create_key`` is the import's operation key. Items this same import created
@@ -3138,7 +3138,7 @@ async def build_import_records(
                 continue
 
         if target is not None and not can_change_costs and (given := _cost_cells(row, _COST_COLUMNS)):
-            errors.extend({"row": i + 1, **_permission_error(col, COST_CHANGE_PERMISSION)} for col in given)
+            errors.extend({"row": i + 1, **_permission_error(col, "view_inventory_costs")} for col in given)
             cost_refused.update((i + 1, col) for col in given)
             continue
 
@@ -3540,9 +3540,8 @@ def _source_field(row: dict, key: str) -> str:
 # Changing an existing item's cost through any import takes view_inventory_costs. A row or
 # record that gives an existing item a cost as a role without it is refused before its cost is
 # read: the refusal names the permission and the cell, never anything that depends on the
-# cost the item holds or the one proposed, so no import outcome discloses that cost.
-COST_CHANGE_PERMISSION = "view_inventory_costs"
-# The item file's cost columns, the cells an import row gives a cost in.
+# cost the item holds or the one proposed, so no import outcome discloses that cost. These are
+# the item file's cost columns, the cells an import row gives a cost in.
 _COST_COLUMNS = ("cost_price", "cost_price_total")
 
 
@@ -3605,7 +3604,7 @@ async def _planned_cost_change(session: AsyncSession, company_id, record: dict,
     The writer applies the patch and then restates the cost against the patched
     item; this runs the same restatement check against the item as the patch
     would leave it. Only a role that may see costs reaches it with a cost: for any
-    other the builder refused the row (COST_CHANGE_PERMISSION).
+    other the builder refused the row (view_inventory_costs).
     """
     if record["event_type"] != "item.patched" or not COST_ITEM_KEYS & set(record["data"]):
         return None, None
@@ -3805,7 +3804,7 @@ async def build_import_plan(
     build = await build_import_records(
         session, company_id, rows, upsert=upsert,
         create_missing_locations=role_has_permission(settings, role, "manage_company_settings"),
-        can_change_costs=role_has_permission(settings, role, COST_CHANGE_PERMISSION),
+        can_change_costs=role_has_permission(settings, role, "view_inventory_costs"),
         create_key=operation_key, skip=frozenset(excluded),
     )
     # A refused cost cell is not read, so nothing the cell holds is reported about it.
@@ -4122,7 +4121,7 @@ async def write_import_batch(
     unit_map = build_unit_map(units)
     price_lists = (await get_price_config(session, company_id))[0]
     derived_keys = derived_price_keys(price_lists)
-    can_change_costs = role_has_permission(settings, role, COST_CHANGE_PERMISSION)
+    can_change_costs = role_has_permission(settings, role, "view_inventory_costs")
 
     outcome = ImportOutcome()
     created_entity_ids: list[str] = []
@@ -4162,7 +4161,7 @@ async def write_import_batch(
             target = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
             if target is not None:
                 named = {**data, "sku": data.get("sku") or (target.state or {}).get("sku")}
-                outcome.add(entity_id, "rejected", _row_refused(named, _needs_permission(given, COST_CHANGE_PERMISSION)))
+                outcome.add(entity_id, "rejected", _row_refused(named, _needs_permission(given, "view_inventory_costs")))
                 continue
 
         try:
