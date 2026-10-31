@@ -1,11 +1,13 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """The test shards split the suite by the measured durations in tests/.test_durations.
-Collection takes about 90 s of a shard's 600 s and the same shard swings by a third from
-run to run, so the split keeps each shard's measured share at 380 s or less, and the
-matrix runs every group the split makes. The share only means something while the file
-measures the tests the job runs: every file the job runs has entries (unless its module
-mark keeps it out of the job), and no entry names a file the job does not run."""
+The shard's own `timeout N` is the only budget: a shard costs about 80 s of collection
+on top of its measured share, and a slow runner stretches the run by up to 1.6 times
+(177 s against 110 s to the first 7% at one head), so the split keeps
+share * 1.6 + 80 <= N, and the matrix runs every group the split makes. The share only
+means something while the file measures the tests the job runs: every file the job runs
+has entries (unless its module mark keeps it out of the job), and no entry names a file
+the job does not run."""
 
 from __future__ import annotations
 
@@ -17,7 +19,8 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
-SHARE_CAP_S = 380
+SLOW_RUNNER = 1.6
+COLLECTION_S = 80
 
 
 def _shard_run() -> tuple[list, list[str]]:
@@ -68,8 +71,11 @@ def test_the_durations_measure_exactly_the_files_the_job_runs():
     assert sorted(measured - runs) == [], "measured but not run by the shard job"
 
 
-def test_each_shard_s_measured_share_stays_under_the_cap():
+def test_each_shard_fits_its_own_timeout_on_a_slow_runner():
     _, args = _shard_run()
+    timeout = int(args[args.index("timeout") + 1])
     splits = int(_flag(args, "--splits")[0])
-    total = sum(_durations().values())
-    assert total / splits <= SHARE_CAP_S, f"{total:.0f} s over {splits} shards; raise --splits"
+    share = sum(_durations().values()) / splits
+    assert share * SLOW_RUNNER + COLLECTION_S <= timeout, (
+        f"{share:.0f} s a shard: {share * SLOW_RUNNER + COLLECTION_S:.0f} s on a slow runner "
+        f"against timeout {timeout}; raise --splits")
