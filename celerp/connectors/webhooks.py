@@ -103,6 +103,7 @@ async def handle_webhook(
         first_sync_state,
         incomplete,
         record_rerun,
+        refusal_drops_work,
     )
     from celerp.connectors.ownership import ConnectorOwnershipError
     from celerp.connectors.relay_token import ConnectorUpgradeRequired, ConnectRequired
@@ -172,7 +173,7 @@ async def handle_webhook(
         log.info("webhook: %s %s busy, rerun recorded", event.platform, resource)
         return
     except ExecutionRefused as exc:
-        if exc.reason == "first_sync_not_finished":
+        if not refusal_drops_work(exc.reason):
             await record_rerun(company_id, event.platform, resource)
         log.info("webhook: %s/%s not synced: %s", event.platform, event.topic, exc)
         return

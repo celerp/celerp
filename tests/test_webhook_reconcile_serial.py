@@ -251,7 +251,7 @@ async def test_a_direction_change_never_writes_to_the_store_and_a_disconnect_lea
     with patch("celerp.connectors.remote_state.revoke_connector_remote_state", AsyncMock()):
         async with factory() as s:
             revoked = await revoke_credentials("woocommerce", str(company_id), None, s, force=False)
-    assert revoked == {"ok": True}, revoked
+    assert revoked == {"ok": True, "kept_store_values": 0}, revoked
     after_disconnect = len(fake.writes)
 
     from celerp.connectors.webhook_reconcile import run_webhook_reconcile

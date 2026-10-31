@@ -99,10 +99,12 @@ class SyncResponse(BaseModel):
 
 
 async def _connector_context(company_id: str, connector_name: str, **kwargs):
-    from celerp.connectors.relay_token import ConnectorUpgradeRequired, ConnectRequired, fetch_context
+    from celerp.connectors.relay_token import ConnectorUpgradeRequired, ConnectRequired, RelayUnavailable, fetch_context
 
     try:
         return await fetch_context(company_id, connector_name, **kwargs)
+    except RelayUnavailable as exc:
+        raise HTTPException(status_code=502, detail=t("error.relay_unreachable")) from exc
     except ConnectorUpgradeRequired as exc:
         raise HTTPException(status_code=426, detail=str(exc)) from exc
     except ConnectRequired as exc:
@@ -123,7 +125,7 @@ def _execution_refusals(connector):
     except ExecutionBusy as exc:
         raise HTTPException(status_code=409, detail=t("connectors.fail_busy")) from exc
     except ExecutionRefused as exc:
-        key = {"direction_off": "connectors.fail_direction",
+        key = {"direction_off": "connectors.fail_direction", "relay_unavailable": "error.relay_unreachable",
                "not_connected": "error.connector_not_connected"}.get(exc.reason, "connectors.err_first_sync_needed")
         raise HTTPException(status_code=409, detail=t(key, service=connector.display_name)) from exc
     except ConnectorUpgradeRequired as exc:

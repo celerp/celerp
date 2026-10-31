@@ -18,6 +18,7 @@ import pytest
 import sqlalchemy as sa
 
 from celerp.connectors.base import ConnectorContext, EntityFlow, SyncEntity, SyncResult
+from celerp.connectors.relay_token import fetch_context as _relay_fetch_context
 from celerp.db import get_session_ctx
 from company_backup_support import company, owner, token
 from connector_test_support import connected
@@ -287,4 +288,58 @@ async def test_a_webhook_whose_sync_fails_records_a_rerun(stub):
     await _failing(stub)
     await _webhook(stub, cid)
     assert stub.calls == [{"reconcile": False}]
+    assert await _reruns(cid, stub.name) == ["orders"]
+
+
+def _relay_answers(monkeypatch, mock, response) -> None:
+    """The real relay context fetch, signed in, for a connection the company owns, the relay
+    answering ``response`` (an httpx.Response, or an exception it raises)."""
+    from unittest.mock import AsyncMock
+
+    from celerp.gateway.state import relay_http_url
+
+    monkeypatch.setattr("celerp.connectors.relay_token.fetch_context", _relay_fetch_context)
+    monkeypatch.setattr("celerp.gateway.state._session_token", "session")
+    monkeypatch.setattr("celerp.connectors.ownership.connector_owned_by_company", AsyncMock(return_value=True))
+    route = mock.get(url__startswith=f"{relay_http_url()}/tokens/")
+    if isinstance(response, Exception):
+        route.mock(side_effect=response)
+    else:
+        route.mock(return_value=response)
+
+
+@pytest.mark.parametrize("answer, retryable", [
+    (503, True), (500, True), (429, True), ("network", True), ("not json", True),
+    (404, False), (401, False), (400, False),
+])
+async def test_the_relay_context_fetch_tells_an_unreachable_relay_from_a_missing_connection(
+        monkeypatch, answer, retryable):
+    """An unreachable or failing relay raises RelayUnavailable (the work is retried); an
+    answer that the connection is gone or needs authorizing again is None (final)."""
+    import httpx
+    import respx
+
+    from celerp.connectors import relay_token
+
+    response = (httpx.ConnectError("down") if answer == "network"
+                else httpx.Response(200, content=b"<html>") if answer == "not json"
+                else httpx.Response(answer, json={"detail": "x"}))
+    with respx.mock(assert_all_called=False) as mock:
+        _relay_answers(monkeypatch, mock, response)
+        if retryable:
+            with pytest.raises(relay_token.RelayUnavailable):
+                await relay_token.fetch_context(str(uuid.uuid4()), "stub_rerun")
+        else:
+            assert await relay_token.fetch_context(str(uuid.uuid4()), "stub_rerun") is None
+
+
+async def test_a_webhook_delivered_while_the_relay_is_unreachable_records_a_rerun(stub, monkeypatch):
+    import httpx
+    import respx
+
+    cid = await _connected(stub)
+    with respx.mock(assert_all_called=False) as mock:
+        _relay_answers(monkeypatch, mock, httpx.ConnectError("down"))
+        await _webhook(stub, cid)
+    assert stub.calls == []
     assert await _reruns(cid, stub.name) == ["orders"]

@@ -611,7 +611,7 @@ async def _release(ex: Execution, resources: list[str], connector=None) -> dict[
                 reasons = {r: eligible(connector, config, first_sync, "rerun", r) for r in pending}
                 taken = {r: generation.get(r, 0) for r in pending if reasons[r] is None}
                 for r in pending:
-                    if reasons[r] == "direction_off":
+                    if reasons[r] is not None and refusal_drops_work(reasons[r]):
                         await _ack_rerun(s, ex, r, generation.get(r, 0))
             for resource in resources:
                 if resource in taken:
@@ -679,6 +679,14 @@ async def _run_reruns(ex: Execution, connector) -> None:
                 await _settle_rerun(ex, resource, generation, failed=True)
                 return
             await _settle_rerun(ex, resource, generation, failed=False)
+
+
+def refusal_drops_work(reason: str) -> bool:
+    """Whether work refused for ``reason`` is dropped, not kept for a retry: only when the
+    connection's directions no longer call for it. Every other refusal (the first sync still
+    running, the relay unreachable, the connection not answering) keeps the request pending,
+    whether a webhook, the sweeper or the holder met it."""
+    return reason == "direction_off"
 
 
 def incomplete(results) -> str | None:
@@ -759,7 +767,7 @@ async def sweep_reruns() -> None:
         except (ExecutionBusy, AdmissionBusy):
             continue
         except ExecutionRefused as exc:
-            if exc.reason == "direction_off":
+            if refusal_drops_work(exc.reason):
                 with _internal():
                     async with _sessions()() as s:
                         await s.execute(sa.text(
@@ -857,9 +865,12 @@ async def _credentials(ex: Execution):
     """The store context, fetched with no transaction open."""
     from celerp.connectors import relay_token
 
-    with _internal():
-        ctx = await relay_token.fetch_context(ex.company_id, ex.connector)
-    if ctx is None:  # no relay session: nothing can reach the store
+    try:
+        with _internal():
+            ctx = await relay_token.fetch_context(ex.company_id, ex.connector)
+    except relay_token.RelayUnavailable as exc:
+        raise ExecutionRefused("relay_unavailable") from exc
+    if ctx is None:  # no relay session, or the relay holds no connection: nothing can reach the store
         raise ExecutionRefused("not_connected")
     return ctx
 
