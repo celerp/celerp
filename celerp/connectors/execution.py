@@ -691,18 +691,14 @@ async def rerun_sweeper_loop() -> None:
         await asyncio.sleep(SWEEP_EVERY)
 
 
-async def record_rerun(company_id, connector: str, resource: str, *, session=None) -> None:
+async def record_rerun(company_id, connector: str, resource: str) -> None:
     """Ask the next execution of ``resource`` (or the sweeper) to run its work once
-    more. In ``session`` when given, else in its own short transaction; raises when it
-    cannot be saved."""
+    more, in its own short transaction; raises when it cannot be saved."""
     key = {"c": str(company_id), "k": connector, "res": resource, "list": f'["{resource}"]'}
     statement = sa.text(
         "INSERT INTO connector_execution_heartbeats (company_id, connector, resource, rerun_requested) "
         "VALUES (:c, :k, :res, CAST(:list AS json)) ON CONFLICT (company_id, connector, resource) "
         "DO UPDATE SET rerun_requested = CAST(:list AS json)")
-    if session is not None:
-        await session.execute(statement, key)
-        return
     with _internal():
         async with _sessions()() as s:
             await _bound(s)

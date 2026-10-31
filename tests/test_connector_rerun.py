@@ -19,8 +19,9 @@ import sqlalchemy as sa
 
 from celerp.connectors.base import ConnectorContext, EntityFlow, SyncEntity, SyncResult
 from celerp.db import get_session_ctx
+from company_backup_support import company, owner, token
 from connector_test_support import connected
-from migration_support import real_engine  # noqa: F401
+from migration_support import real_client, real_engine  # noqa: F401
 
 pytestmark = pytest.mark.asyncio
 
@@ -114,6 +115,55 @@ async def test_a_busy_webhook_runs_after_a_long_running_sync_ends(stub):
     async with get_session_ctx() as s:
         live = await execution.live_executions(s, cid, stub.name)
     assert live == []
+
+
+async def test_a_sync_request_runs_the_rerun_a_busy_delivery_left_before_it_releases(
+        stub, real_engine, real_client, connector_modules_running, signed_in_to_cloud):
+    """A delivery found the resource held and recorded a rerun; the next sync the user asks
+    for runs its own work, then the rerun once with the reconciliation pass, and clears it
+    before it releases."""
+    from celerp.connectors.execution import record_rerun
+
+    user = await owner(real_engine)
+    cid = str(await company(real_engine, user, "Rerun Trading", "rerun-marker"))
+    tok = await token(real_engine, user, cid)
+    await connected(cid, stub, stub.default_directions)
+    await record_rerun(cid, stub.name, "orders")
+
+    r = await real_client.post(f"/connectors/{stub.name}/sync", json={"entity": "orders"},
+                               headers={"Authorization": f"Bearer {tok}"})
+    assert r.status_code == 200, r.text
+    assert stub.calls == [{"reconcile": False}, {"reconcile": True}]
+    assert await _reruns(cid, stub.name) == []
+
+
+async def test_a_rerun_refused_while_modules_change_in_a_sync_request_is_recorded_again(
+        stub, real_engine, real_client, connector_modules_running, signed_in_to_cloud):
+    """The rerun a sync request runs before it releases is refused because a module is
+    changing: the request still answers for its own work, and the rerun is recorded again
+    for the next holder or the sweeper, never dropped."""
+    from celerp.connectors.execution import record_rerun
+    from celerp.modules.boundary import ModuleBusy
+
+    user = await owner(real_engine)
+    cid = str(await company(real_engine, user, "Rerun Again Trading", "rerun-again-marker"))
+    tok = await token(real_engine, user, cid)
+    await connected(cid, stub, stub.default_directions)
+    await record_rerun(cid, stub.name, "orders")
+
+    async def _module_changing():
+        stub.sync_orders = _refused
+
+    async def _refused(ctx, since=None, reconcile=False):
+        stub.calls.append({"reconcile": reconcile})
+        raise ModuleBusy("celerp-inventory")
+
+    stub.during = _module_changing
+    r = await real_client.post(f"/connectors/{stub.name}/sync", json={"entity": "orders"},
+                               headers={"Authorization": f"Bearer {tok}"})
+    assert r.status_code == 200, r.text
+    assert stub.calls == [{"reconcile": False}, {"reconcile": True}]
+    assert await _reruns(cid, stub.name) == ["orders"]
 
 
 async def test_another_execution_acquiring_does_not_clear_a_pending_rerun(stub):

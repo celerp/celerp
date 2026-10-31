@@ -168,10 +168,15 @@ def _coverage(path):
 
 def _passed_through(site, sent) -> bool:
     """A durable write was made on the site's own lines: the observer records the line a
-    statement ran from, and the line that called session.add, delete or merge."""
-    _, start, end, fn, _, (first, _) = site
-    return any(name == fn and start <= line <= end and (begins is None or begins == first)
-               for line, name, begins in sent)
+    statement ran from, and the line that called session.add, delete or merge. A lambda
+    runs in a frame of its own, named <lambda> and starting on its own line; the static
+    inventory gives its calls to the function it is written in, so a lambda frame counts
+    for that function when the lambda starts inside it."""
+    _, start, end, fn, _, (first, last) = site
+    return any(start <= line <= end and (
+        name == fn and (begins is None or begins == first)
+        or name == "<lambda>" and begins is not None and first <= begins <= last)
+        for line, name, begins in sent)
 
 
 def report(folders, out, coverage_path=None, gaps=mutation_coverage_gaps.GAPS_PATH,

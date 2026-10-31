@@ -577,13 +577,18 @@ async def test_a_cleanup_task_is_deleted_under_its_own_row_lock_by_the_sweep_onl
 
 
 @pytest.mark.parametrize("writer", ["the execution", "elsewhere"])
-async def test_a_connector_lease_is_written_by_the_execution_only(session, auth, writer):
+async def test_a_connector_lease_is_written_by_the_execution_only(session, auth, writer, monkeypatch):
     """A lease's rows are kept by celerp/connectors/execution.py without the company lock;
     the same write from anywhere else is judged as company data."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    # The execution's own short transaction, on the test's connection so nothing commits to disk.
+    monkeypatch.setattr("celerp.connectors.execution._sessions", lambda: async_sessionmaker(
+        bind=session.bind, join_transaction_mode="create_savepoint"))
     with serving("POST", "/observed"):
         cid = _authorize(session, auth)
         if writer == "the execution":
-            await record_rerun(cid, "shopify", "products", session=session)
+            await record_rerun(cid, "shopify", "products")
         else:
             await session.execute(text(
                 "INSERT INTO connector_execution_heartbeats (company_id, connector, resource) "
