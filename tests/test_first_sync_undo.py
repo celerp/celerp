@@ -131,6 +131,29 @@ async def test_undo_removes_the_files_the_first_sync_pulled_onto_a_linked_item_u
     assert (await _item(cid, "item:match2")).get("files") in (None, [])
 
 
+async def test_undo_removes_only_the_files_its_own_first_sync_pulled(real_engine, real_client, store):
+    """A file an earlier connection pulled under the same platform and item stays: the undo
+    removes only files whose attachment names this first sync."""
+    from celerp.db import get_session_ctx
+    from celerp.services.attachments import attach_file
+
+    cid = await _started("UndoOwnFiles", DIRECTIONS)
+    async with get_session_ctx() as session:
+        await add_item(session, cid, "item:match2", "NEW-1", name="Own second", sale_price=2.0)
+        await attach_file(session, cid, "item", "item:match2", {
+            "id": "old1", "filename": "old", "mime": "image/jpeg", "size": 3, "url": "/old1.jpg"}, None,
+            source="connector", idempotency_key="connector-file:woocommerce:item:match2:earlierstore",
+            document_tag="product_images", remote={"woocommerce": {"id": "9", "src": "x", "store": "earlier"}})
+        uid = await session.scalar(sa.text("SELECT user_id FROM user_companies WHERE company_id = :c"), {"c": cid})
+        await session.commit()
+    await _execute(cid)
+    links = {link["entity_id"]: link for link in (await _first_sync(cid)).undo["links"]}
+    assert links["item:match2"].get("files") == ["pulled1"], links
+    r = await real_client.post(UNDO, headers=await _headers(real_engine, cid, uid))
+    assert r.status_code == 200, r.text
+    assert [f["id"] for f in (await _item(cid, "item:match2")).get("files") or []] == ["old1"]
+
+
 async def test_undo_keeps_a_pulled_file_changed_since(real_engine, real_client, store):
     cid, uid = await _linked("UndoFileTagged")
     h = await _headers(real_engine, cid, uid)

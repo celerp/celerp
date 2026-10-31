@@ -86,13 +86,16 @@ async def download_and_emit_file(
     platform: str,
     store: str | None,
     remote_id=None,
+    operation: str | None = None,
 ) -> str | None:
     """Download a platform file, store it, and attach it to the item, recording where it
-    came from (its platform image id and store) on the attachment.
+    came from (its platform image id and store) on the attachment, and the first sync
+    pulling it (``operation``, first_sync_metadata) so only that first sync's undo removes it.
 
     Returns the attachment's ledger key, or None when nothing was attached: the item
     already holds this file (a pull is idempotent), or the download or storing failed.
     """
+    from celerp.connectors.base import first_sync_metadata
     from celerp.services.field_fingerprints import fingerprint
 
     from celerp.models.projections import Projection
@@ -145,5 +148,5 @@ async def download_and_emit_file(
     key = f"connector-file:{platform}:{entity_id}:{fingerprint(remote)}"
     await attach_file(session, company_id, "item", entity_id, meta, None, source="connector",
                       idempotency_key=key, document_tag=tag, is_hero=is_hero,
-                      remote={platform: remote})
+                      remote={platform: remote}, metadata_=first_sync_metadata(operation))
     return key

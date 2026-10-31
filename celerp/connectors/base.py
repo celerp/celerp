@@ -259,11 +259,12 @@ class ExternalImportRecord:
             batch.idempotency_keys = [*batch.idempotency_keys, created[1]]
             batch.row_count = len(batch.entity_ids)
 
-    async def attribute_files(self, entity_id: str, platform: str) -> None:
-        """In a short transaction of its own, after the files were pulled: the files the
-        store's product brought onto an item this first sync created join its import batch,
-        and those it brought onto an item it linked join that link's undo record, found by
-        their ledger key, so a pull a stop interrupted is recorded on the retry."""
+    async def attribute_files(self, entity_id: str) -> None:
+        """In a short transaction of its own, after the files were pulled: the files this
+        first sync pulled onto an item it created join its import batch, and those it pulled
+        onto an item it linked join that link's undo record. A file is this first sync's when
+        its attachment names the first sync (first_sync_metadata), never by its key, so a file
+        an earlier connection pulled stays out and a pull a stop interrupted is recorded on the retry."""
         if self.first_sync is None:
             return
         import uuid
@@ -286,7 +287,7 @@ class ExternalImportRecord:
             pulled = (await session.execute(sa.select(LedgerEntry.idempotency_key, LedgerEntry.data).where(
                 LedgerEntry.company_id == uuid.UUID(str(row.company_id)), LedgerEntry.entity_id == entity_id,
                 LedgerEntry.event_type == "item.file.attached",
-                LedgerEntry.idempotency_key.startswith(f"connector-file:{platform}:{entity_id}:", autoescape=True),
+                LedgerEntry.metadata_[FIRST_SYNC_METADATA_KEY].as_string() == row.operation_id,
             ).order_by(LedgerEntry.id))).all()
             if at is None:
                 new = [key for key, _data in pulled if key not in batch.idempotency_keys]

@@ -559,6 +559,7 @@ class WooCommerceConnector(ConnectorBase):
                     img.get("name") or f"product-{i}.jpg",
                     "product_images", is_hero=(i == 0),
                     platform=self.name, store=ctx.store_handle, remote_id=img.get("id"),
+                    operation=first_sync and first_sync.operation,
                 )
             meta = {m["key"]: m["value"] for m in meta_data if m.get("key")}
             for tag_key in _CERT_TAGS:
@@ -574,12 +575,13 @@ class WooCommerceConnector(ConnectorBase):
                                 cert["url"], cert.get("name", "cert.pdf"),
                                 tag_key, is_hero=False,
                                 platform=self.name, store=ctx.store_handle,
+                                operation=first_sync and first_sync.operation,
                             )
                 except Exception as exc:
                     log.warning("woocommerce: failed to pull cert metafield %s: %s", tag_key, exc)
             await session.commit()
         if first_sync is not None:
-            await first_sync.record.attribute_files(entity_id, self.name)
+            await first_sync.record.attribute_files(entity_id)
 
 
     @needs_modules("celerp-inventory")

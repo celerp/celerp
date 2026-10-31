@@ -157,7 +157,7 @@ class ShopifyConnector(ConnectorBase):
                 continue
             # Pull product images after upsert (idempotent, best-effort)
             try:
-                await self._pull_product_images(ctx, remote.extra["product"], entity_id)
+                await self._pull_product_images(ctx, remote.extra["product"], entity_id, first_sync)
             except Exception as img_exc:
                 log.warning("shopify image pull failed for %s: %s", remote.key, img_exc)
 
@@ -208,8 +208,12 @@ class ShopifyConnector(ConnectorBase):
             total=money(o.get("total_price")), currency=o.get("currency"), posts=False,
         ) for o in orders]
 
-    async def _pull_product_images(self, ctx: ConnectorContext, product: dict[str, Any], entity_id: str) -> None:
-        """Pull images from a Shopify product and store them as the item's files."""
+    async def _pull_product_images(
+        self, ctx: ConnectorContext, product: dict[str, Any], entity_id: str,
+        first_sync: FirstSync | None = None,
+    ) -> None:
+        """Pull images from a Shopify product and store them as the item's files. Those a
+        first sync pulls join its import or the link's undo record, as on WooCommerce."""
         from celerp.db import get_session_ctx as get_async_session
         from celerp.connectors.images import download_and_emit_file
 
@@ -227,8 +231,11 @@ class ShopifyConnector(ConnectorBase):
                     session, ctx.company_id, entity_id, src, fname, "product_images",
                     is_hero=(img.get("position", 99) == 1),
                     platform=self.name, store=ctx.store_handle, remote_id=img.get("id"),
+                    operation=first_sync and first_sync.operation,
                 )
             await session.commit()
+        if first_sync is not None:
+            await first_sync.record.attribute_files(entity_id)
 
     # -- Orders ----------------------------------------------------------------
 
