@@ -21,7 +21,7 @@ from ui.components.cloud_gate import (
 )
 from ui.components.shell import base_shell, load_error
 from ui.config import get_token as _token, get_role
-from ui.i18n import refusal_text, t, get_lang
+from ui.i18n import refusal_text, t, t_or, get_lang
 from ui.security import not_permitted_redirect
 
 # A proposal set larger than this renders as the review table instead of cards.
@@ -881,11 +881,11 @@ def setup_ui_routes(app) -> None:
         from starlette.responses import JSONResponse
         token = _token(request)
         if not token:
-            return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+            return JSONResponse({"detail": t("auth.not_authenticated", get_lang(request))}, status_code=401)
         form = await request.form()
         files_raw = form.getlist("files")
         if not files_raw:
-            return JSONResponse({"detail": "No files"}, status_code=400)
+            return JSONResponse({"detail": t("ai.upload_no_files", get_lang(request))}, status_code=400)
 
         from celerp.gateway.state import get_session_token
         session_token = get_session_token()
@@ -1163,8 +1163,9 @@ def _outcome_text(outcome: dict, lang: str = "en") -> tuple[bool, str]:
 
 
 def _label(key: str) -> str:
-    """A field name as a person reads it: contact_name becomes Contact name."""
-    return str(key).replace("_", " ").strip().capitalize()
+    """A field name as a person reads it: the app's own label for the field
+    (``field.<key>``), else the key itself, so contact_type becomes Contact type."""
+    return t_or(f"field.{key}", str(key).replace("_", " ").strip().capitalize())
 
 
 def _fmt_scalar(key: str, value, currency: str | None) -> str:
@@ -1177,6 +1178,8 @@ def _fmt_scalar(key: str, value, currency: str | None) -> str:
             return fmt_qty(value)
         if is_money_field(key):
             return fmt_price(value, key, currency)
+    if isinstance(value, str):
+        return t_or(f"enum.{key}.{value}", value)
     return str(value)
 
 

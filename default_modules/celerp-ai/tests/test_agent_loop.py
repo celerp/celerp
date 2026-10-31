@@ -32,7 +32,6 @@ from celerp.ai.service import (
     MAX_TOOL_CALLS_PER_TURN,
     REQUEST_TEXT_BUDGET,
     AgentResult,
-    _EMPTY_ANSWER,
     run_agent,
 )
 
@@ -251,7 +250,7 @@ async def test_content_and_tool_calls_together_keeps_content(monkeypatch):
 async def test_empty_content_no_tool_calls_yields_placeholder_answer(monkeypatch):
     _install(monkeypatch, [tool_result(content="")])
     result = await _run()
-    assert result.answer == _EMPTY_ANSWER
+    assert result.answer == t("ai.empty_answer")
     assert result.answer != ""
 
 

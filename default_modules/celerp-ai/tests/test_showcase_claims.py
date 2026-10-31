@@ -31,7 +31,7 @@ _BATCH_BILLS_CLAIMS = [
     ("Proposed 5 draft bills", ("capability", "POST", "/docs")),
     ("lines matched to items", ("capability", "GET", "/items")),
     ("new vendor proposed", ("capability", "POST", "/crm/contacts")),
-    ("does not match its line totals", ("symbol", ai_routes._bill_proposals, "add up to")),
+    ("does not match its line totals", ("symbol", ai_routes._bill_proposals, "ai.receipt_total_mismatch")),
     ("Nothing is saved until you confirm", ("route", *_CONFIRM)),
 ]
 

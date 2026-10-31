@@ -180,7 +180,7 @@ def _upload(body: bytes, deadline: float) -> Callable[[], object]:
         loop = asyncio.get_running_loop()
         for start in range(0, len(body), _UPLOAD_CHUNK):
             if loop.time() > deadline:
-                raise RelayError("service_unavailable", "The question could not be sent in time.")
+                raise RelayError("service_unavailable", t("ai.err_send_timeout"))
             yield body[start:start + _UPLOAD_CHUNK]
     return _chunks
 
@@ -329,7 +329,7 @@ async def complete(
     if known is not None:
         raise RelayError(
             known,
-            detail.get("message") or "The AI service could not answer.",
+            detail.get("message") or t("ai.err_no_answer"),
             status=resp.status_code,
             credits=int(detail.get("credits") or 0) if known == "outcome_unknown" else 0,
             retry_after=_retry_after(resp, detail) if known == "operation_in_progress" else None,

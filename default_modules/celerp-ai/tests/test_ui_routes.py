@@ -384,7 +384,7 @@ def _card_html(action: dict, lang: str = "en") -> str:
 def test_action_card_shows_title_fields_and_next_step():
     html = _card_html({**_ACTION, "title": "Create item"})
     assert "Create item" in html
-    assert "Sku" in html and "AGENT-1" in html
+    assert "SKU" in html and "AGENT-1" in html
     assert "Name" in html and "Agent Widget" in html
     assert "Check the details, then confirm" in html
     assert "Proposed action" in html

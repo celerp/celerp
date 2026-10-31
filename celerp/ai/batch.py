@@ -104,12 +104,12 @@ def parse_extraction(answer: str) -> dict | None:
 def _file_error(exc: BaseException) -> str:
     """The user-facing reason a single file could not be read."""
     if isinstance(exc, HTTPException) and exc.status_code == 402:
-        return "You are out of AI credits. Add credits and resend this file."
+        return t("ai.file_out_of_credits")
     if isinstance(exc, RelayError):
         return str(exc)
     if isinstance(exc, asyncio.TimeoutError):
-        return "The model did not answer in time for this file. Resend it to try again."
-    return "This file could not be read. Check that it is a clear image or PDF and resend it."
+        return t("ai.file_timeout")
+    return t("ai.file_unreadable")
 
 
 
@@ -203,7 +203,7 @@ async def create_batch_job(
                               conversation_id=conversation_id, query=query, file_ids=tuple(file_ids))
     file_ids = list(dict.fromkeys(file_ids))
     if not file_ids:
-        raise ValueError("Attach at least one file")
+        raise ValueError(t("ai.attach_one_file"))
     if len(file_ids) > MAX_BATCH_FILES:
         raise ValueError(t("error.batch_too_many", max=MAX_BATCH_FILES))
     job, steps = jobs.documents_job(request=request, file_ids=file_ids, job_id=job_id)
@@ -236,11 +236,11 @@ async def publish_progress(run: FileRun, file_id: str, state: str) -> None:
 async def notify_finished(run: FileRun, completed: int, failed: int) -> None:
     """The notification a finished reading job leaves for its user."""
     if completed == 0:
-        title = f"Could not read {failed} file(s)"
-        body = "None of the attached files could be read. Open the conversation for details."
+        title = t("ai.files_none_read_title", failed=failed)
+        body = t("ai.files_none_read_body")
     else:
-        title = f"{completed} of {completed + failed} file(s) read"
-        body = f"{completed} read, {failed} could not be read. Open the conversation to review the proposed entries."
+        title = t("ai.files_read_title", completed=completed, total=completed + failed)
+        body = t("ai.files_read_body", completed=completed, failed=failed)
     await jobs.notify(run.company_id, run.user_id, run.conversation_id, title, body)
 
 

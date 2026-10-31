@@ -678,7 +678,7 @@ async def test_proposal_flags_total_mismatch(auth_client, session):
     warnings = bill_action["warnings"]
     assert any("27.50" in w and "30.00" in w for w in warnings)
     assert any("No date" in w for w in warnings)
-    assert "photo.jpg: read as a other" in r.json()["answer"]
+    assert "photo.jpg: read as a document that is not a receipt or invoice" in r.json()["answer"]
 
 
 @pytest.mark.asyncio

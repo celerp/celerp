@@ -58,8 +58,6 @@ PENDING_ACTION_TTL_S = 15 * 60  # interactive proposals
 PROPOSAL_TTL_S = 24 * 60 * 60   # proposals built from an extraction job
 
 
-_EMPTY_ANSWER = "I could not find an answer to that. Please try rephrasing your question."
-
 
 # -- Response types ---------------------------------------------------------
 
@@ -131,9 +129,6 @@ _RELAY_ERROR_KEY = {
     "operation_expired": "ai.err_question_expired",
     "operation_mismatch": "ai.err_operation_mismatch",
 }
-_BUSY_TEXT = "The AI service is temporarily busy. Please try again in a moment."
-_UNEXPECTED_TEXT = "An unexpected error occurred. Please try again."
-_TOO_MUCH_DATA_TEXT = "Too much data was returned; ask a narrower question."
 
 # Failures after which the same question can be asked again under the same
 # question id: no answer came back, and asking again is charged at most once (an
@@ -185,10 +180,10 @@ def _user_error(exc: BaseException) -> str:
     if code == "service_unavailable":
         return str(exc)
     if code in ("busy", "operation_in_progress"):
-        return _BUSY_TEXT
+        return t("ai.err_busy")
     if code in _RELAY_ERROR_KEY:
         return t(_RELAY_ERROR_KEY[code])
-    return _UNEXPECTED_TEXT
+    return t("ai.err_unexpected")
 
 
 # -- Prompts ----------------------------------------------------------------
@@ -459,7 +454,7 @@ async def _agent_loop(
         if _request_text_bytes(messages, tools) > REQUEST_TEXT_BUDGET:
             return tally.result(
                 answer="", model_used=model_used, tools_called=tools_called,
-                pending_actions=[], error=_TOO_MUCH_DATA_TEXT, error_code="too_much_data",
+                pending_actions=[], error=t("ai.err_too_much_data"), error_code="too_much_data",
             )
         try:
             while True:
@@ -479,7 +474,7 @@ async def _agent_loop(
                 # The question itself was accepted; the data read for it outgrew a model call.
                 return tally.result(
                     answer="", model_used=model_used, tools_called=tools_called,
-                    pending_actions=[], error=_TOO_MUCH_DATA_TEXT, error_code="too_much_data",
+                    pending_actions=[], error=t("ai.err_too_much_data"), error_code="too_much_data",
                 )
             raise
         reservation_id = result["reservation_id"]
@@ -490,7 +485,7 @@ async def _agent_loop(
 
         if not calls:
             return tally.result(
-                answer=content or _EMPTY_ANSWER, model_used=model_used,
+                answer=content or t("ai.empty_answer"), model_used=model_used,
                 tools_called=tools_called, pending_actions=[],
             )
 
@@ -574,7 +569,7 @@ async def _agent_loop(
 
     return tally.result(
         answer="", model_used=model_used, tools_called=tools_called,
-        pending_actions=[], error="The assistant could not finish within the allowed steps.",
+        pending_actions=[], error=t("ai.err_step_limit"),
         error_code="step_limit",
     )
 
