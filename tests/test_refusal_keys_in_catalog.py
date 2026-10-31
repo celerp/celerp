@@ -52,6 +52,12 @@ def _literal_or_prefix(node: ast.expr):
     return None, None
 
 
+# Functions that build a refusal from the key they are given, by the key's position:
+# their callers name the key, so a call to one is a refusal call site and the
+# refusal() inside the function itself is not.
+_KEY_ARGUMENT = {"refusal": 0, "keyed_error": 1, "_agent_error": 1, "_conflict": 1}
+
+
 def _refusal_calls():
     """Every refusal(key, ...) call site in production code (celerp/ and
     default_modules/, excluding tests), as (file:line, key_or_prefix, kind)."""
@@ -62,15 +68,18 @@ def _refusal_calls():
             if "/tests/" in text or path.name.startswith("test_"):
                 continue
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=text)
+            wrapped = {id(n) for f in ast.walk(tree) if isinstance(f, ast.FunctionDef)
+                       and f.name in _KEY_ARGUMENT for n in ast.walk(f)}
             for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
+                if not isinstance(node, ast.Call) or id(node) in wrapped:
                     continue
                 fn = node.func
                 name = fn.id if isinstance(fn, ast.Name) else (
                     fn.attr if isinstance(fn, ast.Attribute) else None)
-                if name != "refusal" or not node.args:
+                position = _KEY_ARGUMENT.get(name)
+                if position is None or len(node.args) <= position:
                     continue
-                key, kind = _literal_or_prefix(node.args[0])
+                key, kind = _literal_or_prefix(node.args[position])
                 calls.append((f"{path.relative_to(_ROOT)}:{node.lineno}", key, kind))
     return calls
 
