@@ -14,6 +14,8 @@ the response. No cloudflared or per-customer tunnels needed.
 from __future__ import annotations
 
 import asyncio
+import base64
+import contextlib
 import json
 import logging
 import os
@@ -85,6 +87,78 @@ class _SharedProxyTransport(httpx.AsyncHTTPTransport):
         await super().aclose()
 
 
+# Hop-by-hop and framing headers a proxied response never carries back: the relay
+# sets its own Content-Length from the body or the stream's declared length.
+_RESPONSE_SKIP = {"transfer-encoding", "connection", "keep-alive", "content-length"}
+
+
+class _Window:
+    """The response chunks one connection has sent and the relay has not yet
+    acknowledged, shared by every stream on that connection (the relay's
+    advertised window). A stream holds its credit until the relay acknowledges
+    its last chunk or cancels the request, so a store that leaves before reading
+    never pins the window."""
+
+    def __init__(self, size: int, chunk_bytes: int) -> None:
+        self.size = size
+        self.chunk_bytes = chunk_bytes
+        self._sent: dict[str, int] = {}
+        self._acked: dict[str, int] = {}
+        self._last: dict[str, int] = {}
+        self._changed = asyncio.Condition()
+
+    def _unacked(self) -> int:
+        return sum(seq - self._acked.get(rid, -1) for rid, seq in self._sent.items())
+
+    def _drop(self, rid: str) -> None:
+        for held in (self._sent, self._acked, self._last):
+            held.pop(rid, None)
+
+    def _settle(self, rid: str) -> None:
+        if rid in self._last and self._acked.get(rid, -1) >= self._last[rid]:
+            self._drop(rid)
+
+    async def reserve(self, rid: str, seq: int) -> None:
+        """Wait until the connection may hold one more chunk, then count it sent."""
+        async with self._changed:
+            await self._changed.wait_for(lambda: self._unacked() < self.size)
+            self._sent[rid] = seq
+
+    async def ack(self, rid: str, seq: Any) -> None:
+        """The relay consumed chunks up to seq (cumulative)."""
+        if type(seq) is not int:
+            return
+        async with self._changed:
+            if rid in self._sent:
+                self._acked[rid] = max(self._acked.get(rid, -1), min(seq, self._sent[rid]))
+                self._settle(rid)
+                self._changed.notify_all()
+
+    async def finish(self, rid: str) -> None:
+        """The stream sent its last chunk: its credit goes once that one is acknowledged."""
+        async with self._changed:
+            if rid in self._sent:
+                self._last[rid] = self._sent[rid]
+                self._settle(rid)
+                self._changed.notify_all()
+
+    async def release(self, rid: str) -> None:
+        """The stream ended without its acknowledgments (aborted or cancelled)."""
+        async with self._changed:
+            self._drop(rid)
+            self._changed.notify_all()
+
+
+async def _pieces(body: bytes, size: int):
+    for i in range(0, len(body), size):
+        yield body[i:i + size]
+
+
+def _declared_length(resp: httpx.Response) -> int | None:
+    raw = resp.headers.get("content-length", "")
+    return int(raw) if raw.isdigit() else None
+
+
 def _shop_key(handle: str | None) -> str:
     """Normalize a Shopify store handle/shop domain for comparison (strip scheme,
     trailing slash, and the .myshopify.com suffix), so a token's `store_handle`
@@ -137,6 +211,11 @@ class GatewayClient:
         # In-flight proxy tasks keyed by relay request id so an http.cancel frame can
         # abort exactly the one request it names, and no other.
         self._inflight: dict[str, asyncio.Task] = {}
+        # The chunked tunnel of the current connection: its shared chunk window when
+        # the hello_ack granted one (None otherwise), and the request bodies the relay
+        # is sending in chunks, by request id, until their end frame.
+        self._window: _Window | None = None
+        self._partial_requests: dict[str, dict] = {}
         # A transport reconfiguration may be requested by an activation while the
         # current Web Access request is itself being proxied over this socket. Drain
         # already-started requests before reconnecting; new requests fail fast until
@@ -455,10 +534,11 @@ class GatewayClient:
         # ConnectionClosed within ~ping_interval+ping_timeout, so _connect_and_serve
         # exits and run()'s backoff loop reconnects — instead of blocking forever on
         # a half-open socket while the relay returns 502.
-        # max_size: the relay forwards each proxied HTTP request as ONE base64'd WS
-        # message, so the default 1 MiB frame cap silently broke bulk uploads (a ZIP
-        # body > ~750 KB overflowed the frame → connection drop → relay 504). 160 MiB
-        # covers a ~100 MB body (≈134 MB base64) with margin.
+        # max_size: a relay that does not grant the chunked tunnel forwards each
+        # proxied HTTP request as ONE base64'd WS message, so the default 1 MiB frame
+        # cap silently broke bulk uploads (a ZIP body > ~750 KB overflowed the frame →
+        # connection drop → relay 504). 160 MiB covers a ~100 MB body (≈134 MB base64)
+        # with margin; on a chunked tunnel every frame stays under the relay's limit.
         # Pin the gateway WS to HTTP/1.1 (never offer h2 in the TLS ALPN) so the relay
         # host can be re-fronted by an edge/CDN without a new build ever negotiating h2.
         # Only for wss:// - a plaintext ws:// (local/dev) takes no TLS context.
@@ -514,14 +594,17 @@ class GatewayClient:
                     task.cancel()
             self._inflight.clear()
             self._proxy_idle.set()
+            self._window = None
+            self._partial_requests.clear()
             log.debug(
                 "Gateway proxy activity this connection: proxied=%d cancelled=%d "
                 "timed_out=%d stale_dropped=%d",
                 self._proxied_count, self._cancelled_count,
                 self._timeout_count, self._stale_dropped_count,
             )
-            from celerp.gateway.state import set_session_token
+            from celerp.gateway.state import set_session_token, set_tunnel_limits
             set_session_token("")
+            set_tunnel_limits(None)
             if self._relay_status not in ("error", "tos_required", "active_elsewhere"):
                 self._set_status("inactive")
         if (not handshake_accepted and self._running
@@ -544,6 +627,8 @@ class GatewayClient:
         The base keys match a direct install byte for byte. Partner deployment
         association happens separately, before the gateway starts
         (celerp.gateway.bootstrap) - the handshake never carries the credential.
+        "tunnel" asks for the chunked tunnel: the relay grants it in hello_ack with
+        its limits, and large bodies then cross in chunks under its frame limit.
         """
         return {
             "gateway_token": self._token,
@@ -551,6 +636,7 @@ class GatewayClient:
             "tos_version": tos_version,
             "version": app_version,
             "delivery_types": sorted(self._DELIVERIES),
+            "tunnel": {"chunked": 1},
         }
 
     async def _dispatch(self, msg: dict) -> None:
@@ -575,6 +661,14 @@ class GatewayClient:
                 log.debug("Gateway: canonical instance_id updated %s -> %s", self._instance_id, canonical_id)
                 self._instance_id = canonical_id
             set_instance_id(self._instance_id)
+            # The chunked tunnel and its limits hold for this connection only: a
+            # hello_ack that grants none clears what an earlier one advertised.
+            from celerp.gateway.state import get_tunnel_limits, set_tunnel_limits
+            tunnel = payload.get("tunnel")
+            set_tunnel_limits(tunnel.get("limits") if isinstance(tunnel, dict) else None)
+            limits = get_tunnel_limits()
+            self._window = (_Window(limits["window"], limits["chunk_bytes"])
+                            if {"window", "chunk_bytes"} <= limits.keys() else None)
             # Store the session token exactly as the relay issues it. An empty
             # value is the relay's verdict, not an omission: whatever arrived
             # replaces any stored value, including "".
@@ -666,24 +760,24 @@ class GatewayClient:
             set_subscription_state(tier, status)
 
         elif msg_type == "http.request":
-            if self._proxy_draining is not None:
-                await self._send(self._ws, {
-                    "type": "http.response",
-                    "payload": {
-                        "id": payload.get("id", ""),
-                        "status": 503,
-                        "headers": [["retry-after", "1"]],
-                        "body_b64": "",
-                    },
-                })
-            else:
-                self._spawn_proxy(payload)
+            await self._admit_proxy(payload)
+
+        elif msg_type in ("http.request_start", "http.request_chunk", "http.request_end"):
+            await self._request_part(msg_type, payload)
+
+        elif msg_type == "http.stream_ack":
+            if self._window is not None:
+                await self._window.ack(payload.get("id", ""), payload.get("seq"))
 
         elif msg_type == "http.cancel":
             request_id = payload.get("id", "")
             task = self._inflight.get(request_id)
             if task is not None and not task.done():
                 task.cancel()
+            # A stream that already sent its end keeps credit until its last ack; the
+            # relay's cancel is the other way that credit comes back.
+            if self._window is not None:
+                await self._window.release(request_id)
 
         elif msg_type == "shopify.webhook":
             self._spawn(self._handle_shopify_webhook(payload))
@@ -756,8 +850,6 @@ class GatewayClient:
         sync runs (a forged delivery verifies against no secret and is ignored)."""
         topic = payload.get("topic", "")
         try:
-            import base64
-
             from celerp.connectors.webhooks import dispatch_woocommerce_webhook
 
             raw = base64.b64decode(payload.get("body_b64") or "")
@@ -861,6 +953,66 @@ class GatewayClient:
             return None
         return decoded
 
+    async def _admit_proxy(self, payload: dict) -> None:
+        """Start a proxied request, or refuse it while a transport handoff drains."""
+        if self._proxy_draining is not None:
+            await self._send_status(payload.get("id", ""), 503, headers=[["retry-after", "1"]])
+        else:
+            self._spawn_proxy(payload)
+
+    async def _request_part(self, kind: str, payload: dict) -> None:
+        """Put back together a request body the relay sends in chunks: a start (the
+        request without its body, plus the body's length), chunks in order, and an
+        end naming how many. Only a whole body that matches its length reaches the
+        local app; anything else is answered 400 and never forwarded."""
+        request_id = payload.get("id", "")
+        if kind == "http.request_start":
+            length = payload.get("length")
+            if type(length) is not int or length < 0:
+                await self._send_status(request_id, 400, b"Invalid request body")
+                return
+            self._partial_requests[request_id] = {"request": payload, "parts": [], "size": 0}
+            return
+        part = self._partial_requests.get(request_id)
+        if part is None:
+            return
+        whole = kind == "http.request_end"
+        try:
+            data = b"" if whole else base64.b64decode(payload.get("b64") or "", validate=True)
+        except (ValueError, TypeError):
+            data = None
+        length = part["request"]["length"]
+        if whole:
+            intact = payload.get("chunks") == len(part["parts"]) and part["size"] == length
+        else:
+            intact = (data is not None and payload.get("seq") == len(part["parts"])
+                      and part["size"] + len(data) <= length)
+        if not intact:
+            del self._partial_requests[request_id]
+            await self._send_status(request_id, 400, b"Invalid request body")
+            return
+        if not whole:
+            part["parts"].append(data)
+            part["size"] += len(data)
+            return
+        del self._partial_requests[request_id]
+        request = {k: v for k, v in part["request"].items() if k != "length"}
+        request["body_b64"] = base64.b64encode(b"".join(part["parts"])).decode()
+        await self._admit_proxy(request)
+
+    async def _send_status(self, request_id: str, status: int, text: bytes = b"",
+                           headers: list | None = None) -> None:
+        """Answer a proxied request with a fixed status and a short plain body."""
+        await self._send(self._ws, {
+            "type": "http.response",
+            "payload": {
+                "id": request_id,
+                "status": status,
+                "headers": headers if headers is not None else [["content-type", "text/plain"]],
+                "body_b64": base64.b64encode(text).decode(),
+            },
+        })
+
     async def _handle_proxy_request(self, payload: dict) -> None:
         """Handle a proxied HTTP request from the relay.
 
@@ -871,9 +1023,11 @@ class GatewayClient:
         request/response, not streaming). They receive an empty 200 response
         so the browser doesn't error; real-time updates only work on direct
         local access.
-        """
-        import base64
 
+        On a chunked tunnel (stream=1 and a granted window) a body above the
+        relay's chunk size streams back in chunks, read from the local app only as
+        the window allows, and a HEAD answers with its start and an empty end.
+        """
         # Activity stamp for the reaper's grace window: any proxied request counts.
         self._last_request_monotonic = time.monotonic()
         self._proxied_count += 1
@@ -905,15 +1059,7 @@ class GatewayClient:
         # 400 that echoes nothing back to the caller.
         policy_path = self._policy_path(raw_path)
         if policy_path is None:
-            await self._send(self._ws, {
-                "type": "http.response",
-                "payload": {
-                    "id": request_id,
-                    "status": 400,
-                    "headers": [["content-type", "text/plain"]],
-                    "body_b64": base64.b64encode(b"Invalid request path").decode(),
-                },
-            })
+            await self._send_status(request_id, 400, b"Invalid request path")
             return
 
         # Decode the body only after the path is known good. A malformed base64
@@ -924,15 +1070,7 @@ class GatewayClient:
         try:
             body = base64.b64decode(body_b64, validate=True) if body_b64 else None
         except (ValueError, TypeError):
-            await self._send(self._ws, {
-                "type": "http.response",
-                "payload": {
-                    "id": request_id,
-                    "status": 400,
-                    "headers": [["content-type", "text/plain"]],
-                    "body_b64": base64.b64encode(b"Invalid request body").decode(),
-                },
-            })
+            await self._send_status(request_id, 400, b"Invalid request body")
             return
 
         # SSE / long-poll paths cannot be proxied over the WS request/response
@@ -1000,109 +1138,144 @@ class GatewayClient:
         if query:
             url = f"{url}?{query}"
 
-        try:
-            # A fresh client per request over the shared bounded transport: the
-            # wrapper's cookie jar exists only for this one request and is discarded
-            # on block exit, so no auth state carries between visitors, while the
-            # transport's pool stays shared and bounded. follow_redirects=False is
-            # explicit so the local app's redirect and cookies go back to the real
-            # browser rather than being followed internally. Opened inside the try so
-            # any construction error routes to the except Exception -> 502 below.
-            async with httpx.AsyncClient(
-                transport=self._get_http_transport(),
-                timeout=180.0,
-                follow_redirects=False,
-            ) as client:
-                if deadline_s is not None:
-                    # asyncio.wait_for, not asyncio.timeout: the latter is 3.11+, and this package
-                    # supports Python >=3.10 where it does not exist. wait_for cancels the request and
-                    # raises TimeoutError on the deadline, which the handler below turns into an error
-                    # response.
-                    resp = await asyncio.wait_for(
-                        client.request(
-                            method=method,
-                            url=url,
-                            headers=headers,
-                            content=body,
-                        ),
-                        deadline_s,
-                    )
+        window = self._window if payload.get("stream") == 1 else None
+        async with contextlib.AsyncExitStack() as stack:
+            try:
+                # A fresh client per request over the shared bounded transport: the
+                # wrapper's cookie jar exists only for this one request and is discarded
+                # on block exit, so no auth state carries between visitors, while the
+                # transport's pool stays shared and bounded. follow_redirects=False is
+                # explicit so the local app's redirect and cookies go back to the real
+                # browser rather than being followed internally. Opened inside the try so
+                # any construction error routes to the except Exception -> 502 below.
+                client = await stack.enter_async_context(httpx.AsyncClient(
+                    transport=self._get_http_transport(),
+                    timeout=180.0,
+                    follow_redirects=False,
+                ))
+                fetch = self._fetch_local(client, client.build_request(
+                    method=method, url=url, headers=headers, content=body), window)
+                # asyncio.wait_for, not asyncio.timeout: the latter is 3.11+, and this package
+                # supports Python >=3.10 where it does not exist. wait_for cancels the request and
+                # raises TimeoutError on the deadline, which the handler below turns into an error
+                # response.
+                resp, length = await (asyncio.wait_for(fetch, deadline_s) if deadline_s is not None
+                                      else fetch)
+                stack.push_async_callback(resp.aclose)
+            except asyncio.CancelledError:
+                # http.cancel aborted this request: emit nothing and let the cancellation
+                # propagate so the task is recorded cancelled.
+                self._cancelled_count += 1
+                raise
+            except TimeoutError:
+                # The per-request deadline elapsed before the local handler answered. Surface
+                # it as an error response instead of hanging to the fixed cap.
+                self._timeout_count += 1
+                log.warning("Proxy request timed out after %sms for %s %s", timeout_ms, method, raw_path)
+                if generation == self._generation:
+                    await self._send_status(request_id, 504, b"Local app timed out")
                 else:
-                    resp = await client.request(
-                        method=method,
-                        url=url,
-                        headers=headers,
-                        content=body,
-                    )
-        except asyncio.CancelledError:
-            # http.cancel aborted this request: emit nothing and let the cancellation
-            # propagate so the task is recorded cancelled.
-            self._cancelled_count += 1
+                    self._stale_dropped_count += 1
+                return
+            except Exception as exc:
+                log.warning("Proxy request failed for %s %s: %s", method, raw_path, exc)
+                if generation == self._generation:
+                    await self._send_status(
+                        request_id, 502, f"Local app error: {type(exc).__name__}: {exc}".encode())
+                else:
+                    self._stale_dropped_count += 1
+                return
+
+            # The socket that carried this request may have been rebuilt while it was in
+            # flight. A response from a superseded generation belongs to a connection the
+            # relay no longer has; sending it on the new socket would answer the wrong
+            # request, so it is dropped.
+            if generation != self._generation:
+                self._stale_dropped_count += 1
+                return
+            await self._reply(request_id, method, resp, length, window, generation)
+
+    @staticmethod
+    async def _fetch_local(client: httpx.AsyncClient, request: httpx.Request,
+                           window: _Window | None) -> tuple[httpx.Response, int | None]:
+        """Send the request to the local app. A response that will stream (a chunked
+        tunnel, a declared length, and a HEAD or a body above one chunk) comes back
+        open with that length; any other is read whole here, length None."""
+        resp = await client.send(request, stream=True)
+        try:
+            length = _declared_length(resp)
+            if window is not None and length is not None and (
+                    request.method == "HEAD" or length > window.chunk_bytes):
+                return resp, length
+            await resp.aread()
+            return resp, None
+        except BaseException:
+            await resp.aclose()
             raise
-        except TimeoutError:
-            # The per-request deadline elapsed before the local handler answered. Surface
-            # it as an error response instead of hanging to the fixed cap.
-            self._timeout_count += 1
-            log.warning("Proxy request timed out after %sms for %s %s", timeout_ms, method, raw_path)
-            if generation == self._generation:
-                await self._send(self._ws, {
-                    "type": "http.response",
-                    "payload": {
-                        "id": request_id,
-                        "status": 504,
-                        "headers": [["content-type", "text/plain"]],
-                        "body_b64": base64.b64encode(b"Local app timed out").decode(),
-                    },
-                })
-            else:
-                self._stale_dropped_count += 1
-            return
-        except Exception as exc:
-            log.warning("Proxy request failed for %s %s: %s", method, raw_path, exc)
-            if generation == self._generation:
-                await self._send(self._ws, {
-                    "type": "http.response",
-                    "payload": {
-                        "id": request_id,
-                        "status": 502,
-                        "headers": [["content-type", "text/plain"]],
-                        "body_b64": base64.b64encode(
-                            f"Local app error: {type(exc).__name__}: {exc}".encode()
-                        ).decode(),
-                    },
-                })
-            else:
-                self._stale_dropped_count += 1
-            return
 
-        # The socket that carried this request may have been rebuilt while it was in
-        # flight. A response from a superseded generation belongs to a connection the
-        # relay no longer has; sending it on the new socket would answer the wrong
-        # request, so it is dropped.
-        if generation != self._generation:
-            self._stale_dropped_count += 1
-            return
-
-        resp_body_b64 = base64.b64encode(resp.content).decode() if resp.content else ""
+    async def _reply(self, request_id: str, method: str, resp: httpx.Response,
+                     length: int | None, window: _Window | None, generation: int) -> None:
+        """Send the local app's response back: one http.response when it fits one
+        chunk or the tunnel is not chunked, else response_start, the chunks in order
+        under the connection's window, and response_end (response_abort when the
+        local body fails or differs from its length)."""
         # Serialize as an ORDERED LIST of pairs (not a dict): a response can carry several
         # Set-Cookie headers (login/refresh emit access_token + refresh_token), and a dict would
         # collapse them into one comma-joined value the browser can't parse, so the refresh
         # cookie never reaches the browser and the session dies at the access token's hard cap.
-        # multi_items() keeps each header separate. Drop content-length; the relay recomputes it.
-        _skip = {"transfer-encoding", "connection", "keep-alive", "content-length"}
-        resp_headers = [
-            [k, v] for k, v in resp.headers.multi_items()
-            if k.lower() not in _skip
-        ]
-        await self._send(self._ws, {
-            "type": "http.response",
-            "payload": {
-                "id": request_id,
-                "status": resp.status_code,
-                "headers": resp_headers,
-                "body_b64": resp_body_b64,
-            },
-        })
+        # multi_items() keeps each header separate.
+        resp_headers = [[k, v] for k, v in resp.headers.multi_items()
+                        if k.lower() not in _RESPONSE_SKIP]
+        if length is None:
+            content = resp.content
+            if window is None or len(content) <= window.chunk_bytes:
+                await self._send(self._ws, {
+                    "type": "http.response",
+                    "payload": {
+                        "id": request_id,
+                        "status": resp.status_code,
+                        "headers": resp_headers,
+                        "body_b64": base64.b64encode(content).decode() if content else "",
+                    },
+                })
+                return
+            length = len(content)
+            pieces = _pieces(content, window.chunk_bytes)
+        else:
+            pieces = None if method == "HEAD" else resp.aiter_raw(window.chunk_bytes)
+        await self._send(self._ws, {"type": "http.response_start", "payload": {
+            "id": request_id, "status": resp.status_code, "headers": resp_headers, "length": length}})
+        if pieces is None:
+            # A HEAD has no chunks; its end still closes the request at the relay.
+            await self._send(self._ws, {"type": "http.response_end", "payload": {
+                "id": request_id, "chunks": 0}})
+            return
+        seq = sent = 0
+        try:
+            async for piece in pieces:
+                sent += len(piece)
+                if sent > length:
+                    raise ValueError("body longer than its declared length")
+                await window.reserve(request_id, seq)
+                if generation != self._generation:
+                    return
+                await self._send(self._ws, {"type": "http.response_chunk", "payload": {
+                    "id": request_id, "seq": seq, "b64": base64.b64encode(piece).decode()}})
+                seq += 1
+            if sent != length:
+                raise ValueError("body shorter than its declared length")
+        except Exception as exc:
+            log.warning("Proxy stream aborted for %s: %s", request_id, exc)
+            await window.release(request_id)
+            await self._send(self._ws, {"type": "http.response_abort", "payload": {
+                "id": request_id, "reason": "read"}})
+            return
+        except BaseException:
+            await window.release(request_id)
+            raise
+        await window.finish(request_id)
+        await self._send(self._ws, {"type": "http.response_end", "payload": {
+            "id": request_id, "chunks": seq}})
 
     async def send_message(self, msg_type: str, **payload) -> None:
         """Send a JSON message over the active WS connection.

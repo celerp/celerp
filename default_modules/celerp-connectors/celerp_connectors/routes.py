@@ -59,7 +59,9 @@ media_router = APIRouter(prefix="/connector-media", tags=["connectors"])
 _MEDIA_READ_BYTES = 256 * 1024
 
 
-@media_router.api_route("/{token}", methods=["GET", "HEAD"])
+# HEAD is the same operation as GET, so the schema lists it once.
+@media_router.get("/{token}")
+@media_router.head("/{token}", include_in_schema=False)
 async def connector_media(token: str, request: Request):
     """One product image a sync sent a store, while its token is valid. HEAD answers
     from the file's size without reading it."""

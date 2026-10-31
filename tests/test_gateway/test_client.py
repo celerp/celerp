@@ -17,6 +17,7 @@ import httpx
 import pytest
 
 from celerp.gateway.client import GatewayClient
+from test_gateway.local_app import LocalClient
 import celerp.gateway.state as gw_state
 
 
@@ -535,13 +536,7 @@ async def test_proxy_routes_everything_to_ui_server(client, monkeypatch, path):
         content = b"ok"
         headers = httpx.Headers()
 
-    class FakeClient:
-        def __init__(self, *a, **k):
-            pass
-        async def __aenter__(self):
-            return self
-        async def __aexit__(self, *a):
-            return False
+    class FakeClient(LocalClient):
         async def request(self, method, url, headers=None, content=None):
             captured["url"] = url
             return FakeResp()
@@ -578,13 +573,7 @@ async def test_proxy_response_preserves_multiple_set_cookie(client, monkeypatch)
             ("set-cookie", "refresh_token=RRR; Path=/; HttpOnly"),
         ])
 
-    class FakeClient:
-        def __init__(self, *a, **k):
-            pass
-        async def __aenter__(self):
-            return self
-        async def __aexit__(self, *a):
-            return False
+    class FakeClient(LocalClient):
         async def request(self, method, url, headers=None, content=None):
             return FakeResp()
 
@@ -921,13 +910,7 @@ async def test_proxy_forwards_valid_encoded_path_verbatim(client, monkeypatch):
         content = b"ok"
         headers = httpx.Headers()
 
-    class FakeClient:
-        def __init__(self, *a, **k):
-            pass
-        async def __aenter__(self):
-            return self
-        async def __aexit__(self, *a):
-            return False
+    class FakeClient(LocalClient):
         async def request(self, method, url, headers=None, content=None):
             captured["url"] = url
             return FakeResp()
@@ -966,13 +949,7 @@ async def test_proxy_classification_ignores_accept_header(client, monkeypatch):
         content = b"ok"
         headers = httpx.Headers([("content-type", "text/plain")])
 
-    class FakeClient:
-        def __init__(self, *a, **k):
-            pass
-        async def __aenter__(self):
-            return self
-        async def __aexit__(self, *a):
-            return False
+    class FakeClient(LocalClient):
         async def request(self, method, url, headers=None, content=None):
             captured["url"] = url
             return FakeResp()
