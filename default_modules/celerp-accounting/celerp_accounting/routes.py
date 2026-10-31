@@ -4313,6 +4313,7 @@ async def bulk_confirm_recon(
 
     lines = (await db.execute(
         select(BankStatementLine).where(
+            BankStatementLine.company_id == company_id,
             BankStatementLine.reconciliation_id == session_id,
             BankStatementLine.status == "suggested",
         ).order_by(BankStatementLine.line_date, BankStatementLine.created_at).with_for_update()
