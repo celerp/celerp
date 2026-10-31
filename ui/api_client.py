@@ -4103,11 +4103,13 @@ async def get_first_sync_preview(token: str, platform: str, orders_from: str | N
 
 
 async def start_first_sync(token: str, platform: str, directions: dict, match: str,
-                           orders_from: str | None) -> dict:
-    """Start the connection's first sync with the choices made on its preview."""
+                           orders_from: str | None, preview_version: str) -> dict:
+    """Start the connection's first sync with the choices made on its preview, naming the
+    preview version the person reviewed."""
     async with _api_client(token) as c:
         return _raise(await c.post(f"/connectors/{platform}/first-sync", json={
             "directions": directions, "match": match, "orders_from": orders_from or None,
+            "preview_version": preview_version,
         })).json()
 
 

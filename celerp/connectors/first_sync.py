@@ -16,7 +16,13 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from celerp.connectors.base import ConnectorBase, ConnectorContext, SyncDirection, entity_allowed
+from celerp.connectors.base import (
+    ConnectorBase,
+    ConnectorContext,
+    SyncDirection,
+    entity_allowed,
+    validate_directions,
+)
 from celerp.modules.boundary import needs_modules
 from celerp.services.field_fingerprints import PRODUCT_FIELDS, fingerprint
 from ui.i18n import t
@@ -37,6 +43,15 @@ class FirstSyncPreview:
     posting_orders: int = 0
     order_effect: str = ""
     stock_changes: int = 0  # matches whose store stock becomes Celerp's
+    # The receipt Start must hand back: a digest of everything above that the first sync
+    # acts on, with the connection and store it was read from (_version).
+    version: str = ""
+
+    @property
+    def reviewed(self) -> dict[str, str | None]:
+        """Each store product the person reviewed: the item it links to, None when the
+        first sync creates it."""
+        return {**{r["key"]: None for r in self.new}, **{r["key"]: r["entity_id"] for r in self.matches}}
 
 
 def _newest_first(rows: list[dict], key: str = "modified") -> list[dict]:
@@ -52,11 +67,33 @@ def _differences(state: dict, remote) -> dict:
     }
 
 
+def _version(connector: ConnectorBase, ctx: ConnectorContext, config_id: int, preview: FirstSyncPreview) -> str:
+    """The preview's receipt: the same choices, connection, store and effects give the
+    same digest, and any change to one of them gives another."""
+    import hashlib
+    import json
+
+    facts = {
+        "connector": connector.name, "config": config_id, "store": ctx.store_handle,
+        "directions": preview.directions, "orders_from": preview.orders_from.isoformat(),
+        "matches": sorted([r["key"], r["entity_id"], r["differences"], r["stock_change"]] for r in preview.matches),
+        "new": sorted(r["key"] for r in preview.new),
+        "no_sku": sorted(r["key"] for r in preview.no_sku),
+        "problems": sorted(r["key"] for r in preview.problems),
+        "to_publish": sorted(r["entity_id"] for r in preview.to_publish),
+        "orders": sorted([str(o["id"]), bool(o["posts"])] for o in preview.orders),
+    }
+    return hashlib.sha256(json.dumps(facts, sort_keys=True, default=str).encode()).hexdigest()
+
+
 async def build_preview(
-    connector: ConnectorBase, ctx: ConnectorContext, directions: dict, orders_from: datetime
+    connector: ConnectorBase, ctx: ConnectorContext, directions: dict, orders_from: datetime, config_id: int
 ) -> FirstSyncPreview:
     """What a first sync in ``directions``, importing orders from ``orders_from``, would
-    do. Reads only: nothing is written to Celerp or to the platform."""
+    do on the connection ``config_id``. Reads only: nothing is written to Celerp or to the
+    platform. The directions are read as the full map Start saves, so the same choices
+    give the same version however they were named."""
+    directions = validate_directions(connector, directions)
     preview = FirstSyncPreview(directions=directions, orders_from=orders_from)
     if directions.get("products", SyncDirection.OFF.value) != SyncDirection.OFF.value:
         await _preview_products(connector, ctx, directions, preview)
@@ -74,6 +111,7 @@ async def build_preview(
             if preview.posting_orders else
             t("connectors.preview_orders_record", n=len(orders), service=connector.display_name)
         )
+    preview.version = _version(connector, ctx, config_id, preview)
     return preview
 
 

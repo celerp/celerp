@@ -895,7 +895,7 @@ async def test_preview_writes_nothing(woo, connector_session):
                 await session.scalar(select(func.max(Projection.version)).where(Projection.company_id == cid)))
 
     before = await counts()
-    preview = await build_preview(woo, ctx, _WIDEST, datetime(2026, 9, 1, tzinfo=timezone.utc))
+    preview = await build_preview(woo, ctx, _WIDEST, datetime(2026, 9, 1, tzinfo=timezone.utc), config_id=1)
     assert await counts() == before
     assert {call.request.method for call in respx.calls} == {"GET"}
 
@@ -931,7 +931,7 @@ async def test_preview_shows_store_and_celerp_stock_and_what_goes_out(woo, conne
     ]))
     respx.get("https://store.example.com/wp-json/wc/v3/orders").mock(return_value=httpx.Response(200, json=[]))
 
-    preview = await build_preview(woo, ctx, _WIDEST, datetime(2026, 9, 1, tzinfo=timezone.utc))
+    preview = await build_preview(woo, ctx, _WIDEST, datetime(2026, 9, 1, tzinfo=timezone.utc), config_id=1)
     by_sku = {m["sku"]: m for m in preview.matches}
     assert by_sku["COUNT-1"]["stock"] == 9 and by_sku["COUNT-1"]["celerp_stock"] == 4
     assert by_sku["COUNT-1"]["stock_change"] == {"store": 9, "celerp": 4}
@@ -940,7 +940,7 @@ async def test_preview_shows_store_and_celerp_stock_and_what_goes_out(woo, conne
     assert [(n["sku"], n["stock"]) for n in preview.new] == [("NEW-9", 5)]
     assert preview.stock_changes == 1
 
-    preview = await build_preview(woo, ctx, {**_WIDEST, "stock": "off"}, datetime(2026, 9, 1, tzinfo=timezone.utc))
+    preview = await build_preview(woo, ctx, {**_WIDEST, "stock": "off"}, datetime(2026, 9, 1, tzinfo=timezone.utc), config_id=1)
     assert preview.stock_changes == 0
     assert all(m["stock_change"] is None for m in preview.matches)
 
@@ -957,7 +957,7 @@ async def test_preview_counts_orders_and_accounting_effect(woo, connector_sessio
     _store_with_catalog_and_orders()
     start = datetime(2026, 9, 1, tzinfo=timezone.utc)
 
-    preview = await build_preview(woo, ctx, _WIDEST, start)
+    preview = await build_preview(woo, ctx, _WIDEST, start, config_id=1)
 
     order_call = next(c for c in respx.calls if c.request.url.path.endswith("/orders"))
     assert order_call.request.url.params["after"] == start.isoformat()

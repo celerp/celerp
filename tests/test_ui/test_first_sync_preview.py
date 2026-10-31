@@ -105,10 +105,10 @@ async def test_start_runs_the_first_sync_with_the_choices():
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as client:
             client.cookies.update({"celerp_token": make_test_token(role="owner")})
             r = await client.post("/settings/connectors/woocommerce/first-sync",
-                                  data={"match": "take", "orders_from": "2026-09-01"})
+                                  data={"match": "take", "orders_from": "2026-09-01", "preview_version": "v" * 64})
     assert r.status_code == 204 and r.headers["HX-Redirect"] == "/settings/connectors/woocommerce"
-    _token, platform, directions, match, orders_from = start.await_args.args
-    assert (platform, directions, match, orders_from) == ("woocommerce", WOO, "take", "2026-09-01")
+    _token, platform, directions, match, orders_from, version = start.await_args.args
+    assert (platform, directions, match, orders_from, version) == ("woocommerce", WOO, "take", "2026-09-01", "v" * 64)
 
 
 def test_summary_offers_every_way_back():

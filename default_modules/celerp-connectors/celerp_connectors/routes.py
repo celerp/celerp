@@ -13,7 +13,7 @@ import httpx
 import sqlalchemy as sa
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import refusal
@@ -834,12 +834,10 @@ async def preview_first_sync(
     importing orders from ``orders_from`` (today when not given). Reads both sides and
     writes to neither."""
     import dataclasses
-    from datetime import datetime, time, timezone
 
     from fastapi.encoders import jsonable_encoder
 
     from celerp import connectors
-    from celerp.connectors.first_sync import build_preview
 
     try:
         connector = connectors.get(connector_name)
@@ -850,16 +848,26 @@ async def preview_first_sync(
     if row is None or row.state != "pending":
         raise HTTPException(status_code=409, detail=t("connectors.err_first_sync_done"))
     await session.commit()
-    ctx = await _connector_context(str(company_id), connector_name)
+    preview = await _read_preview(connector, company_id, config.id, dict(config.entity_directions), orders_from)
+    return jsonable_encoder(dataclasses.asdict(preview))
+
+
+async def _read_preview(connector, company_id, config_id: int, directions: dict, orders_from: date | None):
+    """The first sync's preview read from the store, outside any lock: what the preview
+    page shows and what Start compares the person's receipt with."""
+    from datetime import datetime, time, timezone
+
+    from celerp.connectors.first_sync import build_preview
+
+    ctx = await _connector_context(str(company_id), connector.name)
     if ctx is None:
         raise HTTPException(status_code=409, detail=t("error.connector_not_connected", service=connector.display_name))
     start = datetime.combine(orders_from or datetime.now(timezone.utc).date(), time(), tzinfo=timezone.utc)
     try:
-        preview = await build_preview(connector, ctx, dict(config.entity_directions), start)
+        return await build_preview(connector, ctx, directions, start, config_id)
     except (httpx.HTTPError, ValueError) as exc:
         raise HTTPException(status_code=502, detail=t(
             "connectors.err_preview", service=connector.display_name, detail=exc)) from exc
-    return jsonable_encoder(dataclasses.asdict(preview))
 
 
 @router.get("/{connector_name}/first-sync/summary")
@@ -954,6 +962,8 @@ class FirstSyncRequest(BaseModel):
     match: Literal["keep", "take"]
     # The earliest order date to import; none starts at the first sync itself.
     orders_from: date | None = None
+    # The version of the preview the person reviewed: Start refuses once it changed.
+    preview_version: str = Field(min_length=64, max_length=64)
 
 
 @router.post("/{connector_name}/first-sync")
@@ -966,9 +976,13 @@ async def start_first_sync(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Start a connection's first sync with the choices reviewed on its preview: the
-    directions, the earliest order date and how SKU matches link. It runs once, in the
-    background: it first sets up the store's webhooks, and when the store refuses, the
-    first sync needs attention with the store's reason."""
+    directions, the earliest order date and how SKU matches link. The preview is read
+    again, outside every lock, with those choices; when it is no longer the version the
+    person reviewed (the store, the catalog or the connection changed since), Start is
+    refused and the page shows the preview again. It runs once, in the background, and
+    only on the store products the person reviewed: it first sets up the store's
+    webhooks, and when the store refuses, the first sync needs attention with the store's
+    reason."""
     import uuid
     from datetime import datetime, time, timezone
 
@@ -983,6 +997,20 @@ async def start_first_sync(
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=connector_name)) from exc
     try:
+        directions = validate_directions(connector, payload.directions)
+    except DirectionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    previewed = await _owned_config(session, company_id, connector)
+    row = await _first_sync_row(session, company_id, connector_name)
+    if row is None or row.state != "pending":
+        raise HTTPException(status_code=409, detail=t("connectors.err_first_sync_done"))
+    config_id = previewed.id
+    await session.commit()
+    preview = await _read_preview(connector, company_id, config_id, directions, payload.orders_from)
+    if preview.version != payload.preview_version:
+        raise HTTPException(status_code=409, detail=t("connectors.err_preview_changed", service=connector.display_name))
+
+    try:
         config = await lock_connector_operation(
             session, company_id, connector_name, require_owner=True, exclusive=True)
     except ConnectorOwnershipError as exc:
@@ -992,15 +1020,9 @@ async def start_first_sync(
     if first_sync is None or first_sync.state != "pending":
         await session.rollback()
         raise HTTPException(status_code=409, detail=t("connectors.err_first_sync_done"))
-    try:
-        directions = validate_directions(connector, payload.directions)
-    except DirectionError as exc:
+    if config.id != config_id:  # reconnected since the preview was read
         await session.rollback()
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    ctx = await _connector_context(str(company_id), connector_name, ownership_session=session)
-    if ctx is None:
-        await session.rollback()
-        raise HTTPException(status_code=409, detail=t("error.connector_not_connected", service=connector.display_name))
+        raise HTTPException(status_code=409, detail=t("connectors.err_preview_changed", service=connector.display_name))
 
     now = datetime.now(timezone.utc)
     config.entity_directions = directions
@@ -1019,6 +1041,8 @@ async def start_first_sync(
     first_sync.state = "starting"
     first_sync.directions = directions
     first_sync.match = payload.match
+    first_sync.preview_version = preview.version
+    first_sync.reviewed = preview.reviewed
     first_sync.watermark = now
     first_sync.started_by = str(user.id)
     first_sync.started_at = now

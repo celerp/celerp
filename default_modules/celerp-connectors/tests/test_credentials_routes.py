@@ -644,12 +644,35 @@ def test_first_sync_requires_preview_inputs():
     with pytest.raises(ValidationError):
         FirstSyncRequest(directions=WOO_DEFAULTS)
     with pytest.raises(ValidationError):
-        FirstSyncRequest(directions=WOO_DEFAULTS, match="merge")
-    assert FirstSyncRequest(directions=WOO_DEFAULTS, match="keep").orders_from is None
+        FirstSyncRequest(directions=WOO_DEFAULTS, match="merge", preview_version="v" * 64)
+    with pytest.raises(ValidationError):
+        FirstSyncRequest(directions=WOO_DEFAULTS, match="keep")
+    with pytest.raises(ValidationError):
+        FirstSyncRequest(directions=WOO_DEFAULTS, match="keep", preview_version="v" * 63)
+    assert FirstSyncRequest(directions=WOO_DEFAULTS, match="keep", preview_version="v" * 64).orders_from is None
+
+
+async def _reviewed(cid, config, directions: dict, orders_from=None) -> str:
+    """The version of the preview the person reviewed before Start, read the way Start
+    reads it again (a store with no products and no orders)."""
+    from celerp import connectors
+    from celerp_connectors.routes import _read_preview
+
+    return (await _read_preview(connectors.get("woocommerce"), str(cid), config.id, directions, orders_from)).version
+
+
+@pytest.fixture
+def empty_store(monkeypatch):
+    """The store's preview reads find nothing."""
+    from celerp import connectors
+
+    woo = type(connectors.get("woocommerce"))
+    monkeypatch.setattr(woo, "preview_products", AsyncMock(return_value=[]))
+    monkeypatch.setattr(woo, "preview_orders", AsyncMock(return_value=[]))
 
 
 @pytest.mark.asyncio
-async def test_first_sync_runs_once(connector_session):
+async def test_first_sync_runs_once(connector_session, empty_store):
     """Starting the first sync saves its choices on the first-sync record, asks for the
     store's webhooks to be set up and runs it; a second start is refused."""
     from datetime import date, datetime, timezone
@@ -666,10 +689,11 @@ async def test_first_sync_runs_once(connector_session):
     ctx = ConnectorContext(company_id=str(cid), access_token="k:s", store_handle=STORE)
     spawned = []
     user = SimpleNamespace(id="user-1")
-    request = FirstSyncRequest(directions={**WOO_DEFAULTS, "products": "both"}, match="take",
-                               orders_from=date(2026, 9, 1))
+    directions = {**WOO_DEFAULTS, "products": "both"}
     with patch("celerp.connectors.relay_token.fetch_context", new=AsyncMock(return_value=ctx)), \
             patch("celerp.services.background.spawn_background", spawned.append):
+        request = FirstSyncRequest(directions=directions, match="take", orders_from=date(2026, 9, 1),
+                                   preview_version=await _reviewed(cid, config, directions, date(2026, 9, 1)))
         out = await start_first_sync("woocommerce", request, str(cid), user, None, session)
         assert out == {"ok": True}
         with pytest.raises(HTTPException) as again:
@@ -691,7 +715,7 @@ async def test_first_sync_runs_once(connector_session):
 
 
 @pytest.mark.asyncio
-async def test_first_sync_without_products_in_records_no_batch(connector_session):
+async def test_first_sync_without_products_in_records_no_batch(connector_session, empty_store):
     from celerp.connectors.base import ConnectorContext
     from celerp.models.connector_first_sync import ConnectorFirstSync
     from celerp_connectors.routes import FirstSyncRequest, start_first_sync
@@ -704,7 +728,9 @@ async def test_first_sync_without_products_in_records_no_batch(connector_session
     spawned = []
     with patch("celerp.connectors.relay_token.fetch_context", new=AsyncMock(return_value=ctx)), \
             patch("celerp.services.background.spawn_background", spawned.append):
-        await start_first_sync("woocommerce", FirstSyncRequest(directions=WOO_DEFAULTS, match="keep"),
+        version = await _reviewed(cid, config, WOO_DEFAULTS)
+        await start_first_sync("woocommerce", FirstSyncRequest(directions=WOO_DEFAULTS, match="keep",
+                                                               preview_version=version),
                                str(cid), SimpleNamespace(id="user-1"), None, session)
     for coro in spawned:
         coro.close()

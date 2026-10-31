@@ -168,6 +168,10 @@ def _preview_body(platform: str, preview: dict, show: str, orders_from: str, lan
         method="get", action=f"/settings/connectors/{platform}/first-sync", cls="first-sync-date",
     ) if "orders" in tabs else Span()
     return Div(
+        # The receipt Start hands back: refreshed with the preview, so Start always names
+        # the version on the page.
+        Input(type="hidden", name="preview_version", value=preview.get("version") or "",
+              id=f"first-sync-preview-version-{platform}"),
         dated,
         P(preview.get("order_effect") or "", cls="flash flash--info") if "orders" in tabs else Span(),
         nav,
@@ -198,6 +202,7 @@ def _start_form(platform: str, orders_from: str, lang: str) -> FT:
         Div(id=f"first-sync-start-result-{platform}"),
         hx_post=f"/settings/connectors/{platform}/first-sync",
         hx_target=f"#first-sync-start-result-{platform}",
+        hx_include=f"#first-sync-preview-version-{platform}",
         cls="settings-card first-sync-start",
     )
 
@@ -375,9 +380,13 @@ def setup_first_sync_routes(app) -> None:
         config = await sc._get_connector_config(sc._request_company_id(request), platform)
         try:
             await start_first_sync(token, platform, dict(config.entity_directions if config else {}),
-                                   str(form.get("match") or "keep"), str(form.get("orders_from") or "") or None)
+                                   str(form.get("match") or "keep"), str(form.get("orders_from") or "") or None,
+                                   str(form.get("preview_version") or ""))
         except APIError as exc:
-            return Span(refusal_text(exc.detail) or str(exc.detail), cls="flash flash--warning")
+            # The preview is read again with the refusal, so a preview that changed shows
+            # its new version, to review and start again.
+            return Response(to_xml(Span(refusal_text(exc.detail) or str(exc.detail), cls="flash flash--warning")),
+                            media_type="text/html", headers={"HX-Trigger": "connectorDirectionsChanged"})
         return Response(status_code=204, headers={"HX-Redirect": f"/settings/connectors/{platform}"})
 
     @app.post("/settings/connectors/{platform}/first-sync/retry")

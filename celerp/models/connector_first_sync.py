@@ -30,6 +30,9 @@ class ConnectorFirstSync(Base):
     directions: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
     match: Mapped[str | None] = mapped_column(sa.String(16), nullable=True)
     preview_version: Mapped[str | None] = mapped_column(sa.String(64), nullable=True)
+    # The store products the person reviewed: remote key -> the item it links to, None
+    # for one it creates. The first sync acts on these only.
+    reviewed: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
     batch_id: Mapped[str | None] = mapped_column(sa.String(64), nullable=True)
     operation_id: Mapped[str | None] = mapped_column(sa.String(64), nullable=True)
     progress: Mapped[dict] = mapped_column(sa.JSON, nullable=False, default=dict, server_default="{}")

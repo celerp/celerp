@@ -6604,6 +6604,7 @@
   "connectors.preview_orders_post": "{n} orders in Processing or Completed will be issued as invoices and post revenue and stock.",
   "connectors.preview_orders_record": "{n} {service} invoices will be added to Celerp as records.",
   "connectors.err_preview": "Could not read {service} for the preview: {detail}",
+  "connectors.err_preview_changed": "ይህ ቅድመ እይታ ከተነበበ በኋላ {service} ወይም Celerp ተቀይሯል። ቅድመ እይታው አሁን የመጀመሪያው ማመሳሰል የሚያደርገውን ያሳያል፤ ይገምግሙት እና እንደገና ይጀምሩ።",
   "connectors.preview_title": "Review the first sync with {service}",
   "connectors.preview_intro": "Nothing has synced yet. This preview reads {service} and Celerp without changing either. Check what the first sync will do, adjust the directions or the order date, then start it.",
   "connectors.preview_tab_matches": "Matched by SKU ({n})",

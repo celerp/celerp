@@ -11,6 +11,7 @@ its own connection and waits for the connector-owner key the starting request ho
 from __future__ import annotations
 
 import asyncio
+import re
 import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -82,9 +83,14 @@ async def test_starting_the_first_sync_from_its_preview_runs_it_under_a_renewed_
     monkeypatch.setattr(execution, "_renew_once", _renewing)
     monkeypatch.setattr(sync_runner, "run_sync", _store)
 
+    from celerp.connectors import first_sync
+
+    monkeypatch.setattr(first_sync, "_preview_products", AsyncMock())  # the store has no products
+    page = await store_owner.ui.get(f"/settings/connectors/{PLATFORM}/first-sync")
+    version = re.search(r'name="preview_version" value="([0-9a-f]{64})"', page.text).group(1)
     before = set(background._BG_TASKS)
     r = await store_owner.ui.post(f"/settings/connectors/{PLATFORM}/first-sync",
-                                  data={"match": "keep"}, headers={"HX-Request": "true"})
+                                  data={"match": "keep", "preview_version": version}, headers={"HX-Request": "true"})
     assert r.status_code == 204, r.text
     assert r.headers["HX-Redirect"] == f"/settings/connectors/{PLATFORM}"
     await asyncio.wait_for(_settled(set(background._BG_TASKS) - before), 30)
