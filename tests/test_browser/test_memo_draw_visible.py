@@ -23,7 +23,7 @@ _CLIPPED = """() => [...document.querySelectorAll('.doc-lines td .badge, .doc-li
                  el.style.overflowWrap = 'normal';
                  const unbroken = el.getBoundingClientRect().height >= r.height - 1;
                  el.style.overflowWrap = '';
-                 return {text: el.textContent.trim(), cell: td.className, width: r.width,
+                 return {text: el.textContent.trim(), width: r.width,
                          inside: r.width > 0 && r.left >= c.left - 1 && r.right <= c.right + 1
                                  && r.top >= c.top - 1 && r.bottom <= c.bottom + 1 && unbroken}; })"""
 
