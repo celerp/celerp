@@ -995,11 +995,10 @@ class WooCommerceConnector(ConnectorBase):
                         continue
                     agreed.update({k: fingerprint(v) for k, v in send.items()})
                 if images_changed:
-                    images, unshared = await store_images(ctx, self.name, item.get("files") or [], link)
-                    if unshared:
-                        attention.append({"id": key, "label": label, "kind": "image",
-                                          "reason": t("connectors.attention_image_unshared",
-                                                      service=self.display_name)})
+                    images, unsent = await store_images(ctx, self.name, self.display_name,
+                                                        item.get("files") or [], link)
+                    if unsent:
+                        attention.append({"id": key, "label": label, "kind": "image", "reason": unsent})
                     else:
                         try:
                             resp = await client.put(url, auth=auth, json=(

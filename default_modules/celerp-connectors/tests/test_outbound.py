@@ -335,6 +335,8 @@ async def test_field_update_succeeds_when_image_rejected(connector_session, monk
     session = connector_session
     monkeypatch.setattr("celerp.services.relay_share.mint_media_url",
                         AsyncMock(return_value="https://share.example.com/m/tok/f1.jpg"))
+    # The image is stored; only the store refuses it.
+    monkeypatch.setattr("celerp.services.attachments.company_file_size", AsyncMock(return_value=1024))
     files = [{"id": "f1", "filename": "f1.jpg", "mime": "image/jpeg", "is_hero": True,
               "document_tag": "product_images", "url": "/static/attachments/c/f1.jpg"}]
     _, ctx = await _linked(session, "ImageRejected", "item:r", "603", sku="R-1", name="Lamp", files=files)

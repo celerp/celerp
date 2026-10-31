@@ -53,25 +53,38 @@ def store_media_id(file: dict, platform: str, link: dict, store: str | None) -> 
     return str(known) if known else None
 
 
-async def store_images(ctx, platform: str, files: list[dict], link: dict) -> tuple[list[dict], list[dict]]:
-    """The image list to send a store for an item's product images, and the images that
-    could not be shared. An image the store holds goes by its id; any other by a
-    short-lived public link (relay_share.mint_media_url); never by a Celerp address the
-    store cannot reach."""
+async def store_images(ctx, platform: str, service: str, files: list[dict],
+                       link: dict) -> tuple[list[dict], str | None]:
+    """The image list to send a store for an item's product images, or the reason none
+    can be sent. An image the store holds goes by its id; any other by a short-lived
+    public link (relay_share.mint_media_url) when it is within the size a store can fetch
+    (connector_media.media_max_bytes); never by a Celerp address the store cannot reach.
+    When one image cannot be sent none are, so the store's images are never replaced by
+    part of the item's."""
     from celerp.services import relay_share
+    from ui.i18n import t
+    from celerp.services.attachments import company_file_size
+    from celerp.services.connector_media import media_max_bytes
 
-    images, unshared = [], []
+    images, limit = [], media_max_bytes()
     for file in product_image_files(files):
         media_id = store_media_id(file, platform, link, ctx.store_handle)
         if media_id is not None:
             images.append({"id": int(media_id) if media_id.isdigit() else media_id})
             continue
-        url = await relay_share.mint_media_url(ctx.company_id, file)
+        size = await company_file_size(ctx.company_id, file["url"]) if file.get("url") else None
+        if size is not None and size > limit:
+            return [], t("connectors.attention_image_too_large", service=service,
+                         name=file.get("filename") or file["id"], size=_megabytes(size), limit=_megabytes(limit))
+        url = await relay_share.mint_media_url(ctx.company_id, file) if size is not None else None
         if url is None:
-            unshared.append(file)
-        else:
-            images.append({"src": url})
-    return images, unshared
+            return [], t("connectors.attention_image_unshared", service=service)
+        images.append({"src": url})
+    return images, None
+
+
+def _megabytes(size: int) -> str:
+    return f"{size / (1024 * 1024):.1f}".removesuffix(".0")
 
 
 async def download_and_emit_file(

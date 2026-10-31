@@ -109,6 +109,7 @@ EXCLUDED_TABLES = {
     "connector_execution_heartbeats": "connector sync runs in progress",
     "outbound_queue": "messages waiting to leave this installation",
     "doc_share_tokens": "share links issued by this installation",
+    "connector_media_tokens": "image links issued by this installation",
     "notifications": "per-user notices",
     "ai_conversations": "per-user assistant history",
     "ai_batch_jobs": "assistant job state",

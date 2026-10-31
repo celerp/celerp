@@ -391,12 +391,11 @@ class ShopifyConnector(ConnectorBase):
                     if item.get("sale_price") is not None:
                         payload["product"]["variants"] = [{"price": str(item["sale_price"])}]
 
-                    images, unshared = await store_images(
-                        ctx, self.name, item.get("files") or [], item.get("external_link") or {})
-                    if unshared:
+                    images, unsent = await store_images(
+                        ctx, self.name, self.display_name, item.get("files") or [], item.get("external_link") or {})
+                    if unsent:
                         attention.append({"id": str(product_id), "label": item.get("name") or item.get("sku"),
-                                          "kind": "image", "reason": t("connectors.attention_image_unshared",
-                                                                       service=self.display_name)})
+                                          "kind": "image", "reason": unsent})
                     elif images:
                         payload["product"]["images"] = images
 

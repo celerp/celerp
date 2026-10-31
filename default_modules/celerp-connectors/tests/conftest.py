@@ -7,6 +7,7 @@ import os
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
 import pytest
+import pytest_asyncio
 from unittest.mock import AsyncMock, patch
 
 from celerp.connectors.base import ConnectorContext
@@ -16,6 +17,20 @@ from connector_test_support import inside_execution  # noqa: F401
 @pytest.fixture(autouse=True)
 def _connectors_depend_on_their_modules(connector_modules_running):
     """Connectors depend on Inventory, Documents and Contacts, so they run here."""
+
+
+@pytest_asyncio.fixture
+async def media_tokens_in_test_transaction(session, monkeypatch):
+    """Image link tokens are issued and read in sessions of their own
+    (celerp.services.connector_media); here those join the test's transaction, so
+    nothing is committed."""
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    from celerp.services import connector_media
+
+    monkeypatch.setattr(connector_media, "SessionLocal", async_sessionmaker(
+        bind=await session.connection(), class_=AsyncSession, expire_on_commit=False,
+        join_transaction_mode="create_savepoint"))
 
 
 @pytest.fixture

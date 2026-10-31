@@ -97,6 +97,7 @@ RANKS: dict[str, int] = {
     # A login's session generation, then its sessions: revoking or issuing a session follows
     # whatever change it ends (a role, a reset, a restore), so both are taken late.
     "row:user_auth_state": 83, "row:session_registry": 84, "row:doc_share_tokens": 85, "row:label_templates": 86,
+    "row:connector_media_tokens": 82,
     "row:marketplace_configs": 87, "row:work_centers": 88, "row:supporter_badges": 89, "row:ai_usage": 90,
     "row:ai_job_steps": 91,
     # Notices, written as their transaction's last statements (celerp/notifications/service.py
@@ -1365,7 +1366,8 @@ def _insert_waits_on_no_key(table: str) -> bool:
 # from ``secrets`` (stored as is or as its hash): no two inserts carry one value, so that key
 # never makes an insert of one company wait on another's. tests/test_lock_rank_checker.py
 # proves each table's writers do.
-SECRET_KEYED = {"doc_share_tokens": "token", "company_peer_grants": "token_hash"}
+SECRET_KEYED = {"doc_share_tokens": "token", "company_peer_grants": "token_hash",
+                "connector_media_tokens": "token_hash"}
 
 
 def _company_param(table: str, where, qualifier: str | None = None) -> tuple[int, ...] | None:

@@ -53,23 +53,30 @@ local_router = APIRouter(
     dependencies=[Depends(get_current_user)],
 )
 # A store fetches the product images Celerp sends it here, through the relay's
-# short-lived share address; the signed token is the only access (connector_media).
+# short-lived share address; the token is the only access (connector_media).
 media_router = APIRouter(prefix="/connector-media", tags=["connectors"])
+# A file is read and sent this much at a time, never held whole.
+_MEDIA_READ_BYTES = 256 * 1024
 
 
-@media_router.get("/{token}")
-async def connector_media(token: str):
-    """One product image a sync sent a store, while its token is valid."""
-    from fastapi.responses import Response
+@media_router.api_route("/{token}", methods=["GET", "HEAD"])
+async def connector_media(token: str, request: Request):
+    """One product image a sync sent a store, while its token is valid. HEAD answers
+    from the file's size without reading it."""
+    from fastapi.responses import Response, StreamingResponse
 
-    from celerp.services.attachments import MAX_FILE_BYTES, read_company_file
-    from celerp.services.connector_media import media_claims
+    from celerp.services.attachments import MAX_FILE_BYTES, company_file_chunks, company_file_size
+    from celerp.services.connector_media import media_file
 
-    claims = media_claims(token)
-    content = await read_company_file(claims["c"], claims["u"], MAX_FILE_BYTES) if claims else None
-    if content is None:
+    media = await media_file(token)
+    size = await company_file_size(media.company_id, media.url) if media else None
+    if size is None or size > MAX_FILE_BYTES:
         raise HTTPException(status_code=404, detail="Not found")
-    return Response(content=content, media_type=claims["m"], headers={"Cache-Control": "no-store"})
+    headers = {"Cache-Control": "no-store", "Content-Length": str(size)}
+    if request.method == "HEAD":
+        return Response(media_type=media.mime, headers=headers)
+    return StreamingResponse(company_file_chunks(media.company_id, media.url, _MEDIA_READ_BYTES),
+                             media_type=media.mime, headers=headers)
 
 
 # ── Request / Response schemas ────────────────────────────────────────────────

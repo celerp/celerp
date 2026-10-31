@@ -8,6 +8,7 @@ from celerp.models.company_peer import CompanyPeerAttention, CompanyPeerGrant, C
 from celerp.models.connector_config import ConnectorConfig  # noqa: F401 - ensure connector_configs table registered
 from celerp.models.connector_execution import ConnectorExecutionHeartbeat, ConnectorExecutionLease  # noqa: F401
 from celerp.models.connector_first_sync import ConnectorFirstSync  # noqa: F401
+from celerp.models.connector_media import ConnectorMediaToken  # noqa: F401
 from celerp.models.connector_source import ConnectorSource  # noqa: F401 - ensure connector_sources table registered
 from celerp.models.import_batch import ImportBatch  # noqa: F401 - ensure import_batches table registered
 from celerp.models.migration import MigrationEntityMap, MigrationRun  # noqa: F401 - ensure migration tables registered

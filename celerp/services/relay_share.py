@@ -54,11 +54,11 @@ async def mint_media_url(company_id, file: dict) -> str | None:
     which stores read the type from. None for a file that is not an image, or when the
     relay cannot be reached, so the image is not sent rather than sent unreachable."""
     from celerp.services.attachments import stored_file_name
-    from celerp.services.connector_media import media_token
+    from celerp.services.connector_media import issue_media_token
 
-    token = media_token(company_id, file)
     filename = stored_file_name(str(file.get("id") or "image"), str(file.get("mime") or ""))
-    if token is None or filename is None:
+    token = await issue_media_token(company_id, file) if filename is not None else None
+    if token is None:
         return None
     from celerp.gateway.state import relay_http_url, relay_session_headers
 

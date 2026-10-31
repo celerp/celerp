@@ -6666,6 +6666,7 @@
   "connectors.err_link_save_failed": "Created {name} in {service} but could not save the link: {reason}. Publish again to link it.",
   "connectors.err_not_published": "This item is not published to {service}.",
   "connectors.attention_image_unshared": "Its images were not sent: Celerp could not create a link {service} can fetch them from. Check that Celerp Connect is active, then sync again.",
+  "connectors.attention_image_too_large": "لم تُرسل الصور: حجم {name} هو {size} ميغابايت، وهو أكبر من {limit} ميغابايت التي يمكن لـ {service} جلبها من Celerp. استخدم صورة أصغر، ثم زامن مرة أخرى.",
   "connectors.attention_image_refused": "{service} did not take its images, so they were not changed; the other changes were sent. {detail}",
   "inventory.col_channels": "Channels",
   "inventory.channel_published": "Published",

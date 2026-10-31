@@ -14,6 +14,9 @@ _subscription_status: str = ""
 _feature_flags: dict = {}
 _commercial_context: dict = {}
 _instance_id: str = ""
+# The tunnel limits the relay advertised on this connection's hello_ack (the relay's
+# relay/services/tunnel_limits.py advertised()); empty when it advertised none.
+_tunnel_limits: dict = {}
 
 # The client understands commercial-context envelopes up to this schema_version.
 # A higher one is rejected (last-known-good preserved) rather than partial-parsed,
@@ -37,6 +40,19 @@ def set_instance_id(iid: str) -> None:
     if _instance_id and iid != _instance_id:
         _commercial_context = {}
     _instance_id = iid
+
+
+def set_tunnel_limits(limits) -> None:
+    """Keep the limits a hello_ack advertised: positive whole numbers only, anything
+    else is dropped."""
+    global _tunnel_limits
+    _tunnel_limits = {k: v for k, v in (limits or {}).items()
+                      if isinstance(k, str) and type(v) is int and v > 0} if isinstance(limits, dict) else {}
+
+
+def get_tunnel_limits() -> dict:
+    """The limits the relay advertised on the current connection, or {}."""
+    return dict(_tunnel_limits)
 
 
 def get_session_token() -> str:

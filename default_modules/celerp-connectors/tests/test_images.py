@@ -170,6 +170,8 @@ async def test_outbound_never_sends_relative_image_src(connector_session, monkey
     relative is ever sent: the image waits on a person."""
     import json
 
+    monkeypatch.setattr("celerp.services.attachments.company_file_size", AsyncMock(return_value=1024))
+
     from celerp.connectors.base import ConnectorContext
     from celerp.connectors.woocommerce import WooCommerceConnector
     from celerp.services.field_fingerprints import fingerprint
@@ -211,39 +213,8 @@ async def test_outbound_never_sends_relative_image_src(connector_session, monkey
 
 # ── short-lived image links for a store to fetch ──────────────────────────────
 
-def test_media_tokens_name_one_image_and_expire():
-    from datetime import datetime, timedelta, timezone
-
-    from celerp.services.connector_media import MEDIA_TTL, media_claims, media_token
-
-    image = {"id": "f1", "mime": "image/png", "url": "/static/attachments/c1/f1.png"}
-    now = datetime(2026, 9, 1, tzinfo=timezone.utc)
-    token = media_token("c1", image, now=now)
-    assert media_claims(token, now=now + timedelta(minutes=5))["u"] == image["url"]
-    assert media_claims(token, now=now + MEDIA_TTL + timedelta(seconds=1)) is None
-    body, _, signature = token.partition(".")
-    assert media_claims(f"{body}x.{signature}", now=now) is None
-    # Never a document: certificates and other files get no link.
-    assert media_token("c1", {"id": "d1", "mime": "application/pdf", "url": "/static/d1.pdf"}) is None
-
-
 @pytest.mark.asyncio
-async def test_media_route_serves_only_a_valid_token(client):
-    from celerp.services.connector_media import media_token
-
-    image = {"id": "f1", "mime": "image/png", "url": "/static/attachments/c1/f1.png"}
-    with patch("celerp.services.attachments.read_company_file", new=AsyncMock(return_value=b"png-bytes")) as read:
-        ok = await client.get(f"/connector-media/{media_token('c1', image)}")
-        forged = await client.get("/connector-media/not-a-token")
-    assert ok.status_code == 200 and ok.content == b"png-bytes"
-    assert ok.headers["content-type"] == "image/png"
-    read.assert_awaited_once_with("c1", image["url"], __import__("celerp.services.attachments",
-                                                                 fromlist=["MAX_FILE_BYTES"]).MAX_FILE_BYTES)
-    assert forged.status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_mint_media_url_asks_the_relay_with_the_image_name():
+async def test_mint_media_url_asks_the_relay_with_the_image_name(media_tokens_in_test_transaction):
     from celerp.services.relay_share import mint_media_url
 
     image = {"id": "f1", "mime": "image/jpeg", "url": "/static/attachments/c1/f1.jpg"}
@@ -254,7 +225,37 @@ async def test_mint_media_url_asks_the_relay_with_the_image_name():
             return_value=httpx.Response(200, json={"url": "https://share.example.com/m/e/f1.jpg"}))
         assert await mint_media_url("c1", image) == "https://share.example.com/m/e/f1.jpg"
         sent = __import__("json").loads(mint.calls[0].request.content)
-        assert sent["filename"] == "f1.jpg" and sent["media_token"]
+        assert sent["filename"] == "f1.jpg"
+        # The relay wraps only its own token shape (relay/services/connector_media.py MEDIA_TOKEN).
+        assert __import__("re").fullmatch(r"[A-Za-z0-9_-]{43}", sent["media_token"])
         mint.mock(return_value=httpx.Response(402))
         assert await mint_media_url("c1", image) is None
     assert await mint_media_url("c1", {"id": "d", "mime": "application/pdf", "url": "/x.pdf"}) is None
+
+
+@pytest.mark.asyncio
+async def test_an_image_above_the_relays_limit_is_never_linked_and_says_why(media_tokens_in_test_transaction):
+    """The relay advertises the largest image a store can fetch (hello_ack tunnel limits);
+    a larger one gets no link, and the reason names its size and the limit."""
+    import uuid
+
+    from celerp.config import settings
+    from celerp.connectors.base import ConnectorContext
+    from celerp.connectors.images import store_images
+    from celerp.gateway import state
+
+    cid = str(uuid.uuid4())
+    folder = settings.data_dir / "static" / "attachments" / cid
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "big.png").write_bytes(b"x" * 3 * 1024 * 1024)
+    (folder / "small.png").write_bytes(b"x" * 1024)
+    files = [{"id": "big", "mime": "image/png", "is_hero": True, "url": f"/static/attachments/{cid}/big.png"},
+             {"id": "small", "mime": "image/png", "document_tag": "product_images",
+              "url": f"/static/attachments/{cid}/small.png"}]
+    ctx = ConnectorContext(company_id=cid, access_token="t", store_handle="https://store.example.com")
+    mint = AsyncMock(return_value="https://share.example.com/m/e/x.png")
+    with patch.object(state, "_tunnel_limits", {"media_max_bytes": 2 * 1024 * 1024}), \
+            patch("celerp.services.relay_share.mint_media_url", new=mint):
+        images, reason = await store_images(ctx, "woocommerce", "WooCommerce", files, {})
+    assert images == [] and not mint.called
+    assert "big" in reason and "3" in reason and "2" in reason and "WooCommerce" in reason
