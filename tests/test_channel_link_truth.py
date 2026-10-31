@@ -398,8 +398,12 @@ async def test_local_product_merge_never_channel_linked(client, session):
 
 @pytest.mark.usefixtures("connector_modules_running")
 async def test_disconnect_detaches_identity_and_allows_merge(client, session, connect_session):
+    """Disconnecting detaches the store's links and forgets the connection's first sync."""
+    from celerp.models.connector_first_sync import ConnectorFirstSync
+    from connector_test_support import connect
+
     h, cid = await _register(client)
-    await _connect(session, cid, "shopify")
+    await connect(session, cid, "shopify", first_sync="completed")
     a, b = await _pair(client, session, h, cid, "DISC", shopify=dict(LIVE_SHOPIFY))
     r = await _merge(client, h, a, b)
     assert r.status_code == 409 and r.json()["detail"] == t("inventory.err_merge_linked", "en", stores="Shopify"), r.text
@@ -407,6 +411,7 @@ async def test_disconnect_detaches_identity_and_allows_merge(client, session, co
         r = await client.delete("/connectors/shopify/credentials", headers=h)
     assert r.status_code == 200 and r.json() == {"ok": True}, r.text
     assert (await _state(session, cid, a))["external_links"]["shopify"] == {"detached": True}
+    assert await session.get(ConnectorFirstSync, (cid, "shopify"), populate_existing=True) is None
     r = await _merge(client, h, a, b)
     assert r.status_code == 200, r.text
 

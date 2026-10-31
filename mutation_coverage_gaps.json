@@ -1095,12 +1095,6 @@
   "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
  },
  {
-  "site": "celerp/connectors/ownership.py claim_connector_ownership delete",
-  "count": 1,
-  "class": "reached from a route",
-  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
- },
- {
   "site": "celerp/events/engine.py connector_upsert emit_event",
   "count": 1,
   "class": "not reached from a route",
