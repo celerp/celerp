@@ -1226,8 +1226,8 @@ class ItemSyncRequest(BaseModel):
     # publish: link or create the product, published; unpublish: set it to draft in the
     # store, keeping the link; stop / resume: stop or resume syncing it, in Celerp only.
     action: Literal["publish", "unpublish", "stop", "resume"]
-    # Items whose existing store product (same SKU) a person agreed to link.
-    confirm_link: list[str] = []
+    # Item -> the existing store product (same SKU) a person agreed to link it to.
+    confirm_link: dict[str, str] = {}
 
 
 @local_router.post("/{connector_name}/sync")
@@ -1241,9 +1241,9 @@ async def set_item_sync(
     """Publish, unpublish, stop or resume catalog products on one connected channel.
 
     Publishing an item whose SKU the store already has asks first: the item is listed
-    under ``needs_confirmation`` with the store product's name, and is linked when sent
-    again in ``confirm_link``. Unpublish sets the store product to draft and keeps the
-    link, so Publish undoes it; nothing is ever deleted in the store."""
+    under ``needs_confirmation`` with the store product's id and name, and is linked when
+    sent again in ``confirm_link`` with that product's id. Unpublish sets the store product
+    to draft and keeps the link, so Publish undoes it; nothing is ever deleted in the store."""
     if connector_name not in PRODUCT_CHANNEL_PLATFORMS:
         raise HTTPException(status_code=404, detail="Unsupported catalog connector")
     if not payload.entity_ids:
@@ -1320,11 +1320,11 @@ async def set_item_sync(
                     else:
                         await woo.ensure_product_link(
                             ctx, anchor_id, actor_id=user.id,
-                            confirm_link=anchor_id in payload.confirm_link,
+                            confirm_remote=payload.confirm_link.get(anchor_id),
                         )
                     updated += 1
                 except LinkNeedsConfirmation as ask:
-                    needs_confirmation.append({"entity_id": anchor_id, "sku": sku,
+                    needs_confirmation.append({"entity_id": anchor_id, "sku": sku, "remote_id": ask.remote_id,
                                                "remote_name": ask.remote_name, "message": str(ask)})
                 except Exception as exc:
                     errors.append(f"{sku}: {exc}")

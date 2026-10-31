@@ -1001,9 +1001,29 @@ async def test_sku_match_needs_confirmation(woo, connector_session):
     assert str(asked.value) == t("connectors.link_confirm", name="Store mug", service="WooCommerce")
     assert not external_link_for_state(await item_state(session, cid, "item:sm-1"), "woocommerce")
 
-    await woo.ensure_product_link(ctx, "item:sm-1", confirm_link=True)
+    await woo.ensure_product_link(ctx, "item:sm-1", confirm_remote=asked.value.remote_id)
     assert external_link_for_state(await item_state(session, cid, "item:sm-1"), "woocommerce")["product_id"] == "88"
     assert not create.called
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_confirm_links_only_the_reviewed_remote_product(woo, connector_session):
+    """A confirmation names the store product the person was shown: when the store's SKU
+    now finds another product, nothing is linked and the person is asked about that one."""
+    from celerp.connectors.woocommerce import LinkNeedsConfirmation
+    from celerp.connectors.product_links import external_link_for_state
+    from connector_test_support import item_state
+
+    session = connector_session
+    cid, ctx = await _publishing(session, "SkuSwapped", "SW-1")
+    respx.get(f"{_STORE}/products").mock(return_value=httpx.Response(
+        200, json=[{"id": 99, "sku": "SW-1", "name": "Another mug", "type": "simple", "status": "publish"}]))
+
+    with pytest.raises(LinkNeedsConfirmation) as asked:
+        await woo.ensure_product_link(ctx, "item:sw-1", confirm_remote="88")
+    assert (asked.value.remote_id, asked.value.remote_name) == ("99", "Another mug")
+    assert not external_link_for_state(await item_state(session, cid, "item:sw-1"), "woocommerce")
 
 
 @pytest.mark.usefixtures("inside_execution")

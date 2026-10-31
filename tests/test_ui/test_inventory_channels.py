@@ -101,7 +101,7 @@ async def test_item_detail_channel_actions():
 
 @pytest.mark.asyncio
 async def test_sku_match_inline_confirmation():
-    ask = {"entity_id": EID, "sku": "CH-1", "remote_name": "Store shirt",
+    ask = {"entity_id": EID, "sku": "CH-1", "remote_id": "88", "remote_name": "Store shirt",
            "message": t("connectors.link_confirm", name="Store shirt", service="WooCommerce")}
     sync = AsyncMock(return_value={"updated": 0, "errors": [], "needs_confirmation": [ask]})
     base = [patch("ui.api_client.get_company", AsyncMock(return_value=COMPANY)),
@@ -112,7 +112,7 @@ async def test_sku_match_inline_confirmation():
     assert r.status_code == 200
     assert ask["message"] in r.text
     assert t("inventory.channel_link") in r.text and t("btn.cancel") in r.text
-    assert "confirm_link" in r.text  # Link sends the confirmation
+    assert "confirm_remote" in r.text and "88" in r.text  # Link confirms the store product shown
     assert 'hx-get="/api/items/item%3Achan-1/channel/woocommerce"' in r.text  # Cancel changes nothing
     assert sync.await_args.args[1:] == ("woocommerce", [EID], "publish")
     assert sync.await_args.kwargs["confirm_link"] is None
@@ -120,8 +120,8 @@ async def test_sku_match_inline_confirmation():
     # Link: the same action, confirmed, and the block shows the linked product.
     sync.return_value = {"updated": 1, "errors": [], "needs_confirmation": []}
     r = await _ui("POST", f"/api/items/{EID}/channel-sync/woocommerce/publish",
-                  [*base, patch("ui.api_client.get_item", _item(PUBLISHED))], data={"confirm_link": "1"})
-    assert sync.await_args.kwargs["confirm_link"] == [EID]
+                  [*base, patch("ui.api_client.get_item", _item(PUBLISHED))], data={"confirm_remote": "88"})
+    assert sync.await_args.kwargs["confirm_link"] == {EID: "88"}
     assert t("inventory.channel_published") in r.text and ask["message"] not in r.text
 
     # Bulk: the items that need it are listed with one Link all.
@@ -131,6 +131,13 @@ async def test_sku_match_inline_confirmation():
     assert ask["message"] in r.text and t("inventory.channel_link_all") in r.text
     assert f'value="{EID}"' in r.text and 'value="item:chan-2"' not in r.text
     assert t("inventory.channel_bulk_done", n=1, service="WooCommerce") in r.text
+    assert f'value="{EID}:88"' in r.text  # Link all confirms each store product shown
+
+    # Link all sends each item with the store product it was shown.
+    sync.return_value = {"updated": 1, "errors": [], "needs_confirmation": []}
+    await _ui("POST", "/api/items/bulk/channel-sync/woocommerce/publish", base,
+              data={"selected": [EID], "confirm": [f"{EID}:88"]})
+    assert sync.await_args.kwargs["confirm_link"] == {EID: "88"}
 
 
 @pytest.mark.asyncio

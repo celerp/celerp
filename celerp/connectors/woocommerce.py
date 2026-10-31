@@ -586,15 +586,16 @@ class WooCommerceConnector(ConnectorBase):
 
     @needs_modules("celerp-inventory")
     async def ensure_product_link(
-        self, ctx: ConnectorContext, entity_id: str, actor_id=None, *, confirm_link: bool = False,
+        self, ctx: ConnectorContext, entity_id: str, actor_id=None, *, confirm_remote: str | None = None,
     ) -> str:
         """Publish one item: link it to its WooCommerce product, or create the product
         published. A linked product WooCommerce holds as a draft is published again.
 
-        A product the store already has under the item's SKU is linked only with
-        ``confirm_link``: linking hands its listing to Celerp, which replaces its
-        name, description, price and images at the next sync, so it is asked first
-        (LinkNeedsConfirmation). When the product was created but its link could not
+        A product the store already has under the item's SKU is linked only when
+        ``confirm_remote`` names it: linking hands its listing to Celerp, which replaces
+        its name, description, price and images at the next sync, so it is asked first
+        (LinkNeedsConfirmation), and a confirmation of another product asks again about
+        the one the store now has. When the product was created but its link could not
         be saved, the error names the product so a person knows it is live; publishing
         again links it by SKU."""
         from decimal import Decimal
@@ -680,7 +681,7 @@ class WooCommerceConnector(ConnectorBase):
                     remote = exact[0]
                     if remote.get("type") == "variable":
                         raise ValueError("This SKU belongs to a variable WooCommerce product; import the exact variation first")
-                    if not confirm_link:
+                    if confirm_remote is None or str(remote.get("id")) != str(confirm_remote):
                         raise LinkNeedsConfirmation(self, remote)
                 else:
                     if not allow_create:

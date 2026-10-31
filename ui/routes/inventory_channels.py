@@ -10,6 +10,7 @@ first, in the block itself, before the store product is linked."""
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from urllib.parse import quote
 
@@ -61,9 +62,10 @@ def _action_url(entity_id: str, platform: str, action: str) -> str:
 
 
 def channel_block(entity_id: str, channel: dict, state: dict, *, can_write: bool,
-                  message: str | None = None, confirm: str | None = None) -> FT:
-    """One channel's block for one item. ``confirm`` asks before linking a store product
-    with the item's SKU; ``message`` explains why the last action did not apply."""
+                  message: str | None = None, confirm: dict | None = None) -> FT:
+    """One channel's block for one item. ``confirm`` (the API's needs_confirmation entry)
+    asks before linking the store product it names; ``message`` explains why the last
+    action did not apply."""
     platform = str(channel.get("id") or "")
     label = str(channel.get("label") or platform)
     block_id = _block_id(entity_id, platform)
@@ -71,9 +73,10 @@ def channel_block(entity_id: str, channel: dict, state: dict, *, can_write: bool
     status, actions = channel_status(channel, state)
     if confirm:
         controls = [
-            Span(confirm, cls="catalog-channel__confirm"),
+            Span(confirm["message"], cls="catalog-channel__confirm"),
             Button(t("inventory.channel_link"), type="button", cls="btn btn--primary btn--xs",
-                   hx_post=_action_url(entity_id, platform, "publish"), hx_vals='{"confirm_link": "1"}', **swap),
+                   hx_post=_action_url(entity_id, platform, "publish"),
+                   hx_vals=json.dumps({"confirm_remote": confirm["remote_id"]}), **swap),
             Button(t("btn.cancel"), type="button", cls="btn btn--secondary btn--xs",
                    hx_get=f"/api/items/{quote(entity_id, safe='')}/channel/{platform}", **swap),
         ]
@@ -118,7 +121,7 @@ def _bulk_confirmation(platform: str, asks: list[dict]) -> FT:
         Ul(*[Li(a.get("message") or a.get("sku")) for a in asks]),
         Form(
             *[Input(type="hidden", name="selected", value=a["entity_id"]) for a in asks],
-            Input(type="hidden", name="confirm_link", value="1"),
+            *[Input(type="hidden", name="confirm", value=f'{a["entity_id"]}:{a["remote_id"]}') for a in asks],
             Button(t("inventory.channel_link_all"), type="submit", cls="btn btn--primary btn--sm"),
             hx_post=f"/api/items/bulk/channel-sync/{platform}/publish",
             hx_target="#bulk-action-result", hx_swap="outerHTML",
@@ -171,7 +174,7 @@ def setup_routes(app) -> None:
         try:
             result = await api.set_connector_item_sync(
                 token, platform, entity_ids, action,
-                confirm_link=entity_ids if form.get("confirm_link") else None)
+                confirm_link=dict(v.rsplit(":", 1) for v in form.getlist("confirm") if ":" in v) or None)
         except APIError as e:
             return _bulk_result(refusal_text(e.detail) or str(e.detail), "flash--error")
         asks = result.get("needs_confirmation") or []
@@ -198,13 +201,13 @@ def setup_routes(app) -> None:
         try:
             result = await api.set_connector_item_sync(
                 token, platform, [entity_id], action,
-                confirm_link=[entity_id] if form.get("confirm_link") else None)
+                confirm_link={entity_id: form["confirm_remote"]} if form.get("confirm_remote") else None)
         except APIError as e:
             return await _block(token, entity_id, channel, role, message=refusal_text(e.detail) or str(e.detail))
         asks = result.get("needs_confirmation") or []
         errors = result.get("errors") or []
         return await _block(token, entity_id, channel, role,
-                            confirm=asks[0]["message"] if asks else None,
+                            confirm=asks[0] if asks else None,
                             message="; ".join(errors) or None)
 
     @app.get("/inventory/{entity_id}/channel/{platform}")

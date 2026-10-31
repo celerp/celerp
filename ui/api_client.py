@@ -2866,14 +2866,14 @@ async def revert_items_to_draft(token: str, entity_ids: list[str], reason: str |
 
 async def set_connector_item_sync(
     token: str, platform: str, entity_ids: list[str], action: str,
-    confirm_link: list[str] | None = None,
+    confirm_link: dict[str, str] | None = None,
 ) -> dict:
-    """Publish, unpublish, stop or resume items on a store; ``confirm_link`` names the
-    items whose existing store product a person agreed to link."""
+    """Publish, unpublish, stop or resume items on a store; ``confirm_link`` maps each
+    item to the existing store product a person agreed to link it to."""
     async with _api_client(token, timeout=60.0) as c:
         return _raise(await c.post(
             f"/connector-items/{platform}/sync",
-            json={"entity_ids": entity_ids, "action": action, "confirm_link": confirm_link or []},
+            json={"entity_ids": entity_ids, "action": action, "confirm_link": confirm_link or {}},
         )).json()
 
 
