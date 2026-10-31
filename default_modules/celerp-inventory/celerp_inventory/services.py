@@ -538,9 +538,9 @@ async def _merge_parts(session: AsyncSession, company_id, entity_id: str) -> lis
 
 def _landed_only(state: dict) -> bool:
     """A lot holding units whose whole value is landed cost: no goods value under its freight."""
-    landed = sum(float(v or 0) for v in (state.get("landed_costs") or {}).values())
-    return (float(state.get("quantity") or 0) != 0 and landed > 0
-            and round_basis(float(recorded_value(state)) - landed) == 0)
+    return (float(state.get("quantity") or 0) != 0
+            and any(float(v or 0) for v in (state.get("landed_costs") or {}).values())
+            and goods_cost_empty({**state, "quantity": 0}))
 
 
 async def cost_review_ids(session: AsyncSession, company_id, entity_ids: list[str]) -> set[str]:
