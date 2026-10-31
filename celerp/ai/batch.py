@@ -105,6 +105,10 @@ def _file_error(exc: BaseException) -> str:
     """The user-facing reason a single file could not be read."""
     if isinstance(exc, HTTPException) and exc.status_code == 402:
         return t("ai.file_out_of_credits")
+    # A free account's read is refused while free questions are paused. The relay's
+    # other free refusal (text too long) cannot reach a read: its text is the prompt.
+    if isinstance(exc, HTTPException) and isinstance(exc.detail, dict) and exc.detail.get("code") == "free_paused":
+        return t("ai.free_paused", date=str(exc.detail.get("resets_at") or "")[:10])
     if isinstance(exc, RelayError):
         if exc.code in service.NEW_QUESTION_ERRORS:  # its read cannot be taken again; a retry reads it anew
             return t("ai.file_lost")

@@ -133,6 +133,14 @@ async def test_file_reading_results_read_in_the_reader_language(monkeypatch):
     assert _english(sent + errors) == []
 
 
+def test_a_file_read_while_free_questions_are_paused_says_so():
+    """The relay refuses a free account's read while free questions are paused: the
+    file says that, not that it could not be read."""
+    paused = HTTPException(503, detail={"code": "free_paused", "message": "Free AI queries are paused.",
+                                        "resets_at": "2026-12-01T00:00:00Z"})
+    assert batch._file_error(paused) == i18n.t("ai.free_paused", date="2026-12-01")
+
+
 # Every failure code the AI service reports (celerp.ai.llm.RelayError): those its
 # replies map to, and those raised in celerp.ai.llm itself.
 # Every code the relay client can raise: the relay's own codes it passes through, and
