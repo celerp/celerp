@@ -6125,7 +6125,7 @@
   "docs.void_under_credit_note": "Faktur ini tidak dapat dibatalkan: nota kredit {numbers} diterbitkan atasnya. Batalkan nota kredit tersebut terlebih dahulu, lalu coba lagi.",
   "docs.revert_under_credit_note": "Faktur ini tidak dapat dikembalikan ke draf: nota kredit {numbers} diterbitkan atasnya. Batalkan nota kredit tersebut terlebih dahulu, lalu coba lagi.",
   "docs.unpriced_receipt": "{goods}: tidak ada baris di {document} yang memberinya harga, sehingga biaya barang yang diterima tidak dapat dihitung. Tambahkan baris untuknya di {document} terlebih dahulu, lalu terima barangnya.",
-  "docs.unpriced_line": "{goods}: this line has no price. Enter its price, then try again.",
+  "docs.unpriced_line": "{goods}: baris ini belum memiliki harga. Masukkan harganya, lalu coba lagi.",
   "posting.role_missing": "Pilih akun untuk {role} di pengaturan akuntansi terlebih dahulu, lalu coba lagi.",
   "doc_import.treatment_required": "Dokumen {number} tidak diimpor karena tidak menyatakan cara masuk ke pembukuan. Impor lagi dan pilih \"Sudah ada di saldo awal saya\" atau \"Catat sekarang\" di layar tinjauan, atau tetapkan dulu tanggal saldo awal di Detail Perusahaan agar pilihannya dibuat dari tanggal dokumen.",
   "doc_import.treatment_unknown": "Dokumen {number} memberi perlakuan impor ({given}) yang tidak dikenal aplikasi. Gunakan Sudah ada di saldo awal saya atau Catat sekarang, atau kosongkan, lalu impor lagi.",

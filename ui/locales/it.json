@@ -6125,7 +6125,7 @@
   "docs.void_under_credit_note": "Questa fattura non può essere annullata: le note di credito {numbers} sono emesse su di essa. Annulla prima quelle note di credito, poi riprova.",
   "docs.revert_under_credit_note": "Questa fattura non può tornare in bozza: le note di credito {numbers} sono emesse su di essa. Annulla prima quelle note di credito, poi riprova.",
   "docs.unpriced_receipt": "{goods}: nessuna riga di {document} ne indica il prezzo, quindi la merce ricevuta non può essere valorizzata. Aggiungi prima una riga per esso in {document}, poi ricevilo.",
-  "docs.unpriced_line": "{goods}: this line has no price. Enter its price, then try again.",
+  "docs.unpriced_line": "{goods}: questa riga non ha un prezzo. Inserisci il prezzo e riprova.",
   "posting.role_missing": "Scegli prima un conto per {role} nelle impostazioni contabili, poi riprova.",
   "doc_import.treatment_required": "Il documento {number} non è stato importato perché non indica come entra nei libri. Importalo di nuovo e scegli \"Già nei miei saldi di apertura\" o \"Registralo ora\" nella schermata di revisione, oppure imposta prima una data dei saldi di apertura in Dettagli aziendali, così la scelta viene fatta in base alla data del documento.",
   "doc_import.treatment_unknown": "Il documento {number} indica un trattamento di importazione ({given}) che l'app non conosce. Usa Già nei miei saldi di apertura o Registralo ora, oppure lascialo vuoto, poi importalo di nuovo.",

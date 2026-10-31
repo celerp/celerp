@@ -6125,7 +6125,7 @@
   "docs.void_under_credit_note": "Không thể hủy hóa đơn này: các phiếu ghi có {numbers} đã được phát hành cho nó. Hãy hủy các phiếu ghi có đó trước, rồi thử lại.",
   "docs.revert_under_credit_note": "Không thể đưa hóa đơn này về bản nháp: các phiếu ghi có {numbers} đã được phát hành cho nó. Hãy hủy các phiếu ghi có đó trước, rồi thử lại.",
   "docs.unpriced_receipt": "{goods}: không dòng nào của {document} định giá cho nó, nên không thể tính giá vốn hàng đã nhận. Hãy thêm một dòng cho nó vào {document} trước, rồi nhận hàng.",
-  "docs.unpriced_line": "{goods}: this line has no price. Enter its price, then try again.",
+  "docs.unpriced_line": "{goods}: dòng này chưa có giá. Hãy nhập giá rồi thử lại.",
   "posting.role_missing": "Hãy chọn tài khoản cho {role} trong cài đặt kế toán trước, rồi thử lại.",
   "doc_import.treatment_required": "Chứng từ {number} chưa được nhập vì không cho biết cách ghi vào sổ. Hãy nhập lại và chọn \"Đã có trong số dư đầu kỳ của tôi\" hoặc \"Ghi nhận ngay\" trên màn hình xem lại, hoặc đặt trước ngày số dư đầu kỳ trong Chi tiết công ty để lựa chọn được xác định theo ngày của chứng từ.",
   "doc_import.treatment_unknown": "Chứng từ {number} đưa ra cách nhập ({given}) mà ứng dụng không biết. Dùng Đã có trong số dư đầu kỳ của tôi hoặc Ghi nhận ngay, hoặc để trống, rồi nhập lại.",

@@ -6125,7 +6125,7 @@
   "docs.void_under_credit_note": "Diese Rechnung kann nicht storniert werden: Die Gutschriften {numbers} sind auf sie ausgestellt. Stornieren Sie zuerst diese Gutschriften und versuchen Sie es dann erneut.",
   "docs.revert_under_credit_note": "Diese Rechnung kann nicht in den Entwurf zurückgesetzt werden: Die Gutschriften {numbers} sind auf sie ausgestellt. Stornieren Sie zuerst diese Gutschriften und versuchen Sie es dann erneut.",
   "docs.unpriced_receipt": "{goods}: Keine Zeile von {document} bepreist es, daher können die erhaltenen Waren nicht bewertet werden. Fügen Sie zuerst eine Zeile dafür zu {document} hinzu und erfassen Sie dann den Eingang.",
-  "docs.unpriced_line": "{goods}: this line has no price. Enter its price, then try again.",
+  "docs.unpriced_line": "{goods}: Für diese Position wurde kein Preis angegeben. Geben Sie den Preis ein und versuchen Sie es erneut.",
   "posting.role_missing": "Wählen Sie zuerst in den Buchhaltungseinstellungen ein Konto für {role} und versuchen Sie es dann erneut.",
   "doc_import.treatment_required": "Dokument {number} wurde nicht importiert, weil es nicht angibt, wie es in die Bücher eingeht. Importieren Sie es erneut und wählen Sie auf der Prüfseite „Bereits in meinen Eröffnungssalden“ oder „Jetzt erfassen“, oder legen Sie zuerst unter Unternehmensdetails ein Datum für die Eröffnungssalden fest, damit die Auswahl anhand des Belegdatums getroffen wird.",
   "doc_import.treatment_unknown": "Dokument {number} gibt eine Importbehandlung ({given}) an, die die App nicht kennt. Verwenden Sie Bereits in meinen Eröffnungssalden oder Jetzt erfassen oder lassen Sie sie weg, und importieren Sie es erneut.",
