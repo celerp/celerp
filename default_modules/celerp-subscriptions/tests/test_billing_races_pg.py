@@ -21,6 +21,17 @@ from test_fresh_authority_races_pg import _Held, _app_client, _race, _seed, _unt
 pytestmark = [pytest.mark.process, pytest.mark.asyncio]
 
 
+async def _company(factory) -> dict:
+    """A seeded company with its books, so finalizing a billed document posts."""
+    from test_helpers import provision_company_books
+
+    seeded = await _seed(factory)
+    async with factory() as s:
+        await provision_company_books(s, seeded["company_id"])
+        await s.commit()
+    return seeded
+
+
 def _factory(engine):
     return async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
 
@@ -64,7 +75,7 @@ def _holding_first(factory, held: _Held):
 async def test_same_period_two_workers_one_invoice(committed_engine, monkeypatch):
     freeze_day(monkeypatch, "2026-03-15")
     factory = _factory(committed_engine)
-    seeded = await _seed(factory)
+    seeded = await _company(factory)
     owner = seeded["h"]["owner"]
     async with _app_client(factory) as (client, pending):
         eid = await agreement(client, owner, start="2026-03-01")
@@ -96,7 +107,7 @@ class _Crash:
 async def test_restart_between_claim_and_commit_one_invoice(committed_engine, monkeypatch):
     freeze_day(monkeypatch, "2026-03-15")
     factory = _factory(committed_engine)
-    seeded = await _seed(factory)
+    seeded = await _company(factory)
     owner = seeded["h"]["owner"]
     async with _app_client(factory) as (client, pending):
         eid = await agreement(client, owner, start="2026-03-01")
@@ -117,7 +128,7 @@ async def test_two_processes_dispatch_same_company_one_invoice(committed_engine,
 
     freeze_day(monkeypatch, "2026-03-15")
     factory = _factory(committed_engine)
-    seeded = await _seed(factory)
+    seeded = await _company(factory)
     owner, cid = seeded["h"]["owner"], seeded["company_id"]
     today = date(2026, 3, 15)
     async with _app_client(factory) as (client, _pending):
@@ -141,7 +152,7 @@ async def test_two_dispatchers_respect_budget_and_claims(committed_engine, monke
         c for c in slots.get("periodic_operation") if c["handler"].startswith("celerp_subscriptions.")])
     freeze_day(monkeypatch, "2026-07-15")
     factory = _factory(committed_engine)
-    seeded = await _seed(factory)
+    seeded = await _company(factory)
     owner, cid = seeded["h"]["owner"], seeded["company_id"]
     today = date(2026, 7, 15)
     async with _app_client(factory) as (client, _pending):

@@ -283,7 +283,7 @@ async def test_list_to_document_duplicate_is_atomic(client, session):
 
 @pytest.mark.asyncio
 async def test_subscription_generate_duplicate_is_atomic(client, session):
-    """generate_now (POST /subscriptions/{id}/generate) on a subscription
+    """Generate due (POST /subscriptions/{id}/generate-due) on a subscription
     template carrying a duplicate non-splittable item is rejected 409 and nothing
     is committed.
 
@@ -298,17 +298,17 @@ async def test_subscription_generate_duplicate_is_atomic(client, session):
     item = await _item(client, t, "SG-NS", allow_splitting=False)
     sub_id = f"doc:{_uuid.uuid4().hex[:12]}"
     await _seed_historical_doc(session, cid, sub_id, {
-        "doc_type": "subscription_invoice", "status": "active",
+        "doc_type": "subscription_invoice", "status": "active", "frequency": "monthly", "anchor_date": "2026-01-01",
         "line_items": [_line(item, sku="SG-NS"), _line(item, sku="SG-NS")],
     })
     before_invoices = await _target_doc_count(session, cid, "invoice")
     before_template = await _doc_state(session, cid, sub_id)
 
-    r = await client.post(f"/subscriptions/{sub_id}/generate", headers=_h(t))
+    r = await client.post(f"/subscriptions/{sub_id}/generate-due", headers=_h(t), json={})
 
     assert r.status_code == 409, r.text
     assert r.json()["detail"]["code"] == "duplicate_document_item"
-    # Atomicity: no generated invoice, template unchanged (no new generated_doc_ids).
+    # Atomicity: no generated invoice, template unchanged (no period claimed).
     assert await _target_doc_count(session, cid, "invoice") == before_invoices
     after_template = await _doc_state(session, cid, sub_id)
     assert after_template == before_template

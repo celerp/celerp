@@ -229,6 +229,29 @@ def _period_row(schedule: Schedule, k: int) -> dict:
             "service_end": schedule.end(k).isoformat(), "bill_date": schedule.bill_date(k).isoformat()}
 
 
+async def period_list(session: AsyncSession, company_id, state: dict, today: date, *, limit: int = 24) -> dict:
+    """An agreement's periods from its lowest to the one after today (and any claimed later),
+    newest first, at most ``limit``, with each claim's state and document; and its next bill date."""
+    if not state.get("anchor_date"):
+        return {"next_bill_date": None, "rows": []}
+    schedule = Schedule.from_state(state)
+    nxt = schedule.next_bill_date(floor=review_floor(state))
+    first = schedule.first()
+    rows = []
+    if first is not None:
+        top = max([schedule.current(today) + 1, *schedule.periods])
+        k = top
+        while k >= first and len(rows) < limit:
+            if schedule.exists(k):
+                entry = schedule.periods.get(k) or {}
+                doc_id = entry.get("doc_id")
+                rows.append({**_period_row(schedule, k), "state": entry.get("state"), "doc_id": doc_id,
+                             "ref_id": await doc_ref(session, company_id, doc_id) if doc_id else None,
+                             "reason": entry.get("reason")})
+            k -= 1
+    return {"next_bill_date": nxt.isoformat() if nxt else None, "rows": rows}
+
+
 def due_periods(state: dict, today: date) -> tuple[Schedule, list[int]] | None:
     """The schedule and its due open periods, for an active agreement with a schedule."""
     if state.get("status") != "active" or not state.get("anchor_date"):

@@ -10882,11 +10882,14 @@ async function celerpCsvImport(input, entityId) {{
                  A(original.get("ref_id") or original.get("doc_number") or doc["original_doc_id"],
                    href=doc_href(doc["original_doc_id"])),
                  cls="meta-cell") if original else ""),
+            # An agreement's schedule changes only through its own controls, which check it
+            # against the periods already billed, so here it is shown, not edited.
             Div(Div(t("th.frequency") if _is_sub_template else t("doc.issue_date"), cls="meta-label"),
-                _cell("frequency", doc.get("frequency", "").capitalize()) if _is_sub_template else _cell("issue_date", issue_date_value),
+                Div(display_enum(doc["frequency"], "subscription_frequency") if doc.get("frequency") else "--")
+                if _is_sub_template else _cell("issue_date", issue_date_value),
                 cls="meta-cell"),
             (Div(Div(t("doc.next_issue_date"), cls="meta-label"),
-                 _cell("next_run_date", doc.get("next_run_date") or "--"),
+                 Div(doc.get("next_bill_date") or "--"),
                  cls="meta-cell") if _is_sub_template else
              (Div(Div(t("doc.due_date"), cls="meta-label"), _cell("due_date", due_date_value), cls="meta-cell") if not is_list else "")),
             cls="doc-meta-bar",

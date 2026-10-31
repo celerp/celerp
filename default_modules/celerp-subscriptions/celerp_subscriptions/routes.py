@@ -17,13 +17,14 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
+from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
 from celerp.services.business_time import company_today
 from celerp.services.company_lock import locked_company
 from celerp.services.permissions import missing_permission, require_permission, role_has_permission
 from celerp_subscriptions import billing, summary
 from celerp_subscriptions.periods import BILLED, CLAIMED_STATES, FREQUENCIES, RELEASED, SKIPPED, TIMINGS, Schedule, UNRESOLVED
-from celerp_subscriptions.search import search_subscription_templates
+from celerp_subscriptions.search import SUBSCRIPTION_DOC_TYPES, search_subscription_templates
 from ui.i18n import t
 
 BATCH_CAP = 50
@@ -293,6 +294,19 @@ def _build_router() -> APIRouter:
                                             period_index=body.period_index, request_key=body.request_key)
         await session.commit()
         return result
+
+    @router.get("/{entity_id}/periods")
+    async def list_periods(
+        entity_id: str,
+        company_id: uuid.UUID = Depends(get_current_company_id),
+        _: None = require_permission("view_subscriptions"),
+        session: AsyncSession = Depends(get_session),
+    ) -> dict:
+        """The agreement's periods, newest first, and its next bill date."""
+        proj = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+        if proj is None or proj.state.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
+            raise HTTPException(status_code=404, detail=t("subscriptions.err_not_found"))
+        return await billing.period_list(session, company_id, proj.state, await company_today(session, company_id))
 
     @router.post("/{entity_id}/periods/{k}/skip")
     async def skip_period(

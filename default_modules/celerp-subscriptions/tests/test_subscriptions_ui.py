@@ -29,12 +29,12 @@ _SUB_DOC = {
     "status": "active",
     "frequency": "monthly",
     "start_date": "2026-01-01",
-    "next_run_date": "2026-06-01",
+    "anchor_date": "2026-01-01",
     "contact_id": "ct:1",
     "contact_name": "Alice",
     "currency": "USD",
     "line_items": [{"description": "Service", "quantity": 1, "unit_price": 100}],
-    "generated_doc_ids": [],
+    "periods": {},
 }
 
 
@@ -90,6 +90,8 @@ class TestSubscriptionsUI:
         ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_subscription", new=AsyncMock(return_value=_SUB_DOC)),
+            patch("ui.api_client.get_subscription_periods",
+                  new=AsyncMock(return_value={"next_bill_date": "2026-02-01", "rows": []})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "ACME", "currency": "USD", "timezone": "UTC"})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": []})),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
@@ -99,7 +101,7 @@ class TestSubscriptionsUI:
             r = await ui_client.get("/subscriptions/sub-001")
         assert r.status_code == 200
         assert "sub-001" in r.text  # ref_id shown in breadcrumb/header
-        assert "Generate Now" in r.text  # active-status action visible
+        assert "Generate due" in r.text  # active-status action visible
 
     async def test_detail_page_unauthenticated_redirects(self, ui_client):
         r = await ui_client.get("/subscriptions/sub-001")
@@ -133,7 +135,7 @@ class TestSubscriptionActions:
     async def test_a_refused_action_says_why_and_stays_on_the_page(self, owner_ui):
         eid = await _active_subscription(owner_ui)
         assert (await owner_ui.api.post(f"/subscriptions/{eid}/cancel")).status_code == 200
-        r = await owner_ui.post(f"/subscriptions/{eid}/generate")
+        r = await owner_ui.post(f"/subscriptions/{eid}/generate-due")
         assert r.status_code == 200
         assert "location" not in r.headers and "HX-Redirect" not in r.headers
         assert t("subscriptions.err_generate_cancelled", "en") in json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"]
@@ -141,9 +143,9 @@ class TestSubscriptionActions:
     async def test_generate_sent_twice_with_its_key_creates_one_document(self, owner_ui):
         eid = await _active_subscription(owner_ui)
         for _ in range(2):
-            await owner_ui.post(f"/subscriptions/{eid}/generate", data={"idempotency_key": "gen-once"})
+            await owner_ui.post(f"/subscriptions/{eid}/generate-due", data={"idempotency_key": "gen-once"})
         sub = (await owner_ui.api.get(f"/docs/{eid}")).json()
-        assert len(sub["generated_doc_ids"]) == 1
+        assert [e["state"] for e in sub["periods"].values()].count("billed") == 1
 
     async def test_an_unknown_action_is_not_found_and_calls_nothing(self, owner_ui):
         eid = await _active_subscription(owner_ui)
@@ -154,7 +156,7 @@ class TestSubscriptionActions:
     async def test_the_detail_page_buttons_post_in_place(self, owner_ui):
         eid = await _active_subscription(owner_ui)
         html = (await owner_ui.get(f"/subscriptions/{eid}")).text
-        assert f'hx-post="/subscriptions/{eid}/generate"' in html
+        assert f'hx-post="/subscriptions/{eid}/generate-due"' in html
         assert "idempotency_key" in html
 
     async def test_a_done_action_returns_to_the_subscription(self, owner_ui):

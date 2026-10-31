@@ -2114,7 +2114,8 @@ async def create_subscription(token: str, data: dict) -> dict:
         return _raise(await c.post("/docs", json=data)).json()
 
 
-SUBSCRIPTION_ACTIONS = ("activate", "generate", "pause", "resume", "cancel")
+SUBSCRIPTION_ACTIONS = ("activate", "generate-due", "bill-early", "pause", "resume", "cancel")
+PERIOD_ACTIONS = ("skip", "unskip", "reopen", "send")
 
 
 async def subscription_action(token: str, entity_id: str, action: str, body: dict | None = None) -> dict:
@@ -2122,6 +2123,24 @@ async def subscription_action(token: str, entity_id: str, action: str, body: dic
         raise ValueError(f"Unknown subscription action: {action}")
     async with _api_client(token) as c:
         return _raise(await c.post(f"/subscriptions/{entity_id}/{action}", json=body)).json()
+
+
+async def get_subscription_periods(token: str, entity_id: str) -> dict:
+    """Returns {next_bill_date, rows: [...]}, newest period first."""
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/subscriptions/{entity_id}/periods")).json()
+
+
+async def subscription_period_action(token: str, entity_id: str, k: int, action: str, body: dict | None = None) -> dict:
+    if action not in PERIOD_ACTIONS:
+        raise ValueError(f"Unknown period action: {action}")
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/subscriptions/{entity_id}/periods/{k}/{action}", json=body)).json()
+
+
+async def update_subscription_schedule(token: str, entity_id: str, changes: dict) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.patch(f"/subscriptions/{entity_id}/schedule", json=changes)).json()
 
 
 # ---------------------------------------------------------------------------

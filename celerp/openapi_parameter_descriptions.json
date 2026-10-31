@@ -724,7 +724,8 @@
     "query:limit": "Maximum number of records to return.",
     "query:offset": "Number of matching records to skip before returning results.",
     "query:q": "Search text used to filter matching records.",
-    "query:status": "Record or workflow status used to filter results or select the requested lifecycle state."
+    "query:status": "Record or workflow status used to filter results or select the requested lifecycle state.",
+    "query:review": "When true, return only agreements with earlier documents waiting for history review."
   },
   "OPTIONS /share/{token}": {
     "path:token": "Opaque public token identifying the shared or payment resource."
@@ -1477,9 +1478,6 @@
   "POST /subscriptions/{entity_id}/cancel": {
     "path:entity_id": "Identifier of the requested Celerp record."
   },
-  "POST /subscriptions/{entity_id}/generate": {
-    "path:entity_id": "Identifier of the requested Celerp record."
-  },
   "POST /subscriptions/{entity_id}/pause": {
     "path:entity_id": "Identifier of the requested Celerp record."
   },
@@ -1535,5 +1533,44 @@
   },
   "POST /docs/{entity_id}/tax-rate": {
     "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "GET /subscriptions/summary": {
+    "query:all": "When true, return everything unattended billing recorded, not only what came after this user last marked the summary read."
+  },
+  "GET /subscriptions/{entity_id}/periods": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "PATCH /subscriptions/{entity_id}/schedule": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /subscriptions/{entity_id}/bill-early": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /subscriptions/{entity_id}/generate-due": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /subscriptions/{entity_id}/history/{doc_id}/confirm": {
+    "path:entity_id": "Identifier of the requested Celerp record.",
+    "path:doc_id": "Identifier of the earlier document waiting in the agreement's history review."
+  },
+  "POST /subscriptions/{entity_id}/history/{doc_id}/withdraw": {
+    "path:entity_id": "Identifier of the requested Celerp record.",
+    "path:doc_id": "Identifier of the earlier document waiting in the agreement's history review."
+  },
+  "POST /subscriptions/{entity_id}/periods/{k}/reopen": {
+    "path:entity_id": "Identifier of the requested Celerp record.",
+    "path:k": "Index of the billing period: 0 is the period starting on the first bill date, and each later period counts up by one."
+  },
+  "POST /subscriptions/{entity_id}/periods/{k}/send": {
+    "path:entity_id": "Identifier of the requested Celerp record.",
+    "path:k": "Index of the billing period: 0 is the period starting on the first bill date, and each later period counts up by one."
+  },
+  "POST /subscriptions/{entity_id}/periods/{k}/skip": {
+    "path:entity_id": "Identifier of the requested Celerp record.",
+    "path:k": "Index of the billing period: 0 is the period starting on the first bill date, and each later period counts up by one."
+  },
+  "POST /subscriptions/{entity_id}/periods/{k}/unskip": {
+    "path:entity_id": "Identifier of the requested Celerp record.",
+    "path:k": "Index of the billing period: 0 is the period starting on the first bill date, and each later period counts up by one."
   }
 }

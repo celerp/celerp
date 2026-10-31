@@ -3,7 +3,8 @@
 """Tests for celerp-subscriptions module rebuild.
 
 Subscription templates are docs with doc_type "subscription_invoice" or "subscription_po".
-Lifecycle actions (pause/resume/cancel/generate) are at /subscriptions/<id>/<action>.
+Lifecycle actions (activate/pause/resume/cancel) and billing (generate-due) are at
+/subscriptions/<id>/<action>.
 """
 from __future__ import annotations
 
@@ -180,17 +181,17 @@ async def test_subscription_status_filter(client):
 
 
 # ---------------------------------------------------------------------------
-# 6. Generate now creates invoice
+# 6. Generate due creates invoice
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_generate_now_creates_invoice(client):
+async def test_generate_due_creates_invoice(client):
     tok = await _register(client)
     h = _h(tok)
     sub = await _create_sub_template(client, h, name="My Sub Template")
     eid = sub.get("entity_id") or sub.get("id") or ""
 
-    r = await client.post(f"/subscriptions/{eid}/generate", headers=h)
+    r = await client.post(f"/subscriptions/{eid}/generate-due", headers=h, json={})
     assert r.status_code == 200, r.text
     body = r.json()
     doc_id = body.get("doc_id", "")
@@ -201,7 +202,7 @@ async def test_generate_now_creates_invoice(client):
     assert dr.status_code == 200
     doc = dr.json()
     assert doc.get("doc_type") == "invoice"
-    assert doc.get("subscription_id") == eid
+    assert doc.get("source_agreement") == eid and doc.get("period_index") == 0
     # The note names the template as the subscriptions list does: by its reference, not its name.
     ref = (await client.get(f"/docs/{eid}", headers=h)).json()["ref_id"]
     assert ref and doc.get("notes") == f"Auto-created from subscription template {ref}"
@@ -211,13 +212,13 @@ async def test_generate_now_creates_invoice(client):
 
 
 @pytest.mark.asyncio
-async def test_generate_now_preserves_legacy_customer_terms(client):
+async def test_generate_due_preserves_legacy_customer_terms(client):
     tok = await _register(client)
     h = _h(tok)
     sub = await _create_sub_template(client, h, terms="Legacy subscription customer terms.")
     eid = sub.get("entity_id") or sub.get("id") or ""
 
-    r = await client.post(f"/subscriptions/{eid}/generate", headers=h)
+    r = await client.post(f"/subscriptions/{eid}/generate-due", headers=h, json={})
     assert r.status_code == 200, r.text
     doc = (await client.get(f"/docs/{r.json()['doc_id']}", headers=h)).json()
     assert doc.get("terms_text") == "Legacy subscription customer terms."
@@ -226,11 +227,11 @@ async def test_generate_now_preserves_legacy_customer_terms(client):
 
 
 # ---------------------------------------------------------------------------
-# 7. Generate now computes totals
+# 7. Generate due computes totals
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_generate_now_computes_totals(client):
+async def test_generate_due_computes_totals(client):
     tok = await _register(client)
     h = _h(tok)
     sub = await _create_sub_template(
@@ -244,7 +245,7 @@ async def test_generate_now_computes_totals(client):
     )
     eid = sub.get("entity_id") or sub.get("id") or ""
 
-    r = await client.post(f"/subscriptions/{eid}/generate", headers=h)
+    r = await client.post(f"/subscriptions/{eid}/generate-due", headers=h, json={})
     assert r.status_code == 200, r.text
     doc_id = r.json()["doc_id"]
 
@@ -290,7 +291,7 @@ async def test_resume_subscription(client):
     assert r.status_code == 200
     body = r.json()
     assert body.get("ok") is True
-    assert body.get("next_run_date")
+    assert body.get("next_bill_date") == "2026-01-01"  # resuming leaves missed periods due
 
     dr = await client.get(f"/docs/{eid}", headers=h)
     assert dr.json().get("status") == "active"
@@ -369,20 +370,21 @@ async def test_subscription_contact_id_preserved(client):
 
 
 # ---------------------------------------------------------------------------
-# 14. Custom frequency uses 30-day default when no interval given
+# 14. A custom frequency needs its interval
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_subscription_custom_frequency_default_interval(client):
+async def test_subscription_custom_frequency_needs_its_interval(client):
     tok = await _register(client)
     h = _h(tok)
-    sub = await _create_sub_template(client, h, frequency="custom")
-    eid = sub.get("entity_id") or sub.get("id") or ""
-
-    r = await client.post(f"/subscriptions/{eid}/generate", headers=h)
-    assert r.status_code == 200
-    # 30-day default from today - just verify next_run_date is returned and not empty
-    assert r.json().get("next_run_date")
+    r = await client.post("/docs", headers=h, json={
+        "doc_type": "subscription_invoice", "contact_id": "contact:test-001", "frequency": "custom",
+        "start_date": "2026-01-01", "line_items": [{"description": "S", "quantity": 1, "unit_price": 100.0}]})
+    assert (await client.post(f"/subscriptions/{r.json()['id']}/activate", headers=h)).status_code == 422
+    sub = await _create_sub_template(client, h, frequency="custom", custom_interval_days=30)
+    r = await client.post(f"/subscriptions/{sub['id']}/generate-due", headers=h, json={})
+    assert r.status_code == 200, r.text
+    assert r.json()["next_bill_date"] == "2026-01-31"
 
 
 # ---------------------------------------------------------------------------
@@ -396,7 +398,7 @@ async def test_generated_invoice_appears_in_normal_invoice_list(client):
     sub = await _create_sub_template(client, h)
     eid = sub.get("entity_id") or sub.get("id") or ""
 
-    r = await client.post(f"/subscriptions/{eid}/generate", headers=h)
+    r = await client.post(f"/subscriptions/{eid}/generate-due", headers=h, json={})
     assert r.status_code == 200
     doc_id = r.json()["doc_id"]
 
@@ -455,7 +457,9 @@ def _balanced(entry: dict) -> bool:
 
 
 async def _generated(client, h, eid: str) -> list[str]:
-    return (await client.get(f"/docs/{eid}", headers=h)).json().get("generated_doc_ids") or []
+    """The documents billed for the agreement, oldest period first."""
+    periods = (await client.get(f"/docs/{eid}", headers=h)).json().get("periods") or {}
+    return [e["doc_id"] for _, e in sorted(periods.items(), key=lambda kv: int(kv[0])) if e.get("state") == "billed"]
 
 
 @pytest.mark.asyncio
@@ -463,7 +467,7 @@ async def test_generate_finalizes_the_invoice_with_its_journal_entry(client, ses
     h = _h(await _register(client))
     eid = (await _create_sub_template(client, h))["id"]
 
-    r = await client.post(f"/subscriptions/{eid}/generate", headers=h)
+    r = await client.post(f"/subscriptions/{eid}/generate-due", headers=h, json={})
     assert r.status_code == 200, r.text
     doc = (await client.get(f"/docs/{r.json()['doc_id']}", headers=h)).json()
     assert doc["status"] == "final" and doc["ref_id"].startswith("INV-")
@@ -477,7 +481,7 @@ async def test_generate_on_a_purchase_order_subscription_creates_a_bill(client, 
     h = _h(await _register(client))
     eid = (await _create_sub_template(client, h, doc_type="subscription_po"))["id"]
 
-    r = await client.post(f"/subscriptions/{eid}/generate", headers=h)
+    r = await client.post(f"/subscriptions/{eid}/generate-due", headers=h, json={})
     assert r.status_code == 200, r.text
     doc = (await client.get(f"/docs/{r.json()['doc_id']}", headers=h)).json()
     assert doc["doc_type"] == "bill" and r.json()["ref_id"] == doc["ref_id"]
@@ -491,39 +495,41 @@ async def test_generate_retried_with_its_key_returns_the_first_result(client):
     h = _h(await _register(client))
     eid = (await _create_sub_template(client, h))["id"]
 
-    first = await client.post(f"/subscriptions/{eid}/generate", json={"idempotency_key": "gen-1"}, headers=h)
-    again = await client.post(f"/subscriptions/{eid}/generate", json={"idempotency_key": "gen-1"}, headers=h)
+    first = await client.post(f"/subscriptions/{eid}/generate-due", json={"request_key": "gen-1"}, headers=h)
+    again = await client.post(f"/subscriptions/{eid}/generate-due", json={"request_key": "gen-1"}, headers=h)
     assert first.status_code == again.status_code == 200, again.text
     assert again.json() == first.json()
     assert await _generated(client, h, eid) == [first.json()["doc_id"]]
 
 
 @pytest.mark.asyncio
-async def test_generate_with_a_new_key_creates_another_document(client):
+async def test_generate_with_a_new_key_bills_the_next_due_period(client):
     h = _h(await _register(client))
     eid = (await _create_sub_template(client, h))["id"]
 
-    a = await client.post(f"/subscriptions/{eid}/generate", json={"idempotency_key": "gen-a"}, headers=h)
-    b = await client.post(f"/subscriptions/{eid}/generate", json={"idempotency_key": "gen-b"}, headers=h)
-    assert a.json()["doc_id"] != b.json()["doc_id"]
+    a = await client.post(f"/subscriptions/{eid}/generate-due", json={"request_key": "gen-a"}, headers=h)
+    b = await client.post(f"/subscriptions/{eid}/generate-due", json={"request_key": "gen-b"}, headers=h)
+    assert (a.json()["period_index"], b.json()["period_index"]) == (0, 1)
     assert await _generated(client, h, eid) == [a.json()["doc_id"], b.json()["doc_id"]]
 
 
 @pytest.mark.asyncio
-async def test_generate_key_used_on_another_subscription_is_refused(client):
+async def test_generate_key_belongs_to_its_own_subscription(client):
+    # A request key repeats an answer only for the agreement it was sent to: the same key on
+    # another agreement is that agreement's own first request.
     h = _h(await _register(client))
     one = (await _create_sub_template(client, h))["id"]
     two = (await _create_sub_template(client, h))["id"]
 
-    assert (await client.post(f"/subscriptions/{one}/generate", json={"idempotency_key": "gen-x"},
-                              headers=h)).status_code == 200
-    r = await client.post(f"/subscriptions/{two}/generate", json={"idempotency_key": "gen-x"}, headers=h)
-    assert r.status_code == 409, r.text
-    assert await _generated(client, h, two) == []
+    a = await client.post(f"/subscriptions/{one}/generate-due", json={"request_key": "gen-x"}, headers=h)
+    b = await client.post(f"/subscriptions/{two}/generate-due", json={"request_key": "gen-x"}, headers=h)
+    assert a.status_code == b.status_code == 200, b.text
+    assert await _generated(client, h, one) == [a.json()["doc_id"]]
+    assert await _generated(client, h, two) == [b.json()["doc_id"]]
 
 
 @pytest.mark.asyncio
-async def test_generate_key_used_to_edit_the_template_is_refused(client):
+async def test_generate_key_used_to_edit_the_template_still_bills(client):
     h = _h(await _register(client))
     eid = (await client.post("/docs", json={"doc_type": "subscription_invoice", "frequency": "monthly",
                                             "line_items": [{"description": "S", "quantity": 1, "unit_price": 100.0}]},
@@ -531,9 +537,9 @@ async def test_generate_key_used_to_edit_the_template_is_refused(client):
     edit = {"fields_changed": {"notes": {"old": None, "new": "x"}}, "idempotency_key": "gen-e"}
     assert (await client.patch(f"/docs/{eid}", json=edit, headers=h)).status_code == 200
     assert (await client.post(f"/subscriptions/{eid}/activate", headers=h)).status_code == 200
-    r = await client.post(f"/subscriptions/{eid}/generate", json={"idempotency_key": "gen-e"}, headers=h)
-    assert r.status_code == 409, r.text
-    assert await _generated(client, h, eid) == []
+    r = await client.post(f"/subscriptions/{eid}/generate-due", json={"request_key": "gen-e"}, headers=h)
+    assert r.status_code == 200, r.text
+    assert await _generated(client, h, eid) == [r.json()["doc_id"]]
 
 
 @pytest.mark.asyncio
@@ -547,7 +553,7 @@ async def test_generate_in_a_locked_period_is_refused_and_writes_nothing(client,
     await session.commit()
     before = (await client.get("/docs?doc_type=invoice", headers=h)).json()["items"]
 
-    r = await client.post(f"/subscriptions/{eid}/generate", headers=h)
+    r = await client.post(f"/subscriptions/{eid}/generate-due", headers=h, json={})
     assert r.status_code == 422, r.text
     assert r.json()["detail"] == t("error.period_locked", "en", date=date.today().isoformat())
     assert (await client.get("/docs?doc_type=invoice", headers=h)).json()["items"] == before

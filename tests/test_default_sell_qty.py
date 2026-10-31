@@ -676,13 +676,13 @@ async def test_an_unnamed_subscription_is_named_as_the_subscriptions_list_names_
     row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": sub})
     row.state = {**row.state, "status": "active"}
     await session.commit()
-    r = await client.post(f"/subscriptions/{sub}/generate", headers=auth["headers"], json={})
+    r = await client.post(f"/subscriptions/{sub}/generate-due", headers=auth["headers"], json={})
     assert r.status_code == 422, r.text
     detail = r.json()["detail"]
     assert detail["message_key"] == "units.template_finer_than_unit", detail
     assert detail["params"]["template"] == ref, detail
     assert detail["message"].startswith(f"Subscription {ref} lists Stone at 0.275 carat"), detail
-    r = await client.post(f"/subscriptions/{fits}/generate", headers=auth["headers"], json={})
+    r = await client.post(f"/subscriptions/{fits}/generate-due", headers=auth["headers"], json={})
     assert r.status_code == 200, r.text
     fits_ref = (await _state(session, auth, fits))["ref_id"]
     assert f"Auto-created from subscription template {fits_ref}" in (
@@ -904,8 +904,10 @@ async def test_a_subscription_never_makes_a_document_finer_than_its_units(client
     # A template saved before a precision change looked at it is refused when it makes the next one,
     # naming the subscription, and nothing is made. Stand-in for one the precision check never saw:
     # cancelled while carat goes to 2 places, then active again as it was stored.
-    await _carat_doc(session, auth, "cancelled", 0.275, "SUB-OLD", doc_type, name="Old stones", frequency="monthly")
-    await _carat_doc(session, auth, "active", 0.27, "SUB-FITS", doc_type, name="Fitting stones", frequency="monthly")
+    await _carat_doc(session, auth, "cancelled", 0.275, "SUB-OLD", doc_type, name="Old stones", frequency="monthly",
+                     start_date="2026-01-01", anchor_date="2026-01-01")
+    await _carat_doc(session, auth, "active", 0.27, "SUB-FITS", doc_type, name="Fitting stones",
+                     frequency="monthly", start_date="2026-01-01", anchor_date="2026-01-01")
     rows = await _rows(session, auth)
     old, fits = rows["SUB-OLD"], rows["SUB-FITS"]
     assert (await client.post(f"/subscriptions/{sub}/cancel", headers=auth["headers"])).status_code == 200
@@ -916,7 +918,7 @@ async def test_a_subscription_never_makes_a_document_finer_than_its_units(client
     await session.commit()
 
     before = await _doc_count(session, auth)
-    r = await client.post(f"/subscriptions/{old}/generate", headers=auth["headers"], json={})
+    r = await client.post(f"/subscriptions/{old}/generate-due", headers=auth["headers"], json={})
     assert r.status_code == 422, r.text
     detail = r.json()["detail"]
     assert detail["message_key"] == "units.template_finer_than_unit", detail
@@ -925,16 +927,16 @@ async def test_a_subscription_never_makes_a_document_finer_than_its_units(client
     assert detail["message"].startswith("Subscription SUB-OLD lists Stone at 0.275 carat"), detail
     assert "set carat back to 3 decimal places" in detail["message"], detail
     assert await _doc_count(session, auth) == before
-    assert not (await _state(session, auth, old)).get("generated_doc_ids")
+    assert not (await _state(session, auth, old)).get("periods")
 
     # A template whose lines fit makes its document as before.
-    r = await client.post(f"/subscriptions/{fits}/generate", headers=auth["headers"], json={})
+    r = await client.post(f"/subscriptions/{fits}/generate-due", headers=auth["headers"], json={})
     assert r.status_code == 200, r.text
     assert (await _state(session, auth, r.json()["doc_id"]))["line_items"][0]["quantity"] == 0.27
 
     # The way out the message names: the unit back to 3 places, then the old template makes its document.
     assert (await _set_carat_decimals(client, auth, 3)).status_code == 200
-    r = await client.post(f"/subscriptions/{old}/generate", headers=auth["headers"], json={})
+    r = await client.post(f"/subscriptions/{old}/generate-due", headers=auth["headers"], json={})
     assert r.status_code == 200, r.text
     assert (await _state(session, auth, r.json()["doc_id"]))["line_items"][0]["quantity"] == 0.275
 

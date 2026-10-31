@@ -1,7 +1,8 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
-"""Subscriptions generate their documents when someone chooses Generate Now, never on
-their own, and every description of them says so."""
+"""A subscription bills only when someone chooses Generate due, until someone allowed to
+turns on automatic billing for it, and every description of it says documents are
+generated when they are due."""
 from __future__ import annotations
 
 import pathlib
@@ -30,7 +31,7 @@ async def _invoices(client, h) -> list[dict]:
 
 
 @pytest.mark.asyncio
-async def test_a_due_subscription_generates_nothing_until_generate_now(client):
+async def test_a_due_subscription_generates_nothing_until_generate_due(client):
     h = await _headers(client)
     r = await client.post("/docs", headers=h, json={
         "doc_type": "subscription_invoice", "contact_id": "contact:test-001", "frequency": "monthly",
@@ -40,20 +41,19 @@ async def test_a_due_subscription_generates_nothing_until_generate_now(client):
     sub_id = r.json()["id"]
     r = await client.post(f"/subscriptions/{sub_id}/activate", headers=h)
     assert r.status_code == 200, r.text
-    due = r.json()["next_run_date"]
-    assert due < "2026-10-15"
+    assert r.json()["next_bill_date"] == "2026-01-01"
 
     assert (await client.get("/subscriptions", headers=h)).status_code == 200
     template = (await client.get(f"/docs/{sub_id}", headers=h)).json()
-    assert template["next_run_date"] == due and not template.get("generated_doc_ids")
+    assert not template.get("periods") and template.get("generation_mode") in (None, "manual_due")
     assert await _invoices(client, h) == []
 
-    r = await client.post(f"/subscriptions/{sub_id}/generate", headers=h)
+    r = await client.post(f"/subscriptions/{sub_id}/generate-due", headers=h, json={})
     assert r.status_code == 200, r.text
     assert [d["id"] for d in await _invoices(client, h)] == [r.json()["doc_id"]]
 
 
-def test_the_subscriptions_module_runs_nothing_by_itself():
+def test_the_subscriptions_module_bills_on_its_own_only_through_the_dispatcher():
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(
@@ -61,17 +61,19 @@ def test_the_subscriptions_module_runs_nothing_by_itself():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     manifest = mod.PLUGIN_MANIFEST
-    assert set(manifest["slots"]) == {"nav", "search_provider"}
-    assert "generate" in manifest["description"].lower() and "automatic" not in manifest["description"].lower()
+    # Unattended billing runs only as the dispatcher's periodic operation, which bills an
+    # agreement only in an automatic mode someone allowed to has turned on.
+    assert set(manifest["slots"]) == {"nav", "search_provider", "periodic_operation", "on_modules_ready"}
+    assert manifest["slots"]["periodic_operation"]["handler"] == "celerp_subscriptions.billing:run_due"
+    assert "billed once" in manifest["description"].lower()
 
 
-def test_subscription_copy_promises_no_automatic_generation():
+def test_subscription_copy_says_documents_are_generated_when_due():
     from celerp.main import app
 
     tag = next(x["description"] for x in app.openapi_tags if x["name"] == "subscriptions")
     readme = (_ROOT / "README.md").read_text()
     for text in (tag, *[ln for ln in readme.splitlines() if "ubscription" in ln and "No subscription" not in ln]):
-        assert "automatic" not in text.lower() and "auto-" not in text.lower(), text
         assert "generate" in text.lower(), text
 
 
@@ -81,6 +83,6 @@ def test_the_list_shows_when_each_subscription_is_next_due():
     from ui.routes.subscriptions import _sub_table
 
     html = to_xml(_sub_table([{"id": "doc:s1", "ref_id": "SUB-1", "frequency": "monthly",
-                               "next_run_date": "2026-02-01", "status": "active"}], "sales"))
+                               "next_bill_date": "2026-02-01", "status": "active"}], "sales"))
     assert f">{t('th.next_due')}<" in html and t("th.next_due") == "Next Due"
     assert "Next Run" not in html and "2026-02-01" in html

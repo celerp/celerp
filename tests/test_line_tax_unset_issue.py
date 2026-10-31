@@ -152,6 +152,7 @@ async def test_a_quotation_converts_with_its_unset_line_and_the_invoice_is_refus
 # Writers that issue lines no user picks a tax for, each with why "--" cannot reach it.
 _ISSUES_WITHOUT_LINE_TAX = {
     "_supplier_credit_for_return": "its one line, for the goods returned, is built with no taxes",
+    "deliver": "it emails a subscription's document that finalize_document issued and checked",
     "imported_opening_snapshot": "create_imported_doc refuses an issued record's unset line before it",
     "write_off_stock": "a write-off's lines are stock taken off, with no tax",
 }

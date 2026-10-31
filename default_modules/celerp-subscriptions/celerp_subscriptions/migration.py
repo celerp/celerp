@@ -108,7 +108,7 @@ async def _migrate_template(session: AsyncSession, company_id, proj: Projection)
 
 async def _old_next_dates(session, company_id) -> dict[str, str]:
     rows = (await session.execute(select(LedgerEntry.entity_id, LedgerEntry.metadata_).where(
-        LedgerEntry.company_id == company_id, LedgerEntry.idempotency_key.like(f"{_KEY}%")))).all()
+        LedgerEntry.company_id == company_id, LedgerEntry.idempotency_key.startswith(_KEY, autoescape=True)))).all()
     return {eid: (meta or {}).get("next_run_date") for eid, meta in rows}
 
 

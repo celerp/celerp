@@ -5,8 +5,9 @@
 Subscription templates are docs with doc_type "subscription_invoice" or
 "subscription_po".  The list page mirrors /docs?type=invoice (status cards,
 search, pagination).  The detail page delegates to _doc_detail() from the docs
-module; subscription-specific controls (frequency, start date, lifecycle
-actions) live in the page_header row, suppressing the standard doc action bar.
+module; subscription-specific controls (frequency, first bill date, lifecycle
+actions) live in the page_header row, suppressing the standard doc action bar, and
+the agreement's periods are listed under the document.
 """
 from __future__ import annotations
 
@@ -21,7 +22,7 @@ import ui.api_client as api
 from celerp.output.document_context import prepare_document_output
 from celerp.services.record_quantities import template_label
 from ui.components.icons import import_icon
-from ui.components.operation_key import operation_key_vals, submitted_operation_key
+from ui.components.operation_key import FIELD, operation_key_vals, submitted_operation_key
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
 from ui.components.table import breadcrumbs, display_enum, empty_state_cta, pagination, per_page_value, search_bar, status_cards
@@ -43,6 +44,11 @@ _STATUS_CSS = {
     "cancelled": "badge--void",
     "draft": "badge--draft",
 }
+
+# Billing actions carry the operation key as the request key, so a repeated click bills once.
+_BILLING_ACTIONS = ("generate-due", "bill-early")
+# The schedule fields the detail page edits, each with how its submitted text is read.
+_SCHEDULE_EDITS = {"frequency": str, "anchor_date": str, "custom_interval_days": int}
 
 _DIRECTION_DOC_TYPE = {
     "sales": "subscription_invoice",
@@ -86,7 +92,10 @@ def _sub_status_cards(items: list[dict], active_status: str, direction: str) -> 
     return status_cards(cards, base, active_status or None, currency=None, show_all_card=False)
 
 
-def _sub_table(subs: list[dict], direction: str) -> FT:
+def _sub_table(subs: list[dict], direction: str, review: bool = False) -> FT:
+    if not subs and review:
+        return Div(empty_state_cta(t("subscriptions.review_empty"), t("subscriptions.review_all"),
+                                   f"/subscriptions?direction={direction}"), id="sub-table")
     if not subs:
         return Div(empty_state_cta(t("label.no_subscription_templates_found"), t("page.new_subscription"),
                                    f"/subscriptions/new?direction={direction}", hx_post=True), id="sub-table")
@@ -96,7 +105,7 @@ def _sub_table(subs: list[dict], direction: str) -> FT:
         name = template_label(s, eid)
         contact = s.get("contact_name") or s.get("contact_company_name") or "-"
         freq = display_enum(s["frequency"], "subscription_frequency") if s.get("frequency") else "-"
-        next_due = s.get("next_run_date") or "-"
+        next_due = s.get("next_bill_date") or "-"
         status = s.get("status", "draft")
         return Tr(
             Td(A(name, href=f"/subscriptions/{eid}")),
@@ -116,19 +125,31 @@ def _sub_table(subs: list[dict], direction: str) -> FT:
     )
 
 
+def _review_banner(items: list[dict], direction: str, review: bool) -> FT | str:
+    """Names how many agreements wait for history review, with the filter that lists them."""
+    n = sum(1 for i in items if i.get("history_review"))
+    if not n or review:
+        return ""
+    return Div(t("subscriptions.review_banner", n=n), " ",
+               A(t("subscriptions.review_open"), href=f"/subscriptions?direction={direction}&review=1"),
+               cls="flash flash--warning")
+
+
 # ---------------------------------------------------------------------------
 # Subscription action bar (replaces standard doc Finalize/Send/Mark-as-Sent)
 # ---------------------------------------------------------------------------
 
 def _schedule_inputs(entity_id: str, sub: dict):
-    """Frequency/start-date controls - shared between draft and paused states."""
+    """Frequency and first bill date controls, shared between draft and paused states. Each
+    change goes through the agreement's schedule, which refuses one that would move a
+    period already billed or skipped."""
     freq = sub.get("frequency") or "monthly"
-    start = sub.get("start_date") or ""
+    first_bill = sub.get("anchor_date") or ""
     interval = sub.get("custom_interval_days") or ""
     freq_select = Select(
         *[Option(display_enum(f, "subscription_frequency"), value=f, selected=(f == freq)) for f in _FREQUENCIES],
         name="value",
-        hx_patch=f"/docs/{entity_id}/field/frequency",
+        hx_patch=f"/subscriptions/{entity_id}/schedule/frequency",
         hx_swap="none",
         hx_trigger="change",
         title=t("th.frequency"),
@@ -136,18 +157,18 @@ def _schedule_inputs(entity_id: str, sub: dict):
         style="width:130px",
     )
     start_input = Input(
-        type="date", name="value", value=start,
-        hx_patch=f"/docs/{entity_id}/field/start_date",
+        type="date", name="value", value=first_bill,
+        hx_patch=f"/subscriptions/{entity_id}/schedule/anchor_date",
         hx_swap="none",
         hx_trigger="change",
-        title=t("label.start_date"),
+        title=t("label.first_bill_date"),
         cls="form-input form-input--inline",
         style="width:145px",
     )
     custom_input = Input(
         type="number", name="value", value=str(interval) if interval else "",
         placeholder=t("label.days"), min="1",
-        hx_patch=f"/docs/{entity_id}/field/custom_interval_days",
+        hx_patch=f"/subscriptions/{entity_id}/schedule/custom_interval_days",
         hx_swap="none",
         hx_trigger="change",
         title=t("subscriptions.custom_interval_title"),
@@ -157,7 +178,7 @@ def _schedule_inputs(entity_id: str, sub: dict):
     )
     toggle_js = Script("""
 (function(){
-  var sel = document.querySelector('select[hx-patch$="/field/frequency"]');
+  var sel = document.querySelector('select[hx-patch$="/schedule/frequency"]');
   var inp = document.getElementById('sub-custom-days');
   if (sel && inp) {
     sel.addEventListener('change', function(){ inp.style.display = sel.value === 'custom' ? '' : 'none'; });
@@ -167,30 +188,44 @@ def _schedule_inputs(entity_id: str, sub: dict):
     return [freq_select, start_input, custom_input, toggle_js]
 
 
-def _sub_action_controls(entity_id: str, sub: dict) -> tuple[list, list]:
+def _bill_date_note(sub: dict, next_bill: str | None) -> FT | str:
+    """Shows the first bill date until a period is billed, then the next bill date."""
+    billed = any((e or {}).get("state") == "billed" for e in (sub.get("periods") or {}).values())
+    if not billed and (first := next_bill or sub.get("anchor_date")):
+        return Span(t("subscriptions.first_bill_on", date=first), cls="text-muted", style="font-size:.85em")
+    if next_bill:
+        return Span(t("subscriptions.next_bill_on", date=next_bill), cls="text-muted", style="font-size:.85em")
+    return ""
+
+
+def _sub_action_controls(entity_id: str, sub: dict, next_bill: str | None = None) -> tuple[list, list]:
     """Return (left_actions, right_actions) for the subscription detail page.
 
-    Draft:   left=[Frequency, StartDate, CustomDays, Activate]   right=[]
-    Active:  left=[badge, GenerateNow]                           right=[Pause, Cancel]
-    Paused:  left=[badge, Frequency, StartDate, CustomDays]      right=[Resume, Cancel]
-    Cancelled: left=[badge]                                       right=[]
+    Draft:   left=[Frequency, FirstBill, CustomDays, Activate, note]      right=[]
+    Active:  left=[badge, GenerateDue, BillEarly, note]                   right=[Pause, Cancel]
+    Paused:  left=[badge, Frequency, FirstBill, CustomDays, note]         right=[Resume, Cancel]
+    Cancelled: left=[badge]                                               right=[]
     """
     status = sub.get("status", "draft")
+    note = _bill_date_note(sub, next_bill)
 
     if status == "draft":
         return _schedule_inputs(entity_id, sub) + [
             Button(t("btn.activate"), cls="btn btn--primary", hx_post=f"/subscriptions/{entity_id}/activate",
                    hx_swap="none", title=t("subscriptions.activate_title")),
+            note,
         ], []
 
     left: list = [_status_badge(status)]
     right: list = []
 
     if status == "active":
-        left.append(
-            Button(t("btn.generate_now"), cls="btn btn--secondary btn--sm", hx_post=f"/subscriptions/{entity_id}/generate",
-                   hx_swap="none", hx_vals=operation_key_vals())
-        )
+        left.extend([
+            Button(t("btn.generate_due"), cls="btn btn--secondary btn--sm", hx_post=f"/subscriptions/{entity_id}/generate-due",
+                   hx_swap="none", hx_vals=operation_key_vals()),
+            Button(t("btn.bill_early"), cls="btn btn--secondary btn--sm", hx_post=f"/subscriptions/{entity_id}/bill-early",
+                   hx_swap="none", hx_vals=operation_key_vals()),
+        ])
         right.append(
             Button(t("btn.pause"), cls="btn btn--warning btn--sm", hx_post=f"/subscriptions/{entity_id}/pause", hx_swap="none")
         )
@@ -206,13 +241,61 @@ def _sub_action_controls(entity_id: str, sub: dict) -> tuple[list, list]:
             Button(t("btn.cancel"), cls="btn btn--danger btn--sm", hx_post=f"/subscriptions/{entity_id}/cancel", hx_swap="none")
         )
 
-    gen_count = len(sub.get("generated_doc_ids") or [])
+    if status != "cancelled":
+        left.append(note)
+    gen_count = sum(1 for e in (sub.get("periods") or {}).values() if (e or {}).get("state") == "billed")
     if gen_count:
         left.append(
             Span(t("subscriptions.docs_generated", n=gen_count), cls="text-muted", style="font-size:.85em")
         )
 
     return left, right
+
+
+_PERIOD_STATE_KEY = {"billed": "billed", "skipped": "skipped", "unresolved": "unresolved"}
+
+
+def _period_actions(entity_id: str, row: dict) -> FT:
+    """Skip an open period with a reason; un-skip a skipped one; reopen a billed one whose
+    document is voided. The server refuses any that does not apply and says why."""
+    k, state = row["period_index"], row.get("state")
+    base = f"/subscriptions/{entity_id}/periods/{k}"
+    if state == "skipped":
+        return Button(t("btn.unskip"), cls="btn btn--secondary btn--sm", hx_post=f"{base}/unskip", hx_swap="none")
+    if state == "billed":
+        return Button(t("btn.reopen"), cls="btn btn--secondary btn--sm", hx_post=f"{base}/reopen", hx_swap="none",
+                      title=t("subscriptions.reopen_title"))
+    if state == "unresolved":
+        return A(t("subscriptions.review_open"), href=f"/subscriptions/{entity_id}#history-review")
+    return Form(
+        Input(type="text", name="reason", placeholder=t("label.reason"), cls="form-input form-input--inline",
+              style="width:160px", required=True),
+        Button(t("btn.skip"), type="submit", cls="btn btn--secondary btn--sm"),
+        hx_post=f"{base}/skip", hx_swap="none", style="display:flex;gap:.25rem",
+    )
+
+
+def _periods_table(entity_id: str, rows: list[dict]) -> FT:
+    """The agreement's periods, newest first: dates, state, the document that billed it."""
+    if not rows:
+        return ""
+
+    def _row(r: dict) -> FT:
+        state = r.get("state")
+        label = t(f"subscriptions.period_{_PERIOD_STATE_KEY.get(state, 'open')}")
+        doc = A(r["ref_id"], href=f"/docs/{r['doc_id']}") if r.get("doc_id") else (r.get("reason") or "--")
+        return Tr(Td(f"{r['service_start']} - {r['service_end']}"), Td(r["bill_date"]), Td(label), Td(doc),
+                  Td(_period_actions(entity_id, r)))
+
+    return Div(
+        H3(t("subscriptions.periods_heading")),
+        Table(
+            Thead(Tr(Th(t("th.period")), Th(t("th.bill_date")), Th(t("th.status")), Th(t("th.document")), Th(""))),
+            Tbody(*[_row(r) for r in rows]),
+            cls="data-table",
+        ),
+        id="sub-periods", cls="mt-lg",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +307,7 @@ def setup_routes(app) -> None:
     # --- List page ---
 
     @app.get("/subscriptions")
-    async def subscriptions_list(request: Request, direction: str = "sales", status: str = ""):
+    async def subscriptions_list(request: Request, direction: str = "sales", status: str = "", review: bool = False):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
@@ -234,8 +317,9 @@ def setup_routes(app) -> None:
         page = int(request.query_params.get("page", 1))
         per_page = per_page_value(request.query_params.get("per_page"), _PER_PAGE)
 
+        params = {"direction": direction, "limit": 1000, **({"review": "true"} if review else {})}
         try:
-            all_resp = await api.list_subscriptions(token, {"direction": direction, "limit": 1000})
+            all_resp = await api.list_subscriptions(token, params)
             all_items = all_resp if isinstance(all_resp, list) else all_resp.get("items", [])
         except APIError:
             all_items = []
@@ -258,22 +342,24 @@ def setup_routes(app) -> None:
         page_items = filtered[(page - 1) * per_page: page * per_page]
         side = "sales" if direction == "sales" else "purchasing"
         title = t(f"nav.subscriptions_{side}")
-        extra = urlencode({k: v for k, v in {"direction": direction, "status": status, "q": q}.items() if v})
+        extra = urlencode({k: v for k, v in {"direction": direction, "status": status, "q": q,
+                                             "review": "1" if review else ""}.items() if v})
         can_import = await _check_permission(request, "import_export_data") is None
 
         content = Div(
             page_header(
                 title,
                 search_bar(placeholder=t("subscriptions.search_placeholder"), target="#sub-table",
-                           url=f"/subscriptions/search?direction={direction}&status={status}",
+                           url=f"/subscriptions/search?direction={direction}&status={status}{'&review=1' if review else ''}",
                            label=t(f"subscriptions.search_{side}")),
                 Button(t("page.new_subscription"), hx_post=f"/subscriptions/new?direction={direction}",
                        hx_swap="none", cls="btn btn--primary"),
                 A(import_icon(), t("btn.import"), href="/subscriptions/import", cls="btn btn--secondary",
                   data_import_hint=True) if can_import else "",
             ),
+            _review_banner(all_items, direction, review),
             _sub_status_cards(all_items, status, direction),
-            _sub_table(page_items, direction),
+            _sub_table(page_items, direction, review),
             pagination(page, total, per_page, "/subscriptions", extra),
             cls="page-content",
         )
@@ -283,13 +369,14 @@ def setup_routes(app) -> None:
     # --- Search (HTMX) ---
 
     @app.get("/subscriptions/search")
-    async def subscriptions_search(request: Request, direction: str = "sales", status: str = ""):
+    async def subscriptions_search(request: Request, direction: str = "sales", status: str = "", review: bool = False):
         token = _token(request)
         if not token:
             return Div(t("error.session_expired"), id="sub-table")
         q = request.query_params.get("q", "")
         try:
-            resp = await api.list_subscriptions(token, {"direction": direction, "limit": 1000})
+            resp = await api.list_subscriptions(token, {"direction": direction, "limit": 1000,
+                                                        **({"review": "true"} if review else {})})
             items = resp if isinstance(resp, list) else resp.get("items", [])
         except APIError:
             items = []
@@ -304,7 +391,7 @@ def setup_routes(app) -> None:
                      or ql in (i.get("name") or "").lower()
                      or ql in (i.get("contact_name") or "").lower()
                      or ql in (i.get("contact_company_name") or "").lower()]
-        return _sub_table(items, direction)
+        return _sub_table(items, direction, review)
 
     # --- Create blank draft → redirect to detail ---
 
@@ -383,13 +470,20 @@ def setup_routes(app) -> None:
         except Exception:
             pass
 
+        schedule: dict = {}
+        try:
+            schedule = await api.get_subscription_periods(token, entity_id)
+        except Exception:
+            pass
+
         status = doc.get("status", "draft")
         ref = doc.get("ref_id") or doc.get("doc_number") or entity_id.split(":")[-1]
         type_label = t("subscriptions.type_sales") if direction == "sales" else t("subscriptions.type_purchasing")
         status_label = display_enum(status, "subscription_status")
         list_url = f"/subscriptions?direction={direction}"
 
-        _sub_left_actions, _sub_right_actions = _sub_action_controls(entity_id, doc)
+        doc = {**doc, "next_bill_date": schedule.get("next_bill_date")}
+        _sub_left_actions, _sub_right_actions = _sub_action_controls(entity_id, doc, doc["next_bill_date"])
 
         return await base_shell(
             breadcrumbs([
@@ -414,6 +508,7 @@ def setup_routes(app) -> None:
                 extra_right_actions=_sub_right_actions,
                 suppress_pdf=True,
             ),
+            _periods_table(entity_id, schedule.get("rows") or []),
             title=f"{type_label} {ref} - Celerp",
             nav_active="subscriptions_sales" if direction == "sales" else "subscriptions_purchasing",
             request=request,
@@ -428,9 +523,42 @@ def setup_routes(app) -> None:
         token = _token(request)
         if not token:
             return Response(status_code=401, headers={"HX-Redirect": "/login"})
+        key = submitted_operation_key(await request.form())
+        body = {"request_key": key[FIELD]} if action in _BILLING_ACTIONS and key else None
         try:
-            await api.subscription_action(token, entity_id, action,
-                                          submitted_operation_key(await request.form()) or None)
+            await api.subscription_action(token, entity_id, action, body)
         except APIError as e:
             return _action_error(refusal_text(e.data or e.detail))
         return Response(status_code=204, headers={"HX-Redirect": f"/subscriptions/{entity_id}"})
+
+    @app.post("/subscriptions/{entity_id}/periods/{k}/{action}")
+    async def subscription_period_ui(request: Request, entity_id: str, k: int, action: str):
+        if action not in api.PERIOD_ACTIONS:
+            return Response(status_code=404)
+        token = _token(request)
+        if not token:
+            return Response(status_code=401, headers={"HX-Redirect": "/login"})
+        reason = str((await request.form()).get("reason", "")).strip()
+        try:
+            await api.subscription_period_action(token, entity_id, k, action,
+                                                 {"reason": reason} if action == "skip" else None)
+        except APIError as e:
+            return _action_error(refusal_text(e.data or e.detail))
+        return Response(status_code=204, headers={"HX-Redirect": f"/subscriptions/{entity_id}"})
+
+    @app.patch("/subscriptions/{entity_id}/schedule/{field}")
+    async def subscription_schedule_ui(request: Request, entity_id: str, field: str):
+        if field not in _SCHEDULE_EDITS:
+            return Response(status_code=404)
+        token = _token(request)
+        if not token:
+            return Response(status_code=401, headers={"HX-Redirect": "/login"})
+        raw = str((await request.form()).get("value", "")).strip()
+        try:
+            value = _SCHEDULE_EDITS[field](raw) if raw else None
+            await api.update_subscription_schedule(token, entity_id, {field: value})
+        except ValueError:
+            return _action_error(t("subscriptions.err_custom_days"))
+        except APIError as e:
+            return _action_error(refusal_text(e.data or e.detail))
+        return Response(status_code=204)

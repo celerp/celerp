@@ -756,7 +756,7 @@
       "params": []
     },
     "subscriptions.err_catchup_not_listed": {
-      "en": "This period is not the next one to catch up on. Refresh the catch-up list and bill from the top.",
+      "en": "This period is no longer the next one to catch up on. Bill the period at the top of the catch-up list.",
       "params": []
     },
     "subscriptions.err_collect_unavailable": {
@@ -824,6 +824,92 @@
     },
     "subscriptions.notice_schedule_check_body": {
       "en": "Some subscription periods point at a document that is missing, of the wrong type or billed twice, or a next bill date moved when templates were set up on schedules. The details are in the server log.",
+      "params": []
+    },
+    "subscriptions.review_empty": {
+      "en": "No agreements need review",
+      "params": []
+    },
+    "subscriptions.review_all": {
+      "en": "Show all agreements",
+      "params": []
+    },
+    "subscriptions.review_banner": {
+      "en": "{n} agreements have earlier documents that could not be matched to their periods. Their past periods stay unbilled until you confirm where each document belongs.",
+      "params": [
+        "n"
+      ]
+    },
+    "subscriptions.review_open": {
+      "en": "Review them",
+      "params": []
+    },
+    "subscriptions.first_bill_on": {
+      "en": "First bill on {date}",
+      "params": [
+        "date"
+      ]
+    },
+    "subscriptions.next_bill_on": {
+      "en": "Next bill on {date}",
+      "params": [
+        "date"
+      ]
+    },
+    "subscriptions.periods_heading": {
+      "en": "Periods",
+      "params": []
+    },
+    "subscriptions.period_open": {
+      "en": "Not billed yet",
+      "params": []
+    },
+    "subscriptions.period_billed": {
+      "en": "Billed",
+      "params": []
+    },
+    "subscriptions.period_skipped": {
+      "en": "Skipped",
+      "params": []
+    },
+    "subscriptions.period_unresolved": {
+      "en": "Needs review",
+      "params": []
+    },
+    "subscriptions.reopen_title": {
+      "en": "After voiding this period's document, reopen the period so it can be billed again",
+      "params": []
+    },
+    "subscriptions.err_custom_days": {
+      "en": "Enter the custom interval as a whole number of days.",
+      "params": []
+    },
+    "subscriptions.activate_title": {
+      "en": "Set the frequency and first bill date, then activate",
+      "params": []
+    },
+    "btn.generate_due": {
+      "en": "Generate due",
+      "params": []
+    },
+    "btn.bill_early": {
+      "en": "Bill next period early",
+      "params": []
+    },
+    "btn.unskip": {
+      "en": "Un-skip",
+      "params": []
+    },
+    "label.first_bill_date": {
+      "en": "First bill date",
+      "params": []
+    },
+    "th.period": {
+      "en": "Period",
+      "params": []
+    },
+    "th.bill_date": {
+      "en": "Bill date",
       "params": []
     }
   }

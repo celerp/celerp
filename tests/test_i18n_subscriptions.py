@@ -85,7 +85,7 @@ def test_schedule_inputs_translate_options_and_tooltips():
 def test_generated_count_translates_with_interpolation():
     # Mechanism: interpolated label ("Generated: {n}").
     left, _right = _sub_action_controls(
-        "doc:1", {"status": "active", "generated_doc_ids": ["a", "b", "c"]}
+        "doc:1", {"status": "active", "periods": {str(k): {"state": "billed", "doc_id": f"doc:{k}"} for k in range(3)}}
     )
     html = to_xml(Div(*left))
     assert "XX_GENERATED 3" in html

@@ -423,6 +423,28 @@ async def _shipping_doc_codes_saved(s, company_id) -> bool:
     return bool(lines) and all(li.get("hs_code") == "4419" for li in lines)
 
 
+async def _template_from_earlier_release(s, company_id) -> None:
+    """A subscription template as an earlier release stored it: a next run date, no schedule."""
+    from celerp.events.engine import emit_event
+
+    tid = f"doc:{uuid.uuid4().hex}"
+    await emit_event(s, company_id=company_id, entity_id=tid, entity_type="doc", event_type="doc.created",
+                     data={"doc_type": "subscription_invoice", "status": "active", "frequency": "monthly",
+                           "start_date": "2026-01-01", "next_run_date": "2026-03-01", "generated_doc_ids": [],
+                           "line_items": [{"name": "Plan", "quantity": 1, "unit_price": 10}]},
+                     actor_id=None, location_id=None, source="test", idempotency_key=f"test:doc.created:{tid}",
+                     metadata_={})
+
+
+async def _template_on_a_schedule(s, company_id) -> bool:
+    from celerp.models.projections import Projection
+
+    rows = (await s.execute(select(Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_type == "doc"))).scalars().all()
+    templates = [st for st in rows if st.get("doc_type") == "subscription_invoice"]
+    return bool(templates) and all(st.get("anchor_date") == "2026-03-01" for st in templates)
+
+
 # Each backfill, with what makes a company need it and whether the backfill reached it.
 LIFECYCLE_BACKFILLS = {
     "celerp_accounting.routes:backfill_chart_of_accounts_hook": (_drop_chart, _has_chart),
@@ -437,6 +459,8 @@ LIFECYCLE_BACKFILLS = {
                                                                  _credit_note_settled),
     "celerp_docs.customs_freeze:customs_freeze_hook": (_shipping_doc_issued_by_earlier_release,
                                                        _shipping_doc_codes_saved),
+    "celerp_subscriptions.migration:migrate_schedules_hook": (_template_from_earlier_release,
+                                                              _template_on_a_schedule),
 }
 # Needs a staged company cannot have: only the migration writes to it, and it never
 # emits doc.shared_import, which nothing but imports from before Received wrote.

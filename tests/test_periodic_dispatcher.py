@@ -28,7 +28,8 @@ _FAIL_FOR: set[uuid.UUID] = set()
 
 async def _record(name: str, session, company_id, today, budget) -> None:
     _CALLS.append((name, company_id, today, budget))
-    session.add(Location(id=uuid.uuid4(), company_id=company_id, name=f"periodic-{name}", type="warehouse"))
+    session.add(Location(id=uuid.uuid4(), company_id=company_id, name=f"periodic-{name}:{uuid.uuid4()}",
+                         type="warehouse"))
     await session.flush()
     if name == "a" and company_id in _FAIL_FOR:
         raise RuntimeError("operation failed for this company")
@@ -66,8 +67,10 @@ async def _companies(factory):
 
 
 async def _written(factory, company_id) -> list[str]:
+    """The operations that committed a write for the company, one entry per write (location
+    names are unique per company, so each write carries its own suffix)."""
     async with factory() as s:
-        return sorted((await s.execute(select(Location.name).where(
+        return sorted(name.split(":")[0] for name in (await s.execute(select(Location.name).where(
             Location.company_id == company_id, Location.name.like("periodic-%")))).scalars().all())
 
 

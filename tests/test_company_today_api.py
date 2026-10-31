@@ -127,15 +127,15 @@ async def _subscription(client, co) -> str:
 
 async def test_subscription_dates_count_from_the_company_day(co, client):
     sub_id = await _subscription(client, co)
-    week = (co.day + timedelta(weeks=1)).isoformat()
+    today = co.day.isoformat()
     r = await client.post(f"/subscriptions/{sub_id}/activate", headers=co.headers)
     assert r.status_code == 200, r.text
-    assert r.json()["next_run_date"] == week
+    assert r.json()["next_bill_date"] == today  # the first period starts and bills on the company's day
     assert (await client.post(f"/subscriptions/{sub_id}/pause", headers=co.headers)).status_code == 200
     r = await client.post(f"/subscriptions/{sub_id}/resume", headers=co.headers)
     assert r.status_code == 200, r.text
-    assert r.json()["next_run_date"] == week
-    r = await client.post(f"/subscriptions/{sub_id}/generate", headers=co.headers)
+    assert r.json()["next_bill_date"] == today
+    r = await client.post(f"/subscriptions/{sub_id}/generate-due", headers=co.headers, json={})
     assert r.status_code == 200, r.text
     made = (await client.get(f"/docs/{r.json()['doc_id']}", headers=co.headers)).json()
     assert made["issue_date"] == co.day.isoformat()
