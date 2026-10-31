@@ -330,7 +330,12 @@ async def test_collision_type_and_currency_hold_until_fixed(real_client, real_en
         "bank_name": "Euro account", "account_number": "1234", "bank_type": "checking",
         "currency": "EUR", "account_code": "1119"}, headers=auth(tok))
     assert r.status_code in (200, 201), r.text
-    euro = await _post_journal(real_client, tok, ADJUSTED, 8.0, "Euro deposit", debit="1119")
+    r = await real_client.post("/accounting/journal-entries", headers=auth(tok), json={
+        "ts": ADJUSTED, "memo": "Euro deposit", "idempotency_token": uuid.uuid4().hex,
+        "entries": [{"account": "1119", "debit": 8.0, "credit": 0.0, "currency": "EUR", "rate": 1.25},
+                    {"account": "6200", "debit": 0.0, "credit": 10.0}]})
+    assert r.status_code == 200, r.text
+    euro = r.json()["je_id"]
     await _two_way(client_company, credential)
     [held] = [h for h in await _holds(real_client, firm_tok) if h["label"] == "Euro deposit"]
     assert held["fix"]["kind"] == "currency" and "EUR" in held["reason"]
@@ -344,7 +349,7 @@ async def test_collision_type_and_currency_hold_until_fixed(real_client, real_en
     assert r.status_code in (200, 201), r.text
     await _fix(real_client, firm_tok, held, action="use", account="1118")
     await _two_way(client_company, credential)
-    assert ("1118", 8.0, 0.0) in _lines(_sent_journal(await _journals(real_engine, firm_company), euro))
+    assert ("1118", 10.0, 0.0) in _lines(_sent_journal(await _journals(real_engine, firm_company), euro))
 
 
 # ---- AC34 archived ---------------------------------------------------------------------

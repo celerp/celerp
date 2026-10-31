@@ -120,6 +120,9 @@
   "GET /accounting/bank-accounts/{bank_id}": {
     "path:bank_id": "Identifier of the bank or card account."
   },
+  "GET /accounting/bank-accounts/{bank_id}/reconciliations": {
+    "path:bank_id": "Identifier of the bank or card account."
+  },
   "GET /accounting/cash-flow": {
     "query:date_from": "Start date for the requested reporting or search period.",
     "query:date_to": "End date for the requested reporting or search period."
@@ -889,6 +892,9 @@
     "path:session_id": "Identifier of the bank reconciliation session."
   },
   "POST /accounting/reconciliation/{session_id}/match": {
+    "path:session_id": "Identifier of the bank reconciliation session."
+  },
+  "POST /accounting/reconciliation/{session_id}/unmatch": {
     "path:session_id": "Identifier of the bank reconciliation session."
   },
   "POST /accounting/reconciliation/{session_id}/reopen": {

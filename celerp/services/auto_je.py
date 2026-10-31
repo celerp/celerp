@@ -55,10 +55,10 @@ from celerp.services import doc_asset_lines
 from celerp.services.company_lock import lock_company
 from celerp.services.document_lines import line_item_id
 from celerp.services.je_keys import je_idempotency_key, je_void_data, unminted_payment_key
-from celerp.services.journal_accounts import UnbalancedJournalEntry, lock_accounts
+from celerp.services.journal_accounts import UnbalancedJournalEntry, bank_currencies, lock_accounts
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.lot_origin import held_value, in_stock, is_stock_type, recorded_value
-from celerp.services.money import allocate_pro_rata, checked_exchange_rate, document_line_amount, received_share, require_doc_rate, require_line_amount, round_money, to_base, to_decimal, to_stored_float
+from celerp.services.money import allocate_pro_rata, checked_exchange_rate, document_line_amount, line_moves, received_share, require_doc_rate, require_line_amount, round_money, to_base, to_decimal, to_stored_float
 from celerp.services.posting_dates import correction_day, void_reversal
 from celerp.services.pick import as_lot, attribute_holds, line_draw_sources, plan_line_draws, resolve_pick_method
 from celerp.services.units import is_non_stock_line, line_receive_kind
@@ -248,14 +248,16 @@ async def _emit_auto_posted_je(
     to the company currency (*currency* when the producer already holds the books it posts
     on), and an entry that does not balance after rounding is refused, so producers build
     their lines to balance once rounded. *extra* adds fields the created event records
-    with the entry (a module journal's source and request hash)."""
+    with the entry (a module journal's source and request hash). A line that moves nothing
+    once rounded (``line_moves``) is not written, so no producer can post one."""
     currency = currency or await company_currency(session, company_id)
-    entries = [
+    rounded = (
         {**e,
          "debit": to_stored_float(round_money(e.get("debit") or 0, currency)),
          "credit": to_stored_float(round_money(e.get("credit") or 0, currency))}
         for e in entries
-    ]
+    )
+    entries = [e for e in rounded if line_moves(e)]
     debits = sum((to_decimal(e["debit"]) for e in entries), _Dec(0))
     credits = sum((to_decimal(e["credit"]) for e in entries), _Dec(0))
     if debits != credits:
@@ -1123,17 +1125,47 @@ def payment_amounts(*, amount: float, base_currency: str, doc_rate: float, settl
     return _piece(doc_rate), _piece(settlement_rate)
 
 
+def bank_fx_fields(bank_fx: tuple[str, float, float] | None, *, outflow: bool) -> dict:
+    """The fx fields of a bank line moving *bank_fx* (currency, amount, rate to the books)
+    in the bank account's own currency, out of the account with *outflow*; none when the
+    account is kept in the books' currency (*bank_fx* None)."""
+    if bank_fx is None:
+        return {}
+    currency, amount, rate = bank_fx
+    return {"fx_currency": currency, "fx_rate": rate,
+            "fx_debit": None if outflow else amount, "fx_credit": amount if outflow else None}
+
+
 def payment_lines(doc_type: str, control, bank: dict, ledger_amount: float, bank_amount: float, *,
-                  returning: bool = False) -> list[dict]:
+                  returning: bool = False, bank_fx: tuple[str, float, float] | None = None) -> list[dict]:
     """The two lines a payment posts, or with *returning* the two that give it back:
     the line on *bank* moving *bank_amount* and ``control(debit=, credit=)``, the
     receivable or payable line, moving *ledger_amount*. A bill payment clears AP and a
     credit note's cash refund clears the credit balance it held against AR, so money
-    leaves the bank; any other payment brings it in. Giving back moves it the other way."""
-    bank_line = {**bank, "debit": 0.0, "credit": 0.0}
-    if (doc_type in _PURCHASE_TYPES or doc_type == "credit_note") != returning:
+    leaves the bank; any other payment brings it in. Giving back moves it the other way.
+    *bank_fx* (currency, amount, rate) is the amount the bank line moves in the bank
+    account's own currency, when that is not the books' (``payment_bank_fx``)."""
+    outflow = (doc_type in _PURCHASE_TYPES or doc_type == "credit_note") != returning
+    bank_line = {**bank, "debit": 0.0, "credit": 0.0, **bank_fx_fields(bank_fx, outflow=outflow)}
+    if outflow:
         return [control(debit=ledger_amount), {**bank_line, "credit": bank_amount}]
     return [{**bank_line, "debit": bank_amount}, control(credit=ledger_amount)]
+
+
+async def payment_bank_fx(session, company_id, doc_id: str, base_currency: str, amount: float,
+                          settlement_rate: float):
+    """``bank_fx`` for a payment of *amount* in its document's currency, as a function of
+    the bank line's chart code: the amount and rate when the bank account is kept in the
+    document's currency and that is not the books', so a reconciliation reads the line in
+    the account's own currency; otherwise None (an account kept in the books' currency
+    reads the books-currency amount)."""
+    doc = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
+    currency = str(((doc.state or {}) if doc is not None else {}).get("currency") or base_currency).upper()
+    if currency == base_currency.upper():
+        return lambda code: None
+    currencies = await bank_currencies(session, company_id)
+    fx = (currency, to_stored_float(round_money(amount, currency)), float(checked_exchange_rate(settlement_rate)))
+    return lambda code: fx if currencies.get(code) == currency else None
 
 
 async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, amount: float, payment_index: int, bank_account_code: str | None, doc_type: str = "invoice", payment_date: str, base_currency: str = "USD", doc_rate: float, settlement_rate: float) -> None:
@@ -1162,8 +1194,10 @@ async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, a
     ledger_amount, bank_amount = payment_amounts(amount=amount, base_currency=base_currency, doc_rate=doc_rate,
                                                  settlement_rate=settlement_rate)
 
+    bank_fx = await payment_bank_fx(session, company_id, doc_id, base_currency, amount, settlement_rate)
+
     def entries_for(control, bank):
-        return payment_lines(doc_type, control, {"account": bank}, ledger_amount, bank_amount)
+        return payment_lines(doc_type, control, {"account": bank}, ledger_amount, bank_amount, bank_fx=bank_fx(bank))
 
     entries = await _settlement_accounts(
         session, company_id, doc_id=doc_id, control=_control_role(doc_type), bank=bank_account_code,
@@ -1258,9 +1292,21 @@ async def create_for_online_fees(
         return None
     amount = to_stored_float(abs(converted))
     if converted:
+        # The bank line carries the fees in the account's own currency when that is
+        # not the books': read off the provider's figure when the fees are in it,
+        # else back through the payment's own rate.
+        bank_currency = (await bank_currencies(session, company_id)).get(bank)
+        bank_fx = None
+        if bank_currency == fee_currency != base:
+            bank_fx = (fee_currency, to_stored_float(round_money(abs(running), fee_currency)), float(rate))
+        elif bank_currency == paid_currency != base:
+            paid_rate = checked_exchange_rate(payment["conversion_rate"])
+            bank_fx = (paid_currency, to_stored_float(round_money(abs(converted) / paid_rate, paid_currency)),
+                       float(paid_rate))
         entries.append({"account": bank,
                         "debit": amount if converted < 0 else 0.0,
-                        "credit": amount if converted > 0 else 0.0})
+                        "credit": amount if converted > 0 else 0.0,
+                        **bank_fx_fields(bank_fx, outflow=converted > 0)})
     company = await session.get(Company, company_id)
     original_day = business_date_at(occurred_at, ((company.settings if company else None) or {}).get("timezone"))
     day = await correction_day(session, company_id, original_day) or original_day
@@ -1300,10 +1346,12 @@ async def payment_return_entries(session, company_id, *, doc_id: str, payment_in
         amount=amount, base_currency=base_currency, doc_rate=doc_rate, settlement_rate=settlement_rate,
         already_given_back=already_given_back)
     outflow = doc_type in _PURCHASE_TYPES or doc_type == "credit_note"
+    bank_fx = await payment_bank_fx(session, company_id, doc_id, base_currency, amount, settlement_rate)
 
     def entries_for(control, bank):
         bank_line = bank if isinstance(bank, dict) else {"account": bank}
-        return payment_lines(doc_type, control, bank_line, ledger_amount, bank_amount, returning=True)
+        return payment_lines(doc_type, control, bank_line, ledger_amount, bank_amount, returning=True,
+                             bank_fx=bank_fx(bank_line["account"]))
 
     original = await session.get(Projection, {"company_id": company_id, "entity_id": f"je:auto:{doc_id}:pay:{payment_index}"})
     posted = (original.state or {}).get("entries") or [] if original is not None else []

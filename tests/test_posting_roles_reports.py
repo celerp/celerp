@@ -88,7 +88,7 @@ async def test_a_new_bank_account_sits_under_the_cash_header_and_its_opening_bal
     await _remap(session, auth, "cash_and_equivalents", "1180")
     await _remap(session, auth, "retained_earnings", "3210")
     r = await client.post("/accounting/bank-accounts", headers=auth["headers"], json={
-        "bank_name": "Second", "account_number": "1", "bank_type": "checking", "currency": "THB",
+        "bank_name": "Second", "account_number": "1", "bank_type": "checking", "currency": "USD",
         "opening_balance": 500.0})
     assert r.status_code == 200, r.text
     code = r.json()["chart_account_code"]

@@ -23,7 +23,7 @@ from playwright.sync_api import Page, expect
 
 from celerp.accounting_roles import SEEDED_TARGETS
 
-from .conftest import css_class, wait_for_topbar
+from .conftest import css_class, settled_boxes
 
 pytestmark = pytest.mark.browser
 
@@ -443,7 +443,9 @@ def test_u46_the_first_use_card_keeps_its_list_inside_and_its_closing_line_apart
 
 def _edges(page: Page, table: str) -> tuple[float, float]:
     """How light the left and right edges of a table's scroll box look on screen, along its
-    first row (255 is white): the pixels a person sees, whatever draws them."""
+    first row (255 is white): the pixels a person sees, whatever draws them. Two animation frames
+    first, so the resize observer has run and the box is painted at its current width."""
+    page.evaluate("() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))")
     box = page.locator(table).evaluate("t => { const r = t.parentElement.getBoundingClientRect(); return [r.x, r.width]; }")
     row = page.locator(f"{table} tbody tr").first.bounding_box()
     shot = Image.open(io.BytesIO(page.screenshot(clip={"x": box[0], "y": row["y"] + 2, "width": box[1],
@@ -501,10 +503,8 @@ def test_the_register_filter_keeps_its_button_beside_a_field_on_a_phone(page: Pa
     _started(c)
     page.set_viewport_size({"width": 390, "height": 844})
     page.goto("/fixed-assets")
-    wait_for_topbar(page)
-    form = page.locator("main form[action='/fixed-assets']")
-    button = form.locator("button[type=submit]").bounding_box()
-    classes = form.locator(".combobox-wrap").first.bounding_box()
+    form = "main form[action='/fixed-assets']"
+    button, classes = settled_boxes(page, f"{form} button[type=submit]", f"{form} .combobox-wrap")
     assert abs((button["y"] + button["height"] / 2) - (classes["y"] + classes["height"] / 2)) < 4, (button, classes)
     assert button["x"] > classes["x"] + classes["width"] - 1
 

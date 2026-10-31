@@ -16,7 +16,7 @@ import re
 import pytest
 from playwright.sync_api import Page, expect
 
-from .conftest import css_class, wait_for_topbar
+from .conftest import css_class, settled_boxes
 
 # A fragment loaded by HTMX on page load is read once it has text, not after a fixed
 # pause: its server read can take longer than any pause on a busy runner.
@@ -303,11 +303,7 @@ class TestChatView:
         # Measure after the stylesheet has loaded: at DOMContentLoaded the narrow-screen
         # rules may not apply yet, and the buttons sit on the field's row.
         page.goto(f"{ui_server}/ai", wait_until="load")
-        wait_for_topbar(page)
-        field = page.locator("#ai-query-input").bounding_box()
-        send = page.locator(".ai-input__send").bounding_box()
-        receipts = page.locator(".ai-input__receipts").bounding_box()
-        assert field and send and receipts
+        field, send, receipts = settled_boxes(page, "#ai-query-input", ".ai-input__send", ".ai-input__receipts")
         assert send["y"] > field["y"]
         assert abs(send["y"] - receipts["y"]) <= 2
 

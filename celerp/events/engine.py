@@ -45,6 +45,9 @@ LIST_TOTALLED_EVENTS = frozenset({"list.created", "list.updated"})
 # Every event that takes a received payment back off a document.
 PAYMENT_REMOVAL_EVENTS = frozenset({"doc.payment.voided", "doc.payment.deleted", "doc.payment.refunded"})
 
+# Every event that changes a journal entry, restoring ones included.
+_JOURNAL_CHANGES = frozenset({"acc.journal_entry.created", "acc.journal_entry.posted", "acc.journal_entry.voided"})
+
 
 async def _stripe_receipts(session, company_id, entity_id) -> list[dict]:
     """The ``doc.payment.received`` events the Stripe intake wrote on this document.
@@ -682,6 +685,16 @@ async def emit_event(
 
     # Enforce period lock
     await _check_period_lock(session, kwargs.get("company_id"), kwargs.get("data", {}))
+
+    # Every journal entry change, whoever produced it, is judged against the bank
+    # reconciliations: one that would change what a reconciliation counts is refused.
+    if kwargs["event_type"] in _JOURNAL_CHANGES:
+        from celerp.services import journal_accounts
+
+        access = journal_accounts.chart_access()
+        if access is not None:
+            await access.guard_journal_change(
+                session, kwargs.get("company_id"), kwargs["entity_id"], kwargs["event_type"], kwargs["data"])
 
     # Every journal line, whoever produced it, passes the one account boundary.
     if kwargs["event_type"] == "acc.journal_entry.created":

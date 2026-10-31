@@ -63,8 +63,10 @@ def _accounting_settings_tabs(active: str) -> FT:
 
 
 def _bank_account_row(b: dict) -> FT:
-    balance = b.get("balance", 0.0)
-    bal_cls = "balance--positive" if balance >= 0 else "balance--negative"
+    # The balance is in the account's own currency, or None when the API cannot read
+    # every posting in it: then it shows as unknown and says why, never as a guess.
+    balance = b.get("balance")
+    bal_cls = "balance--negative" if balance is not None and balance < 0 else "balance--positive"
     currency = b.get("currency", "")
     return Div(
         Div(
@@ -73,7 +75,9 @@ def _bank_account_row(b: dict) -> FT:
             cls="bank-info",
         ),
         Div(
-            Span(f"{currency} {balance:,.2f}", cls=f"balance {bal_cls}"),
+            Span(EMPTY if balance is None else fmt_money(balance, currency), cls=f"balance {bal_cls}"),
+            *([P(t("acct.balance_unknown", currency=currency), cls="flash flash--warning")]
+              if balance is None else []),
             # The balance is the ledger's. Say so when an opening balance was
             # entered here that no journal entry carries, rather than letting the
             # figure look wrong for no stated reason.
@@ -82,8 +86,10 @@ def _bank_account_row(b: dict) -> FT:
             Div(
                 A(t("btn.edit"), href=f"/settings/accounting/bank-accounts/{b['id']}/edit",
                   cls="btn btn--secondary btn--xs"),
-                A(t("acct.reconcile"), href="/accounting/reconcile/start",
+                A(t("acct.reconcile"), href=f"/accounting/reconcile/start?bank_id={b['id']}",
                   cls="btn btn--primary btn--xs"),
+                A(t("recon.history"), href=f"/accounting/reconcile/history/{b['id']}",
+                  cls="btn btn--secondary btn--xs"),
                 Button(
                     t("inv.archive") if b.get("is_active") else t("btn.restore"),
                     hx_patch=f"/settings/accounting/bank-accounts/{b['id']}/toggle",
@@ -1008,6 +1014,14 @@ def setup_routes(app):
                                 Td(Input(type="number", name="opening_balance", value="0",
                                          step="0.01", cls="cell-input cell-input--number")),
                             ),
+                            Tr(
+                                Td(t("acct.opening_rate", base=currency), cls="detail-label"),
+                                Td(
+                                    Input(type="number", name="rate", step="any", min="0",
+                                          cls="cell-input cell-input--number"),
+                                    P(t("acct.opening_rate_hint", base=currency), cls="form-hint"),
+                                ),
+                            ),
                             cls="detail-table",
                         ),
                         Div(
@@ -1047,6 +1061,11 @@ def setup_routes(app):
             opening_balance = float(opening_balance_raw)
         except ValueError:
             return P(t("acct.opening_balance_must_be_a_number"), cls="error-banner")
+        rate_raw = str(form.get("rate", "")).strip()
+        try:
+            rate = float(rate_raw) if rate_raw else None
+        except ValueError:
+            return P(t("acct.err_bank_rate_invalid", raw=rate_raw), cls="error-banner")
         try:
             await api.create_bank_account(token, {
                 "bank_name": bank_name,
@@ -1054,6 +1073,7 @@ def setup_routes(app):
                 "bank_type": bank_type,
                 "currency": currency,
                 "opening_balance": opening_balance,
+                "rate": rate,
             })
         except APIError as e:
             return P(str(e.detail), cls="error-banner")

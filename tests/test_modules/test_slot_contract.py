@@ -74,6 +74,7 @@ CALLABLE = {
     "doc_detail_badges": ("render", False, {}),
     "on_company_created": ("handler", True, {}),
     "on_modules_ready": ("handler", True, {}),
+    "on_books_currency_set": ("handler", True, {}),
     "doc_finalize_hook": ("handler", True, {}),
     "on_doc_payment": ("handler", True, {}),
     "projection_handler": ("handler", False, {"prefix": "slotx."}),
