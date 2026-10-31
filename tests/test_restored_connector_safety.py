@@ -388,6 +388,7 @@ class _Connect:
              patch("celerp.services.outbound_url.validate_public_base_url", AsyncMock(return_value=STORE)), \
              patch("celerp.services.outbound_url.fetch_public_bytes",
                    AsyncMock(return_value=SimpleNamespace(status_code=200))), \
+             patch("celerp.connectors.ownership.prove_store", AsyncMock(return_value=[])), \
              patch("celerp.connectors.ownership.bind_connector_store", self.bind), \
              patch("celerp.connectors.remote_state.revoke_connector_remote_state", self.revoke), \
              respx.mock:
@@ -428,7 +429,7 @@ async def test_reconnect_same_store_relinks_then_protects(restored, real_engine,
     the store links again is protected from merging."""
     bound: list[dict] = []
 
-    async def on_bind(session, company_id, connector, ctx):
+    async def on_bind(session, company_id, connector, ctx, *, proven):
         bound.append(dict((await session.execute(text(
             "SELECT state FROM projections WHERE company_id = :c AND entity_id = :e"),
             {"c": uuid.UUID(str(company_id)), "e": restored.a})).scalar_one()))

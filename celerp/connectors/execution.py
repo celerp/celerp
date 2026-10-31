@@ -77,11 +77,13 @@ class ExecutionBusy(ExecutionError):
 
 
 class ExecutionRefused(ExecutionError):
-    """The connection is not in a state where this work may run. ``reason`` names why."""
+    """The connection is not in a state where this work may run. ``reason`` names why;
+    ``detail``, when given, is what the person is told (its message)."""
 
-    def __init__(self, reason: str) -> None:
-        super().__init__(reason)
+    def __init__(self, reason: str, detail: str | None = None) -> None:
+        super().__init__(detail or reason)
         self.reason = reason
+        self.detail = detail
 
 
 class AdmissionBusy(ExecutionError):
@@ -875,6 +877,18 @@ async def _credentials(ex: Execution):
     return ctx
 
 
+async def _prove_store(ex: Execution, connector) -> None:
+    """Before any store work: the store in the context is the one the company's records
+    came from (ownership.ensure_store_bound). It runs as the execution, so its store
+    calls meet the no-open-transaction check every store call meets."""
+    from celerp.connectors.ownership import ConnectorStoreChangedError, ensure_store_bound
+
+    try:
+        await ensure_store_bound(ex.company_id, connector, ex.ctx)
+    except ConnectorStoreChangedError as exc:
+        raise ExecutionRefused("store_changed", str(exc)) from exc
+
+
 @contextlib.asynccontextmanager
 async def connector_execution(
     company_id, connector, purpose: str, resources: list[str], *,
@@ -919,6 +933,8 @@ async def connector_execution(
             ex.ctx = None if purpose in LOCAL_PURPOSES else await _credentials(ex)
             token = _CURRENT.set(ex)
             try:
+                if ex.ctx is not None:
+                    await _prove_store(ex, connector)
                 yield ex
                 await _run_reruns(ex, connector)
             finally:

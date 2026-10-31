@@ -572,6 +572,7 @@ async def test_orders_from_a_different_store_do_not_mix_with_imported_ones(_db_e
 
 
     from celerp.connectors.base import ConnectorContext, EntityFlow, SyncEntity, SyncResult
+    from celerp.connectors.execution import ExecutionRefused
     from celerp.connectors.sync_runner import run_sync
     from celerp.db import get_session_ctx
     from celerp.models.company import Company
@@ -628,8 +629,9 @@ async def test_orders_from_a_different_store_do_not_mix_with_imported_ones(_db_e
             await session.commit()
 
         _Store.calls = 0
-        other = await _sync("https://third.example")
-        assert other.errors and "https://second.example" in other.errors[0]
+        with pytest.raises(ExecutionRefused) as other:
+            await _sync("https://third.example")
+        assert other.value.reason == "store_changed" and "https://second.example" in other.value.detail
         assert _Store.calls == 0
         same = await _sync("https://second.example")
         assert not same.errors and _Store.calls == 1

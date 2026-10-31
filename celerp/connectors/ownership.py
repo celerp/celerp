@@ -598,54 +598,21 @@ async def _bound(session: AsyncSession, company_id, connector, store_handle: str
             and source.config_id == config_id)
 
 
-async def ensure_store_bound(company_id, connector, ctx) -> None:
-    """Bind a sync's store before it runs, outside the sync's own transaction. An
-    already bound connection is only read; a binding that is needed takes the company
-    lock in its own short transaction and commits, so no sync ever holds that lock."""
-    from celerp.db import get_session_ctx
-
-    if not connector.store_scoped_ids or not ctx.store_handle:
-        return
-    async with get_session_ctx() as session:
-        if await _bound(session, company_id, connector, ctx.store_handle):
-            return
-    async with get_session_ctx() as session:
-        await bind_connector_store(session, company_id, connector, ctx)
-        await session.commit()
-
-
-async def bind_connector_store(session: AsyncSession, company_id, connector, ctx) -> None:
-    """Tie a company's imported records from one connector to the store they
-    came from. Stores that number orders, customers and products per store
-    would overwrite those records, so a store is accepted only when no records
-    exist yet or when it still holds a sample of them. Each new connection is
-    checked once, even when the store address is unchanged. Caller commits."""
-    from datetime import datetime, timezone
-
+async def _store_samples(session: AsyncSession, company_id, connector) -> tuple[list[tuple[str, dict]], str | None]:
+    """The imported records that prove a store, as (entity id, state), and the store the
+    connection was last bound to. A read: no lock is taken."""
     from celerp.models.connector_source import ConnectorSource
     from celerp.models.projections import Projection
 
-    store_handle = ctx.store_handle
-    if not connector.store_scoped_ids or not store_handle:
-        return
-    await _lock_active_company(session, company_id, connector.name)
     cid = uuid.UUID(str(company_id))
-    key = (str(cid), connector.name)
-    if await _bound(session, company_id, connector, store_handle):
-        return
-    source = await session.get(ConnectorSource, key)
-    config_id = await session.scalar(sa.select(ConnectorConfig.id).where(
-        ConnectorConfig.company_id == key[0],
-        ConnectorConfig.connector == connector.name,
-    ))
 
-    async def sample(*conditions) -> list[dict]:
-        return list((await session.scalars(
-            sa.select(Projection.state)
+    async def sample(*conditions) -> list[tuple[str, dict]]:
+        return [tuple(row) for row in (await session.execute(
+            sa.select(Projection.entity_id, Projection.state)
             .where(Projection.company_id == cid, *conditions)
-            .order_by(Projection.created_at.desc().nulls_last())
+            .order_by(Projection.created_at.desc().nulls_last(), Projection.entity_id)
             .limit(STORE_PROOF_SAMPLE)
-        )).all())
+        )).all()]
 
     # Orders and invoices prove the store best, then customers, then products.
     prefix = f"{connector.name}:"
@@ -657,22 +624,93 @@ async def bind_connector_store(session: AsyncSession, company_id, connector, ctx
             Projection.state["idempotency_key"].as_string().startswith(prefix, autoescape=True),
         )
     )
+    source = await session.get(ConnectorSource, (str(cid), connector.name))
+    return samples, (source.store_handle if source is not None else None)
+
+
+async def _confirm_store(connector, ctx, samples: list[tuple[str, dict]], origin: str | None) -> list[str]:
+    """Ask the store in ``ctx`` whether it holds the sampled records (a network call;
+    the caller holds no lock). The proven record ids, or ConnectorStoreChangedError."""
     if samples:
-        origin = f" from {source.store_handle}" if source is not None else ""
         try:
             confirmed = await asyncio.wait_for(
-                connector.same_store(ctx, samples), STORE_PROOF_TIMEOUT_S
+                connector.same_store(ctx, [state for _, state in samples]), STORE_PROOF_TIMEOUT_S
             )
         except Exception as exc:
             raise ConnectorStoreChangedError(
-                t("error.store_unchecked", store=store_handle, service=connector.display_name)
+                t("error.store_unchecked", store=ctx.store_handle, service=connector.display_name)
             ) from exc
         if not confirmed:
+            origin = f" from {origin}" if origin else ""
             raise ConnectorStoreChangedError(
                 f"This company already has {connector.display_name} records"
-                f"{origin}, and {store_handle} does not have them. Connect the store they "
-                f"came from, or use a separate company for {store_handle}."
+                f"{origin}, and {ctx.store_handle} does not have them. Connect the store they "
+                f"came from, or use a separate company for {ctx.store_handle}."
             )
+    return [entity_id for entity_id, _ in samples]
+
+
+async def prove_store(session: AsyncSession, company_id, connector, ctx) -> list[str]:
+    """Check the store in ``ctx`` against the company's imported records before a
+    connection is bound to it: the proof ``bind_connector_store`` takes. ``session``
+    holds no lock; the store is asked over the network. A connection already bound to
+    the store needs no proof."""
+    if not connector.store_scoped_ids or not ctx.store_handle:
+        return []
+    if await _bound(session, company_id, connector, ctx.store_handle):
+        return []
+    samples, origin = await _store_samples(session, company_id, connector)
+    return await _confirm_store(connector, ctx, samples, origin)
+
+
+async def ensure_store_bound(company_id, connector, ctx) -> None:
+    """Bind the connection's store before any store work runs (connector_execution).
+    A bound connection is only read. Otherwise the samples are read, the store is asked
+    with no transaction open, and a short transaction binds it under the company lock,
+    making no network call there."""
+    from celerp.db import get_session_ctx
+
+    if not connector.store_scoped_ids or not ctx.store_handle:
+        return
+    async with get_session_ctx() as session:
+        if await _bound(session, company_id, connector, ctx.store_handle):
+            return
+        samples, origin = await _store_samples(session, company_id, connector)
+    proven = await _confirm_store(connector, ctx, samples, origin)
+    async with get_session_ctx() as session:
+        await bind_connector_store(session, company_id, connector, ctx, proven=proven)
+        await session.commit()
+
+
+async def bind_connector_store(session: AsyncSession, company_id, connector, ctx, *, proven: list[str]) -> None:
+    """Tie a company's imported records from one connector to the store they
+    came from. Stores that number orders, customers and products per store
+    would overwrite those records, so a store is accepted only when no records
+    exist yet or when it still holds a sample of them: ``proven``, the sample
+    ``prove_store`` confirmed. Under the company lock the sample is read again and
+    must be the same; no network call is made here. Each new connection is
+    checked once, even when the store address is unchanged. Caller commits."""
+    from datetime import datetime, timezone
+
+    from celerp.models.connector_source import ConnectorSource
+
+    store_handle = ctx.store_handle
+    if not connector.store_scoped_ids or not store_handle:
+        return
+    await _lock_active_company(session, company_id, connector.name)
+    key = (str(uuid.UUID(str(company_id))), connector.name)
+    if await _bound(session, company_id, connector, store_handle):
+        return
+    samples, _ = await _store_samples(session, company_id, connector)
+    if [entity_id for entity_id, _ in samples] != list(proven):
+        raise ConnectorStoreChangedError(
+            t("error.store_unchecked", store=store_handle, service=connector.display_name)
+        )
+    source = await session.get(ConnectorSource, key)
+    config_id = await session.scalar(sa.select(ConnectorConfig.id).where(
+        ConnectorConfig.company_id == key[0],
+        ConnectorConfig.connector == connector.name,
+    ))
 
     now = datetime.now(timezone.utc)
     if source is None:

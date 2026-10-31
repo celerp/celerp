@@ -3,6 +3,7 @@
 """Sync runner - wraps connector sync calls with audit trail recording."""
 from __future__ import annotations
 
+import contextlib
 import inspect
 import json
 import logging
@@ -21,7 +22,6 @@ from celerp.connectors.base import (
     SyncResult,
     entity_allowed,
 )
-from celerp.connectors.ownership import ConnectorStoreChangedError
 from celerp.connectors.relay_token import ConnectorUpgradeRequired, ConnectRequired
 from celerp.modules.boundary import ModuleBusy, ModuleRefused
 from celerp.models.sync_run import SyncRun
@@ -82,7 +82,7 @@ async def run_connector_sync(
     daily reconciliation pass; ``first_sync`` the first sync, whose product pass
     also runs when products only go out; ``resource`` limits it to the syncs that
     write that resource (a rerun)."""
-    from celerp.connectors.execution import connector_execution, plan_resources
+    from celerp.connectors.execution import plan_resources
 
     directions = await _directions(company_id, connector.name)
     plan = sync_plan(connector, directions)
@@ -93,7 +93,7 @@ async def run_connector_sync(
         plan = [entity for entity in plan if _resource_of(entity) == resource]
         resources = [resource]
     results: list[SyncResult] = []
-    async with connector_execution(company_id, connector, purpose, resources) as ex:
+    async with _sync_execution(connector, company_id, purpose, resources, plan) as ex:
         if any(entity in OUTBOUND_ENTITIES for entity in plan):
             await connector.before_outbound(ex.ctx)
         completed: dict[str, bool] = {}
@@ -199,11 +199,12 @@ async def execute_first_sync(company_id, connector_name: str, *, admission_wait:
     resource it writes: the store's webhooks, then run_first_sync, with the choices saved
     when it started. The start and retry requests run it, and the execution sweeper runs a
     first sync no process holds. A failure the first sync did not record leaves it needing
-    attention with the reason; a busy or refused execution leaves it as it was."""
+    attention with the reason, as does a store that is not the one the company's records
+    came from; any other busy or refused execution leaves it as it was."""
     import sqlalchemy as sa
 
     from celerp import connectors
-    from celerp.connectors.execution import WEBHOOKS, connector_execution, plan_resources
+    from celerp.connectors.execution import WEBHOOKS, ExecutionRefused, connector_execution, plan_resources
     from celerp.connectors.webhook_reconcile import reconcile_webhooks
     from celerp.db import get_session_ctx
     from celerp.models.connector_first_sync import ConnectorFirstSync
@@ -213,14 +214,20 @@ async def execute_first_sync(company_id, connector_name: str, *, admission_wait:
         directions = await session.scalar(sa.select(ConnectorFirstSync.directions).where(
             ConnectorFirstSync.company_id == str(company_id), ConnectorFirstSync.connector == connector_name))
     resources = [*plan_resources(connector, directions or {}), WEBHOOKS]
-    async with connector_execution(company_id, connector, "first_sync", resources,
-                                   admission_wait=admission_wait) as ex:
-        try:
-            await reconcile_webhooks(ex)
-            await run_first_sync(connector, ex.ctx)
-        except Exception as exc:
+    try:
+        async with connector_execution(company_id, connector, "first_sync", resources,
+                                       admission_wait=admission_wait) as ex:
+            try:
+                await reconcile_webhooks(ex)
+                await run_first_sync(connector, ex.ctx)
+            except Exception as exc:
+                await fail_first_sync(company_id, connector_name, exc)
+                raise
+    except ExecutionRefused as exc:
+        # A store that is not the one the records came from: only the company can clear it.
+        if exc.reason == "store_changed":
             await fail_first_sync(company_id, connector_name, exc)
-            raise
+        raise
 
 
 async def retry_first_sync(session, company_id, connector_name: str) -> None:
@@ -458,7 +465,7 @@ async def _finish_run(run_id, company_id, connector, entity, result, started_at,
         log.warning("Failed to record SyncRun: %s", exc)
 
 
-async def record_refused_run(company_id, connector_name: str, entity: str, exc: ModuleRefused) -> None:
+async def record_refused_run(company_id, connector_name: str, entity: str, exc: Exception) -> None:
     """Record on the store's sync history a run of *entity* that *exc* refused before
     anything was fetched or changed, in the refusal's own words."""
     direction = entity_direction(entity)
@@ -468,6 +475,23 @@ async def record_refused_run(company_id, connector_name: str, entity: str, exc: 
                         final=not isinstance(exc, ModuleBusy))
     await _finish_run(run_id, str(company_id), connector_name, entity, result, started_at,
                       datetime.now(timezone.utc), "failed")
+
+
+@contextlib.asynccontextmanager
+async def _sync_execution(connector, company_id, purpose: str, resources: list[str], entities: list[str]):
+    """The execution a sync runs in. When the store is not the one the company's records
+    came from, the refusal is recorded on each entity's sync history in the store check's
+    own words, so the person sees why, and reaches the caller."""
+    from celerp.connectors.execution import ExecutionRefused, connector_execution
+
+    try:
+        async with connector_execution(company_id, connector, purpose, resources) as ex:
+            yield ex
+    except ExecutionRefused as exc:
+        if exc.reason == "store_changed":
+            for entity in entities:
+                await record_refused_run(company_id, connector.name, entity, exc)
+        raise
 
 
 async def run_sync(
@@ -487,8 +511,7 @@ async def run_sync(
     incremental pull. ExecutionError subclasses reach the caller."""
     import sqlalchemy as sa
 
-    from celerp.connectors.execution import ExecutionError, connector_execution
-    from celerp.connectors.ownership import ensure_store_bound
+    from celerp.connectors.execution import ExecutionError
     from celerp.db import get_session_ctx
     from celerp.models.connector_config import ConnectorConfig
 
@@ -502,7 +525,7 @@ async def run_sync(
 
     company_id = str(company_id)
     effective_direction = entity_direction(entity)
-    async with connector_execution(company_id, connector, purpose, [_resource_of(entity)]) as ex:
+    async with _sync_execution(connector, company_id, purpose, [_resource_of(entity)], [entity]) as ex:
         started_at = datetime.now(timezone.utc)
         run_id = await _begin_run(company_id, connector.name, entity, effective_direction.value, started_at)
         try:
@@ -526,8 +549,6 @@ async def run_sync(
             else:
                 if since is None and entity not in OUTBOUND_ENTITIES and use_watermark:
                     since = await _last_success_watermark(company_id, connector.name, entity)
-                # Its own short transaction: the sync below runs holding no lock on the company.
-                await ensure_store_bound(company_id, connector, ex.ctx)
                 if entity in OUTBOUND_ENTITIES:
                     result = await sync_method(ex.ctx)
                 else:
@@ -544,7 +565,7 @@ async def run_sync(
                     result = await sync_method(ex.ctx, since=since, **options)
         except ExecutionError:
             raise
-        except (ConnectorStoreChangedError, ConnectorUpgradeRequired, ConnectRequired, ModuleRefused) as exc:
+        except (ConnectorUpgradeRequired, ConnectRequired, ModuleRefused) as exc:
             result = SyncResult(entity=entity, direction=effective_direction, errors=[str(exc)],
                                 busy=isinstance(exc, ModuleBusy), final=not isinstance(exc, ModuleBusy))
         except NotImplementedError:

@@ -10,7 +10,6 @@ from datetime import date
 from typing import Annotated, Literal
 
 import httpx
-import sqlalchemy as sa
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -125,6 +124,8 @@ def _execution_refusals(connector):
     except ExecutionBusy as exc:
         raise HTTPException(status_code=409, detail=t("connectors.fail_busy")) from exc
     except ExecutionRefused as exc:
+        if exc.detail:
+            raise HTTPException(status_code=409, detail=exc.detail) from exc
         key = {"direction_off": "connectors.fail_direction", "relay_unavailable": "error.relay_unreachable",
                "not_connected": "error.connector_not_connected"}.get(exc.reason, "connectors.err_first_sync_needed")
         raise HTTPException(status_code=409, detail=t(key, service=connector.display_name)) from exc
@@ -469,6 +470,7 @@ async def store_credentials(
         bind_connector_store,
         claim_connector_ownership,
         lock_connector_operation,
+        prove_store,
         release_connector_ownership,
     )
     category = getattr(connector.category, "value", connector.category)
@@ -477,6 +479,19 @@ async def store_credentials(
         if category == ConnectorCategory.WEBSITE.value
         else SyncFrequency.MANUAL.value
     )
+    store_ctx = ConnectorContext(
+        company_id=str(company_id),
+        access_token=(payload.consumer_key if connector_name == "celerp"
+                      else f"{payload.consumer_key}:{payload.consumer_secret}"),
+        store_handle=store_url or None,
+    )
+    # The store is asked about the company's records before any lock is taken.
+    try:
+        proven = await prove_store(session, company_id, connector, store_ctx)
+    except ConnectorStoreChangedError as exc:
+        await session.rollback()
+        return {"ok": False, "error": "store_changed", "detail": str(exc)}
+
     try:
         config, ownership_created = await claim_connector_ownership(
             session,
@@ -497,16 +512,10 @@ async def store_credentials(
             "detail": "Disconnect the existing connector before changing credentials.",
         }
 
-    store_ctx = ConnectorContext(
-        company_id=str(company_id),
-        access_token=(payload.consumer_key if connector_name == "celerp"
-                      else f"{payload.consumer_key}:{payload.consumer_secret}"),
-        store_handle=store_url or None,
-    )
-    # The store is checked against the company's records, and its old product
-    # links become history, in the same commit that makes the company its owner.
+    # The proven store is bound, and its old product links become history, in the same
+    # commit that makes the company its owner.
     try:
-        await bind_connector_store(session, company_id, connector, store_ctx)
+        await bind_connector_store(session, company_id, connector, store_ctx, proven=proven)
     except ConnectorStoreChangedError as exc:
         await session.rollback()
         return {"ok": False, "error": "store_changed", "detail": str(exc)}
@@ -1259,8 +1268,6 @@ async def set_item_sync(
     store_change = connector_name == "woocommerce" and payload.action in ("publish", "unpublish")
     async with _products_work(session, company_id, connector_name,
                               "item_publish" if store_change else "item_flags") as ex:
-        from celerp import connectors
-        from celerp.connectors.ownership import ensure_store_bound
         from celerp.events.engine import emit_event
         from celerp.connectors.product_links import external_link_for_state
         from celerp_inventory.services import resolve_catalog_anchor_for_item, set_external_link_state
@@ -1307,10 +1314,9 @@ async def set_item_sync(
             await session.commit()
         else:
             from celerp.connectors.woocommerce import LinkNeedsConfirmation, WooCommerceConnector
-            # No transaction stays open across a store call; the same store check a sync makes.
+            # No transaction stays open across a store call.
             await session.commit()
             ctx = ex.ctx
-            await ensure_store_bound(company_id, connectors.get("woocommerce"), ctx)
             woo = WooCommerceConnector()
             for anchor_id, anchor in anchors.items():
                 sku = (anchor.state or {}).get("sku") or anchor_id

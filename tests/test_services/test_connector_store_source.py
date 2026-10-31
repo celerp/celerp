@@ -17,7 +17,7 @@ import pytest
 import sqlalchemy as sa
 
 from celerp.connectors.base import ConnectorContext
-from celerp.connectors.ownership import ConnectorStoreChangedError, bind_connector_store
+from celerp.connectors.ownership import ConnectorStoreChangedError, bind_connector_store, prove_store
 from celerp.connectors.quickbooks import QuickBooksConnector
 from celerp.connectors.woocommerce import WooCommerceConnector
 from celerp.models.company import Company
@@ -65,13 +65,19 @@ def _ctx(cid, url) -> ConnectorContext:
     return ConnectorContext(company_id=str(cid), access_token="k:s", store_handle=url)
 
 
+async def _bind(session, cid, connector, ctx) -> None:
+    """Connect's order: the store is proven, then bound with that proof."""
+    proven = await prove_store(session, cid, connector, ctx)
+    await bind_connector_store(session, cid, connector, ctx, proven=proven)
+
+
 def _store(orders):
     return patch.object(WooCommerceConnector, "_paginate", AsyncMock(return_value=orders))
 
 
 async def test_first_store_is_recorded_as_the_source(session):
     cid = await _company(session)
-    await bind_connector_store(session, cid, WooCommerceConnector(), _ctx(cid, "https://a.example"))
+    await _bind(session, cid, WooCommerceConnector(), _ctx(cid, "https://a.example"))
     assert await _source(session, cid) == "https://a.example"
 
 
@@ -86,7 +92,7 @@ async def test_company_settings_cannot_redirect_the_source(session):
     ))
     await session.flush()
     with _store([{**_ORDER, "total": "90.00"}]), pytest.raises(ConnectorStoreChangedError):
-        await bind_connector_store(
+        await _bind(
             session, cid, WooCommerceConnector(), _ctx(cid, "https://b.example")
         )
     assert await _source(session, cid) == "https://a.example"
@@ -97,7 +103,7 @@ async def test_existing_orders_with_no_recorded_store_are_not_assigned_to_any_st
     await _imported_order(session, cid)
     with _store([{**_ORDER, "line_items": [{"name": "Garden hose"}]}]), \
             pytest.raises(ConnectorStoreChangedError, match="does not have them"):
-        await bind_connector_store(
+        await _bind(
             session, cid, WooCommerceConnector(), _ctx(cid, "https://other.example")
         )
     assert await _source(session, cid) is None
@@ -107,7 +113,7 @@ async def test_existing_orders_are_kept_with_the_store_that_still_has_them(sessi
     cid = await _company(session)
     await _imported_order(session, cid)
     with _store([_ORDER]):
-        await bind_connector_store(
+        await _bind(
             session, cid, WooCommerceConnector(), _ctx(cid, "https://shop.example")
         )
     assert await _source(session, cid) == "https://shop.example"
@@ -122,7 +128,7 @@ async def test_a_store_that_moved_domain_keeps_its_orders(session):
     ))
     await session.flush()
     with _store([_ORDER]):
-        await bind_connector_store(
+        await _bind(
             session, cid, WooCommerceConnector(), _ctx(cid, "https://new.example")
         )
     assert await _source(session, cid) == "https://new.example"
@@ -135,7 +141,7 @@ async def test_an_unreachable_store_is_not_accepted(session):
         WooCommerceConnector, "_paginate", AsyncMock(side_effect=RuntimeError("timeout"))
     )
     with failing, pytest.raises(ConnectorStoreChangedError, match="couldn't reach"):
-        await bind_connector_store(
+        await _bind(
             session, cid, WooCommerceConnector(), _ctx(cid, "https://shop.example")
         )
     assert await _source(session, cid) is None
@@ -159,7 +165,7 @@ async def test_customers_alone_confirm_the_store_they_came_from(session, fetched
         state=_CONTACT, version=1, updated_at=datetime.now(timezone.utc),
     ))
     await session.flush()
-    bind = bind_connector_store(
+    bind = _bind(
         session, cid, WooCommerceConnector(), _ctx(cid, "https://shop.example")
     )
     with _store(fetched):
@@ -273,7 +279,7 @@ async def test_products_alone_confirm_the_store_they_came_from(session, fetched,
         state=_ITEM, version=1, updated_at=datetime.now(timezone.utc),
     ))
     await session.flush()
-    bind = bind_connector_store(
+    bind = _bind(
         session, cid, WooCommerceConnector(), _ctx(cid, "https://shop.example")
     )
     with _store(fetched):
@@ -320,14 +326,14 @@ async def test_every_new_connection_checks_the_store_again(session):
     await session.flush()
     ctx = _ctx(cid, "https://shop.example")
     with _store([_ORDER]):
-        await bind_connector_store(session, cid, WooCommerceConnector(), ctx)
+        await _bind(session, cid, WooCommerceConnector(), ctx)
 
     with _store([]) as store:
-        await bind_connector_store(session, cid, WooCommerceConnector(), ctx)
+        await _bind(session, cid, WooCommerceConnector(), ctx)
     store.assert_not_awaited()
 
     await session.execute(sa.delete(ConnectorConfig).where(ConnectorConfig.company_id == str(cid)))
     session.add(ConnectorConfig(company_id=str(cid), connector="woocommerce"))
     await session.flush()
     with _store([]), pytest.raises(ConnectorStoreChangedError, match="does not have them"):
-        await bind_connector_store(session, cid, WooCommerceConnector(), ctx)
+        await _bind(session, cid, WooCommerceConnector(), ctx)

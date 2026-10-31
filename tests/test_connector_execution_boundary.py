@@ -158,3 +158,194 @@ async def test_every_connector_store_client_requires_an_execution():
                         and kw["require_execution"].value is True):
                     missing.append(f"{path.name}:{node.lineno}")
     assert missing == []
+
+
+_ORDER_DOC = {"woocommerce_order_id": "7", "total": 25.0, "currency": "USD", "line_items": [{"name": "Blue mug"}]}
+
+
+@pytest.fixture
+async def unbound_shop(real_engine, connector_modules_running, signed_in_to_cloud, monkeypatch):
+    """A connected company holding an imported WooCommerce order, whose store the
+    connection has not been checked against yet."""
+    from datetime import datetime, timezone
+
+    from celerp.db import get_session_ctx
+    from celerp.models.projections import Projection
+
+    user = await owner(real_engine)
+    cid = str(await company(real_engine, user, "Proof Trading", "proof-marker"))
+    tok = await token(real_engine, user, cid)
+    await connected(cid, "woocommerce", {"products": "both", "orders": "inbound"})
+    async with get_session_ctx() as session:
+        now = datetime.now(timezone.utc)
+        session.add(Projection(company_id=cid, entity_id="doc:woocommerce:order:7", entity_type="doc",
+                               state=_ORDER_DOC, version=1, created_at=now, updated_at=now))
+        await session.commit()
+    monkeypatch.setattr("celerp.connectors.relay_token.fetch_context", AsyncMock(
+        side_effect=lambda company_id, *_a, **_k: ConnectorContext(
+            company_id=str(company_id), access_token="ck_x:cs_x", store_handle=STORE)))
+    return cid, tok
+
+
+async def _bound_store(cid) -> str | None:
+    import sqlalchemy as sa
+
+    from celerp.db import get_session_ctx
+    from celerp.models.connector_source import ConnectorSource
+
+    async with get_session_ctx() as session:
+        return await session.scalar(sa.select(ConnectorSource.store_handle).where(
+            ConnectorSource.company_id == cid, ConnectorSource.connector == "woocommerce"))
+
+
+@pytest.mark.parametrize("purpose, resource", [
+    ("manual_sync", "products"), ("schedule", "orders"), ("webhook", "orders"), ("outbound_queue", "products"),
+    ("item_publish", "products"), ("rerun", "products"), ("webhooks", "webhooks"),
+])
+async def test_every_execution_proves_the_store_first(unbound_shop, monkeypatch, purpose, resource):
+    """Every execution that reaches the store first checks it is the store the company's
+    records came from: a store without them refuses the work before it runs, in the
+    check's own words; the store that has them is bound once and not asked again."""
+    from celerp.connectors.execution import ExecutionRefused, connector_execution
+    from celerp.connectors.woocommerce import WooCommerceConnector
+
+    cid, _ = unbound_shop
+    same_store = AsyncMock(return_value=False)
+    monkeypatch.setattr(WooCommerceConnector, "same_store", same_store)
+    ran = []
+    with pytest.raises(ExecutionRefused) as refused:
+        async with connector_execution(cid, "woocommerce", purpose, [resource]):
+            ran.append(purpose)
+    assert (refused.value.reason, ran) == ("store_changed", [])
+    assert "does not have them" in refused.value.detail
+    assert await _bound_store(cid) is None
+
+    same_store.return_value = True
+    for _ in range(2):
+        async with connector_execution(cid, "woocommerce", purpose, [resource]):
+            ran.append(purpose)
+    assert ran == [purpose, purpose] and same_store.await_count == 2
+    assert await _bound_store(cid) == STORE
+
+
+async def test_a_first_sync_on_another_store_registers_no_webhook_and_says_why(unbound_shop, monkeypatch):
+    """The first sync's webhook registration runs inside its execution, so a store without
+    the company's records gets no webhook and the first sync needs attention with the reason."""
+    from celerp.connectors import webhook_reconcile
+    from celerp.connectors.execution import ExecutionRefused
+    from celerp.connectors.sync_runner import execute_first_sync
+    from celerp.connectors.woocommerce import WooCommerceConnector
+    from celerp.db import get_session_ctx
+    from celerp.models.connector_first_sync import ConnectorFirstSync
+    from connector_test_support import record_first_sync
+    from celerp.models.connector_config import ConnectorConfig
+    import sqlalchemy as sa
+
+    cid, _ = unbound_shop
+    async with get_session_ctx() as session:
+        config = await session.scalar(sa.select(ConnectorConfig).where(
+            ConnectorConfig.company_id == cid, ConnectorConfig.connector == "woocommerce"))
+        await session.execute(sa.delete(ConnectorFirstSync).where(ConnectorFirstSync.company_id == cid))
+        await record_first_sync(session, config, "starting")
+        await session.commit()
+    monkeypatch.setattr(WooCommerceConnector, "same_store", AsyncMock(return_value=False))
+    reconcile = AsyncMock()
+    monkeypatch.setattr(webhook_reconcile, "reconcile_webhooks", reconcile)
+
+    with pytest.raises(ExecutionRefused):
+        await execute_first_sync(cid, "woocommerce")
+    reconcile.assert_not_awaited()
+    async with get_session_ctx() as session:
+        row = await session.get(ConnectorFirstSync, (cid, "woocommerce"))
+        assert row.state == "failed" and "does not have them" in row.error["detail"]
+
+
+async def test_a_sync_refused_for_another_store_is_on_the_sync_history(unbound_shop, monkeypatch):
+    """A person's sync on a store without the company's records shows why on the sync history."""
+    import sqlalchemy as sa
+
+    from celerp import connectors
+    from celerp.connectors.execution import ExecutionRefused
+    from celerp.connectors.sync_runner import run_connector_sync
+    from celerp.connectors.woocommerce import WooCommerceConnector
+    from celerp.db import get_session_ctx
+    from celerp.models.sync_run import SyncRun
+
+    cid, _ = unbound_shop
+    monkeypatch.setattr(WooCommerceConnector, "same_store", AsyncMock(return_value=False))
+    with pytest.raises(ExecutionRefused):
+        await run_connector_sync(connectors.get("woocommerce"), cid, purpose="manual_sync")
+    async with get_session_ctx() as session:
+        runs = (await session.execute(sa.select(SyncRun.entity, SyncRun.status, SyncRun.errors_json)
+                                      .where(SyncRun.company_id == cid))).all()
+    assert {entity for entity, _, _ in runs} >= {"products", "orders"}
+    assert all(status == "failed" and "does not have them" in errors for _, status, errors in runs)
+
+
+async def test_item_publish_on_another_store_is_refused_with_the_reason(unbound_shop, real_client, monkeypatch):
+    from celerp.connectors.woocommerce import WooCommerceConnector
+
+    _, tok = unbound_shop
+    r = await real_client.post("/items", headers=_auth(tok), json={
+        "sku": "PROOF-1", "name": "Proof", "quantity": 1.0, "sell_by": "piece", "status": "available"})
+    assert r.status_code == 200, r.text
+    eid = r.json()["id"]
+    monkeypatch.setattr(WooCommerceConnector, "same_store", AsyncMock(return_value=False))
+    publish = AsyncMock()
+    monkeypatch.setattr(WooCommerceConnector, "ensure_product_link", publish)
+    r = await real_client.post("/connector-items/woocommerce/sync", headers=_auth(tok),
+                               json={"entity_ids": [eid], "action": "publish"})
+    assert r.status_code == 409 and "does not have them" in r.json()["detail"], r.text
+    publish.assert_not_awaited()
+
+
+async def test_store_proof_makes_no_network_call_under_the_company_lock(unbound_shop, monkeypatch):
+    """While the store is asked, the company row is free: another request takes its lock
+    without waiting. A sample that changed before the binding is written refuses it."""
+    import sqlalchemy as sa
+
+    from celerp.connectors.execution import ExecutionRefused, connector_execution
+    from celerp.connectors.woocommerce import WooCommerceConnector
+    from celerp.db import get_session_ctx
+    from celerp.models.projections import Projection
+
+    cid, _ = unbound_shop
+
+    async def lock_free() -> None:
+        async with get_session_ctx() as session:
+            await session.execute(sa.text("SET LOCAL lock_timeout = '100ms'"))
+            await session.execute(sa.text("SELECT 1 FROM companies WHERE id = :c FOR UPDATE NOWAIT"), {"c": cid})
+            await session.rollback()
+
+    async def asks_with_no_lock(self, ctx, records):
+        await _outside(lock_free())
+        return True
+
+    monkeypatch.setattr(WooCommerceConnector, "same_store", asks_with_no_lock)
+    async with connector_execution(cid, "woocommerce", "manual_sync", ["orders"]):
+        pass
+    assert await _bound_store(cid) == STORE
+
+    # A new connection is checked again; a record imported while the store was asked
+    # changes the sample, so the binding is refused rather than written on a stale proof.
+    async with get_session_ctx() as session:
+        await session.execute(sa.text(
+            "UPDATE connector_sources SET config_id = NULL WHERE company_id = :c"), {"c": cid})
+        await session.commit()
+
+    async def import_while_asked(self, ctx, records):
+        from datetime import datetime, timezone
+
+        async with get_session_ctx() as session:
+            now = datetime.now(timezone.utc)
+            session.add(Projection(company_id=cid, entity_id="doc:woocommerce:order:8", entity_type="doc",
+                                   state={**_ORDER_DOC, "woocommerce_order_id": "8"}, version=1,
+                                   created_at=now, updated_at=now))
+            await session.commit()
+        return True
+
+    monkeypatch.setattr(WooCommerceConnector, "same_store", import_while_asked)
+    with pytest.raises(ExecutionRefused) as refused:
+        async with connector_execution(cid, "woocommerce", "manual_sync", ["orders"]):
+            pass
+    assert refused.value.reason == "store_changed"

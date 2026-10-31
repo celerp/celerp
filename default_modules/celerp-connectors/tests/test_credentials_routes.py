@@ -74,6 +74,7 @@ def _owned_connector_boundary(request):
                     entity_directions=dict(WOO_DEFAULTS)))),
                 ("release_connector_ownership", AsyncMock()),
                 ("bind_connector_store", AsyncMock()),
+                ("prove_store", AsyncMock(return_value=[])),
                 ("connector_owned_by_company", AsyncMock(return_value=True)),
             ):
                 stack.enter_context(patch(f"celerp.connectors.ownership.{target}", new=mock))
@@ -522,6 +523,35 @@ def _store_ok():
     respx.delete(f"{RELAY}/tokens/woocommerce").mock(return_value=httpx.Response(404))
     respx.post(f"{RELAY}/tokens/woocommerce").mock(
         return_value=httpx.Response(200, json={"stored": True}))
+
+
+@pytest.mark.asyncio
+async def test_connect_proves_the_store_before_taking_any_lock():
+    """The store is asked about the company's records before the connection is claimed
+    (the claim takes the company lock), and the binding under that lock reuses the proof."""
+    from celerp.connectors import ownership
+
+    order = []
+
+    async def prove(*_a, **_k):
+        order.append("prove")
+        return ["doc:woocommerce:order:7"]
+
+    async def claim(*_a, **_k):
+        order.append("claim")
+        return object(), True
+
+    url_p, hdr_p = _relay_state()
+    with patch.object(ownership, "prove_store", new=prove), \
+            patch.object(ownership, "claim_connector_ownership", new=claim), \
+            url_p, hdr_p, respx.mock:
+        _store_ok()
+        result = await store_credentials("woocommerce", _creds(), "company-test", None, _session())
+        bind = ownership.bind_connector_store
+
+    assert result == {"ok": True}
+    assert order == ["prove", "claim"]
+    assert bind.await_args.kwargs["proven"] == ["doc:woocommerce:order:7"]
 
 
 @pytest.mark.asyncio
