@@ -166,8 +166,8 @@ def _attachment_kinds(file_ids: list[str] | None, company_id, user_id) -> set[st
     return kinds
 
 
-def _conflict(code: str, message: str) -> HTTPException:
-    return HTTPException(status_code=409, detail={"code": code, "message": message})
+def _conflict(code: str, key: str) -> HTTPException:
+    return HTTPException(status_code=409, detail=keyed_error(code, key))
 
 
 async def _find_question(session: AsyncSession, conversation_id: uuid.UUID, question_id: uuid.UUID, request):
@@ -177,7 +177,7 @@ async def _find_question(session: AsyncSession, conversation_id: uuid.UUID, ques
     try:
         return await find_question(session, conversation_id, question_id, request)
     except QuestionIdConflict:
-        raise _conflict("operation_conflict", t("ai.err_operation_conflict")) from None
+        raise _conflict("operation_conflict", "ai.err_operation_conflict") from None
     except QuestionNotFound:
         await session.commit()      # the job a missing question ended
         raise HTTPException(status_code=404, detail=t("ai.err_question_not_found")) from None
@@ -652,7 +652,7 @@ async def delete_conv(
     try:
         found = await delete_conversation(session, conversation_id, company_id, user.id)
     except ConversationBusy:
-        raise _conflict("conversation_busy", t("ai.err_conversation_busy")) from None
+        raise _conflict("conversation_busy", "ai.err_conversation_busy") from None
     if not found:
         raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
     await session.commit()
@@ -748,7 +748,7 @@ async def query_in_conversation(
                 raise HTTPException(status_code=400, detail=str(exc))
             except IntegrityError:
                 await session.rollback()
-                raise _conflict("question_in_progress", t("ai.err_question_in_progress"))
+                raise _conflict("question_in_progress", "ai.err_question_in_progress")
             await session.refresh(job)
             jobs.start_job(job.id)
         return JSONResponse(
@@ -770,7 +770,7 @@ async def query_in_conversation(
         await session.commit()
     except IntegrityError:
         await session.rollback()
-        raise _conflict("question_in_progress", t("ai.err_question_in_progress"))
+        raise _conflict("question_in_progress", "ai.err_question_in_progress")
     if not reopened:
         # A runner holds it, or answered it after this send read the thread: that
         # answer, never a second run. Or the conversation was deleted meanwhile.
@@ -778,7 +778,7 @@ async def query_in_conversation(
         if job.conversation_id is None:
             raise HTTPException(status_code=404, detail=t("ai.err_conversation_not_found"))
         if jobs.outcome(job) != "completed":
-            raise _conflict("question_in_progress", t("ai.err_question_in_progress"))
+            raise _conflict("question_in_progress", "ai.err_question_in_progress")
         answer = await jobs.answer_message(session, job)
         if answer is None:
             raise HTTPException(status_code=404, detail=t("ai.err_question_not_found"))
@@ -1125,7 +1125,7 @@ async def dismiss_action(
         tool_call_id=body.tool_call_id, company_id=company_id, user_id=user.id,
     )
     if not dismissed:
-        raise _conflict("action_not_pending", t("ai.action_not_pending"))
+        raise _conflict("action_not_pending", "ai.action_not_pending")
     await session.commit()
     return {"dismissed": True, "tool_call_id": body.tool_call_id}
 
@@ -1200,7 +1200,7 @@ async def confirm_all(
         raise HTTPException(status_code=404, detail=t("ai.err_message_not_found"))
     ids = _selected_action_ids(pending_actions(msg.tools_called), body.tool_call_ids)
     if not ids:
-        raise _conflict("action_not_pending", t("ai.action_none_pending"))
+        raise _conflict("action_not_pending", "ai.action_none_pending")
 
     capabilities = compile_agent_capabilities(request.app, company_settings, role)
     results = []
@@ -1542,10 +1542,12 @@ async def propose_from_job(
     if job is None:
         raise HTTPException(status_code=404, detail=t("ai.err_job_not_found"))
     if jobs.liveness(job) != "ended":
-        raise _conflict("job_not_finished", t("ai.receipt_files_reading"))
+        raise _conflict("job_not_finished", "ai.receipt_files_reading")
     result_files = [jobs.file_view(step) for step in (await jobs.job_steps(session, [job.id]))[job.id]]
     if jobs.outcome(job) == "failed" and not any(entry.get("status") == "success" for entry in result_files):
-        raise _conflict("job_failed", job.error or t("ai.receipt_files_none_read"))
+        if job.error:  # written in its asker's language when the job failed
+            raise HTTPException(status_code=409, detail={"code": "job_failed", "message": job.error})
+        raise _conflict("job_failed", "ai.receipt_files_none_read")
 
     existing_id = (job.results or {}).get("proposal_message_id")
     if existing_id:
@@ -1576,7 +1578,7 @@ async def propose_from_job(
 
     capabilities = compile_agent_capabilities(request.app, company_settings, role)
     if _DOCS_CREATE not in capabilities:
-        raise _conflict("capability_unavailable", t("ai.receipt_documents_off"))
+        raise _conflict("capability_unavailable", "ai.receipt_documents_off")
 
     lookups = _Lookups(request.app, request.headers.get("authorization", ""), capabilities)
     now = datetime.now(timezone.utc)
@@ -1702,7 +1704,7 @@ async def _job_action(action, job_id: uuid.UUID, company_id, user, session: Asyn
     if await jobs.owned_job(session, job_id, company_id=company_id, user_id=user.id) is None:
         raise HTTPException(status_code=404, detail=t("ai.err_job_not_found"))
     if await action(job_id, company_id, user.id) in (None, False):
-        raise _conflict("job_not_open", t("ai.err_job_not_open"))
+        raise _conflict("job_not_open", "ai.err_job_not_open")
     return JSONResponse(status_code=202, content={"job_id": str(job_id)})
 
 

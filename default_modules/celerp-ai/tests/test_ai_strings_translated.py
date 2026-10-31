@@ -174,25 +174,64 @@ def test_the_app_refusals_an_ai_job_raises_read_in_the_reader_language():
     assert i18n.t("ai.err_unexpected", "qx") not in texts
 
 
-def test_every_structured_refusal_in_the_ai_service_carries_its_catalog_key():
-    """Class guard: an HTTPException under celerp/ai whose detail is a dict literal spreads
-    the canonical keyed refusal into it, so no reader sees its English or a stand-in."""
+# The HTTPException details in the AI code that are neither keyed nor translated where
+# they are raised, each with why no reader sees English from it.
+_UNKEYED_DETAILS = {
+    ("llm.py", "detail"): "the AI service's refusal: explained by its code or never shown (_keyed)",
+    ("routes.py", "refusal['detail']"): "a question's stored refusal, raised again as it was stored",
+    ("routes.py", "out['error']"): "a question's failure, written in its asker's language (service.user_error)",
+    ("routes.py", "str(exc)"): "create_batch_job's refusals, translated where raised (batch.py)",
+    ("routes.py", "error"): "a confirmed action's error, kept whole by _action_error",
+    ("routes.py", "{'code': 'job_failed', 'message': job.error}"):
+        "the job's failure, written in its asker's language when it failed",
+    ("routes.py", "'include_protected requires offset=0'"): "a misused API parameter no screen sends",
+    ("routes.py", "keyed_error(code, key)"): "_conflict: every caller names a catalog key (checked here)",
+}
+
+
+def test_every_refusal_the_ai_code_raises_is_keyed_or_translated_where_raised():
+    """Class guard: an HTTPException under celerp/ai or celerp_ai carries the canonical
+    keyed refusal (spread into its detail, or built by keyed_error with a catalog key) or
+    text translated where it is raised, so no reader sees its English or a stand-in,
+    live or after a reload. A str, f-string or variable detail is reviewed above."""
     import ast
     from celerp import ai
+
+    def keyed(node, names) -> bool:
+        if isinstance(node, ast.Dict):
+            return any(key is None and isinstance(value, ast.Call) and getattr(value.func, "id", None) in names
+                       for key, value in zip(node.keys, node.values))
+        name = getattr(getattr(node, "func", None), "id", None)
+        if name == "t":
+            return True
+        return name == "keyed_error" and len(node.args) > 1 and getattr(node.args[1], "value", None) in _EN
+
     unkeyed = []
-    for path in sorted(Path(ai.__file__).parent.glob("*.py")):
+    for path in [*Path(ai.__file__).parent.glob("*.py"), *Path(routes.__file__).parent.glob("*.py")]:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         names = {a.asname or a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)
                  and n.module == "celerp.accounting_roles" for a in n.names if a.name == "refusal"}
         for node in ast.walk(tree):
-            if not (isinstance(node, ast.Call) and getattr(node.func, "id", None) == "HTTPException"):
+            name = getattr(getattr(node, "func", None), "id", None)
+            if name == "_conflict":
+                if getattr(node.args[1], "value", None) not in _EN:
+                    unkeyed.append(f"{path.name}:{node.lineno}")
+                continue
+            if name != "HTTPException":
                 continue
             detail = next((k.value for k in node.keywords if k.arg == "detail"), None)
-            if isinstance(detail, ast.Dict) and not any(
-                    key is None and isinstance(value, ast.Call) and getattr(value.func, "id", None) in names
-                    for key, value in zip(detail.keys, detail.values)):
-                unkeyed.append(f"{path.name}:{node.lineno}")
+            if detail is not None and not keyed(detail, names) \
+                    and (path.name, ast.unparse(detail)) not in _UNKEYED_DETAILS:
+                unkeyed.append(f"{path.name}:{node.lineno} {ast.unparse(detail)}")
     assert unkeyed == []
+
+
+def test_a_refusal_stored_without_its_key_is_never_shown_in_english():
+    """A stored question refusal with no catalog key (the AI service's English, or a
+    detail that was never keyed) reads as the unexpected-error text."""
+    assert ui_routes._error_text(ui_routes._keyed({"message": "Something broke"}), "qx") == \
+        i18n.t("ai.err_unexpected", "qx")
+    assert ui_routes._keyed("Something broke") is None
 
 
 def test_answer_errors_read_in_the_reader_language():

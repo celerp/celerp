@@ -1156,13 +1156,11 @@ def _error_text(detail, lang: str) -> str:
     return refusal_text(detail) or t("ai.err_unexpected", lang)
 
 
-def _keyed(refusal) -> dict | str | None:
-    """A refusal no code explains, kept when it is the app's own: keyed (the app's
-    refusals carry a catalog message) or the app's plain text. An unkeyed record is
-    the AI service's English and is never shown."""
-    if isinstance(refusal, str) or (isinstance(refusal, dict) and refusal.get("message_key")):
-        return refusal
-    return None
+def _keyed(refusal) -> dict | None:
+    """A refusal no code explains, kept when it is the app's own: every refusal the app
+    raises during AI work is keyed. An unkeyed record is the AI service's English and
+    is never shown."""
+    return refusal if isinstance(refusal, dict) and refusal.get("message_key") else None
 
 
 def _action_error_text(action: dict, otherwise: str | None, lang: str) -> str:
