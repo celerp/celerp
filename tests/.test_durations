@@ -13634,6 +13634,7 @@
     "tests/test_mutation_census_coverage.py::test_a_site_entry_counting_more_sites_than_the_base_branch_holds_fails": 0.018,
     "tests/test_mutation_census_coverage.py::test_a_write_site_no_request_write_passed_through_fails": 0.012,
     "tests/test_mutation_census_coverage.py::test_dropping_an_entry_the_base_branch_holds_passes": 0.012,
+    "tests/test_mutation_census_coverage.py::test_every_checked_in_site_gap_names_write_sites_of_the_bundled_source": 13.6,
     "tests/test_mutation_census_coverage.py::test_gaps_the_baseline_names_pass": 0.017,
     "tests/test_mutation_census_coverage.py::test_the_census_fails_on_any_finding[none]": 11.496,
     "tests/test_mutation_census_coverage.py::test_the_census_fails_on_any_finding[one]": 13.201,

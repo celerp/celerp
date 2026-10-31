@@ -300,6 +300,19 @@ def test_the_checked_in_coverage_gaps_load_and_do_not_grow():
     assert len(mutation_coverage_gaps.load_gaps()) <= mutation_coverage_gaps.GAPS_CEILING
 
 
+def test_every_checked_in_site_gap_names_write_sites_of_the_bundled_source():
+    """A change to a write at an accepted site (its function or its call) leaves the entry
+    naming a site that is no longer there, which only the census over every shard would
+    otherwise report: the static inventory finds it here, in one process."""
+    sites = mutation_census.static_inventory(mutation_census.static_calls.Graph())[1]
+    known: dict[str, int] = {}
+    for rel, _, _, fn, name, _ in sites:
+        known[f"{rel} {fn} {name}"] = known.get(f"{rel} {fn} {name}", 0) + 1
+    wrong = {name: (entry["count"], known.get(name, 0)) for (kind, name), entry in mutation_coverage_gaps.load_gaps().items()
+             if kind == "site" and entry["count"] > known.get(name, 0)}
+    assert not wrong, f"entry count vs write sites in the source: {wrong}"
+
+
 def _finding(route: str = "api POST /observed") -> dict:
     return {"kind": "unprotected", "route": route, "table": "locations", "fingerprint": "f1",
             "where": ["celerp/a.py:10 write"], "count": 1, "tests": ["tests/t.py::t"], "key": route,
