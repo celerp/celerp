@@ -355,8 +355,11 @@ async def test_anchor_editable_only_before_first_claim(client, session, monkeypa
 
 async def test_generate_all_due_rejects_over_cap_and_foreign_ids(client, session, monkeypatch):
     freeze_day(monkeypatch, "2026-03-15")
+    import uuid
+    from test_helpers import company_auth
+
     hd = await register(client)
-    other = await register(client)
+    other = (await company_auth(session, uuid.uuid4(), uuid.uuid4()))["headers"]
     foreign = await agreement(client, other, start="2026-03-01")
     mine = await agreement(client, hd, start="2026-03-01")
     assert (await client.post("/subscriptions/generate-due", headers=hd,

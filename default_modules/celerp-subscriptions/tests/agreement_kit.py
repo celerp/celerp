@@ -109,3 +109,39 @@ async def claim_events(session, eid: str) -> list[str]:
 
 def iso(d: date) -> str:
     return d.isoformat()
+
+
+async def company_id(client, headers: dict) -> str:
+    r = await client.get("/companies/me", headers=headers)
+    assert r.status_code == 200, r.text
+    return r.json()["id"]
+
+
+async def contact(client, headers: dict, email: str) -> str:
+    r = await client.post("/crm/contacts", json={"name": "Member", "email": email}, headers=headers)
+    assert r.status_code in (200, 201), r.text
+    return r.json()["id"]
+
+
+async def tick(session, cid: str, day: str):
+    """One dispatcher pass for one company on ``day``, in the test's own transaction."""
+    from contextlib import asynccontextmanager
+    from celerp_docs import periodic
+
+    @asynccontextmanager
+    async def factory():
+        yield session
+
+    return await periodic.run_company(factory, uuid.UUID(cid), today=date.fromisoformat(day))
+
+
+async def summary(client, headers: dict, **params) -> dict:
+    r = await client.get("/subscriptions/summary", headers=headers, params=params)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+async def revoke(client, owner: dict, perm_key: str, role_key: str) -> None:
+    r = await client.patch("/companies/me/role-permissions", headers=owner,
+                           json={"perm_key": perm_key, "role_key": role_key, "granted": False})
+    assert r.status_code == 200, r.text
