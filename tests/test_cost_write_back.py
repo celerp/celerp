@@ -221,8 +221,9 @@ def test_placeholders_unknown_costs_empty_lots_and_stale_editors_at_every_door(d
     """An empty editor or the "--" an empty cell shows, sent back, is no change. A lot whose goods
     cost is not known opens every editor empty, so any number sent there sets (confirms) it. A
     unit typed on a lot without units is refused. An editor opened on a cost that changed since
-    is refused (nothing written) unless it sends back what it opened with or what is there now."""
-    from celerp_inventory.services import CostChangedSinceOpened, CostNeedsQuantity, cost_written_back
+    writes nothing when it sends back what it opened with or what is there now; any other value is
+    applied here and refused by the writer's item-version check (test_cost_write_stale_pg)."""
+    from celerp_inventory.services import CostNeedsQuantity, cost_written_back
     kind, per_unit = _RULE_DOORS[door]
     for empty in ("", "  ", "--", " -- "):
         assert cost_written_back(_flat(3, None), empty, opened="", now="", per_unit=per_unit) is None
@@ -243,9 +244,8 @@ def test_placeholders_unknown_costs_empty_lots_and_stale_editors_at_every_door(d
     lot = _flat(100, float(Decimal(now) * (100 if per_unit else 1)))
     assert cost_written_back(lot, opened, opened=opened, now=now, per_unit=per_unit) is None
     assert cost_written_back(lot, now, opened=opened, now=now, per_unit=per_unit) is None
-    with pytest.raises(CostChangedSinceOpened) as stale:
-        cost_written_back(lot, "13", opened=opened, now=now, per_unit=per_unit)
-    assert stale.value.now == now
+    assert cost_written_back(lot, "13", opened=opened, now=now, per_unit=per_unit) == {
+        "cost_total": {"new": 1300.0 if per_unit else 13.0}}
 
 
 _PARSED = [("12.30", Decimal("12.30")), (" 12.30 ", Decimal("12.30")), ("$1,234.56", Decimal("1234.56")),
@@ -572,34 +572,36 @@ _UI_EDITORS = ["cell_unit", "cell_total", "cost_total_field", "pricing_unit", "p
 _CELL_FIELD = {"cell_unit": "cost_price", "cell_total": "cost_price_total", "cost_total_field": "cost_total"}
 
 
-async def _opened_at(ui, door: str, lot: str) -> str:
-    """The text the door's editor opens with, as the page holds it."""
+async def _opened_at(ui, door: str, lot: str) -> tuple[str, str]:
+    """The text the door's editor opens with and the item version it opened on, as the page holds them."""
     if door in _CELL_FIELD:
         page = (await ui.get(f"/api/items/{lot}/field/{_CELL_FIELD[door]}/edit")).text
         value = _input(page, name="value")
         sent = re.search(r'hx-vals=\'(\{[^\']*\})\'', page) or re.search(r'hx-vals="([^"]*)"', page)
-        assert sent and json.loads(html.unescape(sent.group(1)))["opened"] == value, page
-        return value
+        vals = json.loads(html.unescape(sent.group(1))) if sent else {}
+        assert vals.get("opened") == value and isinstance(vals.get("opened_version"), int), page
+        return value, str(vals["opened_version"])
     if door == "transform":
         page = (await ui.get("/api/items/bulk/transform-preview", params={"entity_id": lot})).text
         assert _input(page, name="child_cost_total_opened") == _input(page, name="child_cost_total")
-        return _input(page, name="child_cost_total")
+        return _input(page, name="child_cost_total"), _input(page, name="child_cost_total_opened_version")
     page = (await ui.get(f"/inventory/{lot}?tab=pricing")).text
     which = "unit" if door == "pricing_unit" else "total"
     assert _input(page, id=f"opened_{which}_cost_price") == _input(page, id=f"{which}_cost_price")
-    return _input(page, id=f"{which}_cost_price")
+    return _input(page, id=f"{which}_cost_price"), _input(page, id="opened_cost_version")
 
 
-async def _send(ui, door: str, lot: str, typed: str, opened: str | None, state: dict | None = None):
-    """Send ``typed`` at the door, with the text its editor opened with."""
-    extra = {} if opened is None else {"opened": opened}
+async def _send(ui, door: str, lot: str, typed: str, opened: tuple[str, str] | None, state: dict | None = None):
+    """Send ``typed`` at the door, with the text and item version its editor opened with."""
+    extra = {} if opened is None else {"opened": opened[0], "opened_version": opened[1]}
     if door in _CELL_FIELD:
         return await ui.patch(f"/api/items/{lot}/field/{_CELL_FIELD[door]}", data={"value": typed, **extra})
     if door == "transform":
         return await ui.post("/api/items/bulk/transform", data={
             "entity_id": lot, "child_sku": f"T-{uuid.uuid4().hex[:6]}", "child_qty": str(state["quantity"]),
             "child_category": state.get("category") or "", "child_sell_by": state.get("sell_by") or "",
-            "child_cost_total": typed, **({} if opened is None else {"child_cost_total_opened": opened})})
+            "child_cost_total": typed, **({} if opened is None else {
+                "child_cost_total_opened": opened[0], "child_cost_total_opened_version": opened[1]})})
     return await ui.post(f"/api/items/{lot}/price", data={
         "cost_price" if door == "pricing_unit" else "cost_price_total": typed, **extra})
 
@@ -612,10 +614,11 @@ async def test_every_cost_editor_of_a_lot_of_unknown_goods_cost_opens_empty(clie
     m = await _marked(client, auth)
     before = _cost_fields(await _state(session, auth, m))
     async with _browser(_token(auth)) as ui:
-        assert await _opened_at(ui, door, m) == ""
+        opened = await _opened_at(ui, door, m)
+        assert opened[0] == ""
         if door != "transform":
             for empty in ("", "--"):
-                r = await _send(ui, door, m, empty, "")
+                r = await _send(ui, door, m, empty, opened)
                 assert r.status_code == 200, r.text[:300]
     assert _cost_fields(await _state(session, auth, m)) == before
 
@@ -624,8 +627,8 @@ async def test_every_cost_editor_of_a_lot_of_unknown_goods_cost_opens_empty(clie
 async def test_a_cost_that_changed_since_its_editor_opened_is_not_overwritten(client, session, auth, door):
     """Two staff on one lot: one opens the cost, the other sets 15.00 a unit. The first one's
     untouched text sent back writes nothing (no revert); a new value typed over the stale one is
-    refused (409, nothing written) with the cost as it is now in the editor; sent again from
-    there it is applied."""
+    refused by the writer's item-version check (409, nothing written) with the cost as it is now
+    in the editor; sent again from there it is applied."""
     await _seed(session, auth)
     await _cost_column(session, auth)
     lot = await _item(client, auth, qty=100, cost_total=1234.56)
@@ -635,14 +638,14 @@ async def test_a_cost_that_changed_since_its_editor_opened_is_not_overwritten(cl
         assert (await _state(session, auth, lot))["cost_total"] == 1500.0
         events = await _cost_events(session, auth, lot)
         if door != "transform":
-            r = await _send(clerk, door, lot, opened, opened)
+            r = await _send(clerk, door, lot, opened[0], opened)
             assert r.status_code == 200, r.text[:300]
             assert (await _state(session, auth, lot))["cost_total"] == 1500.0
             assert await _cost_events(session, auth, lot) == events
         typed = "13" if door.endswith("unit") else "1300"
         r = await _send(clerk, door, lot, typed, opened, await _state(session, auth, lot))
         now = "15.00" if door.endswith("unit") else "1500.00"
-        assert t("inventory.cost_changed_since_opened", now=now) in r.text, r.text[:400]
+        assert t("inventory.cost_version_stale") in r.text, r.text[:400]
         if door != "transform":
             assert r.status_code == 409 and r.headers.get("X-Swap-Refusal") == "1"
         assert (await _state(session, auth, lot))["cost_total"] == 1500.0
@@ -650,7 +653,7 @@ async def test_a_cost_that_changed_since_its_editor_opened_is_not_overwritten(cl
         if door in _CELL_FIELD:
             assert _input(r.text, name="value") == now
         reopened = await _opened_at(clerk, door, lot)
-        assert reopened == now
+        assert reopened[0] == now and reopened[1] != opened[1]
         r = await _send(clerk, door, lot, typed, reopened, await _state(session, auth, lot))
         assert r.status_code == 200, r.text[:300]
     if door == "transform":
@@ -689,7 +692,7 @@ async def test_a_unit_typed_coarser_than_its_editor_opened_is_applied(client, se
     lot = await _item(client, auth, qty=qty, cost_total=value)
     async with _browser(_token(auth)) as ui:
         opened = await _opened_at(ui, door, lot)
-        assert Decimal(opened) != Decimal(typed)
+        assert Decimal(opened[0]) != Decimal(typed)
         r = await _send(ui, door, lot, typed, opened)
         assert r.status_code == 200, r.text[:300]
         if door == "cell_unit":
@@ -705,8 +708,8 @@ async def test_the_cost_total_field_opens_on_the_total_it_shows_and_a_different_
     lot = await _item(client, auth, qty=3, cost_total=100.004)
     async with _browser(_token(auth)) as ui:
         opened = await _opened_at(ui, "cost_total_field", lot)
-        assert opened == "100.00"
-        await _send(ui, "cost_total_field", lot, opened, opened)
+        assert opened[0] == "100.00"
+        await _send(ui, "cost_total_field", lot, opened[0], opened)
         assert (await _state(session, auth, lot))["cost_total"] == 100.004
         await _send(ui, "cost_total_field", lot, "100.01", opened)
     assert (await _state(session, auth, lot))["cost_total"] == 100.01

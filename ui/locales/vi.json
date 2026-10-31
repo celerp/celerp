@@ -2843,7 +2843,7 @@
   "inventory.cost_total_below_landed": "Tổng giá vốn không được thấp hơn chi phí nhập về {landed} mà mặt hàng này đang mang.",
   "inventory.cost_text_invalid": "Nhập giá vốn dưới dạng số, dùng dấu chấm cho phần thập phân (ví dụ 1234.56).",
   "inventory.cost_unit_needs_quantity": "Hãy đặt số lượng trước: giá vốn đơn vị cần có đơn vị để áp dụng.",
-  "inventory.cost_changed_since_opened": "Giá vốn này đã thay đổi kể từ khi bạn mở. Hiện là {now}.",
+  "inventory.cost_version_stale": "Mặt hàng này đã thay đổi kể từ khi bạn mở, nên giá vốn chưa được lưu. Hãy mở lại để xem tình trạng hiện tại.",
   "inventory.import_cost_changes": "Giá vốn mà tệp này thay đổi: {count}. Hãy kiểm tra trước khi nhập.",
   "inventory.import_cost_change": "Dòng {row}, {sku}: {old} thành {new}",
   "inventory.th_coverage": "Phạm vi bảo hiểm",

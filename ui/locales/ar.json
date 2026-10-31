@@ -2843,7 +2843,7 @@
   "inventory.cost_total_below_landed": "لا يمكن أن يكون إجمالي التكلفة أقل من تكلفة الشحن والتوريد البالغة {landed} التي يحملها هذا الصنف.",
   "inventory.cost_text_invalid": "أدخل التكلفة كرقم، مع نقطة للكسور العشرية (مثلًا 1234.56).",
   "inventory.cost_unit_needs_quantity": "حدد الكمية أولًا: تكلفة الوحدة تحتاج إلى وحدات تُطبَّق عليها.",
-  "inventory.cost_changed_since_opened": "تغيرت هذه التكلفة منذ أن فتحتها. أصبحت الآن {now}.",
+  "inventory.cost_version_stale": "تغيّر هذا الصنف منذ أن فتحته، لذلك لم تُحفظ التكلفة. افتحه مرة أخرى لترى حالته الآن.",
   "inventory.import_cost_changes": "التكاليف التي يغيّرها هذا الملف: {count}. راجعها قبل الاستيراد.",
   "inventory.import_cost_change": "الصف {row}، {sku}: من {old} إلى {new}",
   "inventory.th_coverage": "التغطية",

@@ -3070,7 +3070,7 @@
   "inventory.cost_total_below_landed": "የወጪው ድምር ይህ ዕቃ ከያዘው {landed} የማድረሻ ወጪ ያነሰ ሊሆን አይችልም።",
   "inventory.cost_text_invalid": "ወጪውን በቁጥር ያስገቡ፣ ለአስርዮሽ ነጥብ ይጠቀሙ (ለምሳሌ 1234.56)።",
   "inventory.cost_unit_needs_quantity": "መጀመሪያ ብዛቱን ያዘጋጁ፦ የአንድ ክፍል ወጪ የሚተገበርበት ክፍል ያስፈልገዋል።",
-  "inventory.cost_changed_since_opened": "ከከፈቱት በኋላ ይህ ወጪ ተቀይሯል። አሁን {now} ነው።",
+  "inventory.cost_version_stale": "ከከፈቱት በኋላ ይህ ዕቃ ተቀይሯል፣ ስለዚህ ወጪው አልተቀመጠም። አሁን ያለበትን ሁኔታ ለማየት እንደገና ይክፈቱት።",
   "inventory.import_cost_changes": "ይህ ፋይል የሚቀይራቸው ወጪዎች፦ {count}። ከማስገባትዎ በፊት ያረጋግጧቸው።",
   "inventory.import_cost_change": "ረድፍ {row}፣ {sku}፦ ከ {old} ወደ {new}",
   "inventory.th_coverage": "ሽፋን",

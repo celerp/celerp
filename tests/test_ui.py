@@ -5632,7 +5632,7 @@ class TestItemActionRouteCompleteness:
         async def _mock_set(token, entity_id, price_type, new_price):
             price_calls.append((price_type, new_price))
             return {"event_id": "e1"}
-        async def _mock_patch(token, entity_id, fields):
+        async def _mock_patch(token, entity_id, fields, expected_version=None):
             patch_calls.append(fields)
             return {"event_id": "e1"}
         ui_client.cookies.update(_authed())

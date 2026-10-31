@@ -2843,7 +2843,7 @@
   "inventory.cost_total_below_landed": "Total biaya tidak boleh kurang dari biaya pendaratan {landed} yang dibawa barang ini.",
   "inventory.cost_text_invalid": "Masukkan biaya sebagai angka, dengan titik untuk desimal (misalnya 1234.56).",
   "inventory.cost_unit_needs_quantity": "Atur jumlahnya terlebih dahulu: biaya per unit memerlukan unit untuk diterapkan.",
-  "inventory.cost_changed_since_opened": "Biaya ini berubah sejak Anda membukanya. Sekarang {now}.",
+  "inventory.cost_version_stale": "Item ini berubah sejak Anda membukanya, jadi biaya tidak disimpan. Buka lagi untuk melihat keadaannya sekarang.",
   "inventory.import_cost_changes": "Biaya yang diubah file ini: {count}. Periksa sebelum mengimpor.",
   "inventory.import_cost_change": "Baris {row}, {sku}: {old} menjadi {new}",
   "inventory.th_coverage": "Cakupan",

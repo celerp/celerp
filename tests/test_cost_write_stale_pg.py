@@ -93,3 +93,8 @@ async def test_two_cost_saves_from_one_opened_version_land_once(real_engine, rea
     assert await count(real_engine, "projections", "entity_type = 'journal_entry'") == jes
     # The version a browser sends is the one the item read gives it.
     assert (await c.get(f"/items/{lot}", headers=auth["headers"])).json()["_version"] == (await _lot(real_engine, auth, lot))[1]
+    # The version guards a cost: sent with no cost change it is refused, and nothing is written.
+    r = await c.patch(f"/items/{lot}", headers=auth["headers"], json={
+        "fields_changed": {"name": {"old": "Beads", "new": "Glass beads"}}, "expected_version": version})
+    assert r.status_code == 422 and "expected_version" in r.text, r.text
+    assert await count(real_engine, "ledger", "entity_id = :e", e=lot) == written

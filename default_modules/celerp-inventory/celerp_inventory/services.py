@@ -258,15 +258,6 @@ class CostNeedsQuantity(CostRefused):
                          "Set the quantity first: a unit cost needs units to apply to.")
 
 
-class CostChangedSinceOpened(CostRefused):
-    """The cost changed after the editor opened; ``now`` is the text the door shows now."""
-
-    def __init__(self, now: str):
-        self.now = now
-        super().__init__("inventory.cost_changed_since_opened",
-                         f"This cost changed since you opened it. It is now {now or '--'}.", now=now or "--")
-
-
 class CostVersionStale(CostRefused):
     """A cost saved from an item version that has moved since its editor opened. It names no
     value: a writer who may set costs without seeing them learns none from it."""
@@ -305,9 +296,9 @@ def cost_written_back(state: dict, typed: str, *, opened: str, now: str, per_uni
     both of those from the one formatter that renders the door. No precision is involved.
 
     The text the editor opened with sent back is no change, and so is the text the door shows
-    now (a second Enter). Otherwise, when the lot no longer shows what the editor opened with,
-    someone changed it meanwhile: CostChangedSinceOpened, nothing written. Else the typed value
-    is applied exactly: the lot's whole value, landed cost included, or with ``per_unit`` that
+    now (a second Enter). A lot changed since its editor opened is refused by the writer, which
+    checks the item version the door sent under the item's lock (CostVersionStale). Else the
+    typed value is applied exactly: the lot's whole value, landed cost included, or with ``per_unit`` that
     value per unit (typed x quantity, in Decimal). Its goods cost is the total less the landed
     cost the lot carries; an empty text clears it. A lot whose goods cost is not known opens its
     editors empty, so any number sent there is a deliberate set and confirms it.
@@ -318,8 +309,6 @@ def cost_written_back(state: dict, typed: str, *, opened: str, now: str, per_uni
     value, was, shown = parse_cost(typed), parse_cost(opened), parse_cost(now)
     if value == was or value == shown:
         return None
-    if was != shown:
-        raise CostChangedSinceOpened(now)
     if value is None:
         return {"cost_total": {"new": None}}
     qty = float(state.get("quantity") or 0)

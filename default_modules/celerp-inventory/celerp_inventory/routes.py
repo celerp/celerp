@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -338,6 +338,13 @@ class ItemPatch(BaseModel):
     # The item version (the read's _version) a cost editor opened on; a cost change made from
     # an older version is refused under the item's lock. A guard, never part of the event.
     expected_version: int | None = None
+
+    @model_validator(mode="after")
+    def _version_guards_a_cost(self):
+        """expected_version is checked on cost changes only; sent with none it is refused (422)."""
+        if self.expected_version is not None and not set(self.fields_changed) & COST_ITEM_KEYS:
+            raise ValueError("expected_version is checked on cost changes only")
+        return self
 
 
 class TransferBody(BaseModel):
@@ -2568,8 +2575,6 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     # a granted operator edits cost, an ungranted manager still cannot.
     restricted -= COST_ITEM_KEYS
     changed_keys = set(payload.fields_changed.keys())
-    if payload.expected_version is not None and not changed_keys & COST_ITEM_KEYS:
-        raise HTTPException(status_code=422, detail="expected_version is checked on cost changes only")
     reject_system_item_fields(dict.fromkeys(
         (changed_keys - {"attributes"}) | _changed_attribute_keys(_proj.state, payload.fields_changed)))
     _price_lists, _base_name, _ = await get_price_config(session, company_id)

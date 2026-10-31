@@ -2844,7 +2844,7 @@
   "inventory.cost_total_below_landed": "Le coût total ne peut pas être inférieur aux frais d'approche de {landed} que porte cet article.",
   "inventory.cost_text_invalid": "Saisissez le coût sous forme de nombre, avec un point pour les décimales (par exemple 1234.56).",
   "inventory.cost_unit_needs_quantity": "Indiquez d'abord la quantité : un coût unitaire a besoin d'unités auxquelles s'appliquer.",
-  "inventory.cost_changed_since_opened": "Ce coût a changé depuis que vous l'avez ouvert. Il est maintenant de {now}.",
+  "inventory.cost_version_stale": "Cet article a changé depuis que vous l'avez ouvert, le coût n'a donc pas été enregistré. Ouvrez-le à nouveau pour le voir tel qu'il est maintenant.",
   "inventory.import_cost_changes": "Coûts modifiés par ce fichier : {count}. Vérifiez-les avant d'importer.",
   "inventory.import_cost_change": "Ligne {row}, {sku} : de {old} à {new}",
   "inventory.th_coverage": "Couverture",

@@ -2844,7 +2844,7 @@
   "inventory.cost_total_below_landed": "Il costo totale non può essere inferiore ai costi accessori di {landed} che questo articolo porta.",
   "inventory.cost_text_invalid": "Inserisci il costo come numero, con il punto per i decimali (per esempio 1234.56).",
   "inventory.cost_unit_needs_quantity": "Imposta prima la quantità: un costo unitario ha bisogno di unità a cui applicarsi.",
-  "inventory.cost_changed_since_opened": "Questo costo è cambiato da quando l'hai aperto. Ora è {now}.",
+  "inventory.cost_version_stale": "Questo articolo è cambiato da quando l'hai aperto, quindi il costo non è stato salvato. Aprilo di nuovo per vederlo com'è ora.",
   "inventory.import_cost_changes": "Costi modificati da questo file: {count}. Controllali prima di importare.",
   "inventory.import_cost_change": "Riga {row}, {sku}: da {old} a {new}",
   "inventory.th_coverage": "Copertura",

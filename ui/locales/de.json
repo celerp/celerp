@@ -2844,7 +2844,7 @@
   "inventory.cost_total_below_landed": "Die Gesamtkosten dürfen nicht unter den Bezugsnebenkosten von {landed} liegen, die dieser Artikel trägt.",
   "inventory.cost_text_invalid": "Geben Sie die Kosten als Zahl ein, mit einem Punkt für Dezimalstellen (zum Beispiel 1234.56).",
   "inventory.cost_unit_needs_quantity": "Legen Sie zuerst die Menge fest: Ein Stückpreis braucht Einheiten, auf die er sich bezieht.",
-  "inventory.cost_changed_since_opened": "Diese Kosten haben sich geändert, seit Sie sie geöffnet haben. Sie betragen jetzt {now}.",
+  "inventory.cost_version_stale": "Dieser Artikel wurde geändert, seit Sie ihn geöffnet haben, daher wurden die Kosten nicht gespeichert. Öffnen Sie ihn erneut, um den aktuellen Stand zu sehen.",
   "inventory.import_cost_changes": "Kosten, die diese Datei ändert: {count}. Prüfen Sie sie vor dem Import.",
   "inventory.import_cost_change": "Zeile {row}, {sku}: {old} auf {new}",
   "inventory.th_coverage": "Abdeckung",

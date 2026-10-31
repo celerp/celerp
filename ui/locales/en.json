@@ -3090,7 +3090,7 @@
   "inventory.cost_total_below_landed": "The cost total can't be less than the landed cost of {landed} this item carries.",
   "inventory.cost_text_invalid": "Enter the cost as a number, with a dot for decimals (for example 1234.56).",
   "inventory.cost_unit_needs_quantity": "Set the quantity first: a unit cost needs units to apply to.",
-  "inventory.cost_changed_since_opened": "This cost changed since you opened it. It is now {now}.",
+  "inventory.cost_version_stale": "This item changed since you opened it, so the cost was not saved. Open it again to see it as it is now.",
   "inventory.import_cost_changes": "Costs this file changes: {count}. Check them before you import.",
   "inventory.import_cost_change": "Row {row}, {sku}: {old} to {new}",
   "inventory.th_coverage": "Coverage",

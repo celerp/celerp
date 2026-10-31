@@ -2843,7 +2843,7 @@
   "inventory.cost_total_below_landed": "ต้นทุนรวมต้องไม่น้อยกว่าต้นทุนแฝง {landed} ที่สินค้านี้มีอยู่",
   "inventory.cost_text_invalid": "ป้อนต้นทุนเป็นตัวเลข ใช้จุดสำหรับทศนิยม (เช่น 1234.56)",
   "inventory.cost_unit_needs_quantity": "ตั้งจำนวนก่อน: ต้นทุนต่อหน่วยต้องมีหน่วยให้คิด",
-  "inventory.cost_changed_since_opened": "ต้นทุนนี้เปลี่ยนไปหลังจากที่คุณเปิดแก้ไข ตอนนี้เป็น {now}",
+  "inventory.cost_version_stale": "รายการนี้มีการเปลี่ยนแปลงหลังจากที่คุณเปิดแก้ไข จึงไม่ได้บันทึกต้นทุน เปิดอีกครั้งเพื่อดูข้อมูลปัจจุบัน",
   "inventory.import_cost_changes": "ต้นทุนที่ไฟล์นี้เปลี่ยน: {count} รายการ ตรวจสอบก่อนนำเข้า",
   "inventory.import_cost_change": "แถว {row}, {sku}: {old} เป็น {new}",
   "inventory.th_coverage": "ความเพียงพอ",

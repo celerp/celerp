@@ -2843,7 +2843,7 @@
   "inventory.cost_total_below_landed": "El costo total no puede ser menor que el costo de importación de {landed} que lleva este artículo.",
   "inventory.cost_text_invalid": "Introduzca el costo como número, con un punto para los decimales (por ejemplo 1234.56).",
   "inventory.cost_unit_needs_quantity": "Indique primero la cantidad: un costo unitario necesita unidades a las que aplicarse.",
-  "inventory.cost_changed_since_opened": "Este costo cambió desde que lo abrió. Ahora es {now}.",
+  "inventory.cost_version_stale": "Este artículo cambió desde que lo abrió, así que el costo no se guardó. Ábralo de nuevo para verlo como está ahora.",
   "inventory.import_cost_changes": "Costos que cambia este archivo: {count}. Revíselos antes de importar.",
   "inventory.import_cost_change": "Fila {row}, {sku}: de {old} a {new}",
   "inventory.th_coverage": "Cobertura",
