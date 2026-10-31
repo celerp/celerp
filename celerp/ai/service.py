@@ -27,6 +27,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 from fastapi import HTTPException
 
+from celerp.accounting_roles import refusal
 from celerp.ai import jobs
 from celerp.ai.files import load_file_for_llm
 from celerp.ai.llm import ModelResult, RelayError, _build_user_content, complete
@@ -286,7 +287,7 @@ def _load_files(file_ids: list[str] | None, company_id: uuid.UUID, user_id: uuid
         except (FileNotFoundError, PermissionError):
             raise HTTPException(
                 status_code=404,
-                detail=t("error.file_gone"),
+                detail={"code": "file_gone", **refusal("error.file_gone", t("error.file_gone", "en"))},
             )
     return files
 

@@ -21,7 +21,7 @@ from ui.components.cloud_gate import (
 )
 from ui.components.shell import base_shell, load_error
 from ui.config import get_token as _token, get_role
-from ui.i18n import refusal_text, t, t_or, get_lang
+from ui.i18n import doc_type_label, refusal_text, t, t_or, get_lang
 from ui.security import not_permitted_redirect
 
 # A proposal set larger than this renders as the review table instead of cards.
@@ -1156,10 +1156,13 @@ def _error_text(detail, lang: str) -> str:
     return refusal_text(detail) or t("ai.err_unexpected", lang)
 
 
-def _keyed(refusal: dict) -> dict | None:
-    """An AI service refusal no code explains, kept only when it carries a catalog
-    message: the service's own text is English and never shown."""
-    return refusal if isinstance(refusal, dict) and refusal.get("message_key") else None
+def _keyed(refusal) -> dict | str | None:
+    """A refusal no code explains, kept when it is the app's own: keyed (the app's
+    refusals carry a catalog message) or the app's plain text. An unkeyed record is
+    the AI service's English and is never shown."""
+    if isinstance(refusal, str) or (isinstance(refusal, dict) and refusal.get("message_key")):
+        return refusal
+    return None
 
 
 def _outcome_text(outcome: dict, lang: str = "en") -> tuple[bool, str]:
@@ -1195,6 +1198,8 @@ def _fmt_scalar(key: str, value, currency: str | None) -> str:
         if is_money_field(key):
             return fmt_price(value, key, currency)
     if isinstance(value, str):
+        if key == "doc_type":
+            return doc_type_label(value)
         return t_or(f"enum.{key}.{value}", value)
     return str(value)
 

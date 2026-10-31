@@ -684,4 +684,4 @@ async def test_missing_file_raises_404(monkeypatch):
     with pytest.raises(HTTPException) as ei:
         await _run(file_ids=["ai_up_missing"])
     assert ei.value.status_code == 404
-    assert "no longer available" in ei.value.detail
+    assert (ei.value.detail["code"], ei.value.detail["message_key"]) == ("file_gone", "error.file_gone")

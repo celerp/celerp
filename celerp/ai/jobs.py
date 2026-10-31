@@ -264,8 +264,9 @@ async def reused_job(session, job_id: uuid.UUID, request: JobRequest):
     if (job.company_id, job.user_id) != (request.company_id, request.user_id):
         raise HTTPException(status_code=404, detail=t("ai.err_job_not_found"))
     if job.request_digest != request.digest():
-        raise HTTPException(status_code=409, detail={"code": "operation_conflict",
-                                                     "message": t("ai.err_operation_conflict")})
+        from celerp.accounting_roles import refusal as keyed
+        raise HTTPException(status_code=409, detail={"code": "operation_conflict", **keyed(
+            "ai.err_operation_conflict", t("ai.err_operation_conflict", "en"))})
     return job
 
 
@@ -1125,8 +1126,8 @@ class _JobJournal(Journal):
 
     @staticmethod
     def _refused(refusal: str):
-        from fastapi import HTTPException
-        return HTTPException(status_code=403, detail={"code": refusal.removeprefix("ai."), "message": t(refusal)})
+        from celerp.accounting_roles import refusal as keyed
+        return HTTPException(status_code=403, detail={"code": refusal.removeprefix("ai."), **keyed(refusal, t(refusal, "en"))})
 
     async def admit(self) -> None:
         from celerp.models.ai import AIBatchJob

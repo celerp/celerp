@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -128,8 +129,10 @@ async def test_file_reading_results_read_in_the_reader_language(monkeypatch):
 
 # Every failure code the AI service reports (celerp.ai.llm.RelayError): those its
 # replies map to, and those raised in celerp.ai.llm itself.
+# Every code the relay client can raise: the relay's own codes it passes through, and
+# the codes llm.py raises itself, read from its source so a new one is covered.
 _RELAY_CODES = sorted(set(llm._RELAY_CODES.values())
-                      | {"no_session", "no_account", "unexpected_reply", "gateway_error", "service_unavailable"})
+                      | set(re.findall(r'RelayError\(\s*"(\w+)"', Path(llm.__file__).read_text())))
 
 
 @pytest.mark.parametrize("code", _RELAY_CODES)
@@ -151,6 +154,39 @@ def test_ai_service_refusals_read_in_the_reader_language_never_as_the_service_wr
                                                               "message_key": "ai.err_unexpected"}}, "qx")[1]]
     assert _english(texts) == []
     assert "3" in files
+
+
+def test_the_app_refusals_an_ai_job_raises_read_in_the_reader_language():
+    """A refusal the app raises while running AI work is keyed, so a thread reloaded later
+    shows it in the reader's language, not as an unexpected error."""
+    details = [jobs._JobJournal._refused(key).detail for key in ("ai.job_permission_lost", "ai.job_ai_unavailable")]
+    with pytest.raises(HTTPException) as gone:
+        service._load_files(["no-such-file"], uuid.uuid4(), uuid.uuid4())
+    details.append(gone.value.detail)
+    texts = [ui_routes._error_text(ui_routes._keyed(detail), "qx") for detail in details]
+    assert _english(texts) == []
+    assert i18n.t("ai.err_unexpected", "qx") not in texts
+
+
+def test_every_structured_refusal_in_the_ai_service_carries_its_catalog_key():
+    """Class guard: an HTTPException under celerp/ai whose detail is a dict literal spreads
+    the canonical keyed refusal into it, so no reader sees its English or a stand-in."""
+    import ast
+    from celerp import ai
+    unkeyed = []
+    for path in sorted(Path(ai.__file__).parent.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        names = {a.asname or a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)
+                 and n.module == "celerp.accounting_roles" for a in n.names if a.name == "refusal"}
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and getattr(node.func, "id", None) == "HTTPException"):
+                continue
+            detail = next((k.value for k in node.keywords if k.arg == "detail"), None)
+            if isinstance(detail, ast.Dict) and not any(
+                    key is None and isinstance(value, ast.Call) and getattr(value.func, "id", None) in names
+                    for key, value in zip(detail.keys, detail.values)):
+                unkeyed.append(f"{path.name}:{node.lineno}")
+    assert unkeyed == []
 
 
 def test_answer_errors_read_in_the_reader_language():

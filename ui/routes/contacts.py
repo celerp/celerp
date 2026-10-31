@@ -20,7 +20,7 @@ from ui.components.module_off import can_open
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, info_tip, page_header, page_title
-from ui.components.table import search_bar, search_results, pagination, per_page_value, EMPTY, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, add_new_option, data_table, column_manager
+from ui.components.table import search_bar, search_results, pagination, per_page_value, EMPTY, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, add_new_option, data_table, column_manager, display_enum
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import files_error, files_error_block, files_section as _shared_files_section, files_session_expired, linked_files, _DOCUMENT_TAGS
 from celerp.services.doc_balance import doc_value, settled_on
@@ -75,7 +75,7 @@ def _contact_display_cell(contact_id: str, field: str, value, trigger: str = "db
     if field == "credit_limit":
         display = format_value(value, "money")
     elif field == "contact_type":
-        display = format_value(value, "badge")
+        display = format_value(value, "badge", domain="contact_type")
     elif field == "price_list":
         display = str(value) if value and str(value).strip() else t("contacts.company_default")
     else:
@@ -1847,9 +1847,9 @@ def setup_routes(app):
 
         if field == "contact_type":
             input_el = Select(
-                Option(t("contacts.type_customer"), value="customer", selected=val == "customer"),
-                Option(t("contacts.type_vendor"), value="vendor", selected=val == "vendor"),
-                Option(t("contacts.type_both"), value="both", selected=val == "both"),
+                Option(display_enum("customer", "contact_type"), value="customer", selected=val == "customer"),
+                Option(display_enum("vendor", "contact_type"), value="vendor", selected=val == "vendor"),
+                Option(display_enum("both", "contact_type"), value="both", selected=val == "both"),
                 name="value",
                 hx_patch=f"/contacts/{contact_id}/field/{field}",
                 hx_target="closest td", hx_swap="outerHTML", hx_trigger="change",

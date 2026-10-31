@@ -30,7 +30,7 @@ def _has_lang() -> bool | None:
 
 def upgrade() -> None:
     if _has_lang() is False:
-        op.add_column("ai_batch_jobs", sa.Column("lang", sa.String(16), nullable=False, server_default="en"))
+        op.add_column("ai_batch_jobs", sa.Column("lang", sa.Text(), nullable=False, server_default="en"))
 
 
 def downgrade() -> None:
