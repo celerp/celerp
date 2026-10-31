@@ -2755,7 +2755,7 @@
   "inventory.cost_review_scope_label": "Costos por revisar",
   "inventory.cost_review_scope_basis": "Artículos cuyo costo de la mercancía es desconocido, o cuyo costo se calculó antes de que un costo pudiera ser desconocido. Su valor no se ha modificado. Corrija el costo donde parezca incorrecto.",
   "inventory.no_cost_review_items": "No hay artículos con un costo por revisar.",
-  "inventory.cost_review_withheld": "No tienes acceso a los costos de los artículos. Un propietario o administrador puede revisarlos.",
+  "inventory.cost_review_withheld": "No tiene acceso a los costos de los artículos. Un propietario o administrador puede revisarlos.",
   "inventory.cost_review_link": "Ver todos los artículos con un costo por revisar",
   "inventory.consign_scope_label": "En consignación de este proveedor",
   "inventory.core_details": "Datos principales",
