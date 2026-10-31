@@ -41,8 +41,9 @@ class ConnectorFirstSync(Base):
     )
 
     __table_args__ = (
+        # Compared as text so Postgres prints it back the same way after a restore.
         sa.CheckConstraint(
-            "state IN ('pending', 'starting', 'running', 'completed', 'failed')",
+            "state::text IN ('pending', 'starting', 'running', 'completed', 'failed')",
             name="ck_connector_first_sync_state",
         ),
     )
