@@ -18,7 +18,7 @@ from sqlalchemy import func, select
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from test_cost_restatement import _item, _state
-from test_helpers import company_auth
+from test_helpers import company_auth, own_sessions_on
 
 MESSAGE = "a cost cannot be negative"
 
@@ -150,7 +150,7 @@ async def test_migration_opening_position_with_a_negative_value_is_refused(clien
                    sku="NEG-2", name="Widget", status="available")
     created = await sink_for("items").import_batch(context, [item])
     assert created.created == 1, created
-    await _persist_mappings(session, context.run_id, created)
+    await _persist_mappings(context, created)
     opening = CIFInventoryAdjustment(
         source_system="manager_io", source_type="InventoryItem", source_external_id="neg-2-open",
         kind="opening", adjustment_date="2025-01-01", item_external_id="neg-2",
@@ -187,7 +187,6 @@ async def test_historical_delivery_with_a_negative_cost_is_refused(client, sessi
 # -- Connectors ------------------------------------------------------------
 
 async def test_connector_product_with_a_negative_cost_is_refused(client, session, monkeypatch):
-    import contextlib
     from types import SimpleNamespace
 
     from fastapi import HTTPException
@@ -195,10 +194,7 @@ async def test_connector_product_with_a_negative_cost_is_refused(client, session
     import celerp.connectors.upsert as upsert
     from celerp_inventory.services import CostRestatementConflict
 
-    @contextlib.asynccontextmanager
-    async def _test_session():
-        yield session
-    monkeypatch.setattr("celerp.db.SessionLocal", _test_session)
+    monkeypatch.setattr("celerp.db.SessionLocal", await own_sessions_on(session))
 
     auth = await _auth(session)
     company_id = str(auth["company_id"])

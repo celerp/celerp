@@ -63,7 +63,7 @@ async def test_the_balance_sheet_books_nothing_for_migrated_stock(client, sessio
                    name="Widget", status="available", total_cost=Decimal("40"))
     result = await sink_for("items").import_batch(context, [item])
     assert result.errors == [], result.errors
-    await _persist_mappings(session, context.run_id, result)
+    await _persist_mappings(context, result)
     await session.commit()
     await _read_balance_sheet_writes_nothing(client, session, headers, context.company_id)
 

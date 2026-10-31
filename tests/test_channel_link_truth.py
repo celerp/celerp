@@ -8,6 +8,8 @@ state and merge protection all read the same definition."""
 
 from __future__ import annotations
 
+import json
+
 import ast
 import asyncio
 import importlib.util
@@ -22,6 +24,7 @@ import sqlalchemy as sa
 from sqlalchemy import text
 
 from company_backup_support import company, owner, token
+from connector_test_support import connect, connector_session, stand_in_execution  # noqa: F401
 from migration_support import auth, count, maker, real_client, real_engine  # noqa: F401
 from ui.i18n import t
 from test_helpers import merge_items
@@ -46,9 +49,12 @@ def _production_files():
 
 def _channel_literals() -> list[tuple[str, int]]:
     """Every literal set, tuple or list naming exactly the two product channels (bare or
-    as key prefixes) in production code."""
+    as key prefixes) in production code. A migration revision is left out: it records
+    the values as they stood at its revision, which a later change must not rewrite."""
     hits = []
     for rel, path in _production_files():
+        if rel.parts[:3] == ("celerp", "migrations", "versions"):
+            continue
         tree = ast.parse(path.read_text())
         for node in ast.walk(tree):
             if not isinstance(node, (ast.Set, ast.Tuple, ast.List)) or len(node.elts) < 2:
@@ -82,7 +88,7 @@ def test_product_channel_platforms_match_registry():
     from celerp.connectors.ownership import PRODUCT_CHANNEL_PLATFORMS
     writers = {
         c.name for c in registry.all_connectors()
-        if "upsert_external_product" in Path(inspect.getsourcefile(type(c))).read_text()
+        if "import_store_product" in Path(inspect.getsourcefile(type(c))).read_text()
     }
     assert set(PRODUCT_CHANNEL_PLATFORMS) == writers
     assert set(PRODUCT_CHANNEL_PLATFORMS) == _catalog_channel_ids()
@@ -114,6 +120,11 @@ EXTERNAL_LINK_CALLERS: dict[tuple[str, str], tuple[str, str]] = {
     ("celerp/connectors/woocommerce.py", "_reconcile_missing_product_links"): ("SYNC", _SYNC),
     ("celerp/connectors/woocommerce.py", "ensure_product_link"): ("SYNC", _SYNC),
     ("celerp/connectors/woocommerce.py", "handle_product_deleted"): ("SYNC", _SYNC),
+    ("celerp/connectors/woocommerce.py", "set_product_status"): ("SYNC", _SYNC),
+    ("celerp/connectors/first_sync.py", "_preview_products"):
+        ("SYNC", "reads links for the first sync's preview of an owned connector"),
+    ("default_modules/celerp-connectors/celerp_connectors/routes.py", "resolve_product_conflict"):
+        ("SYNC", "acts only on an entry of the owned connector's attention list"),
     ("celerp/connectors/product_links.py", "refuse_while_links_cannot_detach"):
         ("PURE", "decides whether a link is left to detach"),
     ("celerp/connectors/outbound_queue.py", "enqueue_item_change"):
@@ -135,6 +146,8 @@ EXTERNAL_LINK_CALLERS: dict[tuple[str, str], tuple[str, str]] = {
     (f"{INVENTORY}/services.py", "resolve_external_product"): ("SYNC", _SYNC),
     (f"{INVENTORY}/services.py", "set_external_link"): ("SYNC", _SYNC),
     (f"{INVENTORY}/services.py", "set_external_link_state"): ("SYNC", _SYNC),
+    (f"{INVENTORY}/services.py", "undo_external_link"):
+        ("SYNC", "undoes a first sync's link inside the owned connector's products execution, only while it is the one it made"),
     (f"{INVENTORY}/services.py", "upsert_external_product"): ("SYNC", _SYNC),
 }
 
@@ -316,7 +329,8 @@ async def test_historical_identity_authorizes_no_outbound(client, session):
     r = await client.patch(f"/items/{a}", headers=h, json={"fields_changed": {"quantity": {"old": 5.0, "new": 4.0}}})
     assert r.status_code == 200, r.text
     assert await queued() == 0
-    await _connect(session, cid, "woocommerce", direction="both")
+    await _connect(session, cid, "woocommerce", entity_directions={
+        "products": "both", "stock": "outbound", "orders": "inbound", "customers": "off"})
     r = await client.patch(f"/items/{a}", headers=h, json={"fields_changed": {"quantity": {"old": 4.0, "new": 3.0}}})
     assert r.status_code == 200, r.text
     assert await queued() == 0
@@ -386,15 +400,20 @@ async def test_local_product_merge_never_channel_linked(client, session):
 
 @pytest.mark.usefixtures("connector_modules_running")
 async def test_disconnect_detaches_identity_and_allows_merge(client, session, connect_session):
+    """Disconnecting detaches the store's links and forgets the connection's first sync."""
+    from celerp.models.connector_first_sync import ConnectorFirstSync
+    from connector_test_support import connect
+
     h, cid = await _register(client)
-    await _connect(session, cid, "shopify")
+    await connect(session, cid, "shopify", first_sync="completed")
     a, b = await _pair(client, session, h, cid, "DISC", shopify=dict(LIVE_SHOPIFY))
     r = await _merge(client, h, a, b)
     assert r.status_code == 409 and r.json()["detail"] == t("inventory.err_merge_linked", "en", stores="Shopify"), r.text
     with patch("celerp.connectors.remote_state.revoke_connector_remote_state", AsyncMock()):
         r = await client.delete("/connectors/shopify/credentials", headers=h)
-    assert r.status_code == 200 and r.json() == {"ok": True}, r.text
+    assert r.status_code == 200 and r.json() == {"ok": True, "kept_store_values": 0}, r.text
     assert (await _state(session, cid, a))["external_links"]["shopify"] == {"detached": True}
+    assert await session.get(ConnectorFirstSync, (cid, "shopify"), populate_existing=True) is None
     r = await _merge(client, h, a, b)
     assert r.status_code == 200, r.text
 
@@ -519,11 +538,16 @@ async def _real_links(engine, cid, eid: str, links: dict) -> None:
             {"s": json.dumps({**state, "external_links": links}), "c": cid, "e": eid})
 
 
+SHOPIFY_BOTH = json.dumps({"products": "both", "stock": "outbound", "orders": "inbound",
+                           "customers": "inbound"})
+
+
 async def _set_shopify_owner(engine, owner_id: str | None) -> None:
     await _sql(engine, "DELETE FROM connector_configs WHERE connector = 'shopify'")
     if owner_id is not None:
-        await _sql(engine, "INSERT INTO connector_configs (company_id, connector, direction, sync_frequency, "
-                           "daily_sync_hour) VALUES (:c, 'shopify', 'both', 'realtime', 2)", c=owner_id)
+        await _sql(engine, "INSERT INTO connector_configs (company_id, connector, entity_directions, "
+                           "sync_frequency, daily_sync_hour) VALUES (:c, 'shopify', CAST(:d AS json), "
+                           "'realtime', 2)", c=owner_id, d=SHOPIFY_BOTH)
 
 
 async def test_connector_state_and_catalog_state_agree(real_engine, real_client):
@@ -623,6 +647,7 @@ async def test_merge_racing_disconnect_is_clean(real_engine, real_client):
     Its preview was refused while the item was still listed, so it is refused too and
     changes nothing; previewed again, it sees the detached identity and merges."""
     from celerp.models.connector_config import ConnectorConfig
+    from celerp.services.company_lock import lock_company
     from celerp_inventory.services import detach_external_links_for_platform
     _, cid, tok = await _real_setup(real_engine)
     await _set_shopify_owner(real_engine, str(cid))
@@ -635,8 +660,9 @@ async def test_merge_racing_disconnect_is_clean(real_engine, real_client):
         task = _merge_task(real_client, tok, a, b)
         try:
             await _await_advisory_waiter(real_engine, task)
-            await detach_external_links_for_platform(holder, cid, "shopify")
+            await lock_company(holder, cid)
             await holder.execute(sa.delete(ConnectorConfig).where(ConnectorConfig.company_id == str(cid)))
+            await detach_external_links_for_platform(holder, cid, "shopify")
         finally:
             await holder.commit()
         r = await task
@@ -663,8 +689,9 @@ async def test_merge_racing_connect_rechecks_ownership(real_engine, real_client)
         try:
             await _await_advisory_waiter(real_engine, task)
             await holder.execute(text(
-                "INSERT INTO connector_configs (company_id, connector, direction, sync_frequency, daily_sync_hour) "
-                "VALUES (:c, 'shopify', 'both', 'realtime', 2)"), {"c": str(cid)})
+                "INSERT INTO connector_configs (company_id, connector, entity_directions, sync_frequency, "
+                "daily_sync_hour) VALUES (:c, 'shopify', CAST(:d AS json), 'realtime', 2)"),
+                {"c": str(cid), "d": SHOPIFY_BOTH})
             state = (await holder.execute(text(
                 "SELECT state FROM projections WHERE company_id = :c AND entity_id = :e"),
                 {"c": cid, "e": a})).scalar_one()
@@ -681,16 +708,19 @@ async def test_merge_racing_connect_rechecks_ownership(real_engine, real_client)
 
 
 @pytest.mark.usefixtures("connector_modules_running")
-async def test_item_sync_route_toggles_the_shopify_sync_flag_through_the_ledger(client, session):
+async def test_item_sync_route_toggles_the_shopify_sync_flag_through_the_ledger(client, connector_session, monkeypatch):
     """POST /connector-items/shopify/sync emits shop.sync.enabled/disabled and the
     projection's sync flag follows; a second identical request changes nothing."""
     from celerp.models.ledger import LedgerEntry
     from celerp.models.projections import Projection
 
+    session = connector_session
+
     h, cid = await _register(client)
     a = await _item(client, h, "SYNC-A")
     await _set_state(session, cid, a, external_links={"shopify": dict(LIVE_SHOPIFY)})
-    await _connect(session, cid, "shopify")
+    await connect(session, cid, "shopify", first_sync="completed")
+    stand_in_execution(monkeypatch)
 
     async def _flag() -> bool | None:
         row = await session.get(Projection, {"company_id": uuid.UUID(cid), "entity_id": a},
@@ -704,16 +734,16 @@ async def test_item_sync_route_toggles_the_shopify_sync_flag_through_the_ledger(
         return list(rows.scalars())
 
     r = await client.post("/connector-items/shopify/sync", headers=h,
-                          json={"entity_ids": [a], "enable": True})
+                          json={"entity_ids": [a], "action": "publish"})
     assert r.status_code == 200, r.text
-    assert r.json() == {"updated": 1, "enabled": True, "errors": []}
+    assert r.json() == {"updated": 1, "action": "publish", "errors": [], "needs_confirmation": []}
     assert await _flag() is True
     again = await client.post("/connector-items/shopify/sync", headers=h,
-                              json={"entity_ids": [a], "enable": True})
+                              json={"entity_ids": [a], "action": "publish"})
     assert again.json()["updated"] == 0
 
     r = await client.post("/connector-items/shopify/sync", headers=h,
-                          json={"entity_ids": [a], "enable": False})
+                          json={"entity_ids": [a], "action": "stop"})
     assert r.status_code == 200, r.text
     assert r.json()["updated"] == 1
     assert await _flag() is False

@@ -240,10 +240,10 @@ async def test_a_login_only_the_reset_company_had_stays_signed_out(real_client, 
             "author uuid REFERENCES users(id) ON DELETE CASCADE, body text NOT NULL)"))
         await conn.execute(text("INSERT INTO ext_notes VALUES (:i, :c, :u, 'alpha note')"),
                            {"i": uuid.uuid4(), "c": alpha, "u": clerk})
-        await conn.execute(text("INSERT INTO session_registry (jti, user_id, company_id, expiry) "
-                                "VALUES ('clerk-jti', :u, :c, now())"), {"u": clerk, "c": alpha})
         await conn.execute(text("INSERT INTO user_auth_state (user_id, nonce) VALUES (:u, 'n') "
                                 "ON CONFLICT (user_id) DO NOTHING"), {"u": clerk})
+        await conn.execute(text("INSERT INTO session_registry (jti, user_id, company_id, expiry) "
+                                "VALUES ('clerk-jti', :u, :c, now())"), {"u": clerk, "c": alpha})
     try:
         r = await _reset(real_client, ta, "Alpha Co")
 
@@ -855,10 +855,10 @@ def _refused_busy(r) -> None:
     assert in_language("de", detail) != detail["message"]
 
 
-async def test_a_reset_waiting_too_long_behind_another_writer_is_refused_as_busy(real_client, real_engine):  # noqa: F811
-    """Beta's transaction has written ext_links and stays open for longer than a request
-    may wait for a lock. The reset gives up waiting and is refused as busy, never a
-    server error, and nothing of Alpha is deleted."""
+async def test_a_reset_meeting_another_writer_is_refused_as_busy(real_client, real_engine):  # noqa: F811
+    """Beta's transaction has written ext_links and stays open. The reset finds the table
+    busy and is refused as busy at once, never a server error, and nothing of Alpha is
+    deleted."""
     import uuid
 
     from sqlalchemy import text
@@ -888,12 +888,12 @@ async def test_a_reset_waiting_too_long_behind_another_writer_is_refused_as_busy
             await conn.execute(text("DROP TABLE IF EXISTS ext_links"))
 
 
-async def test_a_reset_caught_in_a_deadlock_is_refused_and_deletes_nothing(real_client, real_engine):  # noqa: F811
+async def test_a_reset_never_waits_where_it_could_deadlock_and_deletes_nothing(real_client, real_engine):  # noqa: F811
     """Beta is part way through a transaction that wrote ext_links when the reset starts
-    locking: the reset waits for ext_links while holding ext_items, and Beta then writes
-    ext_items. Postgres aborts the reset to break the deadlock. The reset is refused as
-    interrupted, without claiming another company holds the records, nothing of Alpha
-    is deleted, and Beta's transaction commits."""
+    locking. Were the reset to wait for ext_links while holding ext_items, Beta's next write
+    to ext_items would deadlock the two. The reset never waits for a table: it is refused as
+    busy at once, nothing of Alpha is deleted, and Beta goes on to write ext_items and
+    commits."""
     import uuid
 
     from sqlalchemy import text
@@ -915,19 +915,9 @@ async def test_a_reset_caught_in_a_deadlock_is_refused_and_deletes_nothing(real_
         async with beta_engine.begin() as beta_conn:
             await beta_conn.execute(text("INSERT INTO ext_links VALUES (:i, :c, NULL, 'beta link')"),
                                     {"i": uuid.uuid4(), "c": beta})
-            reset = asyncio.create_task(_reset(real_client, ta, "Alpha Co"))
-            for _ in range(500):
-                await asyncio.sleep(0.01)
-                async with real_engine.connect() as conn:
-                    if await conn.scalar(text(
-                            "SELECT count(*) FROM pg_locks l JOIN pg_class c ON c.oid = l.relation "
-                            "WHERE NOT l.granted AND c.relname = 'ext_links'")):
-                        break
-            else:
-                pytest.fail("the reset never waited for ext_links")
+            r = await _reset(real_client, ta, "Alpha Co")
             await beta_conn.execute(text("INSERT INTO ext_items VALUES (:i, :c, 'beta item')"),
                                     {"i": uuid.uuid4(), "c": beta})
-        r = await reset
 
         _refused_busy(r)
         assert await count(real_engine, "companies", "id = :i", i=alpha) == 1

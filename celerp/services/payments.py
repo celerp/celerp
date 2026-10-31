@@ -291,6 +291,7 @@ async def receive_payment(payload: dict) -> bool:
                     UnmatchedPayment.released_at, UnmatchedPayment.recorded_company))).first()
             if kept is not None and kept.recorded_company is not None:
                 raise _Moved(reference)
+            await _lock_kept_refunds(session, reference)
             released_at = kept.released_at if kept is not None else None
             try:
                 await record_stripe_payment(session, cid, entity_id, dict(row.state), reference=reference,
@@ -515,9 +516,17 @@ async def _lock_company_of(session, company_id) -> bool:
     return await locked_company(session, company_id) is not None
 
 
+async def _lock_kept_refunds(session, reference: str) -> None:
+    """Lock every refund kept for the payment *reference*, after its unmatched payment
+    and before any document (_lock_company_of): an apply deletes the refunds it
+    applies while it holds their document."""
+    await session.execute(select(UnmatchedRefund.refund_id).where(UnmatchedRefund.reference == reference).order_by(
+        UnmatchedRefund.refund_id, UnmatchedRefund.cycle, UnmatchedRefund.transition).with_for_update())
+
+
 async def _lock_recorded(session, reference: str, home: tuple[uuid.UUID, str]) -> UnmatchedPayment | None:
     """Lock the company of *home*, then the unmatched payment *reference*, still
-    recorded there (_lock_company_of). None when the company is gone; raises _Moved
+    recorded there, then its kept refunds (_lock_company_of). None when the company is gone; raises _Moved
     when the payment was moved meanwhile."""
     if not await _lock_company_of(session, home[0]):
         return None
@@ -525,6 +534,7 @@ async def _lock_recorded(session, reference: str, home: tuple[uuid.UUID, str]) -
         UnmatchedPayment.reference == reference).with_for_update(key_share=True))
     if kept is None or (kept.recorded_company, kept.recorded_document) != (str(home[0]), home[1]):
         raise _Moved(reference)
+    await _lock_kept_refunds(session, reference)
     return kept
 
 
@@ -542,6 +552,10 @@ async def _deliver_to_recorded(session, home: tuple[uuid.UUID, str], reference: 
         await _apply_release(session, home[0], home[1], reference, kept.released_at, origin=origin)
 
 
+class _NoDocument(Exception):
+    """The document a refund is for is gone or is not a document."""
+
+
 def _instant(value) -> datetime | None:
     """A reported time with a zone, or None (no business day it can be placed on)."""
     try:
@@ -553,7 +567,7 @@ def _instant(value) -> datetime | None:
 
 async def _apply_refund(session, cid, entity_id: str, refund: dict, *, recorded: bool = False) -> bool:
     """Apply one change to a refund on its document, under the document's lock and in a
-    savepoint: True once applied (or applied before), and then no longer kept. False,
+    savepoint, its kept refunds locked first (_lock_kept_refunds): True once applied (or applied before), and then no longer kept. False,
     with nothing applied, when the document is gone or refuses it (logged). A 5xx
     raises. A refund of a payment a person *recorded* on the document from the
     unmatched payments gives the money back on the books that payment was recorded on,
@@ -561,17 +575,20 @@ async def _apply_refund(session, cid, entity_id: str, refund: dict, *, recorded:
     from fastapi import HTTPException
     from celerp.services.company_lock import lock_projections
     from celerp_docs.routes_payments import record_stripe_refund, recorded_payment_books
-    row = (await lock_projections(session, cid, [entity_id])).get(entity_id)
-    if row is None or row.entity_type != "doc":
-        return False
-    if recorded:
-        refund = {**refund, "context": await recorded_payment_books(session, cid, row, refund["reference"])}
     try:
         async with session.begin_nested():
+            # Refused, the savepoint lets the document go again before the refund is kept.
+            row = (await lock_projections(session, cid, [entity_id])).get(entity_id)
+            if row is None or row.entity_type != "doc":
+                raise _NoDocument
+            if recorded:
+                refund = {**refund, "context": await recorded_payment_books(session, cid, row, refund["reference"])}
             await record_stripe_refund(
                 session, cid, row, refund_id=refund["refund_id"], cycle=refund["cycle"],
                 transition=refund["transition"], reference=refund["reference"], amount_minor=refund["amount_minor"],
                 currency=refund["currency"], occurred_at=refund["occurred_at"], context=refund["context"])
+    except _NoDocument:
+        return False
     except HTTPException as exc:
         if exc.status_code >= 500 or isinstance(exc, ModuleRefused):
             raise
@@ -637,15 +654,18 @@ async def receive_refund(payload: dict) -> bool:
                 await _apply_parked_refunds(session, home[0], home[1], reference, origin=(company_id, entity_id))
                 await session.commit()
                 return True
-        # A reset waits for this lock; once it has deleted the company, the refund is kept.
-        elif cid and await _lock_company_of(session, cid) and await _apply_refund(session, cid, entity_id, refund):
-            # A reversal that arrived before its refund was applied follows it now.
-            await _apply_parked_refunds(session, cid, entity_id, reference)
-            await session.commit()
-            return True
-        elif (await session.scalar(select(UnmatchedPayment.recorded_company).where(
-                UnmatchedPayment.reference == reference).with_for_update(key_share=True))) is not None:
-            raise _Moved(reference)  # recorded on an invoice meanwhile
+        else:
+            # A reset waits for this lock; once it has deleted the company, the refund is kept.
+            held = bool(cid and await _lock_company_of(session, cid))
+            if (await session.scalar(select(UnmatchedPayment.recorded_company).where(
+                    UnmatchedPayment.reference == reference).with_for_update(key_share=True))) is not None:
+                raise _Moved(reference)  # recorded on an invoice meanwhile
+            await _lock_kept_refunds(session, reference)
+            if held and await _apply_refund(session, cid, entity_id, refund):
+                # A reversal that arrived before its refund was applied follows it now.
+                await _apply_parked_refunds(session, cid, entity_id, reference)
+                await session.commit()
+                return True
         # Kept under the same locks, so a payment recorded meanwhile cannot miss it.
         from sqlalchemy.dialects.postgresql import insert
         await session.execute(insert(UnmatchedRefund).values(
@@ -704,6 +724,7 @@ async def receive_release(payload: dict) -> bool:
         if (kept is not None and kept.recorded_company is not None) != (home is not None) or (
                 home is not None and (kept.recorded_company, kept.recorded_document) != (str(home[0]), home[1])):
             raise _Moved(reference)
+        await _lock_kept_refunds(session, reference)
         if home is not None:
             # Recorded by a person on an invoice: released there too.
             if held:
@@ -785,6 +806,7 @@ async def record_unmatched_payment(session, company_id: uuid.UUID, reference: st
             return
         raise UnmatchedRefused("gone")
     await refuse_other_company(session, kept, company_id)
+    await _lock_kept_refunds(session, reference)
     row = (await lock_projections(session, company_id, [entity_id])).get(entity_id)
     if row is None or row.entity_type != "doc":
         raise UnmatchedRefused("missing")
@@ -820,10 +842,24 @@ async def recorded_unmatched(session, company_id, entity_id: str) -> set[str]:
         UnmatchedPayment.recorded_document == entity_id))).all())
 
 
+async def lock_recorded_unmatched(session, company_id, entity_id: str | None = None) -> None:
+    """Lock the company, then the payments a person recorded from the unmatched payments
+    on its documents (on the document *entity_id* when given), before a caller locks
+    the documents to delete one of their payments (``return_unmatched``) or the company
+    (``unrecord_company``): the order every writer of a payment takes (_lock_company_of)."""
+    await _lock_company_of(session, company_id)
+    recorded = UnmatchedPayment.recorded_company == str(company_id)
+    if entity_id is not None:
+        recorded &= UnmatchedPayment.recorded_document == entity_id
+    await session.execute(select(UnmatchedPayment.reference).where(recorded)
+                          .order_by(UnmatchedPayment.reference).with_for_update())
+
+
 async def return_unmatched(session, company_id, entity_id: str, reference: str | None) -> None:
     """Put the payment *reference*, recorded on this document from the unmatched
     payments, back on the unmatched list: its payment was deleted from the document.
-    In the caller's transaction; nothing for any other payment."""
+    In the caller's transaction, which locked it first (``lock_recorded_unmatched``);
+    nothing for any other payment."""
     from sqlalchemy import update
     if reference:
         await session.execute(update(UnmatchedPayment).where(

@@ -282,19 +282,21 @@ class ProjectionEngine:
         """Replace the projections with a replay of the ledger. Refused, before anything is
         deleted, when the ledger holds events of a module that is not enabled: replaying
         without its handler would rebuild those records wrong (UnhandledEventsError).
-        A company's replay runs under its company lock, which the owning operation takes
-        first, so no write lands mid-replay and is lost."""
-        if company_id is not None:
-            from celerp.services.company_lock import holds_company_lock
-            if not holds_company_lock(session, company_id):
-                raise RuntimeError("a company's projections are rebuilt only under its company lock")
+        A replay runs under the lock of every company it replays, which the owning operation
+        takes first, so no write lands mid-replay and is lost."""
+        from celerp.models.company import Company
+        from celerp.services.company_lock import holds_company_lock
+        companies = [company_id] if company_id is not None else \
+            (await session.execute(select(Company.id))).scalars().all()
+        if not all(holds_company_lock(session, c) for c in companies):
+            raise RuntimeError("a company's projections are rebuilt only under its company lock")
         unknown = await ProjectionEngine.unreplayable(session, company_id)
         if unknown:
             raise UnhandledEventsError(unknown)
-        await session.execute(delete(Projection) if company_id is None else delete(Projection).where(Projection.company_id == company_id))
-        query = select(LedgerEntry).order_by(LedgerEntry.id.asc())
-        if company_id:
-            query = query.where(LedgerEntry.company_id == company_id)
+        # One delete per company, in id order, so each names the company whose rows it takes.
+        for company in sorted(companies, key=str):
+            await session.execute(delete(Projection).where(Projection.company_id == company))
+        query = select(LedgerEntry).where(LedgerEntry.company_id.in_(companies)).order_by(LedgerEntry.id.asc())
         entries = (await session.execute(query)).scalars().all()
         total = len(entries)
         # The desktop app reads these lines to show progress while a large company replays.

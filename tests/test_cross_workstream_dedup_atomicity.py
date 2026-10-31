@@ -25,6 +25,7 @@ import uuid as _uuid
 import pytest
 from sqlalchemy import select
 
+from test_helpers import lock_every_company
 from celerp.models.company import Company
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
@@ -109,7 +110,9 @@ async def _seed_historical_doc(session, cid, doc_id, data):
     guard, then rebuild so the projection exists. This is how a source doc that
     carries a duplicate non-splittable item is constructed for paths whose own
     source-creation would otherwise trip the guard (conversions, subscriptions).
+    The company lock comes first, before the ledger row, as every writer takes them.
     """
+    await lock_every_company(session)
     entry = LedgerEntry(
         company_id=cid,
         entity_id=doc_id,

@@ -19,16 +19,18 @@ from .test_x7y8z9a0b1c2_add_projection_created_at import sync_db  # noqa: F401
 MIG = "e4f5a6b7c8d9_backfill_connector_idempotency_key"
 
 
-def _record(conn, cid: str, entity_type: str, event_type: str, state: dict) -> str:
+def _record(engine, cid: str, entity_type: str, event_type: str, state: dict) -> str:
+    """A record and its event, written in one transaction of their own as a release wrote them."""
     eid = f"{entity_type}:{uuid.uuid4()}"
-    conn.execute(text(
-        "INSERT INTO ledger (entity_id, company_id, entity_type, event_type, data) "
-        "VALUES (:e, :c, :t, :ev, CAST(:d AS jsonb))"
-    ), {"e": eid, "c": cid, "t": entity_type, "ev": event_type, "d": json.dumps(state)})
-    conn.execute(text(
-        "INSERT INTO projections (entity_id, company_id, entity_type, state) "
-        "VALUES (:e, :c, :t, CAST(:d AS jsonb))"
-    ), {"e": eid, "c": cid, "t": entity_type, "d": json.dumps(state)})
+    with engine.begin() as conn:
+        conn.execute(text(
+            "INSERT INTO projections (entity_id, company_id, entity_type, state) "
+            "VALUES (:e, :c, :t, CAST(:d AS jsonb))"
+        ), {"e": eid, "c": cid, "t": entity_type, "d": json.dumps(state)})
+        conn.execute(text(
+            "INSERT INTO ledger (entity_id, company_id, entity_type, event_type, data) "
+            "VALUES (:e, :c, :t, :ev, CAST(:d AS jsonb))"
+        ), {"e": eid, "c": cid, "t": entity_type, "ev": event_type, "d": json.dumps(state)})
     return eid
 
 
@@ -51,12 +53,11 @@ def _index_exists(engine) -> bool:
 
 def test_the_upgrade_stamps_the_key_on_the_projection_and_its_event(sync_db):  # noqa: F811
     cid = str(uuid.uuid4())
-    with sync_db.begin() as conn:
-        order = _record(conn, cid, "doc", "doc.created", {"woocommerce_order_id": 77})
-        customer = _record(conn, cid, "contact", "crm.contact.created", {"attributes": {"xero_id": "X-9"}})
-        keyed = _record(conn, cid, "doc", "doc.created",
-                        {"shopify_order_id": 5, "idempotency_key": "shopify:order:already"})
-        manual = _record(conn, cid, "doc", "doc.created", {"doc_number": "INV-1"})
+    order = _record(sync_db, cid, "doc", "doc.created", {"woocommerce_order_id": 77})
+    customer = _record(sync_db, cid, "contact", "crm.contact.created", {"attributes": {"xero_id": "X-9"}})
+    keyed = _record(sync_db, cid, "doc", "doc.created",
+                    {"shopify_order_id": 5, "idempotency_key": "shopify:order:already"})
+    manual = _record(sync_db, cid, "doc", "doc.created", {"doc_number": "INV-1"})
 
     run_migration_ops(sync_db, MIG)
 
@@ -69,8 +70,7 @@ def test_the_upgrade_stamps_the_key_on_the_projection_and_its_event(sync_db):  #
 
 def test_running_the_upgrade_again_changes_nothing_and_downgrade_drops_the_index(sync_db):  # noqa: F811
     cid = str(uuid.uuid4())
-    with sync_db.begin() as conn:
-        order = _record(conn, cid, "doc", "doc.created", {"quickbooks_invoice_id": "Q1"})
+    order = _record(sync_db, cid, "doc", "doc.created", {"quickbooks_invoice_id": "Q1"})
 
     run_migration_ops(sync_db, MIG)
     run_migration_ops(sync_db, MIG)

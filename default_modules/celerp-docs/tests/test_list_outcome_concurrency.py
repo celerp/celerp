@@ -24,17 +24,15 @@ import uuid
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.events.engine import emit_event
 from celerp.services.account_roles import reconcile_company
 from celerp_accounting.routes import seed_chart_of_accounts
-from celerp_accounting.models import Account
 from celerp.models.company import Company, User
-from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.lot_origin import recognize_opening_lots
+from test_helpers import remove_company
 
 
 def _factory(engine):
@@ -47,24 +45,15 @@ async def _seed_company(factory):
     whose routes 409 before emitting)."""
     company_id, user_id = uuid.uuid4(), uuid.uuid4()
     async with factory() as s:
-        s.add(Company(id=company_id, name="Outcome Co", slug=f"outcome-{company_id.hex[:8]}"))
         s.add(User(id=user_id, email=f"race-{user_id.hex[:8]}@outcome.test", name="Race User",
                    auth_hash="x"))
+        await s.flush()
+        s.add(Company(id=company_id, name="Outcome Co", slug=f"outcome-{company_id.hex[:8]}"))
         await s.flush()
         await seed_chart_of_accounts(s, company_id)
         await reconcile_company(s, company_id)
         await s.commit()
     return company_id, user_id, types.SimpleNamespace(id=user_id)
-
-
-async def _cleanup(factory, company_id, user_id):
-    async with factory() as s:
-        await s.execute(delete(Projection).where(Projection.company_id == company_id))
-        await s.execute(delete(LedgerEntry).where(LedgerEntry.company_id == company_id))
-        await s.execute(delete(Account).where(Account.company_id == company_id))
-        await s.execute(delete(Company).where(Company.id == company_id))
-        await s.execute(delete(User).where(User.id == user_id))
-        await s.commit()
 
 
 def _barcode() -> str:
@@ -168,7 +157,7 @@ async def test_two_concurrent_scan_batches_both_survive(_db_engine):
         run_keys = {r.get("key") for r in (state.get("scan_runs") or [])}
         assert run_keys == {"kX", "kY"}, f"both scan runs must survive; got {run_keys}"
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 async def _seed_memo(factory, company_id, user, *, ref_id, line_items) -> str:
@@ -258,7 +247,7 @@ async def test_close_fulfill_race_mutually_exclusive(_db_engine):
             f"exactly one of close/fulfill must 409; got {n_409}. close={outcome.get('close')!r}, "
             f"fulfill={outcome.get('fulfill')!r}")
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 @pytest.mark.asyncio
@@ -334,7 +323,7 @@ async def test_send_close_race_no_unclose(_db_engine):
         assert isinstance(outcome.get("send"), HTTPException) and outcome["send"].status_code == 409, (
             f"send on a closed memo must 409, not commit; got {outcome.get('send')!r}")
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 async def _set_item_sold(factory, company_id, user, item_id, doc_id):
@@ -431,7 +420,7 @@ async def test_revert_close_race_no_unsettle(_db_engine):
         assert isinstance(outcome.get("revert"), HTTPException) and outcome["revert"].status_code == 409, (
             f"revert on a closed memo must 409, not commit; got {outcome.get('revert')!r}")
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 @pytest.mark.asyncio
@@ -497,7 +486,7 @@ async def test_scan_versus_versioned_save_never_drops_scanned_line(_db_engine):
         else:
             assert item_ids == {x_id, y_id}, f"patch succeeded so X and Y both present; got {item_ids}"
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 @pytest.mark.asyncio
@@ -563,7 +552,7 @@ async def test_scan_versus_finalize_audit_freezes_consistently(_db_engine):
                 f"scan added Z so Z must be in the finalized list; got "
                 f"{[l.get('item_id') for l in lines]}")
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 @pytest.mark.asyncio
@@ -634,4 +623,4 @@ async def test_count_versus_adjust_honors_committed_count(_db_engine):
         else:
             assert b_qty == 3, f"B-count committed so its count of 3 must be applied; got {b_qty}"
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)

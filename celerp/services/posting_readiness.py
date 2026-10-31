@@ -126,13 +126,13 @@ def _labels(roles: list[str]) -> str:
     return ", ".join(ROLE_LABELS[AccountRole(r)] for r in roles)
 
 
-async def notify_unmapped(session: AsyncSession, company_id, refused=()) -> bool:
+async def notify_unmapped(session: AsyncSession, company_id, refused=()) -> None:
     """One high-priority notice while a role has no account that can take its postings
     and the company's workflows need it, a posting was just refused for it (``refused``),
     or the notice already names it. Deduped on the standing notice so a restart never
     stacks them and kept current with the roles still wrong; withdrawn once none is.
-    Returns whether a notice was created. The caller commits. Holds the company lock
-    before the accounts it judges, so a concurrent notifier waits and reads this one's."""
+    The caller commits. Holds the company lock before the accounts it judges, so a
+    concurrent notifier waits and reads this one's."""
     from celerp.models.notification import Notification
     from celerp.notifications import service as notification_service
     from celerp.services.company_lock import lock_company
@@ -151,8 +151,8 @@ async def notify_unmapped(session: AsyncSession, company_id, refused=()) -> bool
     missing = [role.value for role in AccountRole if role.value in problems]
     if not missing:
         await notification_service.clear_standing(session, company_id, NOTICE_CATEGORY, NOTICE_TITLE)
-        return False
-    return await notification_service.notify_standing(
+        return
+    await notification_service.notify_standing(
         session, company_id, NOTICE_CATEGORY, NOTICE_TITLE,
         f"Choose the account for: {_labels(missing)}. Until then, anything that posts to them is refused.",
         action_url=POSTING_ACCOUNTS_PATH,
@@ -335,7 +335,7 @@ async def apply_choices(session: AsyncSession, company_id, choices: dict | None)
     needed role is left without an account or a choice cannot take it; the caller owns
     the transaction and rolls it back. Returns each role set here with its account,
     ``{code, name, account_type}``; empty when accounting is not running."""
-    from celerp.services.company_lock import lock_chart, locked_company
+    from celerp.services.company_lock import locked_company
     from celerp.services.journal_accounts import add_account, lock_accounts
 
     choices = choices or {}
@@ -344,7 +344,6 @@ async def apply_choices(session: AsyncSession, company_id, choices: dict | None)
     chosen = _chosen(choices.get("roles"))
     added = _new_accounts(choices.get("add_accounts"))
     company = await locked_company(session, company_id)
-    await lock_chart(session, company_id)
     rows = await readiness(session, company_id)
     if rows is None:
         return {}

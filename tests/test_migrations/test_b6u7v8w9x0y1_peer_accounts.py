@@ -6,6 +6,8 @@ this company's and the fix a held record needs, and reverses to the older shape.
 
 from __future__ import annotations
 
+from alembic_support import alembic_run
+
 from .conftest import schema_of, throwaway_db, upgrade_to
 
 REVISION = "b6u7v8w9x0y1"
@@ -24,9 +26,6 @@ def test_peer_accounts_revision_up_and_down():
         assert {"company_id", "source_company_id", "other_account_id", "other_code", "other_name",
                 "account_id", "code", "how", "added_from"} <= _columns(sync_url, "company_peer_accounts")
         assert "fix" in _columns(sync_url, "company_peer_attention")
-        from alembic import command
-
-        from celerp.alembic_config import build_alembic_config
-        command.downgrade(build_alembic_config(), "a5t6u7v8w9x0")
+        alembic_run(sync_url, "downgrade", "a5t6u7v8w9x0")
         assert not _columns(sync_url, "company_peer_accounts")
         assert "fix" not in _columns(sync_url, "company_peer_attention")

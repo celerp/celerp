@@ -129,8 +129,9 @@ class _Seeded:
 
 async def _seed(session) -> _Seeded:
     company_id, user_id = uuid.uuid4(), uuid.uuid4()
-    session.add(Company(id=company_id, name="OverdueCo", slug=f"od-{company_id.hex[:8]}"))
     session.add(User(id=user_id, email=f"admin-{uuid.uuid4().hex[:8]}", name="Admin", auth_hash="x", is_active=True))
+    await session.flush()
+    session.add(Company(id=company_id, name="OverdueCo", slug=f"od-{company_id.hex[:8]}"))
     await session.flush()
     session.add(UserCompany(id=uuid.uuid4(), user_id=user_id, company_id=company_id, role="admin", is_active=True))
     rows = []

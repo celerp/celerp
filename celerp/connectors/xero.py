@@ -32,6 +32,10 @@ from celerp.connectors.base import (
     ConnectorBase,
     ConnectorCategory,
     ConnectorContext,
+    EntityFlow,
+    FirstSync,
+    RemoteOrder,
+    RemoteProduct,
     SyncDirection,
     SyncEntity,
     SyncResult,
@@ -145,13 +149,40 @@ def _headers() -> dict[str, str]:
     }
 
 
+def _from_date(orders_from: datetime | None) -> str | None:
+    """The Xero filter keeping invoices dated on or after the connection's earliest order date."""
+    if orders_from is None:
+        return None
+    return f"Date>=DateTime({orders_from.year},{orders_from.month:02d},{orders_from.day:02d})"
+
+
+def _xero_when(value) -> datetime | None:
+    """A Xero date, ISO ("2026-09-01T00:00:00") or JSON ("/Date(1788220800000+0000)/")."""
+    import re
+    from datetime import timezone
+
+    if not value:
+        return None
+    match = re.match(r"/Date\((-?\d+)", str(value))
+    if match:
+        return datetime.fromtimestamp(int(match.group(1)) / 1000, tz=timezone.utc)
+    try:
+        return datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+
+
 class XeroConnector(ConnectorBase):
     name = "xero"
     display_name = "Xero"
     store_scoped_ids = False  # Xero ids are unique across all organisations
-    supported_entities = [SyncEntity.PRODUCTS, SyncEntity.ORDERS, SyncEntity.CONTACTS]
+    imported_doc_marker = "xero_invoice_id"
+    entity_flows = {
+        "products": EntityFlow(inbound=("products",)),
+        "invoices": EntityFlow(inbound=("orders",), outbound=("invoices_out",)),
+        "contacts": EntityFlow(inbound=("contacts",)),
+    }
     category = ConnectorCategory.ACCOUNTING
-    direction = SyncDirection.BOTH
     conflict_strategy = {
         SyncEntity.PRODUCTS: "newest",
         SyncEntity.ORDERS: "platform",
@@ -167,6 +198,7 @@ class XeroConnector(ConnectorBase):
         key: str,
         since: datetime | None = None,
         paginated: bool = True,
+        where: str | None = None,
     ) -> list[dict[str, Any]]:
         """Fetch a resource. Paginating endpoints (Invoices, Contacts) use Xero's
         page-based paging; endpoints that return the full set in one response
@@ -176,9 +208,11 @@ class XeroConnector(ConnectorBase):
         headers = _headers()
         if since:
             headers["If-Modified-Since"] = since.strftime("%a, %d %b %Y %H:%M:%S GMT")
-        async with RateLimitedClient(timeout=_RELAY_TIMEOUT_S) as client:
+        async with RateLimitedClient(timeout=_RELAY_TIMEOUT_S, require_execution=True) as client:
             while True:
-                params = {"page": page, "pageSize": _PAGE_SIZE} if paginated else None
+                params = {"page": page, "pageSize": _PAGE_SIZE} if paginated else {}
+                if where:
+                    params["where"] = where
                 resp = await client.get(f"{_api_base()}{path}", headers=headers, params=params)
                 resp.raise_for_status()
                 data = resp.json()
@@ -192,7 +226,10 @@ class XeroConnector(ConnectorBase):
     # -- Products (Items in Xero) ----------------------------------------------
 
     @needs_modules("celerp-inventory")
-    async def sync_products(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
+    async def sync_products(
+        self, ctx: ConnectorContext, since: datetime | None = None,
+        first_sync: FirstSync | None = None,
+    ) -> SyncResult:
         """
         Pull Xero Items -> Celerp items.
 
@@ -232,7 +269,7 @@ class XeroConnector(ConnectorBase):
                     cost_price=money((xero_item.get("PurchaseDetails") or {}).get("UnitPrice")),
                     idempotency_key=idempotency_key,
                 )
-                result.record(await _upsert.upsert_item(ctx.company_id, item))
+                result.record(await _upsert.upsert_item(ctx.company_id, item, first_sync))
             except Exception as exc:
                 errors.append(f"SKU {sku}: {exc}")
 
@@ -246,9 +283,13 @@ class XeroConnector(ConnectorBase):
     # -- Invoices / Orders -----------------------------------------------------
 
     @needs_modules("celerp-docs")
-    async def sync_orders(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
+    async def sync_orders(
+        self, ctx: ConnectorContext, since: datetime | None = None,
+        orders_from: datetime | None = None, first_sync: FirstSync | None = None,
+    ) -> SyncResult:
         """
-        Pull Xero Invoices (ACCREC type) -> Celerp documents.
+        Pull Xero Invoices (ACCREC type) -> Celerp documents, none dated before
+        ``orders_from``.
 
         Mapping:
           Invoice.InvoiceNumber  -> doc.ref_id
@@ -263,7 +304,8 @@ class XeroConnector(ConnectorBase):
         errors: list[str] = []
 
         try:
-            invoices = await self._paginate(ctx, "/Invoices", "Invoices", since=since)
+            invoices = await self._paginate(ctx, "/Invoices", "Invoices", since=since,
+                                            where=_from_date(orders_from))
         except httpx.HTTPStatusError as exc:
             result.errors = [f"Xero API error: {exc}"]
             return result
@@ -280,7 +322,7 @@ class XeroConnector(ConnectorBase):
                 result.skipped += 1
                 continue
             try:
-                result.record(await _upsert.upsert_invoice_from_xero(ctx.company_id, inv))
+                result.record(await _upsert.upsert_invoice_from_xero(ctx.company_id, inv, first_sync))
             except Exception as exc:
                 errors.append(f"Invoice {inv.get('InvoiceNumber')}: {exc}")
 
@@ -290,6 +332,25 @@ class XeroConnector(ConnectorBase):
             ctx.company_id, result.created, result.skipped, len(errors),
         )
         return result
+
+    async def preview_products(self, ctx: ConnectorContext) -> list[RemoteProduct]:
+        items = await self._paginate(ctx, "/Items", "Items", paginated=False)
+        return [RemoteProduct(
+            key=str(i["ItemID"]), product_id=str(i["ItemID"]), variation_id=None,
+            sku=(i.get("Code") or "").strip(), name=i.get("Name") or "",
+            description=i.get("Description"),
+            price=money((i.get("SalesDetails") or {}).get("UnitPrice")),
+            modified=_xero_when(i.get("UpdatedDateUTC")),
+        ) for i in items]
+
+    async def preview_orders(self, ctx: ConnectorContext, orders_from: datetime) -> list[RemoteOrder]:
+        invoices = await self._paginate(ctx, "/Invoices", "Invoices", where=_from_date(orders_from))
+        return [RemoteOrder(
+            id=str(inv["InvoiceID"]), number=str(inv.get("InvoiceNumber") or inv["InvoiceID"]),
+            status=str(inv.get("Status") or "").lower(),
+            created=_xero_when(inv.get("DateString") or inv.get("Date")),
+            total=money(inv.get("Total")), currency=inv.get("CurrencyCode"), posts=False,
+        ) for inv in invoices if inv.get("Type") == "ACCREC"]
 
     # -- Contacts --------------------------------------------------------------
 
@@ -345,9 +406,7 @@ class XeroConnector(ConnectorBase):
             try:
                 if doc_id not in queued:
                     await enqueue_outbound(company_id, self.name, "invoice", doc_id)
-                outcome = await process_outbound_identity(
-                    company_id, self.name, "invoice", doc_id, ctx=ctx
-                )
+                outcome = await process_outbound_identity(company_id, self.name, "invoice", doc_id)
             except Exception as exc:
                 errors.append(f"Invoice {label}: {exc}")
                 continue
@@ -433,7 +492,7 @@ class XeroConnector(ConnectorBase):
             return result
 
         sent = state["request"]["Invoices"][0]
-        async with RateLimitedClient(timeout=_RELAY_TIMEOUT_S) as client:
+        async with RateLimitedClient(timeout=_RELAY_TIMEOUT_S, require_execution=True) as client:
             age = datetime.now(timezone.utc) - datetime.fromisoformat(state["attempted_at"])
             if state["held"] or age >= _KEY_WINDOW:
                 found = await client.get(

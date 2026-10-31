@@ -69,6 +69,17 @@ def mark_running(monkeypatch, *names: str) -> None:
     monkeypatch.setattr(loader, "_loaded", [*loader._loaded, *({"name": n, "version": "1.0.0"} for n in names)])
 
 
+async def lock_every_company(session) -> None:
+    """Every company's lock, in id order, as a full rebuild's owner takes it first
+    (dev_release_guard)."""
+    from sqlalchemy import select
+
+    from celerp.models.company import Company
+    from celerp.services.company_lock import lock_company
+
+    await lock_company(session, *(await session.execute(select(Company.id))).scalars().all())
+
+
 async def until(predicate, timeout: float = 10.0) -> None:
     """Wait for ``predicate`` (sync or async), polling; fails the test at ``timeout``."""
     async def _wait():
@@ -206,6 +217,37 @@ async def signed_request(session, company_id, user_id, role: str = "operator"):
         await dependency.aclose()
 
 
+@asynccontextmanager
+async def ui_signed_in(token: str):
+    """The UI app signed in with *token*, its API calls answered by the API app in
+    process. Yields the UI client; its `.api` is an API client with the same token."""
+    from unittest.mock import patch
+
+    from httpx import ASGITransport, AsyncClient
+
+    from celerp.main import app
+    from ui.app import app as ui_app
+
+    def _bridged(tok, timeout=10.0):
+        return AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
+                           headers={"Authorization": f"Bearer {tok}"}, follow_redirects=True)
+
+    with patch("ui.api_client._client", _bridged):
+        async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui",
+                               follow_redirects=False, cookies={"celerp_token": token}) as ui, \
+                _bridged(token) as api:
+            ui.api = api
+            yield ui
+
+
+async def as_another_client(statement):
+    """Await ``statement``, a lock a test takes to stand for another client, in a task of its
+    own, as that client would run it: the lock-order recorder then sees the test's later
+    bounded wait on it (a refusal or a lock timeout, the contention under test) as one client
+    waiting on another, not as one task waiting on itself."""
+    return await asyncio.ensure_future(statement)
+
+
 async def provision_company_books(session, company_id) -> None:
     """Give a company created directly in a test what provisioning gives every new
     company: each module's starter data, including the chart of accounts and its
@@ -216,6 +258,65 @@ async def provision_company_books(session, company_id) -> None:
     await session.flush()
 
 
+# Set on a block session's own closing release (block_sessions), which is no commit of the code's.
+BLOCK_END = "celerp_test_block_end"
+
+
+def block_sessions(factory, shared):
+    """The app's own per-block session factory in a test, from a savepoint-joined ``factory``
+    on the test connection. Each block is a session of its own, as production opens one per
+    block, recorded as a transaction of its own (lock_rank Recorder.block). A block that raised
+    ends by rollback; any other ends by releasing its savepoint, as a rollback to it would also
+    undo what another task wrote on the shared connection meanwhile.
+
+    Savepoints on one connection are one stack, so a block gets one only while every open block
+    on the connection is its own task's (they nest LIFO there). A block opened while another
+    task's is open uses ``shared`` (the test session's context) instead: its savepoint would
+    nest inside the other block's and end with it."""
+    import sys
+
+    recorder = sys.modules["lock_rank"].RECORDER
+    open_blocks = _OPEN_BLOCKS.setdefault(id(factory.kw["bind"]), [])
+
+    @asynccontextmanager
+    async def block():
+        task = asyncio.current_task()
+        if any(owner is not task for owner in open_blocks):
+            async with shared() as own:
+                yield own
+            return
+        open_blocks.append(task)
+        try:
+            with recorder.block():
+                async with factory() as own:
+                    yield own
+                    if own.in_transaction():
+                        own.info[BLOCK_END] = True
+                        await own.commit()
+        finally:
+            open_blocks.remove(task)
+    return block
+
+
+# The tasks with a block session open (block_sessions), per test connection.
+_OPEN_BLOCKS: dict[int, list] = {}
+
+
+async def own_sessions_on(session):
+    """The app's own SessionLocal in a test (block_sessions): each session is a session of its
+    own on the test session's connection, joined by savepoint. It sees what the test flushed,
+    and its commits stay inside the rolled-back test transaction."""
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+    @asynccontextmanager
+    async def shared():
+        yield session
+
+    return block_sessions(async_sessionmaker(bind=await session.connection(), class_=AsyncSession,
+                                             expire_on_commit=False, join_transaction_mode="create_savepoint"),
+                          shared)
+
+
 TZ = "Pacific/Kiritimati"  # the timezone of the company company_auth creates
 
 
@@ -224,9 +325,10 @@ async def company_auth(session, cid, uid) -> dict:
     from celerp.models.accounting import UserCompany
     from celerp.models.company import Company, User
 
+    session.add(User(id=uid, email=f"admin-{cid.hex[:8]}@test.co", name="Admin", auth_hash="x", is_active=True))
+    await session.flush()
     session.add(Company(id=cid, name="CostCo", slug=f"costco-{cid.hex[:8]}",
                         settings={"currency": "USD", "timezone": TZ}))
-    session.add(User(id=uid, email=f"admin-{cid.hex[:8]}@test.co", name="Admin", auth_hash="x", is_active=True))
     await session.flush()
     session.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=cid, role="admin", is_active=True))
     await provision_company_books(session, cid)
@@ -265,8 +367,9 @@ async def seed_member(session, role: str = "operator", *, active: bool = True):
     """Insert a company, a user and their membership with ``role``; return (company_id, user_id)."""
     import uuid as _uuid
     from celerp.models.accounting import UserCompany
-    company_id, user_id = await ensure_company(session), _uuid.uuid4()
+    user_id = _uuid.uuid4()
     await ensure_user(session, user_id)
+    company_id = await ensure_company(session)
     session.add(UserCompany(user_id=user_id, company_id=company_id, role=role, is_active=active))
     await session.flush()
     return company_id, user_id
@@ -278,6 +381,56 @@ async def clear_sample_items(session, company_id) -> None:
     from celerp.services.demo import delete_untouched_demo_items
     await delete_untouched_demo_items(session, uuid.UUID(str(company_id)))
     await session.commit()
+
+
+def worker_state_tables() -> list[str]:
+    """users, companies and every table no foreign-key chain reaches from them, so that
+    TRUNCATE of these tables CASCADE empties the whole database. Reachability, never a
+    column name: the payment tables name a company as a plain value (former_company,
+    target_company) and connector state carries a company_id with no foreign key."""
+    from celerp.models.base import Base
+
+    reached, grew = {"users", "companies"}, True
+    while grew:
+        found = {t.name for t in Base.metadata.sorted_tables
+                 if any(fk.column.table.name in reached for fk in t.foreign_keys)}
+        grew = not found <= reached
+        reached |= found
+    return ["users", "companies", *(t.name for t in Base.metadata.sorted_tables if t.name not in reached)]
+
+
+async def remove_company(factory, company_ids, *user_ids) -> None:
+    """Delete everything committed for ``company_ids`` (one id or a list), then the companies,
+    then ``user_ids``. Each company's rows of each table are deleted in a transaction of their
+    own, children first, under that company's lock (as Celerp's own removals are), so a cleanup
+    never holds one table's rows while it takes another's (no lock-order edge) and takes no
+    company's row without its lock. A connector execution lease row is taken holding nothing
+    else (celerp.connectors.execution), so its tables are deleted without the lock."""
+    from sqlalchemy import Uuid, delete
+
+    from celerp.models.base import Base
+    from celerp.models.company import Company, User
+    from celerp.models.connector_execution import ConnectorExecutionHeartbeat, ConnectorExecutionLease
+    from celerp.services.company_lock import lock_company
+    leases = {ConnectorExecutionLease.__table__, ConnectorExecutionHeartbeat.__table__}
+    ids = [uuid.UUID(str(c)) for c in (
+        company_ids if isinstance(company_ids, (list, tuple, set)) else [company_ids])]
+    tables = [t for t in reversed(Base.metadata.sorted_tables)
+              if "company_id" in t.c and t.name != "companies"]
+    async with factory() as s:
+        for company_id in ids:
+            for t in tables:
+                col = t.c.company_id
+                if t not in leases:
+                    await lock_company(s, company_id)
+                await s.execute(delete(t).where(col == (company_id if isinstance(col.type, Uuid) else str(company_id))))
+                await s.commit()
+            await lock_company(s, company_id)
+            await s.execute(delete(Company).where(Company.id == company_id))
+            await s.commit()
+        if user_ids:
+            await s.execute(delete(User).where(User.id.in_([uuid.UUID(str(u)) for u in user_ids])))
+            await s.commit()
 
 
 async def doc_version(client, headers: dict, doc_id: str) -> int:
@@ -382,16 +535,25 @@ async def register_admin(client) -> str:
     return r.json()["access_token"]
 
 
+async def clear_sessions(session) -> None:
+    """Wipe every session_registry row, as a fresh install has none. Nonces are not rotated."""
+    from sqlalchemy import delete
+
+    from celerp.models.auth import SessionRegistry
+
+    await session.execute(delete(SessionRegistry))
+    await session.commit()
+
+
 async def invite_user(client, session, admin_headers: dict, email: str, role: str) -> str:
     """Create a user with the given role and return their access token."""
-    from celerp.services.session_tracker import clear as _clear_tracker
     r = await client.post(
         "/companies/me/users",
         json={"email": email, "name": role.title(), "role": role, "password": "userpw123"},
         headers=admin_headers,
     )
     assert r.status_code == 200, r.text
-    await _clear_tracker(session)  # clear so the new user can log in
+    await clear_sessions(session)  # clear so the new user can log in
     r2 = await client.post("/auth/login", json={"email": email, "password": "userpw123"})
     assert r2.status_code == 200, r2.text
     return r2.json()["access_token"]

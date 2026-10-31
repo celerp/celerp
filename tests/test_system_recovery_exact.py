@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from alembic_support import history_by_hand_async
 from company_backup_support import company, owner, token
 from test_helpers import released_migration_history
 from migration_support import auth, code_config, maker, real_client, real_engine  # noqa: F401
@@ -933,7 +934,7 @@ async def _recovery_of_a_real_dump(tmp_path, monkeypatch, real_engine, history: 
     user = await owner(real_engine)
     await company(real_engine, user, "Alpha Trading", "alpha")
     with released_migration_history():
-        async with real_engine.begin() as conn:
+        async with history_by_hand_async(real_engine) as conn:
             if history is None:
                 await conn.execute(text("DROP TABLE alembic_version"))
             else:
@@ -1119,12 +1120,14 @@ async def _connect_three(engine) -> str:
     from sqlalchemy import text
     user = await owner(engine)
     cid = await company(engine, user, "Alpha Trading", "alpha", settings={"enabled_modules": ["celerp-inventory"]})
+    from celerp.connectors.registry import get as connector_for
     async with engine.begin() as conn:
         for connector in ("shopify", "woocommerce", "quickbooks"):
             await conn.execute(text(
-                "INSERT INTO connector_configs (company_id, connector, direction, sync_frequency, "
-                "daily_sync_hour, webhook_ids_json) VALUES (:c, :n, 'both', 'realtime', 2, :w)"),
-                {"c": str(cid), "n": connector, "w": '["w1", "w2"]' if connector == "woocommerce" else "[]"})
+                "INSERT INTO connector_configs (company_id, connector, entity_directions, sync_frequency, "
+                "daily_sync_hour, webhook_ids_json) VALUES (:c, :n, CAST(:d AS json), 'realtime', 2, :w)"),
+                {"c": str(cid), "n": connector, "d": json.dumps(connector_for(connector).default_directions),
+                 "w": '["w1", "w2"]' if connector == "woocommerce" else "[]"})
     return str(cid)
 
 

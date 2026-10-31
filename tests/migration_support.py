@@ -47,7 +47,7 @@ from celerp.importers.schema import (
     ReconciliationMeasure,
 )
 from celerp.importers.sinks import DestinationMeasurement, SinkBatchResult, SinkEntityMapping
-from test_helpers import DATABASE_URL
+from test_helpers import DATABASE_URL, worker_state_tables
 from ui.i18n import t
 
 # Every run-scoped endpoint, as (method, path suffix).
@@ -300,17 +300,9 @@ async def real_engine(_db_engine, monkeypatch):
         connect_args=celerp.db.REQUEST_CONNECT_ARGS,
     )
 
-    from celerp.models.base import Base
-
     from celerp.services.runtime_state import _drain_cache_bust
 
-    # migration_cleanup_tasks, connector_configs and the payment tables have no foreign keys, so
-    # the cascade from companies misses them; system_runtime_state is the installation's own
-    # state (the star card dismissal), which a reset keeps.
-    tables = ", ".join(t for t in ("users", "companies", "migration_cleanup_tasks", "connector_configs",
-                                   "payment_closures", "payment_recoveries", "unmatched_payments",
-                                   "unmatched_refunds", "system_runtime_state")
-                       if t in Base.metadata.tables)
+    tables = ", ".join(worker_state_tables())
 
     async def _truncate():
         async with engine.begin() as conn:

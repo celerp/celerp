@@ -9,10 +9,29 @@ from collections.abc import Awaitable, Callable
 
 import httpx
 
+from celerp.connectors.execution import before_remote_call
+
 log = logging.getLogger(__name__)
 
 _DEFAULT_MAX_RETRIES = 3
 _DEFAULT_BACKOFF_BASE = 2.0
+_ERROR_TEXT_LIMIT = 300
+
+
+def raise_for_store_status(resp: httpx.Response, store_reason: Callable[[object], str | None]) -> None:
+    """Raise for a failed store reply, keeping the store's own reason (``store_reason``
+    of the parsed body, trimmed) so the person sees why it refused. Credentials travel
+    only in headers and never appear here."""
+    if resp.is_success:
+        return
+    try:
+        body = resp.json()
+    except ValueError:
+        body = None
+    text = f"HTTP {resp.status_code} {store_reason(body) or resp.reason_phrase or 'error'}"
+    if len(text) > _ERROR_TEXT_LIMIT:
+        text = text[:_ERROR_TEXT_LIMIT - 1] + "…"
+    raise httpx.HTTPStatusError(text, request=resp.request, response=resp)
 
 
 class RateLimitedClient:
@@ -25,6 +44,7 @@ class RateLimitedClient:
         backoff_base: float = _DEFAULT_BACKOFF_BASE,
         before_request: Callable[[str], Awaitable[None]] | None = None,
         public_only: bool = False,
+        require_execution: bool = False,
     ) -> None:
         transport = None
         if public_only:
@@ -39,6 +59,7 @@ class RateLimitedClient:
         self._max_retries = max_retries
         self._backoff_base = backoff_base
         self._before_request = before_request
+        self._require_execution = require_execution
 
     async def __aenter__(self) -> "RateLimitedClient":
         return self
@@ -74,6 +95,7 @@ class RateLimitedClient:
         retryable = method.upper() != "POST"
         retry_status = self._GET_RETRY_STATUS if method.upper() == "GET" else self._RETRY_STATUS
         for attempt in range(self._max_retries + 1):
+            before_remote_call(method, require_execution=self._require_execution)
             if self._before_request is not None:
                 await self._before_request(url)
             try:

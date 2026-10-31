@@ -18,6 +18,59 @@ class ConnectorUpgradeRequired(Exception):
     """The relay serves this connector only to a newer Celerp."""
 
 
+class ConnectRequired(Exception):
+    """Celerp Connect has ended, so the relay no longer serves this connector's credentials."""
+
+
+# Connectors a person connects with their own store key held on the relay; their
+# syncing pauses while Connect has ended.
+_CONNECT_PAUSES = frozenset({"woocommerce"})
+
+
+async def _note_connect(company_id: str, connector_name: str, *, lapsed: bool) -> None:
+    """Record on the connection whether Connect has ended, telling the company once per
+    lapse and withdrawing the notice when Connect is renewed."""
+    import uuid
+    from datetime import datetime, timezone
+
+    from celerp.connectors.ownership import lock_connection_row
+    from celerp.connectors.registry import service_name
+    from celerp.db import get_session_ctx
+    from celerp.notifications import service as notifications
+    from ui.i18n import t
+
+    service = service_name(connector_name)
+    title_key = "connectors.connect_lapsed_title"
+    async with get_session_ctx() as session:
+        config = await lock_connection_row(session, company_id, connector_name)
+        if config is None or (config.connect_lapsed_at is not None) == lapsed:
+            return
+        cid = uuid.UUID(str(company_id))
+        if lapsed:
+            config.connect_lapsed_at = datetime.now(timezone.utc)
+            await notifications.notify_standing(
+                session, cid, "integrations", t(title_key, "en", service=service),
+                t("connectors.connect_lapsed", "en", service=service),
+                action_url=f"/settings/connectors/{connector_name}",
+                i18n={"title": title_key, "body": "connectors.connect_lapsed",
+                      "params": {"service": service}},
+            )
+        else:
+            config.connect_lapsed_at = None
+            await notifications.clear_standing(
+                session, cid, "integrations", t(title_key, "en", service=service))
+        await session.commit()
+
+
+class RelayUnavailable(Exception):
+    """The relay could not be reached or answered with an error, so whether the connection
+    can run is not known now: the work is kept and retried, never dropped."""
+
+
+# Relay answers that the connection itself is missing or must be authorized again: final.
+_NOT_CONNECTED = frozenset({400, 401, 403, 404})
+
+
 class RelayStoreError(Exception):
     """The relay did not store a connector's API key; ``status`` is its reply, 0 if unreachable."""
 
@@ -59,6 +112,10 @@ async def fetch_context(
     *,
     ownership_session: "AsyncSession | None" = None,
 ) -> "ConnectorContext | None":
+    """The store context the relay holds for this connection. None when it cannot run: no
+    relay session, a connection the company does not own, or a relay answer that the
+    connection is missing or must be authorized again. RelayUnavailable when the relay could
+    not be reached or answered with an error, so the work is retried rather than dropped."""
     import httpx
 
     from celerp.connectors.base import ConnectorContext
@@ -94,21 +151,32 @@ async def fetch_context(
             )
     except Exception as exc:
         log.warning("relay token fetch for %s failed: %s", connector_name, exc)
-        return None
+        raise RelayUnavailable(str(exc)) from exc
     if r.status_code == 426:
         from celerp.connectors.registry import get as get_connector
 
         raise ConnectorUpgradeRequired(
             f"Update Celerp to continue syncing {get_connector(connector_name).display_name}."
         )
-    if r.status_code != 200:
+    if r.status_code == 402 and connector_name in _CONNECT_PAUSES:
+        from ui.i18n import t
+        from celerp.connectors.registry import service_name
+
+        await _note_connect(company_id, connector_name, lapsed=True)
+        raise ConnectRequired(t("connectors.connect_lapsed", service=service_name(connector_name)))
+    if r.status_code in _NOT_CONNECTED:
         log.debug("relay token fetch for %s returned %d", connector_name, r.status_code)
         return None
+    if r.status_code != 200:
+        log.warning("relay token fetch for %s returned %d", connector_name, r.status_code)
+        raise RelayUnavailable(f"relay returned {r.status_code}")
+    if connector_name in _CONNECT_PAUSES:
+        await _note_connect(company_id, connector_name, lapsed=False)
     try:
         data = r.json()
     except ValueError as exc:
         log.warning("relay token fetch for %s failed: %s", connector_name, exc)
-        return None
+        raise RelayUnavailable(str(exc)) from exc
 
     return ConnectorContext(
         company_id=company_id,

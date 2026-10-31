@@ -5,9 +5,7 @@
 
 from __future__ import annotations
 
-import hashlib
-
-from sqlalchemy import event, select, text
+from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import get_history
@@ -40,7 +38,7 @@ def noted(session, kind: str) -> list:
     return [key for k, key, _ in session.info.get(_PROOFS, ()) if k == kind]
 
 
-async def lock_company(session: AsyncSession, company_id) -> bool:
+async def lock_company(session: AsyncSession, *company_ids) -> bool:
     """Serialize a read-check-write section with every other holder for the company.
     Returns whether the company row was there to lock: a caller with no request
     authority to judge again (background work) must stop on False, as the company is
@@ -60,19 +58,46 @@ async def lock_company(session: AsyncSession, company_id) -> bool:
     KEY SHARE, so the upgrade never happens, while it still conflicts with another
     FOR NO KEY UPDATE.
 
+    It is also the company's chart lock: every change to an account row, and every
+    posting's read of the accounts it posts to, is made under it, so a change checks the
+    chart the previous one left and a posting's accounts stay as read until it commits.
+
     Canonical lock order: the module-state boundary when the caller holds it, then
     the company's module settings (judge_module_writes), then this lock, then any
-    Projection row locks. Never acquire it after SELECT ... FOR UPDATE on a Projection.
-    """
-    await judge_module_writes(session, company_id)
-    found = (await session.execute(
-        select(Company.id).where(Company.id == company_id).with_for_update(key_share=True)
-    )).first() is not None
-    await _judge_authority_again(session, company_id)
-    if found:
-        note(session, "locked", company_id)
-    return found
+    Projection or account row locks. Never acquire it after SELECT ... FOR UPDATE on a
+    Projection.
 
+    Several companies are locked in id order, so two callers taking an overlapping set
+    meet in the same order: each company's module settings first, then every company row,
+    and only then is the request judged again (its membership row is read under the lock),
+    so no company lock is waited on while a membership row is held. Returns whether every
+    company row was there.
+
+    A company whose lock this transaction already holds (holds_company_lock: taken here or
+    in a savepoint still open under it) is not asked for again: PostgreSQL holds the lock
+    until the transaction ends or that savepoint rolls back, which drops the proof with it.
+    """
+    ids = sorted(set(company_ids), key=str)
+    for company_id in ids:
+        await judge_module_writes(session, company_id)
+    held = [c for c in ids if holds_company_lock(session, c)]
+    taken = []
+    for company_id in ids:
+        if company_id not in held and (await session.execute(
+            select(Company.id).where(Company.id == company_id).with_for_update(key_share=True)
+        )).first() is not None:
+            taken.append(company_id)
+    for company_id in taken:
+        note(session, "locked", company_id)
+    for company_id in ids:
+        await _judge_authority_again(session, company_id)
+    return len(held) + len(taken) == len(ids)
+
+
+def holds_company(session, company_id) -> bool:
+    """Whether this transaction holds the company's row exclusively: its lock or its
+    deletion lock, which every company writer waits for."""
+    return any(str(key) == str(company_id) for kind in ("locked", "deleting") for key in noted(session, kind))
 
 async def judge_module_writes(session: AsyncSession, company_id) -> None:
     """Work inside a module was admitted before it ran (modules.boundary.module_use), and
@@ -109,8 +134,9 @@ async def judge_module_writes(session: AsyncSession, company_id) -> None:
 async def judge_without_company_lock(session: AsyncSession, company_id) -> None:
     """Judge the request again, as the company lock does, for the one write that must not
     wait for that lock: a migration cancel (migrations.request_cancel), saved while the
-    runner holds the lock through a batch. The caller's membership is read under its row
-    lock, so a role change in flight is waited for and a committed one is seen."""
+    runner holds the lock through a batch. Without the company lock the membership is
+    read as committed and not held (permissions.read_authority): a role change committed
+    first refuses the cancel, and one still in flight is ordered after it."""
     await _judge_authority_again(session, company_id)
 
 
@@ -133,24 +159,6 @@ async def _judge_authority_again(session: AsyncSession, company_id) -> None:
     except Exception as exc:
         session.info[_REFUSED] = exc
         raise
-
-
-async def lock_chart(session: AsyncSession, company_id) -> None:
-    """Serialize changes to the shape of the company's chart of accounts.
-
-    Adding an account, moving one, changing its type, switching it on or off, and
-    pointing a posting role at one each read other accounts (a parent, the children)
-    before writing. Taking this lock first makes those changes happen one at a time
-    for a company, so each one checks the chart the previous one left. Postings
-    never take it. A chart change is a company write, so this takes the company lock
-    first (judging the request again), then this lock; account rows come after. Held
-    until the transaction ends; SQLite writes one transaction at a time already.
-    """
-    await lock_company(session, company_id)
-    if session.get_bind().dialect.name != "postgresql":
-        return
-    key = int.from_bytes(hashlib.sha256(b"chart:" + str(company_id).encode()).digest()[:8], "big", signed=True)
-    await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": key})
 
 
 async def hold_company(session: AsyncSession, company_id) -> bool:

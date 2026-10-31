@@ -64,6 +64,27 @@ def _run_dir(env, run_id):
     return env["data_dir"] / "migration_runs" / str(run_id)
 
 
+async def _hand_run_to_another_user(engine, run_id) -> None:
+    """A new user is committed first; the run is then written under its company's lock, as
+    every write of a run row is."""
+    from sqlalchemy import update
+
+    from celerp.models.company import User
+    from celerp.models.migration import MigrationRun
+    from celerp.services.company_lock import lock_company
+
+    async with maker(engine)() as s:
+        other = User(email="other@example.com", name="Other")
+        s.add(other)
+        await s.commit()
+    run = await load_run(engine, run_id)
+    async with maker(engine)() as s:
+        await lock_company(s, run.company_id)
+        await s.execute(update(MigrationRun).where(MigrationRun.id == run_id, MigrationRun.company_id == run.company_id)
+                        .values(created_by_user_id=other.id))
+        await s.commit()
+
+
 async def _only_run(engine):
     from celerp.models.migration import MigrationRun
     from sqlalchemy import select
@@ -255,22 +276,13 @@ async def test_concurrent_start_from_scan_starts_one_migration(real_client, real
 
 @pytest.mark.asyncio
 async def test_a_scan_claimed_by_another_user_cannot_start_a_run(real_client, real_engine, migration_env):
-    from celerp.models.migration import MigrationRun
-    from sqlalchemy import update
-
     admin_token = await register_admin(real_client)
     scan_token = await _scan(real_client, admin_token)
     r = await _start(real_client, admin_token, scan_token)
     assert r.status_code == 201
     run_id = uuid.UUID(r.json()["run_id"])
-    async with maker(real_engine)() as s:
-        # Reassign the run's creator: the claim alone never hands a run to someone else.
-        from celerp.models.company import User
-        other = User(email="other@example.com", name="Other")
-        s.add(other)
-        await s.flush()
-        await s.execute(update(MigrationRun).where(MigrationRun.id == run_id).values(created_by_user_id=other.id))
-        await s.commit()
+    # Reassign the run's creator: the claim alone never hands a run to someone else.
+    await _hand_run_to_another_user(real_engine, run_id)
     r = await _start(real_client, admin_token, scan_token)
     assert r.status_code == 409 and r.json()["detail"] == t("migration.err_scan_already_started", "en")
     assert await count(real_engine, "migration_runs") == 1
@@ -349,11 +361,6 @@ async def test_bootstrap_lost_response_recovers_through_login(real_client, real_
 @pytest.mark.asyncio
 async def test_reading_a_started_scan_names_its_run_to_its_creator_only(real_client, real_engine, migration_env):
     """After a lost start response the wizard reads its scan again and is sent to the run."""
-    from sqlalchemy import update
-
-    from celerp.models.company import User
-    from celerp.models.migration import MigrationRun
-
     admin_token = await register_admin(real_client)
     scan_token = await _scan(real_client, admin_token)
     r = await _start(real_client, admin_token, scan_token)
@@ -362,13 +369,7 @@ async def test_reading_a_started_scan_names_its_run_to_its_creator_only(real_cli
     r = await real_client.post("/migrations/scan/read", headers=auth(admin_token), json=read)
     assert r.status_code == 200 and r.json() == {"run_id": run_id}, r.text
 
-    async with maker(real_engine)() as s:
-        other = User(email="other@example.com", name="Other")
-        s.add(other)
-        await s.flush()
-        await s.execute(update(MigrationRun).where(MigrationRun.id == uuid.UUID(run_id))
-                        .values(created_by_user_id=other.id))
-        await s.commit()
+    await _hand_run_to_another_user(real_engine, uuid.UUID(run_id))
     r = await real_client.post("/migrations/scan/read", headers=auth(admin_token), json=read)
     assert r.status_code == 410, r.text
 

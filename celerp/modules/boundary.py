@@ -176,8 +176,9 @@ def require_on(settings: dict | None, *pkg_names: str) -> None:
             raise ModuleOff(name, starting=True)
 
 
-async def company_settings(company_id) -> dict | None:
-    """The stored settings of *company_id*, None when there is no such company."""
+async def company_settings(company_id, session=None) -> dict | None:
+    """The stored settings of *company_id*, None when there is no such company. Read on
+    *session* when given, so a caller holding one never opens a second connection."""
     import uuid
 
     from celerp.models.company import Company
@@ -185,9 +186,11 @@ async def company_settings(company_id) -> dict | None:
         cid = uuid.UUID(str(company_id))
     except ValueError:
         return None
-    async with get_session_ctx() as session:
-        company = await session.get(Company, cid)
-        return dict(company.settings or {}) if company is not None else None
+    if session is None:
+        async with get_session_ctx() as own:
+            return await company_settings(cid, own)
+    company = await session.get(Company, cid)
+    return dict(company.settings or {}) if company is not None else None
 
 
 def context_company(*args: Any, **kwargs: Any) -> str | None:
@@ -221,6 +224,24 @@ def modules_in_use(company_id) -> frozenset[str]:
     return _IN_USE.get().get(str(company_id), frozenset())
 
 
+async def _admit(cid: str, fresh: list[str], counted: list, *, first: bool, pkg_names) -> None:
+    """Admit work in *fresh* for company *cid* (``module_use``): share each module's gate,
+    and the module-state boundary for the company's outermost work, judge every one of
+    *pkg_names* against the settings read under them, and count the work as running
+    (into *counted*) before the gates are released, so a turn-off settles for it."""
+    async with get_session_ctx() as session:
+        for name in fresh:
+            with refused_past_lock_timeout(ModuleBusy(name)):
+                await share_module_gate(session, cid, name)
+        if first:
+            with refused_past_lock_timeout(ModuleBusy(fresh[0])):
+                await share_module_state(session)
+        require_on(await company_settings(cid, session), *pkg_names)
+        for name in fresh:
+            _RUNNING[cid, name] += 1
+            counted.append((cid, name))
+
+
 @asynccontextmanager
 async def module_use(company_id, *pkg_names: str):
     """Run the block as work inside *pkg_names* for *company_id*: refused with ModuleOff,
@@ -242,17 +263,10 @@ async def module_use(company_id, *pkg_names: str):
     refusals_token = _REFUSALS.set([]) if refusals is None else None
     try:
         if fresh:
-            async with get_session_ctx() as session:
-                for name in fresh:
-                    with refused_past_lock_timeout(ModuleBusy(name)):
-                        await share_module_gate(session, cid, name)
-                if cid not in outer:
-                    with refused_past_lock_timeout(ModuleBusy(fresh[0])):
-                        await share_module_state(session)
-                require_on(await company_settings(cid), *pkg_names)
-                for name in fresh:
-                    _RUNNING[cid, name] += 1
-                    counted.append((cid, name))
+            from celerp.connectors.execution import unfenced_reads
+            # Read only, and before the lease rows: the gate and module state rank first.
+            with unfenced_reads():
+                await _admit(cid, fresh, counted, first=cid not in outer, pkg_names=pkg_names)
         else:
             require_on(await company_settings(cid), *pkg_names)
         judge_writes(cid, *pkg_names)

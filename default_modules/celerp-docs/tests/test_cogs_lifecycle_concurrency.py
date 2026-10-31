@@ -22,8 +22,8 @@ from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.services import auto_je
 from celerp.services.lot_origin import recognize_opening_lots
-from test_helpers import invoices_booking_one_lot_twice
-from test_memo_lifecycle_concurrency import _barcode, _cleanup, _factory, _race, _seed_company
+from test_helpers import invoices_booking_one_lot_twice, remove_company
+from test_memo_lifecycle_concurrency import _barcode, _factory, _race, _seed_company
 
 
 async def _lot(factory, company_id, user, cost_total: float = 100.0) -> str:
@@ -140,7 +140,7 @@ async def test_finalize_sent_again_while_the_invoice_ships_both_finish(_db_engin
             isinstance(refinalized, HTTPException) and refinalized.status_code in (409, 422)), refinalized
         assert await _doc_cogs(factory, company_id, doc) == 100.0
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 @pytest.mark.asyncio
@@ -187,7 +187,7 @@ async def test_cost_correction_during_void_or_revert_leaves_no_cogs_behind(_db_e
         assert await _doc_status(factory, company_id, doc) == status
         assert await _doc_cogs(factory, company_id, doc) == 0.0
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 @pytest.mark.asyncio
@@ -210,7 +210,7 @@ async def test_cost_correction_reaches_the_invoice_that_costed_the_lot(_db_engin
         # uncosted until goods ship on it, so the correction does not reach it.
         assert await _doc_cogs(factory, company_id, waiting) == 0.0
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 @pytest.mark.asyncio
@@ -229,4 +229,4 @@ async def test_two_invoices_finalized_at_once_cost_a_lot_once(_db_engine):
         await _race(finalize(), finalize())
         assert sorted([await _doc_cogs(factory, company_id, d) for d in docs]) == [0.0, 100.0]
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)

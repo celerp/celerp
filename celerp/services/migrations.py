@@ -35,7 +35,7 @@ from functools import lru_cache, partial
 from fastapi import HTTPException
 from sqlalchemy import Select, cast, delete, select, text, update
 from sqlalchemy.dialects.postgresql import JSONB, insert as pg_insert
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp import db_catalog
@@ -48,6 +48,7 @@ from celerp.importers.adapters.base import (
     SourceRevisionError,
 )
 from celerp.config import read_config
+from celerp.db import sqlstate
 from celerp.events.engine import find_event_by_idempotency, write_period_lock
 from celerp.importers.adapters.registry import get_adapter
 from celerp.importers.schema import (
@@ -89,11 +90,12 @@ from celerp.services import migration_templates
 from celerp.services import posting_readiness
 from celerp.services.auth import first_usable_company_link, normalize_role
 from celerp.services.company_files import delete_company_data
+from celerp.services.company_reset import BUSY, lock_without_waiting
 from celerp.services.company_lock import judge_without_company_lock, lock_company
 from celerp.services.lot_origin import place_company_stock
 from celerp.services.csv_export import csv_safe
 from celerp.services.permissions import act_for, role_has_permission
-from celerp.services.provisioning import add_missing_required_defaults
+from celerp.services.provisioning import add_missing_required_defaults, hold_owner
 from ui.i18n import current_lang, set_lang, t
 
 logger = logging.getLogger(__name__)
@@ -390,7 +392,7 @@ def _sample_sha256() -> str | None:
 
 
 def _lock_key(run_id: uuid.UUID) -> str:
-    return f"migration:{run_id}"
+    return f"migration-run:{run_id}"
 
 
 async def _try_xact_lock(session: AsyncSession, run_id: uuid.UUID) -> bool:
@@ -465,12 +467,13 @@ async def claim_source(session: AsyncSession, run_id: uuid.UUID, *, token: str |
     Idempotent, so a repeated start and startup recovery both finish a start that died
     part way; only a ``preparing`` run is changed. Returns whether this call started the
     run, so exactly one caller schedules the runner. A source found in neither place
-    fails the run. Locks in canonical order: the run's company, the scan claim, the run row."""
+    fails the run. Locks in canonical order, as a start takes them: the scan claim, the run's
+    company, the run row."""
     run = await session.get(MigrationRun, run_id)
     if run is None:
         return False
-    await lock_company(session, run.company_id)
     await lock_scan_claim(session, run.scan_claim_sha256)
+    await lock_company(session, run.company_id)
     await _lock_run(session, run, company=False)
     if run.status != _S.PREPARING:
         await session.commit()
@@ -563,10 +566,12 @@ async def get_owned_migration_run(session: AsyncSession, run_id: uuid.UUID, user
 
 
 async def _lock_run(session: AsyncSession, run: MigrationRun, *, company: bool = True) -> None:
-    """Canonical lock order: the company first, then the run row."""
+    """Canonical lock order: the company first, then the run row, named within its company."""
     if company:
         await lock_company(session, run.company_id)
-    await session.refresh(run, with_for_update=True)
+    (await session.execute(select(MigrationRun)
+                           .where(MigrationRun.id == run.id, MigrationRun.company_id == run.company_id)
+                           .with_for_update(key_share=True).execution_options(populate_existing=True))).scalar_one()
 
 
 async def request_start(session: AsyncSession, run: MigrationRun) -> None:
@@ -680,10 +685,12 @@ def _phase_entry(state: dict, phase: MigrationPhase) -> dict:
     return {"status": "pending", "cursor": 0, "created": 0, "skipped": 0, "errors": 0, **state.get(phase.value, {})}
 
 
-async def _checkpoint(session: AsyncSession, run_id: uuid.UUID, phase: MigrationPhase, state: dict) -> str:
-    """Persist progress (phase state, current phase, heartbeat only) and return the live status."""
+async def _checkpoint(session: AsyncSession, company_id: uuid.UUID, run_id: uuid.UUID, phase: MigrationPhase,
+                      state: dict) -> str:
+    """Persist progress (phase state, current phase, heartbeat only) and return the live status.
+    The run is named by its company as well, so a batch's write is seen under its company's lock."""
     return (await session.execute(
-        update(MigrationRun).where(MigrationRun.id == run_id)
+        update(MigrationRun).where(MigrationRun.id == run_id, MigrationRun.company_id == company_id)
         .values(phase_state=state, current_phase=phase.value, heartbeat_at=datetime.now(timezone.utc))
         .returning(MigrationRun.status)
     )).scalar_one()
@@ -703,7 +710,7 @@ async def _stop_if_cancelled(maker, run_id: uuid.UUID, status: str) -> bool:
         return False
     if status == _S.CANCEL_REQUESTED:
         async with maker() as s:
-            run = await s.get(MigrationRun, run_id, with_for_update=True)
+            run = await s.get(MigrationRun, run_id, with_for_update={"key_share": True})
             await _set_status(s, run, _S.CANCELLED)
             await s.commit()
     return True
@@ -746,7 +753,7 @@ def _failure_message(exc: Exception) -> str:
 async def _fail(maker, run_id: uuid.UUID, phase: MigrationPhase, cursor: int, exc: Exception) -> None:
     errors, details = _failure_details(exc)
     async with maker() as s:
-        run = await s.get(MigrationRun, run_id, with_for_update=True)
+        run = await s.get(MigrationRun, run_id, with_for_update={"key_share": True})
         state = dict(run.phase_state)
         state[phase.value] = {**_phase_entry(state, phase), "status": "failed", "cursor": cursor, "errors": errors}
         run.phase_state = state
@@ -833,7 +840,7 @@ async def _run_locked(run_id: uuid.UUID) -> None:
         if cursor >= len(phase_steps):
             state[phase.value] = {**entry, "status": "done"}
             async with maker() as s:
-                status = await _checkpoint(s, run_id, phase, state)
+                status = await _checkpoint(s, company_id, run_id, phase, state)
                 await s.commit()
             if await _stop_if_cancelled(maker, run_id, status):
                 return
@@ -848,12 +855,17 @@ async def _run_locked(run_id: uuid.UUID) -> None:
                     records = [b.record for b in batch]
                     result = await batch[0].sink.import_batch(context, records)
                     validate_batch_result(records, result)  # any rejected record rolls the batch back
-                    await _record_mappings(s, run_id, batch[0].group, result.mappings, records)
                     advanced = cursor + len(batch)
                     written = {**entry, "cursor": advanced, "created": entry["created"] + result.created,
                                "skipped": entry["skipped"] + result.skipped, "errors": 0,
                                "status": "done" if advanced >= len(phase_steps) else "running"}
-                    status = await _checkpoint(s, run_id, phase, {**state, phase.value: written})
+                    # The run row, then the linked files' cleanup tasks, then the mappings: rank order, one commit.
+                    status = await _checkpoint(s, company_id, run_id, phase, {**state, phase.value: written})
+                    if context.linked_cleanup_tasks:
+                        await s.execute(delete(MigrationCleanupTask)
+                                        .where(MigrationCleanupTask.company_id == company_id,
+                                               MigrationCleanupTask.id.in_(context.linked_cleanup_tasks)))
+                    await _record_mappings(s, run_id, batch[0].group, result.mappings, records)
                     await s.commit()
             except Exception as exc:
                 # The cursor the database last confirmed: a commit whose outcome is unknown is
@@ -991,7 +1003,7 @@ async def _reconcile_run(maker, run_id: uuid.UUID, state: dict, expected: list[t
 
     Completeness is checked first: matching totals cannot show a lost record."""
     async with maker() as s:
-        run = await s.get(MigrationRun, run_id, with_for_update=True)
+        run = await s.get(MigrationRun, run_id, with_for_update={"key_share": True})
         if run.status != _S.RUNNING:
             if run.status == _S.CANCEL_REQUESTED:
                 await _set_status(s, run, _S.CANCELLED)
@@ -1015,13 +1027,13 @@ async def _reconcile_run(maker, run_id: uuid.UUID, state: dict, expected: list[t
             report = await _verification(s, run)
         except Exception as exc:
             await s.rollback()
-            run = await s.get(MigrationRun, run_id, with_for_update=True, populate_existing=True)
+            run = await s.get(MigrationRun, run_id, with_for_update={"key_share": True}, populate_existing=True)
             run.reconciliation = {}
             await s.commit()
             await _fail(maker, run_id, _P.RECONCILIATION, 0, exc)
             return
         await s.rollback()  # measurement only; nothing it read is kept locked
-        run = await s.get(MigrationRun, run_id, with_for_update=True, populate_existing=True)
+        run = await s.get(MigrationRun, run_id, with_for_update={"key_share": True}, populate_existing=True)
         ready = report["blockers"] == 0 or reviewable_differences(report)
         state[_P.RECONCILIATION.value] = {**_phase_entry(state, _P.RECONCILIATION),
                                           "status": "done" if ready else "failed"}
@@ -1168,8 +1180,23 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
     """Delete a staged company and its runs, then their files; returns where the user goes next.
 
     The files are deleted after the commit through a cleanup task committed with the
-    deletes, so a storage failure never blocks the user and is retried at startup."""
-    await _lock_run(session, run)
+    deletes, so a storage failure never blocks the user and is retried at startup.
+    The run is removed, so it is locked FOR UPDATE (its key) up front, never upgraded
+    from the NO KEY UPDATE of _lock_run after the company's other rows are deleted. A
+    bootstrap discard deletes its owner's login last, so it holds the login before the
+    company (hold_owner): the delete then waits only on the login's key. The company's rows
+    go under the reset's locks: the connector maintenance fence before the company, as a
+    reset takes it, then every table it can read, taken without waiting (company_reset.lock_without_waiting)."""
+    from celerp.connectors.ownership import lock_connector_maintenance
+
+    bootstrap = bool(run.source_summary.get("bootstrap"))
+    if bootstrap:
+        await hold_owner(session, run.created_by_user_id)
+    await lock_connector_maintenance(session)
+    await lock_company(session, run.company_id)
+    (await session.execute(select(MigrationRun)
+                           .where(MigrationRun.id == run.id, MigrationRun.company_id == run.company_id)
+                           .with_for_update().execution_options(populate_existing=True))).scalar_one()
     company = await session.get(Company, run.company_id)
     if run.status == _S.COMPLETED or not company.is_migration_staged:
         raise MigrationError(409, t(NO_UNFINISHED))
@@ -1179,6 +1206,21 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
         await db_catalog.pin(session)
     except db_catalog.TableElsewhere as exc:
         raise MigrationError(409, _changed_outside("partition_key", exc.table)) from None
+    # A transaction holding a row of one of these tables may go on to share the company's
+    # key, held here, so they are taken without waiting. A table this connection cannot read
+    # is never deleted from: one holding records of the company is refused below.
+    schema = await db_catalog.read(session)
+    hidden = set(await db_catalog.hidden(session))
+    try:
+        await lock_without_waiting(session, {k: v for k, v in schema.items() if k not in hidden},
+                                   str(run.company_id))
+    except DBAPIError as exc:
+        if sqlstate(exc) not in BUSY:
+            raise
+        raise MigrationError(409, refusal(
+            "migration.discard_busy",
+            "This migration could not be discarded because other changes were being saved at the "
+            "same time. Nothing was deleted. Try again.")) from None
     await _refuse_changed_outside(session)
     present = await company_tables(session)
     for table in present:
@@ -1197,7 +1239,6 @@ async def discard(session: AsyncSession, run: MigrationRun) -> str:
     run_ids = list((await session.scalars(
         select(MigrationRun.id).where(MigrationRun.company_id == company.id))).all())
     owner_id = run.created_by_user_id
-    bootstrap = bool(run.source_summary.get("bootstrap"))
     # The company task removes every file of the company, the staged ones included.
     await session.execute(delete(MigrationCleanupTask).where(
         MigrationCleanupTask.company_id == company.id, MigrationCleanupTask.attachment.is_not(None)))
@@ -1367,7 +1408,7 @@ async def mark_stale_runs_interrupted(session: AsyncSession, company_id: uuid.UU
     query = select(MigrationRun).where(
         MigrationRun.status.in_([_S.RUNNING.value, _S.CANCEL_REQUESTED.value, _S.RECONCILING.value]),
         MigrationRun.heartbeat_at < cutoff,
-    ).with_for_update(skip_locked=True)
+    ).with_for_update(key_share=True, skip_locked=True)
     if company_id is not None:
         query = query.where(MigrationRun.company_id == company_id)
     marked = 0

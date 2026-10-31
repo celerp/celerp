@@ -176,7 +176,7 @@ async def test_historical_run_with_a_dangling_component_still_rebuilds(client, s
         data=_order("item:gone", s["product"]), actor_id=None, location_id=None, source="legacy",
         idempotency_key=str(uuid.uuid4()), metadata_={},
     ))
-    await session.flush()
+    await session.commit()
     await lock_company(session, company_id)
     await ProjectionEngine.rebuild(session, company_id)
     await session.flush()

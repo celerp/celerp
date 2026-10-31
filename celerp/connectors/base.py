@@ -7,18 +7,20 @@ Each connector (Shopify, QuickBooks, Xero, ...) implements ConnectorBase.
 Connectors do NOT hold OAuth tokens directly - tokens are brokered by the
 CelERP relay service and injected at call time via ConnectorContext.
 
-Sync direction:
+Sync direction is set per kind of record (see EntityFlow):
   - INBOUND: external platform -> Celerp (pull products, orders, contacts)
   - OUTBOUND: Celerp -> external platform (push items, invoices, inventory)
   - BOTH: bidirectional
+  - OFF: not synced
 """
 from __future__ import annotations
 
 import base64
 import hashlib
 import hmac
+import uuid
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any
@@ -28,6 +30,7 @@ class SyncDirection(str, Enum):
     INBOUND = "inbound"
     OUTBOUND = "outbound"
     BOTH = "both"
+    OFF = "off"
 
 
 class SyncEntity(str, Enum):
@@ -64,15 +67,103 @@ OUTBOUND_ENTITIES = (
 )
 
 
-def entity_allowed(entity: str, direction: SyncDirection) -> bool:
-    """Check whether an entity sync is allowed given the configured direction."""
-    if direction == SyncDirection.BOTH:
-        return True
-    if direction == SyncDirection.INBOUND:
-        return entity in INBOUND_ENTITIES
-    if direction == SyncDirection.OUTBOUND:
-        return entity in OUTBOUND_ENTITIES
-    return False
+@dataclass(frozen=True)
+class EntityFlow:
+    """One kind of record a person sets a direction for, and the syncs that carry it
+    each way: ``inbound`` names INBOUND_ENTITIES pulled from the platform,
+    ``outbound`` names OUTBOUND_ENTITIES pushed to it."""
+    inbound: tuple[str, ...] = ()
+    outbound: tuple[str, ...] = ()
+
+    def allowed(self) -> tuple[SyncDirection, ...]:
+        """The directions this record can be set to: the ways the connector can carry
+        it, both when it carries it each way, and always Off."""
+        values = []
+        if self.inbound:
+            values.append(SyncDirection.INBOUND)
+        if self.outbound:
+            values.append(SyncDirection.OUTBOUND)
+        if self.inbound and self.outbound:
+            values.append(SyncDirection.BOTH)
+        return (*values, SyncDirection.OFF)
+
+    def widest(self) -> SyncDirection:
+        """The direction carrying the record every way the connector can."""
+        return self.allowed()[-2] if len(self.allowed()) > 1 else SyncDirection.OFF
+
+    def runs(self, direction: SyncDirection) -> tuple[str, ...]:
+        """The syncs this record runs when set to ``direction``."""
+        pulls = direction in (SyncDirection.INBOUND, SyncDirection.BOTH)
+        pushes = direction in (SyncDirection.OUTBOUND, SyncDirection.BOTH)
+        return (*(self.inbound if pulls else ()), *(self.outbound if pushes else ()))
+
+
+class DirectionError(ValueError):
+    """A record was set to a direction its connector cannot sync it in."""
+
+
+def _direction_of(directions: dict | None, key: str) -> SyncDirection:
+    try:
+        return SyncDirection((directions or {}).get(key, SyncDirection.OFF.value))
+    except ValueError:
+        return SyncDirection.OFF
+
+
+def entity_allowed(connector: "ConnectorBase", entity: str, directions: dict | None) -> bool:
+    """Whether the sync ``entity`` runs under these per-record directions."""
+    return any(
+        entity in flow.runs(_direction_of(directions, key))
+        for key, flow in connector.entity_flows.items()
+    )
+
+
+def direction_label(connector: "ConnectorBase", direction: SyncDirection, lang: str | None = None) -> str:
+    """How a direction reads to a person, naming the platform."""
+    from ui.i18n import t
+
+    return t(f"connectors.flow_dir_{direction.value}", lang, service=connector.display_name)
+
+
+def entity_flow_label(key: str, lang: str | None = None) -> str:
+    """The name a person knows one kind of record by."""
+    from ui.i18n import t
+
+    return t(f"connectors.flow_{key}", lang)
+
+
+def validate_directions(connector: "ConnectorBase", directions: dict) -> dict[str, str]:
+    """Return a full per-record direction map for ``connector``, every record named.
+    Raises DirectionError naming the record and the direction it cannot take."""
+    from ui.i18n import t
+
+    unknown = set(directions) - set(connector.entity_flows)
+    if unknown:
+        raise DirectionError(t("connectors.err_unknown_flow", entity=", ".join(sorted(unknown)),
+                               service=connector.display_name))
+    out: dict[str, str] = {}
+    for key, flow in connector.entity_flows.items():
+        raw = directions.get(key, SyncDirection.OFF.value)
+        try:
+            value = SyncDirection(raw)
+        except ValueError:
+            value = None
+        if value not in flow.allowed():
+            raise DirectionError(t(
+                "connectors.err_flow_direction", entity=entity_flow_label(key),
+                direction=direction_label(connector, value) if value else str(raw),
+                service=connector.display_name,
+            ))
+        out[key] = value.value
+    return out
+
+
+def restored_directions(connector: "ConnectorBase") -> dict[str, str]:
+    """A company restored from a backup pushes nothing outward until its owner says so:
+    each record that can come in does, the rest are Off."""
+    return {
+        key: (SyncDirection.INBOUND if flow.inbound else SyncDirection.OFF).value
+        for key, flow in connector.entity_flows.items()
+    }
 
 
 @dataclass
@@ -82,6 +173,186 @@ class ConnectorContext:
     access_token: str          # short-lived token from relay service; empty for connectors whose calls go through the relay
     store_handle: str | None = None   # e.g. Shopify myshopify domain
     extra: dict[str, Any] | None = None
+
+
+@dataclass
+class RemoteProduct:
+    """One sellable product as a platform holds it (a variation counts as its own),
+    read the same way for a sync and for the first sync's preview."""
+    key: str                    # the platform identity: product id, or "product:variation"
+    product_id: str
+    variation_id: str | None
+    sku: str                    # "" when the platform has none
+    name: str
+    description: str | None
+    price: float | None
+    modified: datetime | None   # when the platform last changed it
+    stock: float | None = None  # the platform's stock count; None when it does not count it
+    extra: dict = field(default_factory=dict)  # platform fields only its sync reads
+
+
+@dataclass
+class RemoteOrder:
+    """One order (or invoice) as a platform holds it, for the first sync's preview.
+    ``posts`` is whether importing it issues an invoice that posts revenue and stock."""
+    id: str
+    number: str
+    status: str
+    created: datetime | None
+    total: float | None
+    currency: str | None
+    posts: bool
+
+
+@dataclass
+class ExternalImportRecord:
+    """What a connector's product import did, for its attention list and its undo.
+
+    ``created``: (entity id, ledger key of its creation) for each item it created.
+    ``linked``: {"entity_id", "remote", "restore", "applied"} for each existing item it
+    newly linked by SKU: ``remote`` the store product's identity it linked to, ``restore``
+    the item's values before the store's replaced them and ``applied`` the store's values
+    written (both None when the item kept its own). A first sync adds ``files``, the ids
+    of the files it pulled onto the item, and its undo an ``outcome``. ``conflicts``: {"entity_id", "fields"} for each linked item
+    whose field changed in both systems, each field with both values.
+
+    ``first_sync``: (company id, connector) when the import is that connection's first
+    sync. Each creation and link is then recorded on the first sync's import batch and
+    undo record in the transaction that makes it (``hold`` at its start, ``attribute``
+    before its commit), so a stop between two writes loses neither."""
+    created: list[tuple[str, str]] = field(default_factory=list)
+    linked: list[dict] = field(default_factory=list)
+    conflicts: list[dict] = field(default_factory=list)
+    first_sync: tuple[str, str] | None = None
+
+    async def hold(self, session) -> None:
+        """At the start of a write this record will attribute: the company, then the first
+        sync's record (lock order: company, first sync, the write's own rows, import batch)."""
+        if self.first_sync is not None:
+            from celerp.connectors.sync_runner import _locked_first_sync
+
+            await _locked_first_sync(session, *self.first_sync)
+
+    async def created_here(self, session, entity_id: str | None) -> bool:
+        """Whether this first sync created the item, read in the transaction ``hold`` began:
+        its import batch lists it. The batch is only added to under the first sync's record,
+        which the caller holds, so it is read without a lock of its own."""
+        if self.first_sync is None or entity_id is None:
+            return False
+        from celerp.connectors.sync_runner import _locked_first_sync
+        from celerp.models.import_batch import ImportBatch
+
+        row = await _locked_first_sync(session, *self.first_sync)
+        batch = None if row is None or row.batch_id is None else await session.get(ImportBatch, uuid.UUID(row.batch_id))
+        return batch is not None and entity_id in batch.entity_ids
+
+    async def attribute(self, session, *, created: tuple[str, str] | None = None,
+                        linked: dict | None = None) -> None:
+        """Record one creation or link in the caller's transaction, which ``hold`` began.
+        Recording one already there changes nothing; a link made again after its undo
+        settled is a new entry, so its own undo restores it."""
+        if created is not None:
+            self.created.append(created)
+        if linked is not None:
+            self.linked.append(linked)
+        if self.first_sync is None:
+            return
+        from celerp.connectors.sync_runner import _first_sync_batch, _locked_first_sync
+
+        row = await _locked_first_sync(session, *self.first_sync)
+        if row is None:  # the connection is gone, and its first sync with it
+            return
+        if linked is not None:
+            undo = dict(row.undo or {})
+            links = list(undo.get("links") or [])
+            if not any(_open_link(link, linked["entity_id"], linked.get("remote")) for link in links):
+                undo["links"] = [*links, linked]
+                row.undo = undo
+        batch = await _first_sync_batch(session, row) if created is not None else None
+        if batch is not None and created[0] not in batch.entity_ids:
+            batch.entity_ids = [*batch.entity_ids, created[0]]
+            batch.idempotency_keys = [*batch.idempotency_keys, created[1]]
+            batch.row_count = len(batch.entity_ids)
+
+    async def attribute_files(self, entity_id: str) -> None:
+        """In a short transaction of its own, after the files were pulled: the files this
+        first sync pulled onto an item it created join its import batch, and those it pulled
+        onto an item it linked join that link's undo record. A file is this first sync's when
+        its attachment names the first sync (first_sync_metadata), never by its key, so a file
+        an earlier connection pulled stays out and a pull a stop interrupted is recorded on the retry."""
+        if self.first_sync is None:
+            return
+
+        import sqlalchemy as sa
+
+        from celerp.connectors.sync_runner import _first_sync_batch, _locked_first_sync
+        from celerp.db import get_session_ctx
+        from celerp.models.ledger import LedgerEntry
+
+        async with get_session_ctx() as session:
+            row = await _locked_first_sync(session, *self.first_sync)
+            if row is None:
+                return
+            batch = await _first_sync_batch(session, row)
+            links = list((row.undo or {}).get("links") or [])
+            at = next((i for i, link in enumerate(links) if _open_link(link, entity_id)), None)
+            if (batch is None or entity_id not in batch.entity_ids) and at is None:
+                return
+            pulled = (await session.execute(sa.select(LedgerEntry.idempotency_key, LedgerEntry.data).where(
+                LedgerEntry.company_id == uuid.UUID(str(row.company_id)), LedgerEntry.entity_id == entity_id,
+                LedgerEntry.event_type == "item.file.attached",
+                LedgerEntry.metadata_[FIRST_SYNC_METADATA_KEY].as_string() == row.operation_id,
+            ).order_by(LedgerEntry.id))).all()
+            if at is None:
+                new = [key for key, _data in pulled if key not in batch.idempotency_keys]
+                if new:
+                    batch.idempotency_keys = [*batch.idempotency_keys, *new]
+            else:
+                files = list(links[at].get("files") or [])
+                new = [data["file_id"] for _key, data in pulled if data["file_id"] not in files]
+                if new:
+                    links[at] = {**links[at], "files": [*files, *new]}
+                    row.undo = {**row.undo, "links": links}
+            if new:
+                await session.commit()
+
+
+def _open_link(link: dict, entity_id: str, remote: dict | None = None) -> bool:
+    """Whether an undo record's link is the one for this item (and store product, when
+    given) that its undo has not settled yet."""
+    return (link["entity_id"] == entity_id and "outcome" not in link
+            and (remote is None or link.get("remote") == remote))
+
+
+@dataclass
+class FirstSync:
+    """A first sync's choices for its product pass, and what that pass did.
+
+    ``match``: "keep" links products that match by SKU keeping Celerp's values,
+    "take" replaces them with the platform's. ``create``: whether products new to
+    Celerp are created (only when products come in). ``batch_id``: the import batch
+    the items it creates join, so its undo removes them with their opening stock.
+    ``record``: the ExternalImportRecord the pass fills in, bound to the first sync.
+    ``operation``: the first sync's own id, put on the creation of each document it
+    imports (``first_sync_metadata``) so its summary lists them.
+    ``completed``: the resources an earlier attempt completed, which this one skips.
+    ``reviewed``: the store products its preview showed, remote key -> the item each links
+    to (None: created); the first sync acts on these only."""
+    match: str
+    create: bool
+    batch_id: str | None
+    record: ExternalImportRecord
+    operation: str
+    reviewed: dict[str, str | None]
+    completed: frozenset[str] = frozenset()
+
+
+FIRST_SYNC_METADATA_KEY = "first_sync"
+
+
+def first_sync_metadata(operation: str | None) -> dict:
+    """The metadata of a record's creating event naming the first sync that imported it."""
+    return {FIRST_SYNC_METADATA_KEY: operation} if operation else {}
 
 
 @dataclass
@@ -101,6 +372,10 @@ class SyncResult:
     # The run did not go ahead because modules were being changed (ModuleBusy): the same
     # run can succeed when tried again.
     busy: bool = False
+    # The run was refused for a reason only the company can clear (a module turned off, the
+    # direction, a changed store, a lapsed connection, no such sync): kept on the history as
+    # an actionable failure, never retried on its own.
+    final: bool = False
 
     @property
     def ok(self) -> bool:
@@ -138,10 +413,23 @@ class ConnectorBase(ABC):
 
     name: str
     display_name: str
-    supported_entities: list[SyncEntity]
-    direction: SyncDirection
+    # The kinds of record a person sets a direction for, in the order they are shown.
+    entity_flows: dict[str, EntityFlow]
     category: ConnectorCategory
     conflict_strategy: dict[str, str]
+
+    @property
+    def default_directions(self) -> dict[str, str]:
+        """Directions a new connection starts with: every record each way the connector
+        can carry it. A connector whose first sync should start narrower overrides this."""
+        return {key: flow.widest().value for key, flow in self.entity_flows.items()}
+
+    # A person reviews and starts this connector's first sync; until it completes,
+    # nothing runs on a schedule, from a webhook or from the outbound queue.
+    reviewed_first_sync: bool = False
+
+    # The document state key naming the platform record an imported invoice came from.
+    imported_doc_marker: str | None = None
 
     # Order and customer numbers are only unique within one store, so imported
     # records are tied to the store they came from (see bind_connector_store).
@@ -151,6 +439,15 @@ class ConnectorBase(ABC):
         """True when the store in ctx still holds most of these imported
         document states. Connectors that cannot tell return False."""
         return False
+
+    async def preview_products(self, ctx: ConnectorContext) -> list[RemoteProduct]:
+        """Every product the platform holds, read only. Override if products sync."""
+        return []
+
+    async def preview_orders(self, ctx: ConnectorContext, orders_from: datetime) -> list[RemoteOrder]:
+        """The platform's orders placed on or after ``orders_from``, read only.
+        Override if orders sync."""
+        return []
 
     async def before_outbound(self, ctx: ConnectorContext, now: datetime | None = None) -> None:
         """Called once before a run sends anything, e.g. to warn about expiring credentials."""
@@ -192,9 +489,22 @@ class ConnectorBase(ABC):
 
     # -- Webhook lifecycle (override for e-commerce connectors) ----------------
 
-    async def register_webhooks(self, ctx: ConnectorContext, webhook_url: str, secret: str | None = None) -> list[str]:
-        """Register platform webhooks. Returns list of webhook IDs. Override if supported."""
+    async def list_webhooks(self, ctx: ConnectorContext, webhook_url: str) -> list[dict]:
+        """Celerp's hooks on the platform delivering to `webhook_url`. Override if supported."""
         return []
+
+    async def create_webhook(self, ctx: ConnectorContext, webhook_url: str, topic: str,
+                             secret: str | None) -> dict:
+        raise NotImplementedError(f"{self.name} has no webhooks")
+
+    async def update_webhook(self, ctx: ConnectorContext, webhook_id, secret: str) -> dict:
+        raise NotImplementedError(f"{self.name} has no webhooks")
+
+    async def get_webhook(self, ctx: ConnectorContext, webhook_id) -> dict | None:
+        raise NotImplementedError(f"{self.name} has no webhooks")
+
+    async def delete_webhook(self, ctx: ConnectorContext, webhook_id) -> None:
+        raise NotImplementedError(f"{self.name} has no webhooks")
 
     async def deregister_webhooks(
         self, ctx: ConnectorContext, webhook_url: str, webhook_ids: list[str]
@@ -203,8 +513,8 @@ class ConnectorBase(ABC):
         Override if supported."""
         pass
 
-    def webhook_topics_for_direction(self, direction: SyncDirection) -> list[str]:
-        """Return webhook topics to register for the given direction. Override if supported."""
+    def webhook_topics(self, directions: dict) -> list[str]:
+        """The webhook topics these per-record directions listen to. Override if supported."""
         return []
 
     def validate_webhook(self, payload: bytes, signature: str, secret: str) -> bool:

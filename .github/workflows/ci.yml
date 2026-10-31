@@ -24,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+        group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26]
 
     services:
       postgres:
@@ -55,31 +55,42 @@ jobs:
       - name: Install deps
         run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split -c constraints.txt
 
-      - name: Run tests (shard ${{ matrix.group }}/17)
+      - name: Run tests (shard ${{ matrix.group }}/25)
         env:
           ALLOW_INSECURE_JWT: "true"
+          CELERP_LOCK_RANK_DIR: lockgraph
           # Run on the Postgres service (each xdist worker gets its own database).
           DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
           # Each test process writes what the write observer saw here; the census job reads all shards.
           CELERP_MUTATION_CENSUS: ${{ runner.temp }}/mutation-census
         # ubuntu-latest has 2 vCPUs, so a single `-n auto` run can't keep up.
-        # pytest-split fans the suite across 17 parallel runners; each still uses -n auto
+        # pytest-split fans the suite across 25 parallel runners; each still uses -n auto
         # within its 2 cores.
         # Process tests run in their own job so the split stays even.
         # The split balances measured time from tests/.test_durations (refresh it with
-        # --store-durations when a shard nears the cap). The same shard swings by a third
-        # from run to run on these runners, and collection takes about a minute of the
-        # 600s, so each shard's estimate stays near 450s. The file sits under tests/ so the
+        # --store-durations when a test file is added or a shard nears the cap). The same
+        # shard swings by a third from run to run on these runners, and collection takes
+        # about 90s of the 600s, so each shard's estimate stays at 380s or less
+        # (tests/test_ci_shard_split.py holds the split to it and the file to the tests
+        # this job runs). The file sits under tests/ so the
         # repo-wide name checks, which skip tests/, never read its test ids. A test missing
         # from it counts as the average, so a split by count alone would put the slow
         # backup and reset files in one shard.
         run: >
           timeout 600 pytest tests/ default_modules/*/tests/ -n auto -q --tb=short --no-cov
           -m "not browser and not embedded_pg and not process and not integration"
-          --splits 17 --group ${{ matrix.group }} --splitting-algorithm least_duration
+          --splits 26 --group ${{ matrix.group }} --splitting-algorithm least_duration
           --durations-path tests/.test_durations
           --ignore=tests/test_visual.py
           --ignore=tests/test_browser
+
+      - name: Upload lock graph
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: lockgraph-shard-${{ matrix.group }}
+          path: lockgraph/
+          if-no-files-found: ignore
 
       - name: Upload the write observer's census
         if: always()
@@ -112,8 +123,7 @@ jobs:
       # The route inventory, the writes made without the company lock and the write sites
       # the suite passed through, from every unit, process and browser shard together
       # (scripts/mutation_census.py).
-      # Fails on a write no baseline entry accepts, on an entry no finding matched or its own
-      # test did not reproduce, and on a writer no test covers that mutation_coverage_gaps.json
+      # Fails on any write the observer refused, and on a writer no test covers that mutation_coverage_gaps.json
       # does not name, or an entry there that no longer matches its gap, that main's copy
       # does not hold, or that counts more write sites than main's copy of it.
       - name: Report
@@ -167,6 +177,7 @@ jobs:
       - name: Run process tests
         env:
           ALLOW_INSECURE_JWT: "true"
+          CELERP_LOCK_RANK_DIR: lockgraph
           # Run on the Postgres service (each xdist worker gets its own database).
           DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
           CELERP_MUTATION_CENSUS: ${{ runner.temp }}/mutation-census
@@ -174,6 +185,14 @@ jobs:
           timeout 600 pytest tests/ default_modules/*/tests/ -m "process and not integration" -n auto -q --tb=short --no-cov
           --ignore=tests/test_visual.py
           --ignore=tests/test_browser
+
+      - name: Upload lock graph
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: lockgraph-process
+          path: lockgraph/
+          if-no-files-found: ignore
 
       - name: Upload the write observer's census
         if: always()
@@ -183,6 +202,30 @@ jobs:
           path: ${{ runner.temp }}/mutation-census
           if-no-files-found: error
           retention-days: 7
+
+  # Each test already fails on a lock order violation the debt file does not name. This job
+  # merges every shard's graph and fails when a debt entry is no longer hit, so the list
+  # only shrinks.
+  lock-order:
+    name: Lock order debt
+    needs: [shard, process]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: lockgraph-*
+          path: lockgraph
+          merge-multiple: true
+
+      - name: Check the merged lock graph
+        run: python tests/lock_rank.py check lockgraph
 
   integration:
     name: Integration validation
@@ -538,7 +581,7 @@ jobs:
   # (this job), which passes only when every unit, process, browser, electron, AND lockfile job passed.
   test:
     name: Test
-    needs: [shard, census, process, integration, browser, embedded, electron, lockfile, constraints, mac-intel-deps, update-changes, update-e2e]
+    needs: [shard, census, process, lock-order, integration, browser, embedded, electron, lockfile, constraints, mac-intel-deps, update-changes, update-e2e]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -554,6 +597,10 @@ jobs:
           fi
           if [ "${{ needs.process.result }}" != "success" ]; then
             echo "Process tests failed (result: ${{ needs.process.result }})"
+            exit 1
+          fi
+          if [ "${{ needs.lock-order.result }}" != "success" ]; then
+            echo "The lock order debt list has a stale entry (result: ${{ needs.lock-order.result }})"
             exit 1
           fi
           if [ "${{ needs.integration.result }}" != "success" ]; then

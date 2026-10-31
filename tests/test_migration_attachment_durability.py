@@ -147,10 +147,10 @@ async def test_attachment_commit_response_lost_then_retry(real_engine, monkeypat
 
     real_checkpoint = migrations._checkpoint
 
-    async def mark(session, run_id, phase, state):
+    async def mark(session, company_id, run_id, phase, state):
         if phase == MigrationPhase.ATTACHMENTS:
             session.info["attachments"] = True
-        return await real_checkpoint(session, run_id, phase, state)
+        return await real_checkpoint(session, company_id, run_id, phase, state)
 
     monkeypatch.setattr(migrations, "_checkpoint", mark)
     monkeypatch.setattr(migrations, "_maker",
@@ -340,3 +340,17 @@ async def test_attachment_discard_after_failed_or_interrupted_run(real_engine, m
     assert await count(real_engine, "companies", "id = :c", c=str(run.company_id)) == 0
     assert _stored(tmp_path, neighbour) == ["kept.png"]
     assert await _tasks(real_engine, neighbour) == 1
+
+
+async def test_a_batch_names_its_company_in_every_run_and_cleanup_write(real_engine, monkeypatch, tmp_path):
+    """A batch writes its run row and deletes its linked files' cleanup tasks under its
+    company's lock, by the company as well as the id, so the lock checker sees both taken
+    under that lock: no batch write of either is judged outside it."""
+    import sys
+
+    run = await _migrate(real_engine, monkeypatch, tmp_path)
+    assert run.status == "ready_to_finalize", run.error_summary
+    assert await _tasks(real_engine, run.company_id) == 0
+    sites = sys.modules["lock_rank"].RECORDER.ungated_sites(
+        {"row:migration_runs", "row:migration_cleanup_tasks"}, "celerp/services/migrations.py")
+    assert {s for s in sites if " _run_locked [" in s or " _checkpoint [" in s and s.endswith("|unknown]")} == set()

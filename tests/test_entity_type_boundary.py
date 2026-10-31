@@ -146,7 +146,6 @@ async def test_a_second_birth_for_the_same_item_id_is_refused_in_language(client
 @pytest.mark.parametrize("path,body", [
     ("/items/bulk/delete", {}),
     ("/items/bulk/status", {"status": "sold"}),
-    ("/items/bulk/shopify-sync", {"enable": True}),
     ("/items/bulk/expire", {}),
     ("/items/bulk/make-available", {}),
     ("/items/bulk/revert-to-draft", {}),
@@ -273,7 +272,7 @@ async def test_rebuild_with_a_historical_crossed_row_is_deterministic(client, se
         data={"fields_changed": {"memo": {"old": None, "new": "legacy"}}}, actor_id=None,
         location_id=None, source="legacy", idempotency_key=str(uuid.uuid4()), metadata_={},
     ))
-    await session.flush()
+    await session.commit()
 
     async def _states():
         rows = (await session.execute(

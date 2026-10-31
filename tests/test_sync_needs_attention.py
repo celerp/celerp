@@ -20,14 +20,28 @@ from ui.i18n import t
 pytestmark = pytest.mark.asyncio
 
 
-async def _sync(client_company: str, credential: str):
+async def _connect(client_company: str, credential: str, monkeypatch) -> None:
+    """The client company's Accountant Sync connection, first sync done, with the key the
+    relay hands back for it."""
+    from celerp.connectors.base import ConnectorContext
+    from celerp.connectors.celerp import CelerpConnector
+    from connector_test_support import connected
+
+    connector = CelerpConnector()
+    await connected(client_company, connector, connector.default_directions)
+
+    async def fetch_context(company_id, connector_name, **kwargs):
+        return ConnectorContext(company_id=str(company_id), store_handle=FIRM, access_token=credential)
+
+    monkeypatch.setattr("celerp.connectors.relay_token.fetch_context", fetch_context)
+
+
+async def _sync(client_company: str):
     """One run of the connector through the runner, as Sync now does."""
-    from celerp.connectors.base import ConnectorContext, SyncDirection
     from celerp.connectors.celerp import CelerpConnector
     from celerp.connectors.sync_runner import run_connector_sync
 
-    ctx = ConnectorContext(company_id=client_company, store_handle=FIRM, access_token=credential)
-    return await run_connector_sync(CelerpConnector(), ctx, SyncDirection.BOTH)
+    return await run_connector_sync(CelerpConnector(), client_company, purpose="manual_sync")
 
 
 async def _client_screen(client_company: str) -> tuple[dict, str, str, list[dict]]:
@@ -70,8 +84,9 @@ async def test_a_declined_journal_shows_needs_attention_until_it_posts(real_clie
     await _post_journal(real_client, firm_tok, ADJUSTED, 80.0, "Year-end accrual")
     await _lock(real_client, tok, "2026-06-30")
     _route_to_app(monkeypatch, [])
+    await _connect(client_company, credential, monkeypatch)
 
-    results = await _sync(client_company, credential)
+    results = await _sync(client_company)
     # The decline is processed, not an error: the result and the other entities stand.
     assert all(r.ok for r in results), [(r.entity, r.errors) for r in results]
     assert _from_firm(await _journals(real_engine, client_company)) == {}
@@ -95,7 +110,7 @@ async def test_a_declined_journal_shows_needs_attention_until_it_posts(real_clie
 
     # Resolved: the client lifts its lock and syncs again; the journal posts once.
     await _lock(real_client, tok, None)
-    results = await _sync(client_company, credential)
+    results = await _sync(client_company)
     assert all(r.ok for r in results), [(r.entity, r.errors) for r in results]
     [posted] = _from_firm(await _journals(real_engine, client_company)).values()
     assert posted["status"] == "posted" and posted["memo"] == "Year-end accrual"

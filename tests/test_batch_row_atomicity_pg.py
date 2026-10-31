@@ -34,10 +34,11 @@ _LOCKED_THROUGH = "2026-01-31"
 async def _seed(factory, settings: dict | None = None) -> tuple[uuid.UUID, types.SimpleNamespace]:
     company_id, user_id = uuid.uuid4(), uuid.uuid4()
     async with factory() as s:
-        s.add(Company(id=company_id, name="Rows", slug=f"rows-{company_id.hex[:8]}",
-                      settings={"lock_date": _LOCKED_THROUGH, **(settings or {})}))
         s.add(User(id=user_id, email=f"a-{user_id.hex[:8]}@example.test", name="Admin",
                    auth_hash="x", is_active=True))
+        await s.flush()
+        s.add(Company(id=company_id, name="Rows", slug=f"rows-{company_id.hex[:8]}",
+                      settings={"lock_date": _LOCKED_THROUGH, **(settings or {})}))
         await s.flush()
         s.add(Location(id=uuid.uuid4(), company_id=company_id, name="Main", type="warehouse", is_default=True))
         s.add(UserCompany(user_id=user_id, company_id=company_id, role="admin", is_active=True))

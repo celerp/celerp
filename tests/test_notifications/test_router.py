@@ -26,7 +26,7 @@ import celerp.gateway.state as gw_state
 
 @pytest_asyncio.fixture
 async def auth_client(session: AsyncSession):
-    from celerp.services.session_tracker import clear as _clear_tracker
+    from test_helpers import clear_sessions as _clear_tracker
     await _clear_tracker(session)
     app.dependency_overrides[get_session] = lambda: session
     token = secrets.token_hex(32)
@@ -209,7 +209,7 @@ async def _second_user(c, session, headers) -> tuple[uuid.UUID, dict]:
     from sqlalchemy import select
 
     from celerp.models.company import User
-    from celerp.services.session_tracker import clear as _clear_tracker
+    from test_helpers import clear_sessions as _clear_tracker
 
     r = await c.post("/companies/me/users", headers=headers, json={
         "name": "Second", "email": "second@test.example", "password": "pwvalid1", "role": "operator"})

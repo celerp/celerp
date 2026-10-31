@@ -37,7 +37,7 @@ from migration_support import (
     staged_run,
     upload_parts,
 )
-from test_helpers import make_authed_token, register_admin
+from test_helpers import as_another_client, make_authed_token, register_admin
 from ui.i18n import t
 
 OWNER_ONLY = t("migration.err_owner_only", "en")
@@ -247,6 +247,7 @@ async def test_migration_run_company_isolation(client, session, migration_env):
     assert r.status_code == 403 and r.json()["detail"] == OWNER_ONLY
 
     # Once finished, a member of the moved company still has no view of the run; the creator keeps it.
+    await session.refresh(run)  # the refused requests rolled back, which expires what the session held
     company = await session.get(Company, run.company_id)
     company.is_active, company.is_migration_staged = True, False
     run.status = "completed"
@@ -340,14 +341,16 @@ async def test_migration_state_machine_rejects_illegal_transitions(real_client, 
 @pytest.mark.asyncio
 async def test_migration_advisory_lock_prevents_double_runner(real_engine, migration_env, monkeypatch):
     from celerp.services import migrations
-    from celerp.services.migrations import MigrationError
+    from celerp.services.migrations import MigrationError, _lock_key
 
     sink = migration_env["sink"]
     run_id, company_id, _ = await staged_run(real_engine)
     before = await load_run(real_engine, run_id)
 
     async with real_engine.connect() as holder:
-        await holder.execute(text("SELECT pg_advisory_lock(hashtext('migration:' || :r))"), {"r": str(run_id)})
+        # Another runner holds the run, taken as every runner takes it: a try that succeeds.
+        assert (await as_another_client(holder.execute(text("SELECT pg_try_advisory_lock(hashtext(:k))"),
+                                                       {"k": _lock_key(run_id)}))).scalar() is True
         await holder.commit()
         await migrations.run_migration(run_id)
         after = await load_run(real_engine, run_id)
@@ -365,7 +368,7 @@ async def test_migration_advisory_lock_prevents_double_runner(real_engine, migra
                 await migrations.request_start(s, run)
             assert (exc.value.status_code, exc.value.detail) == (409, t("migration.err_already_running", "en"))
         assert (await load_run(real_engine, run_id)).status == "failed"
-        await holder.execute(text("SELECT pg_advisory_unlock(hashtext('migration:' || :r))"), {"r": str(run_id)})
+        await holder.execute(text("SELECT pg_advisory_unlock(hashtext(:k))"), {"k": _lock_key(run_id)})
         await holder.commit()
 
     async with real_engine.begin() as conn:
@@ -511,12 +514,14 @@ async def test_discard_staged_company_is_complete_or_noop(real_client, real_engi
             await conn.execute(text("DROP TABLE mystery_rows"))
 
     async with real_engine.connect() as holder:
-        await holder.execute(text("SELECT pg_advisory_lock(hashtext('migration:' || :r))"), {"r": run_id})
+        # Another runner holds the run, taken as every runner takes it: a try that succeeds.
+        assert (await as_another_client(holder.execute(text("SELECT pg_try_advisory_lock(hashtext(:k))"),
+                                                       {"k": migrations._lock_key(run_id)}))).scalar() is True
         await holder.commit()
         r = await discard(admin_token, run_id)
         assert r.status_code == 409 and r.json()["detail"] == t("migration.err_already_running", "en")
         await intact()
-        await holder.execute(text("SELECT pg_advisory_unlock(hashtext('migration:' || :r))"), {"r": run_id})
+        await holder.execute(text("SELECT pg_advisory_unlock(hashtext(:k))"), {"k": migrations._lock_key(run_id)})
         await holder.commit()
 
     r = await discard(admin_token, run_id)

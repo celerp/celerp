@@ -70,7 +70,7 @@ import os
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -155,6 +155,10 @@ _held_operations: set[uuid.UUID] = set()
 _tasks: dict[uuid.UUID, asyncio.Task] = {}
 # Jobs reopened while their task was ending: the task runs them once more.
 _again: set[uuid.UUID] = set()
+# Questions sends of this process are creating, from before the commit that shows them held
+# by this process until their task starts: per job, the sends still creating it and what a
+# send that read it meanwhile waits on.
+_creating: dict[uuid.UUID, tuple[list[int], asyncio.Future]] = {}
 # What a question waits for at the gate (``documents`` or ``questions``), while it waits.
 _waiting: dict[uuid.UUID, str] = {}
 # The questions running in background mode in this process (see ``promote``).
@@ -372,7 +376,7 @@ async def _fenced(session, job_id: uuid.UUID, runner_id: str):
     Only under the job's company lock."""
     from celerp.models.ai import AIBatchJob
     job = (await session.execute(select(AIBatchJob).where(AIBatchJob.id == job_id, _under_lock(session))
-                                 .with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
+                                 .with_for_update(key_share=True).execution_options(populate_existing=True))).scalar_one_or_none()
     if job is None or job.runner_id != runner_id or liveness(job) == "ended":
         log.warning("AI job %s: a runner whose claim was taken or whose job ended wrote; its write was refused", job_id)
         return None
@@ -414,13 +418,14 @@ async def _lock_job(session, job_id: uuid.UUID):
 
 
 def _under_lock(session):
-    """The condition a claim or a fenced write puts on a job row: its company is one
-    whose lock this transaction holds. With none held, the write is refused outright."""
+    """The condition a claim or a fenced write puts on a job row: its company is the one
+    whose lock this transaction holds (lock_for_ai), named by equality so the statement
+    names its company. With none held, or several, the write is refused outright."""
     from celerp.models.ai import AIBatchJob
-    held = noted(session, "locked")
-    if not held:
-        raise RuntimeError("an AI job row written without its company lock (lock_for_ai)")
-    return AIBatchJob.company_id.in_([uuid.UUID(str(c)) for c in held])
+    held = {str(c) for c in noted(session, "locked")}
+    if len(held) != 1:
+        raise RuntimeError("an AI job row written without its company lock (lock_for_ai), or under several")
+    return AIBatchJob.company_id == uuid.UUID(held.pop())
 
 
 async def _hold(session, claim) -> None:
@@ -485,7 +490,7 @@ async def _end_unheld(session, *where) -> bool:
     a reading job cancelled, a question failed. False, and nothing written, while a
     runner holds one of them. Only under the jobs' company lock."""
     from celerp.models.ai import AIBatchJob
-    rows = (await session.execute(select(AIBatchJob).where(is_open(), _under_lock(session), *where).with_for_update()
+    rows = (await session.execute(select(AIBatchJob).where(is_open(), _under_lock(session), *where).with_for_update(key_share=True)
                                   .execution_options(populate_existing=True))).scalars().all()
     if any(liveness(job) == "running" for job in rows):
         return False
@@ -585,11 +590,12 @@ async def _heartbeat(job_id: uuid.UUID, claim: list[str | None], stop: asyncio.E
     LEASE_RENEW_S until ``stop``. A renewal that fails is tried again at the next beat;
     a claim another took is never renewed.
 
-    The one write of a job row made without its company lock: it sets the lease end
-    only, of the row its own claim holds, under that row's lock. A renewal that waited
-    for the company lock would wait behind any long holder of it (an import, a
-    migration batch) past the lease, and a healthy runner's job would read as nobody's,
-    for a Stop or another process to take."""
+    The one write of a job row made without its company lock: one statement that sets
+    the lease end only, of the row its own claim still holds open, checked in the
+    statement itself, in a transaction that takes nothing else and so waits on nothing
+    while it holds the row. A renewal that waited for the company lock would wait behind
+    any long holder of it (an import, a migration batch) past the lease, and a healthy
+    runner's job would read as nobody's, for a Stop or another process to take."""
     from celerp.models.ai import AIBatchJob
     while True:
         try:
@@ -599,9 +605,8 @@ async def _heartbeat(job_id: uuid.UUID, claim: list[str | None], stop: asyncio.E
             pass
         try:
             async with SessionLocal() as session:
-                held = (AIBatchJob.id == job_id, AIBatchJob.runner_id == claim[0], is_open())
-                if await session.scalar(select(AIBatchJob.id).where(*held).with_for_update()) is not None:
-                    await session.execute(update(AIBatchJob).where(*held).values(lease_until=_lease_end()))
+                await session.execute(update(AIBatchJob).where(
+                    AIBatchJob.id == job_id, AIBatchJob.runner_id == claim[0], is_open()).values(lease_until=_lease_end()))
                 await session.commit()
         except Exception:
             log.warning("AI job %s: its lease was not renewed", job_id, exc_info=True)
@@ -762,15 +767,15 @@ async def _reopen(job_id: uuid.UUID, company_id: uuid.UUID, user_id: uuid.UUID, 
         )).scalars().all()
         if not steps:
             return 0
-        if retry:
-            for step in steps:
-                step.generation += 1
-                step.operation_id = step.step_id = file_operation_id(job_id, step.key, step.generation)
-                step.state, step.result, step.charge_known = "pending", None, False
         if not await _claim(session, job_id, reopenable(), status="running", error=None, completed_at=None,
                             cancel_requested_at=None):
             await session.rollback()        # another send took it first, or its conversation is gone
             return None
+        if retry:       # the job's row is claimed before its steps are written, as every runner write is
+            for step in steps:
+                step.generation += 1
+                step.operation_id = step.step_id = file_operation_id(job_id, step.key, step.generation)
+                step.state, step.result, step.charge_known = "pending", None, False
         await session.commit()
     start_job(job_id)
     return len(steps)
@@ -937,7 +942,7 @@ async def _set_step(session, claim, step_pk: uuid.UUID, *, credits: int | None =
     if credits is not None:
         # A retried file keeps what its earlier generations were charged.
         values["credits"] = AIJobStep.credits + credits
-    await session.execute(update(AIJobStep).where(AIJobStep.id == step_pk).values(
+    await session.execute(update(AIJobStep).where(AIJobStep.id == step_pk, AIJobStep.job_id == claim.job_id).values(
         updated_at=datetime.now(timezone.utc), **values))
 
 
@@ -1206,7 +1211,7 @@ async def promote(job_id: uuid.UUID) -> None:
         if await _lock_job(session, job_id) is None:
             return
         await session.execute(
-            update(AIBatchJob).where(AIBatchJob.id == job_id, AIBatchJob.promoted_at.is_(None))
+            update(AIBatchJob).where(AIBatchJob.id == job_id, _under_lock(session), AIBatchJob.promoted_at.is_(None))
             .values(mode="background", promoted_at=datetime.now(timezone.utc)))
         await session.commit()
 
@@ -1399,17 +1404,34 @@ async def _finish_question(job_id: uuid.UUID, result, refusal, runner_id: str) -
         await notify(company_id, user_id, conversation_id, t(key), t("ai.question_done_body"))
 
 
+@contextmanager
+def _creating_question(job_id: uuid.UUID):
+    """Entered before the commit that may create the question, left once its task is
+    started: meanwhile a send of this process that reads the question held by this
+    process, with no task yet, waits (``wait_for_job``) instead of answering it runs."""
+    sends, created = _creating.setdefault(job_id, ([0], asyncio.get_running_loop().create_future()))
+    sends[0] += 1
+    try:
+        yield
+    finally:
+        sends[0] -= 1
+        if not sends[0]:
+            del _creating[job_id]
+            created.set_result(None)
+
+
 async def wait_for_job(job_id: uuid.UUID, *, started: float) -> bool:
-    """Wait for this process's task running the job until ``deadlines.SYNC_WAIT_S``
-    after ``started`` (a monotonic instant: the request's start, so time queued at the
-    gate counts). True when no such task runs any more; otherwise the job is promoted,
-    as the caller is told it keeps running."""
-    while task_alive(job_id):
+    """Wait for this process's task running the job, or for a send of this process
+    creating it to start that task, until ``deadlines.SYNC_WAIT_S`` after ``started``
+    (a monotonic instant: the request's start, so time queued at the gate counts). True
+    when neither is left; otherwise the job is promoted, as the caller is told it keeps
+    running."""
+    while task_alive(job_id) or job_id in _creating:
         left = deadlines.SYNC_WAIT_S - (time.monotonic() - started)
         if left <= 0:
             await promote(job_id)
             return False
-        await asyncio.wait({_tasks[job_id]}, timeout=left)
+        await asyncio.wait({_tasks[job_id] if task_alive(job_id) else _creating[job_id][1]}, timeout=left)
     return True
 
 
@@ -1424,24 +1446,25 @@ async def ask(*, company_id: uuid.UUID, user_id: uuid.UUID, query: str, file_ids
     from sqlalchemy.exc import IntegrityError
     job_id = job_id or uuid.uuid4()
     request = JobRequest.question(company_id=company_id, user_id=user_id, query=query, file_ids=file_ids)
-    async with SessionLocal() as session:
-        await lock_for_ai(session, company_id)
-        job = await reused_job(session, job_id, request)
-        started_here = False
-        if job is None:
-            session.add(question_job(job_id=job_id, request=request, auth_nonce=auth_nonce))
-            try:
+    with _creating_question(job_id):
+        async with SessionLocal() as session:
+            await lock_for_ai(session, company_id)
+            job = await reused_job(session, job_id, request)
+            started_here = False
+            if job is None:
+                session.add(question_job(job_id=job_id, request=request, auth_nonce=auth_nonce))
+                try:
+                    await session.commit()
+                    started_here = True
+                except IntegrityError:
+                    await session.rollback()
+                    await lock_for_ai(session, company_id)
+                    job = await reused_job(session, job_id, request)     # another send created it first
+            if job is not None and liveness(job) != "running":
+                started_here = await reopen_question(session, job_id, auth_nonce)
                 await session.commit()
-                started_here = True
-            except IntegrityError:
-                await session.rollback()
-                await lock_for_ai(session, company_id)
-                job = await reused_job(session, job_id, request)     # another send created it first
-        if job is not None and liveness(job) != "running":
-            started_here = await reopen_question(session, job_id, auth_nonce)
-            await session.commit()
-    if started_here:
-        start_job(job_id)
+        if started_here:
+            start_job(job_id)
     await wait_for_job(job_id, started=started)
     return await question_result(job_id, company_id, user_id)
 

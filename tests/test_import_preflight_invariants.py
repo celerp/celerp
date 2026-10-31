@@ -27,6 +27,7 @@ import pytest
 from celerp.services import import_stage
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
+from test_helpers import as_another_client
 
 pytestmark = pytest.mark.asyncio
 
@@ -462,9 +463,10 @@ async def _seed_race_company(factory) -> tuple[uuid.UUID, uuid.UUID]:
     from celerp.models.company import Company, Location, User
     company_id, user_id = uuid.uuid4(), uuid.uuid4()
     async with factory() as s:
-        s.add(Company(id=company_id, name="RaceCo", slug=f"race-{company_id.hex[:8]}", settings={}))
         s.add(User(id=user_id, email=f"owner-{user_id.hex[:8]}@example.test", name="Owner",
                    auth_hash="x", is_active=True))
+        await s.flush()
+        s.add(Company(id=company_id, name="RaceCo", slug=f"race-{company_id.hex[:8]}", settings={}))
         await s.flush()
         s.add(Location(id=uuid.uuid4(), company_id=company_id, name="Main",
                        type="warehouse", is_default=True))
@@ -634,7 +636,7 @@ async def test_bound_commit_holds_what_it_accepted_until_the_import_commits(comm
     attempts: list[str] = []
     real_write = svc.write_import_batch
 
-    async def _probe_then_write(*args, **kwargs):
+    async def _probe():
         async with factory() as other:
             await other.execute(text("SET LOCAL lock_timeout = '300ms'"))
             try:
@@ -644,6 +646,9 @@ async def test_bound_commit_holds_what_it_accepted_until_the_import_commits(comm
             except DBAPIError as exc:
                 assert "lock timeout" in str(exc).lower(), exc
                 attempts.append("waited")
+
+    async def _probe_then_write(*args, **kwargs):
+        await as_another_client(_probe())
         return await real_write(*args, **kwargs)
 
     monkeypatch.setattr(svc, "write_import_batch", _probe_then_write)
@@ -956,7 +961,7 @@ async def test_location_delete_waits_for_an_import_placing_items_there(committed
     attempts: list[str] = []
     real_write = svc.write_import_batch
 
-    async def _delete_then_write(*args, **kwargs):
+    async def _delete():
         async with factory() as other:
             await other.execute(text("SET LOCAL lock_timeout = '300ms'"))
             try:
@@ -965,6 +970,9 @@ async def test_location_delete_waits_for_an_import_placing_items_there(committed
             except DBAPIError as exc:
                 assert "lock timeout" in str(exc).lower(), exc
                 attempts.append("waited")
+
+    async def _delete_then_write(*args, **kwargs):
+        await as_another_client(_delete())
         return await real_write(*args, **kwargs)
 
     monkeypatch.setattr(svc, "write_import_batch", _delete_then_write)

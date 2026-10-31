@@ -138,7 +138,10 @@ class FreshInstall:
         self.start()
 
     def ensure_new(self) -> None:
-        """Empty the install again when an earlier test finished setup on it."""
+        """Empty the install again when an earlier test finished setup on it. That setup may
+        have restarted the install (a business type's modules load on restart), so it is
+        asked only once it serves again."""
+        wait_until_started(self.api)
         if httpx.get(f"{self.api}/auth/bootstrap-status", timeout=10).json().get("bootstrapped"):
             self.reset()
 

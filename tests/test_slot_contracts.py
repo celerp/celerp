@@ -54,8 +54,9 @@ async def test_item_writes_keep_working_after_a_handlerless_guard_is_offered(cli
     with pytest.raises(ValueError):
         slots.register("item_lineage_guard", {"_module": "acme-thirdparty"})
     cid, uid = uuid.uuid4(), uuid.uuid4()
-    session.add(Company(id=cid, name="Slot Co", slug=f"slot-{cid.hex[:8]}", settings={}))
     session.add(User(id=uid, email=f"slot-{cid.hex[:8]}@test.co", name="Admin", auth_hash="x", is_active=True))
+    await session.flush()
+    session.add(Company(id=cid, name="Slot Co", slug=f"slot-{cid.hex[:8]}", settings={}))
     await session.flush()
     session.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=cid, role="admin", is_active=True))
     await session.commit()

@@ -6,6 +6,8 @@ connected company, and reverses to the older shape."""
 
 from __future__ import annotations
 
+from alembic_support import alembic_run
+
 from .conftest import schema_of, throwaway_db, upgrade_to
 
 REVISION = "a5t6u7v8w9x0"
@@ -22,8 +24,5 @@ def test_peer_deliveries_revision_up_and_down():
         upgrade_to(sync_url, REVISION)
         assert {"company_id", "grant_id", "entity", "entity_id", "revision", "refused",
                 "at"} <= _columns(sync_url, "company_peer_deliveries")
-        from alembic import command
-
-        from celerp.alembic_config import build_alembic_config
-        command.downgrade(build_alembic_config(), "z4r5s6t7u8v9")
+        alembic_run(sync_url, "downgrade", "z4r5s6t7u8v9")
         assert not _columns(sync_url, "company_peer_deliveries")

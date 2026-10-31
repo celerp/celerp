@@ -14,13 +14,10 @@ Both converge on head with every item unchanged and no physical-code unique inde
 from __future__ import annotations
 
 import json
-import os
 import uuid
 
-from alembic import command
 from sqlalchemy import create_engine, text
 
-from celerp.alembic_config import build_alembic_config
 from celerp.cli import _migrate_to_head
 from celerp.inventory_codes import (
     BARCODE_UNIQUE_INDEX,
@@ -29,6 +26,8 @@ from celerp.inventory_codes import (
 )
 from celerp.models.base import Base
 from celerp.models.projections import Projection
+
+from alembic_support import alembic_run
 
 from .conftest import head_rev
 
@@ -99,8 +98,7 @@ def _assert_converged(sync_url: str, cid: str, expected: dict[str, dict]) -> Non
 
 def test_pre_barcode_database_with_duplicate_codes_upgrades_to_head(fresh_db):
     async_url, sync_url = fresh_db
-    os.environ["DATABASE_URL"] = async_url  # restored by fresh_db
-    command.upgrade(build_alembic_config(), BEFORE_BARCODE_REVISION)
+    alembic_run(async_url, "upgrade", BEFORE_BARCODE_REVISION)  # DATABASE_URL restored by fresh_db
 
     engine = create_engine(sync_url)
     try:
@@ -124,8 +122,7 @@ def test_pre_barcode_database_with_duplicate_codes_upgrades_to_head(fresh_db):
 
 def test_database_carrying_the_unique_indexes_upgrades_to_head(fresh_db):
     async_url, sync_url = fresh_db
-    os.environ["DATABASE_URL"] = async_url  # restored by fresh_db
-    command.upgrade(build_alembic_config(), BEFORE_HEAD_REVISION)
+    alembic_run(async_url, "upgrade", BEFORE_HEAD_REVISION)  # DATABASE_URL restored by fresh_db
 
     engine = create_engine(sync_url)
     try:

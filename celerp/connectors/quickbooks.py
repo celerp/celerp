@@ -29,6 +29,10 @@ from celerp.connectors.base import (
     ConnectorBase,
     ConnectorCategory,
     ConnectorContext,
+    EntityFlow,
+    FirstSync,
+    RemoteOrder,
+    RemoteProduct,
     SyncDirection,
     SyncEntity,
     SyncResult,
@@ -44,13 +48,39 @@ _API_BASE = "https://quickbooks.api.intuit.com/v3/company"
 _PAGE_SIZE = 100
 
 
-def _qb_since_filter(field: str, since: datetime | None) -> str:
-    """Build a QB query WHERE clause for incremental sync."""
+def _where(*clauses: str | None) -> str:
+    """A QB query WHERE clause joining the given conditions, or nothing."""
+    kept = [c for c in clauses if c]
+    return f" WHERE {' AND '.join(kept)}" if kept else ""
+
+
+def _since(since: datetime | None) -> str | None:
+    """The condition of an incremental pull: changed after ``since``."""
     if since is None:
-        return ""
+        return None
     if not isinstance(since, datetime):
         raise TypeError(f"Expected datetime, got {type(since).__name__}")
-    return f" AND {field} > '{since.isoformat()}'"
+    return f"MetaData.LastUpdatedTime > '{since.isoformat()}'"
+
+
+def _from_date(orders_from: datetime | None) -> str | None:
+    """The condition keeping invoices dated on or after the connection's earliest order date."""
+    return f"TxnDate >= '{orders_from.date().isoformat()}'" if orders_from else None
+
+
+def _qb_sku(item: dict) -> str:
+    """An item's SKU: its Sku, or its Name when it has none."""
+    return (item.get("Sku") or item.get("Name") or "").strip()
+
+
+_QB_ITEM_TYPES = ("Service", "Inventory", "NonInventory")
+
+
+def _qb_when(value) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(value)) if value else None
+    except ValueError:
+        return None
 
 
 def _base_url(ctx: ConnectorContext) -> str:
@@ -77,7 +107,7 @@ async def _query(ctx: ConnectorContext, sql: str) -> list[dict[str, Any]]:
     base = _base_url(ctx)
     results: list[dict[str, Any]] = []
     start = 1
-    async with RateLimitedClient() as client:
+    async with RateLimitedClient(require_execution=True) as client:
         while True:
             paginated = f"{sql} STARTPOSITION {start} MAXRESULTS {_PAGE_SIZE}"
             resp = await client.get(
@@ -103,9 +133,13 @@ async def _query(ctx: ConnectorContext, sql: str) -> list[dict[str, Any]]:
 class QuickBooksConnector(ConnectorBase):
     name = "quickbooks"
     display_name = "QuickBooks"
-    supported_entities = [SyncEntity.PRODUCTS, SyncEntity.ORDERS, SyncEntity.CONTACTS]
+    imported_doc_marker = "quickbooks_invoice_id"
+    entity_flows = {
+        "products": EntityFlow(inbound=("products",)),
+        "invoices": EntityFlow(inbound=("orders",), outbound=("invoices_out",)),
+        "contacts": EntityFlow(inbound=("contacts",)),
+    }
     category = ConnectorCategory.ACCOUNTING
-    direction = SyncDirection.BOTH
     conflict_strategy = {
         SyncEntity.PRODUCTS: "newest",
         SyncEntity.ORDERS: "platform",
@@ -166,7 +200,10 @@ class QuickBooksConnector(ConnectorBase):
     # -- Products (Items in QB) ------------------------------------------------
 
     @needs_modules("celerp-inventory")
-    async def sync_products(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
+    async def sync_products(
+        self, ctx: ConnectorContext, since: datetime | None = None,
+        first_sync: FirstSync | None = None,
+    ) -> SyncResult:
         """
         Pull QuickBooks Items -> Celerp items.
 
@@ -182,7 +219,7 @@ class QuickBooksConnector(ConnectorBase):
         errors: list[str] = []
 
         try:
-            sql = f"SELECT * FROM Item WHERE Active = true{_qb_since_filter('MetaData.LastUpdatedTime', since)}"
+            sql = f"SELECT * FROM Item{_where('Active = true', _since(since))}"
             items = await _query(ctx, sql)
         except httpx.HTTPStatusError as exc:
             result.errors = [f"QuickBooks API error: {exc}"]
@@ -190,11 +227,11 @@ class QuickBooksConnector(ConnectorBase):
 
         for qb_item in items:
             item_type = qb_item.get("Type", "")
-            if item_type not in ("Service", "Inventory", "NonInventory"):
+            if item_type not in _QB_ITEM_TYPES:
                 result.skipped += 1
                 continue
 
-            sku = (qb_item.get("Sku") or qb_item.get("Name") or "").strip()
+            sku = _qb_sku(qb_item)
             if not sku:
                 result.skipped += 1
                 continue
@@ -213,7 +250,7 @@ class QuickBooksConnector(ConnectorBase):
                     cost_price=money(qb_item.get("PurchaseCost")),
                     idempotency_key=idempotency_key,
                 )
-                result.record(await _upsert.upsert_item(ctx.company_id, item))
+                result.record(await _upsert.upsert_item(ctx.company_id, item, first_sync))
             except Exception as exc:
                 errors.append(f"SKU {sku}: {exc}")
 
@@ -224,12 +261,33 @@ class QuickBooksConnector(ConnectorBase):
         )
         return result
 
+    async def preview_products(self, ctx: ConnectorContext) -> list[RemoteProduct]:
+        items = await _query(ctx, f"SELECT * FROM Item{_where('Active = true')}")
+        return [RemoteProduct(
+            key=str(i["Id"]), product_id=str(i["Id"]), variation_id=None, sku=_qb_sku(i),
+            name=i.get("Name") or "", description=i.get("Description"),
+            price=money(i.get("UnitPrice")),
+            modified=_qb_when((i.get("MetaData") or {}).get("LastUpdatedTime")),
+        ) for i in items if i.get("Type", "") in _QB_ITEM_TYPES]
+
+    async def preview_orders(self, ctx: ConnectorContext, orders_from: datetime) -> list[RemoteOrder]:
+        invoices = await _query(ctx, f"SELECT * FROM Invoice{_where(_from_date(orders_from))}")
+        return [RemoteOrder(
+            id=str(inv["Id"]), number=str(inv.get("DocNumber") or inv["Id"]),
+            status="paid" if money(inv.get("Balance")) == 0 else "open",
+            created=_qb_when(inv.get("TxnDate")), total=money(inv.get("TotalAmt")),
+            currency=(inv.get("CurrencyRef") or {}).get("value"), posts=False,
+        ) for inv in invoices]
+
     # -- Invoices / Orders -----------------------------------------------------
 
     @needs_modules("celerp-docs")
-    async def sync_orders(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
+    async def sync_orders(
+        self, ctx: ConnectorContext, since: datetime | None = None,
+        orders_from: datetime | None = None, first_sync: FirstSync | None = None,
+    ) -> SyncResult:
         """
-        Pull QuickBooks Invoices -> Celerp documents.
+        Pull QuickBooks Invoices -> Celerp documents, none dated before ``orders_from``.
 
         Mapping:
           Invoice.DocNumber       -> doc.ref_id
@@ -242,7 +300,7 @@ class QuickBooksConnector(ConnectorBase):
         errors: list[str] = []
 
         try:
-            sql = f"SELECT * FROM Invoice{_qb_since_filter('MetaData.LastUpdatedTime', since)}"
+            sql = f"SELECT * FROM Invoice{_where(_since(since), _from_date(orders_from))}"
             invoices = await _query(ctx, sql)
         except httpx.HTTPStatusError as exc:
             result.errors = [f"QuickBooks API error: {exc}"]
@@ -250,7 +308,7 @@ class QuickBooksConnector(ConnectorBase):
 
         for inv in invoices:
             try:
-                result.record(await _upsert.upsert_invoice_from_quickbooks(ctx.company_id, inv))
+                result.record(await _upsert.upsert_invoice_from_quickbooks(ctx.company_id, inv, first_sync))
             except Exception as exc:
                 errors.append(f"Invoice {inv.get('DocNumber')}: {exc}")
 
@@ -270,7 +328,7 @@ class QuickBooksConnector(ConnectorBase):
         errors: list[str] = []
 
         try:
-            sql = f"SELECT * FROM Customer WHERE Active = true{_qb_since_filter('MetaData.LastUpdatedTime', since)}"
+            sql = f"SELECT * FROM Customer{_where('Active = true', _since(since))}"
             customers = await _query(ctx, sql)
         except httpx.HTTPStatusError as exc:
             result.errors = [f"QuickBooks API error: {exc}"]
@@ -304,7 +362,7 @@ class QuickBooksConnector(ConnectorBase):
             return result
 
         base = f"{_API_BASE}/{realm_id}"
-        async with RateLimitedClient() as client:
+        async with RateLimitedClient(require_execution=True) as client:
             for inv in invoices:
                 try:
                     line_items = [

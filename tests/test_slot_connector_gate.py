@@ -20,6 +20,13 @@ from celerp.modules import slots
 from test_helpers import make_test_token
 
 
+@pytest.fixture(autouse=True)
+def _only_this_tests_entries():
+    """The app registers the connectors module's own entries when it is imported; each
+    test here starts without them, so it sees only the entries it registers."""
+    slots.unregister_module("celerp-connectors")
+
+
 @pytest_asyncio.fixture
 async def ui_client():
     from ui.app import app as ui_app

@@ -85,6 +85,7 @@ async def issue_token_pair(
     company_id: uuid.UUID,
     expected_snonce: str | None,
     jti: str | None = None,
+    commit: bool = True,
 ) -> dict:
     """The single access+refresh issuance point.
 
@@ -93,7 +94,8 @@ async def issue_token_pair(
     link. Then locks the per-user ``UserAuthState`` row FOR UPDATE, reads the current nonce
     under that lock, builds the enabled-module UI hint list, mints a v2 access
     token and a v2 refresh token bound to exactly the locked nonce, registers the
-    access JTI + expiry in the same transaction, commits once, and returns
+    access JTI + expiry in the same transaction, commits once (unless *commit* is False:
+    a company reset issues the caller's next session in its own transaction), and returns
     ``{"access_token", "refresh_token"}``.  Every caller (register, login,
     force-login, refresh, switch-company, create-company) routes through here so
     no path can issue a token that misses the version/type/nonce contract.
@@ -139,7 +141,10 @@ async def issue_token_pair(
     capped_minutes = min(int(settings.access_token_expire_minutes), 24 * 60)
     expiry_dt = datetime.now(timezone.utc) + timedelta(minutes=capped_minutes)
     await _register(session, token_jti, user_id, company_id, expiry_dt, commit=False)
-    await session.commit()
+    if commit:
+        await session.commit()
+    else:
+        await session.flush()
     refresh_token = create_refresh_token(user_id, company_id, snonce=snonce)
     return {"access_token": access_token, "refresh_token": refresh_token}
 

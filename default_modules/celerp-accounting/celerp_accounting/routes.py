@@ -46,7 +46,7 @@ from celerp_accounting.ledger_accounts import require_money_account
 from celerp_accounting.models import Account, BankAccount, BankStatementLine, ReconciliationRule, ReconciliationSession
 from celerp.models.projections import Projection
 from celerp.accounting_roles import AccountRole, refusal
-from celerp.services.account_roles import current_settings, line_roles, merge_survivors, resolve, resolve_many, role_map
+from celerp.services.account_roles import current_settings, line_roles, merge_survivors, resolve, resolve_many
 from celerp.services.ledger_rows import REVERSAL_SUFFIX, journal_rows
 from celerp.services.ledger_display import readable_memo
 from celerp.services.lot_origin import rerun_after_placing
@@ -57,7 +57,7 @@ from celerp.services.attachments import (
 from celerp.services import peer_access
 from celerp.services.auth import AuthContext, get_auth_context, get_current_company_id, get_current_user
 from celerp.services.peer_import import SourceRevision, peer_batch
-from celerp.services.company_lock import lock_chart, lock_company, locked_company
+from celerp.services.company_lock import lock_company, locked_company
 from celerp.services.doc_balance import canonical_doc_type
 from celerp.services.je_keys import je_void_data
 from celerp.services.journal_accounts import require_destinations
@@ -217,6 +217,7 @@ async def seed_chart_of_accounts(session: AsyncSession, company_id: uuid.UUID) -
     """Seed Thai default chart of accounts for a new company. Idempotent."""
     from sqlalchemy import select as _select
 
+    await lock_company(session, company_id)
     existing_codes = set(
         (await session.execute(
             _select(Account.code).where(Account.company_id == company_id)
@@ -308,7 +309,6 @@ async def _add_seeded_accounts(session: AsyncSession, company_id: uuid.UUID) -> 
     wanted = {role: anchors for role, anchors in _SEEDED_ANCHORS.items() if not mapped.get(role.value)}
     if not wanted:
         return frozenset()
-    await lock_chart(session, company_id)
     chart = {e["code"]: e for e in THAI_CHART_OF_ACCOUNTS}
     codes = {code for role, anchors in wanted.items() for code in (*anchors, SEEDED_TARGETS[role])}
     rows = {a.code: a for a in (await session.execute(_select(Account).where(
@@ -358,7 +358,7 @@ async def default_bank_follows_books_hook(*, session: AsyncSession, company_id: 
     amount, so it moves with them and nothing is revalued."""
     bank = (await session.execute(select(BankAccount).where(
         BankAccount.company_id == company_id, BankAccount.chart_account_code == _DEFAULT_BANK_CODE,
-    ).with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
+    ).with_for_update(key_share=True).execution_options(populate_existing=True))).scalar_one_or_none()
     if bank is None:
         return
     await set_bank_currency(session, company_id, bank, await _base_currency(session, company_id))
@@ -382,19 +382,25 @@ async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
     retried on the next start. A company
     staged for a migration is left alone: its chart and posting accounts come from the
     imported books when the migration is finalized.
+
+    Every company is backfilled in one transaction, so it first takes the lock of every
+    company it backfills, in lock_company's order; every later take is a retake.
     """
     from celerp.accounting_roles import UNGUESSED_ROLES
     from celerp.models.company import Company
     from celerp.services import migrations
+    from celerp.services.company_lock import lock_company
     from celerp.services.lot_origin import place_company_stock
     from sqlalchemy import select as _select
 
     unseeded = set((await session.execute(
         _select(Company.id).where(~_select(Account.id).where(Account.company_id == Company.id).exists())
     )).scalars().all())
-    for company_id in (await session.execute(_select(Company.id).order_by(Company.id))).scalars().all():
-        if await migrations.is_company_migration_staged(session, company_id):
-            continue
+    companies = [company_id
+                 for company_id in (await session.execute(_select(Company.id).order_by(Company.id))).scalars()
+                 if not await migrations.is_company_migration_staged(session, company_id)]
+    await lock_company(session, *companies)
+    for company_id in companies:
         if company_id in unseeded:
             await seed_chart_of_accounts(session, company_id)
             await _seed_default_bank_account(session, company_id)
@@ -606,7 +612,7 @@ async def seed_chart_endpoint(
     """Seed the default chart of accounts for this company. Only adds missing accounts,
     each as one added by hand is; a default account whose parent cannot take it now
     (inactive, or posted to by a role) is left out and listed."""
-    await lock_chart(session, company_id)
+    await lock_company(session, company_id)
     existing_codes = set(
         (await session.execute(
             select(Account.code).where(Account.company_id == company_id)
@@ -755,7 +761,6 @@ async def import_chart_accounts(
     # Hold the company lock so two imports of one file cannot both see a code as new,
     # and judge the caller's authority as it stands once nothing can change it.
     await locked_authority(session, company_id, user.id, ("manage_accounting", "import_export_data"))
-    await lock_chart(session, company_id)
     plan = await _planned_chart_import(request, body, company_id, session)
     # Each account goes in as one added by hand does, so its parent is locked against a
     # posting that has just checked it has nothing under it.
@@ -2659,7 +2664,7 @@ async def _company_bank(
     *for_update*; 404 when the company has no such account."""
     query = select(BankAccount).where(BankAccount.id == bank_id, BankAccount.company_id == company_id)
     if for_update:
-        query = query.with_for_update().execution_options(populate_existing=True)
+        query = query.with_for_update(key_share=True).execution_options(populate_existing=True)
     bank = (await session.execute(query)).scalar_one_or_none()
     if not bank:
         raise HTTPException(status_code=404, detail=t("acct.err_bank_account_not_found"))
@@ -3039,6 +3044,8 @@ async def _get_recon(
         ReconciliationSession.company_id == company_id,
     )
     if for_update:
+        # A writer takes the company's lock before its reconciliation rows, the lock its
+        # postings and chart reads take too, so it never waits for the company holding one.
         await lock_company(db, company_id)
         query = query.with_for_update().execution_options(populate_existing=True)
     recon = (await db.execute(query)).scalar_one_or_none()
@@ -3056,8 +3063,9 @@ async def _lock_recon(
     await lock_company(db, company_id)
     recon = await _get_recon(db, session_id, company_id)
     bank = (await db.execute(
-        select(BankAccount).where(BankAccount.id == recon.bank_account_id)
-        .with_for_update().execution_options(populate_existing=True)
+        select(BankAccount).where(BankAccount.id == recon.bank_account_id,
+                                  BankAccount.company_id == company_id)
+        .with_for_update(key_share=True).execution_options(populate_existing=True)
     )).scalar_one_or_none()
     if not bank:
         raise HTTPException(status_code=404, detail=t("acct.err_bank_account_not_found"))
@@ -4305,6 +4313,7 @@ async def bulk_confirm_recon(
 
     lines = (await db.execute(
         select(BankStatementLine).where(
+            BankStatementLine.company_id == company_id,
             BankStatementLine.reconciliation_id == session_id,
             BankStatementLine.status == "suggested",
         ).order_by(BankStatementLine.line_date, BankStatementLine.created_at).with_for_update()
@@ -4516,6 +4525,7 @@ async def _get_recon_and_line(
         select(BankStatementLine).where(
             BankStatementLine.id == line_id,
             BankStatementLine.reconciliation_id == session_id,
+            BankStatementLine.company_id == company_id,
         ).with_for_update()
     )).scalar_one_or_none()
     if not sl:

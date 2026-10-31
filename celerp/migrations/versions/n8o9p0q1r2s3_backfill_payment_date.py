@@ -38,6 +38,7 @@ from celerp.migrations._json_compat import (
     update_ledger_data,
     update_projection_state,
 )
+from celerp.migrations._locks import lock_tables
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +57,7 @@ depends_on = None
 
 def upgrade() -> None:
     conn = op.get_bind()
+    lock_tables(conn, "ledger", "projections")
 
     # 1. Backfill doc.payment.received ledger events missing payment_date:
     #    set data['payment_date'] = DATE(ledger.ts) where the field is absent.

@@ -44,11 +44,12 @@ async def _seed(session, *, locations, currency=None) -> tuple[uuid.UUID, uuid.U
     settings: dict = {}
     if currency:
         settings["currency"] = currency
-    session.add(Company(id=company_id, name="ImportCo", slug=f"importco-{company_id.hex[:8]}", settings=settings))
     session.add(User(
         id=user_id, email=f"actor-{user_id.hex[:8]}@example.com", name="Actor",
         auth_hash="x", is_active=True,
     ))
+    await session.flush()
+    session.add(Company(id=company_id, name="ImportCo", slug=f"importco-{company_id.hex[:8]}", settings=settings))
     await session.flush()  # parents before location FK rows for Postgres
     loc_rows: list[Location] = []
     for spec in locations:
@@ -846,7 +847,7 @@ async def _woo_linked_item(session, company_id, sku: str) -> None:
     from celerp.models.connector_config import ConnectorConfig
 
     now = datetime.now(timezone.utc)
-    session.add(ConnectorConfig(company_id=str(company_id), connector="woocommerce", direction="both"))
+    session.add(ConnectorConfig(company_id=str(company_id), connector="woocommerce"))
     session.add(Projection(
         company_id=company_id, entity_id=f"item:linked-{uuid.uuid4().hex[:8]}", entity_type="item",
         version=1, created_at=now, updated_at=now,

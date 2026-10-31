@@ -34,7 +34,7 @@ async def company(session) -> Company:
 
 
 @pytest_asyncio.fixture
-async def user(session, company) -> User:
+async def user(session) -> User:
     u = User(email="test@test.com", name="Test")
     session.add(u)
     await session.commit()
@@ -43,7 +43,7 @@ async def user(session, company) -> User:
 
 
 @pytest_asyncio.fixture
-async def user_b(session, company) -> User:
+async def user_b(session) -> User:
     u = User(email="b@test.com", name="UserB")
     session.add(u)
     await session.commit()
@@ -61,7 +61,7 @@ async def company_b(session) -> Company:
 
 
 @pytest_asyncio.fixture
-async def user_b_co(session, company_b) -> User:
+async def user_b_co(session) -> User:
     u = User(email="other@other.com", name="Other")
     session.add(u)
     await session.commit()
@@ -72,7 +72,7 @@ async def user_b_co(session, company_b) -> User:
 # ── create ──────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_create_notification(session, company, user):
+async def test_create_notification(session, user, company):
     with patch("celerp.notifications.service.deliver"):
         n = await svc.create(
             session, company.id, "ai", "Batch done", "5 files processed",
@@ -103,7 +103,7 @@ async def test_create_notification_company_wide(session, company):
 
 
 @pytest.mark.asyncio
-async def test_create_notification_publishes_sse(session, company, user):
+async def test_create_notification_publishes_sse(session, user, company):
     mock_pub = MagicMock()
     with patch("celerp.notifications.service.deliver", mock_pub):
         await svc.create(session, company.id, "ai", "Done", "Body", user_id=user.id)
@@ -118,31 +118,35 @@ async def test_create_notification_publishes_sse(session, company, user):
 # ── notify_once ──────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_notify_once_is_once_per_addressee(session, company, user, user_b):
+async def test_notify_once_is_once_per_addressee(session, user, user_b, company):
     """The same notice told to two members reaches each of them once; telling it again
     to either creates nothing."""
     with patch("celerp.notifications.service.deliver"):
-        assert await svc.notify_once(session, company.id, "fa", "Due", "Van", user_id=user.id)
-        assert await svc.notify_once(session, company.id, "fa", "Due", "Van", user_id=user_b.id)
-        assert not await svc.notify_once(session, company.id, "fa", "Due", "Van", user_id=user.id)
-        assert await svc.notify_once(session, company.id, "fa", "Due", "Van")
-        assert not await svc.notify_once(session, company.id, "fa", "Due", "Van")
+        await svc.notify_once(session, company.id, "fa", "Due", "Van", user_id=user.id)
+        await svc.notify_once(session, company.id, "fa", "Due", "Van", user_id=user_b.id)
+        await svc.notify_once(session, company.id, "fa", "Due", "Van", user_id=user.id)
+        await svc.notify_once(session, company.id, "fa", "Due", "Van")
+        await svc.notify_once(session, company.id, "fa", "Due", "Van")
         await session.commit()
+
+    rows = (await session.execute(text("SELECT user_id FROM notifications WHERE title = 'Due'"))).scalars().all()
+    assert sorted(map(str, rows)) == sorted(map(str, [user.id, user_b.id, None]))
 
     assert await svc.get_unread_count(session, company.id, user.id) == 2
     assert await svc.get_unread_count(session, company.id, user_b.id) == 2
 
 
 @pytest.mark.asyncio
-async def test_notify_once_again_moves_the_link_and_keeps_it_read(session, company, user):
+async def test_notify_once_again_moves_the_link_and_keeps_it_read(session, user, company):
     """Told again with another link, the notice already told takes that link and stays as the
     user left it: the link follows the condition without telling it a second time."""
     with patch("celerp.notifications.service.deliver"):
-        assert await svc.notify_once(session, company.id, "fa", "Due", "Van", action_url="/a")
+        await svc.notify_once(session, company.id, "fa", "Due", "Van", action_url="/a")
         await session.commit()
         notice, _read = (await svc.list_notifications(session, company.id, user.id))[0]
         assert await svc.mark_read(session, notice.id, company.id, user.id)
-        assert not await svc.notify_once(session, company.id, "fa", "Due", "Van", action_url="/b")
+        await session.commit()  # the read is its own request
+        await svc.notify_once(session, company.id, "fa", "Due", "Van", action_url="/b")
         await session.commit()
 
     rows = (await session.execute(text("SELECT action_url FROM notifications WHERE title = 'Due'"))).all()
@@ -153,7 +157,7 @@ async def test_notify_once_again_moves_the_link_and_keeps_it_read(session, compa
 # ── unread_count ─────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_unread_count(session, company, user):
+async def test_unread_count(session, user, company):
     with patch("celerp.notifications.service.deliver"):
         await svc.create(session, company.id, "ai", "N1", "B1", user_id=user.id)
         await svc.create(session, company.id, "ai", "N2", "B2", user_id=user.id)
@@ -164,7 +168,7 @@ async def test_unread_count(session, company, user):
 
 
 @pytest.mark.asyncio
-async def test_unread_count_includes_company_wide(session, company, user):
+async def test_unread_count_includes_company_wide(session, user, company):
     with patch("celerp.notifications.service.deliver"):
         await svc.create(session, company.id, "system", "Update", "v2", user_id=None)
         await svc.create(session, company.id, "ai", "Personal", "B", user_id=user.id)
@@ -175,7 +179,7 @@ async def test_unread_count_includes_company_wide(session, company, user):
 
 
 @pytest.mark.asyncio
-async def test_unread_count_excludes_other_users(session, company, user, user_b):
+async def test_unread_count_excludes_other_users(session, user, user_b, company):
     with patch("celerp.notifications.service.deliver"):
         await svc.create(session, company.id, "ai", "ForB", "B", user_id=user_b.id)
         await session.commit()
@@ -187,7 +191,7 @@ async def test_unread_count_excludes_other_users(session, company, user, user_b)
 # ── list ─────────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_list_notifications_newest_first(session, company, user):
+async def test_list_notifications_newest_first(session, user, company):
     with patch("celerp.notifications.service.deliver"):
         await svc.create(session, company.id, "ai", "First", "B1", user_id=user.id)
         await svc.create(session, company.id, "ai", "Second", "B2", user_id=user.id)
@@ -200,7 +204,7 @@ async def test_list_notifications_newest_first(session, company, user):
 
 
 @pytest.mark.asyncio
-async def test_the_bell_lists_notices_that_ask_for_action_first(session, company, user):
+async def test_the_bell_lists_notices_that_ask_for_action_first(session, user, company):
     """The bell (unread only) puts high-priority notices first, newest first within each
     priority, so one asking the user to act is not buried under later news. The full list
     stays newest first."""
@@ -217,7 +221,7 @@ async def test_the_bell_lists_notices_that_ask_for_action_first(session, company
 
 
 @pytest.mark.asyncio
-async def test_list_notifications_pagination(session, company, user):
+async def test_list_notifications_pagination(session, user, company):
     with patch("celerp.notifications.service.deliver"):
         for i in range(5):
             await svc.create(session, company.id, "ai", f"N{i}", "B", user_id=user.id)
@@ -233,7 +237,7 @@ async def test_list_notifications_pagination(session, company, user):
 # ── mark_read ────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_mark_read(session, company, user):
+async def test_mark_read(session, user, company):
     with patch("celerp.notifications.service.deliver"):
         n = await svc.create(session, company.id, "ai", "Test", "B", user_id=user.id)
         await session.commit()
@@ -247,7 +251,7 @@ async def test_mark_read(session, company, user):
 
 
 @pytest.mark.asyncio
-async def test_mark_read_wrong_company(session, company, company_b, user):
+async def test_mark_read_wrong_company(session, user, company, company_b):
     with patch("celerp.notifications.service.deliver"):
         n = await svc.create(session, company.id, "ai", "Test", "B", user_id=user.id)
         await session.commit()
@@ -257,7 +261,7 @@ async def test_mark_read_wrong_company(session, company, company_b, user):
 
 
 @pytest.mark.asyncio
-async def test_mark_read_nonexistent(session, company, user):
+async def test_mark_read_nonexistent(session, user, company):
     found = await svc.mark_read(session, uuid.uuid4(), company.id, user.id)
     assert found is False
 
@@ -268,11 +272,11 @@ async def test_mark_read_of_a_notice_deleted_meanwhile_is_not_found(committed_en
     read is simply not found."""
     mk = async_sessionmaker(committed_engine, expire_on_commit=False)
     async with mk() as s:
-        co = Company(name="Race", slug="race", settings={})
-        s.add(co)
-        await s.flush()
         u = User(email="race@test.com", name="U")
         s.add(u)
+        await s.flush()
+        co = Company(name="Race", slug="race", settings={})
+        s.add(co)
         await s.flush()
         n = Notification(company_id=co.id, category="system", title="t", body="b")
         s.add(n)
@@ -307,7 +311,7 @@ async def test_mark_read_of_a_notice_deleted_meanwhile_is_not_found(committed_en
 # ── mark_all_read ────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_mark_all_read(session, company, user):
+async def test_mark_all_read(session, user, company):
     with patch("celerp.notifications.service.deliver"):
         await svc.create(session, company.id, "ai", "N1", "B1", user_id=user.id)
         await svc.create(session, company.id, "ai", "N2", "B2", user_id=user.id)
@@ -325,7 +329,7 @@ async def test_mark_all_read(session, company, user):
 # ── retention ────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_retention_100_per_company(session, company, user):
+async def test_retention_100_per_company(session, user, company):
     with patch("celerp.notifications.service.deliver"):
         for i in range(105):
             await svc.create(session, company.id, "ai", f"N{i}", "B", user_id=user.id)
@@ -338,7 +342,7 @@ async def test_retention_100_per_company(session, company, user):
 # ── isolation ────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_isolation_between_companies(session, company, company_b, user, user_b_co):
+async def test_isolation_between_companies(session, user, user_b_co, company, company_b):
     with patch("celerp.notifications.service.deliver"):
         await svc.create(session, company.id, "ai", "CoA", "B", user_id=user.id)
         await svc.create(session, company_b.id, "ai", "CoB", "B", user_id=user_b_co.id)
@@ -353,7 +357,7 @@ async def test_isolation_between_companies(session, company, company_b, user, us
 
 
 @pytest.mark.asyncio
-async def test_list_notifications_stable_order_when_created_at_ties(session, company, user):
+async def test_list_notifications_stable_order_when_created_at_ties(session, user, company):
     """Regression: notifications sharing a created_at must order deterministically by id, so
     OFFSET pagination can't skip or duplicate a tied row across pages."""
     from datetime import datetime, timezone

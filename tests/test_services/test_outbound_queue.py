@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: BUSL-1.1
 from __future__ import annotations
 
+import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -11,20 +12,32 @@ import sqlalchemy as sa
 from celerp.connectors.outbound_queue import enqueue_item_change, process_outbound_queue_once
 from celerp.models.company import Company
 from celerp.models.connector_config import ConnectorConfig, OutboundQueue
+from celerp.models.connector_first_sync import ConnectorFirstSync
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from connector_test_support import connect, stand_in_connector
+from test_helpers import remove_company
+
+
+@pytest.fixture(autouse=True)
+def _queue_rows_are_taken_under_their_company_lock():
+    """Every queue test is a census of the queue rows it takes: one taken outside its company's
+    lock and held while its transaction waits on more (not a leaf) fails the test."""
+    with sys.modules["lock_rank"].ungated_takes(("row:outbound_queue",), "celerp/connectors/") as found:
+        yield
+    assert sorted(found) == [], "queue row takes outside the company lock:\n" + "\n".join(sorted(found))
 
 
 async def _purge_committed(*companies: uuid.UUID, legacy_key: str | None = None) -> None:
     """Delete what a test committed outside the per-test rollback, so later
     tests on the same worker see only their own companies."""
     from celerp.db import get_session_ctx
-    keys = [str(c) for c in companies] + ([legacy_key] if legacy_key else [])
-    async with get_session_ctx() as cleanup:
-        for model in (OutboundQueue, ConnectorConfig):
-            await cleanup.execute(sa.delete(model).where(model.company_id.in_(keys)))
-        await cleanup.execute(sa.delete(Company).where(Company.id.in_(companies)))
-        await cleanup.commit()
+    if legacy_key:
+        async with get_session_ctx() as cleanup:
+            for model in (OutboundQueue, ConnectorConfig, ConnectorFirstSync):
+                await cleanup.execute(sa.delete(model).where(model.company_id == legacy_key))
+                await cleanup.commit()
+    await remove_company(get_session_ctx, list(companies))
 
 
 @pytest.mark.asyncio
@@ -37,7 +50,7 @@ async def test_local_linked_item_change_enqueues_woocommerce_stock(session):
         settings={},
     ))
     session.add(ConnectorConfig(
-        company_id=str(company_id), connector="woocommerce", direction="both"
+        company_id=str(company_id), connector="woocommerce"
     ))
     item_id = "item:q"
     now = datetime.now(timezone.utc)
@@ -108,7 +121,7 @@ async def test_legacy_connector_adoption_uses_explicit_owner_in_multi_company_db
     owner_id = uuid.uuid4()
     other_id = uuid.uuid4()
     legacy_id = f"inst-{uuid.uuid4().hex[:10]}"
-    connector = f"legacy-owner-{uuid.uuid4().hex[:10]}"
+    connector = stand_in_connector(monkeypatch, "legacy-owner")
     try:
         async with get_session_ctx() as seed:
             seed.add_all([
@@ -151,7 +164,7 @@ async def test_connector_ui_enable_enqueues_current_woocommerce_identity(session
         settings={},
     ))
     session.add(ConnectorConfig(
-        company_id=str(company_id), connector="woocommerce", direction="both"
+        company_id=str(company_id), connector="woocommerce"
     ))
     now = datetime.now(timezone.utc)
     session.add(Projection(
@@ -217,7 +230,7 @@ async def test_legacy_sku_change_invalidates_old_and_new_woocommerce_families(se
         settings={},
     ))
     session.add(ConnectorConfig(
-        company_id=str(company_id), connector="woocommerce", direction="both"
+        company_id=str(company_id), connector="woocommerce"
     ))
     now = datetime.now(timezone.utc)
     session.add_all([
@@ -306,7 +319,7 @@ async def test_explicit_catalog_child_change_enqueues_anchor_identity(session):
         settings={},
     ))
     session.add(ConnectorConfig(
-        company_id=str(company_id), connector="woocommerce", direction="both"
+        company_id=str(company_id), connector="woocommerce"
     ))
     now = datetime.now(timezone.utc)
     anchor_id = "item:anchor"
@@ -363,9 +376,14 @@ async def test_explicit_catalog_child_change_enqueues_anchor_identity(session):
     assert identities == {"10"}
 
 @pytest.mark.asyncio
-async def test_identity_backoff_applies_to_newer_rows(_db_engine):
+async def test_identity_backoff_applies_to_newer_rows(_db_engine, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from celerp.connectors.base import ConnectorContext
     from celerp.db import get_session_ctx
 
+    monkeypatch.setattr("celerp.connectors.relay_token.fetch_context", AsyncMock(
+        side_effect=lambda cid, *_a, **_k: ConnectorContext(company_id=str(cid), access_token="k:s")))
     company_id = uuid.uuid4()
     deadline = datetime.now(timezone.utc) + timedelta(minutes=5)
     try:
@@ -376,11 +394,8 @@ async def test_identity_backoff_applies_to_newer_rows(_db_engine):
                 slug=f"backoff-{company_id.hex[:8]}",
                 settings={},
             ))
-            seed.add(ConnectorConfig(
-                company_id=str(company_id),
-                connector="woocommerce",
-                direction="both",
-            ))
+            await seed.flush()
+            await connect(seed, company_id, "woocommerce", first_sync="completed")
             seed.add_all([
                 OutboundQueue(
                     company_id=str(company_id),
@@ -421,6 +436,80 @@ async def test_identity_backoff_applies_to_newer_rows(_db_engine):
 
 
 @pytest.mark.asyncio
+async def test_a_busy_or_failing_identity_waits_under_its_company_lock(_db_engine, monkeypatch):
+    """The background queue defers an identity whose resource another execution holds by 30 s,
+    and one whose store credentials fail by a minute with the error kept; both writers take the
+    queue rows under the company lock, and the test requires that it ran them (the checker
+    cannot judge a writer no test ran)."""
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from celerp.connectors.base import ConnectorContext
+    from celerp.connectors.execution import connector_execution, execution_resource
+    from celerp.db import get_session_ctx
+
+    monkeypatch.setattr("celerp.connectors.relay_token.fetch_context", AsyncMock(
+        side_effect=lambda cid, *_a, **_k: ConnectorContext(company_id=str(cid), access_token="k:s")))
+    company_id = uuid.uuid4()
+    try:
+        async with get_session_ctx() as seed:
+            seed.add(Company(id=company_id, name="Deferred Co", slug=f"deferred-{company_id.hex[:8]}", settings={}))
+            await seed.flush()
+            await connect(seed, company_id, "woocommerce", first_sync="completed")
+            seed.add(OutboundQueue(company_id=str(company_id), connector="woocommerce",
+                                   entity_type="inventory", entity_id="88", status="pending"))
+            await seed.commit()
+
+        async def row() -> OutboundQueue:
+            async with get_session_ctx() as check:
+                return await check.scalar(sa.select(OutboundQueue).where(
+                    OutboundQueue.company_id == str(company_id), OutboundQueue.entity_id == "88"))
+
+        async def due_again() -> None:
+            async with get_session_ctx() as reset:
+                await reset.execute(sa.update(OutboundQueue).where(
+                    OutboundQueue.company_id == str(company_id)).values(next_retry_at=None))
+                await reset.commit()
+
+        with sys.modules["lock_rank"].writers_taken("celerp/connectors/outbound_queue.py") as seen:
+            # Another task holds the identity's resource (the queue's own execution is a
+            # separate task, so it cannot join it).
+            held, done = asyncio.Event(), asyncio.Event()
+
+            async def holder() -> None:
+                async with connector_execution(company_id, "woocommerce", "manual_sync",
+                                               [execution_resource("outbound", "inventory")]):
+                    held.set()
+                    await done.wait()
+
+            holding = asyncio.create_task(holder())
+            await asyncio.wait({holding, asyncio.create_task(held.wait())}, return_when=asyncio.FIRST_COMPLETED)
+            assert held.is_set(), holding.exception()
+            before = datetime.now(timezone.utc)
+            try:
+                await process_outbound_queue_once()
+            finally:
+                done.set()
+                await holding
+            busy = await row()
+            assert busy.status == "pending" and busy.error_message is None
+            assert before + timedelta(seconds=25) <= busy.next_retry_at <= before + timedelta(seconds=40)
+
+            await due_again()
+            monkeypatch.setattr("celerp.connectors.relay_token.fetch_context",
+                                AsyncMock(side_effect=RuntimeError("store credentials unavailable")))
+            before = datetime.now(timezone.utc)
+            await process_outbound_queue_once()
+            failed = await row()
+            assert failed.status == "pending" and failed.error_message == "store credentials unavailable"
+            assert before + timedelta(seconds=55) <= failed.next_retry_at <= before + timedelta(seconds=70)
+        assert {"celerp/connectors/outbound_queue.py defer",
+                "celerp/connectors/outbound_queue.py process_outbound_identity"} <= seen
+    finally:
+        await _purge_committed(company_id)
+
+
+@pytest.mark.asyncio
 async def test_ambiguous_connector_ownership_fails_closed(session, monkeypatch):
     from celerp.connectors.ownership import (
         ConnectorOwnershipAmbiguousError,
@@ -453,7 +542,7 @@ async def test_ambiguous_connector_ownership_fails_closed(session, monkeypatch):
         ConnectorConfig(company_id=first_company, connector=connector),
         ConnectorConfig(company_id=second_company, connector=connector),
     ])
-    await session.flush()
+    await session.commit()
     with pytest.raises(ConnectorOwnershipAmbiguousError):
         await lock_connector_operation(
             session, first_company, connector, require_owner=True
@@ -470,7 +559,7 @@ async def test_legacy_sku_lookup_is_case_insensitive_in_database(session):
         settings={},
     ))
     session.add(ConnectorConfig(
-        company_id=str(company_id), connector="woocommerce", direction="both"
+        company_id=str(company_id), connector="woocommerce"
     ))
     now = datetime.now(timezone.utc)
     session.add_all([

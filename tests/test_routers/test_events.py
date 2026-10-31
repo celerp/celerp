@@ -24,7 +24,6 @@ import uuid
 import pytest
 import pytest_asyncio
 from fastapi import HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import celerp.routers.events as events_mod
 from celerp.models.accounting import UserCompany
@@ -33,6 +32,7 @@ from celerp.models.company import Company, User
 from celerp.notifications.sse import _subscribers, publish, shutdown_all
 from celerp.services import runtime_state
 from celerp.credentials import create_access_token
+from test_helpers import own_sessions_on
 
 
 async def _bearer(session, snonce: str = "stream-nonce") -> tuple[str, uuid.UUID, uuid.UUID, str]:
@@ -52,8 +52,9 @@ async def _bearer(session, snonce: str = "stream-nonce") -> tuple[str, uuid.UUID
     """
     company_id = uuid.uuid4()
     user_id = uuid.uuid4()
-    session.add(Company(id=company_id, name="Stream Co", slug=f"stream-{company_id}"))
     session.add(User(id=user_id, email=f"stream-{user_id}@test.local", name="Stream User"))
+    await session.flush()
+    session.add(Company(id=company_id, name="Stream Co", slug=f"stream-{company_id}"))
     # Flush the parent rows before the membership and auth state so their foreign
     # keys resolve against committed users/companies rows.
     await session.flush()
@@ -92,10 +93,7 @@ async def _route_session_on_test_transaction(session, monkeypatch):
     """
     import celerp.db as _db
 
-    factory = async_sessionmaker(
-        bind=await session.connection(), class_=AsyncSession,
-        expire_on_commit=False, join_transaction_mode="create_savepoint")
-    monkeypatch.setattr(_db, "SessionLocal", factory)
+    monkeypatch.setattr(_db, "SessionLocal", await own_sessions_on(session))
     yield
 
 

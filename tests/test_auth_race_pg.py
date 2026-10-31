@@ -67,22 +67,17 @@ async def _fresh_session(engine) -> AsyncSession:
 @pytest_asyncio.fixture
 async def seeded(engine, sessionmaker):
     """Seed one user, one company (plus a second for switch/create paths), an
-    active membership on each, and the user's UserAuthState with nonce N0.
-
-    Truncates first so a reused database from a prior run starts clean.
-    """
+    active membership on each, and the user's UserAuthState with nonce N0, on the
+    test's own database (committed_engine)."""
     async with sessionmaker() as s:
-        # Clean slate: order respects FKs.
-        for model in (SessionRegistry, UserAuthState, UserCompany, User, Company):
-            await s.execute(model.__table__.delete())
-        await s.commit()
-
         n0 = str(uuid.uuid4())
         suffix = uuid.uuid4().hex[:8]
         user = User(email=f"race-{suffix}@example.com", name="Race User", auth_hash=None)
         company_a = Company(name="Company A", slug=f"company-a-{suffix}", settings={})
         company_b = Company(name="Company B", slug=f"company-b-{suffix}", settings={})
-        s.add_all([user, company_a, company_b])
+        s.add(user)
+        await s.flush()
+        s.add_all([company_a, company_b])
         await s.flush()
         s.add_all([
             UserCompany(user_id=user.id, company_id=company_a.id, role="owner", is_active=True),

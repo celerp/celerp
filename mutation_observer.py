@@ -10,7 +10,7 @@ judging the request's authority again) and PostgreSQL still holds that lock (the
 company_lock keeps), and no narrower lock (a chart, row or other advisory lock) was taken
 before that company's lock; a write named in JUDGED_WITHOUT_LOCK is protected by the
 request's authority judged again without the lock, one named in UNDER_ROW_LOCK by its
-own row lock, and a write to a company this transaction created by that company being
+own row lock, one to a LEASE_STATE table or a LEASE_RENEWALS renewal by the lease's own statements, and a write to a company this transaction created by that company being
 invisible to every other transaction until it commits; a write on a connection no Session
 uses while the request holds the migration lock is the schema migrator's. Each statement is judged on the Session that ran it. A write is
 judged when its transaction commits: a write rolled back with its savepoint or transaction
@@ -40,6 +40,7 @@ import os
 import re
 import sys
 import weakref
+from collections.abc import ValuesView
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field, replace
@@ -58,7 +59,6 @@ from sqlalchemy.util import greenlet_spawn
 
 import sqlalchemy.orm.session as _orm_session
 from celerp.services.company_lock import _PROOFS, note, noted
-from mutation_baseline import accepted
 from mutation_read_notes import READ_ROUTE_WRITES
 
 # Functions whose effects are reviewed: a statement calling only these reads (or writes
@@ -70,7 +70,7 @@ _PURE = frozenset({
     "count", "date", "date_trunc", "extract", "greatest", "json_agg", "json_build_object",
     "jsonb_agg", "jsonb_build_object", "jsonb_extract_path_text", "jsonb_array_elements",
     "jsonb_array_length", "jsonb_typeof", "least", "length", "lower", "max", "min", "now",
-    "nullif", "round", "row_number", "string_agg", "substr", "substring", "sum", "trim",
+    "nullif", "power", "round", "row_number", "string_agg", "substr", "substring", "sum", "trim",
     "upper", "current_date", "current_timestamp", "hashtext", "hashtextextended",
     # string, json and set functions
     "array_position", "convert_to", "encode", "format", "gen_random_uuid", "generate_series",
@@ -98,12 +98,12 @@ _UNLOCK = frozenset({"pg_advisory_unlock", "pg_advisory_unlock_shared"})
 _CONTROL = frozenset({"set_config"}) | _UNLOCK
 # A notice to listeners is an outbound effect, not a write of company data.
 _EFFECT = frozenset({"pg_notify"})
-# Advisory lock families taken before the company lock by the canonical order (module
-# admission and the module-state boundary come first).
-_BEFORE_COMPANY = ("module-use:", "module-gate:")
 # The connector fences (celerp.connectors.ownership.lock_connector_key) rank before the
 # company lock too: the install-wide runtime fence, then one connector's ownership fence.
 _CONNECTOR_RUNTIME, _CONNECTOR_OWNER = "connector-runtime", "connector-owner:"
+# Advisory lock families taken before the company lock by the canonical order (module
+# admission and the module-state boundary, one restore per owner, one start per scan).
+_BEFORE_COMPANY = ("module-use:", "module-gate:", "restore-names:", "migration-scan:")
 _DDL = ("Create", "Alter", "Drop", "Rename", "Comment", "Grant", "Index", "View")
 _ROW_LOCK = {1: "row share key", 2: "row share", 3: "row update key", 4: "row update"}
 # Tables that hold no company's data, each with the infrastructure that writes it.
@@ -154,7 +154,8 @@ _TOKEN_ISSUE = RowLocked(
     "issuance point checks the login's membership under the company's row lock first")
 _TOKEN_REVOKE = RowLocked(
     "user_auth_state",
-    ("celerp/services/session_tracker.py invalidate_sessions", "celerp/services/session_tracker.py _rotate_every_nonce"),
+    tuple(f"celerp/services/session_tracker.py {name}" for name in (
+        "invalidate_sessions", "invalidate_all_sessions", "end_all_sessions")),
     "a login's session tokens ended with its session state rotated: every company the login worked in")
 UNDER_ROW_LOCK: dict[tuple[str, str], RowLocked] = {
     ("migration_cleanup_tasks", "DELETE"): RowLocked(
@@ -163,8 +164,37 @@ UNDER_ROW_LOCK: dict[tuple[str, str], RowLocked] = {
     ("session_registry", "INSERT"): _TOKEN_ISSUE,
     ("session_registry", "UPDATE"): _TOKEN_ISSUE,
     ("session_registry", "DELETE"): _TOKEN_REVOKE,
-    ("ai_batch_jobs", "UPDATE"): RowLocked(
-        "ai_batch_jobs", ("celerp/ai/jobs.py _heartbeat",),
+}
+
+# Tables whose rows are a connector execution's lease, kept by statements on those rows
+# alone that check the holder and expiry in the statement itself, in a transaction that
+# holds nothing else (celerp/connectors/execution.py), so a lease is never held up by a
+# company lock: the canonical order ranks the lease rows before the company lock. Each
+# names the only functions that may write it; the same write from anywhere else is judged
+# as usual.
+_LEASE_SITES = tuple(f"celerp/connectors/execution.py {name}" for name in (
+    "_ensure_rows", "_acquire", "_renew_once", "_release", "_ack_rerun", "_settle_rerun", "sweep_reruns",
+    "record_rerun"))
+LEASE_STATE: dict[str, Judged] = {
+    "connector_execution_leases": Judged(
+        _LEASE_SITES, "a connector execution's fenced generation and holder, taken and given back"),
+    "connector_execution_heartbeats": Judged(
+        _LEASE_SITES, "a connector execution's expiry, renewed while it runs, and the reruns asked of it"),
+}
+# Lease renewals of a row whose other writes are judged as usual, by table and statement type:
+# one statement that sets the lease columns alone and checks the holder in the statement
+# itself, in a transaction that holds nothing else. Each names its columns and the only
+# functions that may make it.
+@dataclass(frozen=True)
+class LeaseRenewal:
+    columns: tuple[str, ...]  # the only columns the renewal sets
+    sites: tuple[str, ...]  # "<file> <function>" that make the write
+    reason: str
+
+
+LEASE_RENEWALS: dict[tuple[str, str], LeaseRenewal] = {
+    ("ai_batch_jobs", "UPDATE"): LeaseRenewal(
+        ("lease_until",), ("celerp/ai/jobs.py _heartbeat",),
         "a runner's lease renewed, and nothing else: only while its runner id still holds the job open, so it "
         "never takes a job, and never waits on the company lock, as a renewal held past the lease would hand a "
         "healthy runner's job to another"),
@@ -643,11 +673,16 @@ def _owned(table: str, seen: frozenset = frozenset()) -> bool:
 def _before_company(op: Op) -> bool:
     """The company lock itself (its row, the membership judged under it) and the locks
     the canonical order takes before it (module admission, the module-state boundary, the
-    schema key a backup or restore shares, a restore's claim of its backup)."""
+    schema key a backup or restore shares, a restore's claim of its backup, one restore
+    per owner, the owner's login row). The order is tests/lock_rank.py RANKS."""
     from celerp.db import _MIGRATION_LOCK_KEY
     from celerp.modules.registry import _MODULE_STATE_LOCK_KEY
     from celerp.services.company_backup import CLAIM
     if op.table in ("companies", "user_companies"):
+        return True
+    if op.table == "users" and op.detail.startswith("row "):
+        return True
+    if op.table in LEASE_STATE and op.detail.startswith("row "):
         return True
     return op.name in (_MODULE_STATE_LOCK_KEY, _MIGRATION_LOCK_KEY) or _fence(op) or (
         isinstance(op.name, str) and op.name.startswith((*_BEFORE_COMPANY, CLAIM)))
@@ -668,12 +703,25 @@ def _unassigned_connector(request: dict, session, target) -> bool:
 
 
 def _under_row_lock(request: dict, session, op: Op) -> bool:
-    """The write is one UNDER_ROW_LOCK names, made by one of its functions after its row lock."""
+    """The write is one UNDER_ROW_LOCK names, made by one of its functions after its row lock
+    (FOR UPDATE or FOR NO KEY UPDATE: either keeps every other writer of the row out)."""
     rule = UNDER_ROW_LOCK.get((op.table, op.detail))
-    if rule is None or not any(rule.table in tables.split(",") and "row update" in mode.split(" + ")
+    if rule is None or not any(rule.table in tables.split(",")
+                               and any(m.startswith("row update") for m in mode.split(" + "))
                                for tables, mode in (held.split(" ", 1) for held in _here(request, session, _ROW))):
         return False
     return _made_by(rule.sites)
+
+
+def _lease_write(op: Op) -> bool:
+    """The write is to a LEASE_STATE table, made by one of its functions, or a LEASE_RENEWALS
+    renewal: its columns only, made by one of its functions."""
+    rule = LEASE_STATE.get(op.table)
+    if rule is not None:
+        return _made_by(rule.sites)
+    renewal = LEASE_RENEWALS.get((op.table, op.detail))
+    return renewal is not None and bool(op.columns) and set(op.columns) <= set(renewal.columns) \
+        and _made_by(renewal.sites)
 
 
 def _read_note(request: dict, op: Op) -> bool:
@@ -727,14 +775,38 @@ def _session_for(conn) -> Session | None:
     return sessions[0] if sessions and len(sessions) == 1 else None
 
 
-def _proofs(request: dict, session) -> list:
-    """The lock proofs the session holds that were taken while this request was served."""
-    inherited = request["inherited"].get(session, {})
-    return [p for p in session.info.get(_PROOFS, ()) if id(p) not in inherited]
+# How many savepoint rollbacks have filtered the session's proofs in place.
+_PROOFS_FILTERED = "mutation_observer_proofs_filtered"
 
 
-def _here(request: dict, session, kind: str) -> list:
-    return [key for k, key, _ in _proofs(request, session) if k == kind]
+@event.listens_for(Session, "after_soft_rollback")
+def _proofs_filtered(session, transaction) -> None:
+    session.info[_PROOFS_FILTERED] = session.info.get(_PROOFS_FILTERED, 0) + 1
+
+
+def _here(request: dict, session, kind: str) -> ValuesView:
+    """The distinct keys of *kind* the session holds that were taken while this request was
+    served. It is read after every statement and a long request takes the same lock thousands
+    of times, so it reads only the proofs noted since its last read (starting over when the
+    list is replaced or a savepoint rollback filtered it) and keeps each key once."""
+    proofs = session.info.get(_PROOFS, ())
+    filtered = session.info.get(_PROOFS_FILTERED, 0)
+    index = request.setdefault("proofs_read", weakref.WeakKeyDictionary())
+    read = index.get(session)
+    if read is None or read["list"] is not proofs or read["filtered"] != filtered or read["upto"] > len(proofs):
+        read = index[session] = {"list": proofs, "filtered": filtered, "upto": 0, "keys": {}}
+    if read["upto"] < len(proofs):
+        inherited = request["inherited"].get(session, {})
+        for proof in proofs[read["upto"]:]:
+            if id(proof) not in inherited:
+                key = proof[1]
+                try:
+                    hash(key)
+                except TypeError:
+                    key = id(proof)
+                read["keys"].setdefault(proof[0], {}).setdefault(key, proof[1])
+        read["upto"] = len(proofs)
+    return read["keys"].get(kind, {}).values()
 
 
 def _holds(request: dict, session, company) -> bool:
@@ -771,10 +843,10 @@ _RELATIVE: dict[str, str | None] = {}
 
 def _relative(filename: str) -> str | None:
     """The app source file a frame runs in, relative to the repository; None for tests,
-    this observer, and anything outside the repository."""
+    the test harness (conftest.py), this observer, and anything outside the repository."""
     if filename not in _RELATIVE:
         mine = filename.startswith(_ROOT) and "/tests/" not in filename \
-            and not filename.endswith("mutation_observer.py")
+            and not filename.endswith(("mutation_observer.py", "conftest.py"))
         _RELATIVE[filename] = os.path.relpath(filename, _ROOT) if mine else None
     return _RELATIVE[filename]
 
@@ -893,7 +965,7 @@ def _executed(conn, cursor, statement, parameters, context, executemany) -> None
     if (op.table, op.detail) == ("companies", "INSERT"):
         for created in op.companies:
             note(session, _CREATED, created)
-    row_locked = _under_row_lock(request, session, op)
+    row_locked = _under_row_lock(request, session, op) or _lease_write(op)
     if not targets and not row_locked:
         return found("unprotected", "no company for the write", None)
     for target in targets or (None,):
@@ -978,7 +1050,7 @@ def explain(findings: list[Finding]) -> str:
 class Totals:
     """Everything one test process saw, merged across its tests: request and write counts
     per route, durable writes per app frame, and each distinct finding once, with how
-    often it was seen, every test that saw it, and the baseline issue that accepts it."""
+    often it was seen and every test that saw it."""
 
     def __init__(self) -> None:
         self.routes: dict[str, dict[str, int]] = {}
@@ -997,9 +1069,7 @@ class Totals:
             key = "|".join(map(str, (f.kind, f.route, f.table, f.detail, f.fingerprint or f.sql, *f.where)))
             seen = self.findings.get(key)
             if seen is None:
-                entry = accepted(f)
-                self.findings[key] = {**asdict(f), "key": key, "sites": [], "count": 1, "tests": [census.test],
-                                      "accepted": entry["issue"] if entry else None}
+                self.findings[key] = {**asdict(f), "key": key, "sites": [], "count": 1, "tests": [census.test]}
             else:
                 seen["count"] += 1
                 if census.test not in seen["tests"]:

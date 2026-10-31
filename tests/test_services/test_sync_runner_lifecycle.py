@@ -16,10 +16,11 @@ from datetime import datetime, timezone
 import pytest
 import sqlalchemy as sa
 
-from celerp.connectors.base import ConnectorContext, SyncDirection, SyncEntity, SyncResult
-from celerp.connectors.sync_runner import run_sync
+from celerp.connectors.base import ConnectorContext, EntityFlow, SyncEntity, SyncResult
 from celerp.db import get_session_ctx
 from celerp.models.sync_run import SyncRun
+from connector_test_support import connected
+from migration_support import real_engine  # noqa: F401
 
 pytestmark = pytest.mark.asyncio
 
@@ -36,12 +37,37 @@ def _active_company_guard(monkeypatch):
         "celerp.connectors.ownership._lock_active_company",
         AsyncMock(return_value=None),
     )
+    monkeypatch.setattr(
+        "celerp.connectors.relay_token.fetch_context",
+        AsyncMock(side_effect=lambda company_id, *_a, **_k: ConnectorContext(
+            company_id=str(company_id), access_token="t")),
+    )
+
+
+@pytest.fixture(autouse=True)
+def _committed_state_cleared(real_engine):
+    """A run commits through the app's own sessions (connections, runs, the execution
+    lease); real_engine truncates all of it after each test, so a stub connector
+    connected in one test is not connected to another company in the next."""
+
+
+async def _run(stub, cid, entity="orders", **kwargs):
+    """``stub`` synced for company ``cid``, connected on first use."""
+    from celerp.connectors.sync_runner import run_sync
+    from celerp.models.connector_first_sync import ConnectorFirstSync
+
+    async with get_session_ctx() as s:
+        new = await s.get(ConnectorFirstSync, (cid, stub.name)) is None
+    if new:
+        await connected(cid, stub, stub.default_directions)
+    return await run_sync(stub, cid, entity, purpose="manual_sync", **kwargs)
 
 
 class _Stub:
     name = "stub_lifecycle"
     store_scoped_ids = False
-    direction = SyncDirection.BOTH
+    entity_flows = {"orders": EntityFlow(inbound=("orders",))}
+    default_directions = {"orders": "inbound"}
 
     def __init__(self, on_run=None, boom=False):
         self._on_run = on_run
@@ -74,7 +100,7 @@ async def test_in_progress_row_visible_then_single_terminal_row(_db_engine):
             seen["status"] = getattr(row, "status", None)
             seen["finished"] = getattr(row, "finished_at", "norow")
 
-    res = await run_sync(_Stub(on_run=_mid), ConnectorContext(company_id=cid, access_token="t"), "orders")
+    res = await _run(_Stub(on_run=_mid), cid)
     assert not res.errors
     assert seen["status"] == "running"
     assert seen["finished"] is None
@@ -85,29 +111,31 @@ async def test_in_progress_row_visible_then_single_terminal_row(_db_engine):
 
 
 async def test_concurrency_guard_refuses_second_run(_db_engine):
-    cid = _cid()
-    async with get_session_ctx() as s:
-        s.add(SyncRun(
-            company_id=cid, connector="stub_lifecycle", entity="orders", started_at=datetime.now(timezone.utc), finished_at=None,
-            created_count=0, updated_count=0, skipped_count=0, errors_json=None, status="running",
-        ))
-        await s.commit()
+    """A second run of a resource whose lease is held is refused before its body runs."""
+    import asyncio
 
-    ran = {"v": False}
+    from celerp.connectors.execution import ExecutionBusy
+
+    cid = _cid()
+    ran = {"second": False}
 
     async def _mark():
-        ran["v"] = True
+        ran["second"] = True
 
-    res = await run_sync(_Stub(on_run=_mark), ConnectorContext(company_id=cid, access_token="t"), "orders")
-    assert ran["v"] is False  # the sync body never ran - a run is already in progress
-    assert res.errors and "already in progress" in res.errors[0]
+    async def _second():
+        with pytest.raises(ExecutionBusy):
+            await asyncio.create_task(_run(_Stub(on_run=_mark), cid))
+
+    res = await _run(_Stub(on_run=_second), cid)
+    assert not res.errors
+    assert ran["second"] is False  # the second body never ran
     rows = await _rows(cid)
     assert len(rows) == 1  # no second row created
 
 
 async def test_failure_records_failed_status(_db_engine):
     cid = _cid()
-    res = await run_sync(_Stub(boom=True), ConnectorContext(company_id=cid, access_token="t"), "orders")
+    res = await _run(_Stub(boom=True), cid)
     assert res.errors and "api 500" in res.errors[0]
     rows = await _rows(cid)
     assert len(rows) == 1
@@ -118,7 +146,8 @@ class _AttentionStub:
     """A connector whose sync takes carried attention and returns a new list."""
     name = "stub_attention"
     store_scoped_ids = False
-    direction = SyncDirection.BOTH
+    entity_flows = {"orders": EntityFlow(inbound=("orders",))}
+    default_directions = {"orders": "inbound"}
 
     def __init__(self, returns):
         self._returns = list(returns)
@@ -136,15 +165,14 @@ async def test_attention_is_persisted_and_carried_to_the_next_run(_db_engine):
     cid = _cid()
     waiting = [{"id": "7", "label": "Order 7", "reason": "no stock"}]
     stub = _AttentionStub([waiting, []])
-    ctx = ConnectorContext(company_id=cid, access_token="t")
 
-    first = await run_sync(stub, ctx, "orders")
+    first = await _run(stub, cid)
     assert not first.errors
     rows = await _rows(cid)
     assert len(rows) == 1 and rows[0].status == "success"
     assert rows[0].attention == waiting
 
-    second = await run_sync(stub, ctx, "orders")
+    second = await _run(stub, cid)
     assert not second.errors
     assert stub.received == [[], waiting]
     latest = max(await _rows(cid), key=lambda r: r.started_at)
@@ -172,17 +200,14 @@ async def test_a_run_that_produces_no_list_keeps_the_previous_one(_db_engine):
     cid = _cid()
     waiting = [{"id": "7", "label": "Order 7", "reason": "no stock"}]
     stub = _FlakyAttentionStub([waiting, RuntimeError("connection refused"), []])
-    ctx = ConnectorContext(company_id=cid, access_token="t")
 
-    await run_sync(stub, ctx, "orders")
-    guarded = await run_sync(stub, ctx, "orders", expected_config_id=uuid.uuid4())
-    assert guarded.errors and "connection changed" in guarded.errors[0]
-    crashed = await run_sync(stub, ctx, "orders")
+    await _run(stub, cid)
+    crashed = await _run(stub, cid)
     assert crashed.errors and "connection refused" in crashed.errors[0]
     assert await attention_entries(cid, stub.name, "orders") == waiting
     assert await attention_entries(cid, stub.name) == [{**waiting[0], "entity": "orders"}]
 
-    await run_sync(stub, ctx, "orders")
+    await _run(stub, cid)
     assert stub.received == [[], waiting, waiting]
     assert await attention_entries(cid, stub.name) == []
 
@@ -197,14 +222,13 @@ async def test_attention_read_failure_fails_the_run(_db_engine, monkeypatch):
     cid = _cid()
     waiting = [{"id": "7", "label": "Order 7", "reason": "no stock"}]
     stub = _AttentionStub([waiting])
-    ctx = ConnectorContext(company_id=cid, access_token="t")
-    await run_sync(stub, ctx, "orders")
+    await _run(stub, cid)
 
     monkeypatch.setattr(
         "celerp.connectors.sync_runner.attention_entries",
         AsyncMock(side_effect=RuntimeError("database unavailable")),
     )
-    failed = await run_sync(stub, ctx, "orders")
+    failed = await _run(stub, cid)
 
     assert failed.errors and "database unavailable" in failed.errors[0]
     assert stub.received == [[]]
@@ -218,8 +242,7 @@ async def test_a_reset_starts_the_attention_list_over(_db_engine):
 
     cid = _cid()
     stub = _AttentionStub([[{"id": "7", "label": "Order 7", "reason": "no stock"}]])
-    ctx = ConnectorContext(company_id=cid, access_token="t")
-    await run_sync(stub, ctx, "orders")
+    await _run(stub, cid)
     assert await attention_entries(cid, stub.name, "orders")
     async with get_session_ctx() as s:
         s.add(SyncRun(
@@ -244,7 +267,7 @@ async def test_update_attention_entry_edits_the_current_list(_db_engine):
         {"id": "8", "label": "Order 8", "reason": "no stock"},
     ]
     stub = _AttentionStub([waiting])
-    await run_sync(stub, ConnectorContext(company_id=cid, access_token="t"), "orders")
+    await _run(stub, cid)
 
     def _mark(entry):
         entry["reconciled"] = True
@@ -262,3 +285,71 @@ async def test_update_attention_entry_edits_the_current_list(_db_engine):
         await s.commit()
     assert entry == {**waiting[0], "reconciled": True}
     assert await attention_entries(cid, stub.name, "orders") == [entry, waiting[1]]
+
+
+class _ProductsStub:
+    """Products both ways; records the context and ``since`` each call receives."""
+    name = "stub_products"
+    store_scoped_ids = False
+    entity_flows = {"products": EntityFlow(inbound=("products",), outbound=("products_out",))}
+    default_directions = {"products": "both"}
+
+    def __init__(self):
+        self.calls: list[tuple] = []
+
+    async def sync_products(self, ctx, since=None):
+        self.calls.append(("products", ctx.access_token, since))
+        return SyncResult(entity=SyncEntity.PRODUCTS, created=1)
+
+    async def sync_products_out(self, ctx):
+        self.calls.append(("products_out", ctx.access_token))
+        return SyncResult(entity=SyncEntity.PRODUCTS, created=1)
+
+
+async def test_run_sync_feeds_the_watermark_as_since(_db_engine):
+    """An incremental pull starts from the last successful run, so a scheduled or
+    webhook sync never degrades to a full pull."""
+    cid = _cid()
+    stub = _ProductsStub()
+    watermark = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    async with get_session_ctx() as s:
+        s.add(SyncRun(company_id=cid, connector=stub.name, entity="products", direction="inbound",
+                      started_at=watermark, finished_at=watermark, status="success"))
+        await s.commit()
+    await _run(stub, cid, "products")
+    assert stub.calls == [("products", "t", watermark)]
+
+
+async def test_run_sync_dispatches_the_outbound_entity_and_its_direction_gates_it(_db_engine):
+    """An outbound entity runs its *_out method while its direction pushes, and is
+    blocked, without the method running, once the direction is inbound only."""
+    from celerp.connectors.sync_runner import run_sync
+    from celerp.models.connector_config import ConnectorConfig
+
+    cid = _cid()
+    stub = _ProductsStub()
+    pushed = await _run(stub, cid, "products_out")
+    assert pushed.created == 1 and stub.calls == [("products_out", "t")]
+
+    async with get_session_ctx() as s:
+        await s.execute(sa.update(ConnectorConfig).where(
+            ConnectorConfig.company_id == cid, ConnectorConfig.connector == stub.name,
+        ).values(entity_directions={"products": "inbound"}))
+        await s.commit()
+    blocked = await run_sync(stub, cid, "products_out", purpose="manual_sync")
+    assert blocked.errors and "blocked by direction" in blocked.errors[0]
+    assert stub.calls == [("products_out", "t")]
+
+
+async def test_run_sync_reads_the_store_context_from_its_execution(_db_engine, monkeypatch):
+    """The sync method gets the context the execution fetched for this run, never
+    one a caller carried in."""
+    from unittest.mock import AsyncMock
+
+    cid = _cid()
+    fetch = AsyncMock(return_value=ConnectorContext(company_id=cid, access_token="fresh"))
+    monkeypatch.setattr("celerp.connectors.relay_token.fetch_context", fetch)
+    stub = _ProductsStub()
+    await _run(stub, cid, "products", use_watermark=False)
+    assert stub.calls == [("products", "fresh", None)]
+    fetch.assert_awaited_once_with(cid, stub.name)

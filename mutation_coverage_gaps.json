@@ -90,11 +90,6 @@
   "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST, lock lock_company, lock locked_company."
  },
  {
-  "route": "api POST /connectors/{connector_name}/sync-plan",
-  "class": "requested, no durable write",
-  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches commit, lock lock_company, write session.add."
- },
- {
   "route": "api POST /items/import/preview",
   "class": "requested, no durable write",
   "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches lock lock_company, lock locked_company."
@@ -216,8 +211,8 @@
  },
  {
   "route": "ui POST /api/items/bulk/channel-sync/{platform}/{action}",
-  "class": "never requested",
-  "reason": "No test requests this route; its source reaches api POST."
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
  },
  {
   "route": "ui POST /api/items/bulk/duplicate",
@@ -236,11 +231,6 @@
  },
  {
   "route": "ui POST /api/items/bulk/revert-to-draft",
-  "class": "never requested",
-  "reason": "No test requests this route; its source reaches api POST."
- },
- {
-  "route": "ui POST /api/items/bulk/shopify-sync/{action}",
   "class": "never requested",
   "reason": "No test requests this route; its source reaches api POST."
  },
@@ -286,8 +276,8 @@
  },
  {
   "route": "ui POST /api/items/{entity_id}/channel-sync/{platform}/{action}",
-  "class": "never requested",
-  "reason": "No test requests this route; its source reaches api POST."
+  "class": "requested, no durable write",
+  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
  },
  {
   "route": "ui POST /api/items/{entity_id}/duplicate",
@@ -955,11 +945,6 @@
   "reason": "No test requests this route; its source reaches api PATCH."
  },
  {
-  "route": "ui POST /settings/import-history/{batch_id}/undo",
-  "class": "requested, no durable write",
-  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
- },
- {
   "route": "ui PUT /settings/labels/{tmpl_id}",
   "class": "requested, no durable write",
   "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api PUT."
@@ -1110,30 +1095,6 @@
   "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
  },
  {
-  "site": "celerp/connectors/outbound_queue.py retain execute",
-  "count": 1,
-  "class": "not reached from a route",
-  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
- },
- {
-  "site": "celerp/connectors/outbound_queue.py save execute",
-  "count": 1,
-  "class": "not reached from a route",
-  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
- },
- {
-  "site": "celerp/connectors/ownership.py claim_connector_ownership delete",
-  "count": 1,
-  "class": "reached from a route",
-  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
- },
- {
-  "site": "celerp/connectors/sync_runner.py _finish_run add",
-  "count": 1,
-  "class": "reached from a route",
-  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
- },
- {
   "site": "celerp/events/engine.py connector_upsert emit_event",
   "count": 1,
   "class": "not reached from a route",
@@ -1164,12 +1125,6 @@
   "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
  },
  {
-  "site": "celerp/services/company_reset.py reset execute",
-  "count": 1,
-  "class": "reached from a route",
-  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
- },
- {
   "site": "celerp/services/lot_origin.py _normalize emit_event",
   "count": 1,
   "class": "not reached from a route",
@@ -1188,19 +1143,7 @@
   "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
  },
  {
-  "site": "celerp/services/migration_core_sink.py _import_attachment execute",
-  "count": 1,
-  "class": "not reached from a route",
-  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
- },
- {
   "site": "celerp/services/migration_core_sink.py _import_location add",
-  "count": 1,
-  "class": "not reached from a route",
-  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
- },
- {
-  "site": "celerp/services/migration_core_sink.py stage_file_cleanup execute",
   "count": 1,
   "class": "not reached from a route",
   "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
@@ -1232,14 +1175,14 @@
  {
   "site": "celerp/services/migrations.py _checkpoint execute",
   "count": 1,
-  "class": "reached from a route",
-  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+  "class": "not reached from a route",
+  "reason": "Runs only inside the migration runner, which schedule_run starts in a task and a context of its own, outside the request that asked for the run. Driven by tests/test_migration_attachment_durability.py::test_a_batch_names_its_company_in_every_run_and_cleanup_write."
  },
  {
   "site": "celerp/services/migrations.py _record_mappings execute",
   "count": 1,
-  "class": "reached from a route",
-  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
+  "class": "not reached from a route",
+  "reason": "Runs only inside the migration runner, which schedule_run starts in a task and a context of its own, outside the request that asked for the run. Driven by tests/test_migration_attachment_durability.py::test_a_batch_names_its_company_in_every_run_and_cleanup_write."
  },
  {
   "site": "celerp/services/migrations.py discard execute",
@@ -1348,12 +1291,6 @@
   "count": 1,
   "class": "reached from a route",
   "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
- },
- {
-  "site": "celerp/services/session_tracker.py clear execute",
-  "count": 1,
-  "class": "not reached from a route",
-  "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
  },
  {
   "site": "celerp/services/session_tracker.py run_jti_cleanup_loop execute",
@@ -1506,12 +1443,6 @@
   "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
  },
  {
-  "site": "default_modules/celerp-inventory/celerp_inventory/services.py set_external_link emit_event",
-  "count": 1,
-  "class": "reached from a route",
-  "reason": "A route handler reaches this function in the static call graph, and no request write in the tests passed through the site."
- },
- {
   "site": "default_modules/celerp-inventory/celerp_inventory/services.py stamp_catalog_family_members emit_event",
   "count": 1,
   "class": "reached from a route",
@@ -1534,5 +1465,59 @@
   "count": 1,
   "class": "not reached from a route",
   "reason": "No route handler reaches this function in the static call graph: it runs outside requests (startup, a migration or backfill, a background job, a connector sync) or through a call the graph does not resolve."
+ },
+ {
+  "site": "celerp/connectors/execution.py sweep_reruns execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "Runs only from rerun_sweeper_loop, the background sweeper main.py starts: it clears a rerun the directions no longer call for. Driven by tests/test_module_off_boundary.py::test_an_order_webhook_for_a_company_that_turned_documents_off_is_not_handled_again."
+ },
+ {
+  "site": "celerp/connectors/execution.py record_rerun execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: a webhook delivery, the webhook reconciler or the daily scheduler records a rerun when the connection's execution is busy, outside any request. Driven by tests/test_connector_rerun.py::test_a_busy_webhook_runs_after_a_long_running_sync_ends."
+ },
+ {
+  "site": "celerp/services/connector_media.py issue_media_token execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: a connector's outbound product sync issues one media token per image it sends to the store, outside any request. Driven by default_modules/celerp-connectors/tests/test_media_tokens.py::test_a_media_token_has_the_relays_shape_and_only_its_hash_is_kept."
+ },
+ {
+  "site": "celerp/services/connector_media.py issue_media_token add",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "No route handler reaches this function in the static call graph: a connector's outbound product sync issues one media token per image it sends to the store, outside any request. Driven by default_modules/celerp-connectors/tests/test_media_tokens.py::test_a_token_names_one_company_image_and_expires."
+ },
+ {
+  "site": "celerp/connectors/outbound_queue.py defer execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "Runs only from process_outbound_queue_once, the background outbound queue worker; a sync request delivers parked work without reaching it. Driven by tests/test_services/test_outbound_queue.py::test_a_busy_or_failing_identity_waits_under_its_company_lock."
+ },
+ {
+  "site": "celerp/connectors/outbound_queue.py process_outbound_identity execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "Runs only from process_outbound_queue_once, the background outbound queue worker; a sync request delivers parked work without reaching it. Driven by tests/test_services/test_outbound_queue.py::test_a_busy_or_failing_identity_waits_under_its_company_lock."
+ },
+ {
+  "site": "celerp/notifications/service.py clear_every_company execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "Runs only at app startup (main.py), clearing the held-back notice once a start brings the records current. Driven by tests/test_projection_semantics_upgrade.py::test_a_failed_rebuild_settles_nothing_and_the_next_start_rebuilds_then_settles."
+ },
+ {
+  "site": "celerp/services/migration_core_sink.py stage_file_cleanup add",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "Runs only inside the migration runner, which schedule_run starts in a task and a session of its own, outside the request that asked for the run. Driven by tests/test_migration_attachment_durability.py::test_a_batch_names_its_company_in_every_run_and_cleanup_write."
+ },
+ {
+  "site": "celerp/services/migrations.py _run_locked execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "Runs only inside the migration runner, which schedule_run starts in a task and a session of its own, outside the request that asked for the run: the batch checkpoint deletes the linked files' cleanup tasks. Driven by tests/test_migration_attachment_durability.py::test_a_batch_names_its_company_in_every_run_and_cleanup_write."
  }
 ]

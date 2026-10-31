@@ -3,25 +3,30 @@
 """Connector routes - /connectors/*."""
 from __future__ import annotations
 
+import contextlib
 import logging
 import uuid
-from typing import Annotated
+from datetime import date
+from typing import Annotated, Literal
+
+import httpx
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import refusal
-from celerp.connectors.base import SyncDirection, SyncEntity
+from celerp.connectors.base import SyncEntity
 from celerp.connectors.ownership import PRODUCT_CHANNEL_MODULES, PRODUCT_CHANNEL_PLATFORMS
 from celerp.db import get_session
-from celerp.modules.boundary import needs_modules_for
+from celerp.modules.boundary import company_settings, needs_modules_for, require_on
 from celerp.services.auth import (
     get_current_company_id,
+    get_current_role,
     get_current_user,
     require_install_owner,
 )
-from celerp.services.permissions import require_permission
+from celerp.services.permissions import get_current_company_settings, require_permission
 from ui.i18n import t
 
 log = logging.getLogger(__name__)
@@ -47,6 +52,33 @@ local_router = APIRouter(
     prefix="/connector-items", tags=["connectors"],
     dependencies=[Depends(get_current_user)],
 )
+# A store fetches the product images Celerp sends it here, through the relay's
+# short-lived share address; the token is the only access (connector_media).
+media_router = APIRouter(prefix="/connector-media", tags=["connectors"])
+# A file is read and sent this much at a time, never held whole.
+_MEDIA_READ_BYTES = 256 * 1024
+
+
+# HEAD is the same operation as GET, so the schema lists it once.
+@media_router.get("/{token}")
+@media_router.head("/{token}", include_in_schema=False)
+async def connector_media(token: str, request: Request):
+    """One product image a sync sent a store, while its token is valid. HEAD answers
+    from the file's size without reading it."""
+    from fastapi.responses import Response, StreamingResponse
+
+    from celerp.services.attachments import MAX_FILE_BYTES, company_file_chunks, company_file_size
+    from celerp.services.connector_media import media_file
+
+    media = await media_file(token)
+    size = await company_file_size(media.company_id, media.url) if media else None
+    if size is None or size > MAX_FILE_BYTES:
+        raise HTTPException(status_code=404, detail="Not found")
+    headers = {"Cache-Control": "no-store", "Content-Length": str(size)}
+    if request.method == "HEAD":
+        return Response(media_type=media.mime, headers=headers)
+    return StreamingResponse(company_file_chunks(media.company_id, media.url, _MEDIA_READ_BYTES),
+                             media_type=media.mime, headers=headers)
 
 
 # ── Request / Response schemas ────────────────────────────────────────────────
@@ -58,8 +90,9 @@ class SyncRequest(BaseModel):
 class ConnectorInfo(BaseModel):
     name: str
     display_name: str
-    supported_entities: list[SyncEntity]
-    direction: str
+    # Each kind of record the connector carries, with the directions it can be set to.
+    entity_flows: dict[str, list[str]]
+    default_directions: dict[str, str]
 
 
 class SyncResponse(BaseModel):
@@ -74,12 +107,93 @@ class SyncResponse(BaseModel):
 
 
 async def _connector_context(company_id: str, connector_name: str, **kwargs):
-    from celerp.connectors.relay_token import ConnectorUpgradeRequired, fetch_context
+    from celerp.connectors.relay_token import ConnectorUpgradeRequired, ConnectRequired, RelayUnavailable, fetch_context
 
     try:
         return await fetch_context(company_id, connector_name, **kwargs)
+    except RelayUnavailable as exc:
+        raise HTTPException(status_code=502, detail=t("error.relay_unreachable")) from exc
     except ConnectorUpgradeRequired as exc:
         raise HTTPException(status_code=426, detail=str(exc)) from exc
+    except ConnectRequired as exc:
+        raise HTTPException(status_code=402, detail=str(exc)) from exc
+
+
+@contextlib.contextmanager
+def _execution_refusals(connector):
+    """A person's connector work refused by its execution, as the answer they see."""
+    from celerp.connectors.execution import ExecutionBusy, ExecutionRefused
+    from celerp.connectors.ownership import ConnectorOwnershipError
+    from celerp.connectors.relay_token import ConnectorUpgradeRequired, ConnectRequired
+
+    try:
+        yield
+    except ConnectorOwnershipError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ExecutionBusy as exc:
+        raise HTTPException(status_code=409, detail=t("connectors.fail_busy")) from exc
+    except ExecutionRefused as exc:
+        if exc.detail:
+            raise HTTPException(status_code=409, detail=exc.detail) from exc
+        key = {"direction_off": "connectors.fail_direction", "relay_unavailable": "error.relay_unreachable",
+               "not_connected": "error.connector_not_connected"}.get(exc.reason, "connectors.err_first_sync_needed")
+        raise HTTPException(status_code=409, detail=t(key, service=connector.display_name)) from exc
+    except ConnectorUpgradeRequired as exc:
+        raise HTTPException(status_code=426, detail=str(exc)) from exc
+    except ConnectRequired as exc:
+        raise HTTPException(status_code=402, detail=str(exc)) from exc
+
+
+@contextlib.asynccontextmanager
+async def _products_work(session: AsyncSession, company_id, connector_name: str, purpose: str):
+    """A person's change to the connection's products, run inside its execution of the
+    products resource, as a products sync runs: refused as busy while one runs. The
+    request's transaction ends first, so the work's own transactions begin inside it. Work
+    that fails rolls the request's transaction back before the execution is released, so
+    the release never waits on the rows the failed work still held."""
+    from celerp import connectors
+    from celerp.connectors.execution import connector_execution
+
+    try:
+        connector = connectors.get(connector_name)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=connector_name))
+    await session.commit()
+    with _execution_refusals(connector):
+        async with connector_execution(company_id, connector, purpose, ["products"]) as ex:
+            try:
+                yield ex
+            except BaseException:
+                await session.rollback()
+                raise
+
+
+async def _first_sync_row(session: AsyncSession, company_id, connector_name: str, *, for_update: bool = False):
+    """The connection's first-sync record (ConnectorFirstSync), None without one."""
+    from celerp.models.connector_first_sync import ConnectorFirstSync
+
+    return await session.get(
+        ConnectorFirstSync, (str(company_id), connector_name), with_for_update=for_update, populate_existing=True)
+
+
+async def _ready_config(session: AsyncSession, company_id, connector):
+    """The company's connection, refused while it is not connected or its first sync
+    has not completed: the first sync is always started from its preview."""
+    from celerp.models.connector_config import ConnectorConfig
+    from sqlalchemy import select
+
+    config = await session.scalar(
+        select(ConnectorConfig).where(
+            ConnectorConfig.company_id == str(company_id),
+            ConnectorConfig.connector == connector.name,
+        )
+    )
+    if config is None:
+        raise HTTPException(status_code=409, detail=t("error.connector_not_connected", service=connector.display_name))
+    row = await _first_sync_row(session, company_id, connector.name)
+    if row is None or row.state != "completed":
+        raise HTTPException(status_code=409, detail=t("connectors.err_first_sync_needed", service=connector.display_name))
+    return config
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -93,8 +207,10 @@ async def list_connectors(
         ConnectorInfo(
             name=c.name,
             display_name=c.display_name,
-            supported_entities=c.supported_entities,
-            direction=c.direction.value,
+            entity_flows={
+                key: [d.value for d in flow.allowed()] for key, flow in c.entity_flows.items()
+            },
+            default_directions=c.default_directions,
         )
         for c in connectors.all_connectors()
     ]
@@ -114,35 +230,23 @@ async def trigger_sync(
     except KeyError:
         raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=connector_name))
 
-    if payload.entity not in connector.supported_entities:
+    from celerp.connectors.sync_runner import implements
+    if not implements(connector, payload.entity.value):
         raise HTTPException(
             status_code=400,
             detail=f"{connector.display_name} does not support entity '{payload.entity}'",
         )
 
-    from celerp.models.connector_config import ConnectorConfig
-    from sqlalchemy import select
-    config = await session.scalar(
-        select(ConnectorConfig).where(
-            ConnectorConfig.company_id == str(company_id),
-            ConnectorConfig.connector == connector_name,
-        )
-    )
-    if config is None:
-        raise HTTPException(status_code=409, detail=t("error.connector_not_connected", service=connector.display_name))
-    direction = SyncDirection(config.direction)
+    await _ready_config(session, company_id, connector)
+    # The sync's transactions begin inside its execution.
+    await session.commit()
 
-    ctx = await _connector_context(str(company_id), connector_name)
-    if ctx is None:
-        raise HTTPException(status_code=409, detail=t("error.connector_not_connected", service=connector.display_name))
-
-    # Route through run_sync so the manual path gets the same audit row, concurrency
-    # guard, and incremental watermark as the scheduled/webhook paths.
     from celerp.connectors.sync_runner import run_sync
     try:
-        result = await run_sync(
-            connector, ctx, payload.entity.value, direction=direction
-        )
+        with _execution_refusals(connector):
+            result = await run_sync(connector, company_id, payload.entity.value, purpose="manual_sync")
+    except HTTPException:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
@@ -174,33 +278,78 @@ async def trigger_sync_plan(
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=connector_name)) from exc
 
-    from celerp.models.connector_config import ConnectorConfig
-    from sqlalchemy import select
-    config = await session.scalar(
-        select(ConnectorConfig).where(
-            ConnectorConfig.company_id == str(company_id),
-            ConnectorConfig.connector == connector_name,
-        )
-    )
-    if config is None:
-        raise HTTPException(status_code=409, detail=t("error.connector_not_connected", service=connector.display_name))
-    direction = SyncDirection(config.direction)
+    await _ready_config(session, company_id, connector)
 
-    ctx = await _connector_context(str(company_id), connector_name)
-    if ctx is None:
-        raise HTTPException(status_code=409, detail=t("error.connector_not_connected", service=connector.display_name))
-
+    from celerp.connectors.execution import ExecutionError
+    from celerp.connectors.relay_token import ConnectorUpgradeRequired, ConnectRequired
     from celerp.connectors.sync_runner import run_connector_sync
     from celerp.services.background import spawn_background
 
     async def _run() -> None:
         try:
-            await run_connector_sync(connector, ctx, direction=direction)
+            await run_connector_sync(connector, company_id, purpose="manual_sync")
+        except (ExecutionError, ConnectRequired, ConnectorUpgradeRequired) as exc:
+            log.info("connector sync plan not run: %s: %s", connector_name, exc)
         except Exception:
             log.exception("connector sync plan failed: %s", connector_name)
 
     spawn_background(_run())
     return {"ok": True}
+
+
+class DirectionRequest(BaseModel):
+    entity: str
+    direction: str
+
+
+@open_router.post("/{connector_name}/directions")
+async def set_connector_direction(
+    connector_name: str,
+    payload: DirectionRequest,
+    company_id: Annotated[str, Depends(get_current_company_id)],
+    _: None = require_permission("manage_integrations"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Set the direction one kind of record syncs in, under the company lock and the
+    connection's row lock taken after the ownership fence. A direction the connector cannot
+    sync that record in is refused, naming both. A store whose webhooks follow the
+    directions has them marked for reconciling; the execution holding the webhooks
+    changes them, never this request."""
+    from celerp import connectors
+    from celerp.connectors.base import DirectionError, validate_directions
+    from celerp.connectors.execution import first_sync_state
+    from celerp.connectors.ownership import (
+        ConnectorOwnershipError, lock_connection_row, lock_connector_operation,
+    )
+    from celerp.connectors.registry import service_name
+    from celerp.connectors.webhook_reconcile import mark_webhooks_dirty
+
+    try:
+        connector = connectors.get(connector_name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=connector_name)) from exc
+    try:
+        await lock_connector_operation(session, company_id, connector_name, require_owner=True)
+        config = await lock_connection_row(session, company_id, connector_name)
+        if config is None:
+            raise ConnectorOwnershipError(t("error.connector_not_here", service=service_name(connector_name)))
+    except ConnectorOwnershipError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    try:
+        directions = validate_directions(
+            connector, {**(config.entity_directions or {}), payload.entity: payload.direction}
+        )
+    except DirectionError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    changed = directions != config.entity_directions
+    config.entity_directions = directions
+    if changed and config.webhook_secret and await first_sync_state(
+            session, company_id, connector_name) not in (None, "pending"):
+        await mark_webhooks_dirty(session, config)
+    await session.commit()
+    return {"entity_directions": directions}
 
 
 # ── Credential management (API-key platforms) ────────────────────────────────
@@ -330,6 +479,7 @@ async def store_credentials(
         bind_connector_store,
         claim_connector_ownership,
         lock_connector_operation,
+        prove_store,
         release_connector_ownership,
     )
     category = getattr(connector.category, "value", connector.category)
@@ -338,6 +488,19 @@ async def store_credentials(
         if category == ConnectorCategory.WEBSITE.value
         else SyncFrequency.MANUAL.value
     )
+    store_ctx = ConnectorContext(
+        company_id=str(company_id),
+        access_token=(payload.consumer_key if connector_name == "celerp"
+                      else f"{payload.consumer_key}:{payload.consumer_secret}"),
+        store_handle=store_url or None,
+    )
+    # The store is asked about the company's records before any lock is taken.
+    try:
+        proven = await prove_store(session, company_id, connector, store_ctx)
+    except ConnectorStoreChangedError as exc:
+        await session.rollback()
+        return {"ok": False, "error": "store_changed", "detail": str(exc)}
+
     try:
         config, ownership_created = await claim_connector_ownership(
             session,
@@ -358,16 +521,10 @@ async def store_credentials(
             "detail": "Disconnect the existing connector before changing credentials.",
         }
 
-    store_ctx = ConnectorContext(
-        company_id=str(company_id),
-        access_token=(payload.consumer_key if connector_name == "celerp"
-                      else f"{payload.consumer_key}:{payload.consumer_secret}"),
-        store_handle=store_url or None,
-    )
-    # The store is checked against the company's records, and its old product
-    # links become history, in the same commit that makes the company its owner.
+    # The proven store is bound, and its old product links become history, in the same
+    # commit that makes the company its owner.
     try:
-        await bind_connector_store(session, company_id, connector, store_ctx)
+        await bind_connector_store(session, company_id, connector, store_ctx, proven=proven)
     except ConnectorStoreChangedError as exc:
         await session.rollback()
         return {"ok": False, "error": "store_changed", "detail": str(exc)}
@@ -392,18 +549,9 @@ async def store_credentials(
         revoke_connector_remote_state,
     )
 
-    async def _failure(
-        error: str,
-        detail: str,
-        *,
-        webhook_ids: list[str] | None = None,
-    ) -> dict:
+    async def _failure(error: str, detail: str) -> dict:
         try:
-            await revoke_connector_remote_state(
-                company_id,
-                connector_name,
-                webhook_ids=webhook_ids,
-            )
+            await revoke_connector_remote_state(company_id, connector_name)
         except ConnectorRemoteCleanupError:
             await session.rollback()
             suffix = (
@@ -446,38 +594,18 @@ async def store_credentials(
             return await _failure("subscription_required", "")
         return await _failure("relay_error", str(exc))
 
-    webhook_ids: list[str] = []
     if connector_name == "woocommerce":
         import secrets
 
-        from celerp.connectors.woocommerce import webhook_delivery_url
-
-        secret = secrets.token_hex(32)
-        delivery_url = webhook_delivery_url()
-        try:
-            # Hooks left by an earlier connection carry an old secret.
-            await connector.deregister_webhooks(store_ctx, delivery_url, [])
-            webhook_ids = await connector.register_webhooks(
-                store_ctx, delivery_url, secret=secret
-            )
-        except Exception as exc:
-            return await _failure(
-                "store_unreachable",
-                f"Webhook setup failed: {exc}",
-                webhook_ids=webhook_ids,
-            )
-
-        config.webhook_secret = secret
-        config.webhook_ids = webhook_ids
+        # Connecting writes nothing to the store: the first sync creates the webhooks,
+        # signed with this secret, and retires any an earlier connection left.
+        config.webhook_secret = secrets.token_hex(32)
+        config.webhook_hooks = {}
 
     try:
         await session.commit()
     except Exception as exc:
-        return await _failure(
-            "local_cleanup_failed",
-            str(exc),
-            webhook_ids=webhook_ids,
-        )
+        return await _failure("local_cleanup_failed", str(exc))
     return {"ok": True}
 
 
@@ -494,6 +622,8 @@ async def revoke_credentials(
     A normal disconnect first confirms the store's webhooks are removed. With
     `force`, it disconnects even when that cannot be confirmed and records
     that it was forced. Imported records keep their store of origin either way.
+    ``kept_store_values`` counts the items still holding values the first sync took
+    from the store, whose undo record goes with the connection.
     """
     from celerp.connectors.ownership import (
         RESET_STATUS_DISCONNECTED,
@@ -522,7 +652,7 @@ async def revoke_credentials(
 
     # Refused before the store forgets anything, while product links are left
     # that only Inventory can turn into history.
-    from celerp.connectors.product_links import detach_product_links, refuse_while_links_cannot_detach
+    from celerp.connectors.product_links import refuse_while_links_cannot_detach
     await refuse_while_links_cannot_detach(session, company_id, connector_name)
 
     # The accountant connection is this company's own: when the relay cannot be
@@ -533,9 +663,10 @@ async def revoke_credentials(
     ):
         return failure
 
+    # Read before the release forgets the first sync's undo record with the connection.
+    first_sync = await _first_sync_row(session, company_id, connector_name)
+    kept = first_sync.links_holding_store_values if first_sync is not None else 0
     try:
-        if connector_name in PRODUCT_CHANNEL_PLATFORMS:
-            await detach_product_links(session, company_id, connector_name)
         await release_connector_ownership(
             session, company_id, connector_name,
             status=RESET_STATUS_FORCED if force else RESET_STATUS_DISCONNECTED,
@@ -544,7 +675,7 @@ async def revoke_credentials(
     except Exception as exc:
         await session.rollback()
         return {"ok": False, "error": "local_cleanup_failed", "detail": str(exc)}
-    return {"ok": True}
+    return {"ok": True, "kept_store_values": kept}
 
 
 async def _revoke_remote(
@@ -643,7 +774,6 @@ async def _set_order_reconciled(
     """Mark (signature) or unmark (None) one WooCommerce order on the attention
     list as reconciled by hand, on the list and on the order together."""
     from celerp.connectors.sync_runner import update_attention_entry
-    from celerp.modules.boundary import company_settings, require_on
     require_on(await company_settings(company_id), "celerp-docs")
     from celerp_docs.doc_service import (
         WooCommerceReconciliationChanged,
@@ -712,12 +842,410 @@ async def unmark_order_reconciled(
     return await _set_order_reconciled(session, company_id, order_id, None, user.id)
 
 
+@router.get("/{connector_name}/first-sync/preview")
+async def preview_first_sync(
+    connector_name: str,
+    company_id: Annotated[str, Depends(get_current_company_id)],
+    orders_from: date | None = None,
+    _: None = require_permission("manage_integrations"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """What starting the first sync in the connection's current directions would do,
+    importing orders from ``orders_from`` (today when not given). Reads both sides and
+    writes to neither."""
+    import dataclasses
+
+    from fastapi.encoders import jsonable_encoder
+
+    from celerp import connectors
+
+    try:
+        connector = connectors.get(connector_name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=connector_name)) from exc
+    config = await _owned_config(session, company_id, connector)
+    row = await _first_sync_row(session, company_id, connector_name)
+    if row is None or row.state != "pending":
+        raise HTTPException(status_code=409, detail=t("connectors.err_first_sync_done"))
+    await session.commit()
+    preview = await _read_preview(connector, company_id, config.id, dict(config.entity_directions), orders_from)
+    return jsonable_encoder(dataclasses.asdict(preview))
+
+
+async def _read_preview(connector, company_id, config_id: int, directions: dict, orders_from: date | None):
+    """The first sync's preview read from the store, outside any lock: what the preview
+    page shows and what Start compares the person's receipt with."""
+    from datetime import datetime, time, timezone
+
+    from celerp.connectors.first_sync import build_preview
+
+    ctx = await _connector_context(str(company_id), connector.name)
+    if ctx is None:
+        raise HTTPException(status_code=409, detail=t("error.connector_not_connected", service=connector.display_name))
+    start = datetime.combine(orders_from or datetime.now(timezone.utc).date(), time(), tzinfo=timezone.utc)
+    try:
+        return await build_preview(connector, ctx, directions, start, config_id)
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail=t(
+            "connectors.err_preview", service=connector.display_name, detail=exc)) from exc
+
+
+@router.get("/{connector_name}/first-sync/summary")
+async def first_sync_summary(
+    connector_name: str,
+    company_id: Annotated[str, Depends(get_current_company_id)],
+    _: None = require_permission("manage_integrations"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """What the first sync did and how to undo it: its state (with the reason when it needs
+    attention), the import of the products it created,
+    each link it made (with its undo's outcome and what that undo kept), and the
+    invoices whose creation names it (first_sync_metadata), newest first. Invoices are voided one by one, which keeps their audit trail."""
+    import uuid
+
+    import sqlalchemy as sa
+
+    from celerp import connectors
+    from celerp.connectors.base import FIRST_SYNC_METADATA_KEY
+    from celerp.models.import_batch import ImportBatch
+    from celerp.models.ledger import LedgerEntry
+    from celerp.models.projections import Projection
+
+    try:
+        connector = connectors.get(connector_name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=connector_name)) from exc
+    await _owned_config(session, company_id, connector)
+    first_sync = await _first_sync_row(session, company_id, connector_name)
+    undo = dict((first_sync.undo if first_sync is not None else None) or {})
+    batch = None
+    if first_sync is not None and first_sync.batch_id:
+        row = await session.get(ImportBatch, uuid.UUID(first_sync.batch_id))
+        if row is not None:
+            batch = {"id": str(row.id), "rows": row.row_count, "status": row.status}
+    links = list(undo.get("links") or [])
+    items = {row.entity_id: row.state or {} for row in (await session.execute(sa.select(Projection).where(
+        Projection.company_id == uuid.UUID(str(company_id)),
+        Projection.entity_id.in_([link["entity_id"] for link in links])))).scalars()} if links else {}
+    invoices = []
+    if first_sync is not None and first_sync.operation_id:
+        # The documents whose creation names this first sync (first_sync_metadata).
+        cid = uuid.UUID(str(company_id))
+        created = sa.select(LedgerEntry.entity_id).where(
+            LedgerEntry.company_id == cid, LedgerEntry.entity_type == "doc",
+            LedgerEntry.event_type == "doc.created",
+            LedgerEntry.metadata_[FIRST_SYNC_METADATA_KEY].as_string() == first_sync.operation_id)
+        rows = (await session.execute(sa.select(Projection).where(
+            Projection.company_id == cid, Projection.entity_type == "doc", Projection.entity_id.in_(created),
+        ).order_by(Projection.created_at.desc(), Projection.entity_id.desc()))).scalars().all()
+        invoices = [{"entity_id": r.entity_id,
+                     "number": (r.state or {}).get("doc_number") or (r.state or {}).get("ref_id"),
+                     "total": (r.state or {}).get("total"), "status": (r.state or {}).get("status")}
+                    for r in rows]
+    return {
+        "started_at": first_sync.started_at.isoformat() if first_sync is not None and first_sync.started_at else None,
+        "state": first_sync.state if first_sync is not None else None,
+        "error": first_sync.error if first_sync is not None else None,
+        "batch": batch,
+        "links": [_link_summary(link, items.get(link["entity_id"])) for link in links],
+        "invoices": invoices,
+    }
+
+
+def _link_summary(link: dict, item: dict | None) -> dict:
+    """One link on the first sync's summary: the item (its SKU and name now; None once it
+    is gone), its undo outcome (None while still to undo), the fields and files its undo
+    kept because they changed since, and how many files the first sync pulled onto it."""
+    kept = link.get("kept") or {}
+    return {"entity_id": link["entity_id"], "sku": (item or {}).get("sku"), "name": (item or {}).get("name"),
+            "outcome": link.get("outcome"),
+            "fields": kept.get("fields") or {}, "kept_files": kept.get("files") or [],
+            "files": len(link.get("files") or [])}
+
+
+async def _owned_config(session: AsyncSession, company_id, connector):
+    from celerp.connectors.ownership import ConnectorOwnershipError, lock_connector_operation
+
+    try:
+        config = await lock_connector_operation(session, company_id, connector.name, require_owner=True)
+    except ConnectorOwnershipError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await session.commit()
+    return config
+
+
+class FirstSyncRequest(BaseModel):
+    """The choices a person made on the first sync's preview."""
+    directions: dict[str, str]
+    match: Literal["keep", "take"]
+    # The earliest order date to import; none starts at the first sync itself.
+    orders_from: date | None = None
+    # The version of the preview the person reviewed: Start refuses once it changed.
+    preview_version: str = Field(min_length=64, max_length=64)
+
+
+@router.post("/{connector_name}/first-sync")
+async def start_first_sync(
+    connector_name: str,
+    payload: FirstSyncRequest,
+    company_id: Annotated[str, Depends(get_current_company_id)],
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_integrations"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Start a connection's first sync with the choices reviewed on its preview: the
+    directions, the earliest order date and how SKU matches link. The preview is read
+    again, outside every lock, with those choices; when it is no longer the version the
+    person reviewed (the store, the catalog or the connection changed since), Start is
+    refused and the page shows the preview again. It runs once, in the background, and
+    only on the store products the person reviewed: it first sets up the store's
+    webhooks, and when the store refuses, the first sync needs attention with the store's
+    reason."""
+    import uuid
+    from datetime import datetime, time, timezone
+
+    from celerp import connectors
+    from celerp.connectors.base import DirectionError, entity_allowed, validate_directions
+    from celerp.connectors.ownership import ConnectorOwnershipError, lock_connector_operation
+    from celerp.connectors.webhook_reconcile import mark_webhooks_dirty
+    from celerp.models.import_batch import ImportBatch
+
+    try:
+        connector = connectors.get(connector_name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=connector_name)) from exc
+    try:
+        directions = validate_directions(connector, payload.directions)
+    except DirectionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    previewed = await _owned_config(session, company_id, connector)
+    row = await _first_sync_row(session, company_id, connector_name)
+    if row is None or row.state != "pending":
+        raise HTTPException(status_code=409, detail=t("connectors.err_first_sync_done"))
+    config_id = previewed.id
+    await session.commit()
+    preview = await _read_preview(connector, company_id, config_id, directions, payload.orders_from)
+    if preview.version != payload.preview_version:
+        raise HTTPException(status_code=409, detail=t("connectors.err_preview_changed", service=connector.display_name))
+
+    try:
+        config = await lock_connector_operation(
+            session, company_id, connector_name, require_owner=True, exclusive=True)
+    except ConnectorOwnershipError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    first_sync = await _first_sync_row(session, company_id, connector_name, for_update=True)
+    if first_sync is None or first_sync.state != "pending":
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=t("connectors.err_first_sync_done"))
+    if config.id != config_id:  # reconnected since the preview was read
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=t("connectors.err_preview_changed", service=connector.display_name))
+
+    now = datetime.now(timezone.utc)
+    config.entity_directions = directions
+    config.orders_from = (datetime.combine(payload.orders_from, time(), tzinfo=timezone.utc)
+                          if payload.orders_from is not None else now)
+    batch_id = None
+    if entity_allowed(connector, "products", directions):
+        batch = ImportBatch(
+            company_id=uuid.UUID(str(company_id)), entity_type="item",
+            filename=t("connectors.first_sync_batch", service=connector.display_name),
+            row_count=0, entity_ids=[], idempotency_keys=[], reversible=True,
+        )
+        session.add(batch)
+        await session.flush()
+        batch_id = str(batch.id)
+    first_sync.state = "starting"
+    first_sync.directions = directions
+    first_sync.match = payload.match
+    first_sync.preview_version = preview.version
+    first_sync.reviewed = preview.reviewed
+    first_sync.watermark = now
+    first_sync.started_by = str(user.id)
+    first_sync.started_at = now
+    first_sync.batch_id = batch_id
+    first_sync.operation_id = str(uuid.uuid4())
+    first_sync.undo = {"links": []}
+    first_sync.error = None
+    if config.webhook_secret:
+        await mark_webhooks_dirty(session, config)
+    await session.commit()
+    _spawn_first_sync(company_id, connector_name)
+    return {"ok": True}
+
+
+def _spawn_first_sync(company_id, connector_name: str) -> None:
+    """Run a started first sync in the background (sync_runner.execute_first_sync); one a
+    stopped process leaves behind is resumed by the execution sweeper."""
+    from celerp.connectors.sync_runner import execute_first_sync
+    from celerp.services.background import spawn_background
+
+    async def _run() -> None:
+        try:
+            await execute_first_sync(company_id, connector_name)
+        except Exception:
+            log.exception("first sync failed: %s", connector_name)
+
+    spawn_background(_run())
+
+
+@router.post("/{connector_name}/first-sync/retry")
+async def retry_first_sync(
+    connector_name: str,
+    company_id: Annotated[str, Depends(get_current_company_id)],
+    _: None = require_permission("manage_integrations"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Start a first sync that needs attention again, with the choices, import batch and
+    order cutoff it started with; it runs only what did not complete."""
+    from celerp import connectors
+    from celerp.connectors import sync_runner
+    from celerp.connectors.ownership import ConnectorOwnershipError, lock_connector_operation
+
+    try:
+        connectors.get(connector_name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=connector_name)) from exc
+    try:
+        await lock_connector_operation(session, company_id, connector_name, require_owner=True, exclusive=True)
+        await sync_runner.retry_first_sync(session, company_id, connector_name)
+    except ConnectorOwnershipError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=t("connectors.err_first_sync_not_failed")) from exc
+    await session.commit()
+    _spawn_first_sync(company_id, connector_name)
+    return {"ok": True}
+
+
+@router.post("/{connector_name}/first-sync/undo-links")
+async def undo_first_sync_links(
+    connector_name: str,
+    company_id: Annotated[str, Depends(get_current_company_id)],
+    user=Depends(get_current_user),
+    role: str = Depends(get_current_role),
+    settings: dict = Depends(get_current_company_settings),
+    _: None = require_permission("manage_integrations"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Undo the links the first sync made to items Celerp already had, as far as each is
+    still the first sync's (celerp_inventory.services.undo_external_link): a value or file
+    changed since, or a link the item no longer holds, is kept and listed in ``kept``. Each
+    link's outcome is saved on the undo record in the same transaction, so a failed undo
+    changes nothing and its repeat settles only the links still open. The items the first
+    sync created are undone in Import History."""
+    require_on(await company_settings(company_id), "celerp-inventory")
+    from celerp_inventory import services as inventory
+
+    from celerp.services.company_lock import lock_company
+
+    async with _products_work(session, company_id, connector_name, "undo"):
+        # The company before the first-sync row, as every company write takes it (lock order).
+        await lock_company(session, uuid.UUID(str(company_id)))
+        first_sync = await _first_sync_row(session, company_id, connector_name, for_update=True)
+        undo = dict((first_sync.undo if first_sync is not None else None) or {})
+        if all("outcome" in link for link in undo.get("links") or []):
+            await session.rollback()
+            raise HTTPException(status_code=409, detail=t("connectors.err_no_links_to_undo"))
+        undone, kept, links = 0, [], []
+        for link in sorted(undo["links"], key=lambda link: link["entity_id"]):
+            if "outcome" not in link:
+                result = await inventory.undo_external_link(
+                    session, company_id, connector_name, link, role=role, settings=settings,
+                    actor_id=user.id, source="connector_ui")
+                link = {**link, "outcome": result["outcome"], "kept": {
+                    "fields": result["kept"], "files": result["files"]}}
+                undone += result["outcome"] == "undone"
+                if result["outcome"] != "undone" or result["kept"] or result["files"]:
+                    kept.append({"entity_id": link["entity_id"], "outcome": result["outcome"],
+                                 "fields": result["kept"], "files": result["files"]})
+            links.append(link)
+        first_sync.undo = {**undo, "links": links}
+        await session.commit()
+        return {"undone": undone, "kept": kept}
+
+
+class ConflictChoice(BaseModel):
+    keep: str  # "store": take the store's values; "celerp": keep Celerp's
+
+
+@router.post("/{connector_name}/products/{record_id}/resolve")
+async def resolve_product_conflict(
+    connector_name: str,
+    record_id: str,
+    payload: ConflictChoice,
+    company_id: Annotated[str, Depends(get_current_company_id)],
+    user=Depends(get_current_user),
+    _: None = require_permission("manage_integrations"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """A person chose between the two values of a product field changed in both
+    systems. Either way the link now agrees on the store's value, so a later pull
+    leaves the field alone; keeping Celerp's value sends it out at the next sync when
+    products go out. Taking the store's is an ordinary item edit, undone by editing
+    the item back."""
+    from celerp.connectors.sync_runner import remove_attention_entry
+    from celerp.events.engine import emit_event
+    from celerp.services.field_fingerprints import LINK_KEY, fingerprint
+    require_on(await company_settings(company_id), "celerp-inventory")
+    from celerp_inventory.services import (
+        lock_external_identity_namespace,
+        resolve_catalog_anchor_for_item,
+        set_external_link_state,
+    )
+    from celerp.connectors.product_links import external_link_for_state
+
+    if connector_name not in PRODUCT_CHANNEL_PLATFORMS or payload.keep not in ("store", "celerp"):
+        raise HTTPException(status_code=422, detail=t("connectors.err_conflict_choice"))
+    async with _products_work(session, company_id, connector_name, "resolve"):
+        entry = await remove_attention_entry(
+            session, str(company_id), connector_name, SyncEntity.PRODUCTS.value, record_id)
+        if entry is None or entry.get("kind") != "conflict":
+            await session.rollback()
+            raise HTTPException(status_code=404, detail=t("connectors.err_conflict_gone"))
+        entity_id, fields = entry["entity_id"], entry["fields"]
+        # The store's links before the item row the store-value edit writes (lock order).
+        await lock_external_identity_namespace(session, company_id, connector_name)
+        anchor = await resolve_catalog_anchor_for_item(session, company_id, entity_id)
+        link = external_link_for_state(anchor.state or {}, connector_name)
+        if not link:
+            await session.rollback()
+            raise HTTPException(status_code=404, detail=t("connectors.err_conflict_gone"))
+        if payload.keep == "store":
+            state = anchor.state or {}
+            changed = {key: {"old": state.get(key), "new": both["remote"]} for key, both in fields.items()}
+            if "sale_price" in fields:
+                changed["retail_price"] = {"old": state.get("retail_price"), "new": fields["sale_price"]["remote"]}
+            await emit_event(
+                session, company_id=company_id, entity_id=entity_id, entity_type="item",
+                event_type="item.updated", data={"fields_changed": changed}, actor_id=user.id,
+                location_id=None, source="connector_ui",
+                idempotency_key=f"conflict:{connector_name}:{entity_id}:v{anchor.version}", metadata_={},
+            )
+        agreed = {**(link.get(LINK_KEY) or {}),
+                  **{key: fingerprint(both["remote"]) for key, both in fields.items()}}
+        await set_external_link_state(
+            session, company_id, entity_id, connector_name, link_updates={LINK_KEY: agreed},
+            actor_id=user.id, source="connector_ui",
+        )
+        await session.commit()
+        return {"entry": entry, "kept": payload.keep}
+
+
 _ITEM_SYNC_LIMIT = 200
 
 
 class ItemSyncRequest(BaseModel):
     entity_ids: list[str]
-    enable: bool = True
+    # publish: link or create the product, published; unpublish: set it to draft in the
+    # store, keeping the link; stop / resume: stop or resume syncing it, in Celerp only.
+    action: Literal["publish", "unpublish", "stop", "resume"]
+    # Item -> the existing store product (same SKU) a person agreed to link it to.
+    confirm_link: dict[str, str] = {}
 
 
 @local_router.post("/{connector_name}/sync")
@@ -728,7 +1256,12 @@ async def set_item_sync(
     user=Depends(get_current_user), _: None = require_permission("adjust_inventory"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Enable or disable catalog product synchronization for one connected channel."""
+    """Publish, unpublish, stop or resume catalog products on one connected channel.
+
+    Publishing an item whose SKU the store already has asks first: the item is listed
+    under ``needs_confirmation`` with the store product's id and name, and is linked when
+    sent again in ``confirm_link`` with that product's id. Unpublish sets the store product
+    to draft and keeps the link, so Publish undoes it; nothing is ever deleted in the store."""
     if connector_name not in PRODUCT_CHANNEL_PLATFORMS:
         raise HTTPException(status_code=404, detail="Unsupported catalog connector")
     if not payload.entity_ids:
@@ -738,67 +1271,80 @@ async def set_item_sync(
             status_code=422,
             detail=t("error.sync_too_many", count=len(payload.entity_ids), limit=_ITEM_SYNC_LIMIT),
         )
-    from celerp.connectors.ownership import (
-        ConnectorOwnershipError,
-        lock_connector_operation,
-    )
-    from celerp.events.engine import emit_event
-    from celerp.connectors.product_links import external_link_for_state
-    from celerp_inventory.services import resolve_catalog_anchor_for_item, set_external_link_state
-    try:
-        await lock_connector_operation(
-            session, company_id, connector_name, require_owner=True
-        )
-    except ConnectorOwnershipError as exc:
-        await session.rollback()
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    anchors: dict[str, object] = {}
-    errors: list[str] = []
-    for entity_id in dict.fromkeys(payload.entity_ids):
-        try:
-            anchor = await resolve_catalog_anchor_for_item(session, company_id, entity_id)
-            anchors[anchor.entity_id] = anchor
-        except ValueError as exc:
-            errors.append(f"{entity_id}: {exc}")
-    updated = 0
-    if connector_name == "shopify":
-        for anchor_id, anchor in anchors.items():
-            state = anchor.state or {}
-            linked = external_link_for_state(state, "shopify")
-            if payload.enable and not linked:
-                errors.append(f"{state.get('sku') or anchor_id}: not linked to a Shopify product; import it from Shopify first")
-                continue
-            desired = bool(payload.enable)
-            if bool(anchor.is_sync_to_shopify) == desired: continue
-            await emit_event(session, company_id=company_id, entity_id=anchor_id, entity_type="item",
-                event_type="shop.sync.enabled" if desired else "shop.sync.disabled", data={},
-                actor_id=user.id, location_id=None, source="connector_ui",
-                idempotency_key=str(__import__("uuid").uuid4()), metadata_={})
-            updated += 1
-        await session.commit()
-    elif not payload.enable:
-        for anchor_id, anchor in anchors.items():
-            link = external_link_for_state(anchor.state or {}, "woocommerce")
-            if not link or link.get("sync_enabled") is False: continue
-            await set_external_link_state(session, company_id, anchor_id, "woocommerce",
-                sync_enabled=False, actor_id=user.id, source="connector_ui")
-            updated += 1
-        await session.commit()
-    else:
-        from celerp.connectors.woocommerce import WooCommerceConnector
-        ctx = await _connector_context(
-            str(company_id), "woocommerce", ownership_session=session
-        )
-        if ctx is None:
-            raise HTTPException(status_code=409, detail=t("error.woocommerce_credentials"))
-        for anchor_id, anchor in anchors.items():
+    if connector_name == "shopify" and payload.action == "unpublish":
+        raise HTTPException(status_code=422, detail=t("connectors.err_unpublish_shopify"))
+    # Publishing and unpublishing change the store; the rest changes only Celerp's records.
+    store_change = connector_name == "woocommerce" and payload.action in ("publish", "unpublish")
+    async with _products_work(session, company_id, connector_name,
+                              "item_publish" if store_change else "item_flags") as ex:
+        from celerp.events.engine import emit_event
+        from celerp.connectors.product_links import external_link_for_state
+        from celerp_inventory.services import resolve_catalog_anchor_for_item, set_external_link_state
+        if connector_name == "shopify":
+            from celerp.connectors.ownership import lock_connector_operation
+
+            # The sync flag's event needs the Shopify fence in its transaction, ahead of
+            # the company lock (emit_event).
+            await lock_connector_operation(session, company_id, "shopify", require_owner=True)
+        anchors: dict[str, object] = {}
+        errors: list[str] = []
+        for entity_id in dict.fromkeys(payload.entity_ids):
             try:
-                await WooCommerceConnector().ensure_product_link(ctx, anchor_id, actor_id=user.id)
+                anchor = await resolve_catalog_anchor_for_item(session, company_id, entity_id)
+                anchors[anchor.entity_id] = anchor
+            except ValueError as exc:
+                errors.append(f"{entity_id}: {exc}")
+        updated = 0
+        needs_confirmation: list[dict] = []
+        action = payload.action
+        if connector_name == "shopify":
+            desired = action in ("publish", "resume")
+            for anchor_id, anchor in anchors.items():
+                state = anchor.state or {}
+                linked = external_link_for_state(state, "shopify")
+                if desired and not linked:
+                    errors.append(f"{state.get('sku') or anchor_id}: not linked to a Shopify product; import it from Shopify first")
+                    continue
+                if bool(anchor.is_sync_to_shopify) == desired: continue
+                await emit_event(session, company_id=company_id, entity_id=anchor_id, entity_type="item",
+                    event_type="shop.sync.enabled" if desired else "shop.sync.disabled", data={},
+                    actor_id=user.id, location_id=None, source="connector_ui",
+                    idempotency_key=str(__import__("uuid").uuid4()), metadata_={})
                 updated += 1
-            except Exception as exc:
-                errors.append(f"{(anchor.state or {}).get('sku') or anchor_id}: {exc}")
-        await session.commit()
-    return {"updated": updated, "enabled": payload.enable, "errors": errors}
+            await session.commit()
+        elif action in ("stop", "resume"):
+            for anchor_id, anchor in anchors.items():
+                link = external_link_for_state(anchor.state or {}, "woocommerce")
+                if not link or link.get("sync_enabled") is (action == "resume"):
+                    continue
+                await set_external_link_state(session, company_id, anchor_id, "woocommerce",
+                    sync_enabled=action == "resume", actor_id=user.id, source="connector_ui")
+                updated += 1
+            await session.commit()
+        else:
+            from celerp.connectors.woocommerce import LinkNeedsConfirmation, WooCommerceConnector
+            # No transaction stays open across a store call.
+            await session.commit()
+            ctx = ex.ctx
+            woo = WooCommerceConnector()
+            for anchor_id, anchor in anchors.items():
+                sku = (anchor.state or {}).get("sku") or anchor_id
+                try:
+                    if action == "unpublish":
+                        await woo.set_product_status(ctx, anchor_id, "draft", actor_id=user.id)
+                    else:
+                        await woo.ensure_product_link(
+                            ctx, anchor_id, actor_id=user.id,
+                            confirm_remote=payload.confirm_link.get(anchor_id),
+                        )
+                    updated += 1
+                except LinkNeedsConfirmation as ask:
+                    needs_confirmation.append({"entity_id": anchor_id, "sku": sku, "remote_id": ask.remote_id,
+                                               "remote_name": ask.remote_name, "message": str(ask)})
+                except Exception as exc:
+                    errors.append(f"{sku}: {exc}")
+        return {"updated": updated, "action": action, "errors": errors,
+                "needs_confirmation": needs_confirmation}
 
 
 # ── Module entry point ────────────────────────────────────────────────────────
@@ -808,3 +1354,4 @@ def setup_api_routes(app) -> None:
     app.include_router(router)
     app.include_router(open_router)
     app.include_router(local_router)
+    app.include_router(media_router)

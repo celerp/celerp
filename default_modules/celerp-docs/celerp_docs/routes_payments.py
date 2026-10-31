@@ -28,7 +28,7 @@ from celerp.models.accounting import UserCompany
 from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.services import payments as pay
-from celerp.services.payments import ONLINE_DEPOSIT_ACCOUNT_KEY, WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY
+from celerp.services.payments import ONLINE_DEPOSIT_ACCOUNT_KEY
 from celerp.services.account_roles import resolve
 from celerp.services.auth import get_current_company_id, get_current_user, require_install_owner
 from celerp.services.business_time import business_date_at, business_timezone
@@ -91,8 +91,8 @@ async def deposit_account(
 async def require_online_deposit_account(session: AsyncSession, company_id, code: str) -> None:
     """422 unless online payments may be deposited to *code*: an active asset account of
     the company that is its default deposit account or behind one of its active bank
-    accounts. The bank account and the chart account are read FOR SHARE, so neither can be
-    archived or retyped while a payment posts to them."""
+    accounts. The bank account is read FOR SHARE and the chart account under the company
+    lock, so neither can be archived or retyped while a payment posts to them."""
     from celerp_accounting.models import BankAccount
     default = await resolve(session, company_id, AccountRole.DEFAULT_DEPOSIT)
     if code != default and (await session.execute(select(BankAccount.id).where(

@@ -126,7 +126,7 @@ async def test_count_outbound_preserves_source_identity_and_retries(monkeypatch,
         assert str(cid) == company_id and not after and since is None
         return [("list:audit", 6, source_state)]
     class Client:
-        def __init__(self, **kw): assert kw == {"public_only": True}
+        def __init__(self, **kw): assert kw == {"public_only": True, "require_execution": True}
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def post(self, url, **kw):
@@ -252,7 +252,8 @@ async def test_completed_stock_audits_page_in_posted_order_not_document_id(clien
     assert created.status_code == 200
     location_id = created.json()["id"]
     position = []
-    for source_id, qty in (("list:z-older", 8), ("list:a-newer", 6)):
+    audits = (("list:z-older", 8), ("list:a-newer", 6))
+    for source_id, qty in audits:
         session.add(Projection(
             company_id=company_id, entity_id=source_id, entity_type="list",
             version=1, updated_at=datetime.now(timezone.utc),
@@ -260,6 +261,8 @@ async def test_completed_stock_audits_page_in_posted_order_not_document_id(clien
                    "result": "stock_adjusted", "location_id": location_id,
                    "line_items": [{"item_id": "item:lot", "counted_qty": qty}]},
         ))
+    await session.flush()
+    for source_id, _qty in audits:
         entry = LedgerEntry(
             company_id=company_id, entity_id=source_id, entity_type="list",
             event_type="list.closed", data={"result": "stock_adjusted"},
@@ -361,6 +364,7 @@ async def test_stock_exclusion_guard_checks_full_document_page(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_distinct_source_locations_cannot_share_one_receiving_location(client, session):
+    from celerp.services.company_lock import lock_company
     from celerp.services.peer_identity import resolve_peer_location
 
     token = await _register(client)
@@ -370,12 +374,14 @@ async def test_distinct_source_locations_cannot_share_one_receiving_location(cli
     assert created.status_code == 200, created.text
     grant = SimpleNamespace(company_id=company, source_company_id=uuid.uuid4())
     first_id, second_id = str(uuid.uuid4()), str(uuid.uuid4())
+    await lock_company(session, company)     # as receive_records holds it for every record
     first_target = await resolve_peer_location(
         session, grant=grant, source_id=first_id,
         name="Paired Site", location_type="warehouse")
     assert first_target == created.json()["id"]
     await session.commit()
 
+    await lock_company(session, company)
     assert await resolve_peer_location(
         session, grant=grant, source_id=first_id,
         name="Paired Site", location_type="warehouse") == first_target

@@ -319,13 +319,15 @@ async def test_two_sales_of_unplaced_older_stock_at_once_place_it_once_and_both_
     cid, tok = await _company(committed_engine)
     lots = [await _available(client, tok, 100.0), await _available(client, tok, 60.0)]
     async with maker(committed_engine)() as s:  # as an older release left them: no account recorded
+        company = await s.get(Company, cid)
+        company.settings = {**company.settings, INVENTORY_ORIGIN_KEY: INVENTORY_ORIGIN_SCHEMA}
+        await s.flush()
         for lot in lots:
             row = await s.get(Projection, {"company_id": cid, "entity_id": lot})
             row.state = {k: v for k, v in row.state.items() if k != LOT_ACCOUNT_FIELD}
+        await s.flush()
         await s.execute(LedgerEntry.__table__.delete().where(
             LedgerEntry.company_id == cid, LedgerEntry.event_type == "item.inventory_account.recorded"))
-        company = await s.get(Company, cid)
-        company.settings = {**company.settings, INVENTORY_ORIGIN_KEY: INVENTORY_ORIGIN_SCHEMA}
         await s.commit()
     docs = [(await _ok(client, tok, "/docs", {"doc_type": "invoice", "line_items": [
         {"entity_id": lot, "name": "Lot", "quantity": 1, "unit_price": 150.0, "sell_by": "piece"}]}))["id"]

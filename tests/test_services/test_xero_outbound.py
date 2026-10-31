@@ -14,14 +14,17 @@ import httpx
 import pytest
 import respx
 import sqlalchemy as sa
+from connector_test_support import connect
+from migration_support import real_client, real_engine  # noqa: F401
 
 from celerp.connectors.base import ConnectorContext
 from celerp.connectors.outbound_queue import process_outbound_queue_once
 from celerp.connectors.xero import XeroConnector
 from celerp.models.company import Company
-from celerp.models.connector_config import ConnectorConfig, OutboundQueue
+from celerp.models.connector_config import OutboundQueue
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from test_helpers import remove_company
 
 pytestmark = pytest.mark.usefixtures("connector_modules_running")
 
@@ -32,9 +35,14 @@ CONTACT = "contact-1"
 
 @pytest.fixture
 def relay():
+    """The relay, and the Xero organisation its session reaches (``store_handle``)."""
+    org = {"store_handle": "t"}
     with patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"), \
-         patch("celerp.gateway.state.relay_session_headers", return_value={}):
-        yield
+         patch("celerp.gateway.state.relay_session_headers", return_value={}), \
+         patch("celerp.connectors.relay_token.fetch_context",
+               new=AsyncMock(side_effect=lambda company_id, *_a, **_k: ConnectorContext(
+                   company_id=str(company_id), access_token="", store_handle=org["store_handle"]))):
+        yield org
 
 
 @pytest.fixture
@@ -47,7 +55,7 @@ async def company(_db_engine):
         seed.add(Company(
             id=company_id, name="Xero Push", slug=f"xero-push-{company_id.hex[:8]}", settings={},
         ))
-        seed.add(ConnectorConfig(company_id=str(company_id), connector="xero", direction="both"))
+        await connect(seed, company_id, "xero", first_sync="completed")
         seed.add(Projection(
             company_id=company_id,
             entity_id=DOC_ID,
@@ -68,14 +76,7 @@ async def company(_db_engine):
     try:
         yield company_id
     finally:
-        async with get_session_ctx() as cleanup:
-            key = str(company_id)
-            for model in (OutboundQueue, ConnectorConfig):
-                await cleanup.execute(sa.delete(model).where(model.company_id == key))
-            for model in (LedgerEntry, Projection):
-                await cleanup.execute(sa.delete(model).where(model.company_id == company_id))
-            await cleanup.execute(sa.delete(Company).where(Company.id == company_id))
-            await cleanup.commit()
+        await remove_company(get_session_ctx, company_id)
 
 
 def _ctx(company_id) -> ConnectorContext:
@@ -180,7 +181,9 @@ LOST = httpx.Response(504, json={"detail": "Xero did not respond in time."})
 
 
 async def _sync(company_id):
-    return await XeroConnector().sync_invoices_out(_ctx(company_id))
+    """A manual sync of invoices to Xero."""
+    from celerp.connectors.sync_runner import run_sync
+    return await run_sync(XeroConnector(), company_id, "invoices_out", purpose="manual_sync")
 
 
 @pytest.mark.asyncio
@@ -252,9 +255,7 @@ async def test_lost_response_retains_row_and_queue_resends_same_key(relay, compa
                 .values(next_retry_at=None)
             )
             await session.commit()
-        with patch("celerp.connectors.relay_token.fetch_context",
-                   new=AsyncMock(return_value=_ctx(company))):
-            assert await process_outbound_queue_once() >= 1
+        assert await process_outbound_queue_once() >= 1
     keys = xero.put_keys()
     assert len(keys) == 2 and keys[0] == keys[1]
     assert (await _doc(company))["xero_invoice_id"] == "xero-1"
@@ -338,9 +339,7 @@ async def test_conflicting_remote_invoice_parks_the_push_and_never_creates(relay
         assert len(rows) == 1 and rows[0].status == "blocked"
 
         # The background queue leaves a parked push alone.
-        with patch("celerp.connectors.relay_token.fetch_context",
-                   new=AsyncMock(return_value=_ctx(company))):
-            await process_outbound_queue_once()
+        await process_outbound_queue_once()
         assert len(xero.gets) == 1
 
         # A manual sync rechecks it. The conflicting invoice is gone, but
@@ -370,9 +369,7 @@ async def test_already_linked_invoice_clears_its_row_without_calling_xero(relay,
                 .values(next_retry_at=None)
             )
             await session.commit()
-        with patch("celerp.connectors.relay_token.fetch_context",
-                   new=AsyncMock(return_value=_ctx(company))):
-            await process_outbound_queue_once()
+        await process_outbound_queue_once()
     assert len(xero.puts) == 1 and xero.gets == []
     assert await _rows(company) == []
 
@@ -404,7 +401,7 @@ async def _disconnect(company_id) -> None:
 async def _reconnect(company_id) -> None:
     from celerp.db import get_session_ctx
     async with get_session_ctx() as session:
-        session.add(ConnectorConfig(company_id=str(company_id), connector="xero", direction="both"))
+        await connect(session, company_id, "xero", first_sync="completed")
         await session.commit()
 
 
@@ -422,9 +419,7 @@ async def test_attempted_create_survives_disconnect_and_resumes_on_reconnect(rel
 
         # The background queue leaves it parked.
         await _reconnect(company)
-        with patch("celerp.connectors.relay_token.fetch_context",
-                   new=AsyncMock(return_value=_ctx(company))):
-            await process_outbound_queue_once()
+        await process_outbound_queue_once()
         assert len(xero.puts) == 1
 
         # A manual sync on the same organisation resumes the same create.
@@ -449,11 +444,11 @@ async def test_other_organisation_makes_no_call_and_stays_blocked(relay, company
         await _sync(company)
         await _disconnect(company)
         await _reconnect(company)
-        other = ConnectorContext(company_id=str(company), access_token="", store_handle="other")
-        result = await XeroConnector().sync_invoices_out(other)
+        relay["store_handle"] = "other"
+        result = await _sync(company)
         assert result.errors and "different Xero organisation" in result.errors[0]
         await _age_attempt(company)
-        await XeroConnector().sync_invoices_out(other)
+        await _sync(company)
     assert len(xero.puts) == 1 and xero.gets == []
     rows = await _rows(company)
     assert len(rows) == 1 and rows[0].status == "blocked"
@@ -643,3 +638,42 @@ async def test_import_matching_two_invoices_fails_closed(company):
         )
     assert after == before
     assert sorted(d.entity_id for d in await _docs(company)) == sorted([DOC_ID, "doc:imported"])
+
+
+@pytest.mark.asyncio
+async def test_a_push_from_the_sync_request_whose_answer_is_lost_keeps_one_row(
+        real_client, real_engine, relay, company, signed_in_to_cloud):
+    """A person's sync request pushes the invoice. Two requests queued the same invoice;
+    Xero's answer is lost, so the push keeps one row for it, the operation's, and drops
+    the later request for the same identity."""
+    import asyncio
+
+    from company_backup_support import member, owner, token
+    from celerp.connectors.outbound_queue import enqueue_outbound
+    from celerp.db import get_session_ctx
+    from celerp.models.connector_config import ConnectorConfig
+    from celerp.services import background
+    from migration_support import auth
+
+    user = await owner(real_engine)
+    await member(real_engine, user, company, role="owner")
+    tok = await token(real_engine, user, company)
+    async with get_session_ctx() as session:  # the sync carries invoices out and nothing in
+        await session.execute(sa.update(ConnectorConfig).where(ConnectorConfig.company_id == str(company)).values(
+            entity_directions={"products": "off", "invoices": "outbound", "contacts": "off"}))
+        await session.commit()
+    await enqueue_outbound(str(company), "xero", "invoice", DOC_ID)
+    async with get_session_ctx() as session:  # a concurrent enqueue that also inserted
+        session.add(OutboundQueue(company_id=str(company), connector="xero", entity_type="invoice",
+                                  entity_id=DOC_ID, status="pending", retry_count=0))
+        await session.commit()
+
+    with _Xero(put=[LOST]) as xero:
+        before = set(background._BG_TASKS)
+        r = await real_client.post("/connectors/xero/sync-plan", headers=auth(tok))
+        assert r.status_code == 200, r.text
+        await asyncio.wait_for(asyncio.gather(*(set(background._BG_TASKS) - before)), 30)
+    assert len(xero.puts) == 1
+    rows = await _rows(company)
+    assert len(rows) == 1 and rows[0].status == "pending"
+    assert json.loads(rows[0].payload_json)["idempotency_key"] == xero.put_keys()[0]

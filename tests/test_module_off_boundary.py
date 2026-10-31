@@ -19,6 +19,7 @@ import json
 import subprocess
 import sys
 import textwrap
+import uuid
 from pathlib import Path
 
 import pytest
@@ -26,7 +27,8 @@ import pytest
 from test_channel_link_truth import (  # noqa: F401  (connect_session is a fixture)
     _connect, _item, _set_state, _state, connect_session)
 from test_channel_link_truth import _register as _owner
-from test_helpers import REPO_ROOT, mark_running
+from migration_support import real_engine  # noqa: F401 - fixture
+from test_helpers import REPO_ROOT, as_another_client, mark_running
 from test_payments_stripe import (  # noqa: F401  (payments_on is a fixture)
     BOOKS, PAID, _company_id, _doc_state, _h, _payable_invoice, _register, payments_on)
 
@@ -71,7 +73,7 @@ _FRESH = textwrap.dedent("""
         from celerp.connectors.registry import get
         ctx = ConnectorContext(company_id=str(uuid.uuid4()), access_token="t", store_handle="https://shop.test")
         for platform, method in (("woocommerce", "sync_products"), ("woocommerce", "sync_orders"),
-                                 ("woocommerce", "sync_contacts"), ("shopify", "sync_orders"),
+                                 ("shopify", "sync_contacts"), ("shopify", "sync_orders"),
                                  ("xero", "sync_products"), ("quickbooks", "sync_orders")):
             out[f"{platform}.{method}"] = await attempt(lambda: getattr(get(platform), method)(ctx))
 
@@ -114,7 +116,7 @@ def test_a_payment_delivery_without_documents_is_refused_naming_it(fresh_process
 
 @pytest.mark.parametrize("call,label", [
     ("woocommerce.sync_products", "Inventory"), ("woocommerce.sync_orders", "Documents"),
-    ("woocommerce.sync_contacts", "Contacts"), ("shopify.sync_orders", "Documents"),
+    ("shopify.sync_contacts", "Contacts"), ("shopify.sync_orders", "Documents"),
     ("xero.sync_products", "Inventory"), ("quickbooks.sync_orders", "Documents"),
 ])
 def test_a_connector_sync_without_its_module_is_refused_naming_it(fresh_process, call, label):
@@ -246,10 +248,15 @@ async def test_a_payment_whose_company_turns_documents_off_after_it_was_admitted
     payload = _delivery(tok, eid)
     real = payments._lock_company_of
 
+    async def turn_off(cid):
+        async with payments._own_session() as other:
+            settings = await other.scalar(select(Company.settings).where(Company.id == cid))
+            await other.execute(update(Company).where(Company.id == cid)
+                                .values(settings=disable_for_company(settings, "celerp-docs")))
+            await other.commit()
+
     async def turned_off_first(s, cid):
-        settings = await s.scalar(select(Company.settings).where(Company.id == cid))
-        await s.execute(update(Company).where(Company.id == cid)
-                        .values(settings=disable_for_company(settings, "celerp-docs")))
+        await as_another_client(turn_off(cid))
         return await real(s, cid)
 
     monkeypatch.setattr(payments, "_lock_company_of", turned_off_first)
@@ -381,33 +388,79 @@ async def test_work_for_no_company_is_refused_even_while_the_module_runs(monkeyp
     assert ran == ["a-company"]
 
 
-async def _no_settings(company_id):
+async def _no_settings(company_id, session=None):
     return {}
 
 
 # ── Connector syncs: the run records the refusal, whatever calls it ──────────
 
-async def _orders_run(monkeypatch, company_id: str, orders):
-    """Run a WooCommerce order sync as the scheduler does, the store answering *orders*;
-    returns the run's result and what it recorded on the run."""
+@pytest.fixture
+async def woo_store(real_engine, monkeypatch):
+    """A company connected to WooCommerce with its first sync done, on the real
+    database, so a sync or a webhook runs in its own execution as in production:
+    (company id, the connector)."""
     from unittest.mock import AsyncMock
+    from celerp.connectors.base import ConnectorContext
+    from celerp.connectors.registry import get
+    from celerp.db import get_session_ctx
+    from connector_test_support import connected, seed_company
+
+    async with get_session_ctx() as session:
+        cid = str(await seed_company(session))
+    woo = get("woocommerce")
+    await connected(cid, woo, woo.default_directions)
+    monkeypatch.setattr("celerp.connectors.relay_token.fetch_context", AsyncMock(
+        side_effect=lambda company_id, *_a, **_k: ConnectorContext(company_id=str(company_id), access_token="t")))
+    return cid, woo
+
+
+async def _turn_off(company_id: str, module: str | None) -> None:
+    """The company's own module list: every running module but *module*."""
+    from celerp.db import get_session_ctx
+    from celerp.modules.loader import loaded_modules
+    from celerp.modules.registry import set_enabled
+    from celerp.services.company_lock import locked_company
+
+    async with get_session_ctx() as session:
+        company = await locked_company(session, uuid.UUID(company_id))
+        company.settings = set_enabled(company.settings or {}, {
+            m["name"] for m in loaded_modules()} - {module})
+        await session.commit()
+
+
+async def _history(company_id: str) -> list[dict]:
+    """The store's sync history, oldest first."""
+    import sqlalchemy as sa
+    from celerp.db import get_session_ctx
+
+    async with get_session_ctx() as session:
+        rows = (await session.execute(sa.text(
+            "SELECT entity, status, errors_json FROM sync_runs WHERE company_id = :c "
+            "ORDER BY started_at"), {"c": company_id})).all()
+    return [{"entity": e, "status": st, "errors": json.loads(err) if err else None} for e, st, err in rows]
+
+
+async def _reruns(company_id: str) -> list[str]:
+    from celerp.connectors.execution import pending_reruns
+    from celerp.db import get_session_ctx
+
+    async with get_session_ctx() as session:
+        return await pending_reruns(session, company_id, "woocommerce")
+
+
+async def _outside(coro):
+    """``coro`` in a task of its own, as a request, the scheduler or the sweeper runs it."""
+    import contextvars
+    return await asyncio.create_task(coro, context=contextvars.Context())
+
+
+async def _orders_run(woo_store, monkeypatch, orders):
+    """Run a WooCommerce order sync as the scheduler does, the store answering *orders*:
+    the run's result."""
     from celerp.connectors import sync_runner
-    from celerp.connectors.base import ConnectorContext, SyncDirection
-    from celerp.connectors.woocommerce import WooCommerceConnector
-
-    finished = {}
-
-    async def finish(run_id, company_id, connector, entity, result, started, ended, status):
-        finished.update(errors=result.errors, status=status)
-    monkeypatch.setattr(sync_runner, "_begin_run", AsyncMock(return_value="run-1"))
-    monkeypatch.setattr(sync_runner, "_finish_run", finish)
-    monkeypatch.setattr(sync_runner, "_last_success_watermark", AsyncMock(return_value=None))
-    monkeypatch.setattr("celerp.connectors.ownership.lock_connector_operation", AsyncMock(return_value=None))
-    monkeypatch.setattr("celerp.connectors.ownership.bind_connector_store", AsyncMock())
-    woo = WooCommerceConnector()
+    cid, woo = woo_store
     monkeypatch.setattr(woo, "_paginate", orders)
-    ctx = ConnectorContext(company_id=company_id, access_token="t", store_handle="https://shop.test")
-    return await sync_runner.run_sync(woo, ctx, "orders", direction=SyncDirection.INBOUND), finished
+    return await _outside(sync_runner.run_sync(woo, cid, "orders", purpose="schedule"))
 
 
 def _not_fetched():
@@ -416,130 +469,75 @@ def _not_fetched():
 
 
 @pytest.mark.asyncio
-async def test_a_sync_run_before_its_module_starts_fails_with_the_refusal_alone(client, monkeypatch, docs_not_started):
+async def test_a_sync_run_before_its_module_starts_fails_with_the_refusal_alone(woo_store, monkeypatch, docs_not_started):
     """One sentence on the run, nothing fetched from the store, so nothing is lost and
     the watermark stays where it was."""
-    tok = await _register(client)
-    result, finished = await _orders_run(monkeypatch, _company_id(tok), _not_fetched())
+    result = await _orders_run(woo_store, monkeypatch, _not_fetched())
 
     assert result.errors == [_STARTS.format("Documents")]
-    assert finished == {"errors": [_STARTS.format("Documents")], "status": "failed"}
+    assert await _history(woo_store[0]) == [
+        {"entity": "orders", "status": "failed", "errors": [_STARTS.format("Documents")]}]
 
 
 @pytest.mark.asyncio
-async def test_a_company_that_turned_documents_off_has_its_order_sync_refused(client, monkeypatch):
-    """Documents off for this company while another keeps it on: this company's sync
-    is refused before anything is fetched, as a document sent to it by a connected
-    company is; the other company's sync runs as before."""
+async def test_a_company_that_turned_documents_off_has_its_order_sync_refused(woo_store, monkeypatch):
+    """Documents off for this company: its sync is refused before anything is fetched,
+    as a document sent to it by a connected company is. Back on, the same sync runs."""
     from unittest.mock import AsyncMock
     mark_running(monkeypatch, "celerp-docs")
-    tok = await _register(client)
-    other = await _second_company(client, tok)
-    await _documents(client, tok, "disable")
+    await _turn_off(woo_store[0], "celerp-docs")
 
-    result, finished = await _orders_run(monkeypatch, _company_id(tok), _not_fetched())
-    assert finished == {"errors": [_OFF.format("Documents")], "status": "failed"}
+    await _orders_run(woo_store, monkeypatch, _not_fetched())
+    assert await _history(woo_store[0]) == [
+        {"entity": "orders", "status": "failed", "errors": [_OFF.format("Documents")]}]
 
+    await _turn_off(woo_store[0], None)
     store = AsyncMock(return_value=[])
-    result, finished = await _orders_run(monkeypatch, _company_id(other), store)
+    result = await _orders_run(woo_store, monkeypatch, store)
     assert store.await_count == 1
-    assert not result.errors and finished["status"] == "success", finished
+    assert not result.errors, result.errors
 
 
-async def _product_deleted(monkeypatch, company_id: str):
-    """A WooCommerce product-deleted delivery for a connected store: the store's sync
-    history it leaves, and the connector that received it."""
-    from types import SimpleNamespace
-    from unittest.mock import AsyncMock
-    import celerp.connectors as connector_registry
-    from celerp.connectors import sync_runner
-    from celerp.connectors.base import ConnectorContext, SyncDirection
+async def _webhook(woo_store, topic: str, payload: dict | None = None) -> None:
     from celerp.connectors.webhooks import WebhookEvent, handle_webhook
-    from celerp.connectors.woocommerce import WooCommerceConnector
-
-    history = []
-
-    async def finish(run_id, company_id, connector, entity, result, started, ended, status):
-        history.append({"entity": entity, "errors": result.errors, "status": status})
-    ctx = ConnectorContext(company_id=company_id, access_token="t", store_handle="https://shop.test")
-    config = SimpleNamespace(id="config-1", webhook_secret="s", direction="both")
-    monkeypatch.setattr(sync_runner, "_begin_run", AsyncMock(return_value="run-1"))
-    monkeypatch.setattr(sync_runner, "_finish_run", finish)
-    monkeypatch.setattr(sync_runner, "_last_success_watermark", AsyncMock(return_value=None))
-    monkeypatch.setattr("celerp.connectors.ownership.lock_connector_operation", AsyncMock(return_value=config))
-    monkeypatch.setattr("celerp.connectors.ownership.bind_connector_store", AsyncMock())
-    monkeypatch.setattr("celerp.connectors.relay_token.fetch_context", AsyncMock(return_value=ctx))
-    woo = WooCommerceConnector()
-    monkeypatch.setattr(woo, "_paginate", _not_fetched())
-    monkeypatch.setattr(connector_registry, "get", lambda name: woo)
-    await handle_webhook(WebhookEvent(platform="woocommerce", topic="product.deleted", payload={"id": 88}),
-                         ctx, SyncDirection.BOTH)
-    return history, woo
+    await _outside(handle_webhook(WebhookEvent(platform="woocommerce", topic=topic, payload=payload or {}),
+                                  woo_store[0]))
 
 
 @pytest.mark.asyncio
-async def test_a_deleted_store_product_before_inventory_starts_is_recorded(client, monkeypatch):
+async def test_a_deleted_store_product_before_inventory_starts_is_recorded(woo_store, monkeypatch):
     """The deletion is refused before anything changes and left on the store's sync
     history in the refusal's words, never dropped unseen; nothing is fetched."""
-    tok = await _register(client)
-    history, _ = await _product_deleted(monkeypatch, _company_id(tok))
-    assert history == [{"entity": "products", "errors": [_STARTS.format("Inventory")], "status": "failed"}]
+    from celerp.modules import loader
+    monkeypatch.setattr(loader, "_loaded", [m for m in loader._loaded if m["name"] != "celerp-inventory"])
+    monkeypatch.setattr(woo_store[1], "_paginate", _not_fetched())
+    await _webhook(woo_store, "product.deleted", {"id": 88})
+    assert await _history(woo_store[0]) == [
+        {"entity": "products", "status": "failed", "errors": [_STARTS.format("Inventory")]}]
+    assert await _reruns(woo_store[0]) == []
 
 
 @pytest.mark.asyncio
-async def test_a_deleted_store_product_with_inventory_off_is_recorded(client, monkeypatch):
+async def test_a_deleted_store_product_with_inventory_off_is_recorded(woo_store, monkeypatch):
     mark_running(monkeypatch, "celerp-inventory")
-    tok = await _register(client)
-    r = await client.post("/companies/me/modules/celerp-inventory/disable", headers=_h(tok))
-    assert r.status_code == 200, r.text
-    history, _ = await _product_deleted(monkeypatch, _company_id(tok))
-    assert history == [{"entity": "products", "errors": [_OFF.format("Inventory")], "status": "failed"}]
+    await _turn_off(woo_store[0], "celerp-inventory")
+    monkeypatch.setattr(woo_store[1], "_paginate", _not_fetched())
+    await _webhook(woo_store, "product.deleted", {"id": 88})
+    assert await _history(woo_store[0]) == [
+        {"entity": "products", "status": "failed", "errors": [_OFF.format("Inventory")]}]
+    assert await _reruns(woo_store[0]) == []
 
 
 @pytest.mark.asyncio
-async def test_a_deleted_store_product_with_inventory_on_is_handled_alone(client, monkeypatch):
+async def test_a_deleted_store_product_with_inventory_on_is_handled_alone(woo_store, monkeypatch):
     """With Inventory on, the targeted handler takes the deletion and no product sync runs."""
     from unittest.mock import AsyncMock
     mark_running(monkeypatch, "celerp-inventory")
-    tok = await _register(client)
     handled = AsyncMock()
-    monkeypatch.setattr("celerp.connectors.woocommerce.WooCommerceConnector.handle_product_deleted", handled)
-    history, _ = await _product_deleted(monkeypatch, _company_id(tok))
-    assert history == [] and handled.await_count == 1
-
-
-async def _order_webhook(monkeypatch, company_id: str, store):
-    """A WooCommerce order-updated delivery for a connected store whose orders *store*
-    answers, handled with every later attempt it leads to: the store's sync history."""
-    from types import SimpleNamespace
-    from unittest.mock import AsyncMock
-    import celerp.connectors as connector_registry
-    from celerp.connectors import sync_runner, webhooks
-    from celerp.connectors.base import ConnectorContext, SyncDirection
-    from celerp.connectors.woocommerce import WooCommerceConnector
-
-    history = []
-
-    async def finish(run_id, company_id, connector, entity, result, started, ended, status):
-        history.append({"entity": entity, "errors": result.errors, "status": status})
-    ctx = ConnectorContext(company_id=company_id, access_token="t", store_handle="https://shop.test")
-    monkeypatch.setattr(sync_runner, "_begin_run", AsyncMock(return_value="run-1"))
-    monkeypatch.setattr(sync_runner, "_finish_run", finish)
-    monkeypatch.setattr(sync_runner, "_last_success_watermark", AsyncMock(return_value=None))
-    monkeypatch.setattr("celerp.connectors.ownership.lock_connector_operation",
-                        AsyncMock(return_value=SimpleNamespace(id="config-1", webhook_secret="s", direction="both")))
-    monkeypatch.setattr("celerp.connectors.ownership.bind_connector_store", AsyncMock())
-    monkeypatch.setattr("celerp.connectors.relay_token.fetch_context", AsyncMock(return_value=ctx))
-    monkeypatch.setattr(webhooks, "MODULE_SETTLE_SECONDS", 0)
-    woo = WooCommerceConnector()
-    monkeypatch.setattr(woo, "_paginate", store)
-    monkeypatch.setattr(connector_registry, "get", lambda name: woo)
-    await webhooks.handle_webhook(webhooks.WebhookEvent(platform="woocommerce", topic="order.updated"),
-                                  ctx, SyncDirection.BOTH)
-    retrying = webhooks._RETRYING
-    while retrying:
-        await asyncio.gather(*list(retrying))
-    return history
+    monkeypatch.setattr(woo_store[1], "handle_product_deleted", handled)
+    monkeypatch.setattr(woo_store[1], "_paginate", _not_fetched())
+    await _webhook(woo_store, "product.deleted", {"id": 88})
+    assert await _history(woo_store[0]) == [] and handled.await_count == 1
 
 
 def _busy_then(answers: int):
@@ -550,40 +548,51 @@ def _busy_then(answers: int):
 
 
 @pytest.mark.asyncio
-async def test_an_order_webhook_refused_while_modules_change_is_handled_again(client, monkeypatch):
-    """A store sends a webhook once and is never asked again, so one refused as busy is
-    handled again after the wait the refusal names, and the order is pulled then."""
+async def test_an_order_webhook_refused_while_modules_change_is_handled_again(woo_store, monkeypatch):
+    """A store sends a webhook once and is never asked again, so one refused as busy
+    records a rerun, and the rerun sweeper pulls the order once the change has settled."""
+    from celerp.connectors.execution import sweep_reruns
     from celerp.modules.boundary import ModuleBusy
     mark_running(monkeypatch, "celerp-docs")
-    tok = await _register(client)
     store = _busy_then(1)
-    history = await _order_webhook(monkeypatch, _company_id(tok), store)
-    assert history == [{"entity": "orders", "errors": [str(ModuleBusy("celerp-docs"))], "status": "failed"},
-                       {"entity": "orders", "errors": None, "status": "success"}]
+    monkeypatch.setattr(woo_store[1], "_paginate", store)
+    await _webhook(woo_store, "order.updated")
+    assert await _history(woo_store[0]) == [
+        {"entity": "orders", "status": "failed", "errors": [str(ModuleBusy("celerp-docs"))]}]
+    assert await _reruns(woo_store[0]) == ["orders"]
+
+    await _outside(sweep_reruns())
     assert store.await_count == 2
+    assert (await _history(woo_store[0]))[-1] == {"entity": "orders", "status": "success", "errors": None}
+    assert await _reruns(woo_store[0]) == []
 
 
 @pytest.mark.asyncio
-async def test_an_order_webhook_refused_while_modules_keep_changing_is_left_to_the_scheduled_sync(
-        client, monkeypatch):
-    """Still busy every time: handled again a bounded number of times, each failed run kept
-    on the store's history (the watermark stays, so the next scheduled sync pulls it)."""
-    from celerp.connectors import webhooks
+async def test_an_order_webhook_refused_while_modules_keep_changing_is_left_for_the_next_tick(
+        woo_store, monkeypatch):
+    """Still busy at the rerun: the failed run is kept on the store's history and the
+    rerun stays recorded for the next sweeper tick (the watermark stays, so nothing is
+    lost)."""
+    from celerp.connectors.execution import sweep_reruns
     mark_running(monkeypatch, "celerp-docs")
-    tok = await _register(client)
-    history = await _order_webhook(monkeypatch, _company_id(tok), _busy_then(10))
-    assert [run["status"] for run in history] == ["failed"] * (1 + webhooks._BUSY_RETRIES)
+    monkeypatch.setattr(woo_store[1], "_paginate", _busy_then(10))
+    await _webhook(woo_store, "order.updated")
+    await _outside(sweep_reruns())
+    assert [run["status"] for run in await _history(woo_store[0])] == ["failed", "failed"]
+    assert await _reruns(woo_store[0]) == ["orders"]
 
 
 @pytest.mark.asyncio
 async def test_an_order_webhook_for_a_company_that_turned_documents_off_is_not_handled_again(
-        client, monkeypatch):
-    """Turned off is final until the company turns it back on: recorded once, never retried."""
+        woo_store, monkeypatch):
+    """Turned off is final until the company turns it back on: recorded once, no rerun."""
     mark_running(monkeypatch, "celerp-docs")
-    tok = await _register(client)
-    await _documents(client, tok, "disable")
-    history = await _order_webhook(monkeypatch, _company_id(tok), _not_fetched())
-    assert history == [{"entity": "orders", "errors": [_OFF.format("Documents")], "status": "failed"}]
+    await _turn_off(woo_store[0], "celerp-docs")
+    monkeypatch.setattr(woo_store[1], "_paginate", _not_fetched())
+    await _webhook(woo_store, "order.updated")
+    assert await _history(woo_store[0]) == [
+        {"entity": "orders", "status": "failed", "errors": [_OFF.format("Documents")]}]
+    assert await _reruns(woo_store[0]) == []
 
 
 # ── Choosing a deposit account ───────────────────────────────────────────────
@@ -715,7 +724,7 @@ async def test_disconnecting_a_store_before_inventory_starts(client, session, mo
             ConnectorConfig.company_id == linked[1])) == 1
 
         r = await client.delete("/connectors/woocommerce/credentials", headers=plain[0])
-    assert r.status_code == 200 and r.json() == {"ok": True}, r.text
+    assert r.status_code == 200 and r.json() == {"ok": True, "kept_store_values": 0}, r.text
 
 
 @pytest.mark.asyncio
@@ -732,7 +741,7 @@ async def test_connecting_a_store_or_choosing_items_to_sync_needs_inventory(clie
         ConnectorConfig.company_id == owner[1])) == 0
 
     r = await client.post("/connector-items/woocommerce/sync", headers=owner[0],
-                          json={"entity_ids": ["any"], "enable": True})
+                          json={"entity_ids": ["any"], "action": "publish"})
     assert (r.status_code, _key(r)) == (403, "modules.starts_after_restart"), r.text
 
 
@@ -871,9 +880,9 @@ _REVIEWED: dict[tuple[str, str], str] = {
         "woocommerce_reconciliation_signature", "list_imported_woocommerce_order_ids",
         "hold_missing_woocommerce_order", "upsert_contact_from_shopify",
         "upsert_contact_from_quickbooks", "upsert_contact_from_xero",
-        "upsert_contact_from_woocommerce", "list_items_with_external_id",
+        "import_store_product", "list_items_with_external_id",
         "list_item_for_external_identity", "list_items_modified_since_last_sync",
-        "list_unsynced_invoices", "invoice_for_push", "mark_doc_pushed")},
+        "record_link_push", "list_unsynced_invoices", "invoice_for_push", "mark_doc_pushed")},
     ("celerp/connectors/product_links.py", "detach_product_links"):
         "imports Inventory only while it runs in this process, after "
         "refuse_while_links_cannot_detach has judged the company",

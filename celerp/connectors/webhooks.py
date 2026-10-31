@@ -9,26 +9,17 @@ the changed entity from the platform API.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
-from celerp.connectors.base import ConnectorContext, SyncDirection, entity_allowed
-from celerp.connectors.sync_runner import run_sync
-from celerp.capacity import MODULE_SETTLE_SECONDS
+import sqlalchemy as sa
+
+from celerp.connectors.sync_runner import record_refused_run, run_sync
 from celerp.modules.boundary import ModuleBusy, ModuleRefused
 import celerp.connectors as connector_registry
 
 log = logging.getLogger(__name__)
-
-# A store sends a webhook once and Celerp never acknowledges it (it arrives over the
-# gateway), so a delivery refused because modules were being changed is handled again
-# here, MODULE_SETTLE_SECONDS later (the wait the refusal names), up to this many times.
-# Past that, the next scheduled sync pulls what it named.
-_BUSY_RETRIES = 3
-# The deliveries waiting to be handled again, kept so none is dropped mid-wait.
-_RETRYING: set[asyncio.Task] = set()
 
 # Maps webhook topic prefixes to sync entity names
 _TOPIC_ENTITY_MAP = {
@@ -58,158 +49,121 @@ def topic_to_entity(topic: str) -> str | None:
 
 async def handle_webhook(
     event: WebhookEvent,
-    ctx: ConnectorContext,
-    direction: SyncDirection = SyncDirection.BOTH,
+    company_id,
     *,
-    expected_config_id=None,
-    expected_store_handle: str | None = None,
     expected_webhook_secret: str | None = None,
+    store_matches: Callable[[str | None], bool] | None = None,
 ) -> None:
-    """Handle an incoming webhook event by running a targeted inbound sync. One refused
-    because modules were being changed is handled again later (_BUSY_RETRIES), without
-    holding up the caller."""
-    fence = {"expected_config_id": expected_config_id, "expected_store_handle": expected_store_handle,
-             "expected_webhook_secret": expected_webhook_secret}
-    if await _handle_once(event, ctx, direction, **fence):
-        _again_later(event, ctx, direction, fence, _BUSY_RETRIES)
+    """Handle an incoming webhook event by running a targeted inbound sync in a
+    webhook execution. A delivery that finds the resource busy, or no free
+    execution slot, or the first sync still running, records a rerun; a
+    delivery before the first sync started, or for a connection that changed
+    since it was verified, is dropped and logged. One refused because modules were
+    being changed records a rerun too: a store sends a webhook once, and the rerun
+    sweeper pulls what it named once the change has settled. It never raises to the
+    store."""
+    from celerp.connectors.execution import (
+        AdmissionBusy,
+        ExecutionBusy,
+        ExecutionRefused,
+        connector_execution,
+        execution_resource,
+        first_sync_state,
+        incomplete,
+        record_rerun,
+        refusal_drops_work,
+    )
+    from celerp.connectors.ownership import ConnectorOwnershipError
+    from celerp.connectors.relay_token import ConnectorUpgradeRequired, ConnectRequired
+    from celerp.db import get_session_ctx
+    from celerp.models.connector_config import ConnectorConfig
 
-
-def _again_later(event: WebhookEvent, ctx: ConnectorContext, direction: SyncDirection,
-                 fence: dict, attempts: int) -> None:
-    async def again() -> None:
-        await asyncio.sleep(MODULE_SETTLE_SECONDS)
-        try:
-            busy = await _handle_once(event, ctx, direction, **fence)
-        except Exception as exc:  # noqa: BLE001 - as the gateway logs a delivery that failed
-            log.warning("webhook: %s/%s for %s failed when tried again: %s",
-                        event.platform, event.topic, ctx.company_id, exc)
-            return
-        if not busy:
-            return
-        if attempts > 1:
-            _again_later(event, ctx, direction, fence, attempts - 1)
-        else:
-            log.warning("webhook: %s/%s for %s still refused while modules change; the next "
-                        "scheduled sync pulls it", event.platform, event.topic, ctx.company_id)
-
-    task = asyncio.create_task(again())
-    _RETRYING.add(task)
-    task.add_done_callback(_RETRYING.discard)
-
-
-async def _handle_once(
-    event: WebhookEvent,
-    ctx: ConnectorContext,
-    direction: SyncDirection,
-    *,
-    expected_config_id,
-    expected_store_handle: str | None,
-    expected_webhook_secret: str | None,
-) -> bool:
-    """Handle the event once. True when it was refused because modules were being changed,
-    so handling it again later can succeed."""
     entity = topic_to_entity(event.topic)
     if not entity:
         log.warning("webhook: unknown topic %s for %s", event.topic, event.platform)
-        return False
+        return
 
     try:
         connector = connector_registry.get(event.platform)
     except KeyError:
         log.error("webhook: unknown platform %s", event.platform)
-        return False
+        return
 
-    deletion_busy = False
-
+    company_id = str(company_id)
     normalized_topic = event.topic.replace("/", ".").lower()
-    if event.platform == "woocommerce" and normalized_topic == "product.deleted":
-        from celerp.connectors.ownership import (
-            ConnectorOwnershipError,
-            lock_connector_operation,
-        )
-        from celerp.connectors.relay_token import fetch_context
-        from celerp.db import get_session_ctx
+    async with get_session_ctx() as session:
+        state = await first_sync_state(session, company_id, event.platform)
+    if state in (None, "pending"):
+        # Accepted and left alone: the first sync reads the whole store.
+        log.info("webhook: %s/%s before the first sync, ignored", event.platform, event.topic)
+        return
 
-        try:
-            async with get_session_ctx() as guard_session:
-                config = await lock_connector_operation(
-                    guard_session,
-                    ctx.company_id,
-                    event.platform,
-                    require_owner=True,
+    resource = execution_resource("entity", entity)
+    try:
+        async with connector_execution(company_id, connector, "webhook", [resource], admission_wait=0) as ex:
+            async with get_session_ctx() as session:
+                config = await session.scalar(sa.select(ConnectorConfig).where(
+                    ConnectorConfig.company_id == company_id, ConnectorConfig.connector == event.platform))
+                secret = config.webhook_secret
+            if expected_webhook_secret is not None and secret != expected_webhook_secret:
+                log.info("webhook: %s reconnected since the delivery was verified, dropped", event.platform)
+                return
+            if store_matches is not None and not store_matches(ex.ctx.store_handle):
+                log.info("webhook: %s delivery for another store, dropped", event.platform)
+                return
+            handled = rerun_needed = False
+            if event.platform == "woocommerce" and normalized_topic == "product.deleted":
+                try:
+                    # A deletion matters to every linked product, whichever way products sync.
+                    await connector.handle_product_deleted(ex.ctx, event.payload or {})
+                    handled = True
+                except ModuleRefused as exc:
+                    # Refused before anything changed: recorded on the store's sync history
+                    # in the refusal's words. Once Inventory runs, the daily reconcile pass
+                    # finds the product the store no longer returns.
+                    await record_refused_run(company_id, event.platform, entity, exc)
+                    handled = True
+                    rerun_needed = isinstance(exc, ModuleBusy)
+            if not handled:
+                result = await run_sync(
+                    connector, company_id, entity, purpose="webhook",
+                    # WooCommerce names only the deleted order; the reconciliation pass
+                    # finds every imported order the store no longer returns.
+                    reconcile=event.platform == "woocommerce" and normalized_topic == "order.deleted",
                 )
-                if expected_config_id is not None and config.id != expected_config_id:
-                    return False
-                if (
-                    expected_webhook_secret is not None
-                    and config.webhook_secret != expected_webhook_secret
-                ):
-                    return False
-                current_direction = SyncDirection(config.direction)
-                if not entity_allowed(entity, current_direction):
-                    return False
-                current_ctx = await fetch_context(
-                    ctx.company_id,
-                    event.platform,
-                    ownership_session=guard_session,
-                )
-                if current_ctx is None:
-                    return False
-                if (
-                    expected_store_handle is not None
-                    and current_ctx.store_handle != expected_store_handle
-                ):
-                    return False
-                await connector.handle_product_deleted(
-                    current_ctx, event.payload or {}
-                )
-                await guard_session.commit()
-        except ConnectorOwnershipError:
-            return False
-        except ModuleRefused as exc:
-            # Refused before anything changed. The product sync below records the
-            # refusal on the store's sync history; one refused as busy is handled again,
-            # and once Inventory runs the daily reconcile pass finds the product the
-            # store no longer returns.
-            deletion_busy = isinstance(exc, ModuleBusy)
-        else:
-            log.info(
-                "webhook: processed targeted WooCommerce product deletion for %s",
-                ctx.company_id,
-            )
-            return False
-
-    result = await run_sync(
-        connector,
-        ctx,
-        entity,
-        direction=direction,
-        # WooCommerce names only the deleted order; the reconciliation pass
-        # finds every imported order the store no longer returns.
-        reconcile=event.platform == "woocommerce" and normalized_topic == "order.deleted",
-        expected_config_id=expected_config_id,
-        expected_store_handle=expected_store_handle,
-        expected_webhook_secret=expected_webhook_secret,
-    )
-    log.info(
-        "webhook: processed %s/%s for %s",
-        event.platform,
-        event.topic,
-        ctx.company_id,
-    )
-    return deletion_busy or result.busy
+                rerun_needed = rerun_needed or incomplete([result]) is not None
+    except (ExecutionBusy, AdmissionBusy):
+        await record_rerun(company_id, event.platform, resource)
+        log.info("webhook: %s %s busy, rerun recorded", event.platform, resource)
+        return
+    except ExecutionRefused as exc:
+        if not refusal_drops_work(exc.reason):
+            await record_rerun(company_id, event.platform, resource)
+        log.info("webhook: %s/%s not synced: %s", event.platform, event.topic, exc)
+        return
+    except (ConnectorOwnershipError, ConnectRequired, ConnectorUpgradeRequired) as exc:
+        log.info("webhook: %s/%s not synced: %s", event.platform, event.topic, exc)
+        return
+    if rerun_needed:
+        # Refused while modules change, or ran and failed: not delivered. Recorded once the
+        # execution has released, so the sweeper runs it after the change settles or the
+        # failure's cause clears, rather than the holder at once.
+        await record_rerun(company_id, event.platform, resource)
+        log.info("webhook: %s %s not completed, rerun recorded", event.platform, resource)
+        return
+    log.info("webhook: processed %s/%s for %s", event.platform, event.topic, company_id)
 
 
 async def dispatch_woocommerce_webhook(
     raw_body: bytes, signature: str, topic: str
 ) -> bool:
-    """Verify a WooCommerce delivery against the current connector generation."""
+    """Verify a WooCommerce delivery and sync it for the company whose secret signed it.
+
+    Step A reads the candidates and checks the signature in its own short
+    transaction and holds nothing after it; the webhook execution's guard then
+    requires the same secret (a reconnect in between drops the delivery)."""
     import json
 
-    import sqlalchemy as sa
-
-    from celerp.connectors.ownership import lock_connector_key
-    from celerp.connectors.relay_token import fetch_context
     from celerp.db import get_session_ctx
     from celerp.models.connector_config import ConnectorConfig
 
@@ -219,70 +173,18 @@ async def dispatch_woocommerce_webhook(
     connector = connector_registry.get("woocommerce")
 
     async with get_session_ctx() as session:
-        rows = await session.execute(
-            sa.select(
-                ConnectorConfig.company_id,
-                ConnectorConfig.webhook_secret,
-                ConnectorConfig.direction,
-            ).where(ConnectorConfig.connector == "woocommerce")
-        )
-        candidates = [
-            row[0]
-            for row in rows.all()
-            if row[1]
-            and connector.validate_webhook(raw_body, signature, row[1])
-        ]
-
-    for company_id in candidates:
-        async with get_session_ctx() as guard_session:
-            await lock_connector_key(guard_session, "woocommerce")
-            current_rows = await guard_session.execute(
-                sa.select(
-                    ConnectorConfig.company_id,
-                    ConnectorConfig.webhook_secret,
-                    ConnectorConfig.direction,
-                )
-                .where(
-                    ConnectorConfig.connector == "woocommerce",
-                    ConnectorConfig.company_id == str(company_id),
-                )
-                .with_for_update()
-            )
-            current = next(
-                (
-                    row
-                    for row in current_rows.all()
-                    if str(row[0]) == str(company_id)
-                ),
-                None,
-            )
-            if current is None:
-                continue
-            secret = current[1]
-            if (
-                not secret
-                or not connector.validate_webhook(raw_body, signature, secret)
-            ):
-                continue
-
-            ctx = await fetch_context(company_id, "woocommerce")
-            if ctx is None:
-                continue
-            direction = SyncDirection(current[2] or "both")
-            expected_store_handle = ctx.store_handle
-
-        try:
-            data = json.loads(raw_body or b"{}")
-        except (ValueError, TypeError):
-            data = {}
-        event = WebhookEvent(platform="woocommerce", topic=topic, payload=data)
-        await handle_webhook(
-            event,
-            ctx,
-            direction,
-            expected_store_handle=expected_store_handle,
-            expected_webhook_secret=secret,
-        )
-        return True
-
-    return False
+        rows = (await session.execute(
+            sa.select(ConnectorConfig.company_id, ConnectorConfig.webhook_secret)
+            .where(ConnectorConfig.connector == "woocommerce")
+        )).all()
+    signed = next(((company_id, secret) for company_id, secret in rows
+                   if secret and connector.validate_webhook(raw_body, signature, secret)), None)
+    if signed is None:
+        return False
+    try:
+        data = json.loads(raw_body or b"{}")
+    except (ValueError, TypeError):
+        data = {}
+    event = WebhookEvent(platform="woocommerce", topic=topic, payload=data)
+    await handle_webhook(event, signed[0], expected_webhook_secret=signed[1])
+    return True

@@ -328,13 +328,12 @@ async def _sync(installs, client: httpx.AsyncClient, tok: str, company_id: str) 
     """Sync now, as the connector page runs it: the whole plan in the background. Returns
     each step's recorded run, read from the rows the connector page shows."""
     import asyncpg
-    from celerp.connectors.base import SyncDirection
     from celerp.connectors.celerp import CelerpConnector
     from celerp.connectors.sync_runner import sync_plan
     r = await client.get("/connectors/", headers=auth(tok))
     assert r.status_code == 200, r.text
-    steps = len(sync_plan(CelerpConnector(), SyncDirection(
-        next(c["direction"] for c in r.json() if c["name"] == "celerp"))))
+    steps = len(sync_plan(CelerpConnector(),
+                          next(c["default_directions"] for c in r.json() if c["name"] == "celerp")))
     conn = await asyncpg.connect(installs["databases"]["client"].replace("+asyncpg", ""))
     try:
         query = ("SELECT entity, status, created_count, updated_count, errors_json, attention_json, finished_at FROM sync_runs"

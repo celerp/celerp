@@ -24,8 +24,10 @@ async def test_install_owner_can_transfer_and_old_owner_loses_authority(client, 
         client, session, admin_h, "next-owner@example.test", "owner")
     users = (await client.get("/companies/me/users", headers=admin_h)).json()["items"]
     target = next(u for u in users if u["email"] == "next-owner@example.test")
-    current = (await session.execute(
-        select(User).where(User.email == "admin@perm.example")
+    # The id as a value: a request answered with an error rolls back the session the client shares
+    # with this test, which expires every object it loaded.
+    current_id = (await session.execute(
+        select(User.id).where(User.email == "admin@perm.example")
     )).scalar_one()
 
     r = await client.post(
@@ -33,7 +35,7 @@ async def test_install_owner_can_transfer_and_old_owner_loses_authority(client, 
     assert r.status_code == 200, r.text
 
     old_retry = await client.post(
-        f"/companies/me/users/{current.id}/installation-owner", headers=admin_h)
+        f"/companies/me/users/{current_id}/installation-owner", headers=admin_h)
     assert old_retry.status_code == 403
 
     new_h = {"Authorization": f"Bearer {next_token}"}
@@ -46,14 +48,14 @@ async def test_install_owner_can_transfer_and_old_owner_loses_authority(client, 
     assert "installation owner" in deactivate_owner.json()["detail"].lower()
 
     transfer_back = await client.post(
-        f"/companies/me/users/{current.id}/installation-owner", headers=new_h)
+        f"/companies/me/users/{current_id}/installation-owner", headers=new_h)
     assert transfer_back.status_code == 200, transfer_back.text
 
     rows = (await session.execute(
         select(User).where(User.is_install_owner.is_(True))
     )).scalars().all()
     assert len(rows) == 1
-    assert rows[0].id == current.id
+    assert rows[0].id == current_id
 
 
 @pytest.mark.asyncio

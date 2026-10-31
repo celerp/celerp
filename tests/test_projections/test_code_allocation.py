@@ -17,14 +17,13 @@ import asyncio
 import uuid
 
 import pytest
-from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.events.engine import emit_event
 from celerp.inventory_codes import BarcodeConflictError
 from celerp.models.company import Company
-from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from test_helpers import remove_company
 
 
 async def _seed_company(factory) -> uuid.UUID:
@@ -33,14 +32,6 @@ async def _seed_company(factory) -> uuid.UUID:
         s.add(Company(id=company_id, name="AllocCo", slug=f"alloc-{company_id.hex[:8]}"))
         await s.commit()
     return company_id
-
-
-async def _cleanup(factory, company_id):
-    async with factory() as s:
-        await s.execute(delete(Projection).where(Projection.company_id == company_id))
-        await s.execute(delete(LedgerEntry).where(LedgerEntry.company_id == company_id))
-        await s.execute(delete(Company).where(Company.id == company_id))
-        await s.commit()
 
 
 def _item_kwargs(company_id, entity_id, sku, barcode):
@@ -88,7 +79,7 @@ async def test_lock_blocks_concurrent_namespace_access(_db_engine):
     finally:
         await s1.close()
         await s2.close()
-        await _cleanup(factory, company_id)
+        await remove_company(factory, company_id)
 
 
 @pytest.mark.asyncio
@@ -120,7 +111,7 @@ async def test_concurrent_creates_mint_distinct_barcodes(_db_engine):
             }
         assert stored == set(codes)
     finally:
-        await _cleanup(factory, company_id)
+        await remove_company(factory, company_id)
 
 
 @pytest.mark.asyncio
@@ -147,7 +138,7 @@ async def test_allocate_internal_codes_batch_is_distinct_and_sequential(_db_engi
             assert nxt not in batch, f"next allocation re-minted a persisted code: {nxt}"
             assert int(nxt) == int(batch[-1]) + 1
     finally:
-        await _cleanup(factory, company_id)
+        await remove_company(factory, company_id)
 
 
 @pytest.mark.asyncio
@@ -169,7 +160,7 @@ async def test_code_in_use_flags_taken_codes(_db_engine):
             assert not await code_in_use(s, company_id, "")
             assert not await code_in_use(s, company_id, None)
     finally:
-        await _cleanup(factory, company_id)
+        await remove_company(factory, company_id)
 
 
 def _update_barcode_kwargs(company_id, entity_id, barcode):
@@ -223,7 +214,7 @@ async def test_concurrent_barcode_patches_one_conflicts(_db_engine):
             }
         assert len(holders) == 1, f"exactly one item must hold {target}, got {holders}"
     finally:
-        await _cleanup(factory, company_id)
+        await remove_company(factory, company_id)
 
 
 @pytest.mark.asyncio
@@ -244,4 +235,4 @@ async def test_code_in_use_excludes_own_entity(_db_engine):
             assert not await code_in_use(s, company_id, "555001", exclude_entity_id="item:1")
             assert await code_in_use(s, company_id, "555002", exclude_entity_id="item:1")
     finally:
-        await _cleanup(factory, company_id)
+        await remove_company(factory, company_id)

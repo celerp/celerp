@@ -189,15 +189,15 @@ def test_the_real_upgrade_backfills_each_projection_from_its_first_event(sync_db
     cid = str(uuid.uuid4())
     eid, lone = f"item:{uuid.uuid4()}", f"item:{uuid.uuid4()}"
     with sync_db.begin() as conn:
+        for e in (eid, lone):
+            conn.execute(text(
+                "INSERT INTO projections (entity_id, company_id, entity_type, state) VALUES (:e, :c, 'item', '{}')"
+            ), {"e": e, "c": cid})
         for ts in ("2026-01-02T10:00:00+00", "2026-01-01T10:00:00+00"):
             conn.execute(text(
                 "INSERT INTO ledger (entity_id, company_id, entity_type, event_type, ts) "
                 "VALUES (:e, :c, 'item', 'item.updated', :ts)"
             ), {"e": eid, "c": cid, "ts": ts})
-        for e in (eid, lone):
-            conn.execute(text(
-                "INSERT INTO projections (entity_id, company_id, entity_type, state) VALUES (:e, :c, 'item', '{}')"
-            ), {"e": e, "c": cid})
 
     run_migration_ops(sync_db, "x7y8z9a0b1c2_add_projection_created_at")
 

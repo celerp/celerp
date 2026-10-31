@@ -50,7 +50,7 @@ from celerp.services.journal_accounts import require_destinations, require_line_
 from celerp.services.lot_origin import in_stock, is_stock_type, rerun_after_placing
 from celerp.services.physical_codes import lock_item_code_namespace
 from celerp.services.peer_import import SourceRevision, peer_batch, receive_file
-from celerp.services.payments import recorded_unmatched, return_unmatched
+from celerp.services.payments import lock_recorded_unmatched, recorded_unmatched, return_unmatched
 from celerp.tax_regimes import default_line_taxes, set_new_line_taxes, side_taxes
 from celerp.services.business_time import business_date_at, business_date_of, company_today
 from celerp.services.landed_cost import compute_bill_landed_allocation
@@ -4680,6 +4680,7 @@ async def delete_payment(
     """
     from celerp.services import auto_je
 
+    await lock_recorded_unmatched(session, company_id, entity_id)  # a deleted one goes back to them
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     key, digest = _operation("delete-payment", f"{entity_id}:{payment_index}", payload)
     if (done := await _earlier_run(session, company_id, key, event_type="doc.payment.deleted",
@@ -12895,6 +12896,11 @@ async def undo_receive(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    return await undo_receive_record(entity_id, company_id, user, session, commit=True)
+
+
+async def undo_receive_record(entity_id: str, company_id: str, user, session: AsyncSession, *,
+                              commit: bool = True) -> dict:
     """Undo everything received on a bill.
 
     A receipt exists when the bill has received anything, expense and asset lines
@@ -12906,14 +12912,8 @@ async def undo_receive(
     moved on) it is refused: those goods go back by a return to the supplier, at cost. Goods
     already returned to the supplier keep the receipt in place: undoing it would orphan the
     posted return. Undoing a receipt already undone reports that instead of failing.
-    """
-    return await undo_receive_record(entity_id, company_id, user, session, commit=True)
-
-
-async def undo_receive_record(entity_id: str, company_id: str, user, session: AsyncSession, *,
-                              commit: bool = True) -> dict:
-    """Undo everything received on a bill (undo_receive). ``commit=False`` leaves the
-    transaction open, so a caller that undoes inside a larger change keeps it atomic."""
+    ``commit=False`` leaves the transaction open, so a caller that undoes inside a larger
+    change keeps it atomic."""
     from celerp.services import auto_je
 
     row = await _get_doc(session, company_id, entity_id, for_update=True)
@@ -14670,7 +14670,7 @@ async def unmark_list_sent(
     user=Depends(get_current_user), session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Clear the sent milestone (the list stays finalized)."""
-    row = await _get_list(session, company_id, entity_id)
+    await _get_list_for_update(session, company_id, entity_id)
     await _set_list_fields(session, company_id, entity_id, user,
                            {"sent_at": None, "sent_via": None, "sent_to": None})
     await session.commit()

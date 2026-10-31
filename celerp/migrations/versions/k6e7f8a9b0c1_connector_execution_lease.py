@@ -1,0 +1,143 @@
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: BUSL-1.1
+"""Connector work runs as executions that hold a lease, and a connection's first sync
+has a record of its own.
+
+Each connection gets its first-sync record: a store connection whose first sync was
+started counts it as completed, as do accounting connections, which have no reviewed
+first sync. The store's webhooks are marked current. Re-running the upgrade changes
+nothing that is already there.
+
+Revision ID: k6e7f8a9b0c1
+Revises: k5e6f7a8b9c0
+"""
+import sqlalchemy as sa
+from alembic import op
+from celerp.migrations._locks import lock_tables
+
+revision = "k6e7f8a9b0c1"
+down_revision = "k5e6f7a8b9c0"
+branch_labels = None
+depends_on = None
+
+# Connectors whose first sync a person reviews and starts, as they stood at this revision.
+_REVIEWED = ("woocommerce", "shopify")
+
+
+def _key_columns() -> list[sa.Column]:
+    return [
+        sa.Column("company_id", sa.String(64), primary_key=True),
+        sa.Column("connector", sa.String(32), primary_key=True),
+        sa.Column("resource", sa.String(32), primary_key=True),
+    ]
+
+
+def upgrade() -> None:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    tables = set(inspector.get_table_names())
+    if "connector_execution_leases" not in tables:
+        op.create_table(
+            "connector_execution_leases", *_key_columns(),
+            sa.Column("generation", sa.BigInteger(), nullable=False, server_default="0"),
+            sa.Column("holder", sa.Uuid(), nullable=True),
+        )
+    if "connector_execution_heartbeats" not in tables:
+        op.create_table(
+            "connector_execution_heartbeats", *_key_columns(),
+            sa.Column("holder", sa.Uuid(), nullable=True),
+            sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
+            sa.Column("rerun_requested", sa.BigInteger(), nullable=False, server_default="0"),
+            sa.Column("rerun_done", sa.BigInteger(), nullable=False, server_default="0"),
+            sa.Column("rerun_attempts", sa.Integer(), nullable=False, server_default="0"),
+            sa.Column("rerun_retry_at", sa.DateTime(timezone=True), nullable=True),
+        )
+    if "connector_first_syncs" not in tables:
+        op.create_table(
+            "connector_first_syncs",
+            sa.Column("company_id", sa.String(64), primary_key=True),
+            sa.Column("connector", sa.String(32), primary_key=True),
+            sa.Column("state", sa.String(16), nullable=False, server_default="pending"),
+            sa.Column("started_by", sa.String(64), nullable=True),
+            sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
+            sa.Column("watermark", sa.DateTime(timezone=True), nullable=True),
+            sa.Column("directions", sa.JSON(), nullable=True),
+            sa.Column("match", sa.String(16), nullable=True),
+            sa.Column("preview_version", sa.String(64), nullable=True),
+            sa.Column("reviewed", sa.JSON, nullable=True),
+            sa.Column("batch_id", sa.String(64), nullable=True),
+            sa.Column("operation_id", sa.String(64), nullable=True),
+            sa.Column("progress", sa.JSON(), nullable=False, server_default="{}"),
+            sa.Column("undo", sa.JSON(), nullable=True),
+            sa.Column("error", sa.JSON(), nullable=True),
+            sa.Column("cancel_requested", sa.Boolean(), nullable=False, server_default=sa.false()),
+            sa.Column("next_attempt_at", sa.DateTime(timezone=True), nullable=True),
+            sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+            sa.CheckConstraint(
+                "state::text IN ('pending', 'starting', 'running', 'completed', 'failed')",
+                name="ck_connector_first_sync_state",
+            ),
+        )
+    columns = {c["name"] for c in inspector.get_columns("connector_configs")}
+    if "webhooks_dirty" not in columns:
+        op.add_column("connector_configs", sa.Column(
+            "webhooks_dirty", sa.Boolean(), nullable=False, server_default=sa.false()))
+    if "webhooks_version" not in columns:
+        op.add_column("connector_configs", sa.Column(
+            "webhooks_version", sa.BigInteger(), nullable=False, server_default="0"))
+    # A connection made before reviewed first syncs existed has been syncing since its
+    # first run after its last reset (runs before that belong to an earlier connection):
+    # that run is its completed first sync. Connectors without a reviewed first sync have
+    # nothing to review.
+    lock_tables(bind, "connector_first_syncs")
+    bind.execute(sa.text("""
+        INSERT INTO connector_first_syncs (company_id, connector, state, started_at)
+        SELECT c.company_id, c.connector,
+               CASE WHEN c.connector NOT IN :reviewed OR s.first_run IS NOT NULL
+                    THEN 'completed' ELSE 'pending' END,
+               s.first_run
+        FROM connector_configs c
+        LEFT JOIN LATERAL (
+            SELECT min(r.started_at) AS first_run FROM sync_runs r
+            WHERE r.company_id = c.company_id AND r.connector = c.connector
+              AND r.entity <> '__connector_reset__'
+              AND r.started_at > coalesce((
+                  SELECT max(x.started_at) FROM sync_runs x
+                  WHERE x.company_id = c.company_id AND x.connector = c.connector
+                    AND x.entity = '__connector_reset__'), '-infinity'::timestamptz)
+        ) s ON true
+        WHERE NOT EXISTS (SELECT 1 FROM connector_first_syncs f
+                          WHERE f.company_id = c.company_id AND f.connector = c.connector)
+    """).bindparams(sa.bindparam("reviewed", expanding=True)), {"reviewed": list(_REVIEWED)})
+
+
+def downgrade_refusal(bind) -> str | None:
+    """The old schema has no first sync and no execution lease, so it cannot hold a
+    connection waiting on its first-sync review (it would sync unreviewed), one part-way
+    through or failed (its resume and undo would be lost), or work still running. Any of
+    those stops the downgrade before the schema changes, naming the connections."""
+    open_work = bind.execute(sa.text("""
+        SELECT f.company_id, f.connector, 'first sync ' || f.state FROM connector_first_syncs f
+        JOIN connector_configs c ON c.company_id = f.company_id AND c.connector = f.connector
+        WHERE f.state <> 'completed'
+        UNION ALL
+        SELECT company_id, connector, 'running ' || resource FROM connector_execution_leases
+        WHERE holder IS NOT NULL
+    """)).all()
+    if not open_work:
+        return None
+    return "Cannot downgrade connector executions: " + "; ".join(
+        f"company {company} {connector}: {what}" for company, connector, what in open_work)
+
+
+def downgrade() -> None:
+    bind = op.get_bind()
+    lock_tables(bind, "connector_first_syncs", "connector_execution_leases")
+    refusal = downgrade_refusal(bind)
+    if refusal:
+        raise RuntimeError(refusal)
+    op.drop_column("connector_configs", "webhooks_version")
+    op.drop_column("connector_configs", "webhooks_dirty")
+    op.drop_table("connector_first_syncs")
+    op.drop_table("connector_execution_heartbeats")
+    op.drop_table("connector_execution_leases")

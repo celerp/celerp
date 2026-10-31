@@ -27,16 +27,14 @@ import uuid
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.events.engine import emit_event
 from celerp_accounting.routes import seed_chart_of_accounts_hook
-from celerp_accounting.models import Account, BankAccount
 from celerp.models.company import Company, User
-from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.lot_origin import recognize_opening_lots
+from test_helpers import remove_company
 
 
 def _factory(engine):
@@ -46,24 +44,14 @@ def _factory(engine):
 async def _seed_company(factory):
     company_id, user_id = uuid.uuid4(), uuid.uuid4()
     async with factory() as s:
-        s.add(Company(id=company_id, name="Lifecycle Co", slug=f"life-{company_id.hex[:8]}"))
         s.add(User(id=user_id, email=f"race-{user_id.hex[:8]}@life.test", name="Race User",
                    auth_hash="x"))
+        await s.flush()
+        s.add(Company(id=company_id, name="Lifecycle Co", slug=f"life-{company_id.hex[:8]}"))
         await s.flush()
         await seed_chart_of_accounts_hook(session=s, company_id=company_id)
         await s.commit()
     return company_id, user_id, types.SimpleNamespace(id=user_id)
-
-
-async def _cleanup(factory, company_id, user_id):
-    async with factory() as s:
-        await s.execute(delete(Projection).where(Projection.company_id == company_id))
-        await s.execute(delete(LedgerEntry).where(LedgerEntry.company_id == company_id))
-        await s.execute(delete(BankAccount).where(BankAccount.company_id == company_id))
-        await s.execute(delete(Account).where(Account.company_id == company_id))
-        await s.execute(delete(Company).where(Company.id == company_id))
-        await s.execute(delete(User).where(User.id == user_id))
-        await s.commit()
 
 
 def _barcode() -> str:
@@ -261,7 +249,7 @@ async def test_close_shipping_race_no_ship_from_closed(_db_engine):
         assert isinstance(outcome.get("ship"), HTTPException) and outcome["ship"].status_code == 409, (
             f"create_shipment on a committed-closed memo must 409; got {outcome.get('ship')!r}")
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 async def test_close_shipping_race_concurrent(_db_engine):
@@ -341,7 +329,7 @@ async def test_close_shipping_race_concurrent(_db_engine):
             assert isinstance(close_out, HTTPException) and close_out.status_code == 409, (
                 f"close must only ever fail with a 409, never raise; got {close_out!r}")
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 @pytest.mark.asyncio
@@ -412,7 +400,7 @@ async def test_close_record_payment_race_no_silent_unclose(_db_engine):
             "un-close: a payment that predates the Close left the memo live instead of "
             f"paid-then-closed; status={status!r}, close={outcome.get('close')!r}")
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 @pytest.mark.asyncio
@@ -471,7 +459,7 @@ async def test_close_void_payment_race_no_silent_unclose(_db_engine):
         assert isinstance(outcome.get("void"), HTTPException) and outcome["void"].status_code == 409, (
             f"void-payment on the just-closed memo must 409; got {outcome.get('void')!r}")
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 @pytest.mark.asyncio
@@ -520,7 +508,7 @@ async def test_close_void_doc_race_single_terminal(_db_engine):
         assert _n_409(outcome.get("close"), outcome.get("void")) == 1, (
             f"exactly one of close/void must 409; close={outcome.get('close')!r}, void={outcome.get('void')!r}")
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 @pytest.mark.asyncio
@@ -567,7 +555,7 @@ async def test_close_revert_to_draft_race_mutually_exclusive(_db_engine):
         assert _n_409(outcome.get("close"), outcome.get("revert")) == 1, (
             f"exactly one of close/revert must 409; close={outcome.get('close')!r}, revert={outcome.get('revert')!r}")
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 @pytest.mark.asyncio
@@ -636,7 +624,7 @@ async def test_close_convert_race_mutually_exclusive(_db_engine):
         assert [t["invoice_id"] for t in memo_state.get("invoiced_on") or []] == [
             outcome["convert"]["target_doc_id"]]
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 @pytest.mark.asyncio
@@ -696,7 +684,7 @@ async def test_close_reserve_lines_race_mutually_exclusive(_db_engine):
             f"exactly one of close/reserve must 409; close={outcome.get('close')!r}, "
             f"reserve={outcome.get('reserve')!r}")
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 @pytest.mark.asyncio
@@ -761,7 +749,7 @@ async def test_reopen_payment_race_serialized(_db_engine):
             # then payment saw closed) or reopened with no payment. Both are consistent.
             assert status in ("closed", "final", "sent", "partial", "paid"), f"unexpected status {status!r}"
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 # ---------------------------------------------------------------------------
@@ -860,7 +848,7 @@ async def test_payment_lock_order_no_abba_deadlock(_db_engine):
             f"memo must be paid exactly once (total {total}); paid={paid}, state={memo_state!r}")
     finally:
         _routes.emit_event = _orig_emit
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 @pytest.mark.asyncio
@@ -943,7 +931,7 @@ async def test_close_bulk_payment_race_no_silent_unclose(_db_engine):
             assert status in ("partial", "paid", "closed"), f"unexpected status {status!r}"
     finally:
         _routes.emit_event = _orig_emit
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 @pytest.mark.asyncio
@@ -958,7 +946,6 @@ async def test_multi_doc_lock_is_ordered(_db_engine):
     write_off_stock; its lock statement is asserted from the function source, since it is not
     separately callable. Both must order by projections.entity_id."""
     import inspect
-    import celerp_docs.routes as _routes
     from celerp_docs.routes import _get_docs_for_update, write_off_stock
 
     factory = _factory(_db_engine)
@@ -997,7 +984,7 @@ async def test_multi_doc_lock_is_ordered(_db_engine):
             "write-off item-lock batch must ORDER BY Projection.entity_id for a deterministic "
             "lock order (same B3 defect as _get_docs_for_update)")
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 @pytest.mark.asyncio
 async def test_concurrent_invoice_fulfillment_cannot_double_claim_shared_lot(_db_engine, monkeypatch):
@@ -1091,5 +1078,5 @@ async def test_concurrent_invoice_fulfillment_cannot_double_claim_shared_lot(_db
             assert b.state.get("status") == "sold"
             assert b.state.get("status_doc_id") == (span_doc if winners[0] == "span" else bound_doc)
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 

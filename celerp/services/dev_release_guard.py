@@ -97,6 +97,12 @@ async def run_upgrade_guard(session: "AsyncSession") -> dict:
                 len(unknown), sorted(unknown),
             )
             return {"changed": True, "rebuilt": False, "current": False, "unknown_event_types": sorted(unknown)}
+        from sqlalchemy import select
+
+        from celerp.models.company import Company
+        from celerp.services.company_lock import lock_company
+
+        await lock_company(session, *(await session.execute(select(Company.id))).scalars().all())
         await ProjectionEngine.rebuild(session)
         rebuilt = True
         log.info("Upgrade guard: rebuilt projections (from %s, semantics %s) for version %s, semantics %s",

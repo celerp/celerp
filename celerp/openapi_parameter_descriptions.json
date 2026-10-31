@@ -280,7 +280,6 @@
   "GET /docs": {
     "query:accounting_sync": "Optional accounting synchronization status used to filter documents.",
     "query:all_issued": "Whether to include all issued documents regardless of other open-state filters.",
-    "query:awaiting_only": "Whether to return only issued documents still awaiting payment, by the statuses of each document type.",
     "query:contact_id": "Identifier of the customer, supplier, or other CRM contact.",
     "query:converted_to_type": "Document type used to filter records that were converted to the specified target type.",
     "query:date_from": "Start date for the requested reporting or search period.",
@@ -296,12 +295,13 @@
     "query:not_stocked": "Whether to return only documents whose expected inventory has not been stocked.",
     "query:offset": "Number of matching records to skip before returning results.",
     "query:overdue_only": "Whether to return only overdue business documents.",
-    "query:paid_only": "Whether to return only documents of a type that awaits payment that are paid in full.",
     "query:q": "Search text used to filter matching records.",
     "query:sort": "Field or supported sort key used to order the result.",
     "query:status": "Record or workflow status used to filter results or select the requested lifecycle state.",
     "query:status_in": "Set of status values to include in the result.",
     "query:unfulfilled_only": "Whether to return only documents with quantities still awaiting fulfillment.",
+    "query:awaiting_only": "Whether to return only issued documents still awaiting payment, by the statuses of each document type.",
+    "query:paid_only": "Whether to return only documents of a type that awaits payment that are paid in full.",
     "query:currency": "Currency code; only documents stored in exactly this currency are returned."
   },
   "GET /docs/{entity_id}": {
@@ -326,7 +326,6 @@
   "GET /docs/export/csv": {
     "query:accounting_sync": "Optional accounting synchronization status used to filter the CSV export.",
     "query:all_issued": "Whether to include all issued documents regardless of other open-state filters.",
-    "query:awaiting_only": "Whether to return only issued documents still awaiting payment, by the statuses of each document type.",
     "query:cols": "Comma-separated column names to export, in the order they should appear. Omit for the default columns.",
     "query:contact_id": "Identifier of the customer, supplier, or other CRM contact.",
     "query:converted_to_type": "Document type used to filter records that were converted to the specified target type.",
@@ -341,12 +340,13 @@
     "query:not_restocked": "Whether to return only documents whose returned inventory has not been restocked.",
     "query:not_stocked": "Whether to return only documents whose expected inventory has not been stocked.",
     "query:overdue_only": "Whether to return only overdue business documents.",
-    "query:paid_only": "Whether to return only documents of a type that awaits payment that are paid in full.",
     "query:q": "Search text used to filter matching records.",
     "query:sort": "Field or supported sort key used to order the result.",
     "query:status": "Record or workflow status used to filter results or select the requested lifecycle state.",
     "query:status_in": "Set of status values to include in the result.",
     "query:unfulfilled_only": "Whether to return only documents with quantities still awaiting fulfillment.",
+    "query:awaiting_only": "Whether to return only issued documents still awaiting payment, by the statuses of each document type.",
+    "query:paid_only": "Whether to return only documents of a type that awaits payment that are paid in full.",
     "query:currency": "Currency code; only documents stored in exactly this currency are returned."
   },
   "GET /docs/numbered": {
@@ -359,7 +359,6 @@
   "GET /docs/summary": {
     "query:accounting_sync": "Optional accounting synchronization status used to filter the summarized documents.",
     "query:all_issued": "Whether to include all issued documents regardless of other open-state filters.",
-    "query:awaiting_only": "Whether to return only issued documents still awaiting payment, by the statuses of each document type.",
     "query:contact_id": "Identifier of the customer, supplier, or other CRM contact.",
     "query:converted_to_type": "Document type used to filter records that were converted to the specified target type.",
     "query:date_from": "Start date for the requested reporting or search period.",
@@ -373,12 +372,13 @@
     "query:not_restocked": "Whether to return only documents whose returned inventory has not been restocked.",
     "query:not_stocked": "Whether to return only documents whose expected inventory has not been stocked.",
     "query:overdue_only": "Whether to return only overdue business documents.",
-    "query:paid_only": "Whether to return only documents of a type that awaits payment that are paid in full.",
     "query:q": "Search text used to filter matching records.",
     "query:sort": "Field or supported sort key used to order the result.",
     "query:status": "Record or workflow status used to filter results or select the requested lifecycle state.",
     "query:status_in": "Set of status values to include in the result.",
     "query:unfulfilled_only": "Whether to return only documents with quantities still awaiting fulfillment.",
+    "query:awaiting_only": "Whether to return only issued documents still awaiting payment, by the statuses of each document type.",
+    "query:paid_only": "Whether to return only documents of a type that awaits payment that are paid in full.",
     "query:currency": "Currency code; only documents stored in exactly this currency are returned."
   },
   "GET /fixed-assets/api/assets": {
@@ -487,16 +487,6 @@
   },
   "GET /fixed-assets/api/year-end": {
     "query:year": "Year to review, as a four-digit year such as 2026."
-  },
-  "GET /help/for-route": {
-    "query:path": "Address of the screen to find help pages for, starting with a slash, with its query if it has one. The path part is at most 300 characters and the whole address at most 4096."
-  },
-  "GET /help/page/{page_id}": {
-    "path:page_id": "Identifier of the help page, as returned by help search."
-  },
-  "GET /help/search": {
-    "query:module": "Optional module name, to search only that module's help pages.",
-    "query:q": "Words describing what to do, matched against the help pages (written in English)."
   },
   "GET /items": {
     "query:barcode": "Barcode value used to find matching inventory items.",
@@ -1467,10 +1457,6 @@
   "POST /notifications/{notification_id}/read": {
     "path:notification_id": "Identifier of the notification."
   },
-  "POST /settings/connectors/{platform}/authorize-url": {
-    "path:platform": "External connector platform name.",
-    "query:shop": "Store or shop identifier used by the connector authorization flow."
-  },
   "POST /subscriptions/{entity_id}/activate": {
     "path:entity_id": "Identifier of the requested Celerp record."
   },
@@ -1502,6 +1488,55 @@
   "PUT /manufacturing/items/{item_id}/workflow": {
     "path:item_id": "Identifier of the inventory item."
   },
+  "GET /connector-media/{token}": {
+    "path:token": "Signed, short-lived media token naming one product image being sent to a store."
+  },
+  "GET /connectors/{connector_name}/first-sync/preview": {
+    "path:connector_name": "Connector name identifying the external integration.",
+    "query:orders_from": "Preview orders created on or after this date (YYYY-MM-DD). Today when not given."
+  },
+  "GET /connectors/{connector_name}/first-sync/summary": {
+    "path:connector_name": "Connector name identifying the external integration."
+  },
+  "POST /connectors/{connector_name}/directions": {
+    "path:connector_name": "Connector name identifying the external integration."
+  },
+  "POST /connectors/{connector_name}/first-sync": {
+    "path:connector_name": "Connector name identifying the external integration."
+  },
+  "POST /connectors/{connector_name}/first-sync/retry": {
+    "path:connector_name": "Connector name identifying the external integration."
+  },
+  "POST /connectors/{connector_name}/first-sync/undo-links": {
+    "path:connector_name": "Connector name identifying the external integration."
+  },
+  "POST /connectors/{connector_name}/products/{record_id}/resolve": {
+    "path:connector_name": "Connector name identifying the external integration.",
+    "path:record_id": "Attention record id of the product whose conflicting store edit is being resolved."
+  },
+  "GET /lists/{entity_id}/old-rule-total": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /lists/{entity_id}/recalculate-total": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /lists/{entity_id}/restore-total": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "GET /help/for-route": {
+    "query:path": "Address of the screen to find help pages for, starting with a slash, with its query if it has one. The path part is at most 300 characters and the whole address at most 4096."
+  },
+  "GET /help/page/{page_id}": {
+    "path:page_id": "Identifier of the help page, as returned by help search."
+  },
+  "GET /help/search": {
+    "query:module": "Optional module name, to search only that module's help pages.",
+    "query:q": "Words describing what to do, matched against the help pages (written in English)."
+  },
+  "POST /settings/connectors/{platform}/authorize-url": {
+    "path:platform": "External connector platform name.",
+    "query:shop": "Store or shop identifier used by the connector authorization flow."
+  },
   "GET /ai/usage-stats": {
     "query:period": "Questions to count: month (from the start of the current company month, the default) or all (all time)."
   },
@@ -1517,15 +1552,6 @@
   },
   "POST /ai/jobs/{job_id}/retry-failed": {
     "path:job_id": "Identifier of the AI processing job."
-  },
-  "GET /lists/{entity_id}/old-rule-total": {
-    "path:entity_id": "Identifier of the requested Celerp record."
-  },
-  "POST /lists/{entity_id}/recalculate-total": {
-    "path:entity_id": "Identifier of the requested Celerp record."
-  },
-  "POST /lists/{entity_id}/restore-total": {
-    "path:entity_id": "Identifier of the requested Celerp record."
   },
   "POST /docs/{entity_id}/back-to-memo": {
     "path:entity_id": "Identifier of the requested Celerp record."

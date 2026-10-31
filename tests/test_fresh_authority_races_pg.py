@@ -112,10 +112,11 @@ async def _seed(factory, *, grants: dict | None = None, modules: list[str] | Non
     if modules is not None:
         settings["enabled_modules"] = dependency_closure(modules)
     async with factory() as s:
-        s.add(Company(id=company_id, name="Access", slug=f"acc-{company_id.hex[:8]}", settings=settings))
         for role, uid in ids.items():
             s.add(User(id=uid, email=f"{role}-{uid.hex[:8]}@example.test", name=role.title(),
                        auth_hash="x", is_active=True))
+        await s.flush()
+        s.add(Company(id=company_id, name="Access", slug=f"acc-{company_id.hex[:8]}", settings=settings))
         await s.flush()
         s.add(Location(id=uuid.uuid4(), company_id=company_id, name="Main", type="warehouse", is_default=True))
         for role, uid in ids.items():

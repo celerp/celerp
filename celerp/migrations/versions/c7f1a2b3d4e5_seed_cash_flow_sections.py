@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
+from celerp.migrations._locks import lock_tables
 
 revision = "c7f1a2b3d4e5"
 down_revision = "u8j9k0l1m2n3"
@@ -41,6 +42,7 @@ def upgrade() -> None:
     # assuming public, so the guard is correct for any schema the migration runs in.
     if not conn.execute(sa.text("SELECT to_regclass('accounts')")).scalar():
         return  # New install: the module seeds the chart with its sections
+    lock_tables(conn, "accounts")
     for code, account_type, parent_code, section in _HEADERS:
         conn.execute(sa.text(
             "UPDATE accounts SET cash_flow_category = :section"
@@ -55,6 +57,7 @@ def downgrade() -> None:
     conn = op.get_bind()
     if not conn.execute(sa.text("SELECT to_regclass('accounts')")).scalar():
         return
+    lock_tables(conn, "accounts")
     for code, account_type, parent_code, section in _HEADERS:
         conn.execute(sa.text(
             "UPDATE accounts SET cash_flow_category = NULL"

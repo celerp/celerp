@@ -100,8 +100,11 @@ async def test_inactive_company_without_staged_run_is_not_staged(real_engine):
     from celerp.services import provisioning
 
     async with maker(real_engine)() as s:
+        owner = await _owner(s)
         paused = await _plain_company(s, "Paused Co", active=False)
-        staged = await provisioning.provision_migration_company(s, owner=await _owner(s), company_name="Staged Co")
+        await s.commit()  # its own transaction, as every company is created
+    async with maker(real_engine)() as s:
+        staged = await provisioning.provision_migration_company(s, owner=owner, company_name="Staged Co")
         await s.commit()
     assert await _staged(real_engine, paused.id) is False
     assert await _staged(real_engine, staged.id) is True
@@ -157,8 +160,8 @@ async def test_backfilled_inactive_company_reactivated_accounting_works(real_cli
     company_id = uuid.UUID(str(decode_access_token(token)["company_id"]))
 
     # The company as it stood before accounting was enabled: no chart, no bank account.
-    async with real_engine.begin() as conn:
-        for table in ("bank_accounts", "accounts"):
+    for table in ("bank_accounts", "accounts"):
+        async with real_engine.begin() as conn:
             await conn.execute(text(f"DELETE FROM {table} WHERE company_id = :c"), {"c": str(company_id)})
 
     r = await real_client.delete("/companies/me", headers=headers)
@@ -182,6 +185,9 @@ PHONE = "+66 2 123 4567"
 
 
 async def _drop_chart(s, company_id) -> None:
+    from celerp.services.company_lock import lock_company
+
+    await lock_company(s, company_id)  # as every chart writer, the company first
     for table in ("bank_accounts", "accounts"):
         await s.execute(text(f"DELETE FROM {table} WHERE company_id = :c"), {"c": str(company_id)})
 
@@ -481,8 +487,11 @@ async def test_no_lifecycle_backfill_filters_on_is_active_alone(real_engine):
     assert declared == set(LIFECYCLE_BACKFILLS), "declare each on_modules_ready backfill's need and coverage here"
 
     async with maker(real_engine)() as s:
+        owner = await _owner(s)
         paused = await _plain_company(s, "Paused Co", active=False)
-        staged = await provisioning.provision_migration_company(s, owner=await _owner(s), company_name="Staged Co")
+        await s.commit()  # its own transaction, as every company is created
+    async with maker(real_engine)() as s:
+        staged = await provisioning.provision_migration_company(s, owner=owner, company_name="Staged Co")
         for handler, (need, _) in sorted(LIFECYCLE_BACKFILLS.items()):
             await need(s, paused.id)
             if handler not in NOT_REACHABLE_WHEN_STAGED:
@@ -501,3 +510,27 @@ async def test_no_lifecycle_backfill_filters_on_is_active_alone(real_engine):
     assert missed == [], f"backfills that skipped a deactivated company: {missed}"
     assert await _company_rows(real_engine, staged.id) == before
     assert await _staged(real_engine, staged.id) is True
+
+
+async def test_backfilling_several_companies_takes_their_locks_in_one_order(real_engine):
+    """Startup backfills every company in one transaction. Taking one company's lock, then
+    working through its chart, then the next company's lock, holds a company's rows while it
+    waits on another company: a request posting for the second company then waits on the
+    backfill while the backfill waits on it. Any such order shows as a violation the lock
+    checker reports (and the suite fails)."""
+    import sys
+
+    from celerp.models.company import Company
+
+    ids = [uuid.uuid4(), uuid.uuid4()]
+    async with maker(real_engine)() as s:
+        await _owner(s)
+        for n, company_id in enumerate(ids):
+            s.add(Company(id=company_id, name=f"Shop {n}", slug=f"shop-{n}-{uuid.uuid4().hex[:6]}",
+                          settings={}, is_active=True))
+        await s.commit()
+    recorder = sys.modules["lock_rank"].RECORDER
+    recorder.take_violations()
+    assert set(ids) <= await _backfill(real_engine)
+    found = [v for v in recorder.take_violations() if {v["cls"], v["held"]} & {"row:companies", "row:accounts"}]
+    assert found == [], [sys.modules["lock_rank"].violation_key(v) + " at " + v["site"] for v in found]

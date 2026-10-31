@@ -7,6 +7,8 @@ revision reverses to the older shape."""
 
 from __future__ import annotations
 
+from alembic_support import alembic_run
+
 from .conftest import schema_of, throwaway_db, upgrade_to
 
 REVISION = "y3q4r5s6t7u8"
@@ -32,8 +34,5 @@ def test_user_api_key_removed():
         upgrade_to(sync_url, REVISION)
         assert "api_key" not in _user_columns(sync_url)
         assert "uq_user_api_key" not in _user_indexes(sync_url)
-        from alembic import command
-
-        from celerp.alembic_config import build_alembic_config
-        command.downgrade(build_alembic_config(), "x2p3q4r5s6t7")
+        alembic_run(sync_url, "downgrade", "x2p3q4r5s6t7")
         assert "api_key" in _user_columns(sync_url) and "uq_user_api_key" in _user_indexes(sync_url)

@@ -691,11 +691,18 @@ async def _reconcile_connectors() -> None:
 
 
 async def _clear_restored_connector_state(session) -> None:
+    """Clear the restored connections, then the queued pushes, fencing each company's
+    connectors until they are connected again, each in a transaction of its own. Each locks
+    every restored company first, in id order, and deletes its rows by company, then the
+    install's legacy rows (its instance id, which is no company's), then any row naming
+    another id (a legacy row of the install the backup came from) by a last statement no lock
+    follows."""
     import sqlalchemy as sa
 
-    from celerp.connectors.ownership import record_connector_reset
+    from celerp.connectors.ownership import ensure_instance_id, record_connector_reset
     from celerp.models.company import Company
     from celerp.models.connector_config import ConnectorConfig, OutboundQueue
+    from celerp.services.company_lock import lock_company
 
     connectors = set((await session.scalars(
         sa.select(ConnectorConfig.connector)
@@ -703,12 +710,19 @@ async def _clear_restored_connector_state(session) -> None:
     connectors.update((await session.scalars(
         sa.select(OutboundQueue.connector)
     )).all())
-    company_ids = (await session.scalars(sa.select(Company.id))).all()
-    for company_id in company_ids:
-        for connector in connectors:
-            record_connector_reset(session, company_id, connector)
-    await session.execute(sa.delete(OutboundQueue))
-    await session.execute(sa.delete(ConnectorConfig))
+    company_ids = sorted((await session.scalars(sa.select(Company.id))).all(), key=str)
+    owners = [*map(str, company_ids), ensure_instance_id()]
+    for model in (ConnectorConfig, OutboundQueue):
+        await lock_company(session, *company_ids)
+        for owner in owners:
+            await session.execute(sa.delete(model).where(model.company_id == owner))
+        if model is OutboundQueue:
+            for company_id in company_ids:
+                for connector in sorted(connectors):
+                    record_connector_reset(session, company_id, connector)
+            await session.flush()
+        await session.execute(sa.delete(model).where(model.company_id.not_in(owners)))
+        await session.commit()
 
 
 def _failed(error: str, **kw):
@@ -878,7 +892,7 @@ async def _replace_installation(prepared: PreparedRecovery) -> tuple[list[str], 
         # Backups without module metadata take the set from every restored company.
         modules = prepared.meta.enabled_modules or await load_set(session)
         # No session from before the replacement stays valid; this also
-        # commits the connector cleanup and the recorded restore.
+        # commits the recorded restore (the connector cleanup committed on its own).
         await session_tracker.end_all_sessions(session)
     await asyncio.to_thread(_swap_roots, prepared)
     return modules, _apply_modules(modules)

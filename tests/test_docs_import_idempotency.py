@@ -18,7 +18,6 @@ async def test_docs_import_batch_idempotency(client, session):
     company_id = uuid.uuid4()
     user_id = uuid.uuid4()
 
-    session.add(Company(id=company_id, name="TestCo", slug="testco"))
     session.add(User(
         id=user_id,
         email="admin@test.co",
@@ -26,6 +25,8 @@ async def test_docs_import_batch_idempotency(client, session):
         auth_hash="x",
         is_active=True,
     ))
+    await session.flush()
+    session.add(Company(id=company_id, name="TestCo", slug="testco"))
     await session.flush()  # parents before membership for Postgres FK checks
     session.add(UserCompany(id=uuid.uuid4(), user_id=user_id, company_id=company_id, role="admin", is_active=True))
     await session.commit()

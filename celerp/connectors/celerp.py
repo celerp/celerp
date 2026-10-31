@@ -12,7 +12,7 @@ from sqlalchemy import select
 
 from celerp.connectors.base import (
     ConnectorBase, ConnectorCategory, ConnectorContext,
-    SyncDirection, SyncEntity, SyncResult,
+    EntityFlow, SyncDirection, SyncEntity, SyncResult,
 )
 from celerp.connectors.http import RateLimitedClient
 from celerp.importers.results import failure_reason
@@ -385,11 +385,17 @@ def _refusal(errors: list) -> str:
 class CelerpConnector(ConnectorBase):
     name = "celerp"
     display_name = "Accountant Sync"
-    direction = SyncDirection.BOTH
     category = ConnectorCategory.ACCOUNTING
     # Fetched from the accountant before anything is sent: its journals, then its lock
     # date, so a journal it posted before locking is not declined by its own lock.
-    supported_entities = [SyncEntity.JOURNALS, SyncEntity.PERIOD_LOCK]
+    # Every kind is sent to the firm; the firm's journals also come back.
+    entity_flows = {
+        **{kind: EntityFlow(inbound=(spec.entity.value,) if kind == "journals" else (),
+                            outbound=(f"{kind}_out",))
+           for kind, spec in _KINDS.items()},
+        "attachments": EntityFlow(outbound=("attachments_out",)),
+        "period_lock": EntityFlow(inbound=("period_lock",)),
+    }
     store_scoped_ids = False
     conflict_strategy = {SyncEntity.CONTACTS: "source"}
     outbound_dependencies = {
@@ -453,7 +459,7 @@ class CelerpConnector(ConnectorBase):
             for item in _reversed_last(later):
                 yield item
 
-        async with RateLimitedClient(public_only=True) as client:
+        async with RateLimitedClient(public_only=True, require_execution=True) as client:
             async for (entity_id, revision, state), sent, firm_lock in records():
                 if sent is not None and sent[0] == revision:
                     if sent[1] is None:
@@ -572,7 +578,7 @@ class CelerpConnector(ConnectorBase):
         company_id = uuid.UUID(ctx.company_id)
         firm_company, grant_id = key_ids(ctx.access_token)
         after = ""
-        async with RateLimitedClient(public_only=True) as client:
+        async with RateLimitedClient(public_only=True, require_execution=True) as client:
             while True:
                 body = await self._fetch(client, ctx, "journals_in", {"after": after})
                 if body is None:
@@ -623,7 +629,7 @@ class CelerpConnector(ConnectorBase):
 
         result = SyncResult(entity=SyncEntity.PERIOD_LOCK, direction=SyncDirection.INBOUND,
                             errors=[], attention=[])
-        async with RateLimitedClient(public_only=True) as client:
+        async with RateLimitedClient(public_only=True, require_execution=True) as client:
             body = await self._fetch(client, ctx, "period_lock", closed=(401, 403))
         changed = await peer_journals.apply_firm_lock(uuid.UUID(ctx.company_id),
                                                       key_ids(ctx.access_token)[1], body)

@@ -3,7 +3,7 @@
 """Connector configuration ownership."""
 from __future__ import annotations
 
-import json
+import asyncio
 import uuid
 from contextlib import asynccontextmanager
 
@@ -152,13 +152,29 @@ async def _lock_active_company(
     return company
 
 
-async def _connector_rows(
-    session: AsyncSession, connector: str, *, for_update: bool
-) -> list[ConnectorConfig]:
+async def _connector_rows(session: AsyncSession, connector: str) -> list[ConnectorConfig]:
+    """Every company's row of ``connector``, read without a row lock: which company holds it
+    changes only under the exclusive connector-owner fence (or a company's own deactivation,
+    under its company lock), so a caller locks only the rows it writes (``_locked_row``)."""
     query = sa.select(ConnectorConfig).where(ConnectorConfig.connector == connector)
-    if for_update:
-        query = query.with_for_update()
     return list((await session.execute(query)).scalars().all())
+
+
+async def _locked_row(session: AsyncSession, owner: str, connector: str) -> ConnectorConfig | None:
+    """The row of ``connector`` keyed by ``owner`` (a company the caller holds the lock of,
+    or the instance id of a legacy row, which is no company's), FOR UPDATE, named by its key."""
+    return await session.scalar(sa.select(ConnectorConfig).where(
+        ConnectorConfig.company_id == str(owner), ConnectorConfig.connector == connector,
+    ).with_for_update().execution_options(populate_existing=True))
+
+
+async def lock_connection_row(session: AsyncSession, company_id, connector: str) -> ConnectorConfig | None:
+    """The one way to take a company's connection row for a write: the company's lock first,
+    as every writer of the company's connector rows takes it, then the row FOR UPDATE. None
+    when the company or the row is gone."""
+    if not await lock_company(session, uuid.UUID(str(company_id))):
+        return None
+    return await _locked_row(session, str(company_id), connector)
 
 
 async def lock_connector_key(
@@ -216,10 +232,9 @@ async def lock_connector_operation(
     company_id = str(company_id)
     await lock_connector_key(session, connector, exclusive=exclusive)
     await _lock_active_company(session, company_id, connector, for_update=exclusive)
-    rows = await _connector_rows(session, connector, for_update=exclusive)
-    current = _resolve_connector_owner(rows, company_id)
+    current = _resolve_connector_owner(await _connector_rows(session, connector), company_id)
     if current is not None:
-        return current
+        return await _locked_row(session, company_id, connector) if exclusive else current
     if require_owner:
         raise ConnectorOwnershipError(t("error.connector_not_here", service=_service(connector)))
     reset_at = await session.scalar(
@@ -248,17 +263,18 @@ async def claim_connector_ownership(
     legacy_id = ensure_instance_id()
     await lock_connector_key(session, connector, exclusive=True)
     company = await _lock_active_company(session, company_id, connector)
-    rows = await _connector_rows(session, connector, for_update=True)
     others = {
         str(row.company_id)
-        for row in rows
+        for row in await _connector_rows(session, connector)
         if str(row.company_id) not in {company_id, legacy_id}
     }
     if others:
         raise ConnectorOwnershipError(t("error.connector_other_company", service=_service(connector)))
 
-    current = next((r for r in rows if str(r.company_id) == company_id), None)
-    legacy = next((r for r in rows if str(r.company_id) == legacy_id), None)
+    # Two keys of one class, taken in key order as every multi-key take is.
+    locked = {o: await _locked_row(session, o, connector) for o in sorted({company_id, legacy_id})}
+    current = locked[company_id]
+    legacy = locked[legacy_id] if legacy_id != company_id else None
     if current is not None and legacy is not None and current is not legacy:
         if (
             current.webhook_secret
@@ -266,8 +282,7 @@ async def claim_connector_ownership(
             and current.webhook_secret != legacy.webhook_secret
         ):
             raise ConnectorOwnershipError(t("error.connector_legacy_conflict", service=_service(connector)))
-        merged_ids = list(dict.fromkeys(current.webhook_ids + legacy.webhook_ids))
-        current.webhook_ids_json = json.dumps(merged_ids) if merged_ids else None
+        current.webhook_hooks = {**legacy.webhook_hooks, **current.webhook_hooks}
         if not current.webhook_secret:
             current.webhook_secret = legacy.webhook_secret
         if (
@@ -285,6 +300,9 @@ async def claim_connector_ownership(
 
     created = current is None and legacy is None and create
     if current is None and create:
+        from celerp.connectors.base import restored_directions
+        from celerp.connectors.registry import get as get_connector
+
         # A company restored from a backup starts with nothing pushed outward
         # until its owner turns outbound sync on for this connector.
         current = ConnectorConfig(
@@ -295,7 +313,7 @@ async def claim_connector_ownership(
                 if default_sync_frequency is not None else {}
             ),
             **(
-                {"direction": "inbound"}
+                {"entity_directions": restored_directions(get_connector(connector))}
                 if (company.settings or {}).get("restored_backup") else {}
             ),
         )
@@ -303,7 +321,44 @@ async def claim_connector_ownership(
 
     if current is not None:
         await session.flush()
+        await _ensure_first_sync(session, company_id, legacy_id, connector, current)
     return (current, created) if report_created else current
+
+
+async def _ensure_first_sync(session: AsyncSession, company_id: str, legacy_id: str, connector: str, config) -> None:
+    """Give the connection its first-sync record: the legacy one when it was adopted,
+    else a new one, ``pending`` until a person reviews it for stores and ``completed``
+    for connectors that import without a review."""
+    from celerp.connectors.execution import plan_resources
+    from celerp.connectors.registry import get as get_connector
+    from celerp.models.connector_first_sync import ConnectorFirstSync
+
+    async def _record(owner: str):
+        return await session.scalar(sa.select(ConnectorFirstSync).where(
+            ConnectorFirstSync.connector == connector, ConnectorFirstSync.company_id == owner,
+        ).with_for_update())
+
+    records = {o: await _record(o) for o in sorted({company_id, legacy_id})}
+    current = records[company_id]
+    legacy = records[legacy_id] if legacy_id != company_id else None
+    if legacy is not None and legacy_id != company_id:
+        if current is None:
+            legacy.company_id = company_id
+            current = legacy
+        else:
+            await session.delete(legacy)
+    if current is None:
+        spec = get_connector(connector)
+        if spec.reviewed_first_sync:
+            current = ConnectorFirstSync(company_id=company_id, connector=connector, state="pending", progress={})
+        else:
+            current = ConnectorFirstSync(
+                company_id=company_id, connector=connector, state="completed",
+                progress={r: {"state": "completed"} for r in plan_resources(spec, config.entity_directions)},
+            )
+        session.add(current)
+    await session.flush()
+    await session.refresh(config, ["first_sync"])
 
 
 OWNERSHIP_OWNED = "owned"
@@ -326,7 +381,7 @@ async def connector_ownership_state(
     company: owned, none, other (another company uses it), ambiguous
     (linked to more than one company) or unassigned (set up before companies
     had their own connectors)."""
-    rows = await _connector_rows(session, connector, for_update=False)
+    rows = await _connector_rows(session, connector)
     if _unassigned_only(rows):
         return OWNERSHIP_UNASSIGNED
     try:
@@ -451,14 +506,16 @@ async def connector_release_scope(
     session: AsyncSession, company_id, connector: str
 ) -> list[ConnectorConfig]:
     """The rows a disconnect by this company releases: its own row plus any
-    legacy row with no company. Raises when this company holds no row."""
+    legacy row with no company, taken under the company's lock (a retake for a caller
+    that holds it). Raises when this company holds no row."""
     company_id = str(company_id)
     legacy_id = ensure_instance_id()
-    rows = await _connector_rows(session, connector, for_update=True)
-    mine = [row for row in rows if str(row.company_id) in {company_id, legacy_id}]
-    if not any(str(row.company_id) == company_id for row in mine):
+    await lock_company(session, uuid.UUID(company_id))
+    owners = {str(row.company_id) for row in await _connector_rows(session, connector)}
+    if company_id not in owners:
         raise ConnectorOwnershipError(t("error.connector_not_here", service=_service(connector)))
-    return mine
+    return [await _locked_row(session, owner, connector)
+            for owner in sorted({company_id, legacy_id}) if owner in owners]
 
 
 async def release_connector_ownership(
@@ -466,7 +523,9 @@ async def release_connector_ownership(
     status: str = RESET_STATUS_DISCONNECTED,
 ) -> None:
     """Release one company's connector state: its own row plus any legacy
-    row with no company, so a disconnect also works while ownership is ambiguous."""
+    row with no company, so a disconnect also works while ownership is ambiguous.
+    A product channel's links to the store become history in the same transaction."""
+    from celerp.connectors.execution import forget_first_sync, refuse_live_execution
     from celerp.connectors.outbound_queue import release_connector_queue
 
     company_id = str(company_id)
@@ -474,6 +533,11 @@ async def release_connector_ownership(
     await lock_connector_key(session, connector, exclusive=True)
     await lock_company(session, uuid.UUID(company_id))
     mine = await connector_release_scope(session, company_id, connector)
+    await refuse_live_execution(session, company_id, connector)
+    await forget_first_sync(session, {company_id, legacy_id}, connector)
+    if connector in PRODUCT_CHANNEL_PLATFORMS:
+        from celerp.connectors.product_links import detach_product_links
+        await detach_product_links(session, company_id, connector)
 
     for queue_owner in {company_id, legacy_id}:
         await release_connector_queue(session, queue_owner, connector)
@@ -489,10 +553,9 @@ async def lock_unassigned_connector(
     """Lock a connector that no company owns for a reset. Raises when any
     company holds it, so a reset never removes a company's connection."""
     await lock_connector_key(session, connector, exclusive=True)
-    rows = await _connector_rows(session, connector, for_update=True)
-    if not _unassigned_only(rows):
+    if not _unassigned_only(await _connector_rows(session, connector)):
         raise ConnectorOwnershipError(t("error.connector_nothing_to_reset", service=_service(connector)))
-    return rows
+    return [await _locked_row(session, ensure_instance_id(), connector)]
 
 
 async def release_unassigned_connector(
@@ -514,43 +577,40 @@ async def release_unassigned_connector(
 
 
 # Imported records a connector reads back from the store to confirm it is the
-# store they came from.
+# store they came from, and how long the store has to answer.
 STORE_PROOF_SAMPLE = 20
+STORE_PROOF_TIMEOUT_S = 10
 
 
-async def bind_connector_store(session: AsyncSession, company_id, connector, ctx) -> None:
-    """Tie a company's imported records from one connector to the store they
-    came from. Stores that number orders, customers and products per store
-    would overwrite those records, so a store is accepted only when no records
-    exist yet or when it still holds a sample of them. Each new connection is
-    checked once, even when the store address is unchanged. Caller commits."""
-    from datetime import datetime, timezone
-
+async def _bound(session: AsyncSession, company_id, connector, store_handle: str) -> bool:
+    """Whether this connection is already bound to ``store_handle`` (an unlocked read)."""
     from celerp.models.connector_source import ConnectorSource
-    from celerp.models.projections import Projection
 
-    store_handle = ctx.store_handle
-    if not connector.store_scoped_ids or not store_handle:
-        return
-    await _lock_active_company(session, company_id, connector.name)
-    cid = uuid.UUID(str(company_id))
-    key = (str(cid), connector.name)
+    key = (str(uuid.UUID(str(company_id))), connector.name)
     source = await session.get(ConnectorSource, key, populate_existing=True)
     config_id = await session.scalar(sa.select(ConnectorConfig.id).where(
         ConnectorConfig.company_id == key[0],
         ConnectorConfig.connector == connector.name,
     ))
-    if (source is not None and source.store_handle == store_handle
-            and source.config_id == config_id):
-        return
+    return (source is not None and source.store_handle == store_handle
+            and source.config_id == config_id)
 
-    async def sample(*conditions) -> list[dict]:
-        return list((await session.scalars(
-            sa.select(Projection.state)
+
+async def _store_samples(session: AsyncSession, company_id, connector) -> tuple[list[tuple[str, dict]], str | None]:
+    """The imported records that prove a store, as (entity id, state), and the store the
+    connection was last bound to. A read: no lock is taken."""
+    from celerp.models.connector_source import ConnectorSource
+    from celerp.models.projections import Projection
+
+    cid = uuid.UUID(str(company_id))
+
+    async def sample(*conditions) -> list[tuple[str, dict]]:
+        return [tuple(row) for row in (await session.execute(
+            sa.select(Projection.entity_id, Projection.state)
             .where(Projection.company_id == cid, *conditions)
-            .order_by(Projection.created_at.desc().nulls_last())
+            .order_by(Projection.created_at.desc().nulls_last(), Projection.entity_id)
             .limit(STORE_PROOF_SAMPLE)
-        )).all())
+        )).all()]
 
     # Orders and invoices prove the store best, then customers, then products.
     prefix = f"{connector.name}:"
@@ -562,20 +622,93 @@ async def bind_connector_store(session: AsyncSession, company_id, connector, ctx
             Projection.state["idempotency_key"].as_string().startswith(prefix, autoescape=True),
         )
     )
+    source = await session.get(ConnectorSource, (str(cid), connector.name))
+    return samples, (source.store_handle if source is not None else None)
+
+
+async def _confirm_store(connector, ctx, samples: list[tuple[str, dict]], origin: str | None) -> list[str]:
+    """Ask the store in ``ctx`` whether it holds the sampled records (a network call;
+    the caller holds no lock). The proven record ids, or ConnectorStoreChangedError."""
     if samples:
-        origin = f" from {source.store_handle}" if source is not None else ""
         try:
-            confirmed = await connector.same_store(ctx, samples)
+            confirmed = await asyncio.wait_for(
+                connector.same_store(ctx, [state for _, state in samples]), STORE_PROOF_TIMEOUT_S
+            )
         except Exception as exc:
             raise ConnectorStoreChangedError(
-                t("error.store_unchecked", store=store_handle, service=connector.display_name)
+                t("error.store_unchecked", store=ctx.store_handle, service=connector.display_name)
             ) from exc
         if not confirmed:
+            origin = f" from {origin}" if origin else ""
             raise ConnectorStoreChangedError(
                 f"This company already has {connector.display_name} records"
-                f"{origin}, and {store_handle} does not have them. Connect the store they "
-                f"came from, or use a separate company for {store_handle}."
+                f"{origin}, and {ctx.store_handle} does not have them. Connect the store they "
+                f"came from, or use a separate company for {ctx.store_handle}."
             )
+    return [entity_id for entity_id, _ in samples]
+
+
+async def prove_store(session: AsyncSession, company_id, connector, ctx) -> list[str]:
+    """Check the store in ``ctx`` against the company's imported records before a
+    connection is bound to it: the proof ``bind_connector_store`` takes. ``session``
+    holds no lock; the store is asked over the network. A connection already bound to
+    the store needs no proof."""
+    if not connector.store_scoped_ids or not ctx.store_handle:
+        return []
+    if await _bound(session, company_id, connector, ctx.store_handle):
+        return []
+    samples, origin = await _store_samples(session, company_id, connector)
+    return await _confirm_store(connector, ctx, samples, origin)
+
+
+async def ensure_store_bound(company_id, connector, ctx) -> None:
+    """Bind the connection's store before any store work runs (connector_execution).
+    A bound connection is only read. Otherwise the samples are read, the store is asked
+    with no transaction open, and a short transaction binds it under the company lock,
+    making no network call there."""
+    from celerp.db import get_session_ctx
+
+    if not connector.store_scoped_ids or not ctx.store_handle:
+        return
+    async with get_session_ctx() as session:
+        if await _bound(session, company_id, connector, ctx.store_handle):
+            return
+        samples, origin = await _store_samples(session, company_id, connector)
+    proven = await _confirm_store(connector, ctx, samples, origin)
+    async with get_session_ctx() as session:
+        await bind_connector_store(session, company_id, connector, ctx, proven=proven)
+        await session.commit()
+
+
+async def bind_connector_store(session: AsyncSession, company_id, connector, ctx, *, proven: list[str]) -> None:
+    """Tie a company's imported records from one connector to the store they
+    came from. Stores that number orders, customers and products per store
+    would overwrite those records, so a store is accepted only when no records
+    exist yet or when it still holds a sample of them: ``proven``, the sample
+    ``prove_store`` confirmed. Under the company lock the sample is read again and
+    must be the same; no network call is made here. Each new connection is
+    checked once, even when the store address is unchanged. Caller commits."""
+    from datetime import datetime, timezone
+
+    from celerp.models.connector_source import ConnectorSource
+
+    store_handle = ctx.store_handle
+    if not connector.store_scoped_ids or not store_handle:
+        return
+    await _lock_active_company(session, company_id, connector.name)
+    key = (str(uuid.UUID(str(company_id))), connector.name)
+    if await _bound(session, company_id, connector, store_handle):
+        return
+    samples, _ = await _store_samples(session, company_id, connector)
+    if [entity_id for entity_id, _ in samples] != list(proven):
+        raise ConnectorStoreChangedError(
+            t("error.store_unchecked", store=store_handle, service=connector.display_name)
+        )
+    source = await session.get(ConnectorSource, key)
+    config_id = await session.scalar(sa.select(ConnectorConfig.id).where(
+        ConnectorConfig.company_id == key[0],
+        ConnectorConfig.connector == connector.name,
+    ))
 
     now = datetime.now(timezone.utc)
     if source is None:

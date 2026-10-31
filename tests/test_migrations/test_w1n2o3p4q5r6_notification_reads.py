@@ -12,13 +12,13 @@ each test builds it as the previous release did.
 
 from __future__ import annotations
 
-import os
 import uuid
 
 import pytest
 from sqlalchemy import create_engine, text
 
-from celerp.cli import _apply_migrations
+
+from alembic_support import alembic_run, apply_migrations as _apply_migrations
 
 from .conftest import throwaway_db, upgrade_to
 
@@ -53,12 +53,12 @@ _OLD_NOTIFICATIONS = """
 
 def _seed(conn) -> dict[str, str]:
     ids = {k: str(uuid.uuid4()) for k in ("company", "alice", "bob", "carol", "read", "unread", "wide")}
-    conn.execute(text("INSERT INTO companies (id, name, slug, settings, is_active, created_at) "
-                      "VALUES (:c, 'Kept', 'kept', '{}', true, now())"), {"c": ids["company"]})
     for key in ("alice", "bob", "carol"):
         conn.execute(text("INSERT INTO users (id, email, name, auth_hash, is_active, created_at) "
                           "VALUES (:u, :e, 'User', 'x', true, now())"),
                      {"u": ids[key], "e": f"{key}@example.test"})
+    conn.execute(text("INSERT INTO companies (id, name, slug, settings, is_active, created_at) "
+                      "VALUES (:c, 'Kept', 'kept', '{}', true, now())"), {"c": ids["company"]})
     for key, user, read in (("read", ids["alice"], True), ("unread", ids["alice"], False), ("wide", None, True)):
         conn.execute(text(
             "INSERT INTO notifications (id, company_id, user_id, category, title, body, priority, read, created_at) "
@@ -154,15 +154,12 @@ def test_new_installation_has_nothing_to_convert():
 def test_downgrade_and_upgrade_keep_read_state():
     """Back on the shared flag a notice someone had read is read, as it was before
     the upgrade; upgrading again gives every current member the same receipts."""
-    from alembic import command
 
-    from celerp.alembic_config import build_alembic_config
 
     with throwaway_db("notifreads") as (_, sync_url):
         ids = _at_parent(sync_url, started_first=False)
         upgrade_to(sync_url, REVISION)
-        os.environ["DATABASE_URL"] = sync_url
-        command.downgrade(build_alembic_config(), PARENT)
+        alembic_run(sync_url, "downgrade", PARENT)
         eng = create_engine(sync_url)
         try:
             with eng.connect() as conn:

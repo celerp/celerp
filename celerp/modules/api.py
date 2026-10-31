@@ -79,7 +79,7 @@ def read_resource(module_file: str, relative_path: str) -> bytes:
 async def _ai_caller(company_id: str, db_session: "AsyncSession | None"):
     """The signed-in user a module's AI call is made for, allowed to use the assistant."""
     from celerp.services.auth import signed_request_context
-    from celerp.services.permissions import assert_role_permission, read_authority
+    from celerp.services.permissions import admit_permission
 
     caller = await signed_request_context(db_session) if db_session is not None else None
     if caller is None or str(caller.company_id) != str(company_id):
@@ -87,8 +87,7 @@ async def _ai_caller(company_id: str, db_session: "AsyncSession | None"):
             status_code=status.HTTP_403_FORBIDDEN,
             detail="AI queries run only for the company of the signed-in request.",
         )
-    role, settings = await read_authority(db_session, caller.company_id, caller.user.id)
-    assert_role_permission(settings, role, "use_ai_assistant")
+    await admit_permission(db_session, caller.company_id, caller.role, "use_ai_assistant")
     return caller
 
 

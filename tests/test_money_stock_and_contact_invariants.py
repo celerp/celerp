@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime, timezone
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.events.engine import emit_event
@@ -19,14 +19,15 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.lot_origin import recognize_opening_lots
 from stock_books import book_older_opening, older_release_lot
-from test_helpers import make_authed_token, perm_setup, provision_company_books
+from test_helpers import make_authed_token, perm_setup, provision_company_books, remove_company
 from ui.i18n import t
 
 
 async def _auth_company(session, currency: str = "USD") -> dict:
     cid, uid = uuid.uuid4(), uuid.uuid4()
-    session.add(Company(id=cid, name="InvariantCo", slug=f"inv-{cid.hex[:8]}", settings={"currency": currency}))
     session.add(User(id=uid, email=f"inv-{uid.hex[:8]}@example.test", name="Admin", auth_hash="x", is_active=True))
+    await session.flush()
+    session.add(Company(id=cid, name="InvariantCo", slug=f"inv-{cid.hex[:8]}", settings={"currency": currency}))
     await session.flush()
     session.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=cid, role="admin", is_active=True))
     await provision_company_books(session, cid)
@@ -188,18 +189,6 @@ async def _seed_audit(factory, company_id, list_id: str, item_id: str, *,
         await s.commit()
 
 
-async def _cleanup(factory, company_id, user_id) -> None:
-    from celerp_accounting.models import Account, BankAccount
-    async with factory() as s:
-        await s.execute(delete(Projection).where(Projection.company_id == company_id))
-        await s.execute(delete(LedgerEntry).where(LedgerEntry.company_id == company_id))
-        await s.execute(delete(BankAccount).where(BankAccount.company_id == company_id))
-        await s.execute(delete(Account).where(Account.company_id == company_id))
-        await s.execute(delete(Company).where(Company.id == company_id))
-        await s.execute(delete(User).where(User.id == user_id))
-        await s.commit()
-
-
 @pytest.mark.asyncio
 async def test_audit_adjust_uses_fresh_locked_item_state(_db_engine):
     from celerp_docs.routes import adjust_audit
@@ -239,7 +228,7 @@ async def test_audit_adjust_uses_fresh_locked_item_state(_db_engine):
     finally:
         await stock.close()
         await audit.close()
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 @pytest.mark.asyncio
@@ -268,7 +257,7 @@ async def test_audit_undo_refuses_to_overwrite_later_stock_activity(_db_engine):
             assert item.state["quantity"] == 4
             assert audit.state["status"] == "closed"
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 @pytest.mark.asyncio
@@ -297,7 +286,7 @@ async def test_audit_undo_refuses_after_later_cost_change(_db_engine):
             assert item.state["quantity"] == 5
             assert item.state["cost_total"] == 60
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 @pytest.mark.asyncio
@@ -342,7 +331,7 @@ async def test_refinalize_waits_for_a_cost_correction_in_flight(_db_engine):
     finally:
         await correction.close()
         await finalize.close()
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 async def _contact(client, h, name: str) -> str:
@@ -361,11 +350,12 @@ async def test_delete_refuses_contact_named_on_a_deal(client, session):
     deal_id = f"deal:{uuid.uuid4()}"
     deal = {"name": "Open deal", "stage": "lead", "contact_id": source}
     now = datetime.now(timezone.utc)
+    session.add(Projection(company_id=company_id, entity_id=deal_id, entity_type="deal", state=deal,
+                           version=1, location_id=None, created_at=now, updated_at=now))
+    await session.flush()
     session.add(LedgerEntry(company_id=company_id, entity_id=deal_id, entity_type="deal",
                             event_type="crm.deal.created", data=deal, actor_id=None, location_id=None,
                             source="test", idempotency_key=str(uuid.uuid4()), metadata_={}))
-    session.add(Projection(company_id=company_id, entity_id=deal_id, entity_type="deal", state=deal,
-                           version=1, location_id=None, created_at=now, updated_at=now))
     await session.commit()
 
     blocked = await client.post("/crm/contacts/bulk/delete", headers=h, json={"contact_ids": [source]})
@@ -459,7 +449,7 @@ async def test_legacy_audit_undo_without_cost_identity_fails_closed(_db_engine):
             assert exc.value.detail == t("documents.err_audit_undo_legacy", "en", sku="AUD-LEGACY")
             await db.rollback()
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 @pytest.mark.asyncio

@@ -9,10 +9,8 @@ import json
 import os
 import uuid
 
-from alembic import command
 from sqlalchemy import create_engine, text
 
-from celerp.alembic_config import build_alembic_config
 from celerp.cli import _migrate_to_head
 from celerp.inventory_codes import (
     BARCODE_UNIQUE_INDEX,
@@ -21,6 +19,8 @@ from celerp.inventory_codes import (
 )
 from celerp.models.base import Base
 from celerp.models.projections import Projection
+
+from alembic_support import alembic_run
 
 from .conftest import head_rev
 
@@ -43,7 +43,7 @@ def test_sql_ascii_2_0_database_migrates_to_head_without_json_expression_indexes
     saved = os.environ.get("DATABASE_URL")
     os.environ["DATABASE_URL"] = async_url
     try:
-        command.upgrade(build_alembic_config(), BASE_2_0_REVISION)
+        alembic_run(async_url, "upgrade", BASE_2_0_REVISION)
 
         engine = create_engine(sync_url)
         cid = str(uuid.uuid4())

@@ -69,6 +69,11 @@ async def seeded(client, session):
     ctx = await perm_setup(client, session)
     admin_h = ctx["admin_h"]
     company_id = uuid.UUID(str(get_token_claims(admin_h["Authorization"].split()[1])["company_id"]))
+    loc1 = ctx["location_id"]
+    loc2 = await create_location(client, admin_h, "Branch")
+    # The company's lock first, then its rows, as every writer takes them.
+    company = await locked_company(session, company_id)
+    company.settings = {**(company.settings or {}), "price_lists": _PRICE_LISTS, "base_price_list": "Retail"}
     # Items created by registration and perm_setup are not part of these fixtures; keep
     # them out of the default view.
     existing = (await session.execute(select(Projection).where(
@@ -77,8 +82,6 @@ async def seeded(client, session):
     for row in existing:
         row.state = {**row.state, "status": "archived"}
     preexisting_skus = {row.state.get("sku") for row in existing}
-    loc1 = ctx["location_id"]
-    loc2 = await create_location(client, admin_h, "Branch")
     now = _dt.datetime.now(_dt.timezone.utc)
     for entity_id, loc, state in _items(loc1, loc2):
         session.add(Projection(
@@ -86,9 +89,7 @@ async def seeded(client, session):
             version=1, location_id=uuid.UUID(loc), created_at=now, updated_at=now,
         ))
     session.add(ConnectorConfig(company_id=str(company_id), connector="shopify"))
-    company = await locked_company(session, company_id)
-    company.settings = {**(company.settings or {}), "price_lists": _PRICE_LISTS, "base_price_list": "Retail"}
-    await session.flush()
+    await session.commit()
     return {**ctx, "loc1": loc1, "loc2": loc2, "preexisting_skus": preexisting_skus}
 
 

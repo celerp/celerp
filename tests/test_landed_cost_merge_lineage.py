@@ -298,9 +298,11 @@ async def _as_an_earlier_release_merged_it(session, auth, x: str) -> None:
     row = (await session.execute(select(LedgerEntry).where(
         LedgerEntry.company_id == cid, LedgerEntry.entity_id == x, LedgerEntry.event_type == "item.created"))).scalar_one()
     data = {k: v for k, v in row.data.items() if k not in ("landed_costs", "cost_base")}
-    await session.execute(update(LedgerEntry).where(LedgerEntry.id == row.id).values(data=data))
+    # The record before its ledger entry, the order every writer takes them in.
     proj = await session.get(Projection, {"company_id": cid, "entity_id": x})
     proj.state = {k: v for k, v in proj.state.items() if k not in ("landed_costs", "cost_base")}
+    await session.flush()
+    await session.execute(update(LedgerEntry).where(LedgerEntry.id == row.id).values(data=data))
     await session.commit()
 
 

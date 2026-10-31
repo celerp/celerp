@@ -189,6 +189,7 @@ def legacy_invoice(*names: str, doc: str = "doc"):
         row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": je_id})
         cogs_free = [e for e in row.state["entries"] if e["account"] not in _COGS_ACCOUNTS]
         row.state = {**row.state, "entries": cogs_free}
+        await session.flush()
         created = (await session.execute(select(LedgerEntry).where(
             LedgerEntry.company_id == auth["company_id"], LedgerEntry.entity_id == je_id,
             LedgerEntry.event_type == "acc.journal_entry.created"))).scalars().one()

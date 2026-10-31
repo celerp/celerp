@@ -18,7 +18,8 @@ from celerp.services import auto_je
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "default_modules" / "celerp-docs" / "tests"))
 from test_cogs_lifecycle_concurrency import _lot, _outcome, emit_event
-from test_memo_lifecycle_concurrency import _cleanup, _factory, _seed_company
+from test_helpers import remove_company
+from test_memo_lifecycle_concurrency import _factory, _seed_company
 
 
 async def _net(factory, company_id, account):
@@ -91,4 +92,4 @@ async def test_adjust_racing_finalize_gives_up_cost_once(_db_engine, monkeypatch
             qty = (await s.get(Projection, {"company_id": company_id, "entity_id": lot})).state.get("quantity")
         assert round(cogs + writeoff, 2) == 100.0, (adjusted, finalized, cogs, writeoff, qty)
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)

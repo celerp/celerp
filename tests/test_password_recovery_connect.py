@@ -101,7 +101,7 @@ async def _reset(ui, handle: str, password: str) -> int:
 async def _signs_in(client, session, password: str) -> bool:
     """Whether *password* signs in; the session it opens is ended, so the next sign-in here
     finds this computer's sign-in place free."""
-    from celerp.services.session_tracker import clear
+    from test_helpers import clear_sessions as clear
 
     ok = (await client.post("/auth/login", json={"email": OWNER, "password": password})).status_code == 200
     await clear(session)
@@ -176,7 +176,7 @@ async def test_a_connect_strangers_failed_sign_ins_never_hold_back_anyone_else(c
     """One caller takes twenty failed sign-ins across every account, then waits. A Connect
     stranger who reaches that wait holds back neither the person at this computer nor
     another Connect visitor, each signing in and failing on their own count."""
-    from celerp.services.session_tracker import clear
+    from test_helpers import clear_sessions as clear
 
     await _register(client)
     await clear(session)

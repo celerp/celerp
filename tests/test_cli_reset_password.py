@@ -34,9 +34,10 @@ def _seed(url: str) -> uuid.UUID:
     user_id, company_id = uuid.uuid4(), uuid.uuid4()
     try:
         with Session(engine) as s, s.begin():
-            s.add(Company(id=company_id, name="CLI Co", slug=f"cli-{company_id.hex[:8]}"))
             s.add(User(id=user_id, email=EMAIL, name="Owner Person", auth_hash=hash_password("old-password1"),
                        is_install_owner=True))
+            s.flush()
+            s.add(Company(id=company_id, name="CLI Co", slug=f"cli-{company_id.hex[:8]}"))
             s.flush()
             s.add(UserAuthState(user_id=user_id, nonce="nonce-before"))
             s.add(SessionRegistry(jti="jti-before", user_id=user_id, company_id=company_id,

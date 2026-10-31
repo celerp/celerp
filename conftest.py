@@ -5,6 +5,9 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import contextvars
+import functools
+import inspect
 import os
 import shutil
 import sys
@@ -152,9 +155,9 @@ import uuid
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import text
+from sqlalchemy import event as sa_event, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 
 def pytest_unconfigure(config):
@@ -168,7 +171,6 @@ def pytest_unconfigure(config):
 
 from celerp.db import get_session
 from celerp.main import app
-import mutation_baseline  # noqa: E402
 import mutation_observer  # noqa: E402 - installs the write observer's listeners
 
 # The `client` fixture patches celerp.gateway.state.get_session_token. The session
@@ -200,7 +202,7 @@ _httpx.AsyncClient.send = _observed_send
 import sys as _sys, os as _os
 from pathlib import Path
 
-from test_helpers import REPO_ROOT, DATABASE_URL, make_test_token, authed_cookies, _crm_available, company_auth, settle_background  # noqa: F401
+from test_helpers import REPO_ROOT, DATABASE_URL, make_test_token, authed_cookies, _crm_available, company_auth, settle_background, BLOCK_END, block_sessions  # noqa: F401
 
 # Register inventory module routes onto the test app.
 _inv_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-inventory")
@@ -471,14 +473,6 @@ _SLOT_CONTRIBUTIONS = _nav_slot_contributions() + [
             "_module": "celerp-fixed-assets",
         },
     },
-    {
-        "slot": "projection_handler",
-        "contrib": {
-            "prefix": "shop.sync.",
-            "handler": "celerp.projections.handlers.shopify:apply_shop_sync_event",
-            "_module": "celerp-connectors",
-        },
-    },
 ]
 
 # If celerp-sales-funnel is installed, add the deal projection handler.
@@ -534,23 +528,15 @@ def _mutation_census(request):
     """One write-observer record per test, kept for the census file
     (CELERP_MUTATION_CENSUS names its folder). A write the observer judges unprotected,
     out of order, for another company or that it cannot classify fails the test that made
-    it, unless it is exactly one the baseline accepts (mutation_baseline.py)."""
+    it."""
     mutation_observer.reset(request.node.nodeid)
     yield
     seen = mutation_observer.reset()
     if request.node.get_closest_marker("observer_control"):
         return  # the observer's own controls make their findings on purpose
     _CENSUS.add(seen)
-    refused = [f for f in seen.findings if not mutation_baseline.accepted(f)]
-    if refused:
-        pytest.fail(mutation_observer.explain(refused), pytrace=False)
-
-
-def pytest_sessionfinish(session, exitstatus):
-    path = mutation_observer.census_path()
-    if path:
-        _CENSUS.write(f"{path}.json")
-        mutation_observer.write_routes(f"{path}.routes.json", [app, _ui_app])
+    if seen.findings:
+        pytest.fail(mutation_observer.explain(seen.findings), pytrace=False)
 
 
 @pytest.fixture(autouse=True)
@@ -571,6 +557,14 @@ def _reset_hot_path_caches():
     yield
     _drain_cache_bust()
     health._relay_methods.clear()
+
+
+@pytest.fixture(autouse=True)
+def _restore_session_bindings():
+    from conftest_support import restore_session_bindings
+
+    yield
+    restore_session_bindings()
 
 
 @pytest.fixture(autouse=True)
@@ -865,6 +859,37 @@ def _admin_conn(dbname: str):
     return conn
 
 
+@pytest.fixture(autouse=True)
+def _worker_database_left_empty(request):
+    """A test on the worker DB leaves no committed row behind. The shared session rolls
+    back; a test that commits through the app's own sessions cleans up after itself
+    (real_engine truncates). A leftover install makes every later test on the worker see
+    a bootstrapped system, and a leftover kept refund or connector row shows up in a later
+    test's reads, so the test that left it fails here, and the rows are cleared so only
+    that test fails. users, companies and the tables their cascade misses
+    (test_helpers.worker_state_tables) cover every table."""
+    yield
+    if "_db_engine" not in request.fixturenames:
+        return
+    from urllib.parse import urlsplit
+
+    from test_helpers import worker_state_tables
+
+    tables = worker_state_tables()
+    conn = _admin_conn(urlsplit(DATABASE_URL).path.lstrip("/"))
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SET lock_timeout = '10s'")
+            cur.execute("SELECT " + ", ".join(f"(SELECT count(*) FROM {t})" for t in tables))
+            left = {t: n for t, n in zip(tables, cur.fetchone()) if n}
+            if left:
+                cur.execute(f"TRUNCATE {', '.join(tables)} RESTART IDENTITY CASCADE")
+    finally:
+        conn.close()
+    if left:
+        pytest.fail(f"the test left committed rows on the worker database (rows per table): {left}")
+
+
 @pytest_asyncio.fixture
 async def committed_engine():
     """An engine on a database of the test's own, for row-lock race tests."""
@@ -922,6 +947,43 @@ async def committed_engine():
             admin.close()
 
 
+class _SharedSession(AsyncSession):
+    """The test's one session, which every request shares, while production gives each
+    request a session of its own. Requests in flight together (a page's API calls sent
+    with asyncio.gather, a request that waits on another) take turns per operation: an
+    AsyncSession allows no concurrent use, and a turn per request would leave a request
+    that waits on another waiting forever. A task already holding the turn keeps it
+    (scalar runs execute)."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._turn = asyncio.Lock()
+        self._turn_holder = None
+
+
+def _one_turn(name: str):
+    # AsyncSession's method is looked up at each call, so a test that patches it (a commit
+    # that fails) reaches the shared session too.
+    @functools.wraps(getattr(AsyncSession, name))
+    async def call(self, *args, **kwargs):
+        method = getattr(AsyncSession, name)
+        task = asyncio.current_task()
+        if self._turn_holder is task:
+            return await method(self, *args, **kwargs)
+        async with self._turn:
+            self._turn_holder = task
+            try:
+                return await method(self, *args, **kwargs)
+            finally:
+                self._turn_holder = None
+    return call
+
+
+for _name, _method in inspect.getmembers(AsyncSession, inspect.iscoroutinefunction):
+    if not _name.startswith("_") and not isinstance(inspect.getattr_static(AsyncSession, _name), classmethod):
+        setattr(_SharedSession, _name, _one_turn(_name))
+
+
 @pytest_asyncio.fixture
 async def _background_work_finishes():
     """Background work a test's requests started finishes on the test's own event
@@ -946,8 +1008,12 @@ async def session(_db_engine) -> AsyncSession:
     transaction is rolled back at teardown."""
     conn = await _db_engine.connect()
     trans = await conn.begin()
+    # The request, AI job and lifecycle sessions all run on this one connection, each its
+    # own transaction in production: the lock recorder judges each task's locks apart.
+    shared = id((await conn.get_raw_connection()).dbapi_connection)
+    _lock_rank.RECORDER.shared.add(shared)
     factory = async_sessionmaker(
-        bind=conn, class_=AsyncSession, expire_on_commit=False,
+        bind=conn, class_=_SharedSession, expire_on_commit=False,
         join_transaction_mode="create_savepoint")
     sess = factory()
     try:
@@ -957,6 +1023,7 @@ async def session(_db_engine) -> AsyncSession:
         if trans.is_active:
             await trans.rollback()
         await conn.close()
+        _lock_rank.RECORDER.shared.discard(shared)
 
 
 @pytest.fixture(autouse=True)
@@ -981,6 +1048,14 @@ async def auth(session, ids):
     return await company_auth(session, ids["company_id"], ids["user_id"])
 
 
+# Set while a request of the `client` fixture runs (its per-request transaction).
+_IN_REQUEST = contextvars.ContextVar("celerp_test_in_request", default=False)
+# The task running that request: tasks it starts (AI jobs) inherit the context but run beside it.
+_REQUEST_TASK = contextvars.ContextVar("celerp_test_request_task", default=None)
+# The statements that write rows, when a request sends them as text.
+_WRITE_VERBS = ("insert", "update", "delete", "merge", "truncate", "copy")
+
+
 @pytest_asyncio.fixture
 async def drained_jobs():
     """Drains the AI jobs a test started (``test_helpers.drain_jobs``); request it
@@ -992,10 +1067,9 @@ async def drained_jobs():
 
 @pytest_asyncio.fixture
 async def client(session: AsyncSession):
-    import asyncio
     from httpx import ASGITransport, AsyncClient
     from celerp.services import background
-    from celerp.services.session_tracker import clear as _clear_tracker
+    from test_helpers import clear_sessions as _clear_tracker
     from celerp.gateway.state import set_session_token as _set_session_token
     from unittest.mock import patch, MagicMock
 
@@ -1010,43 +1084,154 @@ async def client(session: AsyncSession):
     # Set a mock relay client (used by relay-dependent code paths in tests).
     # The concurrent login gate is bypassed in tests because the tracker is
     # cleared at setup/teardown, so each test starts with an empty registry.
-    app.dependency_overrides[get_session] = lambda: session
+    async def _request_session():
+        # Production's session closes, rolling back, when the route raises, before an
+        # exception handler runs (one that notifies in a session of its own, as
+        # middleware.notify_refused does), releasing its locks too, a row lock a read took
+        # (lock_company) as much as a write's. So does the test session's request transaction,
+        # unless a sibling request shares it or something durable was committed inside it,
+        # which a rollback would also undo: the request then ends as _request_scoped judges.
+        try:
+            yield session
+        except Exception:
+            if turn["requests"] == 1 and not turn["durable"]:
+                await session.rollback()
+                turn["wrote"] = False
+            raise
 
-    # Middleware (DrainMiddleware, SlidingTokenRefreshMiddleware) opens its own
-    # session via get_session_ctx() rather than the injected request session. Each
-    # test runs inside one uncommitted outer transaction on a single connection
-    # (the `session` fixture), so a middleware session on a *separate* connection
-    # blocks on that transaction's row locks - e.g. DrainMiddleware's _get_or_create
-    # INSERT of the SystemRuntimeState singleton the request session is already
-    # holding uncommitted - and hangs until the per-test timeout. Route middleware
-    # to the same shared session (the patch point middleware.py imports for this
-    # purpose) so it joins the one transaction instead of deadlocking against it.
-    # The module boundary reads a company's settings the same way, so it sees the
-    # companies a test registered.
+    app.dependency_overrides[get_session] = _request_session
+
+    # The middleware and a module's admission open a session of their own per block, and the
+    # projection rebuild and the Doctor run on the unbounded lifecycle engine. On a SEPARATE
+    # connection such a session would see none of this transaction's seed data and wait on its
+    # locks, so each is a block session on the one shared connection (test_helpers.block_sessions):
+    # it sees the seeded data and its commits stay inside the rolled-back outer transaction.
+    # Savepoints on one connection nest as a stack, so a task running beside the request (an AI
+    # job) cannot open one inside the request's: its middleware and admission blocks use the test
+    # session itself, which takes turns between tasks.
     from contextlib import asynccontextmanager
 
     @asynccontextmanager
     async def _shared_session_ctx():
         yield session
 
-    # get_lifecycle_session_ctx() runs maintenance work (the projection rebuild,
-    # the Doctor) on the unbounded lifecycle_engine in production, because a full
-    # rebuild can exceed the request statement_timeout. In tests that would open a
-    # SEPARATE connection that cannot see this transaction's uncommitted seed data,
-    # so fix-mode counts come back empty. LifecycleSessionLocal is resolved from
-    # celerp.db at call time, so binding a savepoint-joined sessionmaker to the one
-    # shared connection routes every lifecycle session (each a fresh session that
-    # closes on exit) into this transaction: it sees the seeded data and its commits
-    # stay inside the rolled-back outer transaction.
+    def _block_session():
+        if _REQUEST_TASK.get() is asyncio.current_task():
+            return block()
+        return _shared_session_ctx()
+
+    # Installed as the API app's middleware stack while the fixture runs, so every
+    # in-process client of the app (this one, the UI's bridge into it, a test's own) gets
+    # a transaction per request. A request the app makes into itself joins the outer one.
+    stack = app.middleware_stack or app.build_middleware_stack()
+
+    shared = id((await (await session.connection()).get_raw_connection()).dbapi_connection)
+
+    async def _request_scoped(scope, receive, send):
+        if scope["type"] != "http" or _IN_REQUEST.get():
+            if scope["type"] != "http" or _REQUEST_TASK.get() is asyncio.current_task():
+                await stack(scope, receive, send)
+                return
+            # A task a request started (an AI job) inherits its context, but the request it
+            # makes into the app (a tool call) has a session of its own in production, closed
+            # at its end: what that request took ends with it.
+            try:
+                await stack(scope, receive, send)
+            finally:
+                _lock_rank.RECORDER.end_flow(shared)
+            return
+        # Production gives each request a session of its own, closed at the end, so a
+        # request never joins its caller's transaction and keeps nothing it did not
+        # commit. Requests here share the test's session, so each one gets a transaction
+        # of its own: what the test wrote first is committed, as a production client's
+        # data would be, and the request's transaction ends with it. A request that
+        # raised or answered an error ends by rollback, so its uncommitted writes and its
+        # locks are gone as in production. Any other ends by commit (a savepoint release
+        # in the test's outer transaction): a rollback would also undo what lifecycle
+        # sessions and AI jobs committed inside it on this one connection, which
+        # production commits on connections of their own. So does a failed request that
+        # wrote nothing beside such a commit; one that wrote too cannot be told apart
+        # here, so it fails. Requests running at once (a page's parallel reads) share the
+        # one session, so they are one transaction: the first to start commits what the
+        # test wrote, and the last to end ends it, by rollback if any of them answered an
+        # error. Ending it earlier would release the savepoint of a block another one has
+        # open (test_helpers.block_sessions).
+        status = 500
+
+        async def _send(message):
+            nonlocal status
+            if message["type"] == "http.response.start":
+                status = message["status"]
+            await send(message)
+
+        if not turn["requests"]:
+            turn["wrote"] = turn["durable"] = turn["failed"] = False
+            await _end_transaction(commit=True)
+        turn["requests"] += 1
+        token = _IN_REQUEST.set(True)
+        task_token = _REQUEST_TASK.set(asyncio.current_task())
+        try:
+            await stack(scope, receive, _send)
+        finally:
+            _REQUEST_TASK.reset(task_token)
+            _IN_REQUEST.reset(token)
+            turn["requests"] -= 1
+            turn["failed"] = turn["failed"] or status >= 400
+            if not turn["requests"]:
+                if turn["failed"] and turn["wrote"] and turn["durable"]:
+                    await _end_transaction(commit=False)
+                    raise AssertionError("a request that answered an error wrote through its session while "
+                                         "a job or lifecycle session committed beside it on the test connection")
+                await _end_transaction(commit=not turn["failed"] or turn["durable"])
+
+    async def _end_transaction(commit: bool):
+        if not session.in_transaction():
+            return
+        if commit:
+            try:
+                await session.commit()
+                return
+            except Exception:
+                pass
+        await session.rollback()
+
+    # What the requests running now did on this connection: how many there are, whether
+    # any answered an error, wrote through its own session, and whether a block session
+    # (above) or an AI job committed beside them.
+    turn = {"requests": 0, "failed": False, "wrote": False, "durable": False}
+
+    def _wrote(*_):
+        if _IN_REQUEST.get():
+            turn["wrote"] = True
+
+    def _executed(state):
+        if (state.is_insert or state.is_update or state.is_delete
+                or str(state.statement).lstrip("( \n").lower().startswith(_WRITE_VERBS)):
+            _wrote()
+
+    def _durable(committed):
+        if _IN_REQUEST.get() and not committed.info.get(BLOCK_END):
+            turn["durable"] = True
+
+    sync_session = session.sync_session
+    sa_event.listen(sync_session, "after_flush", _wrote)
+    sa_event.listen(sync_session, "do_orm_execute", _executed)
+
+    class _DurableSession(Session):
+        pass
+
+    sa_event.listen(_DurableSession, "after_commit", _durable)
+
     lifecycle_factory = async_sessionmaker(
-        bind=await session.connection(), class_=AsyncSession,
+        bind=await session.connection(), class_=AsyncSession, sync_session_class=_DurableSession,
         expire_on_commit=False, join_transaction_mode="create_savepoint")
+    block = block_sessions(lifecycle_factory, _shared_session_ctx)
 
     # AI job tasks run beside the requests that start them, on the same connection.
     # Their sessions join the outer transaction without savepoints of their own, so
     # a job's commit can never release a savepoint a request session still holds.
     job_factory = async_sessionmaker(
-        bind=await session.connection(), class_=AsyncSession,
+        bind=await session.connection(), class_=AsyncSession, sync_session_class=_DurableSession,
         expire_on_commit=False, join_transaction_mode="rollback_only")
     # The model gate's condition binds to the event loop that first waits on it, and
     # every test runs on its own loop: each test gets a gate of its own.
@@ -1055,15 +1240,18 @@ async def client(session: AsyncSession):
     with patch("celerp.ai.jobs.gate", jobs.ModelGate(jobs.gate.size)), \
          patch("celerp.gateway.client._client", MagicMock()), \
          patch("celerp.gateway.state.get_session_token", return_value="test-session-token"), \
-         patch("celerp.middleware.get_session_ctx", _shared_session_ctx), \
-         patch("celerp.modules.boundary.get_session_ctx", _shared_session_ctx), \
-         patch("celerp.db.LifecycleSessionLocal", lifecycle_factory), \
-         patch("celerp.ai.jobs.SessionLocal", job_factory):
+         patch("celerp.middleware.get_session_ctx", _block_session), \
+         patch("celerp.modules.boundary.get_session_ctx", _block_session), \
+         patch("celerp.db.LifecycleSessionLocal", block), \
+         patch("celerp.ai.jobs.SessionLocal", job_factory), \
+         patch.object(app, "middleware_stack", _request_scoped):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             yield c
         # Work a request left running (an email send and its receipt) finishes on this
         # test's loop: cut off by the loop closing, it would leave its connection open.
         await asyncio.gather(*list(background._BG_TASKS), return_exceptions=True)
+    sa_event.remove(sync_session, "after_flush", _wrote)
+    sa_event.remove(sync_session, "do_orm_execute", _executed)
     app.dependency_overrides.clear()
     # A test that started on held-back records leaves neither the flag nor its cause behind.
     app.state.data_current, app.state.held_back = True, None
@@ -1076,8 +1264,7 @@ async def owner_ui(client):
     """The UI app signed in as the owner of a newly registered company, talking to the
     real API in process (the `client` fixture's database and transaction)."""
     import uuid
-    from unittest.mock import patch
-    from httpx import ASGITransport, AsyncClient
+    from test_helpers import ui_signed_in
 
     r = await client.post("/auth/register", json={
         "company_name": "Owner UI Co", "email": f"owner-ui-{uuid.uuid4().hex[:8]}@test.example",
@@ -1086,16 +1273,8 @@ async def owner_ui(client):
     assert r.status_code == 200, r.text
     token = r.json()["access_token"]
 
-    def _bridged(tok, timeout=10.0):
-        return AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
-                           headers={"Authorization": f"Bearer {tok}"}, follow_redirects=True)
-
-    with patch("ui.api_client._client", _bridged):
-        async with AsyncClient(transport=ASGITransport(app=_ui_app), base_url="http://ui",
-                               follow_redirects=False, cookies={"celerp_token": token}) as ui:
-            ui.api = _bridged(token)
-            yield ui
-            await ui.api.aclose()
+    async with ui_signed_in(token) as ui:
+        yield ui
 
 
 _DISABLED_MODULE_TABLES = {"label_": "label_templates", "marketplace_": "marketplace_configs",
@@ -1149,6 +1328,16 @@ def connector_modules_running(monkeypatch):
     """Record the modules connectors write into as loaded: Inventory, Documents and Contacts."""
     from test_helpers import mark_running
     mark_running(monkeypatch, "celerp-inventory", "celerp-docs", "celerp-contacts")
+
+
+@pytest.fixture
+def signed_in_to_cloud():
+    """The install signed in to Celerp Cloud, as a store or accounting connection needs."""
+    import celerp.gateway.state as gw_state
+
+    gw_state.set_session_token("test-session-token")
+    yield
+    gw_state.set_session_token("")
 
 
 @pytest.fixture(autouse=True)
@@ -1215,3 +1404,79 @@ def relay_not_called_at_boot(no_connection_off_this_machine, monkeypatch):
     """Boot without checking in with the relay (skip_relay_check_in). A test that wants the
     check-in patches it again itself."""
     skip_relay_check_in(monkeypatch.setattr)
+
+
+@pytest.fixture
+def events_without_the_company_lock(monkeypatch):
+    """emit_event takes the company lock itself; the write observer's controls lift it to
+    make the unprotected event writes they check."""
+    async def no_lock(session, company_id):
+        return None
+    monkeypatch.setattr("celerp.services.company_lock.lock_company", no_lock)
+
+
+# ── Lock rank recorder (tests/lock_rank.py) ────────────────────────────────────
+# Every test runs under the recorder: a test whose body takes a lock out of RANKS order
+# (or breaks another rule the recorder checks) fails, unless tests/lock_order_debt.txt names
+# that violation. CELERP_LOCK_RANK_DIR=<dir> also writes one graph per worker there;
+# `python tests/lock_rank.py check <dir>` judges the merged graph and lists stale debt.
+import importlib.util as _importlib_util
+
+# Loaded once under its own name, so the checker's tests share this recorder.
+_spec = _importlib_util.spec_from_file_location("lock_rank", Path(__file__).parent / "tests" / "lock_rank.py")
+_lock_rank = _sys.modules["lock_rank"] = _importlib_util.module_from_spec(_spec)
+_spec.loader.exec_module(_lock_rank)
+_lock_rank.install()
+
+
+def pytest_runtest_setup(item):
+    _lock_rank.RECORDER.test = item.nodeid
+
+
+_AI_ROWS = ("row:ai_conversations", "row:ai_messages", "row:ai_batch_jobs", "row:ai_job_steps", "row:ai_usage")
+
+
+@pytest.fixture(autouse=True)
+def _ai_rows_taken_under_their_company_lock():
+    """Every test is a census of the AI rows the AI's code takes: one taken outside its
+    company's lock and held while its transaction waits on more (not a leaf) fails the test."""
+    with _lock_rank.ungated_takes(_AI_ROWS, "celerp/ai/", "default_modules/celerp-ai/") as found:
+        yield
+    assert sorted(found) == [], "AI row takes outside the company lock:\n" + "\n".join(sorted(found))
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_call(item):
+    if item.get_closest_marker("observer_control"):
+        # These tests take locks out of order on purpose to check the write observer: their
+        # body records into a throwaway recorder, so it neither fails nor enters the graph.
+        real, _lock_rank.RECORDER = _lock_rank.RECORDER, _lock_rank.Recorder()
+        _lock_rank.RECORDER.test = item.nodeid
+        try:
+            yield
+        finally:
+            _lock_rank.RECORDER = real
+            real.clear_transactions()
+        return
+    # Fixture setup runs in the test's one outer transaction; production commits
+    # between setup-like work and a request, so the body starts holding nothing.
+    _lock_rank.RECORDER.take_violations()
+    _lock_rank.RECORDER.clear_transactions()
+    outcome = yield
+    found = _lock_rank.new_violations()
+    if found and outcome.excinfo is None:
+        lines = [f"{_lock_rank.violation_key(v)} (held at {v['held_site']}, taken at {v['site']})"
+                 for v in found[:20]]
+        outcome.force_exception(AssertionError(
+            f"lock order: {len(found)} violation(s) not in tests/lock_order_debt.txt:\n" + "\n".join(lines)))
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Each test process writes the write observer's census and the lock rank graph to
+    the folders their variables name."""
+    path = mutation_observer.census_path()
+    if path:
+        _CENSUS.write(f"{path}.json")
+        mutation_observer.write_routes(f"{path}.routes.json", [app, _ui_app])
+    if os.environ.get("CELERP_LOCK_RANK_DIR"):
+        _lock_rank.dump(Path(os.environ["CELERP_LOCK_RANK_DIR"]) / f"lock-graph-{_worker}.json")

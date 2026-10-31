@@ -17,6 +17,7 @@ import httpx
 import pytest
 
 from celerp.gateway.client import GatewayClient
+from test_gateway.local_app import LocalClient
 import celerp.gateway.state as gw_state
 
 
@@ -253,6 +254,12 @@ def test_relay_routes_pay_links_to_api_server_and_lookalikes_to_ui(client):
     assert client._local_port_for("/payments") == client._ui_port
 
 
+def test_relay_routes_store_image_links_to_api_server(client):
+    """A store fetches the product images Celerp sends it from the API app."""
+    assert client._local_port_for("/connector-media/x") == client._api_port
+    assert client._local_port_for("/connector-mediax") == client._ui_port
+
+
 # Anonymous API routes the UI server calls in-process on a visitor's behalf: login, setup,
 # restore and probes. No browser opens them directly, so the relay never exposes them.
 _UI_CALLS_ONLY = ("/auth/", "/company-backups/", "/migrations/", "/backup/", "/import-bootstrap", "/__celerp/",
@@ -296,7 +303,8 @@ def test_every_anonymous_api_page_is_reached_through_connect_or_named_as_ui_only
                if client._local_port_for(re.sub(r"{[^}]+}", "x", path)) == client._api_port}
     ui_only = {path for path in anonymous if path.startswith(_UI_CALLS_ONLY)}
 
-    assert {"/pay/{token}", "/pay/{token}/return", "/share/{token}", "/share/{token}/bundle"} <= reached
+    assert {"/pay/{token}", "/pay/{token}/return", "/share/{token}", "/share/{token}/bundle",
+            "/connector-media/{token}"} <= reached
     assert anonymous - reached - ui_only == set()
     assert reached & ui_only == set()
 
@@ -528,13 +536,7 @@ async def test_proxy_routes_everything_to_ui_server(client, monkeypatch, path):
         content = b"ok"
         headers = httpx.Headers()
 
-    class FakeClient:
-        def __init__(self, *a, **k):
-            pass
-        async def __aenter__(self):
-            return self
-        async def __aexit__(self, *a):
-            return False
+    class FakeClient(LocalClient):
         async def request(self, method, url, headers=None, content=None):
             captured["url"] = url
             return FakeResp()
@@ -571,13 +573,7 @@ async def test_proxy_response_preserves_multiple_set_cookie(client, monkeypatch)
             ("set-cookie", "refresh_token=RRR; Path=/; HttpOnly"),
         ])
 
-    class FakeClient:
-        def __init__(self, *a, **k):
-            pass
-        async def __aenter__(self):
-            return self
-        async def __aexit__(self, *a):
-            return False
+    class FakeClient(LocalClient):
         async def request(self, method, url, headers=None, content=None):
             return FakeResp()
 
@@ -914,13 +910,7 @@ async def test_proxy_forwards_valid_encoded_path_verbatim(client, monkeypatch):
         content = b"ok"
         headers = httpx.Headers()
 
-    class FakeClient:
-        def __init__(self, *a, **k):
-            pass
-        async def __aenter__(self):
-            return self
-        async def __aexit__(self, *a):
-            return False
+    class FakeClient(LocalClient):
         async def request(self, method, url, headers=None, content=None):
             captured["url"] = url
             return FakeResp()
@@ -959,13 +949,7 @@ async def test_proxy_classification_ignores_accept_header(client, monkeypatch):
         content = b"ok"
         headers = httpx.Headers([("content-type", "text/plain")])
 
-    class FakeClient:
-        def __init__(self, *a, **k):
-            pass
-        async def __aenter__(self):
-            return self
-        async def __aexit__(self, *a):
-            return False
+    class FakeClient(LocalClient):
         async def request(self, method, url, headers=None, content=None):
             captured["url"] = url
             return FakeResp()

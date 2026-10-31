@@ -23,6 +23,7 @@ rather than a false restore.
 from __future__ import annotations
 
 from alembic import op
+from celerp.migrations._locks import lock_tables
 
 
 revision = "f3a4b5c6d7e8"
@@ -32,6 +33,7 @@ depends_on = None
 
 
 def upgrade() -> None:
+    lock_tables(op.get_bind(), "session_registry")
     op.execute("DELETE FROM session_registry")
 
 

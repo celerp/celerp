@@ -44,6 +44,13 @@ READ_ROUTE_WRITES: dict[tuple[str, str], ReadNote] = {
         "a document's share link minted deactivated the first time an editor opens its Share panel, "
         "which shows the link the cloud signs for it; Share (POST) turns it on",
         route="GET /docs/{entity_id}/share"),
+    ("label_templates", "INSERT"): ReadNote(
+        ("company_id", "copies", "created_at", "fields", "format", "height_mm", "id", "name", "notes",
+         "orientation", "updated_at", "width_mm"),
+        ("default_modules/celerp-labels/celerp_labels/routes.py _seed_presets",
+         "default_modules/celerp-labels/celerp_labels/routes.py _source_templates"),
+        "a company's default label presets, and a record kind's own template, added the first time its "
+        "templates are read, so the first labels print at once; each is added under the company's lock"),
     ("payment_recoveries", "UPDATE"): ReadNote(
         ("generation",), ("celerp/services/payments.py report_recoveries",),
         "Celerp Cloud's confirmation of an earlier System Recovery restore, stored as it answers before "

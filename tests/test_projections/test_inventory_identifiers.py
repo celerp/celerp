@@ -22,14 +22,13 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.events.engine import emit_event
 from celerp.models.company import Company
-from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.field_schema import get_effective_field_schema
+from test_helpers import remove_company
 
 
 # --- shared helpers --------------------------------------------------------
@@ -61,15 +60,6 @@ def _item_kwargs(company_id, entity_id, sku, *, barcode=None, rfid_epc=None):
         idempotency_key=str(uuid.uuid4()),
         metadata_={},
     )
-
-
-async def _cleanup(factory, company_ids):
-    async with factory() as s:
-        for cid in company_ids:
-            await s.execute(delete(Projection).where(Projection.company_id == cid))
-            await s.execute(delete(LedgerEntry).where(LedgerEntry.company_id == cid))
-            await s.execute(delete(Company).where(Company.id == cid))
-        await s.commit()
 
 
 # --- GTIN schema + validation ----------------------------------------------
@@ -195,7 +185,7 @@ async def test_rfid_epc_duplicate_rejected_409(_db_engine):
         async with factory() as s:
             assert await s.get(Projection, {"company_id": company_id, "entity_id": "item:2"}) is None
     finally:
-        await _cleanup(factory, [company_id])
+        await remove_company(factory, [company_id])
 
 
 @pytest.mark.asyncio
@@ -227,7 +217,7 @@ async def test_rfid_epc_company_isolated(_db_engine):
                 await emit_event(s, **_item_kwargs(c1, "item:2", "B", rfid_epc="EPC777"))
             await s.rollback()
     finally:
-        await _cleanup(factory, [c1, c2])
+        await remove_company(factory, [c1, c2])
 
 
 # --- cross-field identifier collision (HTTP) --------------------------------

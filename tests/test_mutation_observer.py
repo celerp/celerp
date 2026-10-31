@@ -24,6 +24,7 @@ from sqlalchemy import delete, func, insert, select, text, update
 import mutation_observer
 import mutation_read_notes
 from mutation_observer import serving
+from celerp.connectors.execution import record_rerun
 from celerp.connectors.ownership import lock_connector_key
 from celerp.credentials import issue_token_pair
 from celerp.events.engine import emit_event
@@ -32,7 +33,7 @@ from celerp.models.company import Company, Location, User
 from celerp.models.migration import MigrationCleanupTask, MigrationRun
 from celerp.models.projections import Projection
 from celerp.services.company_lock import (
-    judge_without_company_lock, lock_chart, lock_company, lock_company_for_deletion)
+    hold_company, judge_without_company_lock, lock_company, lock_company_for_deletion)
 from celerp.services.migrations import request_cancel, run_cleanup_task
 from celerp.services.permissions import authorize_request
 from celerp.services.session_tracker import invalidate_sessions, lock_auth_state, register_token
@@ -54,6 +55,11 @@ async def _event(session, cid) -> None:
                      event_type="crm.contact.created", data={"name": "Observed", "contact_type": "both"},
                      actor_id=None, location_id=None, source="test",
                      idempotency_key=f"test:{uuid.uuid4()}", metadata_={})
+
+
+async def _unlocked_write(session, cid) -> None:
+    session.add(Location(company_id=cid, name="Unlocked", type="warehouse"))
+    await session.flush()
 
 
 async def test_orm_insert_without_the_lock_is_reported(session, auth):
@@ -180,7 +186,17 @@ async def test_core_update_without_the_lock_is_reported(session, auth):
     assert (finding.kind, finding.table, finding.company) == ("unprotected", "companies", str(cid))
 
 
-async def test_event_without_the_lock_is_reported_where_it_was_written(session, auth):
+async def test_an_event_takes_the_company_lock_itself(session, auth):
+    with serving("POST", "/observed"):
+        cid = _authorize(session, auth)
+        await _event(session, cid)
+        await session.commit()
+    assert _kinds() == []
+    assert mutation_observer.CENSUS.routes["POST /observed"]["protected"] >= 1
+
+
+async def test_an_event_written_without_the_lock_is_reported_where_it_was_written(
+        session, auth, events_without_the_company_lock):
     with serving("POST", "/observed"):
         cid = _authorize(session, auth)
         await _event(session, cid)
@@ -250,21 +266,25 @@ async def test_the_connector_fences_rank_before_the_company_lock(session, auth, 
     assert _kinds() == []
 
 
-@pytest.mark.parametrize("taken,reported", [("schema", False), ("claim", False), ("names", True)])
-async def test_the_schema_key_and_a_restore_claim_rank_before_the_company_lock(session, auth, taken, reported):
+@pytest.mark.parametrize("taken", ["schema", "claim", "names", "scan"])
+async def test_the_schema_key_a_restores_claim_and_names_and_a_scan_claim_rank_before_the_company_lock(
+        session, auth, taken):
     from celerp.db import share_schema
     from celerp.services.company_backup import CLAIM
+    from celerp.services.migrations import lock_scan_claim
     with serving("POST", "/observed"):
         cid = _authorize(session, auth)
         if taken == "schema":
             assert await share_schema(session)
+        elif taken == "scan":
+            await lock_scan_claim(session, uuid.uuid4().hex)
         else:
             await session.execute(text("SELECT pg_try_advisory_xact_lock(hashtextextended(:k, 0))"),
                                   {"k": f"{CLAIM}{uuid.uuid4()}" if taken == "claim" else f"restore-names:{cid}"})
         await lock_company(session, cid)
         await _event(session, cid)
         await session.commit()
-    assert set(_kinds()) == ({"lock-order"} if reported else set())
+    assert _kinds() == []
 
 
 async def test_a_connector_fence_after_the_company_lock_is_reported(session, auth):
@@ -376,7 +396,7 @@ async def test_a_lock_rolled_back_with_its_savepoint_protects_nothing_after(sess
         nested = await session.begin_nested()
         await lock_company(session, cid)
         await nested.rollback()
-        await _event(session, cid)
+        await _unlocked_write(session, cid)
         await session.commit()
     assert set(_kinds()) == {"unprotected"}
 
@@ -386,7 +406,7 @@ async def test_the_previous_transactions_lock_is_not_inherited(session, auth):
         cid = _authorize(session, auth)
         await lock_company(session, cid)
         await session.commit()
-        await _event(session, cid)
+        await _unlocked_write(session, cid)
         await session.commit()
     assert set(_kinds()) == {"unprotected"}
 
@@ -556,6 +576,80 @@ async def test_a_cleanup_task_is_deleted_under_its_own_row_lock_by_the_sweep_onl
     assert _kinds() == ([] if deleter == "the cleanup sweep" else ["unprotected"])
 
 
+@pytest.mark.parametrize("writer", ["the execution", "elsewhere"])
+async def test_a_connector_lease_is_written_by_the_execution_only(session, auth, writer, monkeypatch):
+    """A lease's rows are kept by celerp/connectors/execution.py without the company lock;
+    the same write from anywhere else is judged as company data."""
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    # The execution's own short transaction, on the test's connection so nothing commits to disk.
+    monkeypatch.setattr("celerp.connectors.execution._sessions", lambda: async_sessionmaker(
+        bind=session.bind, join_transaction_mode="create_savepoint"))
+    with serving("POST", "/observed"):
+        cid = _authorize(session, auth)
+        if writer == "the execution":
+            await record_rerun(cid, "shopify", "products")
+        else:
+            await session.execute(text(
+                "INSERT INTO connector_execution_heartbeats (company_id, connector, resource) "
+                "VALUES (:c, 'shopify', 'products') ON CONFLICT DO NOTHING"), {"c": str(cid)})
+        await session.commit()
+    assert _kinds() == ([] if writer == "the execution" else ["unprotected"])
+
+
+@pytest.mark.parametrize("writer, columns", [("the heartbeat", ("lease_until",)), ("the heartbeat", ("status",)),
+                                             ("elsewhere", ("lease_until",))])
+async def test_an_ai_jobs_lease_is_renewed_by_its_heartbeat_only(session, auth, monkeypatch, writer, columns):
+    """A job's lease is renewed without the company lock by jobs._heartbeat alone, setting
+    the LEASE_RENEWALS columns only: a renewal of another column, or the same write from
+    anywhere else, is judged as company data."""
+    import asyncio
+    import contextlib
+
+    from celerp.ai import jobs
+    from celerp.models.ai import AIBatchJob
+
+    monkeypatch.setitem(mutation_observer.LEASE_RENEWALS, ("ai_batch_jobs", "UPDATE"), mutation_observer.LeaseRenewal(
+        columns, ("celerp/ai/jobs.py _heartbeat",), "a lease renewed"))
+    job = jobs.question_job(job_id=uuid.uuid4(), request=jobs.JobRequest.question(
+        company_id=auth["company_id"], user_id=auth["user_id"], query="Renewed"))
+    job.status, job.runner_id, job.lease_until = "running", "here", datetime.now(timezone.utc)
+    session.add(job)
+    await session.commit()
+    before = job.lease_until
+
+    @contextlib.asynccontextmanager
+    async def _same_session():
+        yield session
+
+    with serving("POST", "/observed"):
+        if writer == "the heartbeat":
+            monkeypatch.setattr(jobs, "SessionLocal", _same_session)
+            monkeypatch.setattr(jobs, "LEASE_RENEW_S", 0.01)
+            stop = asyncio.Event()
+            beat = asyncio.create_task(jobs._heartbeat(job.id, ["here"], stop))
+            while (await session.scalar(select(AIBatchJob.lease_until).where(AIBatchJob.id == job.id))) == before:
+                await asyncio.sleep(0.01)
+            stop.set()
+            await beat
+        else:
+            await session.execute(update(AIBatchJob).where(AIBatchJob.id == job.id).values(
+                lease_until=datetime.now(timezone.utc) + timedelta(seconds=30)))
+            await session.commit()
+    assert _kinds() == ([] if (writer, columns) == ("the heartbeat", ("lease_until",)) else ["unprotected"])
+
+
+async def test_a_lease_row_fenced_before_the_company_lock_is_in_order(session, auth):
+    with serving("POST", "/observed"):
+        cid = _authorize(session, auth)
+        await session.execute(text(
+            "SELECT resource FROM connector_execution_leases WHERE company_id = :c FOR KEY SHARE"), {"c": str(cid)})
+        await lock_company(session, cid)
+        await _event(session, cid)
+        await session.commit()
+    assert _kinds() == []
+
+
 async def test_a_session_token_is_issued_and_ended_under_the_logins_session_state(session, auth):
     user = await session.get(User, auth["user_id"])
     with serving("POST", "/observed"):
@@ -646,7 +740,7 @@ async def test_the_previous_requests_lock_is_not_inherited_on_a_reused_session(s
         await session.commit()
     with serving("POST", "/second"):
         _authorize(session, auth)
-        await _event(session, cid)
+        await _unlocked_write(session, cid)
         await session.commit()
     assert {f.route for f in mutation_observer.CENSUS.findings} == {"POST /second"}
     assert set(_kinds()) == {"unprotected"}
@@ -965,7 +1059,7 @@ async def test_a_cached_statement_is_judged_for_the_company_it_names_now(session
 async def test_a_narrower_lock_left_by_an_earlier_request_is_not_this_requests(session, auth):
     with serving("GET", "/first"):
         cid = _authorize(session, auth)
-        await lock_chart(session, cid)
+        await hold_company(session, cid)
     with serving("POST", "/second"):
         _authorize(session, auth)
         await lock_company(session, cid)
@@ -980,7 +1074,7 @@ async def test_a_company_lock_left_by_an_earlier_request_does_not_protect_this_o
         await lock_company(session, cid)
     with serving("POST", "/second"):
         _authorize(session, auth)
-        await _event(session, cid)
+        await _unlocked_write(session, cid)
         await session.commit()
     assert {(f.kind, f.route) for f in mutation_observer.CENSUS.findings} == {("unprotected", "POST /second")}
 
@@ -1037,3 +1131,32 @@ async def test_a_request_starting_meanwhile_leaves_background_work_its_own_edit(
     served.set()
     assert [p.name for p in await work] == ["Background"]
     assert mutation_observer.CENSUS.findings == []
+
+
+async def test_reading_the_proofs_costs_each_proof_once_however_long_the_request():
+    """A request that takes thousands of locks (a 1001-row import) reads its proofs after
+    every statement: each read must look only at the proofs noted since the last one and
+    keep a lock taken again once, or the observer's cost grows with the square of the
+    request's statements."""
+
+    class Counted(list):
+        visited = 0
+
+        def __iter__(self):
+            Counted.visited += len(self)
+            return super().__iter__()
+
+        def __getitem__(self, index):
+            got = super().__getitem__(index)
+            Counted.visited += len(got) if isinstance(index, slice) else 1
+            return got
+
+    class FakeSession:
+        info = {mutation_observer._PROOFS: Counted()}
+
+    session, request, n = FakeSession(), {"inherited": {}}, 2000
+    for i in range(n):
+        session.info[mutation_observer._PROOFS].append(("locked" if i % 2 else "row", str(i % 7), None))
+        mutation_observer._here(request, session, "locked")
+    assert list(mutation_observer._here(request, session, "locked")) == ["1", "3", "5", "0", "2", "4", "6"]
+    assert Counted.visited <= 3 * n

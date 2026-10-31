@@ -53,6 +53,9 @@ class SinkContext:
     run_id: uuid.UUID
     # The content of one source attachment by its source id; blocking, raises ScanError.
     read_attachment: Callable[[str], bytes]
+    # The cleanup tasks of files this batch linked. The runner deletes them in the batch's
+    # transaction after its run checkpoint, so the batch's bookkeeping rows are taken in rank order.
+    linked_cleanup_tasks: list[uuid.UUID] = field(default_factory=list)
 
     def idempotency_key(self, record: CIFSourceRecord, operation: str) -> str:
         return f"migration:{self.run_id}:{record.source_type}:{record.source_external_id}:{operation}"

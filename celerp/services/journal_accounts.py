@@ -9,9 +9,10 @@ reconciliation, repairs. Replay applies stored events directly and never comes
 back through here, so history is never revalidated or rewritten.
 
 The chart of accounts belongs to the accounting module. When its API starts it
-registers a ``ChartAccess`` here (``register_chart``): reading and share-locking
-account rows, listing the chart, adding an account, and judging a journal change
-against the completed bank reconciliations. Core never touches its tables. Only the bundled accounting module can register; with nothing registered,
+registers a ``ChartAccess`` here (``register_chart``): reading account rows under
+the company lock, listing the chart, adding an account, and judging a journal change
+against the completed bank reconciliations. Core never touches its tables. Only the
+bundled accounting module can register; with nothing registered,
 or the module stopped, accounting is not running and only the role snapshot is
 written.
 
@@ -53,7 +54,7 @@ class ChartAccess:
     """The accounting module's chart, as core reads and extends it.
 
     lock_accounts(session, company_id, codes) -> {code: {"code", "account_type",
-    "is_active", "has_children"}}, share-locked; list_accounts(session, company_id) ->
+    "is_active", "has_children"}}, held as read by the company lock; list_accounts(session, company_id) ->
     the chart's rows, each with its id, code, name, account_type, parent_code,
     cash_flow_category, is_active, has_children and currency (a bank account's, else
     None); add_account(session, company_id, *, code, name, account_type, parent_code=None,
@@ -116,7 +117,7 @@ def chart_access() -> ChartAccess | None:
 
 
 async def lock_accounts(session: AsyncSession, company_id, codes) -> dict[str, dict] | None:
-    """The company's accounts among ``codes``, share-locked until the transaction ends.
+    """The company's accounts among ``codes``, held as read until the transaction ends.
 
     Each value is {"code", "account_type", "is_active", "has_children"}; a code the
     chart does not hold is absent. None when the accounting module is not running.
@@ -206,7 +207,7 @@ async def require_destinations(session: AsyncSession, company_id, codes) -> dict
     """Refuse a new posting a user directed to any of ``codes`` unless each is an account
     in the chart, active, with nothing under it (a header only sums the accounts below it).
 
-    The accounts stay share-locked until the transaction ends, so switching one off or
+    The accounts stay as read until the transaction ends (the company lock), so switching one off or
     putting an account under it waits for the posting, and a posting that waited for such
     a change sees it and is refused. Returns the locked accounts, for the caller's own
     rule on their type; None when the accounting module is not running, so there is no
