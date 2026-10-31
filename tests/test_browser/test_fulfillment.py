@@ -755,3 +755,48 @@ def test_setting_a_memo_tax_rate_previews_each_rate_typed_then_saves(page, ui_se
     page.locator("form.editable-cell button[type=submit]").click()
     expect(page.locator(".toast-container .toast").last).to_contain_text("$50.00 became $20.00")
     assert float(api.get(f"/docs/{doc_id}").json()["tax_rate"]) == 20
+
+
+_RATE_PREVIEWS = "**/tax-rate/preview"
+
+
+def test_a_memo_rate_cannot_be_saved_until_the_preview_of_the_rate_typed_returns(page, ui_server, api):
+    """Setting a memo's rate cannot be undone, so Save waits for the preview of the rate now
+    typed and saves the rate that preview shows, never one still on its way."""
+    sku = f"MRW-{uuid.uuid4().hex[:6]}"
+    item = _create_item(api, sku, qty=1)
+    r = api.post("/docs", json={
+        "doc_type": "memo", "ref_id": f"MR-{uuid.uuid4().hex[:6]}", "tax": 50.0,
+        "line_items": [{"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0, "line_total": 100.0,
+                        "item_id": item, "sell_by": "piece"}],
+    })
+    assert r.status_code in {200, 201}, r.text
+    doc_id = r.json()["id"]
+    assert api.post(f"/docs/{doc_id}/finalize").status_code in {200, 201}
+    page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
+    _assert_no_crash(page, "memo rate wait")
+    page.locator("[hx-get*='/field/tax_rate']").first.click()
+    field = page.locator("form.editable-cell input[name=value]")
+    preview = page.locator("form.editable-cell .memo-rate-preview")
+    save = page.locator("form.editable-cell button[type=submit]")
+    expect(page.locator("form.editable-cell")).not_to_have_class(css_class("htmx-added"))
+    expect(save).to_be_disabled()
+    field.fill("10")
+    expect(preview).to_contain_text("$10.00")
+    expect(save).to_be_enabled()
+
+    held = []
+    page.route(_RATE_PREVIEWS, lambda route: held.append(route))
+    field.fill("20")
+    expect(save).to_be_disabled()
+    page.wait_for_timeout(600)
+    expect(save).to_be_disabled()
+    assert held, "the preview of the new rate was sent"
+    assert not api.get(f"/docs/{doc_id}").json().get("tax_rate")
+    held.pop().continue_()
+    release_held_routes(page, _RATE_PREVIEWS, held)
+    expect(preview).to_contain_text("$20.00")
+    expect(save).to_be_enabled()
+    save.click()
+    expect(page.locator(".toast-container .toast").last).to_contain_text("$50.00 became $20.00")
+    assert float(api.get(f"/docs/{doc_id}").json()["tax_rate"]) == 20
