@@ -379,8 +379,9 @@ _WRITERS = {
     ("celerp/connectors/outbound_queue.py", "self.state = state"): "an outbound delivery's own state, not a projection",
     ("ui/handoff_opening.py", "opening.state = READY"): "a company copy opening's own progress, not a projection",
     ("celerp/connectors/sync_runner.py", 'row.state = "running"'): "a first sync's own progress, not a projection",
-    ("celerp/connectors/sync_runner.py", 'row.state = "completed" if synced == set(resources) else "failed"'):
+    ("celerp/connectors/sync_runner.py", 'row.state = "completed" if done else "failed"'):
         "a first sync's own progress, not a projection",
+    ("celerp/connectors/sync_runner.py", 'row.state = "starting"'): "a first sync's own progress, not a projection",
     ("celerp/connectors/sync_runner.py", 'row.state = "failed"'): "a first sync's own progress, not a projection",
     ("default_modules/celerp-connectors/celerp_connectors/routes.py", 'first_sync.state = "starting"'):
         "a first sync's own progress, not a projection",

@@ -710,7 +710,30 @@ async def sweep_reruns() -> None:
     """Start an execution for each recorded rerun, and each connection whose webhooks
     are marked dirty, that no live execution holds and whose connection may run it; the execution runs it as it releases. A busy or
     refused one waits for the next tick; one the directions no longer call for is
-    dropped. Runs in a task of its own, outside any execution."""
+    dropped. A first sync left starting or running, unchanged for longer than a lease
+    lasts and with no live execution on its connection, was abandoned by a stopped
+    process: it is run again with the choices saved when it started. Runs in a task of
+    its own, outside any execution."""
+    from celerp.connectors.sync_runner import execute_first_sync
+
+    with _internal():
+        async with _sessions()() as s:
+            abandoned = (await s.execute(sa.text(
+                "SELECT f.company_id, f.connector FROM connector_first_syncs f "
+                "WHERE f.state IN ('starting', 'running') "
+                "AND f.updated_at <= now() - make_interval(secs => :ttl) "
+                "AND NOT EXISTS (SELECT 1 FROM connector_execution_heartbeats h "
+                "WHERE h.company_id = f.company_id AND h.connector = f.connector "
+                "AND h.holder IS NOT NULL AND h.expires_at > now()) "
+                "ORDER BY 1, 2"), {"ttl": TTL.total_seconds()})).all()
+            await s.commit()
+    for company_id, connector in abandoned:
+        try:
+            await execute_first_sync(company_id, connector, admission_wait=0)
+        except (ExecutionBusy, AdmissionBusy):
+            continue
+        except Exception as exc:
+            log.warning("first sync of %s not resumed: %s", connector, exc)
     with _internal():
         async with _sessions()() as s:
             rows = (await s.execute(sa.text(

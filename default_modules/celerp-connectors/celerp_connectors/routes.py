@@ -857,7 +857,8 @@ async def first_sync_summary(
     _: None = require_permission("manage_integrations"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """What the first sync did and how to undo it: the import of the products it created,
+    """What the first sync did and how to undo it: its state (with the reason when it needs
+    attention), the import of the products it created,
     the links it made (with whether they were undone), and the invoices it imported,
     newest first. Invoices are voided one by one, which keeps their audit trail."""
     import uuid
@@ -896,6 +897,8 @@ async def first_sync_summary(
                     for r in rows]
     return {
         "started_at": first_sync.started_at.isoformat() if first_sync is not None and first_sync.started_at else None,
+        "state": first_sync.state if first_sync is not None else None,
+        "error": first_sync.error if first_sync is not None else None,
         "batch": batch,
         "links": len(undo.get("links") or []),
         "links_undone_at": undo.get("links_undone_at"),
@@ -942,11 +945,8 @@ async def start_first_sync(
     from celerp import connectors
     from celerp.connectors.base import DirectionError, entity_allowed, validate_directions
     from celerp.connectors.ownership import ConnectorOwnershipError, lock_connector_operation
-    from celerp.connectors.execution import WEBHOOKS, connector_execution, plan_resources
-    from celerp.connectors.sync_runner import fail_first_sync, run_first_sync
-    from celerp.connectors.webhook_reconcile import mark_webhooks_dirty, reconcile_webhooks
+    from celerp.connectors.webhook_reconcile import mark_webhooks_dirty
     from celerp.models.import_batch import ImportBatch
-    from celerp.services.background import spawn_background
 
     try:
         connector = connectors.get(connector_name)
@@ -998,21 +998,53 @@ async def start_first_sync(
     if config.webhook_secret:
         await mark_webhooks_dirty(session, config)
     await session.commit()
-    resources = [*plan_resources(connector, directions), WEBHOOKS]
+    _spawn_first_sync(company_id, connector_name)
+    return {"ok": True}
+
+
+def _spawn_first_sync(company_id, connector_name: str) -> None:
+    """Run a started first sync in the background (sync_runner.execute_first_sync); one a
+    stopped process leaves behind is resumed by the execution sweeper."""
+    from celerp.connectors.sync_runner import execute_first_sync
+    from celerp.services.background import spawn_background
 
     async def _run() -> None:
         try:
-            async with connector_execution(company_id, connector_name, "first_sync", resources) as ex:
-                try:
-                    await reconcile_webhooks(ex)
-                    await run_first_sync(connector, ex.ctx)
-                except Exception as exc:
-                    await fail_first_sync(company_id, connector_name, exc)
-                    raise
+            await execute_first_sync(company_id, connector_name)
         except Exception:
             log.exception("first sync failed: %s", connector_name)
 
     spawn_background(_run())
+
+
+@router.post("/{connector_name}/first-sync/retry")
+async def retry_first_sync(
+    connector_name: str,
+    company_id: Annotated[str, Depends(get_current_company_id)],
+    _: None = require_permission("manage_integrations"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Start a first sync that needs attention again, with the choices, import batch and
+    order cutoff it started with; it runs only what did not complete."""
+    from celerp import connectors
+    from celerp.connectors import sync_runner
+    from celerp.connectors.ownership import ConnectorOwnershipError, lock_connector_operation
+
+    try:
+        connectors.get(connector_name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=connector_name)) from exc
+    try:
+        await lock_connector_operation(session, company_id, connector_name, require_owner=True, exclusive=True)
+        await sync_runner.retry_first_sync(session, company_id, connector_name)
+    except ConnectorOwnershipError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=t("connectors.err_first_sync_not_failed")) from exc
+    await session.commit()
+    _spawn_first_sync(company_id, connector_name)
     return {"ok": True}
 
 

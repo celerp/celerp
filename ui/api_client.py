@@ -4117,6 +4117,12 @@ async def get_first_sync_summary(token: str, platform: str) -> dict:
         return _raise(await c.get(f"/connectors/{platform}/first-sync/summary")).json()
 
 
+async def retry_first_sync(token: str, platform: str) -> dict:
+    """Start a first sync that needs attention again."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/connectors/{platform}/first-sync/retry")).json()
+
+
 async def undo_first_sync_links(token: str, platform: str) -> dict:
     """Undo the links the first sync made to items Celerp already had."""
     async with _api_client(token) as c:

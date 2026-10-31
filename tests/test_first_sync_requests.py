@@ -76,11 +76,11 @@ async def test_starting_the_first_sync_from_its_preview_runs_it_under_a_renewed_
 
     async def _store(*_a, **_k):
         await renewed.wait()
-        return [SyncResult(entity=SyncEntity.PRODUCTS)]  # nothing in the store to bring in
+        return SyncResult(entity=SyncEntity.PRODUCTS)  # nothing in the store to bring in
 
     monkeypatch.setattr(execution, "RENEW_EVERY", 0.01)
     monkeypatch.setattr(execution, "_renew_once", _renewing)
-    monkeypatch.setattr(sync_runner, "run_connector_sync", _store)
+    monkeypatch.setattr(sync_runner, "run_sync", _store)
 
     before = set(background._BG_TASKS)
     r = await store_owner.ui.post(f"/settings/connectors/{PLATFORM}/first-sync",
@@ -120,3 +120,48 @@ async def test_the_first_sync_preview_its_summary_and_the_status_poll_read_throu
 
     r = await store_owner.ui.get(f"/settings/connectors/{PLATFORM}/status")
     assert r.status_code == 200, r.text
+
+
+async def test_a_stopped_first_sync_shows_why_and_its_retry_runs_it_to_the_end(
+        store_owner, store_answers, real_engine, monkeypatch):
+    """A first sync the store stopped shows the reason and Retry on the connection's summary;
+    Retry starts it again through the API and it runs in the background to completion. A
+    second Retry is refused with the reason on the card, as there is nothing left to retry."""
+    from datetime import datetime, timezone
+
+    from celerp.connectors import sync_runner
+    from celerp.connectors.base import SyncEntity, SyncResult
+    from celerp.models.connector_first_sync import ConnectorFirstSync
+    from celerp.services import background
+
+    await connected(store_owner.cid, PLATFORM, {"products": "inbound"}, first_sync="failed")
+    async with maker(real_engine)() as s:
+        record = await s.get(ConnectorFirstSync, (store_owner.cid, PLATFORM))
+        record.directions, record.match = {"products": "inbound"}, "keep"
+        record.started_at = record.watermark = datetime.now(timezone.utc)
+        record.error = {"key": "connectors.err_read_only_key"}
+        await s.commit()
+    monkeypatch.setattr(sync_runner, "run_sync", AsyncMock(return_value=SyncResult(entity=SyncEntity.PRODUCTS)))
+
+    r = await store_owner.api.get(f"/connectors/{PLATFORM}/first-sync/summary",
+                                  headers={"Authorization": f"Bearer {store_owner.tok}"})
+    assert (r.json()["state"], r.json()["error"]) == ("failed", {"key": "connectors.err_read_only_key"})
+    from ui.routes.settings_connectors_first_sync import first_sync_summary_card
+    from fasthtml.common import to_xml
+    card = to_xml(first_sync_summary_card(PLATFORM, r.json(), "en"))
+    assert "This API key is read-only" in card
+    assert f'hx-post="/settings/connectors/{PLATFORM}/first-sync/retry"' in card
+
+    before = set(background._BG_TASKS)
+    r = await store_owner.ui.post(f"/settings/connectors/{PLATFORM}/first-sync/retry",
+                                  headers={"HX-Request": "true"})
+    assert r.status_code == 200, r.text
+    await asyncio.wait_for(_settled(set(background._BG_TASKS) - before), 30)
+    async with maker(real_engine)() as s:
+        record = await s.get(ConnectorFirstSync, (store_owner.cid, PLATFORM))
+        assert (record.state, record.error) == ("completed", None)
+
+    r = await store_owner.ui.post(f"/settings/connectors/{PLATFORM}/first-sync/retry",
+                                  headers={"HX-Request": "true"})
+    assert "This first sync has not stopped, so there is nothing to retry." in r.text
+    assert "first-sync/retry" not in r.text

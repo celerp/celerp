@@ -31,7 +31,7 @@ async def import_store_product(
                         "reason": t("connectors.attention_no_sku", service=connector.display_name)}
         result.skipped += 1
         return None
-    record = ExternalImportRecord()
+    record = ExternalImportRecord(first_sync=None if first_sync is None else first_sync.record.first_sync)
     options = {} if first_sync is None else {
         "link_only": first_sync.match == "keep",
         "create": first_sync.create,

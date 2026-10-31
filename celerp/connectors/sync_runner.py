@@ -97,14 +97,25 @@ async def run_connector_sync(
         if any(entity in OUTBOUND_ENTITIES for entity in plan):
             await connector.before_outbound(ex.ctx)
         completed: dict[str, bool] = {}
+        phases: dict[str, bool] = {}
+        last_of = {_resource_of(entity): entity for entity in plan}
         dependencies = getattr(connector, "outbound_dependencies", {})
         for entity in plan:
+            phase = _resource_of(entity)
+            if first_sync is not None and phase in first_sync.completed:
+                completed[entity] = True
+                continue
+            # An entity whose dependency did not complete does not run; the rest still do.
             if any(completed.get(dep) is not True for dep in dependencies.get(entity, ())):
-                break
-            result = await run_sync(connector, company_id, entity, purpose=purpose,
-                                    reconcile=reconcile, first_sync=first_sync)
-            completed[entity] = result.ok
-            results.append(result)
+                completed[entity] = False
+            else:
+                result = await run_sync(connector, company_id, entity, purpose=purpose,
+                                        reconcile=reconcile, first_sync=first_sync)
+                completed[entity] = result.ok
+                results.append(result)
+            phases[phase] = phases.get(phase, True) and completed[entity]
+            if first_sync is not None and last_of[phase] == entity:
+                await _record_phase(company_id, connector.name, phase, phases[phase])
     return results
 
 
@@ -125,14 +136,13 @@ async def _directions(company_id, connector_name: str) -> dict:
 async def run_first_sync(connector: ConnectorBase, ctx: ConnectorContext) -> list[SyncResult]:
     """Run a connection's first sync, inside its first-sync execution, with the choices a
     person saved on its preview (ConnectorFirstSync). The items it creates join its
-    import batch and the items it links are recorded, so both can be undone; an import
-    batch that ends up empty is removed. The record becomes ``completed`` only when every
-    resource synced, else ``failed`` with the reason."""
-    import uuid
-
+    import batch and the items it links its undo record as each is written, and each
+    resource's outcome is saved as it ends, so an attempt after a stop runs only the
+    resources that did not complete. The record becomes ``completed`` only when every
+    resource completed (an import batch then still empty is removed), else ``failed``
+    with the reason."""
     from celerp.connectors.execution import plan_resources
     from celerp.db import get_session_ctx
-    from celerp.models.import_batch import ImportBatch
 
     key = (str(ctx.company_id), connector.name)
     async with get_session_ctx() as session:
@@ -142,38 +152,94 @@ async def run_first_sync(connector: ConnectorBase, ctx: ConnectorContext) -> lis
         row.state = "running"
         directions = dict(row.directions or {})
         resources = plan_resources(connector, directions)
-        row.progress = {r: {"state": "running"} for r in resources}
+        progress = dict(row.progress or {})
+        completed = frozenset(r for r in resources if (progress.get(r) or {}).get("state") == "completed")
+        row.progress = {r: progress[r] if r in completed else {"state": "running"} for r in resources}
         match, batch_id = row.match or "keep", row.batch_id
         await session.commit()
     first_sync = FirstSync(match=match, create=entity_allowed(connector, "products", directions),
-                           batch_id=batch_id, record=ExternalImportRecord())
+                           batch_id=batch_id, record=ExternalImportRecord(first_sync=key), completed=completed)
     results = await run_connector_sync(connector, ctx.company_id, purpose="first_sync", first_sync=first_sync)
 
-    record = first_sync.record
     async with get_session_ctx() as session:
         row = await _locked_first_sync(session, *key)
-        undo = dict(row.undo or {})
-        undo["links"] = [*undo.get("links", []), *record.linked]
-        row.undo = undo
-        if first_sync.batch_id is not None:
-            batch = await session.get(ImportBatch, uuid.UUID(first_sync.batch_id), with_for_update=True)
-            if batch is not None and not record.created and not batch.entity_ids:
-                await session.delete(batch)
-                row.batch_id = None
-            elif batch is not None:
-                batch.entity_ids = [*batch.entity_ids, *(eid for eid, _ in record.created)]
-                batch.idempotency_keys = [*batch.idempotency_keys, *(key for _, key in record.created),
-                                          *record.files]
-                batch.row_count = len(batch.entity_ids)
-        failed = [r for r in results if not r.ok]
-        failed_resources = {_resource_of(r.entity) for r in failed}
-        synced = {_resource_of(r.entity) for r in results} - failed_resources
-        row.progress = {r: {"state": "completed" if r in synced else "failed"} for r in resources}
-        row.state = "completed" if synced == set(resources) else "failed"
-        row.error = None if row.state == "completed" else {
-            "detail": "; ".join(e for f in failed for e in (f.errors or [])[:1])}
+        if row is None:
+            return results
+        progress = dict(row.progress or {})
+        row.progress = {r: progress.get(r) if (progress.get(r) or {}).get("state") == "completed"
+                        else {"state": "failed"} for r in resources}
+        done = all(row.progress[r]["state"] == "completed" for r in resources)
+        row.state = "completed" if done else "failed"
+        row.error = None if done else {
+            "detail": "; ".join(e for f in results if not f.ok for e in (f.errors or [])[:1])}
+        batch = await _first_sync_batch(session, row) if done else None
+        if batch is not None and not batch.entity_ids:
+            await session.delete(batch)
+            row.batch_id = None
         await session.commit()
     return results
+
+
+async def _record_phase(company_id, connector_name: str, resource: str, ok: bool) -> None:
+    """Save how one resource of a running first sync ended, in a short transaction of its
+    own, as the resource ends."""
+    from celerp.db import get_session_ctx
+
+    async with get_session_ctx() as session:
+        row = await _locked_first_sync(session, str(company_id), connector_name)
+        if row is not None and row.state == "running":
+            row.progress = {**(row.progress or {}), resource: {"state": "completed" if ok else "failed"}}
+        await session.commit()
+
+
+async def execute_first_sync(company_id, connector_name: str, *, admission_wait: float | None = None) -> None:
+    """Run a connection's started first sync to its end, in one execution over every
+    resource it writes: the store's webhooks, then run_first_sync, with the choices saved
+    when it started. The start and retry requests run it, and the execution sweeper runs a
+    first sync no process holds. A failure the first sync did not record leaves it needing
+    attention with the reason; a busy or refused execution leaves it as it was."""
+    import sqlalchemy as sa
+
+    from celerp import connectors
+    from celerp.connectors.execution import WEBHOOKS, connector_execution, plan_resources
+    from celerp.connectors.webhook_reconcile import reconcile_webhooks
+    from celerp.db import get_session_ctx
+    from celerp.models.connector_first_sync import ConnectorFirstSync
+
+    connector = connectors.get(connector_name)
+    async with get_session_ctx() as session:
+        directions = await session.scalar(sa.select(ConnectorFirstSync.directions).where(
+            ConnectorFirstSync.company_id == str(company_id), ConnectorFirstSync.connector == connector_name))
+    resources = [*plan_resources(connector, directions or {}), WEBHOOKS]
+    async with connector_execution(company_id, connector, "first_sync", resources,
+                                   admission_wait=admission_wait) as ex:
+        try:
+            await reconcile_webhooks(ex)
+            await run_first_sync(connector, ex.ctx)
+        except Exception as exc:
+            await fail_first_sync(company_id, connector_name, exc)
+            raise
+
+
+async def retry_first_sync(session, company_id, connector_name: str) -> None:
+    """Start a failed first sync again, in the caller's transaction: it goes back to
+    starting with its reason cleared, keeping its import batch, choices, order cutoff,
+    the resources it completed and what it recorded. ValueError when it has not failed."""
+    row = await _locked_first_sync(session, str(company_id), connector_name)
+    if row is None or row.state != "failed":
+        raise ValueError(f"The first sync of {connector_name} has not failed")
+    row.state = "starting"
+    row.error = None
+
+
+async def _first_sync_batch(session, row):
+    """The import batch of a first sync whose record the caller holds, locked; None
+    when it has none."""
+    from celerp.models.import_batch import ImportBatch
+
+    if row.batch_id is None:
+        return None
+    return await session.get(ImportBatch, uuid.UUID(row.batch_id), with_for_update=True)
 
 
 async def _locked_first_sync(session, company_id: str, connector_name: str):

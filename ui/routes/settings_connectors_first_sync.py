@@ -194,7 +194,8 @@ def first_sync_summary_card(platform: str, summary: dict, lang: str, error: str 
     """What the first sync did and the ways back: Import History undoes the products it
     created with their opening stock; Undo links detaches the products it linked and
     brings back values it took from the store; each imported invoice is voided on its
-    own, which keeps its audit trail (posted accounting is never deleted)."""
+    own, which keeps its audit trail (posted accounting is never deleted). A first sync
+    that stopped shows the reason and a way to run it again."""
     if not summary.get("started_at"):
         return Span(error, cls="flash flash--warning") if error else Span()
     service = get_connector(platform).display_name
@@ -205,6 +206,13 @@ def first_sync_summary_card(platform: str, summary: dict, lang: str, error: str 
     return Div(
         P(t("connectors.first_sync_title", lang), cls="settings-section-title"),
         P(t("connectors.first_sync_started", lang, when=_when(summary["started_at"]))),
+        Div(
+            P(t("connectors.first_sync_failed", lang, reason=_failure_reason(summary.get("error"), lang))),
+            Button(t("connectors.first_sync_retry", lang), cls="btn btn--sm btn--primary",
+                   hx_post=f"/settings/connectors/{platform}/first-sync/retry",
+                   hx_target=f"#first-sync-summary-{platform}", hx_swap="outerHTML"),
+            cls="flash flash--warning",
+        ) if summary.get("state") == "failed" else Span(),
         P(t("connectors.first_sync_created", lang, n=batch["rows"]), " ",
           A(t("connectors.first_sync_import_history", lang), href="/settings/inventory?tab=import-history"))
         if batch else Span(),
@@ -234,6 +242,12 @@ def first_sync_summary_card(platform: str, summary: dict, lang: str, error: str 
         id=f"first-sync-summary-{platform}",
         cls="settings-card",
     )
+
+
+def _failure_reason(error: dict | None, lang: str) -> str:
+    """A stopped first sync's reason: a locale key, or the store's own text."""
+    error = error or {}
+    return t(error["key"], lang) if error.get("key") else str(error.get("detail") or "--")
 
 
 def setup_first_sync_routes(app) -> None:
@@ -320,6 +334,22 @@ def setup_first_sync_routes(app) -> None:
         except APIError as exc:
             return Span(refusal_text(exc.detail) or str(exc.detail), cls="flash flash--warning")
         return Response(status_code=204, headers={"HX-Redirect": f"/settings/connectors/{platform}"})
+
+    @app.post("/settings/connectors/{platform}/first-sync/retry")
+    async def first_sync_retry(request: Request, platform: str):
+        """Start a stopped first sync again, then show the summary."""
+        token, refused = await _guard(request, platform)
+        if refused is not None:
+            return refused
+        from ui.api_client import APIError, get_first_sync_summary, retry_first_sync
+
+        lang = get_lang(request)
+        error = None
+        try:
+            await retry_first_sync(token, platform)
+        except APIError as exc:
+            error = refusal_text(exc.detail) or str(exc.detail)
+        return first_sync_summary_card(platform, await get_first_sync_summary(token, platform), lang, error)
 
     @app.post("/settings/connectors/{platform}/first-sync/undo-links")
     async def first_sync_undo_links(request: Request, platform: str):

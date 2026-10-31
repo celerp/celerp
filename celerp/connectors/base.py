@@ -210,12 +210,78 @@ class ExternalImportRecord:
     ``linked``: {"entity_id", "restore"} for each existing item it newly linked by SKU;
     ``restore`` holds the item's values before the store's replaced them, or None when
     the item kept its own. ``conflicts``: {"entity_id", "fields"} for each linked item
-    whose field changed in both systems, each field with both values."""
+    whose field changed in both systems, each field with both values.
+
+    ``first_sync``: (company id, connector) when the import is that connection's first
+    sync. Each creation and link is then recorded on the first sync's import batch and
+    undo record in the transaction that makes it (``hold`` at its start, ``attribute``
+    before its commit), so a stop between two writes loses neither."""
     created: list[tuple[str, str]] = field(default_factory=list)
     linked: list[dict] = field(default_factory=list)
     conflicts: list[dict] = field(default_factory=list)
-    # Ledger keys of the files pulled onto the items it created.
-    files: list[str] = field(default_factory=list)
+    first_sync: tuple[str, str] | None = None
+
+    async def hold(self, session) -> None:
+        """At the start of a write this record will attribute: the company, then the first
+        sync's record (lock order: company, first sync, the write's own rows, import batch)."""
+        if self.first_sync is not None:
+            from celerp.connectors.sync_runner import _locked_first_sync
+
+            await _locked_first_sync(session, *self.first_sync)
+
+    async def attribute(self, session, *, created: tuple[str, str] | None = None,
+                        linked: dict | None = None) -> None:
+        """Record one creation or link in the caller's transaction, which ``hold`` began.
+        Recording one already there changes nothing."""
+        if created is not None:
+            self.created.append(created)
+        if linked is not None:
+            self.linked.append(linked)
+        if self.first_sync is None:
+            return
+        from celerp.connectors.sync_runner import _first_sync_batch, _locked_first_sync
+
+        row = await _locked_first_sync(session, *self.first_sync)
+        if row is None:  # the connection is gone, and its first sync with it
+            return
+        if linked is not None:
+            undo = dict(row.undo or {})
+            links = list(undo.get("links") or [])
+            if all(link["entity_id"] != linked["entity_id"] for link in links):
+                undo["links"] = [*links, linked]
+                row.undo = undo
+        batch = await _first_sync_batch(session, row) if created is not None else None
+        if batch is not None and created[0] not in batch.entity_ids:
+            batch.entity_ids = [*batch.entity_ids, created[0]]
+            batch.idempotency_keys = [*batch.idempotency_keys, created[1]]
+            batch.row_count = len(batch.entity_ids)
+
+    async def attribute_files(self, entity_id: str, platform: str) -> None:
+        """In a short transaction of its own, after the files were pulled: the files the
+        store's product brought onto an item this first sync created join its import batch,
+        found by their ledger key, so a pull a stop interrupted is recorded on the retry."""
+        if self.first_sync is None:
+            return
+        import sqlalchemy as sa
+
+        from celerp.connectors.sync_runner import _first_sync_batch, _locked_first_sync
+        from celerp.db import get_session_ctx
+        from celerp.models.ledger import LedgerEntry
+
+        async with get_session_ctx() as session:
+            row = await _locked_first_sync(session, *self.first_sync)
+            batch = None if row is None else await _first_sync_batch(session, row)
+            if batch is None or entity_id not in batch.entity_ids:
+                return
+            keys = (await session.scalars(sa.select(LedgerEntry.idempotency_key).where(
+                LedgerEntry.company_id == batch.company_id, LedgerEntry.entity_id == entity_id,
+                LedgerEntry.event_type == "item.file.attached",
+                LedgerEntry.idempotency_key.startswith(f"connector-file:{platform}:{entity_id}:", autoescape=True),
+            ).order_by(LedgerEntry.id))).all()
+            new = [key for key in keys if key not in batch.idempotency_keys]
+            if new:
+                batch.idempotency_keys = [*batch.idempotency_keys, *new]
+                await session.commit()
 
 
 @dataclass
@@ -226,11 +292,13 @@ class FirstSync:
     "take" replaces them with the platform's. ``create``: whether products new to
     Celerp are created (only when products come in). ``batch_id``: the import batch
     the items it creates join, so its undo removes them with their opening stock.
-    ``record``: the ExternalImportRecord the pass fills in."""
+    ``record``: the ExternalImportRecord the pass fills in, bound to the first sync.
+    ``completed``: the resources an earlier attempt completed, which this one skips."""
     match: str
     create: bool
     batch_id: str | None
     record: ExternalImportRecord
+    completed: frozenset[str] = frozenset()
 
 
 @dataclass

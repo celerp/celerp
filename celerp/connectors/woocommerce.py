@@ -542,19 +542,16 @@ class WooCommerceConnector(ConnectorBase):
             )
             if row is None or row.entity_type != "item":
                 return
-            created = first_sync is not None and any(
-                eid == entity_id for eid, _ in first_sync.record.created)
-            keys: list[str | None] = []
             for i, img in enumerate(images):
                 src = img.get("src")
                 if not src:
                     continue
-                keys.append(await download_and_emit_file(
+                await download_and_emit_file(
                     session, ctx.company_id, row.entity_id, src,
                     img.get("name") or f"product-{i}.jpg",
                     "product_images", is_hero=(i == 0),
                     platform=self.name, store=ctx.store_handle, remote_id=img.get("id"),
-                ))
+                )
             meta = {m["key"]: m["value"] for m in meta_data if m.get("key")}
             for tag_key in _CERT_TAGS:
                 raw = meta.get(tag_key)
@@ -564,17 +561,17 @@ class WooCommerceConnector(ConnectorBase):
                     certs = json.loads(raw) if isinstance(raw, str) else raw
                     for cert in (certs if isinstance(certs, list) else []):
                         if cert.get("url"):
-                            keys.append(await download_and_emit_file(
+                            await download_and_emit_file(
                                 session, ctx.company_id, row.entity_id,
                                 cert["url"], cert.get("name", "cert.pdf"),
                                 tag_key, is_hero=False,
                                 platform=self.name, store=ctx.store_handle,
-                            ))
+                            )
                 except Exception as exc:
                     log.warning("woocommerce: failed to pull cert metafield %s: %s", tag_key, exc)
-            if created:
-                first_sync.record.files += [key for key in keys if key]
             await session.commit()
+        if first_sync is not None:
+            await first_sync.record.attribute_files(entity_id, self.name)
 
 
     @needs_modules("celerp-inventory")

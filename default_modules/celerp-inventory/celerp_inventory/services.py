@@ -1375,6 +1375,8 @@ async def upsert_external_product(
     lock_key = f"external-product:{cid}:{platform}:{sku_lock or identity}"
 
     async with AsyncSessionLocal() as session:
+        if record is not None:
+            await record.hold(session)
         await lock_external_identity_namespace(session, cid, platform)
         await session.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
@@ -1463,12 +1465,11 @@ async def upsert_external_product(
             await recognize_opening_lots(
                 session, cid, [entity_id], None, opening_operation or f"connector:{identity}"
             )
+            deduped = getattr(entry, "was_deduped", False)
+            if record is not None and not deduped:
+                await record.attribute(session, created=(entity_id, event_idem))
             await session.commit()
-            if getattr(entry, "was_deduped", False):
-                return "noop", entity_id
-            if record is not None:
-                record.created.append((entity_id, event_idem))
-            return "created", entity_id
+            return ("noop" if deduped else "created"), entity_id
 
         entity_id = row.entity_id
         state = dict(row.state or {})
@@ -1552,7 +1553,7 @@ async def upsert_external_product(
                 restore = {key: state.get(key) for key in apply}
                 if "sale_price" in apply:
                     restore["retail_price"] = state.get("retail_price")
-                record.linked.append({"entity_id": entity_id, "restore": restore or None})
+                await record.attribute(session, linked={"entity_id": entity_id, "restore": restore or None})
         links[platform] = {
             **previous_link,
             **incoming_link,
@@ -2430,6 +2431,8 @@ async def upsert_from_connector(
         data["description"] = item.description
 
     async with AsyncSessionLocal() as session:
+        if record is not None:
+            await record.hold(session)
         # An item the user erased stays erased; the platform still holding it changes nothing.
         if erased_from_connector(await current_settings(session, company_id), idem_key):
             return "noop"
@@ -2459,7 +2462,7 @@ async def upsert_from_connector(
             created_key = await session.scalar(select(LedgerEntry.idempotency_key).where(
                 LedgerEntry.company_id == uuid.UUID(str(company_id)),
                 LedgerEntry.entity_id == entity_id, LedgerEntry.event_type == "item.created"))
-            record.created.append((entity_id, created_key))
+            await record.attribute(session, created=(entity_id, created_key))
         await session.commit()
         return outcome
 

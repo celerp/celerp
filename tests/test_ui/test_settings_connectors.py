@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from fasthtml.common import to_xml
@@ -63,6 +64,8 @@ def _route(monkeypatch, config):
     monkeypatch.setattr(routes, "_token", lambda request: "jwt")
     monkeypatch.setattr(routes, "_check_permission", allowed)
     monkeypatch.setattr(routes, "_request_company_id", lambda request: "company-1")
+    # A refusal reads the saved directions back: the same config the API's stand-in keeps.
+    monkeypatch.setattr(routes, "_get_connector_config", AsyncMock(return_value=config))
     app = FastAPI()
     routes.setup_routes(app)
     return next(r.endpoint for r in app.routes
