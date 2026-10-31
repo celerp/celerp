@@ -70,7 +70,7 @@ import os
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -155,6 +155,10 @@ _held_operations: set[uuid.UUID] = set()
 _tasks: dict[uuid.UUID, asyncio.Task] = {}
 # Jobs reopened while their task was ending: the task runs them once more.
 _again: set[uuid.UUID] = set()
+# Questions sends of this process are creating, from before the commit that shows them held
+# by this process until their task starts: per job, the sends still creating it and what a
+# send that read it meanwhile waits on.
+_creating: dict[uuid.UUID, tuple[list[int], asyncio.Future]] = {}
 # What a question waits for at the gate (``documents`` or ``questions``), while it waits.
 _waiting: dict[uuid.UUID, str] = {}
 # The questions running in background mode in this process (see ``promote``).
@@ -1400,17 +1404,34 @@ async def _finish_question(job_id: uuid.UUID, result, refusal, runner_id: str) -
         await notify(company_id, user_id, conversation_id, t(key), t("ai.question_done_body"))
 
 
+@contextmanager
+def _creating_question(job_id: uuid.UUID):
+    """Entered before the commit that may create the question, left once its task is
+    started: meanwhile a send of this process that reads the question held by this
+    process, with no task yet, waits (``wait_for_job``) instead of answering it runs."""
+    sends, created = _creating.setdefault(job_id, ([0], asyncio.get_running_loop().create_future()))
+    sends[0] += 1
+    try:
+        yield
+    finally:
+        sends[0] -= 1
+        if not sends[0]:
+            del _creating[job_id]
+            created.set_result(None)
+
+
 async def wait_for_job(job_id: uuid.UUID, *, started: float) -> bool:
-    """Wait for this process's task running the job until ``deadlines.SYNC_WAIT_S``
-    after ``started`` (a monotonic instant: the request's start, so time queued at the
-    gate counts). True when no such task runs any more; otherwise the job is promoted,
-    as the caller is told it keeps running."""
-    while task_alive(job_id):
+    """Wait for this process's task running the job, or for a send of this process
+    creating it to start that task, until ``deadlines.SYNC_WAIT_S`` after ``started``
+    (a monotonic instant: the request's start, so time queued at the gate counts). True
+    when neither is left; otherwise the job is promoted, as the caller is told it keeps
+    running."""
+    while task_alive(job_id) or job_id in _creating:
         left = deadlines.SYNC_WAIT_S - (time.monotonic() - started)
         if left <= 0:
             await promote(job_id)
             return False
-        await asyncio.wait({_tasks[job_id]}, timeout=left)
+        await asyncio.wait({_tasks[job_id] if task_alive(job_id) else _creating[job_id][1]}, timeout=left)
     return True
 
 
@@ -1425,24 +1446,25 @@ async def ask(*, company_id: uuid.UUID, user_id: uuid.UUID, query: str, file_ids
     from sqlalchemy.exc import IntegrityError
     job_id = job_id or uuid.uuid4()
     request = JobRequest.question(company_id=company_id, user_id=user_id, query=query, file_ids=file_ids)
-    async with SessionLocal() as session:
-        await lock_for_ai(session, company_id)
-        job = await reused_job(session, job_id, request)
-        started_here = False
-        if job is None:
-            session.add(question_job(job_id=job_id, request=request, auth_nonce=auth_nonce))
-            try:
+    with _creating_question(job_id):
+        async with SessionLocal() as session:
+            await lock_for_ai(session, company_id)
+            job = await reused_job(session, job_id, request)
+            started_here = False
+            if job is None:
+                session.add(question_job(job_id=job_id, request=request, auth_nonce=auth_nonce))
+                try:
+                    await session.commit()
+                    started_here = True
+                except IntegrityError:
+                    await session.rollback()
+                    await lock_for_ai(session, company_id)
+                    job = await reused_job(session, job_id, request)     # another send created it first
+            if job is not None and liveness(job) != "running":
+                started_here = await reopen_question(session, job_id, auth_nonce)
                 await session.commit()
-                started_here = True
-            except IntegrityError:
-                await session.rollback()
-                await lock_for_ai(session, company_id)
-                job = await reused_job(session, job_id, request)     # another send created it first
-        if job is not None and liveness(job) != "running":
-            started_here = await reopen_question(session, job_id, auth_nonce)
-            await session.commit()
-    if started_here:
-        start_job(job_id)
+        if started_here:
+            start_job(job_id)
     await wait_for_job(job_id, started=started)
     return await question_result(job_id, company_id, user_id)
 
