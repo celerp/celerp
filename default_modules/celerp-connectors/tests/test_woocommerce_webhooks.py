@@ -32,6 +32,7 @@ def _sign(body: bytes, secret: str) -> str:
 
 # ── registration sets the secret ─────────────────────────────────────────────
 
+@pytest.mark.usefixtures("inside_execution")
 @pytest.mark.asyncio
 @respx.mock
 async def test_create_webhook_sets_secret_and_delivery_url():

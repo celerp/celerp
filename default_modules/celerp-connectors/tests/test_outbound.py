@@ -66,6 +66,7 @@ def ctx_shopify():
     )
 
 
+@pytest.mark.usefixtures("inside_execution")
 @pytest.mark.asyncio
 async def test_shopify_sync_inventory_out_success(shopify, ctx_shopify):
     items = [
@@ -85,6 +86,7 @@ async def test_shopify_sync_inventory_out_success(shopify, ctx_shopify):
     assert result.errors is None
 
 
+@pytest.mark.usefixtures("inside_execution")
 @pytest.mark.asyncio
 async def test_shopify_sync_inventory_out_skips_missing_ids(shopify, ctx_shopify):
     items = [
@@ -102,6 +104,7 @@ async def test_shopify_sync_inventory_out_skips_missing_ids(shopify, ctx_shopify
     assert result.updated == 1
 
 
+@pytest.mark.usefixtures("inside_execution")
 @pytest.mark.asyncio
 async def test_shopify_sync_inventory_out_error_accumulation(shopify, ctx_shopify):
     items = [
@@ -131,6 +134,7 @@ async def test_shopify_sync_inventory_out_error_accumulation(shopify, ctx_shopif
 
 # -- Shopify sync_products_out --
 
+@pytest.mark.usefixtures("inside_execution")
 @pytest.mark.asyncio
 async def test_shopify_sync_products_out_success(shopify, ctx_shopify):
     items = [
@@ -175,6 +179,7 @@ def ctx_quickbooks():
     )
 
 
+@pytest.mark.usefixtures("inside_execution")
 @pytest.mark.asyncio
 async def test_quickbooks_sync_invoices_out_success(qb, ctx_quickbooks):
     invoices = [
@@ -195,6 +200,7 @@ async def test_quickbooks_sync_invoices_out_success(qb, ctx_quickbooks):
     assert result.errors is None
 
 
+@pytest.mark.usefixtures("inside_execution")
 @pytest.mark.asyncio
 async def test_quickbooks_sync_invoices_out_error_accumulation(qb, ctx_quickbooks):
     invoices = [
@@ -270,6 +276,7 @@ def _store_put(product_id: str, images_status: int = 200, images_body=None):
     return respx.put(f"{_WOO_API}/products/{product_id}").mock(side_effect=reply)
 
 
+@pytest.mark.usefixtures("inside_execution")
 @pytest.mark.asyncio
 @respx.mock
 async def test_unchanged_product_not_sent(connector_session):
@@ -320,6 +327,7 @@ async def test_made_up_sku_is_not_pushed(connector_session):
     assert not put.called and result.skipped == 1
 
 
+@pytest.mark.usefixtures("inside_execution")
 @pytest.mark.asyncio
 @respx.mock
 async def test_field_update_succeeds_when_image_rejected(connector_session, monkeypatch):
@@ -344,6 +352,7 @@ async def test_field_update_succeeds_when_image_rejected(connector_session, monk
     assert "Error getting remote image." in result.attention[0]["reason"]
 
 
+@pytest.mark.usefixtures("inside_execution")
 @pytest.mark.asyncio
 @respx.mock
 async def test_pulled_image_sent_by_id(connector_session, monkeypatch):

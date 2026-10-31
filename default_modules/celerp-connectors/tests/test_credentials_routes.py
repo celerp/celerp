@@ -234,53 +234,9 @@ async def test_store_failure_keeps_owner_when_revoke_is_ambiguous():
 
 
 @pytest.mark.asyncio
-async def test_item_sync_serializes_with_connector_operations():
-    session = _session()
-    lock = AsyncMock(return_value=SimpleNamespace(entity_directions={}))
-    anchor = SimpleNamespace(
-        entity_id="item:1",
-        is_sync_to_shopify=False,
-        state={
-            "sku": "SKU-1",
-            "external_links": {
-                "woocommerce": {
-                    "product_id": "10",
-                    "sync_enabled": True,
-                    "remote_deleted": False,
-                }
-            },
-        },
-    )
-    set_state = AsyncMock()
-    with patch(
-        "celerp.connectors.ownership.lock_connector_operation", lock
-    ), patch(
-        "celerp_inventory.services.resolve_catalog_anchor_for_item",
-        new=AsyncMock(return_value=anchor),
-    ), patch(
-        "celerp_inventory.services.set_external_link_state", set_state
-    ):
-        result = await set_item_sync(
-            "woocommerce",
-            ItemSyncRequest(entity_ids=["item:1"], action="stop"),
-            "company-test",
-            SimpleNamespace(id="user-1"),
-            None,
-            session,
-        )
-
-    lock.assert_awaited_once_with(
-        session, "company-test", "woocommerce", require_owner=True
-    )
-    set_state.assert_awaited_once()
-    assert result["updated"] == 1
-    assert session.commit.await_count == 1
-
-
-@pytest.mark.asyncio
 async def test_item_sync_rejects_unbounded_batch_before_locking():
     lock = AsyncMock()
-    with patch("celerp.connectors.ownership.lock_connector_operation", lock):
+    with patch("celerp.connectors.execution.connector_execution", lock):
         with pytest.raises(HTTPException) as exc:
             await set_item_sync(
                 "woocommerce",

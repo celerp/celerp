@@ -459,7 +459,7 @@ class CelerpConnector(ConnectorBase):
             for item in _reversed_last(later):
                 yield item
 
-        async with RateLimitedClient(public_only=True) as client:
+        async with RateLimitedClient(public_only=True, require_execution=True) as client:
             async for (entity_id, revision, state), sent, firm_lock in records():
                 if sent is not None and sent[0] == revision:
                     if sent[1] is None:
@@ -578,7 +578,7 @@ class CelerpConnector(ConnectorBase):
         company_id = uuid.UUID(ctx.company_id)
         firm_company, grant_id = key_ids(ctx.access_token)
         after = ""
-        async with RateLimitedClient(public_only=True) as client:
+        async with RateLimitedClient(public_only=True, require_execution=True) as client:
             while True:
                 body = await self._fetch(client, ctx, "journals_in", {"after": after})
                 if body is None:
@@ -629,7 +629,7 @@ class CelerpConnector(ConnectorBase):
 
         result = SyncResult(entity=SyncEntity.PERIOD_LOCK, direction=SyncDirection.INBOUND,
                             errors=[], attention=[])
-        async with RateLimitedClient(public_only=True) as client:
+        async with RateLimitedClient(public_only=True, require_execution=True) as client:
             body = await self._fetch(client, ctx, "period_lock", closed=(401, 403))
         changed = await peer_journals.apply_firm_lock(uuid.UUID(ctx.company_id),
                                                       key_ids(ctx.access_token)[1], body)

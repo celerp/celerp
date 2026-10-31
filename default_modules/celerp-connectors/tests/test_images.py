@@ -162,6 +162,7 @@ async def test_inbound_image_pull_is_idempotent(connector_session):
     assert [f["remote"]["woocommerce"]["id"] for f in files] == ["11", "12"]
 
 
+@pytest.mark.usefixtures("inside_execution")
 @pytest.mark.asyncio
 async def test_outbound_never_sends_relative_image_src(connector_session, monkeypatch):
     """A Celerp image goes to the store through a short-lived public link; once the

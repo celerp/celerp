@@ -3481,7 +3481,6 @@
   "error.connector_other_company": "{service} ist bereits mit einem anderen Ihrer Unternehmen verbunden. Trennen Sie es zuerst dort, unter Webzugriff dieses Unternehmens, und verbinden Sie es dann hier.",
   "error.connector_legacy_conflict": "{service} wurde in einer älteren Celerp-Version verbunden und seine Einstellungen widersprechen sich, daher kann es nicht verwendet werden. Trennen Sie es unter Webzugriff und verbinden Sie es dann neu.",
   "error.connector_not_connected": "{service} ist nicht verbunden. Verbinden Sie es zuerst unter Webzugriff.",
-  "error.woocommerce_credentials": "Celerp konnte Ihre WooCommerce-Anmeldedaten nicht laden. Versuchen Sie es gleich noch einmal; wenn es weiter passiert, trennen Sie WooCommerce unter Webzugriff und verbinden Sie es neu.",
   "error.connector_sync_error": "{service} hat nicht wie erwartet geantwortet: {detail}. Versuchen Sie es in ein paar Minuten erneut; wenn es weiter passiert, trennen Sie {service} unter Webzugriff und verbinden Sie es neu.",
   "error.cloud_backup_disconnected": "Die Cloud-Sicherung ist aus, weil Celerp Connect getrennt ist. Verbinden Sie es unter Webzugriff neu, um online zu sichern.",
   "error.cloud_backup_no_account": "Für die Cloud-Sicherung brauchen Sie ein Celerp-Connect-Konto. Melden Sie sich unter Webzugriff an und versuchen Sie es dann erneut.",

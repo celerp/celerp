@@ -3480,7 +3480,6 @@
   "error.connector_other_company": "{service} já está conectado a outra das suas empresas. Desconecte-o lá primeiro, em Acesso pela Web dessa empresa, e depois conecte-o aqui.",
   "error.connector_legacy_conflict": "{service} foi conectado em uma versão anterior do Celerp e as configurações estão em conflito, por isso não pode ser usado. Desconecte-o em Acesso pela Web e conecte-o novamente.",
   "error.connector_not_connected": "{service} não está conectado. Conecte-o primeiro em Acesso pela Web.",
-  "error.woocommerce_credentials": "O Celerp não conseguiu carregar seus dados de acesso do WooCommerce. Tente novamente em instantes; se continuar acontecendo, desconecte o WooCommerce em Acesso pela Web e conecte-o novamente.",
   "error.connector_sync_error": "{service} não respondeu como esperado: {detail}. Tente novamente em alguns minutos; se continuar acontecendo, desconecte {service} em Acesso pela Web e conecte-o novamente.",
   "error.cloud_backup_disconnected": "O backup na nuvem está desligado porque o Celerp Connect está desconectado. Conecte novamente em Acesso pela Web para fazer backup online.",
   "error.cloud_backup_no_account": "O backup na nuvem precisa de uma conta Celerp Connect. Entre em Acesso pela Web e tente novamente.",

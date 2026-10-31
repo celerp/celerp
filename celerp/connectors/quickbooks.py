@@ -107,7 +107,7 @@ async def _query(ctx: ConnectorContext, sql: str) -> list[dict[str, Any]]:
     base = _base_url(ctx)
     results: list[dict[str, Any]] = []
     start = 1
-    async with RateLimitedClient() as client:
+    async with RateLimitedClient(require_execution=True) as client:
         while True:
             paginated = f"{sql} STARTPOSITION {start} MAXRESULTS {_PAGE_SIZE}"
             resp = await client.get(
@@ -362,7 +362,7 @@ class QuickBooksConnector(ConnectorBase):
             return result
 
         base = f"{_API_BASE}/{realm_id}"
-        async with RateLimitedClient() as client:
+        async with RateLimitedClient(require_execution=True) as client:
             for inv in invoices:
                 try:
                     line_items = [

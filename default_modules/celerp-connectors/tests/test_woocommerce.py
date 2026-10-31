@@ -531,6 +531,7 @@ async def test_sync_orders_incremental(woo, ctx, mock_upsert_order):
 
 # -- sync_inventory_out --
 
+@pytest.mark.usefixtures("inside_execution")
 @pytest.mark.asyncio
 async def test_sync_inventory_out_uses_variation_endpoint(woo, ctx):
     item = {
@@ -578,6 +579,7 @@ async def test_sync_inventory_out_refuses_parent_managed_variation(woo, ctx):
 
 # -- sync_products_out --
 
+@pytest.mark.usefixtures("inside_execution")
 @pytest.mark.asyncio
 async def test_sync_products_out_uses_nested_variation_endpoint(woo, ctx):
     item = {
@@ -603,6 +605,7 @@ async def test_sync_products_out_uses_nested_variation_endpoint(woo, ctx):
     assert "name" not in payload
 
 
+@pytest.mark.usefixtures("inside_execution")
 @pytest.mark.asyncio
 async def test_sync_products_out_simple_product_includes_core_fields(woo, ctx):
     item = {
@@ -650,6 +653,7 @@ def test_woocommerce_commercial_fingerprint_detects_financial_change():
     assert _woocommerce_commercial_fingerprint(base) != _woocommerce_commercial_fingerprint(changed)
 
 
+@pytest.mark.usefixtures("inside_execution")
 @pytest.mark.asyncio
 async def test_deregister_webhooks_removes_hooks_whose_ids_were_never_saved(woo, ctx):
     """A hook created while its response was lost is found by where it delivers."""
@@ -698,6 +702,7 @@ async def test_deregister_webhooks_fails_when_the_store_cannot_list_hooks(woo, c
             await woo.deregister_webhooks(ctx, "https://relay.test/hook", ["11"])
 
 
+@pytest.mark.usefixtures("inside_execution")
 @pytest.mark.asyncio
 async def test_sync_inventory_identity_out_pushes_only_selected_product(woo, ctx):
     items = [
@@ -774,6 +779,7 @@ async def test_publish_refused_when_products_inbound_only(woo, connector_session
     assert not create.called
 
 
+@pytest.mark.usefixtures("inside_execution")
 @pytest.mark.asyncio
 @respx.mock
 async def test_publish_allowed_when_products_go_out(woo, connector_session):
@@ -802,6 +808,7 @@ def test_customers_not_bulk_imported(woo):
 
 # -- Store errors --
 
+@pytest.mark.usefixtures("inside_execution")
 @pytest.mark.asyncio
 @respx.mock
 async def test_error_keeps_response_message(woo, ctx):
@@ -962,6 +969,7 @@ async def test_sku_match_needs_confirmation(woo, connector_session):
     assert not create.called
 
 
+@pytest.mark.usefixtures("inside_execution")
 @pytest.mark.asyncio
 @respx.mock
 async def test_unpublish_sets_draft_keeps_link(woo, connector_session):
@@ -992,6 +1000,7 @@ async def test_unpublish_sets_draft_keeps_link(woo, connector_session):
     assert link["remote_status"] == "publish"
 
 
+@pytest.mark.usefixtures("inside_execution")
 @pytest.mark.asyncio
 @respx.mock
 async def test_link_save_failure_names_created_product(woo, connector_session, monkeypatch):

@@ -24,6 +24,7 @@ import sqlalchemy as sa
 from sqlalchemy import text
 
 from company_backup_support import company, owner, token
+from connector_test_support import connect, connector_session, stand_in_execution  # noqa: F401
 from migration_support import auth, count, maker, real_client, real_engine  # noqa: F401
 from ui.i18n import t
 from test_helpers import merge_items
@@ -706,16 +707,19 @@ async def test_merge_racing_connect_rechecks_ownership(real_engine, real_client)
 
 
 @pytest.mark.usefixtures("connector_modules_running")
-async def test_item_sync_route_toggles_the_shopify_sync_flag_through_the_ledger(client, session):
+async def test_item_sync_route_toggles_the_shopify_sync_flag_through_the_ledger(client, connector_session, monkeypatch):
     """POST /connector-items/shopify/sync emits shop.sync.enabled/disabled and the
     projection's sync flag follows; a second identical request changes nothing."""
     from celerp.models.ledger import LedgerEntry
     from celerp.models.projections import Projection
 
+    session = connector_session
+
     h, cid = await _register(client)
     a = await _item(client, h, "SYNC-A")
     await _set_state(session, cid, a, external_links={"shopify": dict(LIVE_SHOPIFY)})
-    await _connect(session, cid, "shopify")
+    await connect(session, cid, "shopify", first_sync="completed")
+    stand_in_execution(monkeypatch)
 
     async def _flag() -> bool | None:
         row = await session.get(Projection, {"company_id": uuid.UUID(cid), "entity_id": a},

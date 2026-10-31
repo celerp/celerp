@@ -50,7 +50,7 @@ async def test_versioned_contact_outbound_and_retry_reporting(monkeypatch):
         return first if not after else []
     class Client:
         def __init__(self, **kwargs):
-            assert kwargs == {"public_only": True}
+            assert kwargs == {"public_only": True, "require_execution": True}
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def post(self, url, **kwargs):
@@ -129,7 +129,7 @@ async def test_product_sync_transmits_catalog_only_and_preserves_revision(monkey
                                   "sku": "W1", "quantity": 400, "cost_base": 123})] if not after else []
     class Client:
         def __init__(self, **kwargs):
-            assert kwargs == {"public_only": True}
+            assert kwargs == {"public_only": True, "require_execution": True}
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def post(self, url, **kwargs):
@@ -172,7 +172,7 @@ async def test_shared_peer_delivery_marks_failed_product_without_losing_source_r
         return [("item:a", 9, {"name": "Part", "sell_by": "piece"})] if not after else []
     class Client:
         def __init__(self, **kwargs):
-            assert kwargs == {"public_only": True}
+            assert kwargs == {"public_only": True, "require_execution": True}
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def post(self, url, **kwargs):
@@ -212,7 +212,7 @@ async def test_draft_document_outbound_filters_private_and_excluded_fields(monke
         ]
     class Client:
         def __init__(self, **kwargs):
-            assert kwargs == {"public_only": True}
+            assert kwargs == {"public_only": True, "require_execution": True}
         async def __aenter__(self):
             return self
         async def __aexit__(self, *args):
@@ -256,7 +256,7 @@ async def test_receiving_company_refusal_is_the_attention_reason(monkeypatch):
         ] if not after else []
     class Client:
         def __init__(self, **kwargs):
-            assert kwargs == {"public_only": True}
+            assert kwargs == {"public_only": True, "require_execution": True}
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def post(self, url, **kwargs):
@@ -303,7 +303,7 @@ async def test_stock_audit_does_not_require_contact_or_product_name(monkeypatch)
         })] if not after else []
     class Client:
         def __init__(self, **kwargs):
-            assert kwargs == {"public_only": True}
+            assert kwargs == {"public_only": True, "require_execution": True}
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def post(self, url, **kwargs):

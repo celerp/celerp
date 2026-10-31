@@ -3480,7 +3480,6 @@
   "error.connector_other_company": "{service} sudah terhubung ke perusahaan Anda yang lain. Putuskan dulu di sana, di Akses Web perusahaan itu, lalu hubungkan di sini.",
   "error.connector_legacy_conflict": "{service} dihubungkan di versi Celerp yang lebih lama dan pengaturannya bertentangan, jadi tidak dapat digunakan. Putuskan di Akses Web, lalu hubungkan lagi.",
   "error.connector_not_connected": "{service} belum terhubung. Hubungkan dulu di Akses Web.",
-  "error.woocommerce_credentials": "Celerp tidak dapat memuat detail masuk WooCommerce Anda. Coba lagi sebentar lagi; jika terus terjadi, putuskan WooCommerce di Akses Web dan hubungkan lagi.",
   "error.connector_sync_error": "{service} tidak menjawab seperti yang diharapkan: {detail}. Coba lagi dalam beberapa menit; jika terus terjadi, putuskan {service} di Akses Web dan hubungkan lagi.",
   "error.cloud_backup_disconnected": "Pencadangan cloud mati karena Celerp Connect terputus. Hubungkan lagi di Akses Web untuk mencadangkan secara daring.",
   "error.cloud_backup_no_account": "Pencadangan cloud memerlukan akun Celerp Connect. Masuk di Akses Web, lalu coba lagi.",

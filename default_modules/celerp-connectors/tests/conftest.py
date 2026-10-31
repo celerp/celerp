@@ -10,6 +10,7 @@ import pytest
 from unittest.mock import AsyncMock, patch
 
 from celerp.connectors.base import ConnectorContext
+from connector_test_support import inside_execution  # noqa: F401
 
 
 @pytest.fixture(autouse=True)

@@ -172,7 +172,7 @@ async def test_another_execution_acquiring_does_not_clear_a_pending_rerun(stub):
 
     cid = await _connected(stub)
     await record_rerun(cid, stub.name, "orders")
-    async with connector_execution(cid, stub, "undo", ["orders"]):
+    async with connector_execution(cid, stub, "manual_sync", ["orders"]):
         assert await _outside(_reruns(cid, stub.name)) == ["orders"]
     assert stub.calls == [{"reconcile": True}]
     assert await _reruns(cid, stub.name) == []
@@ -236,7 +236,7 @@ async def test_a_rerun_taken_by_a_holder_that_dies_before_running_it_is_not_lost
     rerun = execution._rerun
     monkeypatch.setattr(execution, "_rerun", _killed)
     with pytest.raises(asyncio.CancelledError):
-        async with execution.connector_execution(cid, stub, "undo", ["orders"]):
+        async with execution.connector_execution(cid, stub, "manual_sync", ["orders"]):
             pass
     assert await _reruns(cid, stub.name) == ["orders"]
 
@@ -258,7 +258,7 @@ async def test_a_request_recorded_while_its_rerun_runs_stays_pending_when_that_r
 
     stub.during = _newer
     monkeypatch.setattr(execution, "_RERUN_ROUNDS", 1)
-    async with execution.connector_execution(cid, stub, "undo", ["orders"]):
+    async with execution.connector_execution(cid, stub, "manual_sync", ["orders"]):
         pass
     assert stub.calls == [{"reconcile": True}]
     assert await _reruns(cid, stub.name) == ["orders"]
@@ -272,7 +272,7 @@ async def test_a_rerun_whose_sync_fails_stays_pending_until_its_retry_time(stub)
     cid = await _connected(stub)
     await execution.record_rerun(cid, stub.name, "orders")
     await _failing(stub)
-    async with execution.connector_execution(cid, stub, "undo", ["orders"]):
+    async with execution.connector_execution(cid, stub, "manual_sync", ["orders"]):
         pass
     assert stub.calls == [{"reconcile": True}]
     assert await _reruns(cid, stub.name) == ["orders"]

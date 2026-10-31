@@ -3480,7 +3480,6 @@
   "error.connector_other_company": "{service} はすでに別の会社に接続されています。先にその会社の Web アクセスで接続を解除してから、ここで接続してください。",
   "error.connector_legacy_conflict": "{service} は古いバージョンの Celerp で接続され、設定が競合しているため使用できません。Web アクセスで接続を解除してから、接続し直してください。",
   "error.connector_not_connected": "{service} は接続されていません。先に Web アクセスで接続してください。",
-  "error.woocommerce_credentials": "Celerp が WooCommerce のサインイン情報を読み込めませんでした。少し待ってからもう一度お試しください。繰り返し起こる場合は、Web アクセスで WooCommerce の接続を解除してから接続し直してください。",
   "error.connector_sync_error": "{service} から想定どおりの応答がありませんでした: {detail}。数分後にもう一度お試しください。繰り返し起こる場合は、Web アクセスで {service} の接続を解除してから接続し直してください。",
   "error.cloud_backup_disconnected": "Celerp Connect の接続が解除されているため、クラウドバックアップはオフです。オンラインでバックアップするには、Web アクセスで接続し直してください。",
   "error.cloud_backup_no_account": "クラウドバックアップには Celerp Connect アカウントが必要です。Web アクセスでサインインしてから、もう一度お試しください。",

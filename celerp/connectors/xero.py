@@ -208,7 +208,7 @@ class XeroConnector(ConnectorBase):
         headers = _headers()
         if since:
             headers["If-Modified-Since"] = since.strftime("%a, %d %b %Y %H:%M:%S GMT")
-        async with RateLimitedClient(timeout=_RELAY_TIMEOUT_S) as client:
+        async with RateLimitedClient(timeout=_RELAY_TIMEOUT_S, require_execution=True) as client:
             while True:
                 params = {"page": page, "pageSize": _PAGE_SIZE} if paginated else {}
                 if where:
@@ -492,7 +492,7 @@ class XeroConnector(ConnectorBase):
             return result
 
         sent = state["request"]["Invoices"][0]
-        async with RateLimitedClient(timeout=_RELAY_TIMEOUT_S) as client:
+        async with RateLimitedClient(timeout=_RELAY_TIMEOUT_S, require_execution=True) as client:
             age = datetime.now(timezone.utc) - datetime.fromisoformat(state["attempted_at"])
             if state["held"] or age >= _KEY_WINDOW:
                 found = await client.get(

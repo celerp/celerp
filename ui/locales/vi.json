@@ -3480,7 +3480,6 @@
   "error.connector_other_company": "{service} đã được kết nối với một công ty khác của bạn. Hãy ngắt kết nối ở đó trước, trong Truy cập qua web của công ty đó, rồi kết nối tại đây.",
   "error.connector_legacy_conflict": "{service} được kết nối từ phiên bản Celerp cũ và cài đặt bị xung đột nên không dùng được. Hãy ngắt kết nối trong Truy cập qua web rồi kết nối lại.",
   "error.connector_not_connected": "{service} chưa được kết nối. Hãy kết nối trong Truy cập qua web trước.",
-  "error.woocommerce_credentials": "Celerp không tải được thông tin đăng nhập WooCommerce của bạn. Hãy thử lại sau giây lát; nếu vẫn xảy ra, hãy ngắt kết nối WooCommerce trong Truy cập qua web rồi kết nối lại.",
   "error.connector_sync_error": "{service} không phản hồi như mong đợi: {detail}. Hãy thử lại sau vài phút; nếu vẫn xảy ra, hãy ngắt kết nối {service} trong Truy cập qua web rồi kết nối lại.",
   "error.cloud_backup_disconnected": "Sao lưu đám mây đang tắt vì Celerp Connect đã bị ngắt kết nối. Hãy kết nối lại trong Truy cập qua web để sao lưu trực tuyến.",
   "error.cloud_backup_no_account": "Sao lưu đám mây cần tài khoản Celerp Connect. Hãy đăng nhập trong Truy cập qua web rồi thử lại.",

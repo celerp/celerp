@@ -27,6 +27,7 @@ class RateLimitedClient:
         backoff_base: float = _DEFAULT_BACKOFF_BASE,
         before_request: Callable[[str], Awaitable[None]] | None = None,
         public_only: bool = False,
+        require_execution: bool = False,
     ) -> None:
         transport = None
         if public_only:
@@ -41,6 +42,7 @@ class RateLimitedClient:
         self._max_retries = max_retries
         self._backoff_base = backoff_base
         self._before_request = before_request
+        self._require_execution = require_execution
 
     async def __aenter__(self) -> "RateLimitedClient":
         return self
@@ -76,7 +78,7 @@ class RateLimitedClient:
         retryable = method.upper() != "POST"
         retry_status = self._GET_RETRY_STATUS if method.upper() == "GET" else self._RETRY_STATUS
         for attempt in range(self._max_retries + 1):
-            before_remote_call(method)
+            before_remote_call(method, require_execution=self._require_execution)
             if self._before_request is not None:
                 await self._before_request(url)
             try:

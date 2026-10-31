@@ -118,6 +118,7 @@ def _http_client(*, max_retries: int = 3) -> RateLimitedClient:
         max_retries=max_retries,
         before_request=_validate_request_url,
         public_only=True,
+        require_execution=True,
     )
 
 

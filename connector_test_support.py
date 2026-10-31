@@ -157,6 +157,23 @@ def connector_routes(connector_session, monkeypatch):
     gw_state.set_session_token("")
 
 
+def store_calls_inside_execution(monkeypatch) -> None:
+    """The test's store calls run as if inside a running connector execution: only the
+    refusal of a store change made outside one is lifted, so a unit test of what a
+    connector sends needs no lease. The boundary itself is tested in
+    tests/test_connector_execution_boundary.py, which never uses this."""
+    from celerp.connectors import execution, http
+
+    real = execution.before_remote_call
+    monkeypatch.setattr(http, "before_remote_call", lambda method, **_: real(method))
+
+
+@pytest.fixture
+def inside_execution(monkeypatch):
+    """``store_calls_inside_execution`` for one test."""
+    store_calls_inside_execution(monkeypatch)
+
+
 def stand_in_execution(monkeypatch, ctx=None):
     """Run connector work against the test's session without a lease: the stand-in
     reads the connection and its first-sync record and gives the real eligibility
@@ -185,8 +202,9 @@ def stand_in_execution(monkeypatch, ctx=None):
                     raise execution.ExecutionRefused(reason)
         ex = SimpleNamespace(company_id=str(company_id), connector=connector.name, purpose=purpose,
                              resources=list(resources), ctx=ctx)
-        if ex.ctx is None:
+        if ex.ctx is None and purpose not in execution.LOCAL_PURPOSES:
             ex.ctx = await execution._credentials(ex)
         yield ex
 
     monkeypatch.setattr(execution, "connector_execution", _execution)
+    store_calls_inside_execution(monkeypatch)

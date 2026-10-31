@@ -126,7 +126,7 @@ async def test_count_outbound_preserves_source_identity_and_retries(monkeypatch,
         assert str(cid) == company_id and not after and since is None
         return [("list:audit", 6, source_state)]
     class Client:
-        def __init__(self, **kw): assert kw == {"public_only": True}
+        def __init__(self, **kw): assert kw == {"public_only": True, "require_execution": True}
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def post(self, url, **kw):

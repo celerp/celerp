@@ -103,7 +103,8 @@ def _route_to_app(monkeypatch, sent: list):
     from celerp.main import app
 
     class FirmClient(httpx.AsyncClient):
-        def __init__(self, *, public_only: bool = False, timeout: float | None = None):
+        def __init__(self, *, public_only: bool = False, require_execution: bool = False,
+                     timeout: float | None = None):
             assert public_only
             super().__init__(transport=httpx.ASGITransport(app=app), timeout=timeout or 30.0)
 

@@ -1890,7 +1890,6 @@
   "error.connector_other_company": "{service} አስቀድሞ ከሌላ ኩባንያዎ ጋር ተገናኝቷል። መጀመሪያ እዚያ፣ በዚያ ኩባንያ የድር መዳረሻ ውስጥ ያቋርጡት፣ ከዚያ እዚህ ያገናኙት።",
   "error.connector_legacy_conflict": "{service} በቀድሞ የCelerp ስሪት ተገናኝቶ ቅንብሮቹ ስለሚጋጩ መጠቀም አይቻልም። በየድር መዳረሻ ውስጥ ያቋርጡት፣ ከዚያ እንደገና ያገናኙት።",
   "error.connector_not_connected": "{service} አልተገናኘም። መጀመሪያ በየድር መዳረሻ ውስጥ ያገናኙት።",
-  "error.woocommerce_credentials": "Celerp የWooCommerce መግቢያ ዝርዝሮችዎን መጫን አልቻለም። ትንሽ ቆይተው እንደገና ይሞክሩ፤ መከሰቱን ከቀጠለ WooCommerceን በየድር መዳረሻ ውስጥ ያቋርጡና እንደገና ያገናኙት።",
   "error.connector_sync_error": "{service} እንደተጠበቀው አልመለሰም፦ {detail}። ከጥቂት ደቂቃዎች በኋላ እንደገና ይሞክሩ፤ መከሰቱን ከቀጠለ {service}ን በየድር መዳረሻ ውስጥ ያቋርጡና እንደገና ያገናኙት።",
   "error.cloud_backup_disconnected": "Celerp Connect ስለተቋረጠ የደመና ምትኬ ጠፍቷል። በመስመር ላይ ምትኬ ለማስቀመጥ በየድር መዳረሻ ውስጥ እንደገና ያገናኙ።",
   "error.cloud_backup_no_account": "የደመና ምትኬ የCelerp Connect መለያ ያስፈልገዋል። በየድር መዳረሻ ውስጥ ይግቡ፣ ከዚያ እንደገና ይሞክሩ።",

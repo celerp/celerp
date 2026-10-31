@@ -61,7 +61,10 @@ _INTERNAL_LOCK_TIMEOUT_MS = 5000
 _LOCK_NOT_AVAILABLE = "55P03"
 
 PURPOSES = ("first_sync", "manual_sync", "schedule", "webhook", "outbound_queue",
-            "item_publish", "undo", "resolve", "webhooks", "rerun")
+            "item_publish", "item_flags", "undo", "resolve", "webhooks", "rerun")
+# Work that changes only Celerp's records: it holds no store credentials, so it runs
+# while the relay is unreachable, and any store call inside it is refused.
+LOCAL_PURPOSES = ("undo", "resolve", "item_flags")
 WEBHOOKS = "webhooks"
 
 
@@ -109,6 +112,10 @@ class RemoteCallInTransaction(ExecutionError):
     """A store call was made while a fenced transaction was open."""
 
 
+class RemoteCallOutsideExecution(ExecutionError):
+    """A store change with no execution running, or any store call inside Celerp-only work."""
+
+
 class RerunIncomplete(ExecutionError):
     """The rerun's sync ran and did not complete."""
 
@@ -151,7 +158,7 @@ def eligible(connector, config, first_sync, purpose: str, resource: str) -> str 
         if not connector.reviewed_first_sync or state not in ("starting", "running"):
             return "first_sync_not_started"
         return None
-    if purpose in ("undo", "resolve"):
+    if purpose in LOCAL_PURPOSES:
         return None if state in ("completed", "failed") else "first_sync_not_finished"
     if resource == WEBHOOKS:
         return None if state != "pending" else "first_sync_not_started"
@@ -245,6 +252,8 @@ _CURRENT: ContextVar[Execution | None] = ContextVar("connector_execution", defau
 _INTERNAL: ContextVar[bool] = ContextVar("connector_execution_internal", default=False)
 # Set while work inside an execution only reads before any write (unfenced_reads).
 _UNFENCED: ContextVar[bool] = ContextVar("connector_execution_unfenced", default=False)
+# Set while a disconnect removes what it registered in the store (store_teardown).
+_TEARDOWN: ContextVar[bool] = ContextVar("connector_store_teardown", default=False)
 _FENCED: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 _SLOTS: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]" = weakref.WeakKeyDictionary()
 
@@ -271,6 +280,17 @@ def unfenced_reads():
         yield
     finally:
         _UNFENCED.reset(token)
+
+
+@contextlib.contextmanager
+def store_teardown():
+    """A disconnect's store cleanup: its caller holds the connection exclusively and
+    refused every live execution, so no execution can start meanwhile."""
+    token = _TEARDOWN.set(True)
+    try:
+        yield
+    finally:
+        _TEARDOWN.reset(token)
 
 
 @contextlib.contextmanager
@@ -352,11 +372,17 @@ def _on_checkin(_dbapi_connection, record) -> None:
         ex.pool_connections -= 1
 
 
-def before_remote_call(method: str) -> None:
-    """Called by the connector HTTP client before every store request."""
+def before_remote_call(method: str, *, require_execution: bool = False) -> None:
+    """Called by the connector HTTP client before every store request. A store client
+    (``require_execution``) changes nothing outside an execution, except the store
+    teardown of a disconnect, which runs while no execution can start."""
     ex = current()
     if ex is None:
+        if require_execution and method.upper() != "GET" and not _TEARDOWN.get():
+            raise RemoteCallOutsideExecution(f"{method} to the store outside a connector execution")
         return
+    if ex.purpose in LOCAL_PURPOSES:
+        raise RemoteCallOutsideExecution(f"{method} to the store inside {ex.purpose}, which is Celerp-only work")
     if ex.has_open_transaction():
         raise RemoteCallInTransaction(
             f"{method} to the store while a {ex.connector} transaction is open")
@@ -638,8 +664,9 @@ async def _run_reruns(ex: Execution, connector) -> None:
     """Before the holder releases: run, once, each rerun pending on its resources, and
     acknowledge it only once its work completed. A failed one stays pending for the
     sweeper after its backoff. A first sync leaves them to the sweeper, which runs them
-    once the first sync has completed."""
-    if ex.purpose == "first_sync":
+    once the first sync has completed, and so does a person's change to items, which
+    never waits for a sync to answer (Celerp-only work could not run one)."""
+    if ex.purpose in ("first_sync", "item_publish") or ex.purpose in LOCAL_PURPOSES:
         return
     for _ in range(_RERUN_ROUNDS):
         if ex.lost or not ex.resources:
@@ -855,7 +882,7 @@ async def connector_execution(
             await _acquire(ex, connector)
         renewal = asyncio.create_task(_renewal(ex))
         try:
-            ex.ctx = await _credentials(ex)
+            ex.ctx = None if purpose in LOCAL_PURPOSES else await _credentials(ex)
             token = _CURRENT.set(ex)
             try:
                 yield ex

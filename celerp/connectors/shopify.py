@@ -93,7 +93,7 @@ class ShopifyConnector(ConnectorBase):
         results: list[dict[str, Any]] = []
         base_params: dict | None = {"limit": _PAGE_LIMIT, **(params or {})}
         url = f"{_base_url(ctx)}{path}"
-        async with RateLimitedClient() as client:
+        async with RateLimitedClient(require_execution=True) as client:
             while url:
                 resp = await client.get(url, headers=_headers(ctx), params=base_params)
                 resp.raise_for_status()
@@ -318,7 +318,7 @@ class ShopifyConnector(ConnectorBase):
             result.errors = [f"Failed to load inventory: {exc}"]
             return result
 
-        async with RateLimitedClient() as client:
+        async with RateLimitedClient(require_execution=True) as client:
             for item in items:
                 variant_id = item.get("shopify_variant_id")
                 location_id = item.get("shopify_location_id")
@@ -367,7 +367,7 @@ class ShopifyConnector(ConnectorBase):
             result.errors = [f"Failed to load items: {exc}"]
             return result
 
-        async with RateLimitedClient() as client:
+        async with RateLimitedClient(require_execution=True) as client:
             for item in items:
                 product_id = item.get("shopify_product_id")
                 if not product_id:

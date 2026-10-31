@@ -823,7 +823,6 @@
   "error.connector_other_company": "{service} is already connected to another of your companies. Disconnect it there first, in that company's Web Access, then connect it here.",
   "error.connector_legacy_conflict": "{service} was connected in an older version of Celerp and its settings conflict, so it can't be used. Disconnect it in Web Access, then connect it again.",
   "error.connector_not_connected": "{service} isn't connected. Connect it in Web Access first.",
-  "error.woocommerce_credentials": "Celerp couldn't load your WooCommerce sign-in details. Try again in a moment; if it keeps happening, disconnect WooCommerce in Web Access and connect it again.",
   "error.connector_sync_error": "{service} didn't answer as expected: {detail}. Try again in a few minutes; if it keeps happening, disconnect {service} in Web Access and connect it again.",
   "error.cloud_backup_disconnected": "Cloud backup is off because Celerp Connect is disconnected. Connect again in Web Access to back up online.",
   "error.cloud_backup_no_account": "Cloud backup needs a Celerp Connect account. Sign in in Web Access, then try again.",

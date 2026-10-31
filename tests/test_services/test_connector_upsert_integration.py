@@ -26,7 +26,7 @@ from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
 import celerp.connectors.upsert as u
 
-from connector_test_support import add_item
+from connector_test_support import add_item, inside_execution  # noqa: F401
 from test_helpers import make_authed_token, own_sessions_on, provision_company_books, ui_signed_in
 from migration_support import real_engine  # noqa: F401 - fixture
 
@@ -1854,6 +1854,7 @@ async def test_shopify_import_relinks_a_product_after_disconnect(use_test_sessio
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("inside_execution")
 async def test_queued_woocommerce_stock_push_reads_only_that_product(
     use_test_session, monkeypatch
 ):
@@ -2075,11 +2076,12 @@ async def test_conflict_choice_settles_the_field(use_test_session, client, signe
     from celerp.models.sync_run import SyncRun
     from celerp.connectors.base import ExternalImportRecord
     from celerp_inventory.services import upsert_external_product
-    from connector_test_support import item_state
+    from connector_test_support import connect, item_state
 
     session = use_test_session
     monkeypatch.setattr("celerp.db.get_session_ctx", await own_sessions_on(session))
     cid = await _seed_company(session, f"Settle{keep}")
+    await connect(session, cid, "woocommerce", first_sync="completed")
 
     async def pull(name):
         record = ExternalImportRecord()
