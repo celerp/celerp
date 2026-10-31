@@ -1,17 +1,29 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
-"""The one rule every writer applies to a lot's goods cost: it is never negative.
+"""The rules every writer applies to a lot's goods cost: it is never negative, and
+whether it is known is the app's own record.
 
 Routes, imports and migration sinks call negative_cost_error to refuse a negative
 cost in their own response shape before they write anything. The event boundary
 applies the same check to every item event that sets a goods cost, so a writer
-that skips it still cannot store one.
+that skips it still cannot store one, and refuses the unknown-cost flag
+(GOODS_COST_UNKNOWN) on any event that may not carry it (unknown_flag_error).
 """
 from __future__ import annotations
 
 from typing import Any
 
 GOODS_COST_KEYS = ("cost_price", "cost_total", "cost_base")
+
+# A lot whose value holds goods of unknown cost: the value is what the books carry,
+# but no goods cost is known for it. Set only from this flag in an event's data.
+GOODS_COST_UNKNOWN = "goods_cost_unknown"
+
+# Item events whose data may carry GOODS_COST_UNKNOWN; every other item event is refused it.
+UNKNOWN_FLAG_EVENTS = frozenset((
+    "item.created", "item.snapshot", "item.updated", "item.pricing.set", "item.cost_adjusted",
+    "item.quantity.adjusted",
+))
 
 # Item events whose data carries the lot's goods cost at the top level.
 _COST_SETTING_EVENTS = frozenset((
@@ -41,13 +53,39 @@ def negative_cost_error(label: str, *costs: Any) -> str | None:
     return None
 
 
-def event_goods_costs(event_type: str, data: dict) -> list:
-    """The goods-cost values an item event writes."""
+def written_goods_costs(event_type: str, data: dict) -> dict:
+    """The goods-cost keys an item event writes, with the values it writes to them: the
+    one reading of "this event sets the goods cost" every check shares."""
     if event_type == "item.updated":
         changes = data.get("fields_changed") or {}
-        return [(changes.get(key) or {}).get("new") for key in GOODS_COST_KEYS if key in changes]
+        return {key: (changes[key] or {}).get("new") for key in GOODS_COST_KEYS if key in changes}
     if event_type == "item.pricing.set":
-        return [data.get("new_price")] if data.get("price_type") in GOODS_COST_KEYS else []
+        return {data["price_type"]: data.get("new_price")} if data.get("price_type") in GOODS_COST_KEYS else {}
     if event_type in _COST_SETTING_EVENTS:
-        return [data.get(key) for key in GOODS_COST_KEYS]
-    return []
+        return {key: data[key] for key in GOODS_COST_KEYS if key in data}
+    return {}
+
+
+def event_goods_costs(event_type: str, data: dict) -> list:
+    """The goods-cost values an item event writes."""
+    return list(written_goods_costs(event_type, data).values())
+
+
+def writes_goods_cost(event_type: str, data: dict) -> bool:
+    """Whether an item event sets the lot's goods cost."""
+    return bool(written_goods_costs(event_type, data))
+
+
+def clears_goods_cost(event_type: str, data: dict) -> bool:
+    """Whether an item event removes the lot's goods cost (sets a goods-cost key empty)."""
+    return any(value in (None, "") for value in written_goods_costs(event_type, data).values())
+
+
+def unknown_flag_error(event_type: str, data: dict) -> str | None:
+    """The refusal for an item event carrying the unknown-cost flag it may not carry, or
+    a goods cost in a patch (a patch never restates cost), else None."""
+    if GOODS_COST_UNKNOWN in data and event_type not in UNKNOWN_FLAG_EVENTS:
+        return f"{event_type} cannot record whether a goods cost is known"
+    if event_type == "item.patched" and any(key in data for key in GOODS_COST_KEYS):
+        return "a patch cannot set a goods cost"
+    return None

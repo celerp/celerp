@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import ExitStack
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -58,11 +59,20 @@ async def test_the_bulk_merge_sends_one_key_and_raises_the_moved_value_as_a_toas
     assert "celerpSelectionClear" in trigger
 
 
+def _previewing(preview: AsyncMock):
+    """The merge preview answering ``preview``, for a company with no price lists that keeps
+    its books in USD (the preview words the merged lot's prices and value with both)."""
+    stack = ExitStack()
+    stack.enter_context(patch("ui.api_client.preview_merge", new=preview))
+    stack.enter_context(patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])))
+    stack.enter_context(patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD"})))
+    return stack
+
+
 @pytest.mark.asyncio
 async def test_the_merge_preview_returns_the_sentence(ui_client):
     ui_client.cookies.update(_authed())
-    with patch("ui.api_client.preview_merge", new=AsyncMock(
-            return_value={"inventory_reclassification": _TWO, "plan_fingerprint": "fp-1"})):
+    with _previewing(AsyncMock(return_value={"inventory_reclassification": _TWO, "plan_fingerprint": "fp-1"})):
         r = await ui_client.post("/api/items/merge/preview", data={"selected": ["item:a", "item:b"],
                                                                    "target_sku_from": "item:a"})
     assert r.json() == {"message": _merge_reclass_sentence(_TWO), "plan_fingerprint": "fp-1"}
@@ -72,7 +82,7 @@ async def test_the_merge_preview_returns_the_sentence(ui_client):
 async def test_the_merge_preview_asks_for_the_typed_sku(ui_client):
     preview = AsyncMock(return_value={"inventory_reclassification": None, "plan_fingerprint": "fp-2"})
     ui_client.cookies.update(_authed())
-    with patch("ui.api_client.preview_merge", new=preview):
+    with _previewing(preview):
         r = await ui_client.post("/api/items/merge/preview", data={
             "selected": ["item:a", "item:b"], "target_sku_from": "item:a", "resulting_sku": "NEW-1"})
     assert r.json()["plan_fingerprint"] == "fp-2"

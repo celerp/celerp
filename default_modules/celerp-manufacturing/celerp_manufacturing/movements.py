@@ -55,6 +55,7 @@ from celerp.services.account_roles import (
 )
 from celerp.services.company_lock import lock_company, lock_projections
 from celerp.services.document_lines import listing_record
+from celerp.services.goods_cost import GOODS_COST_UNKNOWN
 from celerp.services.ledger_display import run_reference
 from celerp.services.line_measures import splitting_allowed
 from celerp.services.lot_origin import (
@@ -358,7 +359,7 @@ async def _issue(op: _Op, run: Projection, wanted: list[dict], rk: str, request:
         return {"issued": [], "value": "0"}
 
     from celerp_inventory.projections import is_item_available
-    from celerp_inventory.services import cost_kept
+    from celerp_inventory.services import cost_kept, goods_cost_known
 
     rows = await lock_projections(op.session, op.company_id, [i["item_id"] for i in wanted])
     befores: dict[str, Decimal] = {}
@@ -409,8 +410,9 @@ async def _issue(op: _Op, run: Projection, wanted: list[dict], rk: str, request:
             code = lot_account(after.state or {})
             credits[code] = credits.get(code, _ZERO) - moved
         total += moved
-        # Each component's own value, so a return gives back exactly what it took.
-        issued.append({**line, "value": str(moved)})
+        # Each component's own value, so a return gives back exactly what it took, and
+        # whether its goods cost was known, which the run's output keeps.
+        issued.append({**line, "value": str(moved), **({} if goods_cost_known(s) else {GOODS_COST_UNKNOWN: True})})
     await op.post(f"issue:{rk}", f"Components issued to production run {op.ref}", wip_code, total, credits)
     data = {"items": issued, "issued_by": str(op.user_id), "value": str(total), "request": request}
     if wip_code and total:
@@ -485,6 +487,7 @@ async def _return(op: _Op, run: Projection, wanted: list[dict], rk: str, request
                                    else op.round(recorded * _money(line["quantity"]) / _money(have)))
 
     from celerp_inventory.projections import is_item_available
+    from celerp_inventory.services import topped_up_cost
 
     rows = await lock_projections(op.session, op.company_id, list(values))
     # Value each lot holds on the books before the return; None for one an older release let
@@ -526,7 +529,11 @@ async def _return(op: _Op, run: Projection, wanted: list[dict], rk: str, request
             continue
         landed = sum(float(v or 0) for v in (s.get("landed_costs") or {}).values())
         target = befores[item_id] + value
-        await op.emit(item_id, "item", "item.quantity.adjusted", {**adjusted, "cost_base": float(target) - landed},
+        # The lot takes back exactly the value issued; whether its goods cost is known
+        # follows the one top-up rule (topped_up_cost).
+        known = {k: v for k, v in topped_up_cost(s, float(value)).items() if k == GOODS_COST_UNKNOWN}
+        await op.emit(item_id, "item", "item.quantity.adjusted",
+                      {**adjusted, "cost_base": float(target) - landed, **known},
                       f"mfg:{op.order_id}:return:{rk}:{item_id}", metadata={_ORDER_MARK: op.order_id})
         after = await op.session.get(Projection, {"company_id": op.company_id, "entity_id": item_id},
                                      populate_existing=True)
@@ -614,6 +621,8 @@ async def _receive(op: _Op, run: Projection, qty: float, rk: str, request: str) 
         # A produced lot is a new physical parcel with its own barcode.
         "barcode": (await allocate_internal_codes(op.session, op.company_id))[0],
         _ORDER_MARK: op.order_id, "cost_total": float(amount), LOT_ACCOUNT_FIELD: code,
+        # Goods made from a component of unknown goods cost are of unknown goods cost.
+        **({GOODS_COST_UNKNOWN: True} if any(i.get(GOODS_COST_UNKNOWN) for i in state.get("inputs", [])) else {}),
     }, f"mfg:{op.order_id}:receive:{rk}:created", location_id=loc, metadata=mark)
     await op.emit(lot_id, "item", "item.produced", {"quantity_produced": qty},
                   f"mfg:{op.order_id}:receive:{rk}:produced", location_id=loc, metadata=mark)

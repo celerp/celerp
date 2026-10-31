@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,6 +37,10 @@ from celerp.inventory_codes import (
 from celerp.models.projections import Projection
 from .services import (
     HIDDEN_STATUSES,
+    exported_cost_text,
+    shown_cost,
+    goods_cost_empty,
+    goods_cost_known,
     IDENTIFIER_TIERS,
     VALID_INVENTORY_TYPES,
     BatchImportRequest,
@@ -70,10 +74,11 @@ from celerp.services.physical_codes import code_in_use, lock_item_code_namespace
 from celerp.services.auth import AuthContext, get_auth_context, get_current_company_id, get_current_user, get_current_role, ROLE_LEVELS
 from celerp.services.peer_import import peer_batch
 from celerp.services.business_time import business_date_at
-from celerp.services.cost_visibility import COST_ITEM_KEYS, apply_field_visibility, restricted_field_keys
+from celerp.services.cost_visibility import (COST_DERIVED_ITEM_KEYS, COST_ITEM_KEYS, apply_field_visibility,
+                                             restricted_field_keys)
 from celerp.services.csv_export import csv_stream, resolve_export_cols
 from celerp.services.demo import demo_item_ids
-from celerp.services.goods_cost import GOODS_COST_KEYS, lot_label, negative_cost_error
+from celerp.services.goods_cost import GOODS_COST_KEYS, GOODS_COST_UNKNOWN, lot_label, negative_cost_error
 from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS, AMOUNT_ITEM_KEYS, DEFAULT_ITEM_SCHEMA, NUMERIC_SCHEMA_TYPES, reject_system_item_fields
 from celerp.services.permissions import (
     assert_role_permission,
@@ -91,6 +96,7 @@ from celerp.services.pricing import (
     inject_derived_prices,
     is_cost_list_name,
     is_cost_price_type,
+    is_derived,
     is_price_item_key,
     price_key,
     price_keys_in,
@@ -101,9 +107,10 @@ from ui.i18n import category_label, field_label, item_status_label, price_list_l
 from celerp.services.units import validate_quantity, build_unit_map, get_company_units, read_company_units, is_weight_unit, is_pieces_unit, LANDED_COST_KINDS
 from celerp.services.vertical_presets import category_item_defaults
 from celerp.services.line_measures import check_sell_qty_fits_unit, sell_qty_misfit, splitting_allowed, validate_default_sell_qty
-from celerp.services.money import round_basis, round_money, to_decimal, to_stored_float
+from celerp.services.money import round_basis, round_money, round_rate, to_decimal, to_stored_float
 from celerp.schemas.numbers import FiniteFloat
-from celerp_inventory.projections import _is_image_mime, is_core_item_key, is_item_available, thumbnail_file_id
+from celerp_inventory.projections import (_is_image_mime, apply_item_event, is_core_item_key, is_item_available,
+                                          thumbnail_file_id)
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -116,8 +123,8 @@ _ITEM_READ_AGENT = {
     "x-celerp-agent-result-permissions": ["edit_inventory", "view_documents", "view_inventory_costs"],
     "x-celerp-agent-field-visibility": True,
 }
-# An import's preview and commit price, count and file new locations by these.
-_IMPORT_PERMISSIONS = ["edit_inventory_amounts", "manage_company_settings", "set_inventory_prices"]
+# An import's preview and commit price, count, cost and file new locations by these.
+_IMPORT_PERMISSIONS = ["edit_inventory_amounts", "manage_company_settings", "set_inventory_prices", "view_inventory_costs"]
 
 
 # ---------------------------------------------------------------------------
@@ -189,19 +196,6 @@ def _parse_uuid(value: str | None) -> uuid.UUID | None:
         return uuid.UUID(str(value))
     except (ValueError, AttributeError):
         return None
-
-
-def _recipe_standard_unit_cost(state: dict) -> float | None:
-    """The rolled standard unit cost of a recipe-backed (manufactured) item, else None.
-
-    For a manufactured item the recipe's rolled ``unit_cost`` is the SINGLE source of truth for
-    cost — read at standard, never at a lingering build-lot ``cost_total``. Read ``recipe.unit_cost``
-    (not the ``cost_price`` field, which ``_recompute_cost`` can pop) so it is robust and stays
-    consistent with the manufacturing cost roll-up. Only a recipe with components carries a cost.
-    """
-    recipe = state.get("recipe") or {}
-    unit_cost = recipe.get("unit_cost") if recipe.get("components") else None
-    return float(unit_cost) if unit_cost is not None else None
 
 
 # Companion keys whose visibility follows a schema field they mirror, so field-level
@@ -287,17 +281,13 @@ def flatten_item(state: dict, entity_id: str, location_id: str | None = None, lo
     else:
         pieces = _read_pieces(flat) or 0
         flat["qty_each"] = round(qty / pieces, 10) if pieces > 1 else qty
-    _recipe_unit = _recipe_standard_unit_cost(flat)
-    if _recipe_unit is not None:
-        # Recipe-backed item: derive cost from the rolled standard (single source of truth); never
-        # let a lingering build-lot cost_total silently override it. See _recipe_standard_unit_cost.
-        flat["cost_price"] = _recipe_unit
-        flat["cost_total"] = round_basis(_recipe_unit * qty) if qty else 0.0
-    elif flat.get("cost_total") is not None:
-        flat["cost_price"] = round(float(flat["cost_total"]) / qty, 10) if qty else 0.0
-    elif flat.get("cost_price") is not None:
-        flat["cost_total"] = round_basis(float(flat["cost_price"]) * qty)
-    # else: both remain absent (item has no cost set)
+    total, unit = shown_cost(flat)
+    if total is not None:
+        flat["cost_total"] = total
+    if unit is None:
+        flat.pop("cost_price", None)
+    else:
+        flat["cost_price"] = unit
     if price_config is not None:
         inject_derived_prices(flat, *price_config)
     return flat
@@ -348,6 +338,16 @@ class ItemCreate(BaseModel):
 class ItemPatch(BaseModel):
     fields_changed: dict[str, dict] = Field(default_factory=dict)
     idempotency_key: str | None = None
+    # The item version (the read's _version) a cost editor opened on; a cost change made from
+    # an older version is refused under the item's lock. A guard, never part of the event.
+    expected_version: int | None = None
+
+    @model_validator(mode="after")
+    def _version_guards_a_cost(self):
+        """expected_version is checked on cost changes only; sent with none it is refused (422)."""
+        if self.expected_version is not None and not set(self.fields_changed) & COST_ITEM_KEYS:
+            raise ValueError("expected_version is checked on cost changes only")
+        return self
 
 
 class TransferBody(BaseModel):
@@ -393,6 +393,7 @@ class TransformBody(BaseModel):
     child_weight_unit: str | None = None
     child_pieces: int | None = None
     child_cost_total: FiniteFloat | None = None  # final cost override (needs set_inventory_prices); None preserves parent cost
+    expected_version: int | None = None  # the parent's version the cost was typed against; refused if it moved
     idempotency_key: str | None = None
 
 
@@ -1412,6 +1413,14 @@ async def query_items(
         removable = set(await untouched_demo_item_ids(session, company_id))
         result = [r for r in result if r.get("id") in removable]
 
+    # Semantic "cost review" filter: lots whose goods cost is unknown or was carried
+    # from before goods costs could be unknown. Membership reads the cost, so a role
+    # that cannot see costs gets none (listing them would disclose which lots they are).
+    if f.filter == "cost_review":
+        from celerp_inventory.services import cost_review_ids
+        review = await cost_review_ids(session, company_id) if can_see_costs else set()
+        result = [r for r in result if r.get("id") in review]
+
     not_found: list[str] = []
     if f.q:
         # Shared q parse + filter + q_match attachment (single-sourced in
@@ -1501,6 +1510,9 @@ async def list_items(
             reorder point (see celerp.services.reorder.is_below_reorder).
             "demo" keeps only setup's samples that were never edited or used
             (see celerp.services.demo.untouched_demo_item_ids).
+            "cost_review" keeps only lots whose goods cost is worth checking
+            (see celerp_inventory.services.cost_review_ids); none without
+            view_inventory_costs.
     on_memo_to: customer contact_id. Scope to items currently out on memo to that
             customer, valued (holding_value) at the price they were quoted.
     consigned_from: supplier contact_id. Scope to items currently held on
@@ -1762,6 +1774,7 @@ async def items_metadata(payload: ItemsMetadataBody, company_id=Depends(get_curr
     for flat in flats:
         by_category.setdefault(flat.get("category"), []).append(flat)
 
+    versions = {row.entity_id: row.version for row in rows}
     result: dict = {}
     for category, group in by_category.items():
         field_schema = await get_effective_field_schema(session, company_id, category=category)
@@ -1769,7 +1782,7 @@ async def items_metadata(payload: ItemsMetadataBody, company_id=Depends(get_curr
             group, role, field_schema, can_see_costs, can_author_drafts=can_author_drafts,
         )
         for flat in filtered:
-            result[flat["id"]] = flat
+            result[flat["id"]] = {**flat, "_version": versions[flat["id"]]}
 
     return {"items": result}
 
@@ -1863,6 +1876,7 @@ class InventoryImportRowsPreview(BaseModel):
     counts: dict[str, int]
     summary_rows: list[int]
     duplicate_groups: list[dict]
+    cost_changes: list[dict]
     decisions: dict
     preview_hash: str
 
@@ -1896,7 +1910,7 @@ async def import_rows_preview(
         errors=plan.errors,
         locations_to_create=plan.locations_to_create,
         counts=plan.counts, summary_rows=plan.summary_rows, duplicate_groups=plan.duplicate_groups,
-        decisions=plan.decisions,
+        cost_changes=plan.cost_changes, decisions=plan.decisions,
         preview_hash=_rows_preview_hash(body.rows, body.upsert, body.idempotency_key, plan),
     )
 
@@ -2212,6 +2226,7 @@ async def get_item(entity_id: str, company_id=Depends(get_current_company_id), r
         can_author_drafts=role_has_permission(settings, role, "edit_inventory"),
     )
     result = filtered[0]
+    result["_version"] = row.version  # sent back by a cost editor as the version it opened on
     if (str(row.state.get("status") or "").lower() == "sold" and row.state.get("status_doc_id")
             and role_has_permission(settings, role, "view_documents")):
         from celerp.services.holdings import sold_prices
@@ -2539,6 +2554,10 @@ def draft_cost_carveout(is_draft: bool, role: str, settings: dict) -> bool:
     "x-celerp-agent": True, "x-celerp-agent-idempotent": True,
     "x-celerp-agent-result-permissions": ["edit_inventory_amounts", "revert_items_to_draft", "set_inventory_prices"]})
 async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_current_company_id), _: None = require_permission("edit_inventory"), user=Depends(get_current_user), role: str = Depends(get_current_role), settings: dict = Depends(get_current_company_settings), session: AsyncSession = Depends(get_session)) -> dict:
+    """Change item fields (``fields_changed``: ``{field: {"old": ..., "new": ...}}``). A
+    ``cost_total`` here is the item's goods cost, without the landed cost (freight, duty)
+    it carries; the list's Cost Total column and the CSV export show goods plus landed
+    cost. A new value of null clears the goods cost."""
     if payload.idempotency_key:
         replay = await find_event_by_idempotency(session, company_id, payload.idempotency_key)
         if replay is not None:
@@ -2750,14 +2769,14 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     event = dict(
         entity_id=entity_id,
         event_type="item.updated",
-        data={**payload.model_dump(exclude_none=True),
+        data={**payload.model_dump(exclude_none=True, exclude={"expected_version"}),
               **(_kept((payload.fields_changed.get("status") or {}).get("new")) if "status" in changed_keys else {})},
         actor_id=user.id,
         source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
     )
     if changed_keys & COST_ITEM_KEYS:
-        return await _restate_cost_or_409(session, company_id, **event)
+        return await _restate_cost_or_409(session, company_id, expected_version=payload.expected_version, **event)
     entry = await emit_event(session, company_id=company_id, entity_type="item", location_id=None, metadata_={}, **event)
     await session.commit()
     return {"event_id": entry.id}
@@ -2766,11 +2785,13 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
 async def _restate_cost_or_409(session: AsyncSession, company_id, **event) -> dict:
     """Apply and commit a goods-cost change with its merge and COGS consequences (see
     restate_item_cost); returns the event id and what the change posted."""
-    from celerp_inventory.services import CostRestatementConflict, cost_correction_notice, restate_item_cost
+    from celerp_inventory.services import CostRefused, CostRestatementConflict, cost_correction_notice, restate_item_cost
     try:
         entry = await restate_item_cost(session, company_id, **event)
     except CostRestatementConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+    except CostRefused as exc:
+        raise HTTPException(status_code=409, detail=exc.detail)
     notice = await cost_correction_notice(session, company_id, entry)
     await session.commit()
     return {"event_id": entry.id, "cost_correction": notice}
@@ -3346,14 +3367,15 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     from celerp.services.auto_je import company_currency
     from celerp_inventory.services import carve_cost, goods_basis
     currency = await company_currency(session, company_id)
+    unknown = {GOODS_COST_UNKNOWN: True} if parent.state.get(GOODS_COST_UNKNOWN) else {}
     remaining = {"quantity": parent_qty, "cost_base": goods_basis(parent.state),
-                 "landed_costs": dict(parent.state.get("landed_costs") or {})}
+                 "landed_costs": dict(parent.state.get("landed_costs") or {}), **unknown}
     carves = []
     for c in children:
         carve = carve_cost(remaining, c.quantity, currency)
         carves.append(carve)
         remaining = {"quantity": round(parent_qty - sum(x.quantity for x in children[:len(carves)]), 10),
-                     "cost_base": carve.rest_goods, "landed_costs": carve.rest_landed}
+                     "cost_base": carve.rest_goods, "landed_costs": carve.rest_landed, **unknown}
 
     def _child_weight(c) -> float | None:
         if c.weight is not None:
@@ -3481,7 +3503,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
                 entity_id=child_eid,
                 entity_type="item",
                 event_type="item.pricing.set",
-                data={"price_type": "cost_total", "new_price": carves[i].part_goods},
+                data=carves[i].part_cost,
                 actor_id=user.id,
                 location_id=None,
                 source="api",
@@ -3832,7 +3854,7 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
                          idempotency_key=str(uuid.uuid4()), metadata_={"reason": "from_split"})
     if carve.part_goods is not None:
         await emit_event(session, company_id=company_id, entity_id=child_eid, entity_type="item",
-                         event_type="item.pricing.set", data={"price_type": "cost_total", "new_price": carve.part_goods},
+                         event_type="item.pricing.set", data=carve.part_cost,
                          actor_id=user_id, location_id=None, source="fulfill_split",
                          idempotency_key=str(uuid.uuid4()), metadata_={"reason": "from_split"})
 
@@ -3926,6 +3948,9 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     parent = (await _lock_items_for_physical_mutation(session, company_id, [entity_id])).get(entity_id)
     if parent is None or not is_item_available(parent.state):
         raise HTTPException(status_code=404, detail=t("inventory.err_item_unavailable"))
+    if payload.expected_version is not None and parent.version != payload.expected_version:
+        from celerp_inventory.services import CostVersionStale
+        raise HTTPException(status_code=409, detail=CostVersionStale().detail)
 
     # Validate
     if payload.child_quantity <= 0:
@@ -3954,9 +3979,12 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
         float(parent.state.get("cost_price") or 0) * parent_qty
     )
     # A cost that differs from the parent's is a price write, so it takes the same
-    # set_inventory_prices gate as PATCH; with no cost sent (or the parent's cost sent
-    # back) the child keeps the parent's cost.
-    if payload.child_cost_total is not None and payload.child_cost_total != parent_cost_total:
+    # set_inventory_prices gate as PATCH, and so is any cost sent for a parent whose goods cost
+    # is not known: the page opens that box empty, so a value sent was typed and confirms it.
+    # With no cost sent (or a known parent's cost sent back) the child keeps the parent's cost.
+    cost_kept = payload.child_cost_total is None or (
+        payload.child_cost_total == parent_cost_total and goods_cost_known(parent.state))
+    if not cost_kept:
         reject_price_change({"cost_total"}, role, settings)
     effective_cost = payload.child_cost_total if payload.child_cost_total is not None else parent_cost_total
     cost_refusal = negative_cost_error(payload.child_sku, effective_cost)
@@ -4067,14 +4095,16 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     # 2. Sell prices are intentionally NOT copied — the child starts with no sell price (see the
     #    parent_price_keys note above). Only cost carries over.
 
-    # 2b. Set child goods cost via item.pricing.set (consistent with split/post_item flows)
+    # 2b. Set child goods cost via item.pricing.set (consistent with split/post_item flows).
+    #     Kept at the parent's cost, it is as known as the parent's; a cost sent is known.
     await emit_event(
         session,
         company_id=company_id,
         entity_id=child_eid,
         entity_type="item",
         event_type="item.pricing.set",
-        data={"price_type": "cost_total", "new_price": child_goods},
+        data={"price_type": "cost_total", "new_price": child_goods,
+              **({GOODS_COST_UNKNOWN: True} if cost_kept and not goods_cost_known(parent.state) else {})},
         actor_id=user.id,
         location_id=None,
         source="api",
@@ -4185,7 +4215,7 @@ def _merge_request_digest(payload: MergeBody) -> str:
     return hashlib.sha256(json.dumps(canonical, sort_keys=True, default=str).encode()).hexdigest()
 
 
-def _merge_fingerprint(payload: MergeBody, sources: list[Projection], reclass) -> str:
+def _merge_fingerprint(payload: MergeBody, sources: list[Projection], reclass, outputs: list) -> str:
     """Names what the merge asks for, the stock its plan was made from, and where its
     value goes. Keyed, so it reveals nothing about cost to a role that cannot see cost."""
     from celerp.config import settings as app_settings
@@ -4196,6 +4226,7 @@ def _merge_fingerprint(payload: MergeBody, sources: list[Projection], reclass) -
         "destination": reclass.destination,
         "moves": {code: str(amount) for code, amount in reclass.moves.items()},
         "currency": reclass.currency,
+        "outputs": outputs,
     }
     message = json.dumps(basis, sort_keys=True, default=str).encode()
     return hmac.new(app_settings.jwt_secret.encode(), message, hashlib.sha256).hexdigest()
@@ -4233,6 +4264,70 @@ class MergePlan:
     fingerprint: str
 
 
+def _merged_cost(sources: list[Projection], value: float, resulting_qty: float) -> dict:
+    """The cost fields of a merged lot's item.created. It keeps its sources' value; their
+    landed pools carry summed per "<bill>::<kind>", and cost_total names the goods part, the
+    rest of the value. The goods cost is known only when every source that is not empty
+    (goods_cost_empty) has a known one; a lot of sources without value or known cost has no
+    cost. Empty sources waiting at one known unit cost keep it while nothing is on hand."""
+    pools: dict[str, float] = {}
+    for p in sources:
+        for key, amount in (p.state.get("landed_costs") or {}).items():
+            pools[key] = round_basis(pools.get(key, 0.0) + float(amount or 0))
+    pools = {k: v for k, v in pools.items() if v}
+    counted = [p.state for p in sources if not goods_cost_empty(p.state)]
+    unknown = any(not goods_cost_known(st) for st in counted)
+    if not value and (unknown or not counted):
+        waiting = {p.state.get("cost_price") for p in sources}
+        if (not counted and not float(resulting_qty) and len(waiting) == 1 and None not in waiting
+                and all(goods_cost_known(p.state) for p in sources)):
+            return {"cost_price": float(next(iter(waiting)))}
+        return {}
+    out: dict = {"cost_total": round_basis(value - sum(pools.values()))}
+    if pools:
+        out["landed_costs"] = pools
+    if unknown:
+        out[GOODS_COST_UNKNOWN] = True
+    return out
+
+
+def _merged_prices(sources: list[Projection], price_lists: list[dict], currency: str) -> dict:
+    """The merged lot's selling unit prices: each the quantity-weighted average of the
+    stocked sources' (quantity above 0), to the currency's rate ceiling, and left unset when
+    a stocked source has none. A source without stock neither sets nor blocks a price; with
+    no stocked source, a price every source agrees on is kept. Read from the item as the
+    read model shows it: a list's price is one price whether a source holds it under the
+    list's raw name (under attributes) or its conventional key, and the merged lot holds it
+    under the conventional key; derived lists and cost are never stored."""
+    flats = [(flatten_item(p.state, p.entity_id), float(p.state.get("quantity") or 0)) for p in sources]
+    skip = {"cost_total", "cost_price", *COST_DERIVED_ITEM_KEYS, *derived_price_keys(price_lists)}
+    list_of = {k: pl["name"] for pl in price_lists if pl.get("name") for k in (pl["name"], price_key(pl["name"]))}
+
+    def price(flat: dict, key: str) -> float | None:
+        return stored_price(flat, list_of[key]) if key in list_of else coerce_price(flat.get(key))
+
+    keys = {price_key(list_of[k]) if k in list_of else k for flat, _ in flats for k in flat
+            if k not in skip and not k.endswith("_price_total") and is_price_item_key(k, price_lists)}
+    keys -= skip
+    stocked = [(flat, qty) for flat, qty in flats if qty > 0]
+    out: dict = {}
+    for key in sorted(keys):
+        if stocked:
+            units = [(price(flat, key), qty) for flat, qty in stocked]
+            if any(unit is None for unit, _ in units):
+                continue
+            if len({unit for unit, _ in units}) == 1:
+                out[key] = units[0][0]
+                continue
+            total = sum((to_decimal(unit) * to_decimal(qty) for unit, qty in units), Decimal(0))
+            out[key] = float(round_rate(total / sum((to_decimal(qty) for _, qty in units), Decimal(0)), currency))
+        else:
+            units = {price(flat, key) for flat, _ in flats}
+            if len(units) == 1 and None not in units:
+                out[key] = next(iter(units))
+    return out
+
+
 async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, settings: dict, role: str,
                       rows: dict[str, Projection]) -> MergePlan:
     """The one merge plan, shared by the preview and the merge itself. ``rows`` are the
@@ -4243,10 +4338,8 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
     from celerp_inventory.services import normalize_sku
 
     reject_system_item_fields({"attributes": payload.resolved_attributes or {}})
-    reject_price_change(
-        price_keys_in({"attributes": payload.resolved_attributes or {}}, (await get_price_config(session, company_id))[0]),
-        role, settings,
-    )
+    price_lists = (await get_price_config(session, company_id))[0]
+    reject_price_change(price_keys_in({"attributes": payload.resolved_attributes or {}}, price_lists), role, settings)
     source_projections: list[Projection] = []
     for sid in payload.source_entity_ids:
         proj = rows.get(sid)
@@ -4396,6 +4489,9 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
     for p in source_projections:
         all_attr_keys.update((p.state.get("attributes") or {}).keys())
     all_attr_keys -= _EXPIRY_ATTR_KEYS
+    # Prices are averaged per unit (_merged_prices) wherever a source keeps them, never resolved as attributes.
+    all_attr_keys = {k for k in all_attr_keys
+                     if not is_price_item_key(k, price_lists) and k not in derived_price_keys(price_lists)}
     # `pieces` may live TOP-LEVEL (imports / POST /items) rather than under attributes, so the loop
     # above misses it. Add it whenever any source has a piece count so it's resolved (summed) below.
     if any(_read_pieces(p.state) is not None for p in source_projections):
@@ -4491,6 +4587,9 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
     # write prices is refused as for any price write, so its answer says nothing
     # about the cost.
     currency = await company_currency(session, company_id)
+    # A role that cannot see cost gets one answer whatever the amount, so it learns nothing of it.
+    if payload.resulting_cost_total is not None and not role_has_permission(settings, role, "view_inventory_costs"):
+        raise HTTPException(status_code=403, detail=missing_permission_text("view_inventory_costs"))
     if payload.resulting_cost_total is not None and (
         round_money(to_decimal(payload.resulting_cost_total), currency) != round_money(to_decimal(merged_cost_total), currency)
     ):
@@ -4554,26 +4653,11 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
     if weight_unit:
         create_data["weight_unit"] = weight_unit
 
-    # Pricing for the merged money fields (issue #199). Each *_price field is a PER-UNIT
-    # price, so it is reconciled on the source TOTALS (unit × qty): if every source has the price set,
-    # the merged total is their sum (stored back as a unit = total / merged_qty); if ANY source lacks
-    # the price, the merged item carries NO value for it (omit) rather than copying the target's price
-    # or treating the missing one as 0. cost_total is already a total (computed above).
-    price_fields: dict = {"cost_total": merged_cost_total}
-    _price_keys = {
-        k for p in source_projections for k in p.state
-        if k.endswith("_price") and k != "cost_price"
-    }
-    _merge_qty = float(resulting_qty) or 0.0
-    for pk in _price_keys:
-        src_totals = []
-        for p in source_projections:
-            unit = p.state.get(pk)
-            src_totals.append(None if unit in (None, "") else float(unit) * float(p.state.get("quantity") or 0))
-        if src_totals and all(t is not None for t in src_totals):
-            merged_total = sum(src_totals)
-            price_fields[pk] = round(merged_total / _merge_qty, 10) if _merge_qty else merged_total
-        # else: at least one source lacks this price → omit (merged item has no value for it)
+    # The merged lot's value is its sources' (merged_cost_total), its landed cost their pools
+    # summed per bill and kind, and its goods cost the rest of the value: known only when every
+    # source holding units or goods value has a known goods cost (goods_cost_known).
+    create_data.update(_merged_cost(source_projections, merged_cost_total, resulting_qty))
+    price_fields = _merged_prices(source_projections, price_lists, currency)
 
     raw_loc = target_state.get("location_id")
     return MergePlan(
@@ -4584,7 +4668,7 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
         location_id=uuid.UUID(str(raw_loc)) if raw_loc else None,
         reclass=reclass,
         disclosure=await _merge_disclosure(session, company_id, reclass, settings, role),
-        fingerprint=_merge_fingerprint(payload, source_projections, reclass),
+        fingerprint=_merge_fingerprint(payload, source_projections, reclass, [create_data, price_fields]),
     )
 
 
@@ -4599,7 +4683,31 @@ async def preview_merge(payload: MergeBody, company_id=Depends(get_current_compa
         Projection.company_id == company_id, Projection.entity_type == "item",
         Projection.entity_id.in_(payload.source_entity_ids)))).scalars()}
     plan = await _plan_merge(session, company_id, payload, settings, role, rows)
-    return {"inventory_reclassification": plan.disclosure, "plan_fingerprint": plan.fingerprint}
+    return {"inventory_reclassification": plan.disclosure, "plan_fingerprint": plan.fingerprint,
+            "result": await _merge_result_preview(session, company_id, plan, role, settings)}
+
+
+async def _merge_result_preview(session: AsyncSession, company_id, plan: MergePlan, role: str,
+                                settings: dict) -> dict:
+    """The merged item's unit prices on every stored price list (None where it has none),
+    and for a role that may see cost its value, unit cost and whether its goods cost is
+    known, read as an item read would show the result: the same projection, flatten and
+    field visibility."""
+    from celerp.services.field_schema import get_effective_field_schema
+
+    state = apply_item_event({}, "item.created", {**plan.create_data, **plan.price_fields})
+    flat = flatten_item(state, "")
+    price_lists = (await get_price_config(session, company_id))[0]
+    listed = [price_key(pl["name"]) for pl in price_lists
+              if pl.get("name") and not is_derived(pl) and not is_cost_list_name(pl["name"])]
+    shown = {key: flat.get(key) for key in dict.fromkeys((*listed, *plan.price_fields, "cost_total", "cost_price"))}
+    can_see_costs = role_has_permission(settings, role, "view_inventory_costs")
+    field_schema = await get_effective_field_schema(session, company_id, category=flat.get("category"))
+    out = apply_item_visibility([shown], role, field_schema, can_see_costs,
+                                can_author_drafts=role_has_permission(settings, role, "edit_inventory"))[0]
+    if can_see_costs:
+        out["goods_cost_known"] = goods_cost_known(state)
+    return out
 
 
 @router.post("/merge")
@@ -5270,13 +5378,15 @@ async def export_items_csv(
     def _rows():
         for it in listed["items"]:
             row = dict(it)
-            # A virtual total the row does not carry is what the table shows: the stored cost_total
+            if row.get("cost_price") is not None:
+                row["cost_price"] = exported_cost_text(row, per_unit=True)
+            # A virtual total the row does not carry is what the table shows: the lot's whole value
             # for the cost total, else the price times the quantity, at the currency's precision.
             for total_key, price_col in virtual.items():
                 if total_key in row:
                     continue
                 if total_key == "cost_price_total" and row.get("cost_total") not in (None, ""):
-                    row[total_key] = row["cost_total"]
+                    row[total_key] = exported_cost_text(row)
                 elif row.get(price_col) not in (None, ""):
                     row[total_key] = to_stored_float(round_money(
                         to_decimal(row[price_col]) * to_decimal(row.get("quantity") or 0), currency))

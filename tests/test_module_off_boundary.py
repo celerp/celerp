@@ -915,6 +915,9 @@ _REVIEWED: dict[tuple[str, str], str] = {
     **{(_DOCS_UI, name): _OWN_UI for name in (
         "_hold_refusal", "_physical_lots", "_sales_options", "_doc_line_actions",
         "_writeoff_account_choices", "_payment_section", "_doc_detail", "setup_routes")},
+    **{(_DOCS_UI, name): "builds document lines from selected items; called only from Inventory's "
+       "own bulk actions (ui/routes/inventory.py), so it runs only while Inventory runs"
+       for name in ("_line_items_from_inventory", "_reorder_po_line")},
     ("celerp/output/doc_print.py", "render_doc_print_html"):
         "its list-totals step runs only for a list; its callers are Documents' share route "
         "(celerp_docs.routes_share) and Documents' own print page, so it runs only while Documents runs",

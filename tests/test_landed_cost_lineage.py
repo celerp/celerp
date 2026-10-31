@@ -169,6 +169,7 @@ _SPREADERS = {
     (_DOCS, "_received_goods_cost"): "a line's cost over its receipts",
     (_DOCS, "_received_landed"): "a line's landed cost over its receipts",
     (_DOCS, "_freight_since_receipt"): "freight over a receipt's lineage",
+    (_DOCS, "share"): "a lot's freight over the units that stay and the units that left it",
     (_DOCS, "_freight_sent_back"): "a bill's landed cost sent back over its lineage",
     (_DOCS, "sent_back"): "a bill's landed cost over its own units sent back",
     (_INV, "carve_cost"): "a lot's cost over a part and the rest",

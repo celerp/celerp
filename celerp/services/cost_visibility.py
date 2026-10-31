@@ -11,13 +11,16 @@ per-company field configuration, not a hardcoded gate.
 """
 from __future__ import annotations
 
+from celerp.services.goods_cost import GOODS_COST_UNKNOWN
+
 # Item-dict keys stripped when the caller lacks view_inventory_costs.
 COST_ITEM_KEYS: frozenset[str] = frozenset({"cost_price", "cost_total"})
 # Cost companions: derived cost data that a cost-hidden caller must not see either, or the
 # goods cost leaks through a value computed off it. Kept separate from COST_ITEM_KEYS,
 # which also drives the draft cost carve-out; writing one of these restates the goods
 # cost, so pricing.is_price_item_key gates them like cost_total.
-COST_DERIVED_ITEM_KEYS: frozenset[str] = frozenset({"cost_base", "cost_landed", "landed_costs"})
+COST_DERIVED_ITEM_KEYS: frozenset[str] = frozenset({"cost_base", "cost_landed", "landed_costs",
+                                                    GOODS_COST_UNKNOWN})
 
 
 def restricted_field_keys(role: str, field_schema: list[dict]) -> set[str]:
