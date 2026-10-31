@@ -13,6 +13,8 @@ anything is written, so a table added later can never be skipped or wiped by mis
 
 from __future__ import annotations
 
+import asyncio
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -56,6 +58,10 @@ AI_BATCH_ACTIVE = ("Wait for the assistant to finish its work before resetting t
 # Another transaction in the way: the reset rolls back and is refused as busy.
 _LEASE_TABLES = ("connector_execution_leases", "connector_execution_heartbeats")
 _BUSY = ("40P01", "40001", "55P03")  # deadlock, serialization failure, lock wait timed out
+_LOCK_NOT_AVAILABLE = "55P03"
+# How long a reset keeps trying tables another transaction is writing, and how often.
+_LOCK_PATIENCE_S = 2.0
+_LOCK_RETRY_S = 0.05
 PAYMENTS_NOT_CLOSED = {
     "disconnected": (503, "Reconnect Celerp Cloud so this company's online invoice payments can be "
                           "closed, then reset it. Nothing was deleted."),
@@ -185,7 +191,7 @@ def _lock_writers(schema: dict) -> list[str]:
 
     NOWAIT: the reset already holds its company's key exclusively, and a transaction writing
     one of these tables may go on to share that key (a notice naming the company, a row
-    referring to it), so waiting here could close a cycle. A busy table refuses the reset."""
+    referring to it), so waiting here could close a cycle (_lock_without_waiting)."""
     writable = sorted(set(schema) & (INSTALL_WIDE.keys() | {SessionRegistry.__tablename__}))
     company = sorted(set(schema) - set(writable) - {Company.__tablename__})
     keyed = sorted(set(schema) & {Company.__tablename__})
@@ -248,6 +254,35 @@ def _company_deletes(schema: dict) -> list[str]:
             for name, where in reversed(_company_rows(schema).items())]
 
 
+async def _lock_without_waiting(session: AsyncSession, schema: dict, cid: str) -> None:
+    """Take the reset's table locks (_lock_writers), then the company's connector lease rows,
+    never waiting on another transaction. A connector execution's release takes its lease
+    row, then its heartbeat row, then writes them, which the table locks make wait: the rows
+    are taken in that order, so a release in flight refuses the reset instead of deadlocking
+    with it.
+
+    Each attempt runs in a savepoint and fails at once (NOWAIT) on a lock another transaction
+    holds, which its rollback gives back. The tables are shared by every company, so another
+    company's write ordinarily commits within moments: the reset tries again for a short while,
+    and only a transaction still in the way after that refuses it as busy, with nothing changed."""
+    deadline = time.monotonic() + _LOCK_PATIENCE_S
+    while True:
+        try:
+            async with session.begin_nested():
+                for lock in _lock_writers(schema):
+                    await session.execute(text(lock))
+                for table in _LEASE_TABLES:
+                    if table in schema:
+                        await session.execute(text(
+                            f"SELECT 1 FROM {table} WHERE company_id = :c ORDER BY connector, resource "
+                            "FOR UPDATE NOWAIT"), {"c": cid})
+            return
+        except DBAPIError as exc:
+            if sqlstate(exc) != _LOCK_NOT_AVAILABLE or time.monotonic() >= deadline:
+                raise
+        await asyncio.sleep(_LOCK_RETRY_S)
+
+
 async def _company_schema(session: AsyncSession, cid: str) -> dict:
     """The catalog's keys, read and locked for the reset of the company bound as ``cid``
     once every table is placed and no row the reset would reach belongs to another
@@ -263,18 +298,7 @@ async def _company_schema(session: AsyncSession, cid: str) -> dict:
         raise _changed_outside("partition_key", await db_catalog.label(session, tables[0]))
     _placed(schema)
     _company_rows(schema)
-    # Another transaction writing these tables makes the lock fail at once (NOWAIT); the
-    # rollback leaves everything as it was and the owner is asked to try again.
-    for lock in _lock_writers(schema):
-        await session.execute(text(lock))
-    # A connector execution's release takes its lease row, then its heartbeat row, then writes
-    # them, which the locks above make wait: the company's rows are taken here in that order
-    # without waiting, so a release in flight refuses the reset instead of deadlocking with it.
-    for table in _LEASE_TABLES:
-        if table in schema:
-            await session.execute(text(
-                f"SELECT 1 FROM {table} WHERE company_id = :c ORDER BY connector, resource "
-                "FOR UPDATE NOWAIT"), {"c": cid})
+    await _lock_without_waiting(session, schema, cid)
     if await db_catalog.read(session) != schema:  # a table or key added before the lock
         raise _busy()
     if changed := await db_catalog.changed_outside(session, schema):

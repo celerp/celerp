@@ -3,7 +3,8 @@
 """A reset holds its company's key exclusively before it locks the tables, so it never waits
 for a table: a transaction of another company writing one of them may go on to share the
 reset company's key (a notice naming it, a row referring to it), and the two would wait on
-each other. The reset finds the table busy, changes nothing and asks the owner to try again."""
+each other. The reset tries the tables again for a moment without waiting, and one still busy
+after that changes nothing and asks the owner to try again."""
 
 from __future__ import annotations
 
@@ -90,3 +91,27 @@ async def test_a_reset_never_waits_for_a_row_another_transaction_holds(
     assert r.status_code == 409, r.text
     assert r.json()["detail"] == company_reset._busy().detail
     assert await snapshot(real_engine) == before
+
+
+async def test_a_reset_goes_ahead_once_another_companys_brief_write_commits(
+        real_engine, real_client, tmp_path, monkeypatch):
+    """Another company's write that commits a moment after the reset starts does not refuse
+    the reset: it tries the tables again, still without waiting on one, and goes ahead."""
+    _local_files(monkeypatch, tmp_path)
+    shared, solo, a, b = await _two_companies(real_engine, tmp_path)
+    tok = await token(real_engine, shared, a)
+    writer = maker(real_engine)()
+    try:
+        await writer.execute(text("UPDATE locations SET name = name WHERE company_id = :b"), {"b": str(b)})
+        reset = asyncio.create_task(real_client.post(RESET, json={"company_name": NAME}, headers=auth(tok)))
+        await asyncio.sleep(0.3)
+        await writer.commit()
+        waited = await _waits_on_a_table(real_engine, reset)
+        r = await reset
+    finally:
+        await writer.close()
+
+    assert not waited
+    assert r.status_code == 200, r.text
+    assert await count(real_engine, "companies", "id = :c", c=str(a)) == 0
+    assert await count(real_engine, "companies", "id = :c", c=str(b)) == 1
