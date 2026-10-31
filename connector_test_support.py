@@ -201,10 +201,25 @@ def stand_in_execution(monkeypatch, ctx=None):
                 if reason is not None:
                     raise execution.ExecutionRefused(reason)
         ex = SimpleNamespace(company_id=str(company_id), connector=connector.name, purpose=purpose,
-                             resources=list(resources), ctx=ctx)
+                             resources=list(resources), ctx=ctx, holder=uuid.uuid4())
         if ex.ctx is None and purpose not in execution.LOCAL_PURPOSES:
             ex.ctx = await execution._credentials(ex)
         yield ex
 
     monkeypatch.setattr(execution, "connector_execution", _execution)
     store_calls_inside_execution(monkeypatch)
+
+
+async def retry_due(company_id) -> None:
+    """A sweeper tick later: every failed rerun attempt of the company is due again."""
+    import sqlalchemy as sa
+
+    from celerp.connectors.execution import _internal
+    from celerp.db import get_session_ctx
+
+    with _internal():
+        async with get_session_ctx() as session:
+            await session.execute(sa.text(
+                "UPDATE connector_execution_heartbeats SET rerun_retry_at = now() "
+                "WHERE company_id = :c AND rerun_retry_at IS NOT NULL"), {"c": str(company_id)})
+            await session.commit()

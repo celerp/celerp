@@ -55,13 +55,13 @@ async def handle_webhook(
     store_matches: Callable[[str | None], bool] | None = None,
 ) -> None:
     """Handle an incoming webhook event by running a targeted inbound sync in a
-    webhook execution. A delivery that finds the resource busy, or no free
-    execution slot, or the first sync still running, records a rerun; a
-    delivery before the first sync started, or for a connection that changed
-    since it was verified, is dropped and logged. One refused because modules were
-    being changed records a rerun too: a store sends a webhook once, and the rerun
-    sweeper pulls what it named once the change has settled. It never raises to the
-    store."""
+    webhook execution. A store sends a delivery once, so it is recorded as a rerun
+    request before anything runs, and only its completed work acknowledges it. Busy, no
+    free execution slot, the first sync still running, a refusal, a failed or partial
+    sync, modules being changed, the lease lost or the worker killed all leave it pending,
+    and the rerun sweeper runs it (or drops it when the connection may no longer run it).
+    A delivery before the first sync started is ignored; one for a connection that
+    changed since it was verified is dropped and logged."""
     from celerp.connectors.execution import (
         AdmissionBusy,
         ExecutionBusy,
@@ -71,7 +71,7 @@ async def handle_webhook(
         first_sync_state,
         incomplete,
         record_rerun,
-        refusal_drops_work,
+        settle_rerun,
     )
     from celerp.connectors.ownership import ConnectorOwnershipError
     from celerp.connectors.relay_token import ConnectorUpgradeRequired, ConnectRequired
@@ -99,6 +99,7 @@ async def handle_webhook(
         return
 
     resource = execution_resource("entity", entity)
+    generation = await record_rerun(company_id, event.platform, resource)
     try:
         async with connector_execution(company_id, connector, "webhook", [resource], admission_wait=0) as ex:
             async with get_session_ctx() as session:
@@ -107,49 +108,39 @@ async def handle_webhook(
                 secret = config.webhook_secret
             if expected_webhook_secret is not None and secret != expected_webhook_secret:
                 log.info("webhook: %s reconnected since the delivery was verified, dropped", event.platform)
-                return
-            if store_matches is not None and not store_matches(ex.ctx.store_handle):
+                done = True
+            elif store_matches is not None and not store_matches(ex.ctx.store_handle):
                 log.info("webhook: %s delivery for another store, dropped", event.platform)
-                return
-            handled = rerun_needed = False
-            if event.platform == "woocommerce" and normalized_topic == "product.deleted":
+                done = True
+            elif event.platform == "woocommerce" and normalized_topic == "product.deleted":
                 try:
                     # A deletion matters to every linked product, whichever way products sync.
                     await connector.handle_product_deleted(ex.ctx, event.payload or {})
-                    handled = True
+                    done = True
                 except ModuleRefused as exc:
                     # Refused before anything changed: recorded on the store's sync history
                     # in the refusal's words. Once Inventory runs, the daily reconcile pass
                     # finds the product the store no longer returns.
                     await record_refused_run(company_id, event.platform, entity, exc)
-                    handled = True
-                    rerun_needed = isinstance(exc, ModuleBusy)
-            if not handled:
+                    done = not isinstance(exc, ModuleBusy)
+            else:
                 result = await run_sync(
                     connector, company_id, entity, purpose="webhook",
                     # WooCommerce names only the deleted order; the reconciliation pass
                     # finds every imported order the store no longer returns.
                     reconcile=event.platform == "woocommerce" and normalized_topic == "order.deleted",
                 )
-                rerun_needed = rerun_needed or incomplete([result]) is not None
-    except (ExecutionBusy, AdmissionBusy):
-        await record_rerun(company_id, event.platform, resource)
-        log.info("webhook: %s %s busy, rerun recorded", event.platform, resource)
+                done = incomplete([result]) is None
+            # Not done (modules changing, or ran and failed): the request's retry time is set,
+            # so the sweeper runs it after the change settles or the failure's cause clears,
+            # rather than this holder at once.
+            await settle_rerun(ex, resource, generation, failed=not done, alone=True)
+    except (ExecutionBusy, AdmissionBusy, ExecutionRefused, ConnectorOwnershipError, ConnectRequired,
+            ConnectorUpgradeRequired) as exc:
+        log.info("webhook: %s/%s not run now, left to the rerun sweeper: %s", event.platform, event.topic, exc)
         return
-    except ExecutionRefused as exc:
-        if not refusal_drops_work(exc.reason):
-            await record_rerun(company_id, event.platform, resource)
-        log.info("webhook: %s/%s not synced: %s", event.platform, event.topic, exc)
-        return
-    except (ConnectorOwnershipError, ConnectRequired, ConnectorUpgradeRequired) as exc:
-        log.info("webhook: %s/%s not synced: %s", event.platform, event.topic, exc)
-        return
-    if rerun_needed:
-        # Refused while modules change, or ran and failed: not delivered. Recorded once the
-        # execution has released, so the sweeper runs it after the change settles or the
-        # failure's cause clears, rather than the holder at once.
-        await record_rerun(company_id, event.platform, resource)
-        log.info("webhook: %s %s not completed, rerun recorded", event.platform, resource)
+    if not done:
+        log.info("webhook: %s %s not completed, rerun pending", event.platform, resource)
         return
     log.info("webhook: processed %s/%s for %s", event.platform, event.topic, company_id)
 

@@ -550,8 +550,10 @@ def _busy_then(answers: int):
 @pytest.mark.asyncio
 async def test_an_order_webhook_refused_while_modules_change_is_handled_again(woo_store, monkeypatch):
     """A store sends a webhook once and is never asked again, so one refused as busy
-    records a rerun, and the rerun sweeper pulls the order once the change has settled."""
+    stays recorded, and the rerun sweeper pulls the order at its retry time once the change
+    has settled."""
     from celerp.connectors.execution import sweep_reruns
+    from connector_test_support import retry_due
     from celerp.modules.boundary import ModuleBusy
     mark_running(monkeypatch, "celerp-docs")
     store = _busy_then(1)
@@ -561,6 +563,7 @@ async def test_an_order_webhook_refused_while_modules_change_is_handled_again(wo
         {"entity": "orders", "status": "failed", "errors": [str(ModuleBusy("celerp-docs"))]}]
     assert await _reruns(woo_store[0]) == ["orders"]
 
+    await retry_due(woo_store[0])
     await _outside(sweep_reruns())
     assert store.await_count == 2
     assert (await _history(woo_store[0]))[-1] == {"entity": "orders", "status": "success", "errors": None}
@@ -574,9 +577,11 @@ async def test_an_order_webhook_refused_while_modules_keep_changing_is_left_for_
     rerun stays recorded for the next sweeper tick (the watermark stays, so nothing is
     lost)."""
     from celerp.connectors.execution import sweep_reruns
+    from connector_test_support import retry_due
     mark_running(monkeypatch, "celerp-docs")
     monkeypatch.setattr(woo_store[1], "_paginate", _busy_then(10))
     await _webhook(woo_store, "order.updated")
+    await retry_due(woo_store[0])
     await _outside(sweep_reruns())
     assert [run["status"] for run in await _history(woo_store[0])] == ["failed", "failed"]
     assert await _reruns(woo_store[0]) == ["orders"]

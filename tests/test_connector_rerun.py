@@ -10,6 +10,7 @@ ended: a holder that keeps renewing keeps its lease however long it runs."""
 from __future__ import annotations
 
 import asyncio
+import types
 import contextvars
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -21,7 +22,7 @@ from celerp.connectors.base import ConnectorContext, EntityFlow, SyncEntity, Syn
 from celerp.connectors.relay_token import fetch_context as _relay_fetch_context
 from celerp.db import get_session_ctx
 from company_backup_support import company, owner, token
-from connector_test_support import connected
+from connector_test_support import connected, retry_due
 from migration_support import real_client, real_engine  # noqa: F401
 
 pytestmark = pytest.mark.asyncio
@@ -343,3 +344,185 @@ async def test_a_webhook_delivered_while_the_relay_is_unreachable_records_a_reru
         await _webhook(stub, cid)
     assert stub.calls == []
     assert await _reruns(cid, stub.name) == ["orders"]
+
+
+async def _pending(cid, connector) -> int:
+    """How many requests of the connection are recorded and not yet acknowledged."""
+    async with get_session_ctx() as s:
+        return int(await s.scalar(sa.text(
+            "SELECT COALESCE(SUM(rerun_requested - rerun_done), 0) FROM connector_execution_heartbeats "
+            "WHERE company_id = :c AND connector = :k"), {"c": cid, "k": connector}))
+
+
+async def _restored(stub, sync_orders, cid) -> None:
+    """The next process: the store answers again, and the sweeper runs what was left."""
+    from celerp.connectors.execution import sweep_reruns
+
+    stub.sync_orders = sync_orders
+    await retry_due(cid)
+    await _outside(sweep_reruns())
+
+
+@pytest.mark.parametrize("end", ["lease_lost", "killed", "error", "sync_error"])
+async def test_a_webhook_whose_execution_ends_abnormally_leaves_its_delivery_pending(stub, end):
+    """The store sends a webhook once and the relay has already acknowledged it: whether the
+    lease is lost, the worker is killed mid-run, or the execution raises, the delivery stays
+    recorded exactly once, and a later run clears it."""
+    from celerp.connectors import execution
+    from celerp.connectors.webhooks import WebhookEvent, handle_webhook
+
+    cid = await _connected(stub)
+    sync_orders = stub.sync_orders
+
+    async def _ends(ctx, since=None, reconcile=False):
+        stub.calls.append({"reconcile": reconcile})
+        if end == "lease_lost":
+            raise execution.LeaseLost("taken over")
+        if end == "sync_error":
+            raise RuntimeError("the store connection reset")
+        raise asyncio.CancelledError  # the worker is killed while the store call runs
+
+    def _store_check_fails(handle):
+        raise RuntimeError("the store answered nonsense")
+
+    stub.sync_orders = _ends
+    event = WebhookEvent(platform=stub.name, topic="orders/updated")
+    raised = {"killed": asyncio.CancelledError, "lease_lost": execution.LeaseLost, "error": RuntimeError}
+    delivered = _outside(handle_webhook(event, cid, store_matches=_store_check_fails if end == "error" else None))
+    if end in raised:
+        with pytest.raises(raised[end]):
+            await delivered
+    else:
+        await delivered
+    assert await _pending(cid, stub.name) == 1
+
+    await _restored(stub, sync_orders, cid)
+    assert stub.calls[-1] == {"reconcile": True}
+    assert await _pending(cid, stub.name) == 0
+
+
+async def _cleared(s, cid) -> None:
+    """No holder and nothing pending: lease rows before heartbeat rows, as the execution takes them."""
+    key = {"c": cid}
+    await s.execute(sa.text("SELECT resource FROM connector_execution_leases WHERE company_id = :c "
+                            "ORDER BY resource FOR UPDATE"), key)
+    await s.execute(sa.text("UPDATE connector_execution_leases SET holder = NULL WHERE company_id = :c"), key)
+    await s.execute(sa.text(
+        "UPDATE connector_execution_heartbeats SET holder = NULL, expires_at = NULL, "
+        "rerun_done = rerun_requested, rerun_attempts = 0, rerun_retry_at = NULL WHERE company_id = :c"), key)
+    await s.commit()
+
+
+@types.coroutine
+def _cancelled_at(coro, n: int):
+    """Run ``coro`` and cancel its task at its ``n``-th suspension, as a killed worker's
+    task is cancelled wherever it waits."""
+    it = coro.__await__()
+    step, sent, thrown = 0, None, None
+    while True:
+        try:
+            awaited = it.throw(thrown) if thrown is not None else it.send(sent)
+        except StopIteration as stop:
+            return stop.value
+        sent = thrown = None
+        step += 1
+        if step == n:
+            asyncio.current_task().cancel()
+        try:
+            sent = yield awaited
+        except BaseException as exc:  # noqa: BLE001 - handed back to the coroutine
+            thrown = exc
+
+
+@pytest.mark.timeout(240)
+async def test_a_webhook_cancelled_at_any_await_of_its_execution_leaves_its_delivery_pending(stub, monkeypatch):
+    """Cancelled at each await in turn: once its execution has the resource and until its
+    work has completed, exactly one request stays pending; only completed work clears it."""
+    from celerp.connectors import execution
+    from celerp.connectors.webhooks import WebhookEvent, handle_webhook
+
+    cid = await _connected(stub)
+    seen = {"acquired": False, "done": False}
+    acquire, sync_orders = execution._acquire, stub.sync_orders
+
+    async def _acquire(ex, connector):
+        await acquire(ex, connector)
+        seen["acquired"] = True
+
+    async def _sync(ctx, since=None, reconcile=False):
+        result = await sync_orders(ctx, since=since, reconcile=reconcile)
+        seen["done"] = True
+        return result
+
+    monkeypatch.setattr(execution, "_acquire", _acquire)
+    stub.sync_orders = _sync
+    event = WebhookEvent(platform=stub.name, topic="orders/updated")
+
+    async def _cancelled(n):
+        await _cancelled_at(handle_webhook(event, cid), n)
+
+    async def _reset():  # a cancelled release leaves the lease to expire; the next try starts clean
+        with execution._internal():
+            async with get_session_ctx() as s:
+                await _cleared(s, cid)
+
+    n, inside = 0, 0
+    while True:
+        n += 1
+        seen.update(acquired=False, done=False)
+        try:
+            await asyncio.create_task(_cancelled(n), context=contextvars.Context())
+        except asyncio.CancelledError:
+            pending = await _pending(cid, stub.name)
+            if seen["acquired"] and not seen["done"]:
+                inside += 1
+                assert pending == 1, f"cancelled at await {n}: {pending} pending"
+            assert pending <= 1, f"cancelled at await {n}: {pending} pending"
+            await _reset()
+            continue
+        assert seen["done"]
+        assert await _pending(cid, stub.name) == 0
+        break
+    assert inside > 3
+
+
+async def test_a_later_delivery_runs_the_one_a_killed_worker_left_before_it_releases(stub):
+    """A delivery's own sync acknowledges only its own request: the one a killed worker left
+    still gets the rerun's reconciliation pass, run by the next delivery as it releases."""
+    cid = await _connected(stub)
+    sync_orders = stub.sync_orders
+
+    async def _killed(ctx, since=None, reconcile=False):
+        stub.calls.append({"reconcile": reconcile})
+        raise asyncio.CancelledError
+
+    stub.sync_orders = _killed
+    with pytest.raises(asyncio.CancelledError):
+        await _webhook(stub, cid)
+    stub.sync_orders = sync_orders
+    await _webhook(stub, cid)
+    assert stub.calls == [{"reconcile": False}, {"reconcile": False}, {"reconcile": True}]
+    assert await _pending(cid, stub.name) == 0
+
+
+@pytest.mark.parametrize("final", ["connect_ended", "upgrade_required", "not_this_company"])
+async def test_a_delivery_the_connection_can_no_longer_run_is_dropped_by_the_sweeper(stub, monkeypatch, final):
+    """Connect ended, the relay needs a newer Celerp, or the connection is not this company's:
+    the delivery stays recorded until the sweeper meets the same answer, then it is dropped
+    rather than retried every tick (the daily sync runs after a renewal)."""
+    from unittest.mock import AsyncMock
+
+    from celerp.connectors.execution import sweep_reruns
+    from celerp.connectors.ownership import ConnectorOwnershipError
+    from celerp.connectors.relay_token import ConnectorUpgradeRequired, ConnectRequired
+
+    cid = await _connected(stub)
+    answer = {"connect_ended": ConnectRequired(), "upgrade_required": ConnectorUpgradeRequired(),
+              "not_this_company": ConnectorOwnershipError("not here")}[final]
+    monkeypatch.setattr("celerp.connectors.relay_token.fetch_context", AsyncMock(side_effect=answer))
+    await _webhook(stub, cid)
+    assert await _pending(cid, stub.name) == 1
+
+    await _outside(sweep_reruns())
+    assert stub.calls == []
+    assert await _pending(cid, stub.name) == 0
