@@ -804,6 +804,42 @@ class DocConverted(BaseModel):
     pre_convert_status: str | None = None
 
 
+class MemoTakeLine(BaseModel):
+    invoice_line_id: str
+    memo_line_id: str
+    lot_ids: list[str]
+    quantity: float
+    memo_amount: float
+    memo_line_amount: float
+
+
+class MemoTake(BaseModel):
+    draw_id: str
+    invoice_id: str
+    doc_number: str | None = None
+    lines: list[MemoTakeLine]
+    shipping: float = 0
+    discount: float = 0
+    tax: float = 0
+
+
+class DocLinesInvoiced(BaseModel):
+    """A memo's goods drawn onto an invoice: what the draw took, recorded on the memo."""
+    take: MemoTake
+
+
+class ReturnedLine(BaseModel):
+    invoice_line_id: str
+    draw_id: str
+
+
+class DocLinesReturned(BaseModel):
+    """Drawn goods back on a memo: the invoice lines returned, and the draws that stop counting."""
+    invoice_id: str
+    lines: list[ReturnedLine] = Field(default_factory=list)
+    release: list[str] = Field(default_factory=list)
+
+
 class DocConvertedToBill(BaseModel):
     ref_id: str | None = None
     source_po_ref: str | None = None
@@ -1518,6 +1554,8 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "doc.payment.voided": DocPaymentVoided,
     "doc.payment.deleted": DocPaymentDeleted,
     "doc.converted": DocConverted,
+    "doc.lines_invoiced": DocLinesInvoiced,
+    "doc.lines_returned": DocLinesReturned,
     "doc.received": DocReceived,
     "doc.shared_import": DocSharedImport,
     "received_doc.imported": ReceivedDocImported,

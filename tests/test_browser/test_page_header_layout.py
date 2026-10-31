@@ -10,6 +10,8 @@ from __future__ import annotations
 import pytest
 from playwright.sync_api import Page
 
+from .conftest import wait_for_topbar
+
 pytestmark = pytest.mark.browser
 
 # Width the placeholder needs, against the room the input gives it (both in px).
@@ -48,8 +50,7 @@ def _open(page: Page, ui_server: str, lang: str, width: int, path: str = "/inven
     page.goto(path)
     page.wait_for_selector(".page-header #search-input", state="visible")
     page.wait_for_load_state("load")
-    # The company switcher loads after the page; on a phone it can add a top bar row.
-    page.wait_for_selector("#topbar-company-switcher", state="detached")
+    wait_for_topbar(page)
 
 
 @pytest.mark.parametrize("path", ["/inventory", "/docs", "/lists"])

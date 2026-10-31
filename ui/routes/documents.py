@@ -32,7 +32,7 @@ from ui.security import not_permitted_redirect
 from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum, display_unit, doc_href
 from celerp.services.background import spawn_background
 from celerp.services.business_time import business_today
-from celerp.services.doc_balance import doc_tax, doc_value, is_awaiting_payment, is_owed, outstanding_balance
+from celerp.services.doc_balance import MEMO_DRAW_STATUSES, doc_tax, doc_value, is_awaiting_payment, is_owed, outstanding_balance
 from celerp.services.record_quantities import FULFILLABLE_STATUSES, RECEIVABLE_STATUSES
 from celerp.services.money import document_line_amount, to_decimal, to_stored_float, round_money, currency_dp, rate_dp
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, line_price_list, resolve_price
@@ -46,6 +46,8 @@ from celerp.output.document_context import prepare_document_output
 from ui.components.activity import activity_table
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import files_error, files_section as _shared_doc_files_section, files_session_expired
+from ui.components.doc_money import ATTRS as DOC_MONEY_ATTRS, redraw_trigger as doc_money_redraw
+from ui.components.preview_confirm import FORM_ATTRS as CONFIRMS_PREVIEW, PREVIEW_ATTRS, binding_input, confirmed_binding
 from ui.components.operation_key import (
     operation_key_attrs, operation_key_input, operation_key_vals, required_operation_key, submitted_operation_key,
 )
@@ -281,6 +283,15 @@ def _status_doc(item: dict) -> tuple[str, str] | None:
     """The document behind an item's status as (id, number), or None when either is missing."""
     doc_id, doc_number = str(item.get("status_doc_id") or ""), str(item.get("status_doc_number") or "")
     return (doc_id, doc_number) if doc_id and doc_number else None
+
+
+def _line_status_doc(li: dict, eid: str, item_status_doc_map: dict | None) -> tuple[str, str] | None:
+    """The document a line's status badge names: for a line invoiced from a memo, the memo its
+    goods are out on (the invoice holding them is the page itself); otherwise the item's own."""
+    drawn = li.get("drawn_from") or {}
+    if drawn.get("memo_id"):
+        return drawn["memo_id"], drawn.get("memo_number") or drawn["memo_id"]
+    return (item_status_doc_map or {}).get(eid)
 
 
 def _picker_item(item: dict, unit_price, unit_map: dict) -> dict:
@@ -870,6 +881,17 @@ _STATUS_BADGE: dict[str, tuple[str, str]] = {
 }
 
 
+# Header fields whose save changes a figure the page works out from the document's money (the
+# totals, their currency, the conversion note, Outstanding): the save redraws those figures.
+DOC_MONEY_FIELDS = frozenset({"currency", "conversion_rate", "tax_rate"})
+
+
+def _badge_cell(*content, cls: str) -> FT:
+    """A line table cell holding badges or links. Every such cell is made here, so one rule
+    (.cell-badges) wraps them inside the column, whatever its width, and each shows whole."""
+    return Td(*content, cls=f"{cls} cell-badges")
+
+
 def _item_status_badge_cell(status_val: str, eid: str, status_doc: tuple[str, str] | None = None,
                             held: tuple[float, float] | None = None) -> FT:
     """Status column cell for a document line: linked badge when the item's status is
@@ -904,7 +926,7 @@ def _item_status_badge_cell(status_val: str, eid: str, status_doc: tuple[str, st
                 A(Span(label, cls=f"badge {badge_cls} badge--link"), href=f"/inventory/{eid}", title=t("documents.view_in_catalog"))
                 if eid else Span(label, cls=f"badge {badge_cls}")
             )
-        return Td(badge_el, cls="col-item-status")
+        return _badge_cell(badge_el, cls="col-item-status")
     return Td(Span("-", cls="muted"), cls="col-item-status")
 
 
@@ -1094,6 +1116,17 @@ def _line_number_field(unit_label: str, **attrs) -> FT:
         Span(display_unit(unit_label), cls="meta-value meta-value--muted unit-label") if unit_label else None,
         cls="li-qty-field",
     )
+
+
+def _reopened_toast(answer) -> dict:
+    """A notice that stays until closed, naming the memo an action gave goods back to and
+    opened again, with a link to it; empty when no memo reopened."""
+    memos = (answer.get("reopened_memos") or []) if isinstance(answer, dict) else []
+    if not memos:
+        return {}
+    names = ", ".join(m.get("doc_number") or m.get("id") or "" for m in memos)
+    return toast_header(t("documents.memo_reopened_notice", memo=names), "info", persist=True,
+                        action={"href": doc_href(memos[0].get("id")), "label": memos[0].get("doc_number") or ""})
 
 
 def _action_error(msg: str, **triggers):
@@ -2612,6 +2645,17 @@ celerpUpdateBulkAlloc();
                             identifier_backfill(_li, _it)
         except Exception:
             pass
+        # A live memo's Invoice selected offers the drafts of its customer in its currency.
+        draw_targets: list[tuple[str, str]] = []
+        if doc_type == "memo" and status in MEMO_DRAW_STATUSES and doc.get("contact_id"):
+            try:
+                drafts = await api.list_docs(token, {"doc_type": "invoice", "status": "draft", "limit": 200,
+                                                     "contact_id": doc["contact_id"], "currency": doc.get("currency") or ""})
+                draw_targets = [(d.get("entity_id") or d.get("id"), d.get("ref_id") or d.get("doc_number") or "--")
+                                for d in drafts.get("items") or []]
+            except APIError as e:
+                if e.status == 401:
+                    raise
         # Draft PO: grey qty placeholder per blank line = velocity suggestion in purchase units.
         line_suggestions: dict[str, str] = {}
         if doc_type == "purchase_order" and status == "draft":
@@ -2619,7 +2663,7 @@ celerpUpdateBulkAlloc();
         return await base_shell(
             breadcrumbs([(t("nav.dashboard"), "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
             page_header(f"{type_label} - {status_label} {doc_ref}"),
-            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), settings=_co_settings, connected_connectors=_co_connectors, item_categories=item_categories, notes=doc_notes, company_currency=company_currency, free_send_offer=(False if _token_bound else _free_send_offer(token)), email_used=_email_used, email_quota=_email_quota, email_resets_on=_email_resets_on, share_enabled=_token_bound, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_status_doc_map=item_status_doc_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions, line_identifier_mode=_ident_mode, relay_error=_relay_error, note_targets=note_targets, original=original),
+            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), settings=_co_settings, connected_connectors=_co_connectors, item_categories=item_categories, notes=doc_notes, company_currency=company_currency, free_send_offer=(False if _token_bound else _free_send_offer(token)), email_used=_email_used, email_quota=_email_quota, email_resets_on=_email_resets_on, share_enabled=_token_bound, share_active=_share_active, payments_on=_payments_on, item_status_map=item_status_map, item_status_doc_map=item_status_doc_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses, line_suggestions=line_suggestions, line_identifier_mode=_ident_mode, relay_error=_relay_error, note_targets=note_targets, original=original, draw_targets=draw_targets),
             title=f"{type_label} {doc_ref} - Celerp",
             nav_active=_doc_nav_key(doc_type),
             request=request,
@@ -2662,6 +2706,53 @@ celerpUpdateBulkAlloc();
             display_value = doc.get(field)
         return _doc_display_cell(entity_id, field, display_value)
 
+    async def _set_memo_rate(token: str, entity_id: str, memo: dict, value: str, form):
+        """Set an issued memo's tax rate from its Rate cell, confirming the preview on screen, and
+        redraw every figure of the page that comes from its money, with a notice of the tax before
+        and after that stays until closed."""
+        from starlette.responses import Response as _R
+        try:
+            rate = float(value)
+        except ValueError:
+            return P(t("documents.enter_a_number"), cls="cell-error")
+        try:
+            result = await api.set_memo_tax_rate(
+                token, entity_id, rate, confirmed_binding(form, t("documents.memo_rate_wait_for_preview")),
+                required_operation_key(form))
+        except ValueError as exc:
+            return P(str(exc), cls="cell-error")
+        except APIError as e:
+            if e.status == 401:
+                raise
+            return P(error_message(e), cls="cell-error")
+        currency = memo.get("currency") or "USD"
+        notice = t("documents.memo_tax_rate_set", memo=memo.get("ref_id") or memo.get("doc_number") or "",
+                   rate=f"{rate:g}", old=fmt_money(float(result.get("previous_tax") or 0), currency),
+                   new=fmt_money(float(result.get("tax") or 0), currency))
+        return _R("", status_code=200, headers={
+            "HX-Reswap": "none",
+            **toast_header(notice, "success", persist=True, celerpListVersion={"version": result.get("version")},
+                           **doc_money_redraw())})
+
+    @app.post("/docs/{entity_id}/tax-rate/preview")
+    async def memo_tax_rate_preview(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.session_expired"), cls="cell-error")
+        form = await request.form()
+        currency = str(form.get("currency") or "") or "USD"
+        try:
+            result = await api.memo_tax_rate_preview(token, entity_id, float(str(form.get("value") or "")))
+        except ValueError:
+            return Span("")
+        except APIError as e:
+            if e.status == 401:
+                raise
+            return Span(error_message(e), cls="cell-error")
+        return Span(f"{t('doc.tax')} {fmt_money(float(result.get('tax') or 0), currency)}  "
+                    f"{t('doc.total')} {fmt_money(float(result.get('total') or 0), currency)}",
+                    *binding_input(result), cls="text-muted")
+
     @app.get("/docs/{entity_id}/field/{field}/edit")
     async def doc_field_edit(request: Request, entity_id: str, field: str):
         token = _token(request)
@@ -2687,6 +2778,22 @@ celerpUpdateBulkAlloc();
         )
         enter_js = "if(event.key==='Enter'){event.preventDefault();this.blur();}"
         blur_restore = f"htmx.ajax('GET','{restore_url}',{{target:this.closest('.editable-cell'),swap:'outerHTML'}})"
+        if field == "tax_rate" and _memo_rate_open(doc):
+            # Setting a memo's rate cannot be undone, so it waits for Save (never on blur), shows
+            # the tax and total it gives first, and saves only the rate whose preview is on screen.
+            return Form(
+                Input(type="number", name="value", step="any", min="0", cls="cell-input", autofocus=True,
+                      onkeydown=esc_js),
+                Input(type="hidden", name="currency", value=doc.get("currency") or ""),
+                operation_key_input(),
+                Button(t("btn.save"), type="submit", cls="btn btn--primary btn--sm", disabled=True),
+                Span(cls="memo-rate-preview", hx_post=f"/docs/{entity_id}/tax-rate/preview",
+                     hx_trigger="input delay:400ms from:closest form", hx_include="closest form", **PREVIEW_ATTRS),
+                cls="editable-cell", hx_patch=f"/docs/{entity_id}/field/{field}",
+                hx_target="this", hx_swap="outerHTML",
+                # The preview swaps its own answer into its span; the form's swap is Save's alone.
+                hx_disinherit="hx-swap hx-target", **CONFIRMS_PREVIEW,
+            )
         if field == "company_address":
             # Re-editing the From address must re-open the location picker (the same control shown on
             # initial render), not a bare text box - otherwise the user can't switch back to a saved
@@ -2855,6 +2962,13 @@ celerpUpdateBulkAlloc();
                 is_vendor_context = field == "commission_contact_id"
             target = "/contacts/vendors" if is_vendor_context else "/contacts/customers"
             return _R("", status_code=204, headers={"HX-Redirect": target})
+        if field == "tax_rate":
+            try:
+                doc = await api.get_doc(token, entity_id)
+            except APIError as e:
+                return P(error_message(e), cls="cell-error")
+            if _memo_rate_open(doc):
+                return await _set_memo_rate(token, entity_id, doc, value, form)
         try:
             patch = {field: value}
             # A contact change sends only the contact: the backend copies its details, terms,
@@ -2919,6 +3033,7 @@ celerpUpdateBulkAlloc();
             media_type="text/html",
             headers={"HX-Trigger": _json.dumps({
                 "celerpListVersion": {"version": doc.get("version")},
+                **(doc_money_redraw() if field in DOC_MONEY_FIELDS else {}),
             })},
         )
 
@@ -3281,6 +3396,7 @@ celerpUpdateBulkAlloc();
         token = _token(request)
         if not token:
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        notice: dict = {}
         try:
             form = await request.form()
             op_key = submitted_operation_key(form)
@@ -3313,7 +3429,7 @@ celerpUpdateBulkAlloc();
                 await api.revert_doc_to_draft(token, entity_id, reason=None, **op_key)
             elif action == "void":
                 reason = str(form.get("reason", "")).strip() or None
-                await api.void_doc(token, entity_id, reason, **op_key)
+                notice = _reopened_toast(await api.void_doc(token, entity_id, reason, **op_key))
             elif action == "revert_to_draft":
                 reason = str(form.get("reason", "")).strip() or None
                 await api.revert_doc_to_draft(token, entity_id, reason, **op_key)
@@ -3325,13 +3441,13 @@ celerpUpdateBulkAlloc();
             elif action == "reopen":
                 await api.reopen_doc(token, entity_id, **op_key)
             elif action == "delete":
-                await api.delete_doc(token, entity_id)
+                notice = _reopened_toast(await api.delete_doc(token, entity_id))
                 doc_type = str(form.get("doc_type", "")).strip() or "invoice"
                 if doc_type == "subscription_invoice":
                     return _R("", status_code=204, headers={"HX-Redirect": "/subscriptions?direction=sales"})
                 if doc_type == "subscription_po":
                     return _R("", status_code=204, headers={"HX-Redirect": "/subscriptions?direction=purchasing"})
-                return _R("", status_code=204, headers={"HX-Redirect": f"/docs?type={doc_type}"})
+                return _R("", status_code=204, headers={**notice, "HX-Redirect": f"/docs?type={doc_type}"})
             elif action == "create-credit-note":
                 # Fetch source invoice and pre-populate CN with its line items (negated quantities)
                 # and its taxes: one it cannot carry is refused by name, never left off the note.
@@ -3388,7 +3504,7 @@ celerpUpdateBulkAlloc();
                 raise
             # Return error inline
             return _action_error(error_message(e))
-        return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
+        return _R("", status_code=204, headers={**notice, "HX-Redirect": f"/docs/{entity_id}"})
 
     # T4: Record payment
     @app.post("/docs/{entity_id}/payment")
@@ -3440,6 +3556,62 @@ celerpUpdateBulkAlloc();
                 raise
             return _action_error(error_message(e))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{target_id}"})
+
+    def _draw_picks(form) -> dict:
+        """The Invoice selected panel as a draw request: the units of each selected line by its
+        line id and the draft invoice chosen (None for a new one)."""
+        quantities = {}
+        for idx, qty in _selected_line_quantities(form):
+            line_id = str(form.get(f"line_id_{idx}") or "")
+            if qty is None:
+                raise ValueError(t("documents.select_lines_to_invoice"))
+            if line_id:
+                quantities[line_id] = qty
+        if not quantities:
+            raise ValueError(t("documents.select_lines_to_invoice"))
+        return {"line_ids": list(quantities), "quantities": quantities,
+                "target_doc_id": str(form.get("target_doc_id") or "").strip() or None}
+
+    # Invoice selected: chosen units of a memo onto a new or a draft invoice of its customer.
+    @app.post("/docs/{entity_id}/invoice-lines")
+    async def invoice_lines_route(request: Request, entity_id: str):
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        form = await request.form()
+        try:
+            # The draw confirms the preview on screen: its binding, or nothing at all.
+            binding = confirmed_binding(form, t("documents.draw_wait_for_preview"))
+            body = {**_draw_picks(form), "binding": binding,
+                    "idempotency_key": required_operation_key(form, "invoice-lines")}
+            result = await api.invoice_lines(token, entity_id, body)
+        except ValueError as exc:
+            return _action_error(str(exc))
+        except APIError as e:
+            if e.status == 401:
+                raise
+            also = (e.data.get("also") or []) if isinstance(e.data, dict) else []
+            msg = error_message(e)
+            return _action_error(f"{msg} {t('documents.draw_also')} {refusal_text(also)}" if also else msg)
+        return _R("", status_code=204, headers={"HX-Redirect": doc_href(result.get("target_doc_id"))})
+
+    @app.post("/docs/{entity_id}/invoice-lines/preview")
+    async def invoice_lines_preview_route(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.session_expired"), cls="cell-error")
+        form = await request.form()
+        try:
+            # A preview always reads fresh: the binding it answers with is the one a submit sends back.
+            preview = await api.invoice_lines_preview(token, entity_id, _draw_picks(form))
+        except ValueError:
+            return ""
+        except APIError as e:
+            if e.status == 401:
+                raise
+            return P(error_message(e), cls="cell-error")
+        return _draw_panel_preview({"currency": str(form.get("currency") or "")}, preview)
 
     # T2: Receive PO goods
     @app.post("/docs/{entity_id}/receive")
@@ -4055,7 +4227,9 @@ celerpUpdateBulkAlloc();
         # Goods another invoice named: say whose, and that it can no longer ship them, in a
         # notice that stays until it is closed.
         moved = (answer.get("taken_from") or []) if isinstance(answer, dict) else []
-        if moved:
+        if reopened := _reopened_toast(answer):
+            toast = reopened
+        elif moved:
             notice = " ".join(t("documents.cost_moved_with_goods", sku=m.get("sku") or m.get("lot_id"),
                                 doc=m.get("doc_number") or m.get("doc_id")) for m in moved)
             toast = toast_header(notice, "info", persist=True)
@@ -4070,6 +4244,12 @@ celerpUpdateBulkAlloc();
             request, lambda form: {"_send": api.fulfill_lines, "entity_id": entity_id, "_done": "documents.lines_shipped",
                           **_line_action_form(form, "fulfil")},
             redirect=f"/docs/{entity_id}")
+
+    @app.post("/docs/{entity_id}/back-to-memo")
+    async def doc_back_to_memo(request: Request, entity_id: str):
+        return await _line_action_proxy(
+            request, lambda form: {"_send": api.back_to_memo, "entity_id": entity_id,
+                                   "_done": "documents.lines_back_to_memo", **_line_action_form(form, "back-to-memo")})
 
     def _set_available_form(form, entity_id: str, is_list: bool) -> dict:
         import re as _re_qty
@@ -6040,7 +6220,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
         history_table,
         summary_line,
         add_form,
-        cls="doc-section payment-section",
+        id="doc-payments", cls="doc-section payment-section", **DOC_MONEY_ATTRS,
     )
 
 
@@ -6473,14 +6653,14 @@ _RETURN_LOTS_JS = """
 """
 
 
-def _line_action_submit(label: str, cls: str) -> FT:
+def _line_action_submit(label: str, cls: str, **attrs) -> FT:
     """The submit button of a line action form. The second click of a double click does
     nothing, so the action's confirm is asked once; the form disables the button while its
     request is on the way."""
-    return Button(label, type="submit", cls=cls, onclick="if(event.detail>1)event.preventDefault()")
+    return Button(label, type="submit", cls=cls, onclick="if(event.detail>1)event.preventDefault()", **attrs)
 
 
-def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, show_fulfill: bool = False, is_inbound: bool = False, inbound_line_items: list | None = None, locations: list | None = None, scan_marks: bool = False, show_reserve: bool = False, show_release: bool = False, can_delete: bool = True, unit_map: dict | None = None, item_meta_map: dict | None = None) -> FT:
+def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, show_fulfill: bool = False, is_inbound: bool = False, inbound_line_items: list | None = None, locations: list | None = None, scan_marks: bool = False, show_reserve: bool = False, show_release: bool = False, can_delete: bool = True, unit_map: dict | None = None, item_meta_map: dict | None = None, draw_panel: FT | None = None, show_back_to_memo: bool = False) -> FT:
     """Bulk action toolbar for line items. Hidden until JS detects 1+ checked rows.
     labels_only=True: finalized docs - only Print Labels action, no delete.
     can_delete=False: the line structure is locked (a counting audit), so no Delete selected.
@@ -6491,6 +6671,8 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
     is_inbound=True: show Receive Goods / Return Goods for the selected lines' quantities.
     unit_map: the company units, so each quantity field steps by what its unit allows.
     item_meta_map: the lines' item measures, so a return row offers the weight and pieces its item keeps.
+    draw_panel: a live memo's Invoice selected panel (_draw_panel), offered as an action.
+    show_back_to_memo=True: a draft invoice offers Back to memo for lines invoiced from a memo.
     Two-stage: select action → confirm button appears. Print Labels only shown when
     celerp-labels is installed (slot-driven, DRY)."""
     from celerp.modules.slots import get as get_slot
@@ -6515,6 +6697,8 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
             options.append(Option(_reserve_label, value="li-reserve"))
         if show_fulfill or show_reserve or show_release:
             options.append(Option(_revert_label, value="li-revert"))
+        if show_back_to_memo:
+            options.append(Option(t("btn.back_to_memo"), value="li-back-to-memo"))
     else:
         options = [
             Option(t("doc.action"), value="", disabled=True, selected=True),
@@ -6527,6 +6711,8 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
             options.append(Option(_reserve_label, value="li-reserve"))
         if show_fulfill or show_reserve:
             options.append(Option(_revert_label, value="li-revert"))
+        if draw_panel is not None:
+            options.append(Option(t("btn.invoice_selected"), value="li-invoice"))
     # Marking/reverting scanned highlights on a finalized audit is a row-selection action, not a button.
     if scan_marks:
         options.append(Option(t("documents.mark_as_scanned"), value="li-mark-scanned"))
@@ -6547,6 +6733,14 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
                cls="btn btn--secondary btn--sm", style="display:none",
                onclick="liBulkLabelsConfirmed()"),
     ]
+    if show_back_to_memo:
+        children.append(
+            Button(t("btn.back_to_memo"), type="button", id="li-bulk-backmemo-btn",
+                   cls="btn btn--secondary btn--sm", style="display:none",
+                   onclick="liBulkBackToMemo(event)"),
+        )
+    if draw_panel is not None:
+        children.append(draw_panel)
     if scan_marks:
         children += [
             Button(t("documents.mark_as_scanned"), type="button", id="li-bulk-markscan-btn",
@@ -6722,10 +6916,131 @@ def _doc_tax_rows(doc: dict, currency: str, can_edit: bool) -> tuple[FT, FT]:
         label = f"{t('documents.tax')} ({next(iter(rates)):g}%)" if len(rates) == 1 else t("documents.tax")
         code_totals = {"tax": {"label": label, "amount": tax_amount}} if tax_amount else {}
         stored_tax_rows = Div(id="doc-stored-tax-rows")
+    rate_row = (Div(Span(t("label.tax_rate"), cls="total-label"),
+                    _doc_display_cell(doc.get("entity_id") or doc.get("id") or "", "tax_rate", None),
+                    cls="total-row") if _memo_rate_open(doc) else "")
     line_tax_rows = Div(*(Div(Span(f"{v['label']}:", cls="total-label"),
                               Span(fmt_money(v["amount"], currency), cls="total-value"), cls="total-row")
-                          for v in code_totals.values()), id="doc-tax-rows")
+                          for v in code_totals.values()), rate_row, id="doc-tax-rows")
     return line_tax_rows, stored_tax_rows
+
+
+def _from_memo_link(li: dict):
+    """The "From memo M-12" link to the memo under the quantity of an invoice line drawn from
+    it; "" for any other line."""
+    drawn = li.get("drawn_from") or {}
+    if not drawn.get("memo_id"):
+        return ""
+    return Div(A(t("documents.line_from_memo", memo=drawn.get("memo_number") or drawn["memo_id"]),
+                 href=doc_href(drawn["memo_id"]), cls="auth-link"), cls="text-muted drawn-from")
+
+
+def _memo_take_labels(li: dict) -> list:
+    """A memo line's shipped cell once invoices took some of it: On Memo for the units still out,
+    then each invoice holding units, linked, as a draft or sold, or Returned once that invoice
+    took them back to stock."""
+    out, qty = float(li.get("out_quantity") or 0), float(li.get("quantity") or 0)
+    labels = []
+    if out > 1e-9:
+        labels.append(Span(t("documents.line_label_on_memo_part", out=f"{out:g}", qty=f"{qty:g}")
+                           if out < qty - 1e-9 else t("inventory.status_on_memo"), cls="badge badge--inactive"))
+    for take in li.get("invoiced_on") or []:
+        if take.get("taken_back"):
+            labels.append(Span(t("documents.line_label_returned"), cls="badge badge--inactive"))
+            continue
+        key = "documents.line_invoiced_draft" if take.get("status") == "draft" else "documents.line_sold_on"
+        labels.append(A(t(key, number=take.get("doc_number") or ""), href=doc_href(take.get("invoice_id")),
+                        cls="badge badge--inactive"))
+    return labels
+
+
+def _memo_rate_open(doc: dict) -> bool:
+    """Whether a memo's tax was entered as an amount with no rate, so its Rate cell can set one
+    (the memo cannot be invoiced in part until it has)."""
+    return (doc.get("doc_type") == "memo" and doc.get("status") in MEMO_DRAW_STATUSES and not doc.get("tax_rate")
+            and float((doc.get("memo_fixed_amounts") or {}).get("tax") or 0) > 0.005)
+
+
+_FIXED_AMOUNT_LABELS = (("shipping", "doc.shipping"), ("discount", "doc.discount"), ("tax", "doc.tax"))
+
+
+def _fixed_amounts_text(amounts: dict | None, currency: str) -> str:
+    """A memo's fixed amounts as one phrase of labelled figures, "Shipping: $50.00, Discount:
+    -$100.00", leaving out the ones that are zero; a discount reads as taken off."""
+    parts = []
+    for key, label in _FIXED_AMOUNT_LABELS:
+        amount = float((amounts or {}).get(key) or 0)
+        if abs(amount) > 0.005:
+            parts.append(f"{t(label)} {fmt_money(-amount if key == 'discount' else amount, currency)}")
+    return ", ".join(parts)
+
+
+def _memo_take_rows(doc: dict, currency: str) -> list:
+    """Totals rows of what invoices took from a memo: on a memo, each invoice holding some of its
+    fixed amounts, then what is still on the memo; on an invoice, what it took from each memo."""
+    if doc.get("doc_type") == "memo":
+        fixed = doc.get("memo_fixed_amounts") or {}
+        takes = [tk for tk in fixed.get("takes") or [] if _fixed_amounts_text(tk, currency)]
+        taken = [Div(Span(t("documents.memo_fixed_taken"), cls="total-label"), cls="total-row"),
+                 *(Div(Span(A(tk.get("doc_number") or tk.get("invoice_id"), href=doc_href(tk.get("invoice_id")),
+                              cls="auth-link"), cls="total-label"),
+                       Span(_fixed_amounts_text(tk, currency), cls="total-value"), cls="total-row")
+                   for tk in takes)] if takes else []
+        # None on a memo no draw can come from (draft, closed, void): nothing is still on it to bill.
+        still = ([Div(Span(t("documents.memo_still_on_memo"), cls="total-label"),
+                      Span(fmt_money(float(fixed["still_on_memo"]), currency), id="doc-still-on-memo",
+                           cls="total-value"), cls="total-row")]
+                 if fixed.get("still_on_memo") is not None else [])
+        return [*taken, *still]
+    return [Div(A(t("documents.invoice_amount_from_memo", amounts=_fixed_amounts_text(tk, currency),
+                    memo=tk.get("memo_number") or tk.get("memo_id")), href=doc_href(tk.get("memo_id"))),
+                cls="total-row total-label--conversion")
+            for tk in doc.get("memo_fixed_taken") or [] if _fixed_amounts_text(tk, currency)]
+
+
+def _draw_panel(entity_id: str, doc: dict, targets: list | None, unit_map: dict) -> FT:
+    """Invoice selected on a memo: the units of each selected line to invoice (all it has out
+    unless changed), the draft invoice of the same customer to add them to or a new one, and
+    the server's preview of what that invoice bills and what stays on the memo."""
+    lines = doc.get("line_items") or []
+    rows = _line_action_rows(lines, lambda li: float(li.get("out_quantity") or 0),
+                             lambda li: li.get("unit") or "", t("documents.line_label_not_shipped"), unit_map)
+    options = [("", t("documents.invoice_target_new")), *((tid, ref) for tid, ref in targets or [])]
+    return Form(
+        *rows,
+        Input(type="hidden", name="currency", value=doc.get("currency") or ""),
+        Div(Label(t("documents.invoice_target"), cls="form-label"),
+            searchable_select("target_doc_id", options, value=""), cls="inline-form-row"),
+        Div(id="draw-preview", hx_post=f"/docs/{entity_id}/invoice-lines/preview", hx_include="#draw-panel",
+            hx_trigger="change from:#draw-panel, input delay:400ms from:#draw-panel, celerpDrawOpen",
+            **PREVIEW_ATTRS),
+        operation_key_input(),
+        # Enabled only by a preview of the current selection (ui.components.preview_confirm).
+        _line_action_submit(t("btn.invoice_selected"), "btn btn--primary btn--sm", disabled=True),
+        id="draw-panel", style="display:none", hx_post=f"/docs/{entity_id}/invoice-lines", hx_swap="none",
+        **CONFIRMS_PREVIEW,
+        hx_disabled_elt="find button[type=submit]",
+        # The preview inside swaps its own answer in; the form's swap and disabled element are the draw's alone.
+        hx_disinherit="hx-swap hx-disabled-elt",
+    )
+
+
+def _draw_panel_preview(memo: dict, preview: dict) -> FT:
+    """What Invoice selected would do, from the server's dry run: the reason it cannot, or the
+    fixed amounts the invoice takes from the memo, its total after the draw and what stays on
+    the memo. Carries the preview's binding, which the confirm sends so the draw is refused
+    unless it is exactly the one shown."""
+    currency = memo.get("currency") or ""
+    binding = binding_input(preview)
+    if preview.get("problems"):
+        return Div(*binding, P(refusal_text(preview["problems"]), cls="cell-error"))
+    taken = _fixed_amounts_text(preview.get("fixed_taken"), currency)
+    total = float((preview.get("totals_after") or {}).get("total") or 0)
+    left = float(((preview.get("left_on_memo") or {}).get("fixed") or {}).get("still_on_memo") or 0)
+    return Div(*binding,
+               P(t("documents.draw_takes_fixed", amounts=taken)) if taken else "",
+               P(t("documents.draw_preview_totals", total=fmt_money(total, currency))),
+               P(t("documents.draw_preview_left", left=fmt_money(left, currency)), cls="text-muted"))
 
 
 def _header_discount_row(doc: dict, discount: float, currency: str):
@@ -6760,7 +7075,8 @@ def _doc_money(doc: dict) -> dict:
 
 
 def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: dict | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, free_send_offer: bool = False, email_used: int = 0, email_quota: int = 0, email_resets_on: str | None = None, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_status_doc_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku", relay_error: bool = False, line_offset: int = 0, line_total: int | None = None, line_limit: int = 100,
-                connected_connectors: set[str] | None = None, note_targets: list | None = None, original: dict | None = None) -> FT:
+                connected_connectors: set[str] | None = None, note_targets: list | None = None, original: dict | None = None,
+                draw_targets: list | None = None) -> FT:
     def _pick(*keys: str):
         for k in keys:
             if k in doc and doc.get(k) is not None:
@@ -6920,10 +7236,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                    hx_swap="none", cls="btn btn--primary",
                    title=t("documents.tip_convert_quote"))
         )
-    # Issued memos can be converted to invoices (customer keeps goods)
-    if doc_type == "memo" and status in ("final", "sent", "received", "partially_received"):
+    # Invoice all: every product still out on a live memo goes onto one draft invoice.
+    if doc_type == "memo" and status in MEMO_DRAW_STATUSES:
         action_btns_left.append(
-            Button(t("btn.convert"), hx_post=f"/docs/{entity_id}/convert",
+            Button(t("btn.invoice_all"), hx_post=f"/docs/{entity_id}/convert",
                    hx_swap="none", cls="btn btn--secondary",
                    title=t("documents.tip_convert_memo"))
         )
@@ -7739,7 +8055,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             if _draft_show_item_status:
                 cells.insert(1, _item_status_badge_cell(
                     (item_status_map or {}).get(li_entity_id, ""), li_entity_id,
-                    status_doc=(item_status_doc_map or {}).get(li_entity_id),
+                    status_doc=_line_status_doc(li, li_entity_id, item_status_doc_map),
                     held=_line_held(li, (item_status_doc_map or {}).get(li_entity_id))))
             if category_cell:
                 cells.append(category_cell)
@@ -7784,6 +8100,13 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     # CSS-hidden), so emitting the unit as invoice rows do would add an unheadered
                     # column and leak the label, pushing On-hand/Counted out of alignment.
                     cells.append(Td(_qty_input, cls="col-qty"))
+                elif li.get("drawn_from"):
+                    # A line invoiced from a memo keeps the quantity it was drawn with until it goes
+                    # back to the memo: plain text, the stored figure kept for the line save.
+                    cells.append(_badge_cell(Div(Span(f"{float(qty or 0):g}"),
+                                                 Input(type="hidden", value=str(qty), data_name="quantity"),
+                                                 _unit_span, cls="qty-unit-wrap"),
+                                             _from_memo_link(li), cls="col-qty"))
                 elif doc_type in _INVOICE_LAYOUT_DOC_TYPES:
                     # Quantity and its (read-only) unit share one cell; only the number edits.
                     # Invoice layout has NO standalone unit column (the header skips it and the
@@ -8071,7 +8394,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             # Set as available only while it holds something.
             _li_bulk_toolbar(entity_id, is_list, scan_marks=(pol["audit"] and status == _LF),
                              show_reserve=is_list, show_release=_draft_show_item_status and _draft_holds,
-                             can_delete=can_edit_lines),
+                             can_delete=can_edit_lines,
+                             show_back_to_memo=doc_type == "invoice" and any(li.get("drawn_from") for li in line_items)),
             # Audit terminal action sits right above its Counted column (right-aligned). (Marking/clearing
             # scanned highlights is a row-selection bulk action — see the bulk toolbar, not a button.)
             (Div(
@@ -9862,7 +10186,9 @@ async function celerpCsvImport(input, entityId) {{
   var clearScanBtn=document.getElementById('li-bulk-clearscan-btn');
   var reserveBtn=document.getElementById('li-bulk-reserve-btn');
   var revertBtn=document.getElementById('li-bulk-revert-btn');
+  var backMemoBtn=document.getElementById('li-bulk-backmemo-btn');
   function _hideBtns(){{
+    if(backMemoBtn) backMemoBtn.style.display='none';
     if(deleteBtn) deleteBtn.style.display='none';
     if(labelsBtn) labelsBtn.style.display='none';
     if(markScanBtn) markScanBtn.style.display='none';
@@ -9883,6 +10209,8 @@ async function celerpCsvImport(input, entityId) {{
       if(reserveBtn) reserveBtn.style.display='';
     }} else if(action==='li-revert'){{
       if(revertBtn) revertBtn.style.display='';
+    }} else if(action==='li-back-to-memo'){{
+      if(backMemoBtn) backMemoBtn.style.display='';
     }} else if(action.startsWith('mod:')){{
       if(labelsBtn) labelsBtn.style.display='';
     }}
@@ -9909,6 +10237,16 @@ async function celerpCsvImport(input, entityId) {{
   }}
   window.liBulkReserveConfirmed=function(e){{ return celerpLineActionOnce(e, function(){{ return _liDraftSetStatus('reserved'); }}); }};
   window.liBulkAvailableConfirmed=function(e){{ return celerpLineActionOnce(e, function(){{ return _liDraftSetStatus('available'); }}); }};
+  // Back to memo saves pending edits first, then sends the chosen lines back to their memos.
+  window.liBulkBackToMemo=function(e){{ return celerpLineActionOnce(e, async function(){{
+    var rows=table?Array.prototype.slice.call(table.querySelectorAll('tbody .li-select:checked')):[];
+    if(!rows.length||!(await _celerpPersist())) return false;
+    var _bar=document.getElementById('li-bulk-toolbar');
+    var ok=await celerpLineAction(_CELERP_BASE + _CELERP_EID + '/back-to-memo', rows, [],
+                                  _bar?_bar.getAttribute('data-operation-key'):'', _L.unexpected_error);
+    if(ok) window.location.reload();
+    return ok;
+  }}); }};
   window.liBulkSetScanned=async function(scanned){{
     var ids=[];
     if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{ if(cb.value) ids.push(cb.value); }});
@@ -9997,7 +10335,11 @@ async function celerpCsvImport(input, entityId) {{
             and bool(line_items)
         )
         _fin_show_reserve = _doc_reservable or _list_reservable
-        _fin_show_bulk = (_fin_labels_active or _fin_show_fulfill or _fin_show_reserve) and bool(line_items)
+        # A live memo invoices chosen goods (Invoice selected), paid or not: the server names why it cannot.
+        _fin_draw_panel = (_draw_panel(entity_id, doc, draw_targets, _unit_map)
+                           if doc_type == "memo" and status in MEMO_DRAW_STATUSES else None)
+        _fin_show_bulk = (_fin_labels_active or _fin_show_fulfill or _fin_show_reserve
+                          or _fin_draw_panel is not None) and bool(line_items)
         _show_item_status = (doc_type in _FULFILLABLE_DOC_TYPES or _inbound_receivable or _fin_show_reserve) and bool(line_items)
         # Memo lines carry a derived shipped-state label (Returned / Not shipped /
         # On Memo / Sold) computed by the backend get_doc from the event log and the
@@ -10042,12 +10384,12 @@ async function celerpCsvImport(input, entityId) {{
                 if _is_vendor_doc and line_receive_kind(li) != "stock":
                     cells.append(Td("", cls="col-item-status"))
                 elif _is_vendor_doc:
-                    cells.append(Td(_vendor_line_badge(li, status), cls="col-item-status"))
+                    cells.append(_badge_cell(_vendor_line_badge(li, status), cls="col-item-status"))
                 else:
                     status_val = item_status_map.get(li_eid, "") if item_status_map else ""
                     cells.append(_item_status_badge_cell(
                         status_val, li_eid,
-                        status_doc=(item_status_doc_map or {}).get(li_eid),
+                        status_doc=_line_status_doc(li, li_eid, item_status_doc_map),
                         held=_line_held(li, (item_status_doc_map or {}).get(li_eid))))
             if _show_shipped_label:
                 _lbl = li.get("shipped_label")
@@ -10058,8 +10400,9 @@ async function celerpCsvImport(input, entityId) {{
                 _line_qty = float(li.get("quantity") or 0)
                 if _lbl == "On Memo" and 1e-9 < _still_out < _line_qty - 1e-9:
                     _text = t("documents.line_label_on_memo_part", out=f"{_still_out:g}", qty=f"{_line_qty:g}")
-                cells.append(Td(
-                    Span(_text, cls="badge badge--inactive") if _text else "--",
+                cells.append(_badge_cell(
+                    *_memo_take_labels(li) if li.get("invoiced_on") else
+                    [Span(_text, cls="badge badge--inactive") if _text else "--"],
                     cls="col-shipped-label",
                 ))
             # Pieces / Weight as compact sub-lines under the description (shared with
@@ -10108,7 +10451,9 @@ async function celerpCsvImport(input, entityId) {{
                     cls="li-return-qty", style="display:none;",
                     title=t("documents.memo_return_prompt", qty=f"{_out_qty:g}"))
             cells.extend([
-                Td(qty_label({**li, "unit": display_unit(li.get("unit") or li.get("sell_by"))}), _return_qty, cls="col-qty"),
+                (_badge_cell if li.get("drawn_from") else Td)(
+                    qty_label({**li, "unit": display_unit(li.get("unit") or li.get("sell_by"))}), _return_qty,
+                    _from_memo_link(li), cls="col-qty"),
                 Td(fmt_rate(li.get("unit_price"), currency), cls="cell--number col-unit-price"),
                 Td(f"{discount_pct:.1f}%" if discount_pct else "--", cls="col-disc"),
                 Td(format_value(float(line_tax_rate(li)) or None), cls="col-tax"),
@@ -10168,7 +10513,7 @@ async function celerpCsvImport(input, entityId) {{
         _fin_total = line_total if line_total is not None else len(line_items)
         _fin_pager = _list_line_pager(entity_id, line_offset, line_limit, _fin_total) if is_list else None
         lines_section = Div(
-            _li_bulk_toolbar(entity_id, is_list, labels_only=True, show_fulfill=_fin_show_fulfill, show_reserve=_fin_show_reserve, is_inbound=_is_vendor_doc, inbound_line_items=line_items if _is_vendor_doc else None, locations=locations, unit_map=_unit_map, item_meta_map=item_meta_map) if _fin_show_bulk else None,
+            _li_bulk_toolbar(entity_id, is_list, labels_only=True, show_fulfill=_fin_show_fulfill, show_reserve=_fin_show_reserve, is_inbound=_is_vendor_doc, inbound_line_items=line_items if _is_vendor_doc else None, locations=locations, unit_map=_unit_map, item_meta_map=item_meta_map, draw_panel=_fin_draw_panel) if _fin_show_bulk else None,
             Table(
                 Thead(Tr(*_thead_base)),
                 Tbody(*([_li_row(li, line_offset + i) for i, li in enumerate(line_items)] if line_items else [
@@ -10204,7 +10549,7 @@ async function celerpCsvImport(input, entityId) {{
   function _syncReceiveRows(){{
     var picked={{}};
     if(table) table.querySelectorAll('.li-select:checked').forEach(function(cb){{picked[cb.getAttribute('data-line-index')]=1;}});
-    document.querySelectorAll('#li-bulk-fulfill-btn fieldset.receive-row, #li-bulk-revert-btn fieldset.receive-row').forEach(function(row){{
+    document.querySelectorAll('#li-bulk-fulfill-btn fieldset.receive-row, #li-bulk-revert-btn fieldset.receive-row, #draw-panel fieldset.receive-row').forEach(function(row){{
       var on=!!picked[row.getAttribute('data-line-index')];
       row.style.display=on?'':'none';
       row.disabled=!on;
@@ -10216,6 +10561,7 @@ async function celerpCsvImport(input, entityId) {{
     if(toolbar) toolbar.style.display=n>0?'flex':'none';
     if(sel&&n===0) {{ sel.value=''; _hideBtns(); }}
     _syncReceiveRows();
+    if(drawPanel&&drawPanel.style.display!=='none') htmx.trigger('#draw-preview','celerpDrawOpen');
   }}
   if(table) table.addEventListener('change',function(e){{
     if(e.target&&e.target.classList.contains('li-select')) _update();
@@ -10231,11 +10577,13 @@ async function celerpCsvImport(input, entityId) {{
   var fulfillBtn=document.getElementById('li-bulk-fulfill-btn');
   var reserveBtn=document.getElementById('li-bulk-reserve-btn');
   var revertBtn=document.getElementById('li-bulk-revert-btn');
+  var drawPanel=document.getElementById('draw-panel');
   function _hideBtns(){{
     if(labelsBtn) labelsBtn.style.display='none';
     if(fulfillBtn) fulfillBtn.style.display='none';
     if(reserveBtn) reserveBtn.style.display='none';
     if(revertBtn) revertBtn.style.display='none';
+    if(drawPanel) drawPanel.style.display='none';
   }}
   window.liBulkActionSelected=function(action){{
     _hideBtns();
@@ -10244,6 +10592,7 @@ async function celerpCsvImport(input, entityId) {{
     else if(action==='li-fulfill'){{ if(fulfillBtn) fulfillBtn.style.display=''; }}
     else if(action==='li-reserve'){{ if(reserveBtn) reserveBtn.style.display=''; }}
     else if(action==='li-revert'){{ if(revertBtn) revertBtn.style.display=''; }}
+    else if(action==='li-invoice'&&drawPanel){{ drawPanel.style.display=''; htmx.trigger('#draw-preview','celerpDrawOpen'); }}
     if(table) table.querySelectorAll('.li-return-qty').forEach(function(el){{
       el.style.display=(action==='li-revert')?'':'none';
     }});
@@ -10382,6 +10731,7 @@ async function celerpCsvImport(input, entityId) {{
         _header_discount_row(doc, discount, currency),
         line_tax_rows,
         stored_tax_rows,
+        *_memo_take_rows(doc, currency),
         Div(Span(t("doc.shipping"), cls="total-label"),
             Span(fmt_money(shipping, currency), id="doc-shipping", cls="total-value"),
             cls="total-row") if shipping else "",
@@ -10433,7 +10783,7 @@ async function celerpCsvImport(input, entityId) {{
             ),
         ] if _can_discount else []),
         _totals_pending_note,
-        cls="total-panel",
+        id="doc-total-panel", cls="total-panel", **DOC_MONEY_ATTRS,
     )
     # No-money types (production_order, transfer, audit) carry no totals panel.
     is_no_money = pol["no_money"]
@@ -10448,7 +10798,7 @@ async function celerpCsvImport(input, entityId) {{
                 Span(fmt_money(float(subtotal_value or 0), currency), id="doc-total", cls="total-value total-value--final"),
                 cls="total-row total-row--final"),
             _totals_pending_note,
-            cls="total-panel",
+            id="doc-total-panel", cls="total-panel", **DOC_MONEY_ATTRS,
         )
 
     contact_label = {
@@ -10485,7 +10835,7 @@ async function celerpCsvImport(input, entityId) {{
             _rate_display = str(_rate_val) if _rate_val else "--"
             _contact_rows.append(Div(Div(t("label.conversion_rate"), cls="form-label"), _cell("conversion_rate", _rate_display), cls="form-group"))
         if not is_list and outstanding_value is not None:
-            _contact_rows.append(Div(Div(t("doc.outstanding"), cls="form-label"), Span(fmt_money(float(outstanding_value or 0), currency), id="doc-outstanding", cls="meta-value"), cls="form-group"))
+            _contact_rows.append(Div(Div(t("doc.outstanding"), cls="form-label"), Span(fmt_money(float(outstanding_value or 0), currency), id="doc-outstanding", cls="meta-value", **DOC_MONEY_ATTRS), cls="form-group"))
 
     _is_sub_template = doc_type in ("subscription_invoice", "subscription_po")
 

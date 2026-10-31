@@ -36,7 +36,8 @@ async def _documents(owner_ui, monkeypatch) -> dict:
         "paid": await _invoice(api, contact, 125.0, steps=("finalize", "send", "pay"), issued=3),
         "draft": await _invoice(api, contact, 90.0, steps=()),
         "void": await _invoice(api, contact, 60.0, steps=("finalize", "void")),
-        "excluded": await _invoice(api, contact, 30.0, issued=5, accounting_sync_excluded=True),
+        "excluded": await _invoice(api, contact, 30.0, issued=5, accounting_sync_excluded=True,
+                                   currency="EUR", conversion_rate=1),
     }
     cn = await _ok(await api.post("/docs", json={
         "doc_type": "credit_note", "original_doc_id": ids["sent"], "contact_id": contact["id"],
@@ -73,6 +74,7 @@ def _filters(made: dict) -> dict[str, dict]:
         "due_to": {"due_to": _day(3)},
         "q": {"q": contact["name"]},
         "contact_id": {"contact_id": contact["id"]},
+        "currency": {"currency": "EUR"},
         "overdue_only": {"overdue_only": "1"},
         "awaiting_only": {"awaiting_only": "1"},
         "paid_only": {"paid_only": "1"},
@@ -149,7 +151,7 @@ async def test_the_summary_counts_the_rows_the_list_shows_for_every_filter(owner
 # The page parameter for each list filter. The rest are API-only: no page sets them, so no card
 # link carries them.
 _PAGE_KEYS = {"doc_type": "type", "date_from": "from", "date_to": "to"}
-_API_ONLY = {"exclude_status", "due_from", "due_to"}
+_API_ONLY = {"exclude_status", "due_from", "due_to", "currency"}
 _TYPES = ("invoice", "quotation", "credit_note", "bill", "memo")
 
 

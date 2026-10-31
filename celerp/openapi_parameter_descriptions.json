@@ -301,7 +301,8 @@
     "query:sort": "Field or supported sort key used to order the result.",
     "query:status": "Record or workflow status used to filter results or select the requested lifecycle state.",
     "query:status_in": "Set of status values to include in the result.",
-    "query:unfulfilled_only": "Whether to return only documents with quantities still awaiting fulfillment."
+    "query:unfulfilled_only": "Whether to return only documents with quantities still awaiting fulfillment.",
+    "query:currency": "Currency code; only documents stored in exactly this currency are returned."
   },
   "GET /docs/{entity_id}": {
     "path:entity_id": "Identifier of the requested Celerp record."
@@ -345,7 +346,8 @@
     "query:sort": "Field or supported sort key used to order the result.",
     "query:status": "Record or workflow status used to filter results or select the requested lifecycle state.",
     "query:status_in": "Set of status values to include in the result.",
-    "query:unfulfilled_only": "Whether to return only documents with quantities still awaiting fulfillment."
+    "query:unfulfilled_only": "Whether to return only documents with quantities still awaiting fulfillment.",
+    "query:currency": "Currency code; only documents stored in exactly this currency are returned."
   },
   "GET /docs/numbered": {
     "query:doc_type": "Document type to limit the match to, such as invoice or bill. Omit to match every type.",
@@ -376,7 +378,8 @@
     "query:sort": "Field or supported sort key used to order the result.",
     "query:status": "Record or workflow status used to filter results or select the requested lifecycle state.",
     "query:status_in": "Set of status values to include in the result.",
-    "query:unfulfilled_only": "Whether to return only documents with quantities still awaiting fulfillment."
+    "query:unfulfilled_only": "Whether to return only documents with quantities still awaiting fulfillment.",
+    "query:currency": "Currency code; only documents stored in exactly this currency are returned."
   },
   "GET /fixed-assets/api/assets": {
     "query:class_id": "Keeps only assets in this asset class.",
@@ -1522,6 +1525,15 @@
     "path:entity_id": "Identifier of the requested Celerp record."
   },
   "POST /lists/{entity_id}/restore-total": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /docs/{entity_id}/back-to-memo": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /docs/{entity_id}/invoice-lines": {
+    "path:entity_id": "Identifier of the requested Celerp record."
+  },
+  "POST /docs/{entity_id}/tax-rate": {
     "path:entity_id": "Identifier of the requested Celerp record."
   }
 }

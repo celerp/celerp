@@ -36,6 +36,11 @@ def canonical_doc_type(doc_type: str) -> str:
 # Memo statuses in which goods are still out with the customer.
 MEMO_LIVE_STATUSES: frozenset[str] = frozenset({"sent", "final", "partial", "received", "partially_received", "partial_returned"})
 
+# Memo statuses goods out on it can be invoiced from: every live status and paid in full, since
+# a memo paid in full may still hold goods. Kept apart from MEMO_LIVE_STATUSES, which also
+# decides what is shippable and overdue, neither of which a paid memo is.
+MEMO_DRAW_STATUSES: frozenset[str] = MEMO_LIVE_STATUSES | {"paid"}
+
 # Statuses in which an issued sales document (invoice, proforma, memo) still awaits payment.
 _RECEIVABLE_AWAITING: frozenset[str] = frozenset({"final", "sent", "awaiting_payment", "partial"})
 

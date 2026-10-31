@@ -13,6 +13,7 @@ from decimal import Decimal
 
 from fastapi import HTTPException
 
+from celerp.services.doc_balance import MEMO_DRAW_STATUSES
 from celerp.services.list_behavior import FINALIZED
 from celerp.services.money import discount_from_inputs, document_line_amount, round_money, to_decimal, to_stored_float
 from celerp.tax_regimes import line_tax_unset, tax_entries, tax_text, unreadable_tax
@@ -184,6 +185,126 @@ def _has_rate(state: dict) -> bool:
     if tax_entries(state.get("doc_taxes")) or to_decimal(state.get("tax_rate", 0) or 0):
         return True
     return any(isinstance(line, dict) and line_has_tax(line) for line in state.get("line_items") or [])
+
+
+def fixed_discount(state: dict) -> Decimal:
+    """A document's header discount when it is a fixed amount; 0 for a percentage."""
+    if state.get("discount_type") == "percentage":
+        return to_decimal(0)
+    return max(to_decimal(0), to_decimal(state.get("discount", 0) or 0))
+
+
+def unrated_tax(state: dict) -> Decimal:
+    """A document's tax amount when nothing gives it a rate (_has_rate); otherwise 0."""
+    return to_decimal(0) if _has_rate(state) else to_decimal(state.get("tax", 0) or 0)
+
+
+def memo_draws(state: dict) -> list[dict]:
+    """The takes that still count on a memo *state*, each with its lines not yet back on the memo.
+
+    A take is what one draw put on an invoice (``invoiced_on``, written only by the memo's
+    ``doc.lines_invoiced`` and ``doc.lines_returned`` events). It counts until a release names
+    its draw, whatever happened to the invoice since; a released take's lines count for nothing.
+    A memo converted before draws existed holds no takes: its invoice ``converted_to`` holds
+    every fixed amount of the memo, as one take with no lines, until that invoice's void
+    reopens the memo.
+    """
+    if state.get("status") == "converted" and state.get("converted_to"):
+        return [{"draw_id": None, "invoice_id": state["converted_to"], "doc_number": None, "lines": [],
+                 "shipping": float(state.get("shipping") or 0), "discount": to_stored_float(fixed_discount(state)),
+                 "tax": to_stored_float(unrated_tax(state)), "released": False, "legacy": True}]
+    return [{**take, "lines": [ln for ln in take["lines"] if not ln.get("returned")]}
+            for take in state.get("invoiced_on") or [] if not take.get("released")]
+
+
+def drawn_line_money(memo_line: dict, n, take_lines: list[dict], currency: str) -> Decimal:
+    """The amount *n* units of a memo line bill when drawn onto an invoice.
+
+    *take_lines* are the unreturned take lines of this memo line (memo_draws). The draw that
+    brings them to the line's whole quantity, all taken at the line's present amount, takes the
+    remainder, so the drawn amounts sum to the memo line's amount exactly; every other draw is
+    its share of that amount, rounded once. Units set as available never change the quantity,
+    so later draws stay proportional.
+    """
+    amount = _line_amount(memo_line, currency)
+    quantity = to_decimal(memo_line.get("quantity", 0) or 0)
+    n = to_decimal(n)
+    taken = sum((to_decimal(ln["quantity"]) for ln in take_lines), to_decimal(0))
+    if taken + n == quantity and all(to_decimal(ln["memo_line_amount"]) == amount for ln in take_lines):
+        return amount - sum((to_decimal(ln["memo_amount"]) for ln in take_lines), to_decimal(0))
+    if not quantity:
+        return to_decimal(0)
+    return round_money(amount * n / quantity, currency)
+
+
+def memo_fixed_amounts(state: dict, out_by_line: dict[str, float]) -> dict:
+    """What is left on a memo *state* of its fixed amounts, and each take that holds some.
+
+    Shipping and a tax amount with no rate go whole with the first take and come back when it
+    is released; a fixed discount is taken in parts. ``still_on_memo`` is what the units still
+    out (*out_by_line*, by memo line id) would bill by drawn_line_money, plus the fixed amounts
+    left, on a memo a draw can come from; None on any other.
+    """
+    currency = state.get("currency")
+    takes = memo_draws(state)
+    shipping = to_decimal(0) if any(t["shipping"] for t in takes) else to_decimal(state.get("shipping") or 0)
+    discount = max(to_decimal(0), fixed_discount(state) - sum((to_decimal(t["discount"]) for t in takes),
+                                                             to_decimal(0)))
+    tax = to_decimal(0) if any(t["tax"] for t in takes) else unrated_tax(state)
+    still = None
+    if state.get("status") in MEMO_DRAW_STATUSES:
+        goods = sum((drawn_line_money(line, out_by_line.get(line.get("line_id"), 0),
+                                      [ln for t in takes for ln in t["lines"]
+                                       if ln["memo_line_id"] == line.get("line_id")], currency)
+                     for line in state.get("line_items") or [] if isinstance(line, dict)), to_decimal(0))
+        still = to_stored_float(round_money(goods + shipping + tax - discount, currency))
+    return {"shipping": to_stored_float(round_money(shipping, currency)),
+            "discount": to_stored_float(round_money(discount, currency)),
+            "tax": to_stored_float(round_money(tax, currency)),
+            "takes": [{"invoice_id": t["invoice_id"], "doc_number": t["doc_number"], "shipping": t["shipping"],
+                       "discount": t["discount"], "tax": t["tax"]} for t in takes],
+            "still_on_memo": still}
+
+
+def released_header_money(state: dict, released: list[dict]) -> dict:
+    """The header fields of an invoice *state* lowered by the memo takes *released* in one return:
+    shipping and a tax amount with no rate each lose ``min(take, current)``, and a fixed discount
+    likewise while the invoice's discount is still a fixed amount (a percentage the user set is
+    left as it is). Only fields that change are returned; nothing goes below 0."""
+    currency = state.get("currency")
+    pct = state.get("discount_type") == "percentage"
+    current = {"shipping": to_decimal(state.get("shipping") or 0), "discount": fixed_discount(state),
+               "tax": unrated_tax(state)}
+    fields = {}
+    for key, now in current.items():
+        if key == "discount" and pct:
+            continue
+        taken = sum((to_decimal(t.get(key) or 0) for t in released), to_decimal(0))
+        if taken and now:
+            fields[key] = to_stored_float(round_money(now - min(taken, now), currency))
+    return fields
+
+
+def document_terms(state: dict, *, own_unrated_tax) -> dict:
+    """The terms that apply to every line of a document *state*, which a draw's target must share
+    with the memo: a percentage header discount, the document taxes, the header rate, and
+    *own_unrated_tax*, a tax amount with no rate that is the document's own (0 on a memo; on a
+    draft, what none of this memo's takes put there). A fixed discount is not a term, nor is a
+    percentage of 0, which discounts nothing."""
+    pct = state.get("discount_type") == "percentage" and to_decimal(state.get("discount", 0) or 0)
+    taxes = tuple((d.code, to_decimal(d.rate), d.order, d.is_compound)
+                  for d in (_definition(e) for e in tax_entries(state.get("doc_taxes"))) if d is not None)
+    return {"discount_pct": to_decimal(state.get("discount", 0) or 0) if pct else None,
+            "doc_taxes": taxes,
+            "tax_rate": to_decimal(state.get("tax_rate", 0) or 0),
+            "unrated_tax": max(to_decimal(0), to_decimal(own_unrated_tax or 0))}
+
+
+def memo_tax_rate_money(memo: dict, rate) -> dict:
+    """A memo's money with its tax worked out at *rate* (document_money), the rule every invoice
+    drawn from it is then taxed by; the rate correction's preview and write both read it."""
+    lines = [dict(line) for line in memo.get("line_items") or [] if isinstance(line, dict)]
+    return document_money({**memo, "tax_rate": rate}, lines, memo.get("currency"), keep_unrated_tax=False)
 
 
 def document_money(state: dict, lines: list[dict], currency: str, *, keep_unrated_tax: bool,

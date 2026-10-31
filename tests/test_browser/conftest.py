@@ -369,11 +369,21 @@ def css_class(name: str) -> re.Pattern:
     return re.compile(rf"(^|\s){re.escape(name)}(\s|$)")
 
 
+def wait_for_topbar(page) -> None:
+    """Waits until the top bar's help button and company switcher have loaded in place of
+    their placeholders. Both arrive after the page's load event and, on a phone, add a top
+    bar row that pushes the page down, so a layout read before then can measure one box
+    before the shift and the next one after it."""
+    for placeholder in ("#topbar-help", "#topbar-company-switcher"):
+        page.wait_for_selector(placeholder, state="detached")
+
+
 def settled_boxes(page, *selectors: str) -> list[dict]:
-    """The box of the first element matching each selector, all read in one pass once web
-    fonts have loaded and the layout has had two frames to settle. Boxes read one call at a
+    """The box of the first element matching each selector, all read in one pass once the
+    top bar has loaded (``wait_for_topbar``), web fonts have loaded and the layout has had two frames to settle. Boxes read one call at a
     time can straddle a reflow (a font swap, a header part that loads after the page), so two
     of them would describe layouts the person never sees together."""
+    wait_for_topbar(page)
     return page.evaluate("""async (selectors) => {
       await document.fonts.ready;
       await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));

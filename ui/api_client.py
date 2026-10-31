@@ -2681,6 +2681,41 @@ async def convert_doc(token: str, entity_id: str) -> dict:
         return _raise(await c.post(f"/docs/{entity_id}/convert")).json()
 
 
+async def invoice_lines(token: str, memo_id: str, body: dict) -> dict:
+    """Invoice chosen goods out on a memo (Invoice selected)."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/docs/{memo_id}/invoice-lines", json=body)).json()
+
+
+async def invoice_lines_preview(token: str, memo_id: str, body: dict) -> dict:
+    """What Invoice selected would do with these goods (a dry run; nothing is saved)."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/docs/{memo_id}/invoice-lines", json={**body, "dry_run": True})).json()
+
+
+async def back_to_memo(token: str, entity_id: str, *, line_ids: list[str] | None = None,
+                       line_entity_ids: list[str] | None = None, idempotency_key: str | None = None) -> dict:
+    """Send chosen lines of a draft invoice back to the memos they were invoiced from."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/docs/{entity_id}/back-to-memo", json={
+            "line_ids": line_ids or [], "line_entity_ids": line_entity_ids or [],
+            "idempotency_key": idempotency_key})).json()
+
+
+async def set_memo_tax_rate(token: str, memo_id: str, rate: float, binding: str, idempotency_key: str) -> dict:
+    """Set the tax rate of an issued memo whose tax was entered as an amount, confirming the
+    preview whose ``binding`` is sent; the same ``idempotency_key`` sent again returns the first result."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/docs/{memo_id}/tax-rate", json={
+            "tax_rate": rate, "binding": binding, "idempotency_key": idempotency_key})).json()
+
+
+async def memo_tax_rate_preview(token: str, memo_id: str, rate: float) -> dict:
+    """The tax and total a memo tax rate would give, with their binding (a dry run; nothing is saved)."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/docs/{memo_id}/tax-rate", json={"tax_rate": rate, "dry_run": True})).json()
+
+
 async def create_shipment_from_docs(token: str, doc_ids: list[str]) -> dict:
     """Create ONE draft shipping document from one or more issued invoices/memos."""
     async with _api_client(token) as c:
