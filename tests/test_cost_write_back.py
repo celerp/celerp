@@ -564,6 +564,11 @@ async def test_every_surface_shows_the_value_a_marked_lot_carries(client, sessio
         }
     for surface, page in pages.items():
         assert re.search(rf'class="cell-money">[^<]*100\.00</span>\s*<span class="cell-price-unit">{label}<', page), surface
+    # The Pricing tab follows the label with the review link on a line of its own, never in one run of text.
+    link = html.escape(t("inventory.cost_review_link"), quote=False)
+    assert re.search(rf'{label}</span>\s*<div>\s*<a href="[^"]*filter=cost_review"[^>]*>{link}</a>\s*</div>',
+                     pages["pricing tab"]), pages["pricing tab"]
+    assert label + t("inventory.cost_review_link") not in re.sub(r"<[^>]+>", "", pages["pricing tab"])
 
 
 # ── the editor's text, its staleness, and text that is no cost, at the HTTP doors ──

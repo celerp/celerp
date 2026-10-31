@@ -2756,6 +2756,7 @@
   "inventory.cost_review_scope_label": "Zu prüfende Kosten",
   "inventory.cost_review_scope_basis": "Artikel, deren Warenkosten unbekannt sind oder deren Kosten ermittelt wurden, bevor Kosten unbekannt sein konnten. Ihr Wert wurde nicht geändert. Korrigieren Sie Kosten, die falsch aussehen.",
   "inventory.no_cost_review_items": "Keine Artikel mit zu prüfenden Kosten.",
+  "inventory.cost_review_withheld": "Sie haben keinen Zugriff auf Artikelkosten. Ein Inhaber oder Administrator kann sie prüfen.",
   "inventory.cost_review_link": "Alle Artikel mit zu prüfenden Kosten anzeigen",
   "inventory.consign_scope_label": "In Kommission von diesem Lieferanten bereitgestellt",
   "inventory.core_details": "Kerndaten",

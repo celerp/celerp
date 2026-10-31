@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import or_, select, text
+from sqlalchemy import Select, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import LOT_ACCOUNT_FIELD, refusal
@@ -520,9 +520,10 @@ async def _merge_parts(session: AsyncSession, company_id, entity_id: str) -> lis
     return (await _merge_parts_of(session, company_id, [entity_id])).get(entity_id)
 
 
-async def _merge_parts_of(session: AsyncSession, company_id, entity_ids: list[str]) -> dict[str, list[str]]:
-    """The lots each of ``entity_ids`` was made from by a merge, for those whose cost is
-    still the merge's own (no cost was set on it since), read in one query. A correction
+async def _merge_parts_of(session: AsyncSession, company_id, entity_ids: list[str] | Select) -> dict[str, list[str]]:
+    """The lots each of ``entity_ids`` (a list, or a query selecting them) was made from by a
+    merge, for those whose cost is still the merge's own (no cost was set on it since), read
+    in one query. A correction
     carried into it from a part (restated_from) and a merge's own cost write (reason
     from_merge) are the merge's."""
     history: dict[str, list] = {}
@@ -551,33 +552,28 @@ def _landed_only(state: dict) -> bool:
             and goods_cost_empty({**state, "quantity": 0}))
 
 
-async def cost_review_ids(session: AsyncSession, company_id, entity_ids: list[str]) -> set[str]:
-    """The lots among ``entity_ids`` whose goods cost an owner should check: those whose
-    goods cost is unknown, those holding units whose value is landed cost only (a goods
-    cost cleared while the lot carried freight), and merge results whose cost is still the
-    merge's own although a lot they were made from had no goods cost. Lots costed before
-    goods costs could be unknown keep their value; this lists them instead of revaluing
-    them. Backs the item list's ``filter=cost_review``."""
-    if not entity_ids:
-        return set()
-    states = {eid: state for eid, state in (await session.execute(
+async def cost_review_ids(session: AsyncSession, company_id) -> set[str]:
+    """The company's lots whose goods cost an owner should check: those whose goods cost
+    is unknown, those holding units whose value is landed cost only (a goods cost cleared
+    while the lot carried freight), and merge results whose cost is still the merge's own
+    although a lot they were made from had no goods cost. Lots costed before goods costs
+    could be unknown keep their value; this lists them instead of revaluing them. Backs the
+    item list's ``filter=cost_review``.
+
+    Selected by company in SQL, never by a list of ids, so the statements and their
+    parameters stay the same whatever the number of lots."""
+    states = {eid: state or {} for eid, state in (await session.execute(
         select(Projection.entity_id, Projection.state).where(
             Projection.company_id == company_id, Projection.entity_type == "item",
-            Projection.entity_id.in_(entity_ids),
         ))).all()}
     review = {eid for eid, state in states.items() if not goods_cost_known(state) or _landed_only(state)}
-    merged = [eid for eid, metadata in (await session.execute(
-        select(LedgerEntry.entity_id, LedgerEntry.metadata_).where(
-            LedgerEntry.company_id == company_id, LedgerEntry.event_type == "item.created",
-            LedgerEntry.entity_id.in_([eid for eid in states if eid not in review]),
-        ))).all() if (metadata or {}).get("merged_from")]
-    parts_of = await _merge_parts_of(session, company_id, merged) if merged else {}
-    unknown_parts = {eid for eid, state in (await session.execute(
-        select(Projection.entity_id, Projection.state).where(
-            Projection.company_id == company_id,
-            Projection.entity_id.in_({p for parts in parts_of.values() for p in parts}),
-        ))).all() if not goods_cost_known(state) and not goods_cost_empty(state)} if parts_of else set()
-    review.update(eid for eid, parts in parts_of.items() if unknown_parts.intersection(parts))
+    merged = select(LedgerEntry.entity_id).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.event_type == "item.created",
+        LedgerEntry.metadata_["merged_from"].is_not(None),
+    )
+    parts_of = await _merge_parts_of(session, company_id, merged)
+    review.update(eid for eid, parts in parts_of.items() if eid in states and any(
+        p in states and not goods_cost_known(states[p]) and not goods_cost_empty(states[p]) for p in parts))
     return review
 
 
@@ -4069,6 +4065,24 @@ def _record_refused(entity_id: str, key: str, message: str, **params) -> dict:
                    refusal=refusal(f"import.record.{key}", message, **params))
 
 
+# Codes the writer allocates for a blank cell, so a retry that leaves them blank still repeats its write.
+_ALLOCATED_CODES = frozenset({"sku", "barcode"})
+
+
+def _repeats_write(primary, event_type: str, entity_id: str, data: dict, status: str, actor_id) -> bool:
+    """Whether a record repeats the write its idempotency key already made: the same caller,
+    event and entity, and every field it gives as that write recorded it. Read from the key's
+    own ledger entry, never from the item, so the answer depends on nothing written since and
+    tells the caller nothing beyond its own earlier submission."""
+    if (primary is None or primary.event_type != event_type or primary.entity_id != entity_id
+            or str(primary.actor_id) != str(actor_id)):
+        return False
+    written = primary.data or {}
+    if status and written.get("status") != status:
+        return False
+    return all(written.get(k) == v or (k in _ALLOCATED_CODES and v in (None, "")) for k, v in data.items())
+
+
 def _needs_permission(fields, permission: str) -> dict:
     names = ", ".join(sorted(fields))
     return refusal("import.row.needs_permission", f"editing {names} requires the {permission} permission",
@@ -4155,14 +4169,6 @@ async def write_import_batch(
         entity_id = rec.entity_id
         idem_key = rec.idempotency_key
         primary = existing.get(idem_key)
-        # A cost for an existing item is refused before anything compares it with the item's
-        # (a retry check, a replay), so the outcome never depends on the cost the item holds.
-        if not can_change_costs and (given := _cost_cells(data, COST_ITEM_KEYS)):
-            target = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-            if target is not None:
-                named = {**data, "sku": data.get("sku") or (target.state or {}).get("sku")}
-                outcome.add(entity_id, "rejected", _row_refused(named, _needs_permission(given, "view_inventory_costs")))
-                continue
 
         try:
             reject_system_item_fields(data)
@@ -4173,6 +4179,19 @@ async def write_import_batch(
             data["category"], category_error = resolve_import_category(data["category"], category_keys, category_names)
             if category_error:
                 outcome.add(entity_id, "rejected", f"Row (SKU={data.get('sku', '?')}): {category_error}")
+                continue
+
+        # An exact retry is answered as its first write was, for every role, and writes nothing.
+        if _repeats_write(primary, event_type, entity_id, data, status, user.id):
+            outcome.add(entity_id, "skipped")
+            continue
+        # Any other cost for an existing item is refused before anything compares it with the
+        # item's (an upsert check, a replay), so the outcome never depends on the cost the item holds.
+        if not can_change_costs and (given := _cost_cells(data, COST_ITEM_KEYS)):
+            target = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+            if target is not None:
+                named = {**data, "sku": data.get("sku") or (target.state or {}).get("sku")}
+                outcome.add(entity_id, "rejected", _row_refused(named, _needs_permission(given, "view_inventory_costs")))
                 continue
 
         if event_type == "item.patched":

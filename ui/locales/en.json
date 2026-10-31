@@ -3006,6 +3006,7 @@
   "inventory.cost_review_scope_label": "Costs to check",
   "inventory.cost_review_scope_basis": "Items whose goods cost is unknown, or whose cost was worked out before a cost could be unknown. Their value has not been changed. Correct a cost where it looks wrong.",
   "inventory.no_cost_review_items": "No items have a cost to check.",
+  "inventory.cost_review_withheld": "You don't have access to item costs. An owner or admin can check them.",
   "inventory.cost_review_link": "See every item with a cost to check",
   "inventory.consign_scope_label": "Held on consignment from this supplier",
   "inventory.core_details": "Core Details",

@@ -817,11 +817,14 @@ def _holdings_scope_banner(p: dict, holdings_total: float | None, currency: str 
 COST_REVIEW_FILTER = "cost_review"
 COST_REVIEW_URL = f"/inventory?filter={COST_REVIEW_FILTER}"
 
-# A semantic filter's banner (label, basis) and its empty-list message.
+# A semantic filter's banner (label, basis), its empty-list message, and the permission its
+# list needs with what a role without it reads instead (the API lists nothing to that role,
+# so the plain empty message would tell it nothing needs doing).
 _FILTER_SCOPES = {
-    DEMO_ITEMS_FILTER: ("inventory.demo_scope_label", "inventory.demo_scope_basis", "inventory.no_demo_items"),
+    DEMO_ITEMS_FILTER: ("inventory.demo_scope_label", "inventory.demo_scope_basis", "inventory.no_demo_items",
+                        None, None),
     COST_REVIEW_FILTER: ("inventory.cost_review_scope_label", "inventory.cost_review_scope_basis",
-                         "inventory.no_cost_review_items"),
+                         "inventory.no_cost_review_items", "view_inventory_costs", "inventory.cost_review_withheld"),
 }
 
 
@@ -1258,7 +1261,7 @@ async def _inventory_content(
             auto_hide_empty=False,
             column_filters=_inventory_column_filters(eff_schema, schema, locations, attribute_facets, p),
             **table_args,
-        ) if items else _inventory_empty_state(p),
+        ) if items else _inventory_empty_state(p, _settings, role),
         pagination(p["page"], list_total, p["per_page"], "/inventory", extra_params),
         Script(SERVER_FILTER_JS),
         Script(_CLEAR_SELECTION_JS) if p.get("filter") == DEMO_ITEMS_FILTER else None,
@@ -5441,13 +5444,15 @@ def _inventory_status_cards(count_by_status: dict, active_status: str, vertical:
     return status_cards(cards, base_url, active_status or None)
 
 
-def _inventory_empty_state(p: dict) -> FT:
+def _inventory_empty_state(p: dict, settings: dict, role: str) -> FT:
     """Context-aware empty state: only show import CTA on unfiltered views."""
     active_status = p.get("status", "")
     active_q = p.get("q", "")
     scope = _FILTER_SCOPES.get(p.get("filter") or "")
     if scope:
-        return Div(P(t(scope[2]), cls="empty-state-msg"), cls="empty-state", id="data-table")
+        _label, _basis, empty, permission, withheld = scope
+        msg = withheld if permission and not role_has_permission(settings, role, permission) else empty
+        return Div(P(t(msg), cls="empty-state-msg"), cls="empty-state", id="data-table")
     if active_status:
         label = display_enum(active_status, domain="item_status")
         return Div(P(t("inventory.no_status_items", status=label.lower()), cls="empty-state-msg"), cls="empty-state", id="data-table")
@@ -5606,15 +5611,19 @@ def _label_price_cols(schema: list[dict]) -> list[dict]:
     return result
 
 
-def _cost_total_view(row: dict, currency: str | None) -> tuple:
+def _cost_total_view(row: dict, currency: str | None, *, review_link: bool = False) -> tuple:
     """A lot's cost total as every surface shows it: its book value ("--" only when it carries
     no cost, a known 0 reads 0.00), with "goods cost unknown" beside a value whose goods cost
-    is not known."""
+    is not known. With ``review_link`` that note is followed, on a line of its own, by the
+    link to every item with a cost to check."""
     total = row.get("cost_total")
     if total is None:
         return (Span("--"),)
-    note = (Span(t("inventory.goods_cost_unknown"), cls="cell-price-unit"),) if not goods_cost_known(row) else ()
-    return (Span(fmt_money(float(total), currency), cls="cell-money"), *note)
+    value = Span(fmt_money(float(total), currency), cls="cell-money")
+    if goods_cost_known(row):
+        return (value,)
+    link = (Div(A(t("inventory.cost_review_link"), href=COST_REVIEW_URL, cls="link")),) if review_link else ()
+    return (value, Span(t("inventory.goods_cost_unknown"), cls="cell-price-unit"), *link)
 
 
 def _virtual_total_cell(entity_id: str, field: str, row: dict, currency: str | None, oob: bool = False) -> FT:
@@ -7758,8 +7767,7 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
             total_save = {"name": f"{conventional_key}_total", **_save,
                           "hx_include": f"this, #{_PRICING_OPENED[False]}, #{_PRICING_OPENED_VERSION}"}
             carried = (*(() if goods_cost_known(item) or item.get("cost_total") is None
-                         else (*_cost_total_view(item, currency),
-                               A(t("inventory.cost_review_link"), href=COST_REVIEW_URL, cls="link"))),
+                         else _cost_total_view(item, currency, review_link=True)),
                        *_pricing_cost_opened(item, currency))
         else:
             # Editing the total back-fills the unit, then re-fires its autosave.

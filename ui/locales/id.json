@@ -2755,6 +2755,7 @@
   "inventory.cost_review_scope_label": "Biaya yang perlu diperiksa",
   "inventory.cost_review_scope_basis": "Item yang biaya barangnya tidak diketahui, atau yang biayanya dihitung sebelum biaya bisa tidak diketahui. Nilainya tidak diubah. Perbaiki biaya yang tampak salah.",
   "inventory.no_cost_review_items": "Tidak ada item dengan biaya yang perlu diperiksa.",
+  "inventory.cost_review_withheld": "Anda tidak memiliki akses ke biaya item. Pemilik atau admin dapat memeriksanya.",
   "inventory.cost_review_link": "Lihat semua item dengan biaya yang perlu diperiksa",
   "inventory.consign_scope_label": "Disimpan sebagai barang konsinyasi dari pemasok ini",
   "inventory.core_details": "Detail Inti",

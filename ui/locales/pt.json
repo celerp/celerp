@@ -2755,6 +2755,7 @@
   "inventory.cost_review_scope_label": "Custos a verificar",
   "inventory.cost_review_scope_basis": "Itens cujo custo da mercadoria é desconhecido, ou cujo custo foi calculado antes de um custo poder ser desconhecido. O seu valor não foi alterado. Corrija um custo que pareça errado.",
   "inventory.no_cost_review_items": "Nenhum item tem um custo a verificar.",
+  "inventory.cost_review_withheld": "Você não tem acesso aos custos dos itens. Um proprietário ou administrador pode verificá-los.",
   "inventory.cost_review_link": "Ver todos os itens com um custo a verificar",
   "inventory.consign_scope_label": "Mantido em consignação deste fornecedor",
   "inventory.core_details": "Detalhes principais",

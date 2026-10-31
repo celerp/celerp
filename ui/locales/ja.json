@@ -2755,6 +2755,7 @@
   "inventory.cost_review_scope_label": "確認が必要な原価",
   "inventory.cost_review_scope_basis": "商品原価が不明な品目、または原価が不明になり得るようになる前に原価が算出された品目です。評価額は変更されていません。誤っていると思われる原価は修正してください。",
   "inventory.no_cost_review_items": "確認が必要な原価のある品目はありません。",
+  "inventory.cost_review_withheld": "品目の原価を閲覧する権限がありません。オーナーまたは管理者が確認できます。",
   "inventory.cost_review_link": "確認が必要な原価のある品目をすべて表示",
   "inventory.consign_scope_label": "このサプライヤーからの委託在庫",
   "inventory.core_details": "基本情報",

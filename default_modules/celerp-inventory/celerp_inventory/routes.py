@@ -1418,8 +1418,7 @@ async def query_items(
     # that cannot see costs gets none (listing them would disclose which lots they are).
     if f.filter == "cost_review":
         from celerp_inventory.services import cost_review_ids
-        review = (await cost_review_ids(session, company_id, [r["id"] for r in result if r.get("id")])
-                  if can_see_costs else set())
+        review = await cost_review_ids(session, company_id) if can_see_costs else set()
         result = [r for r in result if r.get("id") in review]
 
     not_found: list[str] = []

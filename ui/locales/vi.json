@@ -2755,6 +2755,7 @@
   "inventory.cost_review_scope_label": "Giá vốn cần kiểm tra",
   "inventory.cost_review_scope_basis": "Các mục chưa biết giá vốn hàng, hoặc có giá vốn được tính trước khi giá vốn có thể ở trạng thái chưa biết. Giá trị của chúng không bị thay đổi. Hãy sửa giá vốn nào có vẻ sai.",
   "inventory.no_cost_review_items": "Không có mục nào có giá vốn cần kiểm tra.",
+  "inventory.cost_review_withheld": "Bạn không có quyền xem giá vốn của mặt hàng. Chủ sở hữu hoặc quản trị viên có thể kiểm tra.",
   "inventory.cost_review_link": "Xem mọi mục có giá vốn cần kiểm tra",
   "inventory.consign_scope_label": "Hàng ký gửi từ nhà cung cấp này",
   "inventory.core_details": "Chi tiết chính",
