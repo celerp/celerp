@@ -102,6 +102,12 @@ _DYNAMIC_KEY_SITES = {
     ],
     # celerp/services/document_lines.py: key, text = _PROTECTED_MESSAGES[why]
     "celerp/services/document_lines.py": ["line.protected_held", "line.protected_received"],
+    # default_modules/celerp-inventory/celerp_inventory/services.py: CostRefused(key, message)
+    # wraps refusal(key, ...); each subclass passes its literal key to super().__init__
+    "default_modules/celerp-inventory/celerp_inventory/services.py": [
+        "inventory.cost_total_below_landed", "inventory.cost_text_invalid",
+        "inventory.cost_unit_needs_quantity", "inventory.cost_changed_since_opened",
+    ],
     # celerp/services/cogs_backfill.py: _outcome(key) for key in ("posted_one",
     # "posted_many") + _OPTIONAL_PARTS, key is f"{_NOTICE}.{key}" with _NOTICE a
     # module-level constant (non-literal first f-string segment)
