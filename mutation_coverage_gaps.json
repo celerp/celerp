@@ -945,11 +945,6 @@
   "reason": "No test requests this route; its source reaches api PATCH."
  },
  {
-  "route": "ui POST /settings/import-history/{batch_id}/undo",
-  "class": "requested, no durable write",
-  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
- },
- {
   "route": "ui PUT /settings/labels/{tmpl_id}",
   "class": "requested, no durable write",
   "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api PUT."

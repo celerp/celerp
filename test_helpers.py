@@ -217,6 +217,29 @@ async def signed_request(session, company_id, user_id, role: str = "operator"):
         await dependency.aclose()
 
 
+@asynccontextmanager
+async def ui_signed_in(token: str):
+    """The UI app signed in with *token*, its API calls answered by the API app in
+    process. Yields the UI client; its `.api` is an API client with the same token."""
+    from unittest.mock import patch
+
+    from httpx import ASGITransport, AsyncClient
+
+    from celerp.main import app
+    from ui.app import app as ui_app
+
+    def _bridged(tok, timeout=10.0):
+        return AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
+                           headers={"Authorization": f"Bearer {tok}"}, follow_redirects=True)
+
+    with patch("ui.api_client._client", _bridged):
+        async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui",
+                               follow_redirects=False, cookies={"celerp_token": token}) as ui, \
+                _bridged(token) as api:
+            ui.api = api
+            yield ui
+
+
 async def as_another_client(statement):
     """Await ``statement``, a lock a test takes to stand for another client, in a task of its
     own, as that client would run it: the lock-order recorder then sees the test's later

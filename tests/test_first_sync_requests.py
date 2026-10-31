@@ -13,16 +13,16 @@ from __future__ import annotations
 import asyncio
 import uuid
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
 import sqlalchemy as sa
-from httpx import ASGITransport, AsyncClient
 
 from company_backup_support import company, owner, token
 from connector_test_support import connected
 from migration_support import maker, real_client, real_engine  # noqa: F401
+from test_helpers import ui_signed_in
 
 pytestmark = pytest.mark.asyncio
 
@@ -38,21 +38,11 @@ async def _settled(tasks: set) -> None:
 async def store_owner(real_engine, real_client, connector_modules_running):
     """The owner of a company with a store connection, signed in to the settings pages,
     which talk to the real API in process."""
-    from celerp.main import app
-    from ui.app import app as ui_app
-
     user = await owner(real_engine)
     cid = await company(real_engine, user, "Store Trading", "store-marker")
     tok = await token(real_engine, user, cid)
-
-    def _bridged(t, timeout=10.0):
-        return AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
-                           headers={"Authorization": f"Bearer {t}"}, follow_redirects=True)
-
-    with patch("ui.api_client._client", _bridged):
-        async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui",
-                               follow_redirects=False, cookies={"celerp_token": tok}) as ui:
-            yield SimpleNamespace(cid=str(cid), tok=tok, ui=ui, api=real_client)
+    async with ui_signed_in(tok) as ui:
+        yield SimpleNamespace(cid=str(cid), tok=tok, ui=ui, api=real_client)
 
 
 @pytest.fixture

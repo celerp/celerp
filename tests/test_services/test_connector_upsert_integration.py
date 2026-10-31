@@ -27,7 +27,7 @@ from celerp.models.company import Company, User
 import celerp.connectors.upsert as u
 
 from connector_test_support import add_item
-from test_helpers import own_sessions_on, provision_company_books
+from test_helpers import make_authed_token, own_sessions_on, provision_company_books, ui_signed_in
 from migration_support import real_engine  # noqa: F401 - fixture
 
 pytestmark = pytest.mark.usefixtures("connector_modules_running")
@@ -2111,7 +2111,7 @@ async def test_conflict_choice_settles_the_field(use_test_session, monkeypatch, 
 
 
 @pytest.mark.asyncio
-async def test_first_sync_import_is_undoable(real_engine, monkeypatch):
+async def test_first_sync_import_is_undoable(real_engine, signed_in_to_cloud, monkeypatch):
     """A first sync records the items it creates as an import batch that Import History
     undoes with their opening stock, and its links can be undone, restoring the values
     it took from the store."""
@@ -2122,7 +2122,7 @@ async def test_first_sync_import_is_undoable(real_engine, monkeypatch):
 
 
 async def _first_sync_then_undo(session, monkeypatch) -> None:
-    from types import SimpleNamespace
+    from datetime import datetime, timezone
     from unittest.mock import AsyncMock
 
     import httpx
@@ -2134,8 +2134,6 @@ async def _first_sync_then_undo(session, monkeypatch) -> None:
     from celerp.connectors.woocommerce import WooCommerceConnector
     from celerp.models.accounting import UserCompany
     from celerp.models.import_batch import ImportBatch
-    from celerp_connectors.routes import undo_first_sync_links
-    from celerp_inventory.routes import undo_import_batch
     from celerp.connectors.product_links import external_link_for_state
     from connector_test_support import connect, item_state, ungated_connector_takes
 
@@ -2152,6 +2150,7 @@ async def _first_sync_then_undo(session, monkeypatch) -> None:
                             row_count=0, entity_ids=[], idempotency_keys=[], reversible=True)
         config.first_sync.directions = dict(config.entity_directions)
         config.first_sync.batch_id, config.first_sync.match = str(batch.id), "take"
+        config.first_sync.started_at = datetime.now(timezone.utc)
         config.first_sync.undo = {"links": []}
         await session.flush()
         session.add(batch)  # after the first-sync record is locked, as starting a first sync does
@@ -2186,16 +2185,22 @@ async def _first_sync_then_undo(session, monkeypatch) -> None:
     assert [f["id"] for f in (await item_state(session, cid, created[0]))["files"]] == ["pulled1"]
     assert (await item_state(session, cid, "item:match"))["name"] == "Store name"
 
-    owner = SimpleNamespace(id=user_id)
+    # The owner undoes both from the settings pages, through the app's own requests.
+    await session.commit()
     deleted = AsyncMock()
     monkeypatch.setattr("celerp.services.attachments.delete_stored_file", deleted)
-    out = await undo_import_batch(str(batch.id), cid, owner, None, None, session)
-    assert out == {"ok": True, "removed": 1}
-    assert await item_state(session, cid, created[0]) == {}
-    deleted.assert_awaited_once_with(str(cid), "pulled1", "image/jpeg")
+    async with ui_signed_in(await make_authed_token(session, str(user_id), str(cid), "owner")) as ui:
+        r = await ui.post(f"/settings/import-history/{batch.id}/undo", headers={"HX-Request": "true"})
+        assert r.status_code == 204, r.text
+        assert r.headers["HX-Redirect"].endswith("msg=1+undone")
+        session.expire_all()
+        assert await item_state(session, cid, created[0]) == {}
+        deleted.assert_awaited_once_with(str(cid), "pulled1", "image/jpeg")
 
-    out = await undo_first_sync_links("woocommerce", str(cid), owner, None, session)
-    assert out["undone"] == 1
+        r = await ui.post("/settings/connectors/woocommerce/first-sync/undo-links", headers={"HX-Request": "true"})
+        assert r.status_code == 200, r.text
+        assert "flash--warning" not in r.text, r.text
+    session.expire_all()
     state = await item_state(session, cid, "item:match")
     assert not external_link_for_state(state, "woocommerce")
     assert (state["name"], state["sale_price"]) == ("Celerp name", 10.0)

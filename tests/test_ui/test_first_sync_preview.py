@@ -113,3 +113,12 @@ def test_summary_offers_every_way_back():
     assert 'href="/settings/inventory?tab=import-history"' in html
     assert 'hx-post="/settings/connectors/woocommerce/first-sync/undo-links"' in html
     assert 'href="/docs/doc:woocommerce:order:10"' in html
+
+
+def test_a_refused_undo_is_shown_even_when_there_is_no_first_sync_to_summarize():
+    from fasthtml.common import to_xml
+
+    from ui.routes.settings_connectors_first_sync import first_sync_summary_card
+
+    html = to_xml(first_sync_summary_card("woocommerce", {}, "en", "Connect web access first"))
+    assert "Connect web access first" in html and "flash--warning" in html

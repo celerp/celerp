@@ -196,7 +196,7 @@ def first_sync_summary_card(platform: str, summary: dict, lang: str, error: str 
     brings back values it took from the store; each imported invoice is voided on its
     own, which keeps its audit trail (posted accounting is never deleted)."""
     if not summary.get("started_at"):
-        return Span()
+        return Span(error, cls="flash flash--warning") if error else Span()
     service = get_connector(platform).display_name
     batch = summary.get("batch")
     links = summary.get("links") or 0

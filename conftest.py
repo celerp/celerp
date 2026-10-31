@@ -1264,8 +1264,7 @@ async def owner_ui(client):
     """The UI app signed in as the owner of a newly registered company, talking to the
     real API in process (the `client` fixture's database and transaction)."""
     import uuid
-    from unittest.mock import patch
-    from httpx import ASGITransport, AsyncClient
+    from test_helpers import ui_signed_in
 
     r = await client.post("/auth/register", json={
         "company_name": "Owner UI Co", "email": f"owner-ui-{uuid.uuid4().hex[:8]}@test.example",
@@ -1274,16 +1273,8 @@ async def owner_ui(client):
     assert r.status_code == 200, r.text
     token = r.json()["access_token"]
 
-    def _bridged(tok, timeout=10.0):
-        return AsyncClient(transport=ASGITransport(app=app), base_url="http://test",
-                           headers={"Authorization": f"Bearer {tok}"}, follow_redirects=True)
-
-    with patch("ui.api_client._client", _bridged):
-        async with AsyncClient(transport=ASGITransport(app=_ui_app), base_url="http://ui",
-                               follow_redirects=False, cookies={"celerp_token": token}) as ui:
-            ui.api = _bridged(token)
-            yield ui
-            await ui.api.aclose()
+    async with ui_signed_in(token) as ui:
+        yield ui
 
 
 _DISABLED_MODULE_TABLES = {"label_": "label_templates", "marketplace_": "marketplace_configs",
