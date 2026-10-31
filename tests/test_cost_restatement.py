@@ -523,7 +523,7 @@ async def test_csv_cost_upsert_that_cannot_reconcile_changes_nothing(client, ses
     assert state["cost_total"] == 100.0 and state["name"] == "Lot"
 
 
-# -- Zero-quantity unit cost: one normalization for price, edit and CSV -------
+# -- Zero-quantity unit cost: the API keeps it waiting, the CSV door refuses it ---
 
 async def _set_unit_cost_at_zero(client, auth, item_id: str, path: str) -> None:
     if path == "price":
@@ -542,7 +542,26 @@ async def _set_unit_cost_at_zero(client, auth, item_id: str, path: str) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("path", ["price", "patch", "csv"])
+async def test_zero_quantity_unit_cost_typed_in_a_csv_is_refused(client, session, auth):
+    # An owner's file is a door: a unit cost there needs units to apply to.
+    item_id = await _item(client, auth, 40.0, qty=0)
+    before = await _state(session, auth, item_id)
+    record = {"entity_id": item_id, "event_type": "item.patched", "source": "csv_import",
+              "data": {"name": "Lot", "cost_price": 12.5},
+              "idempotency_key": f"csv:item:{item_id}:patch:{uuid.uuid4().hex}"}
+    r = await client.post("/items/import/batch", headers=auth["headers"], json={"records": [record]})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["updated"] == 0, body
+    assert [e["params"]["refusal"]["message_key"] for e in body["errors"]] == \
+        ["inventory.cost_unit_needs_quantity"], body
+    after = await _state(session, auth, item_id)
+    assert {k: after.get(k) for k in ("cost_price", "cost_total", "cost_base")} == \
+        {k: before.get(k) for k in ("cost_price", "cost_total", "cost_base")}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["price", "patch"])
 async def test_zero_quantity_unit_cost_survives_new_stock_and_sale(client, session, auth, path):
     # A lot that once had a cost basis, now empty: the new unit cost replaces it.
     item_id = await _item(client, auth, 40.0, qty=0)

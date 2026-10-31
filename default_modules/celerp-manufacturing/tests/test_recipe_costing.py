@@ -32,11 +32,22 @@ def test_leaf_unit_cost_from_cost_price_when_no_total() -> None:
     assert unit_cost({"cost_price": 3.5}, {}.get) == 3.5
 
 
-def test_cost_unpriced_component_contributes_zero() -> None:
-    # Documented deterministic rule: an unpriced raw contributes 0 until priced.
-    bd = roll_up_cost(_recipe([{"item_id": "item:x", "quantity": 4}]), {"item:x": {}}.get)
-    assert bd["materials_cost"] == 0.0
-    assert bd["unit_cost"] == 0.0
+def test_cost_unpriced_component_leaves_the_cost_unknown() -> None:
+    # An unpriced raw has no known cost, so neither has the recipe: unknown is never read as 0.
+    recipe = _recipe([{"item_id": "item:x", "quantity": 4}])
+    bd = roll_up_cost(recipe, {"item:x": {}}.get)
+    assert bd["materials_cost"] is None
+    assert bd["unit_cost"] is None
+    assert recipe["components"][0]["unit_cost"] is None
+
+
+def test_cost_component_of_unknown_goods_cost_leaves_the_cost_unknown() -> None:
+    g = {"item:x": {"cost_total": 10.0, "quantity": 5, "goods_cost_unknown": True},
+         "item:y": {"cost_total": 6.0, "quantity": 3}}
+    recipe = _recipe([{"item_id": "item:x", "quantity": 1}, {"item_id": "item:y", "quantity": 1}])
+    bd = roll_up_cost(recipe, g.get)
+    assert bd["unit_cost"] is None and bd["materials_cost"] is None
+    assert [c["unit_cost"] for c in recipe["components"]] == [None, 2.0]
 
 
 # --- summands in isolation --------------------------------------------------

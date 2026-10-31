@@ -1435,11 +1435,13 @@ async def get_reorder_suggestion(token: str, entity_id: str) -> dict:
         return _raise(await c.get(f"/items/{entity_id}/reorder-suggestion")).json()
 
 
-async def patch_item(token: str, entity_id: str, fields_changed: dict) -> dict:
+async def patch_item(token: str, entity_id: str, fields_changed: dict, expected_version: int | None = None) -> dict:
     """Patch item fields. Pass a flat {field: value} dict; wraps into {field: {old, new}} format.
 
     Numeric fields (quantity, *_price) are coerced to float so projection state
-    never receives string values from inline edits.
+    never receives string values from inline edits. A cost change may carry the item
+    version its editor opened on (``expected_version``): the API refuses it (409) once
+    the item has moved.
     """
     _NUMERIC = lambda k: k == "quantity" or k.endswith("_price")
     def _coerce(k, v):
@@ -1456,7 +1458,10 @@ async def patch_item(token: str, entity_id: str, fields_changed: dict) -> dict:
         return v
     wrapped = {k: (v if isinstance(v, dict) and "new" in v else {"old": None, "new": _coerce(k, v)}) for k, v in fields_changed.items()}
     async with _api_client(token) as c:
-        return _raise(await c.patch(f"/items/{entity_id}", json={"fields_changed": wrapped})).json()
+        body: dict = {"fields_changed": wrapped}
+        if expected_version is not None:
+            body["expected_version"] = expected_version
+        return _raise(await c.patch(f"/items/{entity_id}", json=body)).json()
 
 
 def _received_doc_path(r: httpx.Response) -> str:
