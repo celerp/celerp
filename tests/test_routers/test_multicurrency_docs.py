@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import select
 
 from celerp.models.ledger import LedgerEntry
+from ui.i18n import refusal_text
 
 
 def _auth(token: str) -> dict:
@@ -172,7 +173,8 @@ async def test_finalize_refuses_a_base_currency_doc_carrying_a_rate(client, sess
 
     r = await client.post(f"/docs/{doc_id}/finalize", headers=h)
     assert r.status_code == 422, r.text
-    detail = r.json()["detail"]
+    assert r.json()["detail"]["message_key"] == "error.rate_not_one_for_base"
+    detail = refusal_text(r.json()["detail"])
     assert "USD" in detail and "1" in detail
 
     rows = (await session.execute(
@@ -400,7 +402,7 @@ async def test_finalize_foreign_currency_without_rate_fails(client):
 
     finalize = await client.post(f"/docs/{doc_id}/finalize", headers=h)
     assert finalize.status_code == 422
-    assert "exchange rate" in finalize.json()["detail"].lower()
+    assert "exchange rate" in refusal_text(finalize.json()["detail"]).lower()
 
 
 @pytest.mark.asyncio

@@ -173,22 +173,23 @@ def doc_rate(doc: dict, base_currency: str) -> Decimal | None:
     """The rate that converts *doc*'s amounts into the books' currency, or None if unknown.
 
     A document in the books' currency converts at 1; a stored rate other than 1 on it
-    is a contradiction and raises ValueError. A foreign-currency document converts at
+    is a contradiction and is refused. A foreign-currency document converts at
     its stored rate, and with no stored rate its conversion is unknown (None): nothing
-    may assume 1 for it. A malformed, zero or negative rate raises ValueError.
+    may assume 1 for it. A malformed, zero or negative rate is refused
+    (``Refused``, a ValueError).
     """
     base = str(base_currency or "").upper()
     currency = str(doc.get("currency") or base).upper()
     raw = doc.get("conversion_rate")
     if raw in (None, ""):
         return Decimal(1) if currency == base else None
-    from ui.i18n import t  # ui.i18n imports pricing, which imports this module
+    from celerp.accounting_roles import Refused  # ui.i18n imports pricing, which imports this module
     try:
         rate = checked_exchange_rate(raw)
     except ValueError as exc:
-        raise ValueError(t("error.rate_invalid", raw=raw)) from exc
+        raise Refused("error.rate_invalid", raw=raw) from exc
     if currency == base and rate != 1:
-        raise ValueError(t("error.rate_not_one_for_base", base=base, raw=raw))
+        raise Refused("error.rate_not_one_for_base", base=base, raw=raw)
     return rate
 
 
