@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from celerp.accounting_roles import Refused
+from celerp.accounting_roles import KeyedRefusal, Refused
 
 MAX_BARCODE_LEN = 64
 MAX_SKU_LEN = 255
@@ -39,8 +39,6 @@ LEGACY_BARCODE_UNIQUE_INDEX = "uq_projection_company_item_barcode"
 BARCODE_UNIQUE_INDEX = "uq_projection_company_resolvable_item_barcode"
 RFID_EPC_UNIQUE_INDEX = "uq_projection_company_item_rfid_epc"
 
-BARCODE_CONFLICT_MESSAGE = "Barcode '{barcode}' already exists"
-RFID_EPC_CONFLICT_MESSAGE = "RFID / EPC '{code}' already exists"
 
 
 def reject_comma_sku(sku: Any) -> Any:
@@ -124,11 +122,11 @@ def validate_rfid_epc(code: Any) -> Any:
     return s
 
 
-class CodeConflictError(Exception):
+class CodeConflictError(KeyedRefusal):
     """Base for a physical-code uniqueness violation (barcode or RFID / EPC).
 
     One base so the API layer needs a single exception handler that maps every physical
-    code collision to 409.
+    code collision to 409, with the keyed refusal it carries.
     """
 
 
@@ -142,9 +140,10 @@ class BarcodeConflictError(CodeConflictError):
 
     def __init__(self, barcode: str | None = None):
         self.barcode = barcode
-        super().__init__(
-            BARCODE_CONFLICT_MESSAGE.format(barcode=barcode) if barcode else "Barcode already exists"
-        )
+        if barcode:
+            super().__init__("inventory.err_barcode_taken", barcode=barcode)
+        else:
+            super().__init__("inventory.err_barcode_taken_unnamed")
 
 
 class RfidEpcConflictError(CodeConflictError):
@@ -155,9 +154,10 @@ class RfidEpcConflictError(CodeConflictError):
 
     def __init__(self, code: str | None = None):
         self.code = code
-        super().__init__(
-            RFID_EPC_CONFLICT_MESSAGE.format(code=code) if code else "RFID / EPC already exists"
-        )
+        if code:
+            super().__init__("inventory.err_rfid_epc_taken", code=code)
+        else:
+            super().__init__("inventory.err_rfid_epc_taken_unnamed")
 
 
 def is_barcode_unique_violation(exc: Exception) -> bool:

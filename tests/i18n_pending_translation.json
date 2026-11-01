@@ -980,6 +980,33 @@
         "doc",
         "lot"
       ]
+    },
+    "inventory.err_barcode_taken": {
+      "en": "Another item already has barcode {barcode}. Use a different barcode, or change it on the other item first.",
+      "params": [
+        "barcode"
+      ]
+    },
+    "inventory.err_barcode_taken_unnamed": {
+      "en": "Another item already has this barcode. Use a different barcode, or change it on the other item first.",
+      "params": []
+    },
+    "inventory.err_rfid_epc_taken": {
+      "en": "Another item already has RFID / EPC code {code}. Use a different code, or change it on the other item first.",
+      "params": [
+        "code"
+      ]
+    },
+    "inventory.err_rfid_epc_taken_unnamed": {
+      "en": "Another item already has this RFID / EPC code. Use a different code, or change it on the other item first.",
+      "params": []
+    },
+    "error.unhandled_events": {
+      "en": "Records can't be rebuilt while these modules are turned off: {modules} ({events}). Turn them on in Modules, then try again.",
+      "params": [
+        "events",
+        "modules"
+      ]
     }
   }
 }

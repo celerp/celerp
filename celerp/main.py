@@ -12,11 +12,13 @@ import uuid
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from celerp import __version__, runtime as _runtime
 _runtime.watch_supervisor_pipe()
+from celerp.accounting_roles import catalog_refusal
+from celerp.error_body import error_response
 from celerp.db import create_tables, engine, lifecycle_engine, mask_db_credentials
 from celerp.openapi_parameters import describe_parameters
 from celerp.inventory_codes import CodeConflictError
@@ -45,7 +47,7 @@ from celerp.held_back import (
     unowned_error,
 )
 from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, ModuleStartupMiddleware, OlderStockMiddleware, RecoveryMaintenanceMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception, notify_refused
-from ui.i18n import I18nMiddleware, t
+from ui.i18n import I18nMiddleware
 
 from celerp.routers import auth, companies, company_backup, company_peers, ledger, migrations
 from celerp.routers import health, notifications, system, events as events_router_mod
@@ -771,18 +773,23 @@ if settings.celerp_public_url:
 
 
 @app.exception_handler(404)
-async def not_found_handler(request: Request, exc) -> JSONResponse:
+async def not_found_handler(request: Request, exc):
     # A route that raised its own 404 keeps its message; an unknown address gets the generic one.
     detail = getattr(exc, "detail", None)
     if not detail or detail == "Not Found":
-        detail = t("error.api_not_found")
-    return JSONResponse(status_code=404, content={"detail": detail})
+        detail = catalog_refusal("error.api_not_found")
+    return error_response(request, 404, detail, headers=getattr(exc, "headers", None))
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    return error_response(request, exc.status_code, exc.detail, headers=exc.headers)
 
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
     log_unhandled_exception(request, exc)
-    return JSONResponse(status_code=500, content={"detail": t("error.server_error")})
+    return error_response(request, 500, catalog_refusal("error.server_error"))
 
 
 def _finite_or_text(value: float) -> float | str:
@@ -790,38 +797,36 @@ def _finite_or_text(value: float) -> float | str:
 
 
 @app.exception_handler(RequestValidationError)
-async def request_validation_handler(_request: Request, exc: RequestValidationError):
+async def request_validation_handler(request: Request, exc: RequestValidationError):
     # A rejected NaN or Infinity is echoed back as text, since JSON cannot carry it as a number.
-    return JSONResponse(status_code=422, content={
-        "detail": jsonable_encoder(exc.errors(), custom_encoder={float: _finite_or_text})})
+    return error_response(request, 422, jsonable_encoder(exc.errors(), custom_encoder={float: _finite_or_text}))
 
 
 @app.exception_handler(RateLimitExceeded)
-async def rate_limit_handler(_request: Request, _exc: RateLimitExceeded):
-    return JSONResponse(status_code=429, content={"detail": t("error.rate_limited")})
+async def rate_limit_handler(request: Request, _exc: RateLimitExceeded):
+    return error_response(request, 429, catalog_refusal("error.rate_limited"))
 
 
 @app.exception_handler(CodeConflictError)
-async def code_conflict_handler(_request: Request, exc: CodeConflictError):
+async def code_conflict_handler(request: Request, exc: CodeConflictError):
     # The event boundary raises a CodeConflictError (barcode or RFID / EPC) when a write
     # introduces a physical code another item already holds. One handler on the shared
     # base maps every physical-code collision to 409.
-    return JSONResponse(status_code=409, content={"detail": str(exc)})
+    return error_response(request, 409, exc.detail)
 
 
 @app.exception_handler(InvalidTimezoneError)
-async def invalid_timezone_handler(_request: Request, exc: InvalidTimezoneError):
+async def invalid_timezone_handler(request: Request, exc: InvalidTimezoneError):
     # Any request that needs the business day (numbering a document, previewing a counter)
     # is refused before it stores anything, without a try in every route. The message names
     # the page that sets the time zone, and the code lets a page link there.
-    return JSONResponse(status_code=422, content={
-        "detail": t("error.company_timezone_unknown"), "code": "company_timezone"})
+    return error_response(request, 422, catalog_refusal("error.company_timezone_unknown"), code="company_timezone")
 
 
 @app.exception_handler(UnhandledEventsError)
-async def unhandled_events_handler(_request: Request, exc: UnhandledEventsError):
+async def unhandled_events_handler(request: Request, exc: UnhandledEventsError):
     # Every rebuild door (ledger, doctor, admin) is refused the same way before it changes anything.
-    return JSONResponse(status_code=409, content={"detail": str(exc)})
+    return error_response(request, 409, exc.detail)
 
 
 @app.exception_handler(PostingRoleError)
@@ -834,14 +839,14 @@ async def posting_refused_handler(request: Request, exc: PostingRoleError):
             await notify_refused(company_id, [p["params"]["role"] for p in exc.detail["params"]["problems"]])
         except Exception:
             logging.getLogger(__name__).exception("Could not notify a refused posting")
-    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail}, headers=exc.headers)
+    return error_response(request, exc.status_code, exc.detail, headers=exc.headers)
 
 
 @app.exception_handler(UnbalancedJournalEntry)
-async def unbalanced_je_handler(_request: Request, exc: UnbalancedJournalEntry):
+async def unbalanced_je_handler(request: Request, exc: UnbalancedJournalEntry):
     # An automatic journal entry that would not balance is refused, and the write that
     # produced it rolls back with it; the message names the document and the amounts.
-    return JSONResponse(status_code=422, content={"detail": str(exc)})
+    return error_response(request, 422, exc.detail)
 
 
 # Kernel routes — always present regardless of module configuration

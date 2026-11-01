@@ -16,6 +16,7 @@ import httpx
 from fastapi.routing import APIRoute
 
 from celerp.accounting_roles import refusal
+from celerp import error_body
 from celerp.ai import deadlines
 from celerp.modules.loader import loaded_modules
 from celerp.modules.registry import uses_module
@@ -444,6 +445,10 @@ async def execute_agent_capability(
             http_status=response.status_code, status=response.status_code,
         )
 
+    # A refusal the route answered with directly, not through an exception handler, meets
+    # the same check here, where every answer the AI keeps arrives.
+    error_body.check(f"{capability['method']} {url_path}", response.status_code,
+                     data.get("detail") if isinstance(data, dict) else data, agent=True)
     encoded = json.dumps(data, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8")
     if len(encoded) > result_max_bytes:
         if response.is_success and capability.get("requires_confirmation"):

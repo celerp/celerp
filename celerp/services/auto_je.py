@@ -262,9 +262,8 @@ async def _emit_auto_posted_je(
     debits = sum((to_decimal(e["debit"]) for e in entries), _Dec(0))
     credits = sum((to_decimal(e["credit"]) for e in entries), _Dec(0))
     if debits != credits:
-        raise UnbalancedJournalEntry(
-            t("error.auto_je_unbalanced", memo=memo, debits=debits, credits=credits, currency=currency)
-        )
+        raise UnbalancedJournalEntry("error.auto_je_unbalanced", memo=memo, debits=str(debits),
+                                     credits=str(credits), currency=currency)
     payload = {**(extra or {}), "memo": memo, "entries": entries}
     if ts:
         payload["ts"] = ts
@@ -2231,9 +2230,8 @@ async def _bill_entries(session, company_id, doc_id: str, doc: dict,
     # The line index each debit comes from (None for tax, shipping and a bill with no lines).
     sources: list[int | None] = [part if isinstance(part, int) else None for part, _ in parts]
     if sum((a for _, a in lines), _Dec(0)) != total_d:
-        raise UnbalancedJournalEntry(
-            t("error.bill_lines_mismatch", doc_id=doc_id, total=total_d, currency=currency)
-        )
+        raise UnbalancedJournalEntry("error.bill_lines_mismatch", doc_id=doc_id, total=str(total_d),
+                                     currency=currency)
 
     settings = await current_settings(session, company_id)
     # A charge its receipts already drew from clearing (goods received before the bill was

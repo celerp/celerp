@@ -6783,6 +6783,7 @@
   "documents.err_contact_not_customer": "{name} is not a customer. Choose a customer, or change the contact's type to customer or both.",
   "documents.err_contact_not_vendor": "{name} is not a vendor. Choose a vendor, or change the contact's type to vendor or both.",
   "error.idempotency_key_too_long": "idempotency_key is longer than {max} characters",
+  "error.unhandled_events": "Records can't be rebuilt while these modules are turned off: {modules} ({events}). Turn them on in Modules, then try again.",
   "inventory.err_restore_only": "A deleted item comes back only through Restore, as a draft.",
   "inventory.err_left_books_sold": "This item was sold; reverse its fulfilment to bring it back.",
   "inventory.err_gave_up_stock": "This item holds no stock on the books: it was sold, or its stock went into other items (a split, transform or merge), or its receipt or return was undone, so a status edit cannot bring it back.",
@@ -6816,5 +6817,9 @@
   "inventory.err_restate_lineage_broken": "{lot} was merged into {item}, which is not an item; the merge lineage is broken",
   "inventory.err_restate_successor_used": "{lot}'s cost went into {successor}, which was later split, transformed, used, or written off, so the correction cannot be carried through it automatically",
   "inventory.err_restate_successor_negative": "{lot}'s cost went into {successor}, whose cost cannot absorb a change of {change}",
-  "inventory.err_restate_lot_partly_priced": "{lot} was sold on {doc}, but that invoice does not price the whole lot, so its cost of goods sold cannot be adjusted automatically; correct it with a journal entry instead"
+  "inventory.err_restate_lot_partly_priced": "{lot} was sold on {doc}, but that invoice does not price the whole lot, so its cost of goods sold cannot be adjusted automatically; correct it with a journal entry instead",
+  "inventory.err_barcode_taken": "Another item already has barcode {barcode}. Use a different barcode, or change it on the other item first.",
+  "inventory.err_barcode_taken_unnamed": "Another item already has this barcode. Use a different barcode, or change it on the other item first.",
+  "inventory.err_rfid_epc_taken": "Another item already has RFID / EPC code {code}. Use a different code, or change it on the other item first.",
+  "inventory.err_rfid_epc_taken_unnamed": "Another item already has this RFID / EPC code. Use a different code, or change it on the other item first."
 }

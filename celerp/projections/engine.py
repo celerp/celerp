@@ -12,6 +12,7 @@ from fastapi import HTTPException
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
+from celerp.accounting_roles import KeyedRefusal
 from celerp.inventory_codes import (
     BarcodeConflictError,
     RfidEpcConflictError,
@@ -110,17 +111,15 @@ def _replay_handler(event_type: str):
     return _merge if event_type in MERGE_EVENTS else None
 
 
-class UnhandledEventsError(Exception):
+class UnhandledEventsError(KeyedRefusal):
     """The ledger holds events this build cannot replay as written (ProjectionEngine.unreplayable)."""
 
     def __init__(self, event_types: set[str]):
         from celerp.modules.loader import modules_owning_events
 
         self.event_types = sorted(event_types)
-        super().__init__(
-            "Records cannot be rebuilt while these modules are not enabled: "
-            f"{', '.join(modules_owning_events(event_types))} ({', '.join(self.event_types)}). "
-            "Enable them in Modules, then try again.")
+        super().__init__("error.unhandled_events", modules=", ".join(modules_owning_events(event_types)),
+                         events=", ".join(self.event_types))
 
 
 class ProjectionEngine:

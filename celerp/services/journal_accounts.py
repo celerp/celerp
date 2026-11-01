@@ -32,6 +32,7 @@ from celerp.accounting_roles import (
     ROLE_LABELS,
     SCHEMA_KEY,
     AccountRole,
+    Refused,
     is_role,
     refusal,
     unknown_role,
@@ -84,7 +85,7 @@ class UntrustedChartError(ValueError):
     """A chart offered by code that is not the bundled accounting module."""
 
 
-class UnbalancedJournalEntry(ValueError):
+class UnbalancedJournalEntry(Refused):
     """An automatic journal entry whose lines do not balance in the company currency."""
 
 

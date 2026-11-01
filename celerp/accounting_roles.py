@@ -325,21 +325,35 @@ def refusal(key: str, message: str, /, **params) -> dict:
     return {"message": message, "message_key": key, "params": params}
 
 
-class Refused(ValueError):
+def catalog_refusal(key: str, /, **params) -> dict:
+    """The ``refusal`` whose English is the en catalog's text for ``key``."""
+    from ui.i18n import t  # ui.i18n reads prices, whose cost rules raise Refused
+
+    return refusal(key, t(key, "en", **params), **params)
+
+
+class KeyedRefusal(Exception):
     """A refusal raised where it is met: ``detail`` is the ``refusal`` a route answers
     with, so it reads in each reader's language; its text is the refusal in the language
-    of the request that met it. ``message`` is the English, the en catalog's when not given."""
+    of the request that met it. ``message`` is the English, the en catalog's when not given.
+    Refused is the one most code raises; a refusal an app exception handler answers with,
+    which no ``except ValueError`` on its way may catch, derives from this directly."""
 
     def __init__(self, key: str, message: str | None = None, /, **params):
-        from ui.i18n import refusal_text, t  # ui.i18n reads prices, whose cost rules raise this
+        from ui.i18n import refusal_text  # ui.i18n reads prices, whose cost rules raise this
 
-        self.detail = refusal(key, t(key, "en", **params) if message is None else message, **params)
+        self.detail = catalog_refusal(key, **params) if message is None else refusal(key, message, **params)
         super().__init__(refusal_text(self.detail))
 
     @classmethod
     def of(cls, detail: dict):
         """The refusal ``detail`` (a ``refusal``) raised as this class."""
         return cls(detail["message_key"], detail["message"], **detail["params"])
+
+
+class Refused(KeyedRefusal, ValueError):
+    """A keyed refusal that is also a ValueError, so a validator's caller that refuses
+    a ValueError refuses this one too."""
 
 
 def no_account_chosen() -> dict:
