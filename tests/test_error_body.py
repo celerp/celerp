@@ -5,6 +5,8 @@ under tests a route the AI calls that refuses without a catalog key fails the te
 met it, so the whole suite checks the refusals the AI can keep and show."""
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi import HTTPException
 from fastapi.exceptions import WebSocketRequestValidationError
@@ -59,6 +61,48 @@ async def test_a_keyed_agent_route_refusal_is_not_recorded(recorded, detail):
 async def test_a_route_the_ai_does_not_call_is_not_checked(recorded):
     handler = app.exception_handlers[StarletteHTTPException]
     await handler(_request(agent=False), HTTPException(409, "Plain text"))
+    assert recorded == []
+
+
+def _examples() -> dict:
+    """One exception of each type the app has a handler for, as the code that raises it
+    builds it. The HTTPException handlers keep the detail they are given, which the
+    boundary checks for every route (test_an_agent_route_refusal_without_a_key_is_recorded)."""
+    from fastapi.exceptions import RequestValidationError
+    from slowapi.errors import RateLimitExceeded
+
+    from celerp.inventory_codes import BarcodeConflictError, CodeConflictError
+    from celerp.projections.engine import UnhandledEventsError
+    from celerp.services.account_roles import PostingRoleError
+    from celerp.services.business_time import InvalidTimezoneError
+    from celerp.services.journal_accounts import UnbalancedJournalEntry
+
+    return {
+        404: StarletteHTTPException(404),
+        StarletteHTTPException: HTTPException(409, catalog_refusal("error.server_error")),
+        Exception: RuntimeError("boom"),
+        RequestValidationError: RequestValidationError([{"loc": ["body", "sku"], "msg": "Field required"}]),
+        # The handler reads nothing from the exception; a Limit needs a live limiter to build.
+        RateLimitExceeded: RateLimitExceeded.__new__(RateLimitExceeded),
+        CodeConflictError: BarcodeConflictError("1001"),
+        InvalidTimezoneError: InvalidTimezoneError("error.company_timezone_unknown"),
+        UnhandledEventsError: UnhandledEventsError({"unknown.event"}),
+        PostingRoleError: PostingRoleError([catalog_refusal("posting.problem.unset", role="sales")]),
+        UnbalancedJournalEntry: UnbalancedJournalEntry("error.server_error"),
+    }
+
+
+async def test_every_exception_handler_answers_an_agent_route_with_a_keyed_refusal(recorded):
+    """Registry guard: each exception type the app answers is answered keyed, so a refusal
+    no route raises itself (a code conflict at the event boundary, a ledger this build
+    cannot replay) still reads in the reader's language. A new handler needs an example."""
+    examples = _examples()
+    handled = {kind for kind in app.exception_handlers if kind is not WebSocketRequestValidationError}
+    assert handled == set(examples), handled ^ set(examples)
+    for kind, exc in examples.items():
+        response = await app.exception_handlers[kind](_request(agent=True), exc)
+        detail = json.loads(response.body)["detail"]
+        assert error_body.keyed(detail), (kind, detail)
     assert recorded == []
 
 
