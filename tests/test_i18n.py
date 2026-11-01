@@ -781,8 +781,9 @@ def test_thai_no_truncated_values():
 def test_bundled_module_locales_no_untranslated_prose():
     """Bundled module catalogs get the same source-identical review as the
     central catalogs: no release-complete locale value may be byte-identical to
-    the module's English source. The only exception is a string still waiting for
-    its translation, listed under the module in i18n_pending_translation.json."""
+    the module's English source. The exceptions are a string still waiting for
+    its translation, listed under the module in i18n_pending_translation.json, and a
+    template with no words outside its {parameters}, which has no prose to translate."""
     pending_modules = json.loads(
         (Path(__file__).parent / "i18n_pending_translation.json").read_text(encoding="utf-8")
     ).get("modules", {})
@@ -796,7 +797,8 @@ def test_bundled_module_locales_no_untranslated_prose():
             loc = json.loads((locdir / f"{code}.json").read_text())
             identical = sorted(
                 k for k, v in loc.items()
-                if k in en and v == en[k] and en[k].strip() and k not in pending
+                if k in en and v == en[k] and re.search(r"[^\W\d_]", re.sub(r"\{\w+\}", "", en[k]))
+                and k not in pending
             )
             if identical:
                 offenders[f"{locdir.parent.name}:{code}"] = identical
