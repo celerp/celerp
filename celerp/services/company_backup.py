@@ -86,11 +86,15 @@ FORMAT = "celerp-company-backup"
 FORMAT_VERSION = 2
 EXTENSION = ".celerp-company"
 
-# The core and bundled-module company tables a backup carries.
-PORTABLE_TABLES = frozenset({
-    "locations", "work_centers", "ledger", "projections", "accounts", "bank_accounts",
-    "reconciliation_sessions", "reconciliation_rules", "bank_statement_lines", "label_templates",
-})
+# The core and bundled-module company tables a backup carries, each with the module that
+# creates it (None: Celerp's own). A copy holding rows in a module's table needs that module,
+# whatever module list the copy records: older copies record none.
+PORTABLE_TABLES: dict[str, str | None] = {
+    "locations": None, "work_centers": None, "ledger": None, "projections": None,
+    "accounts": "celerp-accounting", "bank_accounts": "celerp-accounting",
+    "reconciliation_sessions": "celerp-accounting", "reconciliation_rules": "celerp-accounting",
+    "bank_statement_lines": "celerp-accounting", "label_templates": "celerp-labels",
+}
 
 # Company tables that stay with the installation, and why.
 EXCLUDED_TABLES = {
@@ -1067,12 +1071,18 @@ class _Checked:
     digests: dict[str, int]
 
 
+def needed_modules(m: dict) -> set[str]:
+    """Every module the backup's company uses: enabled in the copy or holding its data."""
+    holding = {PORTABLE_TABLES[name] for name, meta in m["tables"].items()
+               if PORTABLE_TABLES.get(name) and meta["rows"]}
+    return set(m["modules"]["enabled"]) | set(m["modules"]["versions"]) | holding
+
+
 def requirement_plan(backup: BackupFile) -> requirements.RequirementPlan:
-    """Every module the backup needs, enabled or holding its data, with what stands
-    between it and running here at a version that will do."""
+    """Every module the backup needs, with what stands between it and running here at a
+    version that will do."""
     versions = backup.manifest["modules"]["versions"]
-    return requirements.plan_requirements(
-        {name: versions.get(name) for name in set(backup.manifest["modules"]["enabled"]) | set(versions)})
+    return requirements.plan_requirements({name: versions.get(name) for name in needed_modules(backup.manifest)})
 
 
 def _lines(zf: zipfile.ZipFile, name: str):
@@ -1805,7 +1815,7 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                         raise BackupError(422, t(ATTACHMENT_FAILED)) from None
                 id_map = {source: str(new_id), **{old: str(uuid.uuid4()) for old in checked.ids}, **url_map}
                 settings = remap(_kept_settings(m["company"]["settings"]), id_map)
-                settings = set_enabled(settings, set(m["modules"]["enabled"]))  # the checked list, never the copied key
+                settings = set_enabled(settings, needed_modules(m))  # the checked list, never the copied key
                 settings[LINEAGE_SETTING] = _copy_lineage(m["company"])
                 team_to_add, grants = plan.team_to_add, plan.role_grants
                 if replacing is not None:

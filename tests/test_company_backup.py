@@ -854,7 +854,7 @@ async def test_no_table_in_both_groups():
     """No table is both portable and excluded, and neither list claims a module-prefix table."""
     from celerp.modules.importer import valid_table_prefixes
     cb = _bk_cb()
-    assert isinstance(cb.PORTABLE_TABLES, frozenset) and isinstance(cb.EXCLUDED_TABLES, dict)
+    assert isinstance(cb.PORTABLE_TABLES, dict) and isinstance(cb.EXCLUDED_TABLES, dict)
     assert not set(cb.PORTABLE_TABLES) & set(cb.EXCLUDED_TABLES)
     prefixes = tuple(valid_table_prefixes().values())
     if prefixes:
@@ -862,6 +862,18 @@ async def test_no_table_in_both_groups():
     assert set(cb.PORTABLE_TABLES) == {"locations", "work_centers", "ledger", "projections", "accounts",
                                        "bank_accounts", "reconciliation_sessions", "reconciliation_rules",
                                        "bank_statement_lines", "label_templates"}
+
+
+def test_each_portable_table_names_the_module_that_creates_it():
+    """A copy holding rows in a module's portable table asks for that module, so each portable
+    table names the package whose model creates it (None: Celerp's own)."""
+    import celerp_accounting.models  # noqa: F401
+    import celerp_labels.models  # noqa: F401
+    from celerp.models.base import Base
+    made_by = {m.local_table.name: m.class_.__module__.split(".")[0] for m in Base.registry.mappers}
+    for table, module in _bk_cb().PORTABLE_TABLES.items():
+        package = made_by[table]
+        assert module == (None if package == "celerp" else package.replace("_", "-")), (table, package)
 
 
 async def test_export_refuses_unclassified_table(real_engine, real_client, tmp_path, monkeypatch):
