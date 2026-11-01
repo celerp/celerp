@@ -7,6 +7,7 @@ import os
 import re
 from contextlib import contextmanager
 from contextvars import ContextVar
+from datetime import date
 from pathlib import Path
 from functools import lru_cache
 
@@ -131,6 +132,13 @@ def t(key: str, lang: str | None = None, **kwargs) -> str:
     en = _cached_load("en")
     text = locale.get(key, en.get(key, key))
     return text.format(**kwargs) if kwargs else text
+
+
+def date_text(day: date, lang: str | None = None) -> str:
+    """A day as people read it in running text, in the locale's own order and month names
+    ("31 Mar 2026")."""
+    month = t("date.months_short", lang).split()[day.month - 1]
+    return t("date.text", lang, day=day.day, month=month, month_number=day.month, year=day.year)
 
 
 def list_text(items, lang: str | None = None) -> str:
@@ -371,7 +379,7 @@ def _refusal_param(name: str, value):
     ``status`` as an item status, ``lot_status`` as one read mid-sentence and
     ``doc_status`` as a document status, each only when the value is an enum slug (a
     file type such as ".pdf" or a name reads as written); ``reason``
-    as why a production run waits for reconciling."""
+    as why a production run waits for reconciling; any ISO day as a date (date_text)."""
     from ui.components.table import display_enum
 
     if isinstance(value, dict) and "message" in value:
@@ -388,6 +396,11 @@ def _refusal_param(name: str, value):
         return reconcile_reason(str(value))
     if name == "types" and isinstance(value, list):
         return t("posting.type_or").join(_refusal_param("type", v) for v in value)
+    if isinstance(value, str) and _ISO_DAY.fullmatch(value):
+        try:
+            return date_text(date.fromisoformat(value))
+        except ValueError:
+            return value  # shaped like a day but not one (2026-13-40) reads as written
     if not (isinstance(value, str) and _ENUM_SLUG.fullmatch(value)):
         return value  # text such as a file type (".pdf") or a name reads as written
     if name == "status":
@@ -405,6 +418,8 @@ def _refusal_param(name: str, value):
 
 # An enum value as stored: a lowercase slug. A param holding anything else is already text.
 _ENUM_SLUG = re.compile(r"[a-z][a-z0-9_]*")
+# A day as the API carries it (celerp.accounting_roles.refusal turns a date into this).
+_ISO_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 def field_label(f: dict) -> str:

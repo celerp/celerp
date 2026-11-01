@@ -13,7 +13,7 @@ import pytest
 from fa_fixtures import FA
 from test_runs import _contributed, _managed_from, _run
 from test_sales import _finalize, _sell
-from ui.i18n import refusal_text
+from ui.i18n import date_text, refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -78,7 +78,7 @@ async def test_a_date_after_today_names_the_company_today_and_where_it_is_set(fa
     ahead = (today + timedelta(days=1)).isoformat()
     r = await fa.post(f"/assets/{car}/dispose", {"date": ahead, "reason": "lost", "preview": True, "op_key": "d"})
     assert r.status_code == 422
-    assert _message(r) == (f"The disposal date {ahead} is after the company's today, {today.isoformat()} "
+    assert _message(r) == (f"The disposal date {date_text(today + timedelta(days=1))} is after the company's today, {date_text(today)} "
                            "(time zone UTC).")
     assert _params(r) == {"field": "The disposal date", "value": ahead, "today": today.isoformat(), "zone": "UTC",
                           "href": "/settings/general?tab=company", "action": "settings.company_details"}
@@ -91,7 +91,7 @@ async def test_a_date_before_a_later_change_names_the_change(fa: FA):
     r = await fa.post(f"/assets/{car}/sell", {"date": "2026-05-20", "price": "9000", "contact_id": await fa.buyer(),
                                               "preview": True, "op_key": "s"})
     number = (await fa.asset(car))["number"]
-    assert _message(r) == f"{number} was changed on 2026-06-30 (Impairment). Date the sale on or after that date."
+    assert _message(r) == f"{number} was changed on 30 Jun 2026 (Impairment). Date the sale on or after that date."
 
 
 async def test_undo_registration_on_the_asset_page_points_at_its_correct(fa: FA):
@@ -305,8 +305,8 @@ async def test_forms_on_an_asset_out_of_use_say_its_state_and_the_way_back_befor
     await fa.operate(f"/assets/{van}/undo", {}, key="undo-van")
     numbers = {a: (await fa.asset(a))["number"] for a in (printer, car, van)}
     left = {
-        printer: f"{numbers[printer]} was disposed of on 2026-03-20. Undo the disposal on its page first.",
-        car: f"{numbers[car]} was sold on 2026-04-10. Void its invoice and cancel the sale on its page first.",
+        printer: f"{numbers[printer]} was disposed of on 20 Mar 2026. Undo the disposal on its page first.",
+        car: f"{numbers[car]} was sold on 10 Apr 2026. Void its invoice and cancel the sale on its page first.",
         van: f"{numbers[van]}'s registration was undone. Its bill line is back in Register from bills, "
              "to register it again."}
     cannot = {"sell": "{} cannot be sold.", "dispose": "{} cannot be disposed of.", "move": "{} cannot be moved.",

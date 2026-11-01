@@ -588,6 +588,8 @@
   "lines.no_item": "Dòng {line} không chỉ định mặt hàng tồn kho nào.",
   "lines.cannot_split": "Không thể tách {sku}: {reason}",
   "lines.lot_already_invoiced": "{sku} đã được lập hóa đơn trên {docs} và chưa giao, nên không thể lập hóa đơn lại. Hãy giao hoặc hủy hóa đơn đó trước, hoặc lập hóa đơn cho hàng tồn khác.",
+  "date.months_short": "thg1 thg2 thg3 thg4 thg5 thg6 thg7 thg8 thg9 thg10 thg11 thg12",
+  "date.text": "{day} thg {month_number}, {year}",
   "list.and": "{items} và {last}",
   "list.separator": ", ",
   "lots.splitting_off": "Cho phép tách đang tắt cho {sku}. Để {action} một phần, hãy bật Cho phép tách cho mặt hàng, hoặc {action} toàn bộ lô.",

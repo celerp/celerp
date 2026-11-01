@@ -588,6 +588,8 @@
   "lines.no_item": "La ligne {line} ne désigne aucun article en stock.",
   "lines.cannot_split": "Impossible de diviser {sku} : {reason}",
   "lines.lot_already_invoiced": "{sku} est déjà facturé sur {docs} et pas encore expédié, il ne peut donc pas être facturé à nouveau. Expédiez ou annulez d'abord cette facture, ou facturez un autre stock.",
+  "date.months_short": "janv. févr. mars avr. mai juin juil. août sept. oct. nov. déc.",
+  "date.text": "{day} {month} {year}",
   "list.and": "{items} et {last}",
   "list.separator": ", ",
   "lots.splitting_off": "Autoriser la division est désactivé pour {sku}. Pour {action} une partie, activez Autoriser la division sur l'article, ou vous pouvez {action} le lot entier.",

@@ -588,6 +588,8 @@
   "lines.no_item": "Baris {line} tidak menyebut barang persediaan.",
   "lines.cannot_split": "Tidak dapat memecah {sku}: {reason}",
   "lines.lot_already_invoiced": "{sku} sudah ditagih pada {docs} dan belum dikirim, jadi tidak dapat ditagih lagi. Kirim atau batalkan faktur itu terlebih dahulu, atau tagih stok lain.",
+  "date.months_short": "Jan Feb Mar Apr Mei Jun Jul Agu Sep Okt Nov Des",
+  "date.text": "{day} {month} {year}",
   "list.and": "{items} dan {last}",
   "list.separator": ", ",
   "lots.splitting_off": "Izinkan Pemisahan nonaktif untuk {sku}. Untuk {action} sebagian, aktifkan Izinkan Pemisahan pada barang, atau {action} seluruh paket.",

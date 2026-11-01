@@ -15,7 +15,6 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from celerp.accounting_roles import catalog_refusal
-from celerp.accounting_roles import catalog_refusal
 from celerp.models.projections import Projection
 from celerp.services.business_time import business_today, company_today
 from celerp_fixed_assets.calc import rules
@@ -112,7 +111,7 @@ def require_open(lock: date | None, day: str) -> None:
     """Refuses ``day`` when it falls in the locked period, naming the first open date."""
     if lock is not None and date.fromisoformat(day) <= lock:
         first = lock + timedelta(days=1)
-        raise refuse("fixed_assets.err_locked", lock=lock.isoformat(), first=first.isoformat())
+        raise refuse("fixed_assets.err_locked", lock=lock, first=first)
 
 
 def settings_of(company_settings: dict | None) -> dict:

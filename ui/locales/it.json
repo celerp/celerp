@@ -588,6 +588,8 @@
   "lines.no_item": "La riga {line} non indica alcun articolo di magazzino.",
   "lines.cannot_split": "Impossibile dividere {sku}: {reason}",
   "lines.lot_already_invoiced": "{sku} è già fatturato su {docs} e non ancora spedito, quindi non può essere fatturato di nuovo. Spedisci o annulla prima quella fattura, oppure fattura altro stock.",
+  "date.months_short": "gen feb mar apr mag giu lug ago set ott nov dic",
+  "date.text": "{day} {month} {year}",
   "list.and": "{items} e {last}",
   "list.separator": ", ",
   "lots.splitting_off": "Consenti divisione è disattivato per {sku}. Per {action} una parte, attiva Consenti divisione sull'articolo, oppure puoi {action} l'intero lotto.",

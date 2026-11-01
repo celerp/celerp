@@ -14,7 +14,7 @@ from decimal import Decimal
 import pytest
 
 from fa_fixtures import FA
-from ui.i18n import refusal_text, t
+from ui.i18n import date_text, refusal_text, t
 
 pytestmark = pytest.mark.asyncio
 
@@ -137,7 +137,7 @@ async def test_j5_as_at_must_be_the_cutover(fa):
     cut = await _cutover(fa)
     other = (date.fromisoformat(cut) - timedelta(days=1)).isoformat()
     refused = await fa.post("/imports", {"rows": [_building(cut)], "as_at": other, "preview": True, "op_key": "x"})
-    assert refused.status_code == 422 and f"as at the cutover {cut}" in refusal_text(refused.json()["detail"])
+    assert refused.status_code == 422 and f"as at the cutover {date_text(date.fromisoformat(cut))}." in refusal_text(refused.json()["detail"])
     empty = await fa.post("/imports", {"rows": [], "as_at": cut, "preview": True, "op_key": "x"})
     assert empty.status_code == 422
 

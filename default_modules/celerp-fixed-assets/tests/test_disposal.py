@@ -83,7 +83,7 @@ async def test_dispose_on_a_locked_date_names_the_first_open_date(fa):
     await _lock(fa, "2026-03-31")
     r = await fa.post(f"/assets/{car}/dispose", {"date": "2026-03-15", "reason": "lost", "preview": True,
                                                  "op_key": "dl"})
-    assert r.status_code == 422 and "Use a date from 2026-04-01" in refusal_text(r.json()["detail"])
+    assert r.status_code == 422 and "Use a date from 1 Apr 2026" in refusal_text(r.json()["detail"])
 
 
 async def test_dispose_validates_its_inputs(fa):
@@ -258,4 +258,4 @@ async def test_disposed_asset_refuses_another_disposal(fa):
                                                  "op_key": "again"})
     number = (await fa.asset(car))["number"]
     assert r.status_code == 409 and r.json()["detail"]["message"] == (
-        f"{number} cannot be disposed of. {number} was disposed of on 2026-05-20. Undo the disposal on its page first.")
+        f"{number} cannot be disposed of. {number} was disposed of on 20 May 2026. Undo the disposal on its page first.")

@@ -588,6 +588,8 @@
   "lines.no_item": "Zeile {line} nennt keinen Lagerartikel.",
   "lines.cannot_split": "{sku} kann nicht geteilt werden: {reason}",
   "lines.lot_already_invoiced": "{sku} ist bereits auf {docs} fakturiert und noch nicht versendet, daher kann es nicht erneut fakturiert werden. Versenden oder stornieren Sie zuerst diese Rechnung, oder fakturieren Sie anderen Bestand.",
+  "date.months_short": "Jan. Feb. März Apr. Mai Juni Juli Aug. Sept. Okt. Nov. Dez.",
+  "date.text": "{day}. {month} {year}",
   "list.and": "{items} und {last}",
   "list.separator": ", ",
   "lots.splitting_off": "Teilen erlauben ist für {sku} ausgeschaltet. Um einen Teil davon zu {action}, schalten Sie Teilen erlauben für den Artikel ein. Die ganze Partie lässt sich immer {action}.",

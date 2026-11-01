@@ -588,6 +588,8 @@
   "lines.no_item": "{line} 行目に在庫品目が指定されていません。",
   "lines.cannot_split": "{sku} を分割できません: {reason}",
   "lines.lot_already_invoiced": "{sku} は {docs} で請求済みでまだ出荷されていないため、再度請求できません。先にその請求書を出荷または無効にするか、別の在庫を請求してください。",
+  "date.months_short": "1月 2月 3月 4月 5月 6月 7月 8月 9月 10月 11月 12月",
+  "date.text": "{year}年{month_number}月{day}日",
   "list.and": "{items}と{last}",
   "list.separator": "、",
   "lots.splitting_off": "{sku} は分割許可がオフです。一部を{action}するには品目の分割許可をオンにするか、ロット全体を{action}してください。",
