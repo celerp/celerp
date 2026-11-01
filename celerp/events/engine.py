@@ -816,12 +816,12 @@ async def emit_event(
         from celerp.services.goods_cost import (event_goods_costs, lot_label, negative_cost_error,
                                                 unknown_flag_error)
 
-        refusal = negative_cost_error(
+        cost_refusal = negative_cost_error(
             lot_label({**(previous_item_state or {}), **kwargs["data"]}, kwargs["entity_id"]),
             *event_goods_costs(kwargs["event_type"], kwargs["data"]),
         ) or unknown_flag_error(kwargs["event_type"], kwargs["data"])
-        if refusal:
-            raise HTTPException(status_code=422, detail=refusal)
+        if cost_refusal:
+            raise HTTPException(status_code=422, detail=cost_refusal)
         check_codes = _touches_physical_codes(
             previous_item_state or {}, kwargs["event_type"], kwargs["data"]
         ) and await find_event_by_idempotency(

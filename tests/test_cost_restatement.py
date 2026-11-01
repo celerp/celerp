@@ -19,6 +19,7 @@ from sqlalchemy import func, select
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from test_helpers import TZ, invoices_booking_one_lot_twice, merge_items
+from ui.i18n import refusal_text
 
 
 async def _item(client, auth, cost_total: float | None, qty: float = 1, sku: str | None = None) -> str:
@@ -335,7 +336,7 @@ async def _assert_refused(client, session, auth, root: str, watch: list[str], *,
     events = await _count(session, auth)
     r = await _set_cost(client, auth, root, new_cost)
     assert r.status_code == 409, r.text
-    assert fragment in r.json()["detail"]
+    assert fragment in refusal_text(r.json()["detail"])
     assert {eid: await _cost(session, auth, eid) for eid in [root, *watch]} == before
     assert await _count(session, auth) == events
 

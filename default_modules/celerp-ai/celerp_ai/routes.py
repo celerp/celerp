@@ -1056,10 +1056,12 @@ def _retryable_action_result(result: dict) -> bool:
 
 
 def _action_error(result: dict) -> dict | None:
-    """Why a confirmed action failed, as {code, message, message_key, params}: the
-    executor's own keyed error, or the rejecting route's refusal. A route's plain text
-    is the app's own, already in the user's language; field validation and a reply
-    with no reason get their catalog text, so the reply always says the reason."""
+    """Why a confirmed action failed: the executor's own keyed error, or the rejecting
+    route's refusal kept whole (code, message, message_key, params, errors), which the
+    routes the AI calls key where they raise it (or translate there, kept as written).
+    Field validation gets its catalog text,
+    and a reply no text explains (none, or a bare code) reads as the keyed request
+    failure, so the reply always says the reason in the reader's language."""
     from celerp.ai.tools import keyed_error
     if result.get("ok"):
         return None
@@ -1067,16 +1069,15 @@ def _action_error(result: dict) -> dict | None:
         return result["error"]
     data = result.get("data")
     detail = data.get("detail") if isinstance(data, dict) else None
-    if isinstance(detail, dict):
-        return {"code": detail.get("code") or "route_error",
-                "message": detail.get("message") or detail.get("code") or str(detail),
-                **{k: detail[k] for k in ("message_key", "params") if k in detail}}
+    if isinstance(detail, dict) and (detail.get("message_key") or detail.get("errors")):
+        return {"code": detail.get("code") or "route_error", **detail}
     if isinstance(detail, list):
         return keyed_error("invalid_arguments", "ai.err_invalid_arguments",
                            "; ".join(str(e.get("msg") if isinstance(e, dict) else e) for e in detail))
-    if detail:
-        return {"code": "route_error", "message": str(detail)}
-    return keyed_error("route_error", "ai.action_request_failed", status=result.get("status"))
+    if isinstance(detail, str) and detail:
+        return {"code": "route_error", "message": detail}
+    code = detail.get("code") if isinstance(detail, dict) else None
+    return keyed_error(code or "route_error", "ai.action_request_failed", status=result.get("status"))
 
 
 _ACTION_STATE_CODES = frozenset({"action_not_pending", "capability_unavailable"})

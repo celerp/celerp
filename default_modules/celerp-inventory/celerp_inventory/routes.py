@@ -2470,9 +2470,9 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
         _amt_val = data.get(_amt)
         if _amt_val is not None and float(_amt_val) < 0:
             raise HTTPException(status_code=422, detail=t("inventory.err_amount_negative", field=_field_name(_amt)))
-    refusal = negative_cost_error(lot_label(data, entity_id), *(data.get(k) for k in GOODS_COST_KEYS))
-    if refusal:
-        raise HTTPException(status_code=422, detail=refusal)
+    cost_refusal = negative_cost_error(lot_label(data, entity_id), *(data.get(k) for k in GOODS_COST_KEYS))
+    if cost_refusal:
+        raise HTTPException(status_code=422, detail=cost_refusal)
     if (sell_qty := validate_default_sell_qty(data.pop("default_sell_qty", None), payload.sell_by, unit_map)) is not None:
         data["default_sell_qty"] = sell_qty
 

@@ -317,9 +317,10 @@ def refusal_text(detail) -> str:
     """An API refusal in the user's language, as plain sentences.
 
     A structured refusal carries ``message`` (English), ``message_key`` and ``params``;
-    its ``message_key`` is translated with those params. A body's ``errors`` (a list
-    wins over a joined English ``message`` beside it) and lists render every entry in
-    turn, a body's ``detail`` renders what it holds, and plain text is shown as the
+    its ``message_key`` is translated with those params, and wins over an ``errors``
+    list beside it (the list is the detail behind a keyed summary). A body's
+    ``errors`` (a list wins over a joined English ``message`` beside it) and lists
+    render every entry in turn, a body's ``detail`` renders what it holds, and plain text is shown as the
     server wrote it. Internal record ids never reach the user. Anything
     else renders as "", so callers fall back to their own plain message."""
     if isinstance(detail, str):
@@ -329,7 +330,7 @@ def refusal_text(detail) -> str:
     if not isinstance(detail, dict):
         return ""
     errors = detail.get("errors")
-    if errors and (isinstance(errors, list) or "message" not in detail):
+    if errors and ((isinstance(errors, list) and not detail.get("message_key")) or "message" not in detail):
         return refusal_text(errors)
     if "message" not in detail:
         return refusal_text(detail.get("detail"))

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from ui.i18n import t
+from ui.i18n import refusal_text, set_lang, t
 
 _LOCALES = Path(__file__).resolve().parents[1] / "ui" / "locales"
 _LANGS = ("en", "th", "de", "fr", "es", "it", "pt", "id", "vi", "ja", "ar", "am")
@@ -42,9 +42,9 @@ async def _create_rejected(client, h, **fields) -> str:
 @pytest.mark.asyncio
 async def test_bad_codes_say_what_to_remove(client):
     h = await _headers(client)
-    assert await _create_rejected(client, h, sku="A,B") == t("inventory.err_sku_comma", "en")
-    assert await _create_rejected(client, h, barcode="12AB") == t("inventory.err_barcode_digits", "en")
-    assert await _create_rejected(client, h, gtin="1234567") == t("inventory.err_gtin_length", "en")
+    assert refusal_text(await _create_rejected(client, h, sku="A,B")) == t("inventory.err_sku_comma", "en")
+    assert refusal_text(await _create_rejected(client, h, barcode="12AB")) == t("inventory.err_barcode_digits", "en")
+    assert refusal_text(await _create_rejected(client, h, gtin="1234567")) == t("inventory.err_gtin_length", "en")
 
 
 @pytest.mark.asyncio
@@ -116,7 +116,12 @@ async def test_work_center_messages(client):
 @pytest.mark.asyncio
 async def test_inventory_messages_follow_the_users_language(client):
     h = {**await _headers(client), "Accept-Language": "th"}
-    assert await _create_rejected(client, h, sku="A,B") == t("inventory.err_sku_comma", "th")
+    detail = await _create_rejected(client, h, sku="A,B")
+    set_lang("th")
+    try:
+        assert refusal_text(detail) == t("inventory.err_sku_comma", "th")
+    finally:
+        set_lang("en")
     assert t("inventory.err_sku_comma", "th") != t("inventory.err_sku_comma", "en")
 
 

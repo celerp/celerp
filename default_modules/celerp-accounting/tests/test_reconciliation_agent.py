@@ -144,7 +144,7 @@ async def test_import_file_csv_and_xlsx(client):
 
     r = await _import_file(client, h, recon["id"], "ai_up_missing")
     assert r.status_code == 422
-    assert "ai_up_missing" in r.json()["detail"]
+    assert r.json()["detail"]["message_key"] == "error.file_not_found"
 
     other = await _second_company(client, h)
     other_company = await _company_id(client, other)

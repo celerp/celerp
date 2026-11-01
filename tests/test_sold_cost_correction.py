@@ -25,7 +25,7 @@ from celerp.services import auto_je
 from test_cost_restatement import (
     _cogs_adjustments, _doc_cogs, _fulfil, _invoice, _item, _merge, _set_cost, _state, sold_by_hand,
 )
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 from stock_books import book_older_opening
 from test_consignment_in_sale import _consign
 from test_helpers import TZ, company_auth, invoices_booking_one_lot_twice
@@ -251,7 +251,7 @@ async def _refused(client, session, auth, item_id: str, new_cost, *fragments: st
     r = await _set_cost(client, auth, item_id, new_cost)
     assert r.status_code == 409, r.text
     for fragment in fragments:
-        assert fragment in r.json()["detail"], r.json()["detail"]
+        assert fragment in refusal_text(r.json()["detail"]), r.json()["detail"]
     assert await _snapshot(session, auth) == before
     return r.json()["detail"]
 

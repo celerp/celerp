@@ -726,9 +726,9 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
     cost_changed = old_basis != new_basis
     # The written values too, not only the basis: a unit cost on a lot with no stock
     # leaves no basis at all.
-    refusal = negative_cost_error(label, *event_goods_costs(event_type, data), new_basis)
-    if refusal:
-        raise CostRestatementConflict.of(refusal)
+    cost_refusal = negative_cost_error(label, *event_goods_costs(event_type, data), new_basis)
+    if cost_refusal:
+        raise CostRestatementConflict.of(cost_refusal)
     if cost_changed and not await _cost_is_traceable(session, company_id, entity_id, old):
         raise CostRestatementConflict(
             "inventory.err_restate_cost_used",
@@ -3354,9 +3354,9 @@ async def build_import_records(
                 else:
                     data[unit_key] = to_stored_float(unit_price_from_total(total_val, price_qty, currency))
         for col_key in ("cost_price", "cost_price_total"):
-            refusal = negative_cost_error(sku or name or f"Row {i + 1}", _flt(col_key))
-            if refusal:
-                price_errors.append({"row": i + 1, "field": col_key, "code": "negative_value", **refusal})
+            cost_refusal = negative_cost_error(sku or name or f"Row {i + 1}", _flt(col_key))
+            if cost_refusal:
+                price_errors.append({"row": i + 1, "field": col_key, "code": "negative_value", **cost_refusal})
         if price_errors:
             errors.extend(price_errors)
             continue

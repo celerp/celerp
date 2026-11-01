@@ -13,7 +13,7 @@ from test_helpers import create_item, grant_permission, perm_setup, merge_items,
 from celerp.services.permissions import missing_permission_text
 from celerp_inventory.routes import _field_name
 from ui.components.activity import event_label
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 
 async def _item_state(client, headers: dict, item_id: str) -> dict:
@@ -311,7 +311,8 @@ async def test_unknown_status_rejected(client, session):
     ctx = await perm_setup(client, session)
     r = await _set_status(client, ctx["admin_h"], ctx["item_id"], "banana")
     assert r.status_code == 422, r.text
-    assert "banana" in r.json()["detail"] or "status" in r.json()["detail"].lower()
+    detail = refusal_text(r.json()["detail"])
+    assert "banana" in detail or "status" in detail.lower()
 
 
 @pytest.mark.parametrize("target", ["sold", "reserved", "archived", "expired"])
@@ -505,7 +506,7 @@ async def test_revert_via_item_patch_rejected_regardless_of_permission(client, s
         json={"fields_changed": {"status": {"old": "available", "new": "draft"}}},
         headers=ctx["operator_h"])
     assert denied.status_code == 422, denied.text
-    assert "revert to draft" in denied.json()["detail"].lower()
+    assert "revert to draft" in refusal_text(denied.json()["detail"]).lower()
 
 
 async def test_bulk_revert_validates_all_before_any(client, session):

@@ -399,6 +399,82 @@ async def test_a_failed_action_reads_the_same_in_the_reply_and_after_a_reload(mo
         assert english not in live and live != i18n.t("ai.err_unexpected", "th")
 
 
+async def _route_refusals(client) -> list[dict]:
+    """What the real app answers three confirmed AI actions it refuses with: an item
+    created in a status only an action reaches, an import whose preview went stale and
+    a match for a statement line that already created its journal entry."""
+    from test_helpers import register_admin
+    h = {"Authorization": f"Bearer {await register_admin(client)}"}
+    answers = [await client.post("/items", headers=h, json={
+        "sku": f"RS-{uuid.uuid4().hex[:6]}", "name": "Ring", "quantity": 1, "sell_by": "piece",
+        "status": "reserved"})]
+    rows = [{"name": "Widget", "sell_by": "piece", "quantity": "1"}]
+    batch = {"upsert": False, "idempotency_key": "op-1", "decisions": {}}
+    preview = await client.post("/items/import/rows/preview", headers=h, json={"rows": rows, **batch})
+    assert preview.status_code == 200, preview.text
+    answers.append(await client.post("/items/import/rows", headers=h, json={
+        "rows": [dict(rows[0], quantity="2")], "preview_hash": preview.json()["preview_hash"], **batch}))
+    bank = await client.post("/accounting/bank-accounts", headers=h, json={
+        "bank_name": "Harbor Bank", "account_number": "0001", "bank_type": "checking",
+        "currency": "USD", "opening_balance": 1000.0})
+    assert bank.status_code == 200, bank.text
+    recon = await client.post("/accounting/reconciliation/start", headers=h, json={
+        "bank_account_id": bank.json()["id"], "statement_date": "2026-09-30", "statement_balance": 1020.0})
+    assert recon.status_code == 200, recon.text
+    sid = recon.json()["id"]
+    imported = await client.post(f"/accounting/reconciliation/{sid}/import-csv", headers=h, files={
+        "file": ("s.csv", b"Date,Description,Amount\n2026-09-05,Deposit,20.00\n", "text/csv")})
+    assert imported.status_code == 200, imported.text
+    body = (await client.get(f"/accounting/reconciliation/{sid}/statement-lines", headers=h)).json()
+    (line,) = body.get("items") if isinstance(body, dict) else body
+    lines = f"/accounting/reconciliation/{sid}/lines/{line['id']}"
+    created = await client.post(f"{lines}/create", headers=h, json={"account_code": "4100"})
+    assert created.status_code == 200, created.text
+    answers.append(await client.post(f"{lines}/match", headers=h, json={"je_id": str(uuid.uuid4())}))
+    assert [r.status_code for r in answers] == [422, 409, 409], [r.text for r in answers]
+    return [{"ok": False, "status": r.status_code, "data": r.json()} for r in answers]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lang", ["qx", "th"])
+async def test_a_route_refusal_reads_the_same_on_the_card_and_after_a_reload(client, monkeypatch, lang):
+    """Class guard at the route boundary: a refusal the app's own route answers a
+    confirmed action with is stored whole, so the card and the reloaded thread read it
+    alike in the reader's language (the qx stand-in proves no English source reaches
+    either), never a bare code."""
+    from fasthtml.common import to_xml
+    from celerp.ai import tools
+    results = await _route_refusals(client)
+    monkeypatch.setattr(tools, "execute_agent_capability", None)
+    i18n.set_lang(lang)
+    for result in results:
+        detail = result["data"]["detail"]
+        outcome, stored = await _confirmed(monkeypatch, result)
+        assert stored["error"] == outcome["error"] == {"code": detail.get("code", "route_error"), **detail}
+        live = ui_routes._outcome_text(outcome, lang)[1]
+        reloaded = [to_xml(ui_routes._action_card("c", "m", stored, lang)),
+                    to_xml(ui_routes._action_status_cell(stored, lang)[1])]
+        assert all(live in text for text in reloaded), (detail, live)
+        assert live == i18n.refusal_text(detail) and detail["message_key"], detail
+        if lang == "qx":
+            assert _english([live]) == [], live
+
+
+@pytest.mark.asyncio
+async def test_a_route_refusal_keeps_its_errors_and_a_bare_code_reads_as_the_request_failing():
+    """A refusal's errors list survives to the card, and a refusal no text explains reads
+    as the keyed request failure, never as its code or an unkeyed English message."""
+    rows = {"code": "validation_failed", "errors": [_refusal("inventory.err_sku_comma", "No comma.")]}
+    error = routes._action_error({"ok": False, "status": 422, "data": {"detail": rows}})
+    assert error == rows
+    assert ui_routes._outcome_text({"ok": False, "error": error}, "qx")[1] == i18n.t("inventory.err_sku_comma", "qx")
+    for detail in ({"code": "preview_stale"}, {"code": "preview_stale", "message": "Stale."}):
+        error = routes._action_error({"ok": False, "status": 409, "data": {"detail": detail}})
+        assert error["code"] == "preview_stale" and error["message_key"] == "ai.action_request_failed"
+        assert ui_routes._outcome_text({"ok": False, "error": error}, "qx")[1] == i18n.t(
+            "ai.action_request_failed", "qx", status=409)
+
+
 @pytest.mark.asyncio
 async def test_a_failed_action_stored_before_errors_were_kept_whole_still_reads():
     """An older record holds only its text: it is shown as written."""

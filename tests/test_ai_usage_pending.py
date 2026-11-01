@@ -243,7 +243,9 @@ async def test_a_row_past_the_services_retry_window_is_unresolved_never_zero(
     assert asked == [[fresh]]
     assert await _state(session, old) == (2, True, True)
     assert await _state(session, fresh) == (0, False, False)
-    (row,) = (await _usage(client, token)).json()["users"]
+    # All time: the aged row is older than the retry window, so early in a month it
+    # falls in the previous one.
+    (row,) = (await _usage(client, token, period="all")).json()["users"]
     assert (row["query_count"], row["credits_used"], row["pending_count"],
             row["unresolved_count"]) == (0, 0, 0, 1)  # the fresh one was never charged
     await usage.reconcile_usage(session)
