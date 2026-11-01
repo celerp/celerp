@@ -946,6 +946,10 @@ def setup_routes(app):
 
     # ── /contacts/customers ───────────────────────────────────────────────
 
+    @app.get("/contacts")
+    async def contacts_landing(request: Request):
+        return RedirectResponse("/contacts/customers", status_code=302)
+
     @app.get("/contacts/customers")
     async def customers_page(request: Request):
         token = _token(request)
@@ -1213,7 +1217,8 @@ def setup_routes(app):
                 return RedirectResponse("/login", status_code=302)
             # A missing contact is final, so the API's own sentence stands alone; only a
             # temporary failure is worth Try again (the shell adds the button).
-            body = str(e.detail) if e.status == 404 else t("msg.contact_load_failed", detail=str(e.detail))
+            body = ((str(e.detail), " ", A(t("contacts.back_to_list"), href="/contacts/customers")) if e.status == 404
+                    else t("msg.contact_load_failed", detail=str(e.detail)))
             return await base_shell(
                 breadcrumbs([(t("nav.dashboard"), "/dashboard"), (t("nav.customers"), "/contacts/customers")]),
                 page_header(t("page.contact_detail")),

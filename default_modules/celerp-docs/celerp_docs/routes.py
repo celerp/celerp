@@ -1168,7 +1168,8 @@ def _doc_row(r: Projection, contact_name: str | None) -> dict:
 
 
 # The state keys the row-by-row filters of ``_doc_filter`` read, before display fallbacks.
-_DOC_FILTER_KEYS = ("doc_type", "status", "due_date", "amount_outstanding", "total", "fulfillment_status", "return_received_items", "received_items")
+_DOC_FILTER_KEYS = ("doc_type", "status", "due_date", "amount_outstanding", "total", "fulfillment_status", "return_received_items", "received_items",
+                    "line_items", "received_before_import")
 
 
 def _doc_flag_rules(today: str) -> dict[str, Callable[[dict], bool]]:
@@ -1184,8 +1185,16 @@ def _doc_flag_rules(today: str) -> dict[str, Callable[[dict], bool]]:
         "paid_only": is_paid_document,
         "unfulfilled_only": lambda x: issued(x) and x.get("status") != CLOSED and x.get("fulfillment_status") != "fulfilled",
         "not_restocked": lambda x: issued(x) and not (x.get("return_received_items") or []),
-        "not_stocked": lambda x: issued(x) and not (x.get("received_items") or []),
+        "not_stocked": lambda x: issued(x) and awaits_stock(x),
     }
+
+
+def awaits_stock(doc: dict) -> bool:
+    """True when a purchase document has stock lines and nothing of them came in: no receipt of
+    its own, and not a bill whose goods arrived before its books were imported. A bill of
+    expenses only (rent, power) brings in no stock to receive."""
+    return (any(line_receive_kind(li) == "stock" for li in doc.get("line_items") or [])
+            and not (doc.get("received_items") or []) and not doc.get("received_before_import"))
 
 
 # Each flag filter's summary figures: the count key, and the receivable total (key, field) its

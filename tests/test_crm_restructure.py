@@ -63,6 +63,14 @@ async def test_crm_redirect_to_contacts(ui_client):
 
 
 @pytest.mark.asyncio
+async def test_contacts_lands_on_the_customer_list(ui_client):
+    """GET /contacts, the address a user types for their contacts, opens the customer list."""
+    ui_client.cookies.update(_authed())
+    r = await ui_client.get("/contacts", follow_redirects=False)
+    assert r.status_code in (302, 303) and r.headers["location"] == "/contacts/customers"
+
+
+@pytest.mark.asyncio
 async def test_customers_page_loads(ui_client):
     """GET /contacts/customers redirects to login when unauthenticated."""
     r = await ui_client.get("/contacts/customers", follow_redirects=False)

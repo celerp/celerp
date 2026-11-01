@@ -151,6 +151,8 @@ a:hover { text-decoration: underline; }
    submit button, stretched over the whole card. */
 .auth-container:has(.setup-chooser),
 .auth-container:has(.migration-wizard) { max-width: 760px; }
+/* A wizard step showing a table (coverage, mapping, checks) takes the room a wide screen has. */
+.auth-container:has(.migration-wizard .data-table) { max-width: 1120px; }
 .auth-container:has(.setup-card) { max-width: 600px; }
 .setup-options { margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--c-border); }
 .setup-options-heading { font-size: 13px; font-weight: 600; color: var(--c-text2); margin: 0 0 10px; }
@@ -2396,6 +2398,9 @@ form:has(> #fa-preview:not(:empty)) ~ .empty-state-cta { display: none; }
 .payment-voided td { text-decoration: line-through; opacity: 0.6; }
 .payment-voided .badge--void { text-decoration: none; opacity: 1; }
 .void-inline { display: inline; }
+/* A payment's Refund and Void stay on one line; an opened form wraps inside the cell. */
+.payment-actions { white-space: nowrap; }
+.payment-actions details[open] { white-space: normal; }
 .void-inline > summary { list-style: none; cursor: pointer; }
 .void-inline > summary::-webkit-details-marker { display: none; }
 .inline-form--compact { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin-top: 0.25rem; padding: 0.5rem; background: var(--c-bg-alt, #f8f9fa); border-radius: var(--radius); border: 1px solid var(--c-border); }

@@ -940,12 +940,13 @@ def _item_status_badge_cell(status_val: str, eid: str, status_doc: tuple[str, st
     return Td(Span("-", cls="muted"), cls="col-item-status")
 
 
-def _vendor_line_badge(li: dict, doc_status: str) -> FT:
+def _vendor_line_badge(li: dict, doc_status: str, before_import: bool = False) -> FT:
     """What a purchase document did for one of its stock lines, from the document's own receipts
     and returns, never the catalog item's status (other documents move the same item): Returned
     or Part returned once the line sent goods back, else Received, Received n of m, or Not
     Received. A document shared in as received carries no receipts of its own and reads
-    Received."""
+    Received; an imported bill whose goods came in with the imported stock (``before_import``)
+    reads Received before import."""
     returned = li.get("return_status")
     if returned == "returned":
         return Span(t("documents.line_label_returned"), cls="badge badge--inactive")
@@ -959,6 +960,8 @@ def _vendor_line_badge(li: dict, doc_status: str) -> FT:
     if received > 1e-9:
         return Span(t("documents.status_received_part", received=f"{received:g}", qty=f"{qty:g}"),
                     cls="badge badge--pending")
+    if before_import:
+        return Span(t("documents.status_received_before_import"), cls="badge badge--received")
     return Span(t("documents.status_not_received"), cls="badge badge--not_received")
 
 
@@ -2502,6 +2505,13 @@ celerpUpdateBulkAlloc();
             except Exception:
                 chart_accounts = []
             company_locations = []
+        elif doc.get("payments"):
+            # The payments table names each payment's account (a bank, or the account a
+            # withholding or starting balance settled from) by code and name.
+            try:
+                chart_accounts = (await api.get_chart(token)).get("items", [])
+            except Exception:
+                chart_accounts = []
 
         # History loaded lazily via HTMX GET /docs/{entity_id}/history
         ledger: list[dict] = []
@@ -5975,11 +5985,14 @@ def _note_target_options(doc: dict, candidates: list[dict]) -> list[tuple[str, s
 
 
 def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_operator: bool = True,
-                     targets: list[dict] | None = None, tz: str | None = None) -> FT:
+                     targets: list[dict] | None = None, tz: str | None = None,
+                     chart_accounts: list[dict] | None = None) -> FT:
     """Shared payment/credit section for invoices, bills, and customer and supplier credit notes.
 
     DRY: one function, different labels based on doc_type. ``targets`` holds the contact's
     documents a credit note may be applied to; the picker shows only those still open.
+    Each payment's account reads by code and name from ``chart_accounts`` (``account_label``),
+    the bare code only for an account the chart no longer holds.
     Hidden for drafts, void docs, and non-payable doc types.
     """
     from celerp_docs.doc_constants import CREDIT_APPLICATION_METHODS
@@ -6018,6 +6031,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
     today = business_today(tz).isoformat()
 
     # --- Payment history table ---
+    account_names = {a.get("code"): account_label(a) for a in chart_accounts or [] if a.get("code")}
     history_rows = []
     for p in payments:
         voided = p.get("status") == "voided"
@@ -6036,7 +6050,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
             _prefix = "CN" if p_method == "credit_note" else "SCN"
             link_col = Td(A(f"{_prefix} {p_source.split(':')[-1][:12]}", href=f"/docs/{p_source}", cls="table-link"))
         else:
-            link_col = Td(p_bank or EMPTY)
+            link_col = Td(account_names.get(p_bank, p_bank) or EMPTY)
 
         row_cls = "data-row" + (" payment-voided" if voided else "")
         void_cell = Td("")
@@ -6091,6 +6105,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
                     ),
                     cls="void-inline",
                 ),
+                cls="payment-actions",
             )
         else:
             void_cell = Td()
@@ -10420,7 +10435,8 @@ async function celerpCsvImport(input, entityId) {{
                 if _is_vendor_doc and line_receive_kind(li) != "stock":
                     cells.append(Td("", cls="col-item-status"))
                 elif _is_vendor_doc:
-                    cells.append(_badge_cell(_vendor_line_badge(li, status), cls="col-item-status"))
+                    cells.append(_badge_cell(_vendor_line_badge(li, status, bool(doc.get("received_before_import"))),
+                                            cls="col-item-status"))
                 else:
                     status_val = item_status_map.get(li_eid, "") if item_status_map else ""
                     cells.append(_item_status_badge_cell(
@@ -10993,7 +11009,8 @@ async function celerpCsvImport(input, entityId) {{
             cls="doc-section doc-section--totals",
         ),
         # Payment section (invoices, bills, credit notes - not drafts/voids)
-        _payment_section(doc, bank_accounts=bank_accounts, is_operator=_can_pay, targets=note_targets, tz=tz),
+        _payment_section(doc, bank_accounts=bank_accounts, is_operator=_can_pay, targets=note_targets, tz=tz,
+                         chart_accounts=chart_accounts),
         # Terms & Conditions + Note to customer (2 columns). Both are customer-facing, so an
         # internal money-less doc (production order) hides them - it uses the Internal Notes
         # section below instead.

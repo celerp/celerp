@@ -6666,6 +6666,9 @@ class TestCompanyFilesAggregation:
             r = await ui_client.get("/contacts/c1")
         assert sentence in r.text and "could not be loaded" not in r.text
         assert 'class="page-title"' in r.text
+        # The sentence says to choose the contact from the list, so the notice links to it.
+        notice = r.text.split(sentence, 1)[1].split("</div>", 1)[0]
+        assert 'href="/contacts/customers"' in notice
         assert "Select Try again" not in r.text.split('class="page-title"', 1)[1].split("<script", 1)[0]
 
     @pytest.mark.asyncio
