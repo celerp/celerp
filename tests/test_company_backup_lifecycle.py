@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 from sqlalchemy import text
 
 from company_backup_support import company, confirm, download, member, members, owner, read, restore, rezip, token
@@ -166,7 +166,7 @@ async def test_bootstrap_repeat_reports_opened_existing(real_client, real_engine
     # password then still opens the company.
     from ui.i18n import t
     wrong = await real_client.post("/company-backups/bootstrap/restore", json={**body, "password": "otherpw1234"})
-    assert (wrong.status_code, wrong.json()["detail"]) == (401, t("auth.invalid_credentials"))
+    assert (wrong.status_code, refusal_text(wrong.json()["detail"])) == (401, t("auth.invalid_credentials"))
     retry = await real_client.post("/company-backups/bootstrap/restore", json=body)
     assert retry.status_code == 200, retry.text
     assert retry.json()["company_id"] == first.json()["company_id"]
@@ -192,7 +192,7 @@ async def test_bootstrap_second_upload_with_a_wrong_password_reads_as_sign_in(re
 
     second = {"upload_token": tokens[1], **account}
     wrong = await real_client.post("/company-backups/bootstrap/restore", json={**second, "password": "otherpw1234"})
-    assert (wrong.status_code, wrong.json()["detail"]) == (401, t("auth.invalid_credentials")), wrong.text
+    assert (wrong.status_code, refusal_text(wrong.json()["detail"])) == (401, t("auth.invalid_credentials")), wrong.text
     right = await real_client.post("/company-backups/bootstrap/restore", json=second)
     assert right.status_code == 200, right.text
     assert (right.json()["outcome"], right.json()["company_id"]) == ("opened_existing", first.json()["company_id"])

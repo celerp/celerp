@@ -13,6 +13,7 @@ from fa_fixtures import FA
 from test_l10n import _map, _tax_book
 from test_runs import _contributed, _managed_from, _run
 from test_year_end import _accept_all, _mark, _year_end
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -62,7 +63,7 @@ async def test_tax_book_elections(fa, zz):
     page = await fa.page("/fixed-assets/tax-books", regime="zz_asset", year=2025)
     assert "Full expensing" in page.text and ">full_expensing<" not in page.text
     bad = await fa.patch(f"/tax-books/{car}/zz_asset", {"elections": {"bonus": True}})
-    assert bad.status_code == 422 and "bonus" in bad.json()["detail"]
+    assert bad.status_code == 422 and "bonus" in refusal_text(bad.json()["detail"])
     wrong_type = await fa.patch(f"/tax-books/{car}/zz_asset", {"elections": {"full_expensing": "yes"}})
     assert wrong_type.status_code == 422
     operator = await fa.role_headers("operator")
@@ -74,7 +75,7 @@ async def test_tax_book_no_category_then_mapped(fa, zz):
     row = _row(await _tax_book(fa, "zz_asset", 2025), car)
     assert row["status"] == "no_category" and row["allowance"] is None
     refused = await fa.patch(f"/tax-books/{car}/zz_asset", {"category": "zz_cars"})
-    assert refused.status_code == 422 and "zz_cars" in refused.json()["detail"]
+    assert refused.status_code == 422 and "zz_cars" in refusal_text(refused.json()["detail"])
     await fa.ok(await fa.patch(f"/tax-books/{car}/zz_asset", {"category": "zz_buildings"}))
     row = _row(await _tax_book(fa, "zz_asset", 2025), car)
     assert row["status"] == "ok" and row["category"] == "zz_buildings" and D(row["allowance"]) == D("600")
@@ -114,16 +115,16 @@ async def test_tax_year_close_order_and_timing(fa, zz):
     # 2026 cannot close before 2025, which has figures.
     await _accept_all(fa, 2026)
     first = await fa.post("/tax-years/zz_asset/2026/close", {})
-    assert first.status_code == 409 and "2025" in first.json()["detail"]
+    assert first.status_code == 409 and "2025" in refusal_text(first.json()["detail"])
     await _accept_all(fa, 2025)
     await fa.ok(await fa.post("/tax-years/zz_asset/2025/close", {}))
     await fa.ok(await fa.post("/tax-years/zz_asset/2026/close", {}))
     # 2025 cannot reopen while 2026 stands closed.
     refused = await fa.post("/tax-years/zz_asset/2025/reopen", {"reason": "Late election"})
-    assert refused.status_code == 409 and "2026" in refused.json()["detail"]
+    assert refused.status_code == 409 and "2026" in refusal_text(refused.json()["detail"])
     # A year that has not ended cannot close.
     early = await fa.post("/tax-years/zz_asset/2027/close", {})
-    assert early.status_code == 409 and "2027-06-30" in early.json()["detail"]
+    assert early.status_code == 409 and "2027-06-30" in refusal_text(early.json()["detail"])
     operator = await fa.role_headers("operator")
     assert (await fa.post("/tax-years/zz_asset/2026/reopen", {"reason": "x"}, headers=operator)).status_code == 403
 
@@ -150,13 +151,13 @@ async def test_tax_figure_missing_cannot_be_accepted_or_closed(fa, zz):
     number = (await fa.asset(car))["number"]
     key = f"tax:zz_asset:{car}"
     refused = await _mark(fa, 2025, key, "accepted", reason="Reviewed", effect="None")
-    assert refused.status_code == 409 and _REMEDY_CATEGORY in refused.json()["detail"]
+    assert refused.status_code == 409 and _REMEDY_CATEGORY in refusal_text(refused.json()["detail"])
     # Noting it, with the reason it waits, is still allowed.
     await fa.ok(await _mark(fa, 2025, key, "noted", reason="Category to be agreed"))
     await _accept_books(fa, 2025)
     close = await fa.post("/tax-years/zz_asset/2025/close", {})
     assert close.status_code == 409, close.text
-    assert number in close.json()["detail"] and _REMEDY_CATEGORY in close.json()["detail"]
+    assert number in refusal_text(close.json()["detail"]) and _REMEDY_CATEGORY in refusal_text(close.json()["detail"])
     assert (await _tax_book(fa, "zz_asset", 2025))["status"] == "open"
     await fa.ok(await fa.patch(f"/tax-books/{car}/zz_asset", {"category": "zz_plant"}))
     await fa.ok(await fa.post("/tax-years/zz_asset/2025/close", {}))
@@ -179,11 +180,11 @@ async def test_tax_acceptance_saved_before_the_rule_does_not_close(fa, zz):
     items = {i["key"]: i for i in (await _year_end(fa, 2025))["items"]}
     assert items[key]["state"] == "open" and items[key]["accepted_amount"] is None
     close = await fa.post("/tax-years/zz_asset/2025/close", {})
-    assert close.status_code == 409 and number in close.json()["detail"], close.text
+    assert close.status_code == 409 and number in refusal_text(close.json()["detail"]), close.text
     await fa.ok(await fa.patch(f"/tax-books/{car}/zz_asset", {"category": "zz_plant"}))
     await fa.ok(await fa.post("/tax-years/zz_asset/2025/close", {}))
     again = await fa.post("/tax-years/zz_asset/2025/close", {})
-    assert again.status_code == 409 and "already closed" in again.json()["detail"]
+    assert again.status_code == 409 and "already closed" in refusal_text(again.json()["detail"])
     book = await _tax_book(fa, "zz_asset", 2025)
     assert book["status"] == "closed" and [h["action"] for h in book.get("history") or []] in ([], ["closed"])
 
@@ -196,10 +197,10 @@ async def test_tax_close_refusal_in_thai_names_the_asset(fa, zz):
     number = (await fa.asset(car))["number"]
     th = {**fa.h, "Accept-Language": "th"}
     refused = await _mark(fa, 2025, f"tax:zz_asset:{car}", "accepted", headers=th, reason="ตรวจแล้ว", effect="ไม่มี")
-    assert refused.status_code == 409 and f"{number} ไม่มีหมวดภาษี" in refused.json()["detail"], refused.text
+    assert refused.status_code == 409 and f"{number} ไม่มีหมวดภาษี" in refusal_text(refused.json()["detail"]), refused.text
     await _accept_books(fa, 2025)
     close = await fa.post("/tax-years/zz_asset/2025/close", {}, headers=th)
-    assert close.status_code == 409 and number in close.json()["detail"], close.text
+    assert close.status_code == 409 and number in refusal_text(close.json()["detail"]), close.text
     page = await fa.page("/fixed-assets/tax-books", regime="zz_asset", year=2025)
     assert page.status_code == 200 and "รถยนต์ของเจ้าของ" in page.text
 
@@ -215,7 +216,7 @@ async def test_tax_calculation_failure_blocks_close(fa, zz, monkeypatch):
     assert accepted.status_code == 409
     await _accept_books(fa, 2025)
     close = await fa.post("/tax-years/zz_asset/2025/close", {})
-    assert close.status_code == 409 and number in close.json()["detail"], close.text
+    assert close.status_code == 409 and number in refusal_text(close.json()["detail"]), close.text
     assert (await _tax_book(fa, "zz_asset", 2025))["status"] == "open"
 
 
@@ -231,7 +232,7 @@ async def test_tax_pool_failure_blocks_close(fa, zz, monkeypatch):
     assert "tax:zz_pool:pool:zz_cars" in {i["key"] for i in (await _year_end(fa, 2025))["items"]}
     await _accept_books(fa, 2025)
     close = await fa.post("/tax-years/zz_pool/2025/close", {})
-    assert close.status_code == 409 and "zz_cars" in close.json()["detail"], close.text
+    assert close.status_code == 409 and "zz_cars" in refusal_text(close.json()["detail"]), close.text
 
 
 def _empty(*_args, **_kwargs):
@@ -255,14 +256,14 @@ async def test_tax_result_without_figures_blocks_close(fa, zz, monkeypatch, resu
     assert _row(await _tax_book(fa, "zz_asset", 2025), car)["status"] == "error"
     await _accept_books(fa, 2025)
     close = await fa.post("/tax-years/zz_asset/2025/close", {})
-    assert close.status_code == 409 and number in close.json()["detail"], close.text
+    assert close.status_code == 409 and number in refusal_text(close.json()["detail"]), close.text
     await fa.ok(await fa.patch("/settings", {"tax_regimes": ["zz_pool"]}))
     await _map(fa, "Vehicles", {"zz_pool": "zz_cars"})
     monkeypatch.setattr(PoolRegime, "pool_year", result)
     (pool,) = [p for p in (await _tax_book(fa, "zz_pool", 2025))["pools"] if p["key"] == "zz_cars"]
     assert pool["status"] == "error"
     close = await fa.post("/tax-years/zz_pool/2025/close", {})
-    assert close.status_code == 409 and "zz_cars" in close.json()["detail"], close.text
+    assert close.status_code == 409 and "zz_cars" in refusal_text(close.json()["detail"]), close.text
 
 
 async def test_tax_year_closed_without_a_figure_is_not_carried(fa, zz):
@@ -287,7 +288,7 @@ async def test_tax_year_closed_without_a_figure_is_not_carried(fa, zz):
     assert number in items[f"tax:zz_asset:{car}"]["label"]
     await _accept_books(fa, 2026)
     close = await fa.post("/tax-years/zz_asset/2026/close", {})
-    assert close.status_code == 409 and number in close.json()["detail"] and "2025" in close.json()["detail"]
+    assert close.status_code == 409 and number in refusal_text(close.json()["detail"]) and "2025" in refusal_text(close.json()["detail"])
     # Reopened, 2025 works the car out and 2026 starts from it.
     await fa.ok(await fa.post("/tax-years/zz_asset/2025/reopen", {"reason": "Category set"}))
     assert _figures(_row(await _tax_book(fa, "zz_asset", 2026), car)) == (

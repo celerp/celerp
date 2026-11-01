@@ -1212,7 +1212,7 @@ async def test_doctor_dry_run_names_a_locked_period_refusal_as_the_fix_does(clie
     company.settings = {**company.settings, "lock_date": "2020-12-31"}
     await session.commit()
     old_number = (await client.get(f"/docs/{old}", headers=_h(token))).json()["doc_number"]
-    refused = [(old, old_number, t("error.period_locked", "en", date="2020-12-31"))]
+    refused = [(old, old_number, t("error.period_locked", "en", date="31 Dec 2020"))]
 
     runs = [await _missing_jes(client, token, fix) for fix in (False, True, True)]
     for run in runs:

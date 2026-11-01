@@ -16,7 +16,7 @@ import pytest
 from sqlalchemy import select
 
 from celerp.models.company import Company, WorkCenter
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 
 async def _register(client) -> str:
@@ -202,7 +202,7 @@ async def test_wc_make_default_race_correct_message(client, monkeypatch):
     monkeypatch.setattr(mfg_routes, "_unset_other_defaults", _noop)
     r = await client.patch(f"/manufacturing/work-centers/{b['id']}/is_default", headers=_h(token))
     assert r.status_code == 409
-    assert r.json()["detail"] == t("manufacturing.err_wc_default_taken", "en")
+    assert refusal_text(r.json()["detail"]) == t("manufacturing.err_wc_default_taken", "en")
 
 
 @pytest.mark.asyncio
@@ -406,4 +406,4 @@ async def test_renaming_a_work_center_to_a_taken_name_is_refused_by_name(client)
     r = await client.patch(f"/manufacturing/work-centers/{other}", headers=_h(token),
                            json={"name": "Polishing Bench", "is_default": True})
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == t("manufacturing.err_wc_name_taken", name="Polishing Bench")
+    assert refusal_text(r.json()["detail"]) == t("manufacturing.err_wc_name_taken", name="Polishing Bench")

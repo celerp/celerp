@@ -18,7 +18,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import FileResponse
 
-from celerp.accounting_roles import CONSIGNOR_FIELD, refusal
+from celerp.accounting_roles import CONSIGNOR_FIELD, catalog_refusal, refusal
 from celerp.db import get_session
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.models.ledger import LedgerEntry
@@ -135,7 +135,7 @@ async def _get_contact(session: AsyncSession, company_id, contact_id: str) -> Pr
     """Canonical contact lookup: an id from another projection type is not a contact."""
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
     if row is None or row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail=t("contacts.err_contact_not_found"))
+        raise HTTPException(status_code=404, detail=catalog_refusal("contacts.err_contact_not_found"))
     return row
 
 
@@ -146,10 +146,10 @@ async def create_contact(payload: ContactCreate, company_id: str = Depends(get_c
         replay = await find_event_by_idempotency(session, company_id, payload.idempotency_key)
         if replay is not None:
             if replay.event_type != "crm.contact.created":
-                raise HTTPException(status_code=409, detail=t("contacts.err_resubmitted"))
+                raise HTTPException(status_code=409, detail=catalog_refusal("contacts.err_resubmitted"))
             return {"event_id": replay.id, "id": replay.entity_id}
     if not payload.name or not payload.name.strip():
-        raise HTTPException(status_code=422, detail=t("contacts.err_name_required"))
+        raise HTTPException(status_code=422, detail=catalog_refusal("contacts.err_name_required"))
     require_currency_code(payload.currency)
     require_phone(payload.phone)
     entity_id = f"contact:{uuid.uuid4()}"
@@ -201,7 +201,7 @@ async def update_contact(contact_id: str, payload: ContactUpdate, company_id: st
         replay = await find_event_by_idempotency(session, company_id, payload.idempotency_key)
         if replay is not None:
             if replay.event_type != "crm.contact.updated" or replay.entity_id != contact_id:
-                raise HTTPException(status_code=409, detail=t("contacts.err_resubmitted"))
+                raise HTTPException(status_code=409, detail=catalog_refusal("contacts.err_resubmitted"))
             return {"event_id": replay.id}
     currency = (payload.fields_changed.get("currency") or {}).get("new")
     # A contact kept in a currency ISO 4217 has since withdrawn keeps it; none is moved to one.
@@ -254,7 +254,7 @@ async def _locked_contact(session: AsyncSession, company_id, contact_id: str) ->
     """The contact a change applies to, read once no other write to it is in flight."""
     row = (await lock_contacts(session, company_id, [contact_id])).get(contact_id)
     if row is None or row.entity_type != "contact":
-        raise HTTPException(status_code=404, detail=t("error.record_not_found"))
+        raise HTTPException(status_code=404, detail=catalog_refusal("error.record_not_found"))
     return row
 
 

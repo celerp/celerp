@@ -14,7 +14,7 @@ from sqlalchemy import select
 from celerp.events.schemas import EVENT_SCHEMA_MAP
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 _VAT10 = {"code": "VAT 10%", "rate": 10.0, "amount": 0, "order": 0, "is_compound": False, "label": ""}
 _TOTALS = ("subtotal", "discount_amount", "tax_amount", "total")
@@ -188,7 +188,7 @@ async def test_a_completed_or_void_list_keeps_its_total(client, session, ending)
     for action in ("recalculate-total", "restore-total"):
         r = await client.post(f"/lists/{lid}/{action}", headers=h)
         assert r.status_code == 409, r.text
-        assert r.json()["detail"] == t("documents.err_list_total_status")
+        assert refusal_text(r.json()["detail"]) == t("documents.err_list_total_status")
     assert {k: (await _state(session, cid, lid))[k] for k in _TOTALS} == {k: before[k] for k in _TOTALS}
 
 

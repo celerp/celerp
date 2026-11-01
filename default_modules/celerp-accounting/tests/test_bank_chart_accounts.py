@@ -65,7 +65,7 @@ async def test_a_bank_account_on_an_existing_chart_account_needs_an_active_asset
         "account_code": "1190"})
 
     assert r.status_code == 422, r.text
-    assert reason in r.json()["detail"]
+    assert reason in refusal_text(r.json()["detail"])
     banks = (await client.get("/accounting/bank-accounts?include_inactive=true", headers=_h(tok))).json()
     assert "1190" not in [b["chart_account_code"] for b in banks["items"]]
 
@@ -141,7 +141,7 @@ async def test_a_bank_account_is_restored_only_onto_an_active_asset_account(clie
     r = await client.patch(f"/accounting/bank-accounts/{bank['id']}", headers=_h(tok), json={"is_active": True})
 
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("acct.err_account_archived", "en", code=code)
+    assert refusal_text(r.json()["detail"]) == t("acct.err_account_archived", "en", code=code)
     banks = (await client.get("/accounting/bank-accounts?include_inactive=true", headers=_h(tok))).json()["items"]
     assert [b["is_active"] for b in banks if b["id"] == bank["id"]] == [False]
 

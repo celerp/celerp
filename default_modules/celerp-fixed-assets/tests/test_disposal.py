@@ -15,6 +15,7 @@ import pytest
 
 from fa_fixtures import FA
 from test_runs import _contributed, _lines, _lock, _managed_from, _movements, _run
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -82,7 +83,7 @@ async def test_dispose_on_a_locked_date_names_the_first_open_date(fa):
     await _lock(fa, "2026-03-31")
     r = await fa.post(f"/assets/{car}/dispose", {"date": "2026-03-15", "reason": "lost", "preview": True,
                                                  "op_key": "dl"})
-    assert r.status_code == 422 and "Use a date from 1 Apr 2026" in r.json()["detail"]
+    assert r.status_code == 422 and "Use a date from 1 Apr 2026" in refusal_text(r.json()["detail"])
 
 
 async def test_dispose_validates_its_inputs(fa):
@@ -94,7 +95,7 @@ async def test_dispose_validates_its_inputs(fa):
                         ({"date": "2026-05-01", "reason": "lost", "percent": "120"}, "percent"),
                         ({"date": "2026-05-01", "reason": "lost", "quantity": "2"}, "quantity")):
         r = await fa.post(f"/assets/{car}/dispose", {**body, "preview": True, "op_key": "v"})
-        assert r.status_code == 422 and words in r.json()["detail"], (body, r.text)
+        assert r.status_code == 422 and words in refusal_text(r.json()["detail"]), (body, r.text)
     r = await fa.post(f"/assets/{car}/dispose", {"date": "2026-05-01", "reason": "lost", "preview": True,
                                                  "op_key": "v"}, headers=await fa.role_headers("viewer"))
     assert r.status_code == 403
@@ -203,7 +204,7 @@ async def test_partial_dispose_of_a_quantity_record_by_quantity(fa):
     await fa.fold_matches(record)
     r = await fa.post(f"/assets/{record}/dispose", {"date": laptops["date"], "reason": "lost", "percent": "50",
                                                     "preview": True, "op_key": "pq"})
-    assert r.status_code == 422 and "quantity" in r.json()["detail"]
+    assert r.status_code == 422 and "quantity" in refusal_text(r.json()["detail"])
 
 
 async def test_u37_a_disposal_brings_depreciation_up_to_date_as_its_own_movement(fa):
@@ -246,7 +247,7 @@ async def test_undo_disposal_refused_once_its_period_is_locked(fa):
     await _dispose(fa, car, "2026-05-20")
     await _lock(fa, "2026-05-31")
     r = await fa.post(f"/assets/{car}/undo-disposal", {"preview": True, "op_key": "u"})
-    assert r.status_code == 409 and "2026-05-20 is locked" in r.json()["detail"]
+    assert r.status_code == 409 and "2026-05-20 is locked" in refusal_text(r.json()["detail"])
 
 
 async def test_disposed_asset_refuses_another_disposal(fa):
@@ -257,4 +258,4 @@ async def test_disposed_asset_refuses_another_disposal(fa):
                                                  "op_key": "again"})
     number = (await fa.asset(car))["number"]
     assert r.status_code == 409 and r.json()["detail"]["message"] == (
-        f"{number} was disposed of on 2026-05-20, so it cannot be disposed of. Undo the disposal on its page first.")
+        f"{number} cannot be disposed of. {number} was disposed of on 20 May 2026. Undo the disposal on its page first.")

@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 
 import mutation_observer
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 from sqlalchemy import text
 
 from company_backup_support import (
@@ -4368,7 +4368,7 @@ async def test_bootstrap_retry_after_success_returns_same_company(real_engine, r
     assert again.json()["company_id"] == first["company_id"] and again.json()["outcome"] == "opened_existing"
     assert again.json()["access_token"]
     other = await _r_brestore(real_client, upload_token, code_config, email="other@example.com")
-    assert (other.status_code, other.json()["detail"]) == (401, t("auth.invalid_credentials")), other.text
+    assert (other.status_code, refusal_text(other.json()["detail"])) == (401, t("auth.invalid_credentials")), other.text
     assert await count(real_engine, "users") == 1 and await count(real_engine, "companies") == 1
 
 
@@ -5098,7 +5098,7 @@ async def test_inactive_prior_restore_refuses_member_and_non_member(real_engine,
             refusals.append(await real_client.post(f"/company-backups/{route}", headers=auth(who_tok), json={
                 "upload_token": upload, "mode": "new_company", "plan_fingerprint": "0" * 64}))
     assert [r.status_code for r in refusals] == [409] * 6, [r.text for r in refusals]
-    assert refusals[0].json() == {"detail": t(cb.NOT_A_MEMBER)}
+    assert refusal_text(refusals[0].json()["detail"]) == t(cb.NOT_A_MEMBER)
     assert len({r.content for r in refusals}) == 1
     assert await snapshot(real_engine) == before
 

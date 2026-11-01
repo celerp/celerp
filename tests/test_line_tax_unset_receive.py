@@ -20,7 +20,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from test_money_stock_and_contact_invariants import _auth_company
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 from test_helpers import doc_version
 
 
@@ -69,7 +69,7 @@ def _receive(client, auth, doc_id: str, received: list[dict], key: str | None = 
 
 
 def _refused(r, line: int) -> bool:
-    return r.status_code == 422 and r.json().get("detail") == t("documents.err_line_tax_unset_receive", line=line)
+    return r.status_code == 422 and refusal_text(r.json().get("detail")) == t("documents.err_line_tax_unset_receive", line=line)
 
 
 @pytest.mark.parametrize("doc_type", ["purchase_order", "consignment_in"])
@@ -142,5 +142,5 @@ async def test_every_caller_of_the_shared_receipt_is_refused(client, session):
                              settings={}, user=SimpleNamespace(id=auth["user_id"]))
     await session.rollback()
     assert refused.value.status_code == 422
-    assert refused.value.detail == t("documents.err_line_tax_unset_receive", line=1)
+    assert refusal_text(refused.value.detail) == t("documents.err_line_tax_unset_receive", line=1)
     assert await _footprint(session, auth) == before

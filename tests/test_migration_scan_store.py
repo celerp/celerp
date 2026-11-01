@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import func, select, text
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 from migration_support import (
     creator_run,
@@ -84,7 +84,7 @@ async def test_migration_scan_streams_and_bounds_upload(client, session, migrati
         resp = await client.post("/migrations/bootstrap/scan", files=files or None, data={"source": source})
         assert resp.status_code == status, resp.text
         if detail is not None:
-            assert resp.json()["detail"] == detail
+            assert refusal_text(resp.json()["detail"]) == detail
         assert _scan_dirs(migration_env) == baseline, "a rejected upload left files behind"
         assert adapter.inspect_calls == inspected, "a rejected upload reached the source parser"
 
@@ -141,7 +141,7 @@ async def test_migration_scan_streams_and_bounds_upload(client, session, migrati
         return {"type": "http.request", "body": b"", "more_body": False}
 
     for path in ("/migrations/bootstrap/scan", "/migrations/scan", "/migrations/scan/decisions"):
-        scope = {"type": "http", "path": path, "headers": [(b"content-length", b"1000")]}
+        scope = {"type": "http", "method": "POST", "path": path, "headers": [(b"content-length", b"1000")]}
         await capped(scope, receive, send)
     assert reached == ["/migrations/bootstrap/scan", "/migrations/scan"]
     assert any(m.get("status") == 413 for m in sent)
@@ -172,7 +172,7 @@ async def test_migration_rejects_unknown_or_mismatched_source(client, migration_
     for data, source, detail in cases:
         r = await scan_upload(client, data, source=source)
         assert r.status_code == 422, r.text
-        assert r.json()["detail"] in (detail if isinstance(detail, set) else {detail})
+        assert refusal_text(r.json()["detail"]) in (detail if isinstance(detail, set) else {detail})
         assert _scan_dirs(migration_env) == set()
 
     assert registry.get_adapter("not_a_source") is None

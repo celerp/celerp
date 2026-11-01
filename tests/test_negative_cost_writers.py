@@ -19,6 +19,7 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from test_cost_restatement import _item, _state
 from test_helpers import company_auth, own_sessions_on
+from ui.i18n import refusal_text
 
 MESSAGE = "a cost cannot be negative"
 
@@ -49,7 +50,7 @@ async def test_create_refuses_a_negative_cost(client, session, field):
     r = await client.post("/items", headers=auth["headers"], json={
         "sku": sku, "name": "Lot", "quantity": 2, "sell_by": "piece", field: -5})
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == f"{sku}: {MESSAGE}"
+    assert r.json()["detail"]["message"] == f"{sku}: {MESSAGE}"
     assert await _item_events(session, auth["company_id"]) == before
 
 
@@ -59,7 +60,7 @@ async def test_create_refuses_a_negative_unit_cost_with_no_stock(client, session
     r = await client.post("/items", headers=auth["headers"], json={
         "sku": sku, "name": "Lot", "quantity": 0, "sell_by": "piece", "cost_price": -5})
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == f"{sku}: {MESSAGE}"
+    assert r.json()["detail"]["message"] == f"{sku}: {MESSAGE}"
 
 
 # -- Edits: the unit cost of a lot with no stock ---------------------------
@@ -71,7 +72,7 @@ async def test_patch_refuses_a_negative_unit_cost_on_a_lot_with_no_stock(client,
     r = await client.patch(f"/items/{item}", headers=auth["headers"],
                            json={"fields_changed": {"cost_price": {"old": None, "new": -5}}})
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == f"{sku}: {MESSAGE}"
+    assert r.json()["detail"]["message"] == f"{sku}: {MESSAGE}"
     assert (await _state(session, auth, item)).get("cost_price") is None
 
 
@@ -82,7 +83,7 @@ async def test_price_endpoint_refuses_a_negative_unit_cost_on_a_lot_with_no_stoc
     r = await client.post(f"/items/{item}/price", headers=auth["headers"],
                           json={"price_type": "cost_price", "new_price": -5})
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == f"{sku}: {MESSAGE}"
+    assert r.json()["detail"]["message"] == f"{sku}: {MESSAGE}"
     assert (await _state(session, auth, item)).get("cost_price") is None
 
 
@@ -181,7 +182,7 @@ async def test_historical_delivery_with_a_negative_cost_is_refused(client, sessi
             session, auth["company_id"], invoice, actor_id=auth["user_id"], source="migration",
             idempotency_key=f"m:{invoice}:delivered",
             lines=[{"line": 0, "item_id": item, "quantity": 5, "cost": -20, "lot_id": lot, "date": "2025-02-03"}])
-    assert (exc.value.status_code, exc.value.detail) == (422, f"HIST-NEG: {MESSAGE}")
+    assert (exc.value.status_code, exc.value.detail["message"]) == (422, f"HIST-NEG: {MESSAGE}")
 
 
 # -- Connectors ------------------------------------------------------------
@@ -206,7 +207,7 @@ async def test_connector_product_with_a_negative_cost_is_refused(client, session
     before = await _item_events(session, auth["company_id"])
     with pytest.raises(HTTPException) as exc:
         await upsert.upsert_item(company_id, _product("conn-neg", -5))
-    assert (exc.value.status_code, exc.value.detail) == (422, f"CONN-NEG: {MESSAGE}")
+    assert (exc.value.status_code, exc.value.detail["message"]) == (422, f"CONN-NEG: {MESSAGE}")
     assert await _item_events(session, auth["company_id"]) == before
 
     assert await upsert.upsert_item(company_id, _product("conn-upd", 5)) == "created"
@@ -232,7 +233,7 @@ async def test_receiving_goods_at_a_negative_cost_is_refused(client, session):
     r = await client.post(f"/docs/{bill}/receive", headers=auth["headers"], json={
         "location_id": loc, "received_items": [{"po_line_index": 0, "quantity_received": 10}]})
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == f"RECV-NEG: {MESSAGE}"
+    assert r.json()["detail"]["message"] == f"RECV-NEG: {MESSAGE}"
     assert await _item_events(session, auth["company_id"]) == before
 
 
@@ -243,7 +244,7 @@ async def test_merge_refuses_a_negative_resulting_cost(client, session):
         "source_entity_ids": [a, b], "target_sku_from": a, "resulting_cost_total": -5})
     # A merge keeps the sum of its parts' costs, so any other resulting cost is refused.
     assert r.status_code == 422, r.text
-    assert r.json()["detail"].startswith("A merge keeps the cost of the items it combines."), r.text
+    assert refusal_text(r.json()["detail"]).startswith("A merge keeps the cost of the items it combines."), r.text
     assert (await _state(session, auth, a))["status"] != "merged"
 
 
@@ -254,7 +255,7 @@ async def test_transform_refuses_a_negative_child_cost(client, session):
         "child_sku": "TRF-NEG", "child_category": "Processed", "child_sell_by": "piece",
         "child_quantity": 8.0, "child_cost_total": -5})
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == f"TRF-NEG: {MESSAGE}"
+    assert r.json()["detail"]["message"] == f"TRF-NEG: {MESSAGE}"
     assert (await _state(session, auth, parent))["status"] == "available"
 
 
@@ -266,7 +267,7 @@ async def test_recipe_that_rolls_up_to_a_negative_cost_is_refused(client, sessio
         "output_qty": 1, "components": [{"item_id": part, "quantity": 1}], "labor": [],
         "overhead": [{"description": "Credit", "amount": -100}]})
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == f"RCP-NEG: {MESSAGE}"
+    assert r.json()["detail"]["message"] == f"RCP-NEG: {MESSAGE}"
     assert (await _state(session, auth, product)).get("cost_price") is None
 
 
@@ -292,4 +293,4 @@ async def test_the_event_boundary_refuses_a_negative_cost_from_any_writer(client
                          event_type=event_type, data=data, actor_id=auth["user_id"], location_id=None,
                          source="api", idempotency_key=f"evt-{uuid.uuid4().hex}", metadata_={})
     assert exc.value.status_code == 422
-    assert exc.value.detail == f"EVT-NEG: {MESSAGE}"
+    assert exc.value.detail["message"] == f"EVT-NEG: {MESSAGE}"

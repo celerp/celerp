@@ -30,7 +30,7 @@ from migration_support import auth, code_config, maker, real_client, real_engine
 from test_company_reset_payments import (_PAYMENT, BOOKS, _Cloud, _harbor, _invoice, _paid, _pay_by_hand,
                                          _reset, _system_recovery, _unmatched)
 from test_system_recovery_exact import _migration_history  # noqa: F401
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 pytestmark = pytest.mark.asyncio
 
@@ -463,7 +463,7 @@ async def test_a_stripe_payment_refunded_in_stripe_still_cannot_be_refunded_void
 
     r = await _remove_payment(real_client, auth(await token(real_engine, boss, a)), invoice, action)
 
-    assert r.status_code == 422 and r.json()["detail"] == STRIPE_OWNED
+    assert r.status_code == 422 and r.json()["detail"]["message"] == STRIPE_OWNED
     assert await _doc(real_engine, invoice) == before and await _ledger(real_engine, invoice) == events
 
 
@@ -578,7 +578,7 @@ async def _delete_event(engine, company_id, entity_id):
                              actor_id=None, location_id=None, source="api", idempotency_key="delete-pi_1")
         except HTTPException as refused:
             await s.rollback()
-            return refused.status_code, refused.detail
+            return refused.status_code, refusal_text(refused.detail)
         await s.commit()
         return 200, None
 
@@ -596,7 +596,7 @@ async def test_a_payment_received_through_stripe_is_never_deleted(
     else:
         refused = await _delete_event(real_engine, a, invoice)
 
-    assert refused == (422, detail)
+    assert (refused[0], refusal_text(refused[1])) == (422, detail)
     assert await _doc(real_engine, invoice) == before and await _ledger(real_engine, invoice) == events
 
 
@@ -1169,7 +1169,7 @@ async def test_a_stripe_payment_moved_into_another_payments_old_place_is_still_s
 
     r = await _remove_payment(real_client, auth(await token(real_engine, boss, a)), invoice, action)
 
-    assert r.status_code == 422 and r.json()["detail"] == STRIPE_OWNED
+    assert r.status_code == 422 and r.json()["detail"]["message"] == STRIPE_OWNED
     assert await _doc(real_engine, invoice) == before and await _ledger(real_engine, invoice) == events
 
 

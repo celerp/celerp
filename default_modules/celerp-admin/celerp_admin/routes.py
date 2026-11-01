@@ -75,6 +75,11 @@ _UNEXPECTED_ERROR = (
 )
 
 
+def _refusal_reason(exc: HTTPException) -> str:
+    """Why a refused repair was not made, in the reader's language."""
+    return refusal_text(exc.detail) or str(exc.detail)
+
+
 async def _repair_one(session: AsyncSession, detail: dict, label: str, emit) -> bool:
     """Run one repair on its own savepoint: a refusal or an unexpected error is reported on
     *detail* and undoes only that repair's writes, never the run's other repairs. An
@@ -83,7 +88,7 @@ async def _repair_one(session: AsyncSession, detail: dict, label: str, emit) -> 
         async with session.begin_nested():
             await emit()
     except HTTPException as exc:
-        detail["blocked_reason"] = refusal_text(exc.detail) or str(exc.detail)
+        detail["blocked_reason"] = _refusal_reason(exc)
         return False
     except ValueError as exc:
         detail["blocked_reason"] = str(exc)
@@ -231,7 +236,7 @@ async def _check_missing_jes(
             try:
                 await _check_period_lock(session, company_id, {"ts": day})
             except HTTPException as exc:
-                problem = str(exc.detail)
+                problem = _refusal_reason(exc)
         if problem:
             detail["blocked_reason"] = problem
         return problem is not None

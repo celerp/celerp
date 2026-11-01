@@ -17,6 +17,7 @@ import pytest
 from sqlalchemy import select
 
 from test_reconciliation_history import admin, bank, match, start
+from ui.i18n import refusal_text
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 RATES = {"EUR": 1.08, "JPY": 0.0067}
@@ -105,7 +106,7 @@ async def test_every_bank_writer_posts_in_the_bank_currency_and_the_account_reco
              {"account": "4100", "debit": 0, "credit": 15}]
     r = await client.post("/accounting/journal-entries", headers=h, json={
         "ts": DAY, "memo": "Cash sale", "idempotency_token": uuid.uuid4().hex, "entries": lines})
-    assert r.status_code == 422 and r.json()["detail"] == t(
+    assert r.status_code == 422 and refusal_text(r.json()["detail"]) == t(
         "acct.err_je_bank_currency", account=code, currency=currency), r.text
     lines[0] |= {"currency": currency, "rate": rate}
     lines[1]["credit"] = float(round(15 * rate, 2))

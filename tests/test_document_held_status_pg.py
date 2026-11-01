@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import pytest
 
+from ui.i18n import refusal_text
 from migration_support import auth
 from test_posting_roles_race_pg_custody import _memo
 from test_posting_roles_race_pg_draft import _available, _company, _ok, _state, race  # noqa: F401  (race is a fixture)
@@ -60,7 +61,7 @@ async def test_a_status_edit_cannot_put_an_item_in_a_document_status(committed_e
     r = await door(client, tok, lot, status)
 
     assert r.status_code == 422, r.text
-    assert "not a direct status edit" in r.json()["detail"]
+    assert "not a direct status edit" in refusal_text(r.json()["detail"])
     state = await _state(committed_engine, cid, lot)
     assert (state["status"], state.get("status_doc_id")) == ("available", None)
 
@@ -77,7 +78,7 @@ async def test_a_status_edit_cannot_take_an_item_from_its_document(committed_eng
     r = await door(client, tok, lot, target)
 
     assert r.status_code == 409, r.text
-    assert "held by document" in r.json()["detail"]
+    assert "held by document" in refusal_text(r.json()["detail"])
     after = await _state(committed_engine, cid, lot)
     assert (after["status"], after.get("status_doc_id")) == (before["status"], memo)
     assert after.get("status_doc_number") == before.get("status_doc_number")

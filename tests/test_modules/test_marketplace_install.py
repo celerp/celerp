@@ -33,7 +33,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 pytestmark = pytest.mark.xdist_group("modules_api")
 
@@ -245,7 +245,7 @@ async def test_install_answer_of_any_other_shape_stages_nothing(client, relay_en
     with patch("httpx.AsyncClient", _fake_relay(install=_FakeResp(200, answer), urls=urls)):
         dl = await _download(client, headers)
     assert dl.status_code == 502
-    assert "couldn't read" in dl.json()["detail"].lower()
+    assert "couldn't read" in refusal_text(dl.json()["detail"]).lower()
     assert urls == []
     assert _staged(relay_env) == []
 
@@ -294,7 +294,7 @@ async def test_downloaded_bytes_must_match_the_digest(client, relay_env):
     with patch("httpx.AsyncClient", fake):
         dl = await _download(client, headers)
     assert dl.status_code == 502
-    assert "try again" in dl.json()["detail"].lower()
+    assert "try again" in refusal_text(dl.json()["detail"]).lower()
     assert _staged(relay_env) == []
     with patch("httpx.AsyncClient", _fake_relay()):
         dl = await _download(client, headers)
@@ -308,7 +308,7 @@ async def test_relay_refusal_passes_through_and_stages_nothing(client, relay_env
     with patch("httpx.AsyncClient", fake):
         dl = await _download(client, headers)
     assert dl.status_code == 402
-    assert "requires purchase" in dl.json()["detail"]
+    assert "requires purchase" in refusal_text(dl.json()["detail"])
     assert _staged(relay_env) == []
 
 
@@ -337,7 +337,7 @@ async def test_malformed_relay_json_gives_friendly_error(client, relay_env):
     with patch("httpx.AsyncClient", fake):
         dl = await _download(client, headers)
     assert dl.status_code == 502
-    assert dl.json()["detail"] == t("error.relay_bad_reply")
+    assert refusal_text(dl.json()["detail"]) == t("error.relay_bad_reply")
 
 
 @pytest.mark.asyncio
@@ -379,7 +379,7 @@ async def test_package_named_differently_from_its_module_is_refused(client, rela
         dl = await _download(client, headers)
     r = await _install(client, headers, dl.json()["ref"])
     assert r.status_code == 422
-    assert r.json()["detail"] == t("company.err_download_mismatch")
+    assert refusal_text(r.json()["detail"]) == t("company.err_download_mismatch")
     assert not (relay_env / "celerp-imposter").exists()
     assert not (relay_env / "celerp-budgeting").exists()
 
@@ -397,7 +397,7 @@ async def test_package_version_must_match_the_listed_version(client, relay_env, 
     assert dl.status_code == 200, dl.text
     r = await _install(client, headers, dl.json()["ref"])
     assert r.status_code == 422
-    assert r.json()["detail"] == t("company.err_download_mismatch")
+    assert refusal_text(r.json()["detail"]) == t("company.err_download_mismatch")
     assert not (relay_env / "celerp-budgeting").exists()
     assert not (tmp_path / "license_cache" / "celerp-budgeting.free.json").exists()
 
@@ -449,7 +449,7 @@ async def test_install_of_an_unknown_reference_asks_for_a_new_download(client, r
     headers = await _register(client)
     r = await _install(client, headers, "mp_" + "0" * 32)
     assert r.status_code == 410
-    assert "download the module again" in r.json()["detail"].lower()
+    assert "download the module again" in refusal_text(r.json()["detail"]).lower()
 
 
 def _no_details(package: Path, details: Path) -> None:
@@ -496,7 +496,7 @@ async def test_install_of_an_incomplete_stage_asks_for_a_new_download(client, re
     damage(*marketplace_stage.stage_paths(dl.json()["ref"]))
     r = await _install(client, headers, dl.json()["ref"])
     assert r.status_code == 410
-    assert "download the module again" in r.json()["detail"].lower()
+    assert "download the module again" in refusal_text(r.json()["detail"]).lower()
     assert not (relay_env / "celerp-budgeting").exists()
 
 
@@ -513,7 +513,7 @@ async def test_install_of_an_expired_stage_asks_for_a_new_download(client, relay
         m.setattr(marketplace_stage, "TTL_SECONDS", -1)
         r = await _install(client, headers, dl.json()["ref"])
     assert r.status_code == 410
-    assert "download the module again" in r.json()["detail"].lower()
+    assert "download the module again" in refusal_text(r.json()["detail"]).lower()
     assert not (relay_env / "celerp-budgeting").exists()
     assert _staged(relay_env) == []
     with patch("httpx.AsyncClient", _fake_relay()):
@@ -534,7 +534,7 @@ async def test_retry_after_a_recoverable_install_error_uses_the_same_download(cl
     (blocker / "notes.txt").write_text("copied in by hand")
     r = await _install(client, headers, ref)
     assert r.status_code == 422
-    assert "already installed" in r.json()["detail"]
+    assert "already installed" in refusal_text(r.json()["detail"])
     (blocker / "notes.txt").unlink()
     blocker.rmdir()
     r = await _install(client, headers, ref)
@@ -642,7 +642,7 @@ async def test_not_signed_in_gives_clear_503(client, relay_env, monkeypatch):
     monkeypatch.setattr(_s, "gateway_token", "")
     dl = await _download(client, headers)
     assert dl.status_code == 503
-    assert "connect a Celerp account" in dl.json()["detail"]
+    assert "connect a Celerp account" in refusal_text(dl.json()["detail"])
 
 
 @pytest.mark.asyncio
@@ -666,7 +666,7 @@ async def test_token_exchange_200_without_access_token_gives_clear_502(client, r
     with patch("httpx.AsyncClient", fake):
         dl = await _download(client, headers)
     assert dl.status_code == 502
-    assert "couldn't read" in dl.json()["detail"].lower()
+    assert "couldn't read" in refusal_text(dl.json()["detail"]).lower()
 
 
 @pytest.mark.asyncio

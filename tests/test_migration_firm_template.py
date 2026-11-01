@@ -16,7 +16,7 @@ from starlette.requests import Request
 
 from migration_support import auth, load_run, maker, real_client, real_engine, scan_upload  # noqa: F401
 from test_helpers import make_authed_token, register_admin
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 pytestmark = pytest.mark.asyncio
 
@@ -178,7 +178,7 @@ async def test_firm_template_forget(real_client, real_engine, runner):
     r = await real_client.get(f"/migrations/{first}", headers=auth(token))
     assert r.json()["saved_answers"] is False
     r = await real_client.delete("/migrations/templates/not-a-source", headers=auth(token))
-    assert r.status_code == 404 and r.json() == {"detail": t("migration.err_unknown_source", "en")}
+    assert r.status_code == 404 and refusal_text(r.json()["detail"]) == t("migration.err_unknown_source", "en")
     run_id = await _migrate(real_client, token, "orders", runner)
     assert _from_previous(await _roles(real_client, token, run_id)) == {}
 

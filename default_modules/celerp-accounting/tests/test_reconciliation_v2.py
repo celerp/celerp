@@ -10,6 +10,8 @@ from decimal import Decimal
 import pytest
 from httpx import AsyncClient
 
+from ui.i18n import refusal_text
+
 
 # ── Auth helper ───────────────────────────────────────────────────────────────
 
@@ -282,7 +284,8 @@ async def test_import_csv_refuses_a_header_that_would_lose_values(client, csv_by
         files={"file": ("dup.csv", csv_bytes, "text/csv")}, headers=h,
     )
     assert r.status_code == 422, r.text
-    assert " D " in r.json()["detail"] or " D has" in r.json()["detail"]
+    text = refusal_text(r.json()["detail"])
+    assert " D " in text or " D has" in text
     lines = (await client.get(f"/accounting/reconciliation/{recon['id']}/statement-lines", headers=h)).json()
     assert lines["items"] == []
 

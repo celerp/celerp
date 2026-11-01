@@ -22,7 +22,7 @@ from celerp.models.projections import Projection
 from celerp_docs.doc_money import draft_route, refuse_unset_line_tax, unreadable_tax_refusal
 from test_receipt_accounting import _doc, _finalize, _receive, _return
 from test_supplier_return_settles_bill import _restated_bill
-from ui.i18n import t
+from ui.i18n import t, refusal_text
 
 DATE = "2026-01-15"
 
@@ -208,8 +208,8 @@ async def test_both_tax_refusals_past_draft_end_with_that_advice(client, session
         refuse_unset_line_tax(lines, state)
     unreadable = unreadable_tax_refusal("VAT ?", state)
 
-    assert unset.value.detail == t("documents.err_line_tax_unset_issued", line=1, route=_advice(state))
-    assert unreadable.detail == t("documents.err_tax_unreadable_issued", tax="VAT ?", route=_advice(state))
+    assert refusal_text(unset.value.detail) == t("documents.err_line_tax_unset_issued", line=1, route=_advice(state))
+    assert refusal_text(unreadable.detail) == t("documents.err_tax_unreadable_issued", tax="VAT ?", route=_advice(state))
 
 
 async def test_a_stranded_order_refusing_more_goods_names_return_then_void(client, session, auth):
@@ -226,7 +226,7 @@ async def test_a_stranded_order_refusing_more_goods_names_return_then_void(clien
     r = await _receive(client, auth, doc, {"po_line_index": 0, "sku": sku, "name": "Beads", "quantity_received": 1})
 
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("documents.err_line_tax_unset_issued", line=1, route=_advice(state))
+    assert refusal_text(r.json()["detail"]) == t("documents.err_line_tax_unset_issued", line=1, route=_advice(state))
     for step in draft_route(state):
         await _follow(client, session, auth, doc, step)
     assert (await _state(session, auth, doc))["status"] == "void"

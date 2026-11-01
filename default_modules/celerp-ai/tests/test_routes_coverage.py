@@ -32,7 +32,7 @@ import pytest
 from celerp.config import settings
 from celerp.ai import jobs
 from celerp.ai.service import AgentResult, PendingAction
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 from test_helpers import asked_in_thread
 
 
@@ -68,7 +68,7 @@ async def test_upload_too_many_files(auth_client):
     files = [("files", (f"f{i}.jpg", b"x", "image/jpeg")) for i in range(21)]
     r = await c.post("/ai/upload", headers=h, files=files)
     assert r.status_code == 400
-    assert "20 files" in r.json()["detail"]
+    assert "20 files" in refusal_text(r.json()["detail"])
 
 
 @pytest.mark.asyncio
@@ -90,7 +90,7 @@ async def test_upload_rejects_unsupported_type(auth_client):
         "files": ("payload.exe", b"MZ\x90\x00", "application/x-msdownload"),
     })
     assert r.status_code == 400
-    assert r.json()["detail"] == t("ai.err_file_type_named", name="payload.exe")
+    assert refusal_text(r.json()["detail"]) == t("ai.err_file_type_named", name="payload.exe")
 
 
 # ── GET /ai/file/{file_id} ──────────────────────────────────────────────────
@@ -680,7 +680,7 @@ async def test_proposal_flags_total_mismatch(auth_client, session):
     warnings = bill_action["warnings"]
     assert any("27.50" in w and "30.00" in w for w in warnings)
     assert any("No date" in w for w in warnings)
-    assert "photo.jpg: read as a other" in r.json()["answer"]
+    assert "photo.jpg: read as a document that is not a receipt or invoice" in r.json()["answer"]
 
 
 @pytest.mark.asyncio

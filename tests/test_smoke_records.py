@@ -25,7 +25,8 @@ def _load(name: str):
 _smoke = _load("smoke_records")
 _e2e = _load("e2e_update")
 
-_STARTING = (503, {"detail": "Celerp is still starting. Try again in a moment."})
+_STARTING = (503, {"detail": {"message": "Celerp is still starting. Try again in a moment.",
+                              "message_key": "error.still_starting", "params": {}}})
 
 
 @pytest.fixture

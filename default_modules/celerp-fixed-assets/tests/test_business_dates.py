@@ -92,7 +92,8 @@ async def test_f04_manual_run_waits_for_the_company_month_end(fa, monkeypatch):
     assert early.status_code == 422 and early.json()["detail"] == {
         "message": "2026-05 has not ended yet. Depreciation runs for a month once it has ended, so the latest you "
                    "can run through is 2026-04.",
-        "params": {"fill": {"field": "month", "value": "2026-04", "action": "fixed_assets.action.review_through"}}}, \
+        "message_key": "fixed_assets.err_month_not_ended",
+        "params": {"month": "2026-05", "last": "2026-04", "fill": {"field": "month", "value": "2026-04", "action": "fixed_assets.action.review_through"}}}, \
         early.text
     _clock(monkeypatch, "2026-06-01T08:00:00+00:00", "2026-06-01")
     assert (await fa.post("/runs", body)).status_code == 200

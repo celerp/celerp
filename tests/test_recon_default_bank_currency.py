@@ -9,7 +9,7 @@ import uuid
 
 import pytest
 
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 from test_reconciliation_history import legacy_deposit, admin, deposit, start
 
 pytestmark = pytest.mark.asyncio
@@ -116,7 +116,7 @@ async def test_mislabelled_bank_is_corrected_from_the_notice_and_its_reconciliat
     items = (await client.get(f"/accounting/bank-accounts/{b['id']}/reconciliations", headers=h)).json()["items"]
     assert not any(i["needs_review"] for i in items), items
     r = await client.patch(f"/accounting/bank-accounts/{b['id']}", json={"currency": "THB"}, headers=h)
-    assert r.status_code == 409 and r.json()["detail"] == t("acct.err_bank_currency_reconciled", currency="USD"), r.text
+    assert r.status_code == 409 and refusal_text(r.json()["detail"]) == t("acct.err_bank_currency_reconciled", currency="USD"), r.text
 
 
 async def test_relabel_returns_only_to_a_reconciliation_page(client, session):

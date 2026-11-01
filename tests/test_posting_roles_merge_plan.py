@@ -20,7 +20,7 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from test_cost_restatement import _state
 from test_posting_roles_merge import _FIELD, _lot, _merge, _remap, _two_accounts
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 pytestmark = pytest.mark.asyncio
 
@@ -76,7 +76,7 @@ async def test_a_merge_key_reused_for_a_different_merge_is_refused(session, clie
     before = await _ledger_count(session, auth)
     again = await client.post("/items/merge", headers=auth["headers"], json=body)
     assert again.status_code == 409, again.text
-    assert again.json()["detail"] == t("contacts.err_resubmitted", "en")
+    assert refusal_text(again.json()["detail"]) == t("contacts.err_resubmitted", "en")
     assert await _ledger_count(session, auth) == before
 
 
@@ -186,7 +186,7 @@ async def test_stock_that_is_not_on_hand_cannot_be_merged(session, client, auth,
     items, before = await _items(session, auth), await _ledger_count(session, auth)
     r = await _merge(client, auth, [a, b])
     assert r.status_code == 409, r.text
-    assert "not on hand" in r.json()["detail"]
+    assert "not on hand" in refusal_text(r.json()["detail"])
     await session.rollback()
     assert await _items(session, auth) == items
     assert await _ledger_count(session, auth) == before
@@ -200,7 +200,7 @@ async def test_a_merged_cost_different_from_the_items_cost_is_refused(session, c
     items, before = await _items(session, auth), await _ledger_count(session, auth)
     r = await _merge(client, auth, [a, b], resulting_cost_total=1200.0)
     assert r.status_code == 422, r.text
-    assert "cost correction" in r.json()["detail"]
+    assert "cost correction" in refusal_text(r.json()["detail"])
     await session.rollback()
     assert await _items(session, auth) == items
     assert await _ledger_count(session, auth) == before

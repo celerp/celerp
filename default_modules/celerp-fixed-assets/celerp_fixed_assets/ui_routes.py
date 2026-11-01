@@ -228,7 +228,7 @@ def _left_use_notice(asset: dict) -> FT | str:
     left = asset.get("left_use")
     if not left:
         return ""
-    return Div(*_linked(refusal_text(left["message"]), left["links"]), cls="flash flash--warning", id="fa-left-use")
+    return Div(*_linked(refusal_text(left), left["params"]["links"]), cls="flash flash--warning", id="fa-left-use")
 
 
 def _money(value, currency: str | None) -> FT | str:

@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from fa_fixtures import FA
 from test_runs import _contributed, _lines, _lock, _managed_from, _movements, _notices, _run, _run_journals
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -89,7 +90,7 @@ async def test_s3_life_change_estimate_prospective(fa):
     # An estimate cannot reach back into a month already depreciated.
     back = await fa.post(f"/assets/{car}/correct", {"changes": {"life_months": 36}, "effective_date": "2026-05-01",
                                                     "preview": True, "op_key": "back"})
-    assert back.status_code == 422 and "2026-08" in back.json()["detail"]
+    assert back.status_code == 422 and "2026-08" in refusal_text(back.json()["detail"])
 
 
 async def test_s3_class_edit_leaves_assets_until_applied(fa):
@@ -157,7 +158,7 @@ async def test_s3_backdated_error_economic_vs_posting_dates(fa):
     plain = await fa.post(f"/assets/{van}/correct", {"changes": {"cost": "15000"}, "posting_date": "2026-04-20",
                                                      "immaterial_reason": "", "prior_years": "profit_and_loss",
                                                      "preview": True, "op_key": "c2"})
-    assert plain.status_code == 422 and "reason" in plain.json()["detail"].lower()
+    assert plain.status_code == 422 and "reason" in refusal_text(plain.json()["detail"]).lower()
     await _correct(fa, van, {"cost": "15000"}, posting_date="2026-04-20", prior_years="profit_and_loss",
                    immaterial_reason="Below the materiality threshold")
     lines = _sum_lines(await _correction_journals(fa, van))
@@ -178,10 +179,10 @@ async def test_s3_classification_default_and_override_authority(fa):
     refused = await fa.post(f"/assets/{car}/corrections", {
         "changes": {"life_months": 48}, "classification": "error", "override_reason": "Life was keyed wrong",
         "op_key": "ask"}, headers=operator)
-    assert refused.status_code == 403 and "Manage accounting" in refused.json()["detail"]
+    assert refused.status_code == 403 and "Manage accounting" in refusal_text(refused.json()["detail"])
     blank = await fa.post(f"/assets/{car}/correct", {"changes": {"life_months": 48}, "classification": "error",
                                                      "preview": True, "op_key": "o"})
-    assert blank.status_code == 422 and "reason" in blank.json()["detail"].lower()
+    assert blank.status_code == 422 and "reason" in refusal_text(blank.json()["detail"]).lower()
     done = await _correct(fa, car, {"life_months": 48}, classification="error",
                           override_reason="Life was keyed wrong")
     stored = await fa.state(done["correction"]["id"])
@@ -273,7 +274,7 @@ async def test_correct_opening_values_posts_no_journal(fa):
                                         "accumulated_depreciation": "18000"}, key="op")
     truck = done["assets"][0]["id"]
     cost = await fa.post(f"/assets/{truck}/correct", {"changes": {"cost": "31000"}, "preview": True, "op_key": "x"})
-    assert cost.status_code == 422 and "opening values" in cost.json()["detail"].lower()
+    assert cost.status_code == 422 and "opening values" in refusal_text(cost.json()["detail"]).lower()
     await _correct(fa, truck, {"opening_values": {"cost": "30000", "accumulated_depreciation": "17500"}})
     assert await _correction_journals(fa, truck) == []
     assert D((await fa.asset(truck))["accumulated_depreciation"]) == D("17500")
@@ -364,7 +365,7 @@ async def test_link_and_release_additional_source(fa):
     assert extra in [i["source"] for i in await fa.intake()]
     last = await fa.post(f"/assets/{asset}/correct", {"changes": {"release_source": {"source": van["source"]}},
                                                       "preview": True, "op_key": "rl"})
-    assert last.status_code == 422 and "Undo" in last.json()["detail"]
+    assert last.status_code == 422 and "Undo" in refusal_text(last.json()["detail"])
     await fa.fold_matches(asset)
 
 

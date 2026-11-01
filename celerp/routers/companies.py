@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session, sqlstate
 from celerp.events.engine import emit_event
+from celerp.importers.results import failure_reason
 from celerp.models.company import Company, Location, User
 from celerp.models.accounting import UserCompany
 from celerp.services.auth import (
@@ -566,7 +567,7 @@ async def batch_import_settings(
                 created += 1
         except Exception as exc:
             if len(errors) < 10:
-                errors.append(f"{rec.entity_id}: {exc}")
+                errors.append(f"{rec.entity_id}: {failure_reason(exc)}")
 
     await session.commit()
     return BatchImportResult(created=created, skipped=skipped, errors=errors)

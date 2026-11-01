@@ -17,15 +17,15 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import refusal
+from celerp.accounting_roles import catalog_refusal, refusal
 from celerp.events.engine import emit_event
-from celerp.importers.results import ImportOutcome
+from celerp.importers.results import ImportOutcome, failure_reason
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.company_lock import lock_company
 from celerp_accounting.ledger_accounts import require_money_account
 from celerp_accounting.models import Account, BankAccount
-from ui.i18n import t
+
 from celerp_accounting.chart_rules import (
     check_new_account,
     checked_account_code,
@@ -72,7 +72,7 @@ async def check_line_contacts(
     if missing:
         raise HTTPException(
             status_code=422,
-            detail=t("error.contacts_not_found", names=", ".join(missing)),
+            detail=catalog_refusal("error.contacts_not_found", names=", ".join(missing)),
         )
 
 
@@ -135,7 +135,7 @@ async def import_journal_records(
             # A concurrent import of the same file can write the row first.
             outcome.add(rec.entity_id, "skipped" if getattr(entry, "was_deduped", False) else "created")
         except Exception as exc:
-            outcome.add(rec.entity_id, "failed", f"{rec.entity_id}: {exc}")
+            outcome.add(rec.entity_id, "failed", f"{rec.entity_id}: {failure_reason(exc)}")
     return outcome
 
 

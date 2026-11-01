@@ -27,7 +27,7 @@ from test_company_backup_ui import (  # noqa: F401
     ui,
 )
 from test_company_reset import SOLO_EMAIL, SOLO_PASSWORD, _local_files
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 pytestmark = pytest.mark.asyncio
 
@@ -98,8 +98,8 @@ async def test_wrong_credentials_restore_nothing(real_client, real_engine, monke
     bad_read = await _read(real_client, data, password="wrong-password")
     bad_restore = await real_client.post(RESTORE, json=_confirm(preview, password="wrong-password"))
 
-    assert bad_read.status_code == 401 and bad_read.json()["detail"] == t("auth.invalid_credentials", "en")
-    assert bad_restore.status_code == 401 and bad_restore.json()["detail"] == t("auth.invalid_credentials", "en")
+    assert bad_read.status_code == 401 and refusal_text(bad_read.json()["detail"]) == t("auth.invalid_credentials", "en")
+    assert bad_restore.status_code == 401 and refusal_text(bad_restore.json()["detail"]) == t("auth.invalid_credentials", "en")
     assert await count(real_engine, "companies") == 0
     assert {t: rows for t, rows in (await snapshot(real_engine)).items() if t not in ("user_auth_state",)} == \
         {t: rows for t, rows in before.items() if t not in ("user_auth_state",)}
@@ -113,7 +113,7 @@ async def test_a_login_that_has_a_company_is_told_to_sign_in(real_client, real_e
 
     r = await _read(real_client, data)
 
-    assert r.status_code == 409 and r.json()["detail"] == HAS_COMPANY
+    assert r.status_code == 409 and refusal_text(r.json()["detail"]) == HAS_COMPANY
     assert await count(real_engine, "companies") == 1
 
 
@@ -128,7 +128,7 @@ async def test_a_company_started_after_the_preview_stops_the_restore(real_client
 
     r = await real_client.post(RESTORE, json=_confirm(preview))
 
-    assert r.status_code == 409 and r.json()["detail"] == HAS_COMPANY
+    assert r.status_code == 409 and refusal_text(r.json()["detail"]) == HAS_COMPANY
     assert [n for _, n in await _companies(real_engine)] == ["Fresh Start Ltd"]
 
 
@@ -155,7 +155,7 @@ async def test_another_logins_upload_cannot_be_restored(real_client, real_engine
 
     r = await real_client.post(RESTORE, json=_confirm(preview, SOLO_EMAIL, SOLO_PASSWORD))
 
-    assert r.status_code == 409 and "Choose the file again" in r.json()["detail"]
+    assert r.status_code == 409 and "Choose the file again" in refusal_text(r.json()["detail"])
     assert await count(real_engine, "companies") == 0
 
 

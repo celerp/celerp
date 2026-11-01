@@ -17,6 +17,7 @@ import pytest
 
 from fa_fixtures import FA
 from test_runs import _contributed, _lines, _managed_from, _movements, _notices, _run, _tick
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -123,7 +124,7 @@ async def test_s2_impairment_reversal_capped(fa):
     car = await _contributed(fa)
     r = await fa.post(f"/assets/{car}/reverse-impairment", {"date": "2026-02-28", "recoverable_amount": "13000",
                                                             "preview": True, "op_key": "ri0"})
-    assert r.status_code == 422 and "no impairment" in r.json()["detail"]
+    assert r.status_code == 422 and "no impairment" in refusal_text(r.json()["detail"])
     await _impair(fa, car, "2026-03-31", "8550")
     assert _lines(await _latest_journal(fa, car)) == {"6400": (D(600), D(0)), "6410": (D(2850), D(0)),
                                                         "1220": (D(0), D(3450))}
@@ -151,14 +152,14 @@ async def test_s2_class_revaluation_table(fa):
     single = await fa.post(f"/assets/{ids[0]}/revalue", {"date": "2026-03-31", "fair_value": "50000",
                                                          "preview": True, "op_key": "one"})
     assert single.status_code == 422
-    assert "This class uses the cost model" in single.json()["detail"] and "all 3 assets" in single.json()["detail"]
+    assert "This class uses the cost model" in refusal_text(single.json()["detail"]) and "all 3 assets" in refusal_text(single.json()["detail"])
     path = f"/classes/{cls['id']}/revalue"
     partial = {"date": "2026-03-31", "rows": _rows({ids[0]: "50000", ids[1]: "47000"})}
     preview = await fa.ok(await fa.post(path, {**partial, "preview": True, "op_key": "cr1"}))
     assert preview["missing"] == [numbers[2]]
     refused = await fa.post(path, {**partial, "preview": False, "op_key": "cr1",
                                    "fingerprint": preview["fingerprint"]})
-    assert refused.status_code == 422 and numbers[2] in refused.json()["detail"]
+    assert refused.status_code == 422 and numbers[2] in refusal_text(refused.json()["detail"])
     full = {"date": "2026-03-31", "rows": _rows({ids[0]: "50000", ids[1]: "47000", ids[2]: "47700"})}
     preview = await fa.ok(await fa.post(path, {**full, "preview": True, "op_key": "cr2"}))
     assert preview["missing"] == []
@@ -173,10 +174,10 @@ async def test_s2_class_revaluation_table(fa):
     assert len(op["effects"]["journals"]) == 3
     assert await fa.balance("3400") == D(-2300) and await fa.balance("6410") == D(700)
     back = await fa.patch(f"/classes/{cls['id']}", {"measurement_policy": "cost"})
-    assert back.status_code == 409 and "revalued" in back.json()["detail"]
+    assert back.status_code == 409 and "revalued" in refusal_text(back.json()["detail"])
     vehicles = (await fa.classes())["Vehicles"]
     direct = await fa.patch(f"/classes/{vehicles['id']}", {"measurement_policy": "revaluation"})
-    assert direct.status_code == 422 and "Change class to revaluation" in direct.json()["detail"]
+    assert direct.status_code == 422 and "Change class to revaluation" in refusal_text(direct.json()["detail"])
     await _revalue(fa, ids[0], "2026-06-30", "51000")
 
 
@@ -191,7 +192,7 @@ async def test_s2_intangible_indefinite_and_active_market(fa):
     await _tick(fa, date(2026, 10, 16))
     assert any(n.title == "Impairment reviews due" for n in await _notices(fa))
     nothing = await fa.post("/runs", {"month": "2026-03", "preview": True, "op_key": "r3"})
-    assert nothing.status_code == 422 and "Nothing to depreciate" in nothing.json()["detail"], nothing.text
+    assert nothing.status_code == 422 and "Nothing to depreciate" in refusal_text(nothing.json()["detail"]), nothing.text
     await fa.ok(await fa.post(f"/assets/{licence}/reviews", {"date": "2026-10-01", "outcome": "no_indication",
                                                              "basis": "Licence renewed to 2036"}))
     assert (await fa.ok(await fa.get("/reviews")))["items"] == []
@@ -205,7 +206,7 @@ async def test_s2_intangible_indefinite_and_active_market(fa):
     path = f"/classes/{other['id']}/revalue"
     body = {"date": "2026-10-05", "rows": _rows({licence: "6000"}), "preview": True, "op_key": "am"}
     refused = await fa.post(path, body)
-    assert refused.status_code == 422 and "active market" in refused.json()["detail"]
+    assert refused.status_code == 422 and "active market" in refusal_text(refused.json()["detail"])
     await fa.ok(await fa.patch(f"/classes/{other['id']}", {
         "active_market": {"date": "2026-10-01", "basis": "Quoted on the licence exchange"}}))
     await fa.ok(await fa.post(path, body))
@@ -235,7 +236,7 @@ async def test_corrections_do_not_restate_across_a_remeasurement(fa):
     await _impair(fa, car, "2026-03-31", "8550")
     path = f"/assets/{car}/correct"
     error = await fa.post(path, {"changes": {"cost": "13000"}, "preview": True, "op_key": "c1"})
-    assert error.status_code == 422 and "remeasured on 2026-03-31" in error.json()["detail"]
+    assert error.status_code == 422 and "remeasured on 2026-03-31" in refusal_text(error.json()["detail"])
     early = await fa.post(path, {"changes": {"life_months": 48}, "classification": "estimate",
                                  "effective_date": "2026-03-01", "preview": True, "op_key": "c2"})
     assert early.status_code == 422, early.text
@@ -270,7 +271,7 @@ async def test_valuer_report_attached_to_every_asset_in_the_class_and_removed(fa
     land = (await fa.classes())["Land"]
     empty = await fa.client.post(f"/fixed-assets/api/classes/{land['id']}/valuer-report", headers=fa.h,
                                  files={"file": ("valuation.pdf", PDF, "application/pdf")})
-    assert empty.status_code == 422 and "No assets in use" in empty.json()["detail"]
+    assert empty.status_code == 422 and "No assets in use" in refusal_text(empty.json()["detail"])
     stranger = await fa.post(f"/classes/{cls['id']}/valuer-report/remove",
                              {"files": [{"asset_id": ids[0], "file_id": "nope"}]})
     assert stranger.status_code == 404

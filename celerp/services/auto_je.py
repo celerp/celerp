@@ -24,6 +24,8 @@ from celerp.accounting_roles import (
     LOT_ACCOUNT_FIELD,
     ROLE_TYPES,
     AccountRole,
+    Refused,
+    catalog_refusal,
     refusal,
 )
 from celerp.events.engine import emit_event
@@ -225,8 +227,8 @@ async def entry_day(session, company_id, recorded: object = None) -> str:
 
     try:
         return business_date_of(recorded, (await current_settings(session, company_id)).get("timezone"))
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Refused as exc:
+        raise HTTPException(status_code=422, detail=exc.detail) from exc
 
 
 async def _emit_auto_posted_je(
@@ -261,9 +263,8 @@ async def _emit_auto_posted_je(
     debits = sum((to_decimal(e["debit"]) for e in entries), _Dec(0))
     credits = sum((to_decimal(e["credit"]) for e in entries), _Dec(0))
     if debits != credits:
-        raise UnbalancedJournalEntry(
-            t("error.auto_je_unbalanced", memo=memo, debits=debits, credits=credits, currency=currency)
-        )
+        raise UnbalancedJournalEntry("error.auto_je_unbalanced", memo=memo, debits=str(debits),
+                                     credits=str(credits), currency=currency)
     payload = {**(extra or {}), "memo": memo, "entries": entries}
     if ts:
         payload["ts"] = ts
@@ -637,7 +638,7 @@ def refuse_misplaced_tax(settings: dict, doc_type: str | None, state: dict, line
         from fastapi import HTTPException
 
         key = "documents.err_tax_purchase_only" if doc_side(doc_type) == "sales" else "documents.err_tax_sales_only"
-        raise HTTPException(status_code=422, detail=t(key, tax=name))
+        raise HTTPException(status_code=422, detail=catalog_refusal(key, tax=name))
 
 
 def refuse_unissuable_taxes(settings: dict, doc_type: str | None, doc: dict) -> None:
@@ -1077,7 +1078,7 @@ async def party_origin(session, company_id, doc_id: str, role, settings: dict | 
             found = {e["account"] for e in entries if e.get("contact") and e.get("account_roles") is None}
         codes |= found
     if len(codes) > 1:
-        raise AmbiguousOriginError(str(role), f"Document {doc_id}", codes)
+        raise AmbiguousOriginError(str(role), doc_id, codes)
     if not codes and role == R.PAYABLE:
         note = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
         state = (note.state if note is not None else None) or {}
@@ -2230,9 +2231,8 @@ async def _bill_entries(session, company_id, doc_id: str, doc: dict,
     # The line index each debit comes from (None for tax, shipping and a bill with no lines).
     sources: list[int | None] = [part if isinstance(part, int) else None for part, _ in parts]
     if sum((a for _, a in lines), _Dec(0)) != total_d:
-        raise UnbalancedJournalEntry(
-            t("error.bill_lines_mismatch", doc_id=doc_id, total=total_d, currency=currency)
-        )
+        raise UnbalancedJournalEntry("error.bill_lines_mismatch", doc_id=doc_id, total=str(total_d),
+                                     currency=currency)
 
     settings = await current_settings(session, company_id)
     # A charge its receipts already drew from clearing (goods received before the bill was
@@ -3560,7 +3560,7 @@ async def _recognized_by_account(
     """What an invoice recognizes today, per inventory account, in two parts: the actual
     cost of the lots it shipped, and, per line, its allocation's share (with every cost
     correction since) for the goods it has not shipped, with the quantity not shipped.
-    Raises ValueError when a shipped or returned lot cannot be matched to one of the
+    Raises Refused when a shipped or returned lot cannot be matched to one of the
     invoice's lines."""
     recognized = books.recognized[doc_id]
     shipped: dict[str, float] = {}
@@ -3580,7 +3580,7 @@ async def _recognized_by_account(
     for lot in books.shipments.out.get(doc_id, []):
         idx = _line(lot)
         if idx is None:
-            raise ValueError(t("error.cogs_line_unknown"))
+            raise Refused("error.cogs_line_unknown")
         cost = lot_cost_of_sale(lot.state or {})
         if cost:
             _add(shipped, {await _sold_key(session, company_id, lot.entity_id, lot.state or {}, books): cost})
@@ -3588,7 +3588,7 @@ async def _recognized_by_account(
     for lot, qty in books.shipments.back.get(doc_id, []):
         idx = _line(lot)
         if idx is None:
-            raise ValueError(t("error.cogs_line_unknown"))
+            raise Refused("error.cogs_line_unknown")
         back_qty[idx] = back_qty.get(idx, 0.0) + qty
     repriced = books.repriced.get((doc_id, recognized.cycle), {})
     for idx, alloc in recognized.allocations.items():
@@ -4097,16 +4097,15 @@ async def create_for_cost_moves(session, *, company_id, user_id, doc_id: str, do
     return notice
 
 
-class CogsShareUnknown(ValueError):
+class CogsShareUnknown(Refused):
     """An older invoice's cost of goods sold cannot be split by lot from what it posted,
     so goods it takes back cannot give their share back. ``detail`` is the refusal."""
 
     def __init__(self) -> None:
-        self.detail = refusal(
+        super().__init__(
             "documents.cogs_share_unknown",
             "The cost of goods sold this invoice posted does not match the cost of its goods, "
             "so the share of the goods taken back cannot be worked out. Nothing was changed.")
-        super().__init__(self.detail["message"])
 
 
 async def reconcile_doc_cogs(
@@ -4133,7 +4132,7 @@ async def reconcile_doc_cogs(
     An invoice void or back in draft recognizes nothing: once its own entries are
     reversed, any cost it still carries through moves is settled on a cost-settle entry,
     which no void or restore touches. An invoice with no recognized allocation on record
-    posts nothing. Raises ValueError when a shipped lot cannot be matched to one of the
+    posts nothing. Raises Refused when a shipped lot cannot be matched to one of the
     invoice's lines, and CogsShareUnknown when an older invoice's share of goods taken
     back cannot be worked out.
     """

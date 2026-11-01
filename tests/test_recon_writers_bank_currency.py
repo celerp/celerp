@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 
 from test_reconciliation_history import admin, bank, fx_deposit, match, start
-from ui.i18n import t
+from ui.i18n import t, refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -72,7 +72,7 @@ async def test_payment_into_a_bank_kept_in_a_third_currency_is_refused_naming_th
     inv = await _eur_invoice(client, h)
     r = await client.post(f"/docs/{inv}/payment", headers=h, json={
         "amount": 100.0, "payment_date": "2026-09-10", "bank_account": b["chart_account_code"]})
-    assert r.status_code == 422 and r.json()["detail"] == t(
+    assert r.status_code == 422 and refusal_text(r.json()["detail"]) == t(
         "documents.err_payment_bank_currency", bank_currency="JPY", doc_currency="EUR", base="USD"), r.text
 
 

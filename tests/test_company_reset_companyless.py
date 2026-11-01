@@ -22,7 +22,7 @@ from company_backup_support import company, download, member, owner, token
 from migration_support import OWNER_EMAIL, OWNER_PASSWORD, auth, count, migration_env, real_client, real_engine  # noqa: F401
 from test_company_reset import _local_files
 from test_company_reset_migration import _ready_scan, _start as _move_in
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 pytestmark = pytest.mark.asyncio
 
@@ -114,7 +114,7 @@ async def _one_company_for(engine, boss) -> None:
 def _one_won(results, won: set[int], refusals: frozenset[str] = frozenset({HAS_COMPANY})) -> None:
     codes = sorted(r.status_code for r in results)
     assert codes in [sorted([w, 409]) for w in won], [r.text for r in results]
-    [refusal] = [r.json()["detail"] for r in results if r.status_code == 409]
+    [refusal] = [refusal_text(r.json()["detail"]) for r in results if r.status_code == 409]
     assert refusal in refusals, refusal
 
 

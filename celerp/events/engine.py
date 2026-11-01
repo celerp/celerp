@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
+from celerp.accounting_roles import Refused, catalog_refusal, refusal
 from celerp.events.schemas import EVENT_SCHEMA_MAP
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
@@ -29,17 +30,18 @@ from celerp.services.document_lines import (
     normalize_line_ids,
 )
 from celerp.services.business_time import business_date_of
-from ui.i18n import t
 
 
 def apply_event(state: dict, event: LedgerEntry) -> dict:
     return ProjectionEngine._apply(state, event.event_type, event.data)
 
 
-STRIPE_OWNED_PAYMENT = (
-    "This payment was received through Stripe, so it can only be refunded or reversed in Stripe."
-)
-PAYMENT_NOT_NAMED = "A payment can be taken off a document only by naming it, and a deletion keeps its place."
+STRIPE_OWNED_PAYMENT = refusal(
+    "error.payment_stripe_owned",
+    "This payment was received through Stripe, so it can only be refunded or reversed in Stripe.")
+PAYMENT_NOT_NAMED = refusal(
+    "error.payment_not_named",
+    "A payment can be taken off a document only by naming it, and a deletion keeps its place.")
 # The list writes that carry the totals they give the list (emit_event).
 LIST_TOTALLED_EVENTS = frozenset({"list.created", "list.updated"})
 # Every event that takes a received payment back off a document.
@@ -113,7 +115,7 @@ async def refuse_stripe_payment_removal(session, company_id, entity_id, payments
         raise HTTPException(status_code=422, detail=STRIPE_OWNED_PAYMENT)
     if (event_type == "doc.payment.deleted" and payment is not None
             and is_stripe_receipt(payment, await stripe_receipt_references(session, company_id, entity_id))):
-        raise HTTPException(status_code=422, detail=t("error.stripe_receipt_kept"))
+        raise HTTPException(status_code=422, detail=catalog_refusal("error.stripe_receipt_kept"))
 
 
 async def _refuse_stripe_payment_removal(session, kwargs: dict) -> None:
@@ -185,12 +187,12 @@ async def _check_period_lock(session, company_id, data: dict) -> None:
     event_date_str = data.get("reversed_on") or data.get("ts") or data.get("issue_date") or data.get("date")
     try:
         event_date = date.fromisoformat(business_date_of(event_date_str, (company.settings or {}).get("timezone")))
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Refused as exc:
+        raise HTTPException(status_code=422, detail=exc.detail) from exc
     if event_date <= lock_date:
         raise HTTPException(
             status_code=422,
-            detail=t("error.period_locked", date=lock_date_str),
+            detail=catalog_refusal("error.period_locked", date=lock_date_str),
         )
 
 
@@ -556,9 +558,9 @@ async def _item_applied(session, entry: LedgerEntry, transition, held_lot_carve:
     )
 
     if transition.before is None and entry.event_type not in ITEM_BIRTHS:
-        raise HTTPException(status_code=404, detail=t("inventory.err_item_not_found"))
+        raise HTTPException(status_code=404, detail=catalog_refusal("inventory.err_item_not_found"))
     if transition.before is not None and entry.event_type in ITEM_BIRTHS:
-        raise HTTPException(status_code=409, detail=t("inventory.err_item_exists"))
+        raise HTTPException(status_code=409, detail=catalog_refusal("inventory.err_item_exists"))
     assert_draft_not_circulated(entry.event_type, transition)
     # Modules hold an item to what its lineage may still take (a production run's open
     # output, for one); a handler that cannot be resolved fails the event, never skips it.
@@ -621,7 +623,7 @@ async def emit_event(
     # (reads, which never emit, are unaffected) so nothing changes mid-backup.
     from celerp.services.backup_state import is_active as _backup_active
     if _backup_active():
-        raise HTTPException(status_code=503, detail=t("error.backup_running"))
+        raise HTTPException(status_code=503, detail=catalog_refusal("error.backup_running"))
 
     # Work inside a module writes only while its company still uses that module.
     from celerp.services.company_lock import judge_module_writes
@@ -816,12 +818,12 @@ async def emit_event(
         from celerp.services.goods_cost import (event_goods_costs, lot_label, negative_cost_error,
                                                 unknown_flag_error)
 
-        refusal = negative_cost_error(
+        cost_refusal = negative_cost_error(
             lot_label({**(previous_item_state or {}), **kwargs["data"]}, kwargs["entity_id"]),
             *event_goods_costs(kwargs["event_type"], kwargs["data"]),
         ) or unknown_flag_error(kwargs["event_type"], kwargs["data"])
-        if refusal:
-            raise HTTPException(status_code=422, detail=refusal)
+        if cost_refusal:
+            raise HTTPException(status_code=422, detail=cost_refusal)
         check_codes = _touches_physical_codes(
             previous_item_state or {}, kwargs["event_type"], kwargs["data"]
         ) and await find_event_by_idempotency(

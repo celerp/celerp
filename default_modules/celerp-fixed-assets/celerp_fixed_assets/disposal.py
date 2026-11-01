@@ -70,24 +70,24 @@ def _share(asset: dict, body: dict) -> tuple[Decimal, Decimal]:
     return share, quantity if share == 1 else Decimal(0)
 
 
-def _role(books: runs.Books, role: str, label: str) -> str:
+def _role(books: runs.Books, role: str) -> str:
     from celerp.services.account_roles import role_map
 
     account = role_map(books.settings).get(role)
     if not account:
-        raise setup.unprocessable(f"Choose the {label} account in Posting accounts first.")
+        raise setup.refuse("fixed_assets.err_choose_role_account", role=role)
     return account
 
 
 def accounts(books: runs.Books) -> dict:
     """The posting accounts a disposal, sale or remeasurement may need, each read only when
     a line uses it."""
-    return {"gain": lambda: _role(books, "disposal_gain", "gain on disposal"),
-            "loss": lambda: _role(books, "disposal_loss", "loss on disposal"),
-            "surplus": lambda: _role(books, "revaluation_surplus", "revaluation surplus"),
-            "impairment": lambda: _role(books, "impairment_loss", "impairment loss"),
-            "retained": lambda: _role(books, "retained_earnings", "retained earnings"),
-            "clearing": lambda: _role(books, "asset_disposal_clearing", "asset sale clearing")}
+    return {"gain": lambda: _role(books, "disposal_gain"),
+            "loss": lambda: _role(books, "disposal_loss"),
+            "surplus": lambda: _role(books, "revaluation_surplus"),
+            "impairment": lambda: _role(books, "impairment_loss"),
+            "retained": lambda: _role(books, "retained_earnings"),
+            "clearing": lambda: _role(books, "asset_disposal_clearing")}
 
 
 def surplus_account(accounts: dict, asset: dict) -> str:
@@ -107,20 +107,23 @@ def _split(amount: Decimal, share: Decimal, currency: str) -> Decimal:
     return allocate_pro_rata(amount, [share, 1 - share], currency)[0]
 
 
-def check_date(books: runs.Books, asset: dict, live: list[dict], day: str, *, what: str = "disposal",
-               verb: str = "Dispose") -> None:
+# The dates check_date checks, each the action it dates: its refusals are keyed by it.
+DATED = ("disposal", "sale", "addition", "available_for_use", "reclassification", "measurement")
+
+
+def check_date(books: runs.Books, asset: dict, live: list[dict], day: str, *, what: str = "disposal") -> None:
     """``day`` is open, in service, not ahead of today and not before the asset's latest
-    change other than depreciation. ``what`` names the date, ``verb`` the action."""
+    change other than depreciation. ``what`` (one of DATED) names the action it dates."""
     if day < (asset.get("available_date") or day):
-        raise setup.unprocessable(f"The {what} date is before {asset['number']} was available for use "
-                                  f"({asset['available_date']}).")
-    setup.not_after_today(f"The {what} date", day, books.settings)
+        raise setup.refuse(f"fixed_assets.err_before_available.{what}", number=asset["number"],
+                           available=asset["available_date"])
+    setup.not_after_today(f"The {what.replace('_', '-')} date", day, books.settings)
     setup.require_open(books.lock, day)
     later = [m for m in live if m.get("operation") not in _CHARGES and m["effective_date"] > day]
     if later:
         changed = max(m["effective_date"] for m in later)
-        raise setup.unprocessable(f"{asset['number']} was changed on {changed} ({changes(later)}). "
-                                  f"{verb} on or after that date.")
+        raise setup.refuse(f"fixed_assets.err_changed_after.{what}", number=asset["number"], date=changed,
+                           changes=changes(later))
 
 
 def owed(books: runs.Books, asset: dict, movements: list[dict], month: int, through: int) -> tuple[dict, object]:
@@ -133,7 +136,7 @@ def owed(books: runs.Books, asset: dict, movements: list[dict], month: int, thro
         planned = runs.full_schedule(asset, movements, books.settings, through)
         missing = [p.period for p in planned.periods if p.exception is not None and parse_period(p.period) <= month]
         if missing:
-            raise setup.unprocessable(f"Enter the reading for {missing[0]} on {asset['number']} first.")
+            raise setup.refuse("fixed_assets.err_reading_missing", period=missing[0], number=asset["number"])
         restated = {parse_period(p.period): p.amount for p in planned.periods}
     charged = runs.charged_by_month(movements)
     diff = {k: restated.get(k, Decimal(0)) - charged.get(k, Decimal(0))
@@ -153,9 +156,9 @@ def _plan_asset(books: runs.Books, asset_id: str, asset: dict, cls: dict, moveme
     ``proceeds`` in from its ``clearing`` account (posted for ``clearing_role``, when it
     serves one), and they count toward the gain."""
     currency = books.currency
-    in_use(asset_id, asset, "it cannot be disposed of")
+    in_use(asset_id, asset, "dispose")
     live = projections.live(movements)
-    check_date(books, asset, live, day, **({"what": "sale", "verb": "Date the sale"} if clearing_role else {}))
+    check_date(books, asset, live, day, what="sale" if clearing_role else "disposal")
     cost = _dec(asset.get("cost"))
     gone_cost = _split(cost, share, currency)
     month = month_index(date.fromisoformat(day))
@@ -275,7 +278,7 @@ async def dispose(session, company_id, user_id, body: dict, asset_ids: list[str]
             row = rows.get(asset_id)
             if row is None or row.entity_type != "fa_asset":
                 raise HTTPException(status_code=404, detail="No such asset.")
-            in_use(asset_id, row.state, "it cannot be disposed of")
+            in_use(asset_id, row.state, "dispose")
         day = _date(body.get("date"), "The disposal date")
         reason = body.get("reason")
         if reason not in REASONS:

@@ -12,6 +12,7 @@ import pytest
 
 from celerp.tax_regimes import TAX_REGIMES
 from test_money_boundary import _company, _je
+from ui.i18n import refusal_text
 
 _WHT = {"code": "WHT 3%", "rate": -3.0, "order": 1, "is_compound": False}
 _VAT = {"code": "VAT 7%", "rate": 7.0, "order": 0, "is_compound": False}
@@ -40,8 +41,8 @@ async def test_a_sales_document_with_withholding_tax_is_refused_naming_the_tax(c
     for payload in (_doc(doc_type, doc_taxes=[_VAT, _WHT]), _doc(doc_type, line_taxes=[_WHT])):
         r = await client.post("/docs", headers=auth["headers"], json=payload)
         assert r.status_code == 422, r.text
-        assert "WHT 3%" in r.json()["detail"]
-        assert "sales document" in r.json()["detail"]
+        assert "WHT 3%" in refusal_text(r.json()["detail"])
+        assert "sales document" in refusal_text(r.json()["detail"])
 
 
 @pytest.mark.asyncio
@@ -51,7 +52,7 @@ async def test_a_negative_rate_no_tax_list_names_is_refused_on_a_sale(client, se
     assert r.status_code == 422, r.text
     r = await client.post("/docs", headers=auth["headers"],
                           json=_doc("invoice", doc_taxes=[{**_WHT, "code": "Withheld"}]))
-    assert r.status_code == 422 and "Withheld" in r.json()["detail"]
+    assert r.status_code == 422 and "Withheld" in refusal_text(r.json()["detail"])
 
 
 @pytest.mark.asyncio
@@ -62,7 +63,7 @@ async def test_withholding_added_to_a_draft_invoice_is_refused_and_the_draft_kee
     doc_id = r.json()["id"]
     r = await client.patch(f"/docs/{doc_id}", headers=auth["headers"],
                            json={"fields_changed": {"doc_taxes": {"new": [_VAT, _WHT]}}})
-    assert r.status_code == 422 and "WHT 3%" in r.json()["detail"]
+    assert r.status_code == 422 and "WHT 3%" in refusal_text(r.json()["detail"])
     doc = (await client.get(f"/docs/{doc_id}", headers=auth["headers"])).json()
     assert [t["code"] for t in doc["doc_taxes"]] == ["VAT 7%"]
     assert doc["total"] == pytest.approx(1070.0)
@@ -87,7 +88,7 @@ async def test_a_sales_only_tax_is_refused_on_a_purchase_bill(client, session):
     r = await client.post("/docs", headers=auth["headers"],
                           json=_doc("bill", line_taxes=[{"code": "Sales Tax 10%", "rate": 10.0, "order": 0, "is_compound": False}]))
     assert r.status_code == 422, r.text
-    assert "Sales Tax 10%" in r.json()["detail"] and "purchase document" in r.json()["detail"]
+    assert "Sales Tax 10%" in refusal_text(r.json()["detail"]) and "purchase document" in refusal_text(r.json()["detail"])
 
 
 @pytest.mark.asyncio
@@ -102,7 +103,7 @@ async def test_a_sale_whose_taxes_come_to_less_than_zero_does_not_finalize(clien
     doc_id = r.json()["id"]
     r = await client.post(f"/docs/{doc_id}/finalize", headers=auth["headers"])
     assert r.status_code == 409, r.text
-    assert "less than zero" in r.json()["detail"]
+    assert "less than zero" in refusal_text(r.json()["detail"])
     doc = (await client.get(f"/docs/{doc_id}", headers=auth["headers"])).json()
     assert doc["status"] == "draft"
 

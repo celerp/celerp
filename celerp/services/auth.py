@@ -19,6 +19,7 @@ from passlib.context import CryptContext
 from sqlalchemy import and_, case, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.accounting_roles import catalog_refusal
 from celerp.config import settings
 from celerp.db import get_session
 from celerp.models.accounting import UserCompany
@@ -384,7 +385,7 @@ async def get_auth_context(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated",
                             headers={"WWW-Authenticate": "Bearer"})
     if ctx.company.is_migration_staged and not request.url.path.startswith(STAGED_ALLOWED_PREFIX):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("auth.company_staged"))
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=catalog_refusal("auth.company_staged"))
     from celerp.modules.boundary import require_company_uses
     from celerp.modules.loader import reads_when_off, route_module
 

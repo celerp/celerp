@@ -23,6 +23,7 @@ from __future__ import annotations
 import uuid
 from decimal import Decimal
 
+from celerp.accounting_roles import catalog_refusal
 from celerp.models.projections import Projection
 from celerp.services.account_roles import line_has_role, line_roles
 from celerp.services.money import currency_dp, round_money
@@ -43,6 +44,7 @@ from celerp_fixed_assets.operations import (
     catch_up,
     conflict,
     in_use,
+    refuse,
     label_lines,
     reverse_move,
 )
@@ -104,8 +106,7 @@ async def _cleared(session, company_id, settings: dict, doc_id: str, asset_id: s
                 net[e["account"]] = net.get(e["account"], Decimal(0)) + _dec(e.get("debit")) - _dec(e.get("credit"))
     used = [(a, v) for a, v in net.items() if v]
     if len(used) > 1:
-        raise conflict(f"{number}: the document cleared its line through more than one account "
-                       f"({', '.join(a for a, _ in used)}).")
+        raise refuse("fixed_assets.err_sale_many_clearing", number=number, accounts=", ".join(a for a, _ in used))
     return used[0] if used else (None, Decimal(0))
 
 
@@ -184,7 +185,7 @@ async def _locked(session, company_id, asset_ids: list[str]) -> dict:
 async def _asset(session, company_id, asset_id: str) -> dict:
     row = (await _locked(session, company_id, [asset_id])).get(asset_id)
     if row is None or row.entity_type != "fa_asset":
-        raise HTTPException(status_code=404, detail="No such asset.")
+        raise HTTPException(status_code=404, detail=catalog_refusal("fixed_assets.err_no_such_asset"))
     return row.state
 
 
@@ -200,13 +201,10 @@ async def refuse_waiting(session, company_id, asset_id: str, asset: dict) -> Non
     invoice = await _state(session, company_id, sale["invoice_id"])
     number = doc_number(invoice, sale["invoice_id"])
     if invoice is not None and invoice.get("status") == "draft" and _carries(invoice, asset_id):
-        raise conflict(f"{asset['number']} is on draft invoice {number}. Finalize or delete that invoice, "
-                       "or cancel the sale from the asset's page.")
+        raise refuse("fixed_assets.err_sale_on_draft", number=asset["number"], invoice=number)
     if invoice is not None and invoice.get("status") == "void":
-        raise conflict(f"{asset['number']} is waiting on void invoice {number}. Reissue or cancel the sale "
-                       "from the asset's page.")
-    raise conflict(f"{asset['number']} is waiting on a sale whose draft invoice was deleted. Reissue or cancel "
-                   "the sale from the asset's page.")
+        raise refuse("fixed_assets.err_sale_on_void", number=asset["number"], invoice=number)
+    raise refuse("fixed_assets.err_sale_draft_deleted", number=asset["number"])
 
 
 async def _plan(session, company_id, books: runs.Books, asset_id: str, asset: dict, day: str,
@@ -293,7 +291,7 @@ async def sell(session, company_id, user_id, asset_id: str, body: dict) -> dict:
 
     async def plan(fa):
         asset = await _asset(session, company_id, asset_id)
-        in_use(asset_id, asset, "it cannot be sold")
+        in_use(asset_id, asset, "sell")
         day = _date(body.get("date"), "The sale date")
         books = await runs._books(session, company_id)
         currency = books.currency
@@ -386,17 +384,17 @@ async def credit(session, company_id, user_id, asset_id: str, body: dict) -> dic
     async def plan(fa):
         kind = body.get("kind")
         if kind not in ("adjust", "returned"):
-            raise setup.unprocessable("Choose whether the credit note credits part of the price or takes the asset "
-                                      "back.")
+            raise setup.refuse("fixed_assets.err_credit_kind")
         day = _date(body.get("date"), "The credit note date")
         asset = await _asset(session, company_id, asset_id)
         sale = asset.get("sale") or {}
         if sale.get("state") != "sold":
-            raise conflict(f"{asset['number']} has no completed sale to credit.")
+            raise refuse("fixed_assets.err_credit_no_sale", number=asset["number"])
         invoice = await _state(session, company_id, sale["invoice_id"]) or {}
         source = _carries(invoice, asset_id)
         if source is None:
-            raise conflict(f"Invoice {doc_number(invoice, sale['invoice_id'])} no longer carries {asset['number']}.")
+            raise refuse("fixed_assets.err_credit_not_on_invoice", invoice=doc_number(invoice, sale["invoice_id"]),
+                         number=asset["number"])
         # A credit note already drafted for the sale is opened, never drafted twice.
         drafts = await _draft_credit_notes(session, company_id, sale["invoice_id"], asset_id)
         if drafts:
@@ -409,7 +407,7 @@ async def credit(session, company_id, user_id, asset_id: str, body: dict) -> dic
         if kind == "adjust":
             amount = _money_in(body.get("amount"), "The amount", in_doc, positive=True)
             if amount * rate > remaining:
-                raise conflict(f"Only {said(remaining, base)} of the sale of {asset['number']} is left to credit.")
+                raise refuse("fixed_assets.err_credit_over", amount=said(remaining, base), number=asset["number"])
         else:
             amount = round_money(remaining / rate, in_doc)
         shown = {"number": asset["number"], "kind": kind, "date": day, "amount": money(amount, in_doc),
@@ -448,7 +446,7 @@ async def view(session, company_id, asset_id: str) -> dict:
 
     row = await session.get(Projection, {"company_id": company_id, "entity_id": asset_id})
     if row is None or row.entity_type != "fa_asset":
-        raise HTTPException(status_code=404, detail="No such asset.")
+        raise HTTPException(status_code=404, detail=catalog_refusal("fixed_assets.err_no_such_asset"))
     asset = row.state
     sale = asset.get("sale") or {}
     if not sale:
@@ -557,7 +555,7 @@ async def _unsell(session, company_id, user_id, asset_id: str, asset: dict, sale
     live = next((cn for cn, c in (sale.get("credits") or {}).items() if c.get("live")), None)
     if live is not None:
         number = doc_number(await _state(session, company_id, live), live)
-        raise conflict(f"{asset['number']} has credit note {number} on this invoice. Void that credit note first.")
+        raise refuse("fixed_assets.err_unsell_credit_note", number=asset["number"], credit_note=number)
     books = await runs._books(session, company_id)
     await _reverse(session, company_id, user_id, sale["journal_id"], "sale_reverse", "Sale invoice reversed")
     mv = await _state(session, company_id, sale["movement_id"])
@@ -590,7 +588,7 @@ async def _credit_posted(session, company_id, user_id, asset_id: str, asset: dic
     accounts = disposal.accounts(books)
     number = asset["number"]
     if sale.get("state") != "sold":
-        raise conflict(f"{number} was already returned with a credit note on this invoice.")
+        raise refuse("fixed_assets.err_credit_already_returned", number=number)
     clearing, amount = await _cleared(session, company_id, books.settings, doc_id, asset_id, number)
     held = await _held(session, company_id, books.settings, sale)
     gain = _total(held)
@@ -599,7 +597,7 @@ async def _credit_posted(session, company_id, user_id, asset_id: str, asset: dic
     short = asset_id.removeprefix("fa:asset:")
     if not line.get("asset_returned"):
         if amount > remaining:
-            raise conflict(f"Only {said(remaining, books.currency)} of the sale of {number} is left to credit.")
+            raise refuse("fixed_assets.err_credit_over", amount=said(remaining, books.currency), number=number)
         restated, added = _restate(accounts, held, gain - amount)
         je_id = await _post(session, company_id, user_id, key=f"asset:{short}:credit:{uuid.uuid4().hex}",
                             operation="sale_adjust", day=day, memo=f"{number} sale credited: {doc_number(doc, doc_id)}",
@@ -614,8 +612,7 @@ async def _credit_posted(session, company_id, user_id, asset_id: str, asset: dic
     # A foreign credit note converts to the base currency within one of its smallest units.
     foreign = str(doc.get("currency") or "").upper() not in ("", books.currency)
     if abs(amount - remaining) > (Decimal(1).scaleb(-currency_dp(books.currency)) if foreign else 0):
-        raise conflict(f"A return credits what is left of the sale of {number}: "
-                       f"{said(remaining, books.currency)}.")
+        raise refuse("fixed_assets.err_return_amount", number=number, amount=said(remaining, books.currency))
     mv = await _state(session, company_id, sale["movement_id"])
     cls = await setup.get_class(session, company_id, asset.get("class_id"))
     moved = {k: _dec((mv.get("amounts") or {}).get(k)) for k in ("cost", _AD, _IMP, _SURPLUS)}
@@ -664,9 +661,8 @@ async def _credit_reversed(session, company_id, user_id, asset_id: str, asset: d
         return
     if sale.get("state") == "returned":
         returned = next(cn for cn, c in sale["credits"].items() if c.get("live") and c["kind"] == "returned")
-        raise conflict(f"{asset['number']} was returned with credit note "
-                       f"{doc_number(await _state(session, company_id, returned), returned)}. Void that credit "
-                       "note first.")
+        raise refuse("fixed_assets.err_unsell_returned", number=asset["number"],
+                     credit_note=doc_number(await _state(session, company_id, returned), returned))
     books = await runs._books(session, company_id)
     await _reverse(session, company_id, user_id, entry["journal_id"], "sale_adjust", "Sale credit note reversed")
     held = await _held(session, company_id, books.settings, sale)
@@ -691,14 +687,15 @@ async def _authorize(session, company_id, user_id, change: str, numbers: str) ->
     from celerp.services.permissions import locked_authority
 
     if user_id is None:
-        raise conflict(f"{numbers}: a document selling or crediting an asset is changed by a person.")
+        raise refuse("fixed_assets.err_sale_doc_by_person", numbers=numbers)
     try:
         _, settings = await locked_authority(session, company_id, user_id,
                                              _WRITE_KEYS if change == "write" else SALE_KEYS)
     except HTTPException as exc:
         if exc.status_code != 403:
             raise
-        raise HTTPException(status_code=403, detail=f"{numbers}: {exc.detail}") from exc
+        raise HTTPException(status_code=403, detail=catalog_refusal(
+            "fixed_assets.err_assets_refused", numbers=numbers, why=exc.detail)) from exc
     return settings
 
 
@@ -717,19 +714,18 @@ async def on_asset_lines(*, session, company_id, user_id, doc_id: str, doc: dict
             asset = await _state(session, company_id, li["asset_id"]) or {}
             sale = asset.get("sale") or {}
             if sale.get("state") == "pending" and sale.get("invoice_id") == doc_id:
-                raise conflict(f"{asset['number']} is waiting on this invoice. Keep its line, or cancel the sale "
-                               "from the asset's page, which voids this draft.")
+                raise refuse("fixed_assets.err_sale_keep_line", number=asset["number"])
         return
     rows = await _locked(session, company_id, [li["asset_id"] for li in lines])
     for li in lines:
         row = rows.get(li["asset_id"])
         if row is None or row.entity_type != "fa_asset":
-            raise setup.unprocessable(f"{line_label(li)}: no such asset.")
+            raise setup.refuse("fixed_assets.err_line_no_such_asset", line=line_label(li))
     numbers = ", ".join(rows[li["asset_id"]].state["number"] for li in lines)
     settings = await _authorize(session, company_id, user_id, change, numbers)
     invoice = doc.get("doc_type") == "invoice"
     if invoice and change in ("write", "finalize") and not uses_module(settings, MODULE):
-        raise conflict(f"{numbers}: turn on Fixed Assets to sell an asset.")
+        raise refuse("fixed_assets.err_sale_module_off", numbers=numbers)
     op_key = f"{doc_id}:{change}"
     for li in lines:
         asset_id = li["asset_id"]
@@ -748,8 +744,7 @@ async def on_asset_lines(*, session, company_id, user_id, doc_id: str, doc: dict
                                    clearing=clearing)
                 continue
             await refuse_waiting(session, company_id, asset_id, asset)
-            raise conflict(f"{number} is not being sold on this invoice. Sell it from its page, which drafts its "
-                           "invoice.")
+            raise refuse("fixed_assets.err_sale_not_here", number=number)
         if invoice:
             if sale.get("state") == "sold" and here:
                 await _unsell(session, company_id, user_id, asset_id, asset, sale, doc_id, doc, op_key)
@@ -760,7 +755,7 @@ async def on_asset_lines(*, session, company_id, user_id, doc_id: str, doc: dict
             continue
         if not here or sale.get("state") not in ("sold", "returned"):
             original = str(doc.get("original_doc_id") or "")
-            raise conflict(f"{number} was not sold on invoice "
-                           f"{doc_number(await _state(session, company_id, original), original)}.")
+            raise refuse("fixed_assets.err_credit_not_sold_there", number=number,
+                         invoice=doc_number(await _state(session, company_id, original), original))
         if change != "write":
             await _credit_posted(session, company_id, user_id, asset_id, asset, sale, doc_id, doc, li, op_key)

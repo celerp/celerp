@@ -22,6 +22,7 @@ from fixtures.xero_export import build
 from migration_support import auth, load_run, maker, real_client, real_engine  # noqa: F401
 from test_export_set_adapters import _xero
 from test_migration_e2e import migrate_set
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.timeout(240)  # each test imports three years of the demo company
 
@@ -296,7 +297,7 @@ async def test_only_a_xero_migration_fetches_from_xero(real_engine, real_client,
         row.source_system = "quickbooks_online"
         await s.commit()
     refused = await real_client.post(f"/migrations/{run.id}/xero-attachments", headers=headers)
-    assert refused.status_code == 409 and "Xero" in refused.json()["detail"]
+    assert refused.status_code == 409 and "Xero" in refusal_text(refused.json()["detail"])
     assert relay.calls == []
     assert (await load_run(real_engine, run.id)).status == "ready_to_finalize"
 

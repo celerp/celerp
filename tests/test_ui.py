@@ -36,7 +36,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from celerp.services.import_stage import read_stage, write_stage
 from ui.routes.csv_import import MAPPING_ATTRIBUTE, MAPPING_SKIP
 from ui.routes.inventory import _IMPORT_SPEC
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 from celerp.services.permissions import missing_permission_text
 from test_helpers import assert_not_permitted_redirect, make_test_token, authed_cookies, settle_background
 from ui.config import API_BASE as _API_BASE
@@ -13765,7 +13765,7 @@ class TestUnitsSettings:
         ]}
         r = await client.put("/companies/me/units", json=payload, headers=headers)
         assert r.status_code == 422
-        assert r.json()["detail"] == t("company.err_unit_duplicate", name="piece")
+        assert refusal_text(r.json()["detail"]) == t("company.err_unit_duplicate", name="piece")
 
     # ── API: Validation — invalid decimals ──────────────────────────
 

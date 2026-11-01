@@ -13,6 +13,7 @@ import pytest
 from fa_fixtures import FA
 from test_runs import _contributed, _managed_from, _run
 from test_sales import _finalize, _sell
+from ui.i18n import date_text, refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -58,7 +59,7 @@ async def test_a_month_already_posted_links_its_run(fa: FA):
     again = await fa.post("/runs", {"month": "2026-03", "preview": True, "op_key": "again"})
     assert again.status_code == 409
     assert _message(again) == "Depreciation for 2026-03 is already posted. Open its run to see it or reverse it."
-    assert _params(again) == {"href": "/fixed-assets/runs/2026-03", "action": "fixed_assets.action.open_run"}
+    assert _params(again) == {"month": "2026-03", "href": "/fixed-assets/runs/2026-03", "action": "fixed_assets.action.open_run"}
 
 
 async def test_amounts_in_a_refusal_read_as_money(fa: FA):
@@ -77,9 +78,10 @@ async def test_a_date_after_today_names_the_company_today_and_where_it_is_set(fa
     ahead = (today + timedelta(days=1)).isoformat()
     r = await fa.post(f"/assets/{car}/dispose", {"date": ahead, "reason": "lost", "preview": True, "op_key": "d"})
     assert r.status_code == 422
-    assert _message(r) == (f"The disposal date {ahead} is after the company's today, {today.isoformat()} "
+    assert _message(r) == (f"The disposal date {date_text(today + timedelta(days=1))} is after the company's today, {date_text(today)} "
                            "(time zone UTC).")
-    assert _params(r) == {"href": "/settings/general?tab=company", "action": "settings.company_details"}
+    assert _params(r) == {"field": "The disposal date", "value": ahead, "today": today.isoformat(), "zone": "UTC",
+                          "href": "/settings/general?tab=company", "action": "settings.company_details"}
 
 
 async def test_a_date_before_a_later_change_names_the_change(fa: FA):
@@ -89,7 +91,7 @@ async def test_a_date_before_a_later_change_names_the_change(fa: FA):
     r = await fa.post(f"/assets/{car}/sell", {"date": "2026-05-20", "price": "9000", "contact_id": await fa.buyer(),
                                               "preview": True, "op_key": "s"})
     number = (await fa.asset(car))["number"]
-    assert _message(r) == f"{number} was changed on 2026-06-30 (Impairment). Date the sale on or after that date."
+    assert _message(r) == f"{number} was changed on 30 Jun 2026 (Impairment). Date the sale on or after that date."
 
 
 async def test_undo_registration_on_the_asset_page_points_at_its_correct(fa: FA):
@@ -121,7 +123,7 @@ async def test_reverse_run_refusal_gives_each_asset_its_own_way_and_link(fa: FA)
     car_no, van_no, bike_no = [(await fa.asset(a))["number"] for a in (car, van, bike)]
     ref = (await fa.state(invoice))["doc_number"]
     message = _message(r)
-    assert message == (f"The 2026-03 run can no longer be reversed. {car_no} (Impairment) and {bike_no} (Impairment) "
+    assert message == (f"The 2026-03 run can no longer be reversed. {car_no} (Impairment); {bike_no} (Impairment) "
                        "changed since this run. Use Correct on each one's page to change its depreciation. "
                        f"{van_no} was sold on invoice {ref}. Void that invoice and cancel the sale on {van_no}'s "
                        "page, then use Correct there.")
@@ -303,23 +305,24 @@ async def test_forms_on_an_asset_out_of_use_say_its_state_and_the_way_back_befor
     await fa.operate(f"/assets/{van}/undo", {}, key="undo-van")
     numbers = {a: (await fa.asset(a))["number"] for a in (printer, car, van)}
     left = {
-        printer: f"{numbers[printer]} was disposed of on 2026-03-20{{so}}. Undo the disposal on its page first.",
-        car: f"{numbers[car]} was sold on 2026-04-10{{so}}. Void its invoice and cancel the sale on its page first.",
-        van: f"{numbers[van]}'s registration was undone{{so}}. Its bill line is back in Register from bills, "
+        printer: f"{numbers[printer]} was disposed of on 20 Mar 2026. Undo the disposal on its page first.",
+        car: f"{numbers[car]} was sold on 10 Apr 2026. Void its invoice and cancel the sale on its page first.",
+        van: f"{numbers[van]}'s registration was undone. Its bill line is back in Register from bills, "
              "to register it again."}
-    cannot = {"sell": "it cannot be sold", "dispose": "it cannot be disposed of", "move": "it cannot be moved",
-              "add": "nothing can be added to it", "revalue": "it cannot be remeasured",
-              "impair": "it cannot be remeasured", "reclassify": "it cannot be reclassified",
-              "correct": "it cannot be corrected"}
+    cannot = {"sell": "{} cannot be sold.", "dispose": "{} cannot be disposed of.", "move": "{} cannot be moved.",
+              "add": "Nothing can be added to {}.", "revalue": "{} cannot be remeasured.",
+              "impair": "{} cannot be remeasured.", "reclassify": "{} cannot be reclassified.",
+              "correct": "{} cannot be corrected."}
     for asset_id, text in left.items():
         links = [{"label": numbers[asset_id], "href": f"/fixed-assets/assets/{asset_id}"}]
         if asset_id == van:
             links.append({"label": "Register from bills", "href": "/fixed-assets/intake"})
-        for op, clause in cannot.items():
+        for op, sentence in cannot.items():
             r = await fa.post(f"/assets/{asset_id}/{op}", {"preview": True, "op_key": f"x-{op}"})
-            assert (op, r.status_code, _message(r)) == (op, 409, text.format(so=f", so {clause}")), r.text
+            assert (op, r.status_code, _message(r)) == (op, 409, f"{sentence.format(numbers[asset_id])} {text}"), r.text
             assert _params(r)["links"] == links
-        assert (await fa.asset(asset_id))["left_use"] == {"message": text.format(so=""), "links": links}
+        gone = (await fa.asset(asset_id))["left_use"]
+        assert (refusal_text(gone), gone["params"]["links"]) == (text, links)
         for form in ("sell", "dispose", "move", "add", "remeasure", "reclassify", "correct"):
             page = html.unescape((await fa.page(f"/fixed-assets/assets/{asset_id}/{form}")).text)
             assert 'id="fa-left-use"' in page, (form, asset_id)
@@ -327,5 +330,5 @@ async def test_forms_on_an_asset_out_of_use_say_its_state_and_the_way_back_befor
         page = (await fa.page(f"/fixed-assets/assets/{asset_id}/remeasure")).text
         assert "Change class to revaluation" not in page
     r = await fa.post("/move", {"asset_ids": [printer], "preview": True, "op_key": "x-many"})
-    assert _message(r) == left[printer].format(so=", so it cannot be moved")
+    assert _message(r) == f"{numbers[printer]} cannot be moved. {left[printer]}"
     assert (await fa.asset(await _contributed(fa, name="Bike")))["left_use"] is None

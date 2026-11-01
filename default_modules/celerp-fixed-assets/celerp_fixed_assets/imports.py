@@ -343,8 +343,7 @@ async def _plan(session, company_id, books: _Books, numbered, excluded: set[int]
     errors = [e for r in checked if not r.excluded for e in r.errors]
     if errors and not preview:
         rows = sorted({e["row"] for e in errors})
-        raise setup.unprocessable("Fix or leave out the rows with problems first: rows "
-                                  + ", ".join(str(n) for n in rows) + ".")
+        raise setup.refuse("fixed_assets.err_import_rows_with_problems", rows=", ".join(str(n) for n in rows))
     importing = _balances(books, creating)
     accounts = [{**a, "importing": money(importing.get(a["account"]), books.currency),
                  "difference": money(_dec(a["ledger"]) - _dec(a["registered"]) - importing.get(a["account"], 0),
@@ -432,10 +431,10 @@ def _excluded(value, count: int) -> set[int]:
     if value in (None, ""):
         return set()
     if not isinstance(value, list) or not all(isinstance(n, int) and not isinstance(n, bool) for n in value):
-        raise setup.unprocessable("Leave out rows by their row numbers.")
+        raise setup.refuse("fixed_assets.err_import_exclude_numbers")
     outside = [n for n in value if not 1 <= n <= count]
     if outside:
-        raise setup.unprocessable(f"There is no row {outside[0]} in this file.")
+        raise setup.refuse("fixed_assets.err_import_no_such_row", row=outside[0])
     return set(value)
 
 
@@ -444,9 +443,9 @@ async def import_register(session, *, company_id, user_id, rows, as_at, source, 
     ``as_at``, which is the cutover. ``source`` names where the rows came from; ``body``
     carries the operation contract (preview, fingerprint, op_key) and the rows left out."""
     if not isinstance(rows, list) or not rows:
-        raise setup.unprocessable("The file has no rows to import.")
+        raise setup.refuse("fixed_assets.err_import_no_rows")
     if len(rows) > MAX_ROWS:
-        raise setup.unprocessable(f"Import at most {MAX_ROWS:,} rows at a time. Split the file and import each part.")
+        raise setup.refuse("fixed_assets.err_import_too_many_rows", max=f"{MAX_ROWS:,}")
     parsed = [RegisterRow.of(v) for v in rows]
     excluded = _excluded(body.get("exclude"), len(parsed))
     source = str(source or "").strip()[:200] or "api"
@@ -454,7 +453,7 @@ async def import_register(session, *, company_id, user_id, rows, as_at, source, 
     async def plan(fa):
         cut = setup.cutover(fa)
         if as_at != cut:
-            raise setup.unprocessable(f"The register is imported as at the cutover {cut}.")
+            raise setup.refuse("fixed_assets.err_import_at_cutover", cutover=cut)
         books = await _books(session, company_id, fa)
         shown, context = await _plan(session, company_id, books, list(enumerate(parsed, 1)), excluded,
                                      bool(body.get("preview")))

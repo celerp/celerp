@@ -19,6 +19,7 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from fa_fixtures import FA, demo_owner
+from ui.i18n import refusal_text
 
 
 pytestmark = pytest.mark.asyncio
@@ -197,7 +198,7 @@ async def test_s1_retry_same_key_same_result_new_key_refused(fa):
     assert again["assets"] == first["assets"]
     assert len(await fa.entities("fa_asset")) == 1
     r = await fa.post("/register", {**confirm, "op_key": "k2"})
-    assert r.status_code == 409 and "FA-0001" in r.json()["detail"]
+    assert r.status_code == 409 and "FA-0001" in refusal_text(r.json()["detail"])
     changed = await fa.post("/register", {**confirm, "mode": "quantity"})
     assert changed.status_code == 409
 
@@ -212,7 +213,7 @@ async def test_s1_stale_form_after_claim_and_release_refused(fa):
     assert (await fa.line("Delivery van"))["generation"] == 1
     r = await fa.post("/register", {**body, "preview": False, "op_key": "a", "fingerprint": form_a["fingerprint"]})
     assert r.status_code == 409
-    assert "registered and released since you opened this form" in r.json()["detail"]
+    assert "registered and released since you opened this form" in refusal_text(r.json()["detail"])
     redo = await fa.operate("/register", body, key="a2")
     assert len(redo["assets"]) == 1
 
@@ -290,13 +291,13 @@ async def test_s1_sourced_cost_cannot_diverge(fa):
     asset = (await fa.register(van["source"], key="reg", mode="separate"))["assets"][0]
     got = await fa.asset(asset["id"])
     r = await fa.patch(f"/assets/{asset['id']}", {"changes": {"cost": "30000"}, "previous": {"cost": got["cost"]}})
-    assert r.status_code == 422 and "Replace source" in r.json()["detail"]
+    assert r.status_code == 422 and "Replace source" in refusal_text(r.json()["detail"])
     fields = await fa.ok(await fa.get(f"/assets/{asset['id']}/correct-fields"))
     assert "cost" not in {f["field"] for f in fields["fields"]}
     assert {"replace_source", "link_source"} <= {a["action"] for a in fields["source_actions"]}
     typed = await fa.post(f"/assets/{asset['id']}/correct", {"changes": {"cost": "30000"}, "preview": True,
                                                             "op_key": "c"})
-    assert typed.status_code == 422 and "Replace source" in typed.json()["detail"]
+    assert typed.status_code == 422 and "Replace source" in refusal_text(typed.json()["detail"])
     assert D((await fa.asset(asset["id"]))["cost"]) == D("32000")
 
 
@@ -337,7 +338,7 @@ async def test_not_an_acquisition_requires_a_reason(fa):
     je_id = await fa.journal(first, [{"account": "1210", "debit": 700}, {"account": "1111", "credit": 700}])
     source = f"{je_id}:0"
     r = await fa.post("/not-acquisition", {"source": source, "reason": "  ", "preview": True, "op_key": "na"})
-    assert r.status_code == 422 and "reason" in r.json()["detail"].lower()
+    assert r.status_code == 422 and "reason" in refusal_text(r.json()["detail"]).lower()
     await fa.operate("/not-acquisition", {"source": source, "reason": "Reclass of a prepayment"}, key="na")
     assert all(i["source"] != source for i in await fa.intake())
     claim = await fa.state(f"fa:src:{source}")
@@ -400,7 +401,7 @@ async def test_s1_pre_cutover_lines_not_in_intake(fa):
     assert f"{after}:0" in sources
     r = await fa.post("/register", {"source": f"{early}:0", "class_id": (await fa.classes())["Vehicles"]["id"],
                                     "mode": "separate", "preview": True, "op_key": "pre"})
-    assert r.status_code == 422 and "cutover" in r.json()["detail"].lower()
+    assert r.status_code == 422 and "cutover" in refusal_text(r.json()["detail"]).lower()
 
 
 # ── Assets added by hand ─────────────────────────────────────────────────────
@@ -420,7 +421,7 @@ async def test_opening_asset_posts_nothing_and_refuses_after_cutover(fa):
     assert await fa.module_journals() == []
     late = (date.fromisoformat(cutover) + timedelta(days=1)).isoformat()
     r = await fa.post("/assets", {**body, "available_date": late, "preview": True, "op_key": "op2"})
-    assert r.status_code == 422 and "Dated after the cutover" in r.json()["detail"]
+    assert r.status_code == 422 and "Dated after the cutover" in refusal_text(r.json()["detail"])
     neg = await fa.post("/assets", {**body, "accumulated_depreciation": "300000", "preview": True, "op_key": "op3"})
     assert neg.status_code == 422
 
@@ -446,11 +447,11 @@ async def test_adding_an_asset_by_hand_needs_the_right_permission(fa):
     opening = {"kind": "opening", "class_id": cls["id"], "name": "Warehouse", "available_date": "2020-01-01",
                "cost": "1000", "preview": True, "op_key": "perm-1"}
     refused = await fa.post("/assets", opening, headers=operator)
-    assert refused.status_code == 403 and refused.json()["detail"] == missing_permission_text("manage_accounting")
+    assert refused.status_code == 403 and refusal_text(refused.json()["detail"]) == missing_permission_text("manage_accounting")
     physical = {"kind": "physical", "name": "Forklift", "preview": True, "op_key": "perm-2"}
     assert (await fa.post("/assets", physical, headers=operator)).status_code == 200
     blocked = await fa.post("/assets", physical, headers=viewer)
-    assert blocked.status_code == 403 and blocked.json()["detail"] == missing_permission_text("manage_fixed_assets")
+    assert blocked.status_code == 403 and refusal_text(blocked.json()["detail"]) == missing_permission_text("manage_fixed_assets")
 
 
 async def test_physical_record_then_financial_details(fa):

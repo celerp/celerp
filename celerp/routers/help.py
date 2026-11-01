@@ -26,6 +26,7 @@ from celerp.help.render import render_step
 from celerp.help.schema import HelpPage, read_image
 from celerp.services.auth import get_current_role, get_current_user
 from celerp.services.permissions import get_current_company_settings, missing_permission_text
+from celerp.accounting_roles import catalog_refusal
 from ui.i18n import current_lang, t
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -67,7 +68,7 @@ async def help_search(
     """
     query = q.strip()
     if not query:
-        raise HTTPException(status_code=422, detail=t("help.empty_query"))
+        raise HTTPException(status_code=422, detail=catalog_refusal("help.empty_query"))
     if module and module not in {p.module for p in get_index().pages.values()}:
         return {"hits": [], "message": t("help.no_module", module=module)}
     hits = help_search_mod.search(query, current_lang(), settings, role, module)
@@ -83,7 +84,7 @@ async def help_read(
     """Read one help page: its numbered steps, with button and menu names as the user sees them."""
     page = get_index().pages.get(page_id)
     if page is None:
-        raise HTTPException(status_code=404, detail=t("error.not_found_title"))
+        raise HTTPException(status_code=404, detail=catalog_refusal("error.not_found_title"))
     lang = current_lang()
     return {
         **_summary(page),

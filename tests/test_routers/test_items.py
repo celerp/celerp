@@ -7,7 +7,7 @@ import uuid
 import pytest
 from test_helpers import merge_items, reserve_item, sell_item
 
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 
 async def _token(client) -> str:
@@ -352,7 +352,7 @@ async def test_create_item_requires_sell_by(client):
     h = {"Authorization": f"Bearer {token}"}
     r = await client.post("/items", json={"status": "available", "sku": "NO-SB", "name": "Widget", "quantity": 1}, headers=h)
     assert r.status_code == 422
-    assert r.json()["detail"] == t("inventory.err_sell_by_required", "en")
+    assert refusal_text(r.json()["detail"]) == t("inventory.err_sell_by_required", "en")
 
 
 @pytest.mark.asyncio
@@ -540,7 +540,7 @@ async def test_split_qty_exceeds_parent_rejected(client):
         "children": [{"sku": "C1", "quantity": 3}, {"sku": "C2", "quantity": 3}]
     }, headers=h)
     assert r.status_code == 422
-    assert r.json()["detail"] == t("inventory.err_split_qty_over", "en", total="6", available="5")
+    assert refusal_text(r.json()["detail"]) == t("inventory.err_split_qty_over", "en", total="6", available="5")
 
 
 @pytest.mark.asyncio
@@ -921,8 +921,8 @@ async def test_merge_rejects_different_sell_units(client):
     b = (await client.post("/items", json={"status": "available", "sku": "WU-B", "name": "Gold B", "quantity": 3, "sell_by": "carat"}, headers=h)).json()["id"]
     r = await merge_items(client, json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)
     assert r.status_code == 422
-    assert "unit" in r.json()["detail"].lower()
-    assert "gram" in r.json()["detail"] and "carat" in r.json()["detail"]
+    assert "unit" in refusal_text(r.json()["detail"]).lower()
+    assert "gram" in refusal_text(r.json()["detail"]) and "carat" in refusal_text(r.json()["detail"])
 
 
 @pytest.mark.asyncio
@@ -936,7 +936,7 @@ async def test_merge_rejects_different_net_weight_units(client):
                                            "weight": 3, "weight_unit": "carat"}, headers=h)).json()["id"]
     r = await merge_items(client, json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)
     assert r.status_code == 422
-    assert "weight unit" in r.json()["detail"].lower()
+    assert "weight unit" in refusal_text(r.json()["detail"]).lower()
 
 
 @pytest.mark.asyncio
@@ -2787,7 +2787,7 @@ async def test_set_item_status_rejects_disposed(client):
 
     r = await client.post(f"/items/{iid}/status", json={"new_status": "disposed"}, headers=h)
     assert r.status_code == 422, r.text
-    detail = (r.json().get("detail") or "").lower()
+    detail = refusal_text(r.json().get("detail")).lower()
     # Distinct from the generic "Unknown status ..." rejection - names the write-off flow.
     assert "unknown status" not in detail
     assert "write" in detail

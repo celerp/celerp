@@ -20,7 +20,7 @@ from ui.components.module_off import can_open
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, info_tip, page_header, page_title
-from ui.components.table import search_bar, search_results, pagination, per_page_value, EMPTY, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, add_new_option, data_table, column_manager
+from ui.components.table import search_bar, search_results, pagination, per_page_value, EMPTY, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, add_new_option, data_table, column_manager, display_enum
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import files_error, files_error_block, files_section as _shared_files_section, files_session_expired, linked_files, _DOCUMENT_TAGS
 from celerp.services.doc_balance import doc_value, settled_on
@@ -75,7 +75,7 @@ def _contact_display_cell(contact_id: str, field: str, value, trigger: str = "db
     if field == "credit_limit":
         display = format_value(value, "money")
     elif field == "contact_type":
-        display = format_value(value, "badge")
+        display = format_value(value, "badge", domain="contact_type")
     elif field == "price_list":
         display = str(value) if value and str(value).strip() else t("contacts.company_default")
     else:
@@ -564,7 +564,7 @@ def _contact_ledger_table(ledger: list[dict], docs_on: bool) -> FT:
     return activity_table(ledger, max_display=10, docs_on=docs_on)
 
 
-def _contacts_bulk_toolbar(contact_type: str) -> FT:
+def _contacts_bulk_toolbar() -> FT:
     """Sticky bulk action toolbar for the contacts list. Hidden until rows are selected."""
     return Div(
         Span(t("doc.0_selected"), id="contact-bulk-count", cls="bulk-count"),
@@ -588,18 +588,18 @@ def _contacts_bulk_toolbar(contact_type: str) -> FT:
         ),
         Div(id="contact-bulk-context"),
         Div(id="bulk-action-result"),
-        _contact_bulk_templates(contact_type),
+        _contact_bulk_templates(),
         id="contact-bulk-toolbar",
         cls="bulk-toolbar",
     )
 
 
-def _contact_bulk_templates(contact_type: str) -> FT:
+def _contact_bulk_templates() -> FT:
     """Hidden <template> elements for contact bulk action context UI."""
     from fasthtml.common import Template as _Tpl
     merge_tpl = _Tpl(
         Div(
-            P(t("contacts.merge_prompt", type=contact_type),
+            P(t("contacts.merge_prompt"),
               cls="meta-value", style="margin-bottom:0.5rem;font-size:0.85rem;"),
             Div(id="contact-merge-radio-list",
                 data_merge_failed=t("contacts.merge_failed")),
@@ -622,7 +622,7 @@ def _contact_bulk_templates(contact_type: str) -> FT:
       document.getElementById('contact-merge-confirm-btn').disabled = false;
     });
     label.appendChild(radio);
-    label.appendChild(document.createTextNode((meta.name || id) + (meta.contact_type ? ' (' + meta.contact_type + ')' : '')));
+    label.appendChild(document.createTextNode(meta.name || id));
     list.appendChild(label);
   });
   window.contactMergeSubmit = function() {
@@ -676,10 +676,11 @@ def _contacts_content(
     link_fn = {"name": "/contacts/{id}", "company_name": "/contacts/{id}"}
 
     if not contacts:
+        label = display_enum(contact_type, "contact_type")
         table_content = Div(
             empty_state_cta(
-                t("contacts.empty_none", type=contact_type),
-                t("contacts.add_type", type=contact_type.title()),
+                t("contacts.empty_none", type=label),
+                t("contacts.add_type", type=label),
                 create_url,
                 hx_post=True,
             ),
@@ -741,7 +742,7 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
             A(import_icon(), t("btn.import"), href="/crm/import/contacts", cls="btn btn--secondary", data_import_hint=True) if _can_import_export else "",
         ),
         Div(column_manager(schema, et), cls="column-manager-row"),
-        _contacts_bulk_toolbar(contact_type),
+        _contacts_bulk_toolbar(),
         _contacts_content(contact_type, contacts, q, page, total, per_page, sort, sort_dir, currency),
         Script(f"""
 (function(){{
@@ -1847,9 +1848,9 @@ def setup_routes(app):
 
         if field == "contact_type":
             input_el = Select(
-                Option(t("contacts.type_customer"), value="customer", selected=val == "customer"),
-                Option(t("contacts.type_vendor"), value="vendor", selected=val == "vendor"),
-                Option(t("contacts.type_both"), value="both", selected=val == "both"),
+                Option(display_enum("customer", "contact_type"), value="customer", selected=val == "customer"),
+                Option(display_enum("vendor", "contact_type"), value="vendor", selected=val == "vendor"),
+                Option(display_enum("both", "contact_type"), value="both", selected=val == "both"),
                 name="value",
                 hx_patch=f"/contacts/{contact_id}/field/{field}",
                 hx_target="closest td", hx_swap="outerHTML", hx_trigger="change",

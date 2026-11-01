@@ -447,7 +447,7 @@ async def _open(session, company_id, asset_id: str) -> tuple[dict, list[dict]]:
     row = (await lock_projections(session, company_id, [asset_id])).get(asset_id)
     if row is None or row.entity_type != "fa_asset":
         raise HTTPException(status_code=404, detail="No such asset.")
-    in_use(asset_id, row.state, "it cannot be corrected")
+    in_use(asset_id, row.state, "correct")
     from celerp_fixed_assets import sales
 
     await sales.refuse_waiting(session, company_id, asset_id, row.state)

@@ -175,3 +175,24 @@ async def test_the_work_center_notice_an_upgrade_stored_is_shown_in_the_readers_
     assert (shown["title"], shown["body"]) == (de["notice.work_centers_moved.title"],
                                                de["notice.work_centers_moved.body"])
     assert shown["action_url"] == "/settings/manufacturing"
+
+
+
+@pytest.mark.parametrize("lang", LOCALES)
+def test_every_language_names_twelve_months_for_a_date_in_a_refusal(lang):
+    assert len(i18n.t("date.months_short", lang).split()) == 12
+
+
+def test_a_date_in_a_refusal_reads_as_a_date_in_each_language_never_as_iso():
+    from datetime import date
+
+    from celerp.accounting_roles import refusal
+
+    detail = refusal("fixed_assets.err_locked", "", lock=date(2026, 3, 31), first=date(2026, 4, 1))
+    assert detail["params"] == {"lock": "2026-03-31", "first": "2026-04-01"}  # travels as JSON
+    json.dumps(detail)
+    assert i18n._refusal_param("lock", "2026-03-31") == "31 Mar 2026"
+    assert i18n._refusal_param("value", "2026-13-40") == "2026-13-40"
+    assert i18n.date_text(date(2026, 3, 31), "ja") == "2026年3月31日"
+    assert i18n.date_text(date(2026, 3, 31), "de") == "31. März 2026"
+    assert i18n.date_text(date(2026, 3, 31), "th") == "31 มี.ค. 2026"

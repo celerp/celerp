@@ -26,7 +26,7 @@ import uuid
 from datetime import date
 from decimal import Decimal
 
-from celerp.accounting_roles import refusal
+from celerp.accounting_roles import catalog_refusal, refusal
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.money import books_currency, round_money
@@ -45,27 +45,35 @@ _OP_KEY = re.compile(r"[A-Za-z0-9._-]{1,64}")
 _NOT_INTENT = ("preview", "fingerprint", "op_key")
 
 
-def conflict(message: str | dict) -> HTTPException:
-    return HTTPException(status_code=409, detail=message)
+def conflict(detail: dict) -> HTTPException:
+    """A 409 refusing with ``detail``, a ``refusal``."""
+    return HTTPException(status_code=409, detail=detail)
 
 
-def left_use(asset: dict, cannot: str | None = None) -> str | None:
-    """How an asset no longer in use left it and the way back, or None while it is in use.
-    ``cannot`` ("it cannot be sold") says what that stops."""
+def refuse(key: str, /, **params) -> HTTPException:
+    """The 409 refusal ``key`` of the catalog, with ``params``."""
+    return conflict(catalog_refusal(key, **params))
+
+
+# What an operation on an asset no longer in use cannot do, each a sentence in the catalog
+# (fixed_assets.err_cannot.<what>).
+CANNOT = ("sell", "dispose", "remeasure", "review", "reclassify", "move", "undo_move", "transfer", "correct",
+          "add", "upkeep")
+
+
+def left_use(asset: dict) -> dict | None:
+    """How an asset no longer in use left it and the way back (a ``refusal``), or None while
+    it is in use."""
     status, number = asset.get("status"), asset["number"]
     if status == "active":
         return None
     day = (asset.get("disposal") or {}).get("date")
-    so = f", so {cannot}" if cannot else ""
-    if status == "sold":
-        return f"{number} was sold on {day}{so}. Void its invoice and cancel the sale on its page first."
-    if status == "disposed":
-        return f"{number} was disposed of on {day}{so}. Undo the disposal on its page first."
+    if status in ("sold", "disposed"):
+        return catalog_refusal(f"fixed_assets.err_left_use.{status}", number=number, date=day)
     if status == "undone":
-        again = ("Its bill line is back in Register from bills, to register it again." if asset.get("sources")
-                 else "Register it again to bring it back.")
-        return f"{number}'s registration was undone{so}. {again}"
-    return f"{number} is not in use{so}."
+        return catalog_refusal("fixed_assets.err_left_use.undone_from_bill" if asset.get("sources")
+                               else "fixed_assets.err_left_use.undone", number=number)
+    return catalog_refusal("fixed_assets.err_left_use.other", number=number)
 
 
 def left_use_links(asset_id: str, asset: dict) -> list[dict]:
@@ -77,9 +85,11 @@ def left_use_links(asset_id: str, asset: dict) -> list[dict]:
 
 
 def in_use(asset_id: str, asset: dict, cannot: str) -> None:
-    """Refuse an operation on an asset no longer in use, before anything else on its form."""
-    if (message := left_use(asset, cannot)) is not None:
-        raise setup.refused(409, message, links=left_use_links(asset_id, asset))
+    """Refuse an operation on an asset no longer in use, before anything else on its form:
+    what ``cannot`` (one of CANNOT) be done, then how the asset left use and the way back."""
+    if (why := left_use(asset)) is not None:
+        raise setup.refused(409, "fixed_assets.err_not_in_use", links=left_use_links(asset_id, asset), why=why,
+                            cannot=catalog_refusal(f"fixed_assets.err_cannot.{cannot}", number=asset["number"]))
 
 
 # ── Shared pieces ────────────────────────────────────────────────────────────
@@ -88,7 +98,8 @@ def in_use(asset_id: str, asset: dict, cannot: str) -> None:
 def _amount(value, field: str, *, positive: bool = False) -> Decimal:
     amount = setup.number(value if value not in (None, "") else "0", field)
     if amount < 0 or (positive and amount == 0):
-        raise setup.unprocessable(f"{field} must be more than zero." if positive else f"{field} must be zero or more.")
+        raise setup.refuse("fixed_assets.err_more_than_zero" if positive else "fixed_assets.err_zero_or_more",
+                           field=field)
     return amount
 
 
@@ -96,7 +107,7 @@ def _money_in(value, field: str, currency: str, *, positive: bool = False) -> De
     """A money amount the user entered, rounded once to the precision of ``currency``."""
     amount = round_money(_amount(value, field, positive=positive), currency)
     if positive and amount == 0:
-        raise setup.unprocessable(f"{field} must be more than zero.")
+        raise setup.refuse("fixed_assets.err_more_than_zero", field=field)
     return amount
 
 
@@ -235,7 +246,7 @@ async def _claim(session, company_id, user_id, line: dict, *, allocation: str, o
 def _op_key(body: dict) -> str:
     key = body.get("op_key")
     if not isinstance(key, str) or not _OP_KEY.fullmatch(key):
-        raise setup.unprocessable("Every change carries an operation key from its form.")
+        raise setup.refuse("fixed_assets.err_op_key")
     return key
 
 
@@ -290,7 +301,7 @@ async def _run(session, company_id, user_id, body: dict, *, op_type: str, keys: 
     previewed = str(body.get("fingerprint") or "").split(".")
     if previewed[:2] != fingerprint.split("."):
         if previewed[0] != str(generation):
-            raise conflict("Line was registered and released since you opened this form. Press Review again.")
+            raise refuse("fixed_assets.err_line_released")
         raise await _stale(session, company_id, shown, previewed[2] if len(previewed) > 2 else "")
     context["intent_hash"] = intent_hash
     result, effects = await _applied(session, company_id, apply, context, op_key)
@@ -336,8 +347,7 @@ async def _stale(session, company_id, shown: dict, since: str) -> HTTPException:
     """The refusal for a confirm whose review no longer stands: each asset on it that changed
     after ledger entry ``since``, with what changed, linked; or, when none did (an account or
     a posting changed), what may have."""
-    again = "Press Review again to see it as it stands now."
-    unnamed = conflict(f"An asset, account or posting on this review changed since you reviewed it. {again}")
+    unnamed = refuse("fixed_assets.err_review_stale_unnamed")
     numbers = _numbers(shown)
     if not since.isdigit() or not numbers:
         return unnamed
@@ -355,9 +365,9 @@ async def _stale(session, company_id, shown: dict, since: str) -> HTTPException:
     named = sorted((s["number"], a) for a, s in states.items() if s.get("number") in numbers)
     if not named:
         return unnamed
-    listed = _listed([f"{n} ({', '.join(dict.fromkeys(what[a]))})" for n, a in named])
-    them = "it" if len(named) == 1 else "them"
-    return setup.refused(409, f"{listed} changed since you reviewed {them}. {again}",
+    return setup.refused(409, "fixed_assets.err_review_stale.one" if len(named) == 1
+                         else "fixed_assets.err_review_stale.many",
+                         assets=_listed([f"{n} ({', '.join(dict.fromkeys(what[a]))})" for n, a in named]),
                          links=[{"label": n, "href": f"/fixed-assets/assets/{a}"} for n, a in named])
 
 
@@ -860,31 +870,35 @@ def changes(movements: list[dict]) -> str:
 
 
 def _listed(names: list[str]) -> str:
-    return names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+    return "; ".join(names)
 
 
 _ENDED = ("sold", "disposed")
 
 
-async def _ended(session, company_id, asset: dict) -> str:
-    """How a sold or disposed asset comes back to where Correct is offered."""
+async def _ended(session, company_id, asset: dict) -> dict:
+    """How a sold or disposed asset comes back to where Correct is offered (a ``refusal``)."""
     number = asset["number"]
     sale = asset.get("sale") or {}
     if asset.get("status") == "sold" and sale.get("invoice_id"):
         invoice = await _state(session, company_id, sale["invoice_id"]) or {}
         ref = invoice.get("doc_number") or invoice.get("ref_id") or sale["invoice_id"].removeprefix("doc:")
-        return (f"{number} was sold on invoice {ref}. Void that invoice and cancel the sale on {number}'s page, "
-                "then use Correct there.")
-    return f"{number} was disposed of. Undo the disposal on its page, then use Correct there."
+        return catalog_refusal("fixed_assets.err_ended.sold", number=number, invoice=ref)
+    return catalog_refusal("fixed_assets.err_ended.disposed", number=number)
 
 
-async def changed_since(session, company_id, changed: list[tuple[str, dict, int]], since: tuple[str, str],
-                        purpose: str, lead: str = "") -> HTTPException:
+# What a refusal for changed assets says they changed since, each a pair of sentences in the
+# catalog (fixed_assets.err_changed_since.<since>.one and .many).
+SINCE = ("registered", "done", "run")
+
+
+async def changed_since(session, company_id, changed: list[tuple[str, dict, int]], since: str,
+                        lead: dict | None = None) -> HTTPException:
     """The refusal for ``changed``, each (asset id, asset, its last movement then), after
-    ``lead``, naming what changed on each asset and the way on its state offers. The assets
-    still in use share one sentence, ``since`` read for one or for several, pointing at their
-    Correct for ``purpose``; a sold or disposed asset is told how to end that first. Each
-    asset is linked where it is named."""
+    ``lead`` (a ``refusal``), naming what changed on each asset and the way on its state
+    offers. The assets still in use share one sentence, what they changed ``since`` (one of
+    SINCE), pointing at their Correct; a sold or disposed asset is told how to end that first.
+    Each asset is linked where it is named."""
     changed = sorted(changed, key=lambda c: c[1]["number"])
     in_use = [(i, a, n) for i, a, n in changed if a.get("status") not in _ENDED]
     sentences = [lead] if lead else []
@@ -894,12 +908,10 @@ async def changed_since(session, company_id, changed: list[tuple[str, dict, int]
             later = [m for m in await asset_movements(session, company_id, asset_id)
                      if int(m["id"].rsplit(":", 1)[1]) > index]
             named.append(f"{asset['number']} ({changes(later)})")
-        one = len(in_use) == 1
-        whose = "its" if one else "each one's"
-        sentences.append(f"{_listed(named)} changed {since[0] if one else since[1]}. "
-                         f"Use Correct on {whose} page {purpose}.")
+        sentences.append(catalog_refusal(f"fixed_assets.err_changed_since.{since}."
+                                         f"{'one' if len(in_use) == 1 else 'many'}", assets=_listed(named)))
     sentences += [await _ended(session, company_id, a) for _, a, _ in changed if a.get("status") in _ENDED]
-    return setup.refused(409, " ".join(sentences),
+    return setup.refused(409, "fixed_assets.err_sentences", sentences=sentences,
                          links=[{"label": a["number"], "href": f"/fixed-assets/assets/{i}"} for i, a, _ in changed])
 
 
@@ -932,7 +944,7 @@ async def _undo(session, company_id, user_id, target_keys: list[str], body: dict
         created = [(a, rows[a].state, 1) for a in effects["assets"]]
         moved = [c for c in created if int(c[1].get("movement_count") or 0) > 1]
         if moved:
-            raise await changed_since(session, company_id, moved, _SINCE_REGISTERED, "instead")
+            raise await changed_since(session, company_id, moved, "registered")
         movements = {m: await _state(session, company_id, m) for m in effects["movements"]}
         # Per asset it did not create, the operation's last movement is still the asset's latest.
         last: dict[str, int] = {}
@@ -942,8 +954,7 @@ async def _undo(session, company_id, user_id, target_keys: list[str], body: dict
         later = [(a, asset, n) for a, n in last.items()
                  if int((asset := await _state(session, company_id, a) or {}).get("movement_count") or 0) > n]
         if later:
-            raise await changed_since(session, company_id, later, ("since this was done",) * 2,
-                                      "instead")
+            raise await changed_since(session, company_id, later, "done")
         # What the operation left as it was (an asset's movements, a class's version) is still so.
         for entity_id, fields in (effects.get("unchanged") or {}).items():
             now = await _state(session, company_id, entity_id) or {}
@@ -997,14 +1008,11 @@ async def _undo(session, company_id, user_id, target_keys: list[str], body: dict
                       plan=plan, apply=apply)
 
 
-_SINCE_REGISTERED = ("since it was registered", "since they were registered")
-
-
 async def registration_refusal(session, company_id, asset_id: str, asset: dict) -> HTTPException | None:
     """Why Undo registration would refuse the asset, with the way on, or None while nothing has
     happened to it since it was registered. The asset page shows it beside the button."""
     if int(asset.get("movement_count") or 0) > 1:
-        return await changed_since(session, company_id, [(asset_id, asset, 1)], _SINCE_REGISTERED, "instead")
+        return await changed_since(session, company_id, [(asset_id, asset, 1)], "registered")
     return None
 
 

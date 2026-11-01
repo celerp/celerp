@@ -22,7 +22,7 @@ from celerp.models.company import User
 from celerp.services.auth import CALLER_HEADER
 from email_codes_support import CODE, FAILURES, relay, short_floor  # noqa: F401 - fixtures
 from test_helpers import invite_user, settle_background
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 pytestmark = pytest.mark.asyncio
 
@@ -287,12 +287,12 @@ async def test_recovery_reset_wrong_code_is_generic(client, session, relay, shor
                await _reset(client, OWNER, handle, code="12ab5678"),
                await _reset(client, OWNER, handle, code=CODE[:6]),
                await _reset(client, OWNER, handle, code="")]
-    assert [(r.status_code, r.json()["detail"]) for r in answers] == [(400, generic)] * 5
+    assert [(r.status_code, refusal_text(r.json()["detail"])) for r in answers] == [(400, generic)] * 5
     assert await _hash(session, OWNER) == before
 
     assert (await _reset(client, OWNER, handle)).status_code == 200
     used = await _reset(client, OWNER, handle, password="another-password1")
-    assert (used.status_code, used.json()["detail"]) == (400, generic)
+    assert (used.status_code, refusal_text(used.json()["detail"])) == (400, generic)
     assert (await _login(client, OWNER, NEW_PW)).status_code == 200
 
 
@@ -341,7 +341,7 @@ async def test_recovery_reset_validates_password_before_relay(client, session, r
     before = await _hash(session, OWNER)
     r = await _reset(client, OWNER, "any-handle", password="short")
     assert r.status_code == 422, r.text
-    assert "8" in r.json()["detail"]
+    assert "8" in refusal_text(r.json()["detail"])
     assert relay.calls == []
     assert await _hash(session, OWNER) == before
 
@@ -571,7 +571,7 @@ async def test_recovery_lost_attempt_is_a_wrong_or_expired_code(client, session,
     handle = await _start(client, OWNER)
     email_codes._attempts.clear()
     r = await _reset(client, OWNER, handle)
-    assert (r.status_code, r.json()["detail"]) == (400, t("recovery.code_refused")), r.text
+    assert (r.status_code, refusal_text(r.json()["detail"])) == (400, t("recovery.code_refused")), r.text
     assert await _hash(session, OWNER) == before
     assert (await _reset(client, OWNER, await _start(client, OWNER))).status_code == 200
 
@@ -611,7 +611,7 @@ async def test_reset_with_a_handle_not_for_this_recovery_never_asks_the_relay(cl
     generic = (400, t("recovery.code_refused"))
     for handle in (staff, "x" * 32, ""):
         r = await _reset(client, OWNER, handle)
-        assert (r.status_code, r.json()["detail"]) == generic, handle
+        assert (r.status_code, refusal_text(r.json()["detail"])) == generic, handle
     assert relay.calls == []
     assert (await _reset(client, STAFF, staff)).status_code == 200
 
@@ -712,10 +712,10 @@ async def test_staff_reset_refusals(client, session):
         asked = await client.get(f"/companies/me/users/{target}/password", headers=_bearer(token))
         r = await _staff_reset(client, token, target)
         assert r.status_code == status, (target, r.text)
-        assert isinstance(r.json()["detail"], str) and r.json()["detail"], r.text
+        assert isinstance(refusal_text(r.json()["detail"]), str) and refusal_text(r.json()["detail"]), r.text
         assert (asked.status_code, asked.json()) == (r.status_code, r.json()), (target, asked.text)
     r = await _staff_reset(client, owner, ids[STAFF], "short")
-    assert r.status_code == 422 and "8" in r.json()["detail"], r.text
+    assert r.status_code == 422 and "8" in refusal_text(r.json()["detail"]), r.text
     assert {e: await _hash(session, e) for e in ids} == hashes
 
     # The installation owner owns every company the staff member is in.

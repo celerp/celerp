@@ -76,7 +76,7 @@ async def test_parent_from_another_company_is_refused(client, session):
     await _other_company_account(session, "8800")
     r = await _create(client, h_a, "8801", "asset", parent_code="8800")
     assert r.status_code == 422, r.text
-    assert "8800" in r.json()["detail"]
+    assert "8800" in refusal_text(r.json()["detail"])
     assert "8801" not in await _chart(client, h_a)
 
 
@@ -102,7 +102,7 @@ async def test_new_account_under_an_inactive_parent_is_refused(client, session):
     assert (await _patch(client, h, "8810", is_active=False)).status_code == 200
     r = await _create(client, h, "8811", "asset", parent_code="8810")
     assert r.status_code == 422, r.text
-    assert "inactive" in r.json()["detail"]
+    assert "inactive" in refusal_text(r.json()["detail"])
 
 
 @pytest.mark.asyncio

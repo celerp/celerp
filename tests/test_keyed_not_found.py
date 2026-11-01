@@ -8,7 +8,7 @@ import uuid
 import pytest
 
 from test_helpers import in_language
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 pytestmark = pytest.mark.asyncio
 
@@ -26,7 +26,7 @@ async def test_keyed_not_found_keeps_its_message_key(client, auth):
 async def test_plain_not_found_keeps_its_words(client, auth):
     r = await client.patch(f"/companies/me/locations/{uuid.uuid4()}", headers=auth["headers"], json={"name": "X"})
     assert r.status_code == 404, r.text
-    assert r.json()["detail"] == t("company.err_location_not_found", "en")
+    assert refusal_text(r.json()["detail"]) == t("company.err_location_not_found", "en")
 
 
 async def test_unmatched_path_still_answers_404(client, auth):

@@ -22,7 +22,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import refusal
+from celerp.accounting_roles import Refused, refusal
 from celerp.services.business_time import business_date_of
 
 
@@ -43,8 +43,8 @@ def _lock_date(settings: dict) -> date | None:
 def _day(recorded, timezone_name: str | None) -> date:
     try:
         return date.fromisoformat(business_date_of(recorded, timezone_name))
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Refused as exc:
+        raise HTTPException(status_code=422, detail=exc.detail) from exc
 
 
 async def _cutover_day(session: AsyncSession, company_id) -> date | None:

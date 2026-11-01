@@ -9,18 +9,17 @@ import re
 import time
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Callable
 
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
 
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 # Imported at module level so tests can patch celerp.middleware.is_draining
 # and celerp.middleware.get_session_ctx
 from celerp.db import get_session_ctx
+from celerp.error_body import error_response
 from celerp.held_back import HeldBack, held_back
 from celerp.services.runtime_state import is_draining
 from ui.i18n import t
@@ -114,11 +113,11 @@ class MaxBodySizeMiddleware:
         if cl is not None:
             try:
                 if int(cl) > limit:
-                    response = JSONResponse(status_code=413, content={"detail": t("error.upload_too_large")})
+                    response = error_response(Request(scope), 413, t("error.upload_too_large"))
                     await response(scope, receive, send)
                     return
             except ValueError:
-                response = JSONResponse(status_code=400, content={"detail": "Invalid Content-Length"})
+                response = error_response(Request(scope), 400, t("error.invalid_content_length"))
                 await response(scope, receive, send)
                 return
 
@@ -152,7 +151,7 @@ class MaxBodySizeMiddleware:
             if not too_large:
                 raise
         if too_large and not started:
-            await JSONResponse(status_code=413, content={"detail": t("error.upload_too_large")})(scope, receive, send)
+            await error_response(Request(scope), 413, t("error.upload_too_large"))(scope, receive, send)
 
 
 class SlidingTokenRefreshMiddleware:
@@ -318,7 +317,7 @@ class DrainMiddleware:
             return
 
         if (cause := _refused_while_held_back(scope, path)) is not None:
-            await JSONResponse(status_code=503, content={"detail": cause.refusal()})(scope, receive, send)
+            await error_response(Request(scope), 503, cause.refusal())(scope, receive, send)
             return
 
         try:
@@ -328,11 +327,7 @@ class DrainMiddleware:
             draining = False  # fail open
 
         if draining:
-            response = JSONResponse(
-                status_code=503,
-                content={"detail": t("error.maintenance")},
-                headers={"Retry-After": "10"},
-            )
+            response = error_response(Request(scope), 503, t("error.maintenance"), headers={"Retry-After": "10"})
             await response(scope, receive, send)
             return
 
@@ -522,7 +517,7 @@ class ModuleStartupMiddleware:
         if ready:
             await self.app(scope, receive, send)
             return
-        response = JSONResponse(status_code=503, content={"detail": outcome.STARTING})
+        response = error_response(Request(scope), 503, t("error.still_starting"))
         await response(scope, receive, send)
 
 
@@ -543,8 +538,5 @@ class RecoveryMaintenanceMiddleware:
                 or not recovery_incomplete()):
             await self.app(scope, receive, send)
             return
-        response = JSONResponse(
-            status_code=503,
-            content={"detail": t("error.recovery_incomplete")},
-        )
+        response = error_response(Request(scope), 503, t("error.recovery_incomplete"))
         await response(scope, receive, send)

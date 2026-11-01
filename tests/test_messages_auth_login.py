@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 _LOCALES = Path(__file__).resolve().parents[1] / "ui" / "locales"
 
@@ -18,8 +18,8 @@ _LOCALES = Path(__file__).resolve().parents[1] / "ui" / "locales"
 async def test_wrong_password_says_check_both_or_reset(client):
     r = await client.post("/auth/login", json={"email": "nobody@test.com", "password": "anything"})
     assert r.status_code == 401
-    assert r.json()["detail"] == t("auth.invalid_credentials", "en")
-    assert "Forgot password?" in r.json()["detail"]
+    assert refusal_text(r.json()["detail"]) == t("auth.invalid_credentials", "en")
+    assert "Forgot password?" in refusal_text(r.json()["detail"])
 
 
 def test_invalid_credentials_names_forgot_password_in_every_locale():
@@ -33,8 +33,8 @@ async def test_bad_recovery_code_says_how_to_get_a_new_one(client):
     r = await client.post("/auth/password-recovery/reset", json={
         "email": "nobody@example.com", "handle": "x" * 32, "code": "12345678", "new_password": "newpassword1"})
     assert r.status_code == 400
-    assert r.json()["detail"] == t("recovery.code_refused", "en")
-    assert "Send a new code" in r.json()["detail"]
+    assert refusal_text(r.json()["detail"]) == t("recovery.code_refused", "en")
+    assert "Send a new code" in refusal_text(r.json()["detail"])
 
 
 def test_wrong_setup_code_says_where_the_code_is(monkeypatch):
@@ -119,4 +119,4 @@ async def test_oversized_upload_message(client):
     r = await client.post("/auth/login", content=b"x",
                           headers={"content-length": str(10 ** 12), "content-type": "application/json"})
     assert r.status_code == 413
-    assert r.json()["detail"] == t("error.upload_too_large", "en")
+    assert refusal_text(r.json()["detail"]) == t("error.upload_too_large", "en")

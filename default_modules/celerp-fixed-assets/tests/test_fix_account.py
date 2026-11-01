@@ -15,6 +15,7 @@ from decimal import Decimal
 import pytest
 
 from fa_fixtures import FA
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -72,11 +73,11 @@ async def test_s2_future_postings_only_refused_for_balance_sheet_accounts(fa):
         refused = await fa.post(path, {"field": field, "account": "1210", "mode": "future", "preview": True,
                                        "op_key": f"f-{field}"})
         assert refused.status_code == 422, refused.text
-        assert "Move existing balances" in refused.json()["detail"]
+        assert "Move existing balances" in refusal_text(refused.json()["detail"])
 
     moved = await fa.post(path, {"field": "depreciation_account", "account": "6400", "mode": "move",
                                  "preview": True, "op_key": "m"})
-    assert moved.status_code == 422 and "Future postings only" in moved.json()["detail"]
+    assert moved.status_code == 422 and "Future postings only" in refusal_text(moved.json()["detail"])
 
     shown = await fa.ok(await fa.post(path, {"field": "depreciation_account", "account": "6400", "mode": "future",
                                              "preview": True, "op_key": "f"}))
@@ -105,7 +106,7 @@ async def test_s2_inactive_historical_account_reclass_source(fa):
 
     # While its assets hold a balance there, the class account changes only by moving it.
     refused = await fa.patch(f"/classes/{cls['id']}", {"asset_account": "1210"})
-    assert refused.status_code == 409 and "Fix posting account" in refused.json()["detail"]
+    assert refused.status_code == 409 and "Fix posting account" in refusal_text(refused.json()["detail"])
 
     await _archive(fa, "1215")
     # A new line to the archived account is refused by the chart.
@@ -136,7 +137,7 @@ async def test_s2_inactive_historical_account_reclass_source(fa):
     assert (await fa.asset(car)).get("exception") is None
     # Once a run has posted on the class, the move is no longer undone.
     late = await fa.post(f"/classes/{class_id}/fix-account/undo", {"preview": True, "op_key": "undo-late"})
-    assert late.status_code == 409 and "Correct" not in late.json()["detail"]
+    assert late.status_code == 409 and "Correct" not in refusal_text(late.json()["detail"])
 
     recon = await fa.ok(await fa.get("/reconciliation", at="2026-02-28"))
     assert recon["errors"] == []

@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from celerp.accounting_roles import refusal
+from celerp.accounting_roles import catalog_refusal, refusal
 from celerp.models.projections import Projection
 from celerp.services.company_lock import lock_company
 from celerp.services.line_measures import splitting_allowed
@@ -370,11 +370,10 @@ async def linked_items(session, company_id, line_items, *, known: Counter | None
         if isinstance(line, dict) and line.get("item_id") and line.get("entity_id") \
                 and line["item_id"] != line["entity_id"]:
             raise HTTPException(status_code=422, detail={
-                "code": "conflicting_reference",
-                "message": f"Line {n} names two different items ({line['item_id']} and {line['entity_id']}). "
-                           "Keep one item per line.",
-                "line": n,
-            })
+                "code": "conflicting_reference", "line": n, **refusal(
+                    "documents.err_line_two_items",
+                    f"Line {n} names two different items ({line['item_id']} and {line['entity_id']}). "
+                    "Keep one item per line.", line=n, item=line["item_id"], other=line["entity_id"])})
     linked = [(n, line, line_item_id(line)) for n, line in enumerate(line_items or [], 1)
               if isinstance(line, dict) and line_item_id(line)]
     counts = Counter(ident for _, _, ident in linked)
@@ -402,7 +401,7 @@ async def linked_items(session, company_id, line_items, *, known: Counter | None
                 status_code=422,
                 detail={
                     "code": "invalid_reference",
-                    "message": t("documents.err_item_missing", where=where, ident=ident),
+                    **catalog_refusal("documents.err_item_missing", where=where, ident=ident),
                     "item_id": ident,
                     "line": n,
                 },
@@ -598,7 +597,7 @@ async def assert_document_item_uniqueness(session, company_id, doc_type, line_it
                 status_code=409,
                 detail={
                     "code": "duplicate_document_item",
-                    "message": t("documents.duplicate_item_on_document"),
+                    **catalog_refusal("documents.duplicate_item_on_document"),
                     "item_id": ident,
                 },
             )

@@ -28,7 +28,7 @@ from test_posting_roles_lot_origin import _books_match_lots, _remap
 from test_posting_roles_lots import _lot, _new_inventory_account
 from test_posting_roles_older_stock import _as_older_release, _draft, _sold
 from test_posting_roles_rollout import _startup
-from ui.i18n import t
+from ui.i18n import t, refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -181,7 +181,7 @@ async def test_a_locked_day_refuses_making_a_draft_available_and_changes_nothing
     before = await _events(session, auth)
     r = await _move(client, auth, "make-available", draft)
     assert r.status_code == 422, r.text
-    assert _LOCKED in r.json()["detail"]
+    assert _LOCKED in refusal_text(r.json()["detail"])
     assert await _events(session, auth) == before
     assert await _lot_state(session, auth, draft) == ("draft", None)
     assert await _entries(session, auth, draft) == []
@@ -194,7 +194,7 @@ async def test_a_locked_day_refuses_returning_stock_to_draft_and_its_value_stays
     before = await _events(session, auth)
     r = await _move(client, auth, "revert-to-draft", draft)
     assert r.status_code == 422, r.text
-    assert _LOCKED in r.json()["detail"]
+    assert _LOCKED in refusal_text(r.json()["detail"])
     assert await _events(session, auth) == before
     assert await _lot_state(session, auth, draft) == ("available", "1130-OB")
     assert await _books_match_lots(session, auth, "1130-OB") == {"1130-OB": 200.0}

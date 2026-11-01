@@ -30,6 +30,7 @@ from celerp.config import settings
 import celerp.gateway.state as gw_state
 from celerp.db import get_session
 from celerp.main import app
+from ui.i18n import refusal_text
 
 # `session` (Postgres, rollback-isolated) comes from the root conftest.
 
@@ -360,8 +361,8 @@ async def test_import_bootstrap_blocked_when_users_exist(auth_client):
         files={"file": ("test.celerp-backup", buf.read(), "application/octet-stream")},
     )
     assert r.status_code == 403
-    assert "already set up" in r.json()["detail"].lower()
-    assert "System Recovery" in r.json()["detail"]
+    assert "already set up" in refusal_text(r.json()["detail"]).lower()
+    assert "System Recovery" in refusal_text(r.json()["detail"])
 
 
 @pytest.mark.asyncio

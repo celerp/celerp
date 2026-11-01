@@ -172,6 +172,7 @@ def pytest_unconfigure(config):
 from celerp.db import get_session
 from celerp.main import app
 import mutation_observer  # noqa: E402 - installs the write observer's listeners
+from celerp import error_body  # noqa: E402
 
 # The `client` fixture patches celerp.gateway.state.get_session_token. The session
 # gate keeps its own reference from import time, so it is imported here, before any
@@ -537,6 +538,18 @@ def _mutation_census(request):
     _CENSUS.add(seen)
     if seen.findings:
         pytest.fail(mutation_observer.explain(seen.findings), pytrace=False)
+
+
+@pytest.fixture(autouse=True)
+def _agent_refusals_keyed():
+    """Strict refusals: a route the AI calls that answers a test's request with a refusal
+    carrying no catalog key fails that test (celerp.error_body), naming the route and the
+    detail."""
+    error_body.unkeyed = []
+    yield
+    seen, error_body.unkeyed = sorted(set(error_body.unkeyed)), None
+    if seen:
+        pytest.fail("\n".join(seen), pytrace=False)
 
 
 @pytest.fixture(autouse=True)

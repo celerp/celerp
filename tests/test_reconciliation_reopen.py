@@ -22,6 +22,7 @@ from migration_support import auth, code_config, maker, real_client, real_engine
 from test_company_reset_payments import _harbor, _waiting_on_a_lock
 from test_helpers import invite_user, register_admin
 from ui.app import app as ui_app
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -114,7 +115,7 @@ async def test_reopen_refused_while_another_reconciliation_of_that_statement_is_
     await legacy_session(session, {"id": bank_id}, "2026-09-30", status="open")
     r = await client.post(f"/accounting/reconciliation/{sid}/reopen", headers=h)
     assert r.status_code == 409, r.text
-    assert "already open" in r.json()["detail"]
+    assert "already open" in refusal_text(r.json()["detail"])
     assert (await client.get(f"/accounting/reconciliation/{sid}", headers=h)).json()["status"] == "completed"
 
 
@@ -129,7 +130,7 @@ async def test_changing_a_completed_reconciliation_says_it_can_be_reopened_and_w
     sid = await _completed(client, h)
     r = await client.post(f"/accounting/reconciliation/{sid}/{path}", json=body, headers=h)
     assert r.status_code == 409, r.text
-    detail = r.json()["detail"]
+    detail = refusal_text(r.json()["detail"])
     assert "completed" in detail and "Reopen" in detail
     assert "top of this reconciliation" in detail
 
@@ -284,7 +285,7 @@ async def test_two_reopens_of_the_same_statement_leave_one_open(monkeypatch, rea
     r1, r2 = await first, await second
     assert r1.status_code == 200 and r1.json()["status"] == "open", r1.text
     assert r2.status_code == 409, r2.text
-    assert "already open" in r2.json()["detail"]
+    assert "already open" in refusal_text(r2.json()["detail"])
     assert await _open_ids(real_engine) == [s1]
 
 

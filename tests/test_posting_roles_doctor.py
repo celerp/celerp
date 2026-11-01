@@ -68,11 +68,11 @@ async def test_an_older_invoice_on_more_than_one_receivable_account_is_reported_
     result = await _doctor(client, auth)
     (finding,) = result["details"]
     assert (finding["kind"], finding["entity_id"]) == ("party_origin", inv)
-    assert "more than one accounts receivable account (1120, 1121)" in finding["problem"]
+    assert "more than one accounts receivable account (1120, 1121)" in finding["problem"]["message"]
 
     r = await _pay(client, auth, inv, 100.0)
     assert r.status_code == 409, r.text
-    assert "more than one accounts receivable account" in r.json()["detail"]
+    assert "more than one accounts receivable account" in r.json()["detail"]["message"]
 
 
 @pytest.mark.asyncio

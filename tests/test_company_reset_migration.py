@@ -28,7 +28,7 @@ from migration_support import (  # noqa: F401
 )
 from test_company_backup_ui import _cookie, _follow, _page, ui  # noqa: F401
 from test_company_reset import _local_files
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 pytestmark = pytest.mark.asyncio
 
@@ -128,7 +128,7 @@ async def test_a_login_that_has_a_company_is_told_to_sign_in(real_client, real_e
 
     r = await _scan(real_client)
 
-    assert r.status_code == 409 and r.json()["detail"] == HAS_COMPANY
+    assert r.status_code == 409 and refusal_text(r.json()["detail"]) == HAS_COMPANY
 
 
 async def test_two_starts_at_once_make_one_company(real_client, real_engine, migration_env, monkeypatch, tmp_path):
@@ -153,7 +153,7 @@ async def test_a_start_after_success_is_told_to_sign_in(real_client, real_engine
 
     again = await _start(real_client, scan_token)
 
-    assert again.status_code == 409 and again.json()["detail"] == HAS_COMPANY
+    assert again.status_code == 409 and refusal_text(again.json()["detail"]) == HAS_COMPANY
     assert await count(real_engine, "companies") == 1
     # The answer was lost: signing in lands on the company being moved in.
     login = await real_client.post("/auth/login", json={"email": OWNER_EMAIL, "password": OWNER_PASSWORD})

@@ -64,7 +64,7 @@ async def test_foreign_amount_change_on_a_completed_reconciliation_is_refused(cl
         {**line, "fx_debit": 90.0, "fx_rate": 1.2} if line["account"] == b["chart_account_code"] else line
         for line in data["entries"]]}
     message = await _refused(session, cid, je, "acc.journal_entry.created", changed)
-    assert "2026-09-30" in message
+    assert "30 Sep 2026" in message
 
 
 async def _invoice(client, h, currency, rate, total) -> str:

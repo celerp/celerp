@@ -21,6 +21,7 @@ from sqlalchemy import select
 from celerp.services.currencies import CURRENCIES, CURRENCY_CODES, HISTORICAL, KNOWN_CURRENCY_CODES
 from celerp.services.money import currency_dp, doc_rate, require_doc_rate, round_money
 from test_helpers import make_test_token
+from ui.i18n import refusal_text
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -128,7 +129,7 @@ async def test_a_birr_invoice_with_no_rate_in_dollar_books_has_no_rate_and_is_no
         "subtotal": 100.0, "tax": 0.0, "total": 100.0})
     assert r.status_code == 200, r.text
     finalize = await client.post(f"/docs/{r.json()['id']}/finalize", headers=h)
-    assert finalize.status_code == 422 and "exchange rate" in finalize.json()["detail"].lower()
+    assert finalize.status_code == 422 and "exchange rate" in refusal_text(finalize.json()["detail"]).lower()
 
 
 # ── Withdrawn currencies ─────────────────────────────────────────────────────
