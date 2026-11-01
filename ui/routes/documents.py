@@ -8035,6 +8035,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 # only the secondary measure (the one qty is NOT) — same skip rule as the
                 # print/finalized view; locks + values come from the shared helper.
                 _locks = measure_locks(_meta, allow_split=_allow_split)
+                if li.get("drawn_from"):
+                    # A line invoiced from a memo keeps the measures of the lot it was drawn with.
+                    _locks = {**_locks, "pcs_locked": True, "weight_locked": True}
                 _qty_disabled = _locks["qty_locked"]
                 _qty_measure = "weight" if _meta.get("qty_is_weight") else ("pieces" if _meta.get("qty_is_pieces") else "")
                 _pcs_val, _weight_val, _wu, _qip, _qiw = resolve_line_measures(li, item_meta=_meta)
@@ -8175,7 +8178,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             audited = pol["audit"] and li.get("audited_at") is not None
             adjusted = pol["audit"] and bool(li.get("adjusted"))
             _row_cls = "data-row--adjusted" if adjusted else ("data-row--audited" if audited else "")
-            return Tr(*cells, cls=_row_cls) if _row_cls else Tr(*cells)
+            _row_attrs = {"cls": _row_cls} if _row_cls else {}
+            if li.get("drawn_from"):
+                _row_attrs["data_drawn"] = "1"
+            return Tr(*cells, **_row_attrs)
 
         def _li_empty_row(target: dict | None) -> FT:
             """An empty line row starting with the taxes default_line_taxes gives a new line on
@@ -9646,11 +9652,13 @@ function _celerpCollectLines() {{
         const accountCode = row.querySelector('[data-name="account_code"]')?.value || null;
         const allowSplitting = row.querySelector('[data-name="allow_splitting"]')?.value === '1';
         const barcode = row.querySelector('[data-name="barcode"]')?.value || null;
-        const piecesEl = row.querySelector('[data-name="pieces"]');
+        // A row drawn from a memo shows its lot's measures but never sends them: the draw owns them.
+        const drawn = row.dataset.drawn === '1';
+        const piecesEl = drawn ? null : row.querySelector('[data-name="pieces"]');
         const pieces = piecesEl && piecesEl.value !== '' ? parseFloat(piecesEl.value) : null;
         const carried = {{}};
         for (const el of row.querySelectorAll('input[data-carry]')) carried[el.dataset.carry] = el.value === 'true' ? true : el.value;
-        const weightEl = row.querySelector('[data-name="weight"]');
+        const weightEl = drawn ? null : row.querySelector('[data-name="weight"]');
         const weight = weightEl && weightEl.value !== '' ? parseFloat(weightEl.value) : null;
         if (_celerpRowHasContent(row)) {{
             // A meaningful row with no usable quantity fails the whole save closed:

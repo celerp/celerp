@@ -39,8 +39,8 @@ def _items(api) -> list[dict]:
     return r.json()["items"]
 
 
-def _seed_demo_items(api) -> None:
-    """An added company starts without samples; seed the agricultural set the way
+def _seed_demo_items(api, vertical: str = "agricultural") -> None:
+    """An added company starts without samples; seed a business type's set the way
     setup does for a new install."""
     import asyncio
     import base64
@@ -64,7 +64,7 @@ def _seed_demo_items(api) -> None:
             async with AsyncSession(engine) as session:
                 loc = (await session.execute(sa.select(Location.id).where(
                     Location.company_id == company_id, Location.is_default == True))).scalar()  # noqa: E712
-                await seed_demo_items(session, company_id, user_id, vertical="agricultural",
+                await seed_demo_items(session, company_id, user_id, vertical=vertical,
                                       default_location_id=loc)
                 await session.commit()
         finally:

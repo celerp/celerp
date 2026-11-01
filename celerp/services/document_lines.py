@@ -73,7 +73,11 @@ class MemoReturn:
 # and description stay editable, and the customer and currency stay while it is there.
 # ---------------------------------------------------------------------------
 
-_DRAWN_LINE_MEASURES = ("quantity", "weight", "pieces")
+# What the draw owns on a drawn line beyond its link: the lot it carries and that lot's measures.
+# No write edits them, so a write takes the stored values, whatever it sends or leaves out (an
+# editor re-deriving a weight from the quantity changes nothing). The item is still compared
+# first, so naming another product is refused rather than overwritten.
+_DRAWN_LINE_OWNED = ("item_id", "entity_id", "weight", "pieces")
 _DRAWN_HEADER_FIELDS = ("contact_id", "currency")
 
 
@@ -136,9 +140,10 @@ async def assert_drawn_lines_authorized(session, company_id, entity_id: str, sto
     customer or currency of an invoice holding drawn lines (409).
 
     ``incoming`` holds the write's line set under ``line_items`` (after normalize_line_ids)
-    and any header field it sets. A kept drawn line that omits ``drawn_from`` gets the stored
-    one, in place. A ``MemoDraw`` may add exactly its lines, each stamped by that draw; a
-    ``MemoReturn`` may remove exactly its lines and change nothing else. A grant that does
+    and any header field it sets. A kept drawn line that omits ``drawn_from``, its quantity or
+    its item gets the stored one, and always the stored ``_DRAWN_LINE_OWNED`` fields, in place.
+    A ``MemoDraw`` may add exactly its lines, each stamped by that draw; a ``MemoReturn`` may
+    remove exactly its lines and change nothing else. A grant that does
     not fit the write is a programming error (AssertionError)."""
     drawn = _stored_drawn_lines(stored)
     if drawn:
@@ -178,9 +183,16 @@ async def assert_drawn_lines_authorized(session, company_id, entity_id: str, sto
         line.setdefault("drawn_from", old["drawn_from"])
         if line["drawn_from"] != old["drawn_from"] or (returning and line != old):
             raise _drawn_refusal("docs.memo_provenance_forged", old)
-        if line_item_id(line) != line_item_id(old) or any(
-                _measure(line, k) != _measure(old, k) for k in _DRAWN_LINE_MEASURES):
+        line.setdefault("quantity", old.get("quantity"))
+        names_item = "item_id" in line or "entity_id" in line
+        if ((names_item and line_item_id(line) != line_item_id(old))
+                or _measure(line, "quantity") != _measure(old, "quantity")):
             raise _drawn_refusal("docs.drawn_line_locked", old)
+        for key in _DRAWN_LINE_OWNED:
+            if key in old:
+                line[key] = old[key]
+            else:
+                line.pop(key, None)
 
 
 def refuse_drawn_line_action(state: dict, indices) -> None:

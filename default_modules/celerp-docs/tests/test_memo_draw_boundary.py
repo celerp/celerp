@@ -93,7 +93,8 @@ INVOICE_ROWS = {
     "line_discount": (lambda d: {"line_items": _edit_line(d, discount_pct=5)}, None),
     "description": (lambda d: {"line_items": _edit_line(d, description="Ring, resized")}, None),
     "quantity": (lambda d: {"line_items": _edit_line(d, quantity=2)}, "docs.drawn_line_locked"),
-    "weight": (lambda d: {"line_items": _edit_line(d, weight=9.9)}, "docs.drawn_line_locked"),
+    # The draw owns the lot's measures: a write that sends one keeps the stored value.
+    "weight": (lambda d: {"line_items": _edit_line(d, weight=9.9)}, None),
     "item": (lambda d: {"line_items": _edit_line(d, item_id=None, sku="OTHER")}, "docs.drawn_line_locked"),
     "omit": (lambda d: {"line_items": [li for li in d["line_items"] if not li.get("drawn_from")]},
              "docs.drawn_line_back_to_memo"),
@@ -119,7 +120,9 @@ async def test_drawn_line_operations_boundary(client, session):
         if refusal:
             assert after["version"] == before["version"], name
         else:
-            assert [li["drawn_from"] for li in drawn_lines(after)] == [li["drawn_from"] for li in drawn_lines(before)], name
+            owned = ("drawn_from", "item_id", "quantity", "weight", "pieces")
+            assert [{k: li.get(k) for k in owned} for li in drawn_lines(after)] \
+                == [{k: li.get(k) for k in owned} for li in drawn_lines(before)], name
     pf, memo, lots = await _drawn_draft(client, h)
     assert await _engine_refuses(session, a, pf, {"contact_id": await contact(client, h, "Store B")}) \
         == "docs.drawn_header_locked"
