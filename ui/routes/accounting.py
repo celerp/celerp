@@ -143,7 +143,8 @@ def setup_routes(app):
                 journal_bulk_toolbar(params, carried),
                 journal_table(journal_rows(data, items=False), items=False, currency=currency,
                               params=params, select=True,
-                              filtered=bool(data.get("filtered"))),
+                              filtered=bool(data.get("filtered")),
+                              period=(d_from, d_to, "/accounting?preset=all")),
             )
         except APIError as e:
             if e.status == 401:
@@ -369,7 +370,8 @@ def setup_routes(app):
         # extended journal returns the extended journal.
         table = journal_table(journal_rows(data, items=items), items=items,
                               currency=currency, params=params,
-                              select=True, filtered=bool(data.get("filtered")))
+                              select=True, filtered=bool(data.get("filtered")),
+                              period=(d_from, d_to, f"{base}?preset=all"))
         totals = _journal_totals(
             data, currency, oob=True,
             filter_words=journal_filter_words(filters, get_lang(request)),

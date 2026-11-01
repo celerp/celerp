@@ -24,7 +24,7 @@ from ui.components.report_kit import (
     fname_date, fx_line_amounts, href, je_source_label, period_subtitle,
 )
 from ui.components.shell import toast_header
-from ui.components.table import EMPTY, bulk_toolbar, fmt_money
+from ui.components.table import EMPTY, bulk_toolbar, fmt_money, period_empty_note
 from ui.i18n import refusal_text, t
 
 # What the journal can be narrowed by: one search box. The API takes this name and
@@ -456,7 +456,8 @@ def _headers(*, items: bool, has_fx: bool, select: bool) -> list:
 
 def journal_table(rows: list[dict], *, items: bool, currency: str | None = None,
                   params: dict | None = None,
-                  filtered: bool = False, select: bool = False) -> FT:
+                  filtered: bool = False, select: bool = False,
+                  period: tuple[str, str, str] | None = None) -> FT:
     """The journal as a table, in whichever of its two shapes the caller asked for.
 
     `params` is the view the reader is looking at, carried into the selection
@@ -465,11 +466,13 @@ def journal_table(rows: list[dict], *, items: bool, currency: str | None = None,
     sheets do without: there is nothing to tick on paper. `filtered` is what the
     payload said about itself, so an empty answer says which kind of empty it is: a
     period with no entries in it, or filters that matched none of the entries there
-    are.
+    are. `period` is the (from, to, All time url) window on screen, so an empty
+    period names itself and offers All time.
     """
     if not rows:
-        return P(t("acct.no_matches") if filtered else t("acct.no_journal_entries"),
-                 cls="empty-state")
+        if filtered:
+            return P(t("acct.no_matches"), cls="empty-state")
+        return period_empty_note(period) or P(t("acct.no_journal_entries"), cls="empty-state")
     # The foreign columns appear only when the period actually holds a foreign
     # transaction, so a single-currency journal stays as narrow as it has always been.
     has_fx = any(r.get("fx_currency") for r in rows)

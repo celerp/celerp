@@ -957,6 +957,7 @@
   "file_tag.disposal": "Disposal",
   "file_tag.valuations": "Valuations",
   "filter.all_time": "All time",
+  "filter.empty_period": "Nothing dated {date_from} to {date_to}. Records outside these dates are not shown here.",
   "filter.last_12m": "Last 12 months",
   "filter.last_3m": "Last 3 months",
   "filter.last_6m": "Last 6 months",

@@ -29,7 +29,7 @@ from celerp.services.units import (
 from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
 from ui.components.shell import base_shell, page_header, toast_header, page_title
 from ui.security import not_permitted_redirect
-from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum, display_unit, doc_href
+from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, period_all_time_link, period_empty_text, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum, display_unit, doc_href
 from celerp.services.background import spawn_background
 from celerp.services.business_time import business_today
 from celerp.services.doc_balance import MEMO_DRAW_STATUSES, doc_tax, doc_value, is_awaiting_payment, is_owed, outstanding_balance
@@ -550,6 +550,14 @@ def _state_query(state: dict[str, str], *, without: tuple[str, ...] = ()) -> str
     return urlencode({k: v for k, v in state.items() if k not in without})
 
 
+def _list_period(base: str, state: dict[str, str], date_from: str, date_to: str) -> tuple[str, str, str]:
+    """The (from, to, All time url) window a /docs or /lists state shows, for its empty state;
+    the All time link keeps the rest of the state (type, status, search, sort)."""
+    return date_from, date_to, f"/{base}?" + urlencode({**{k: v for k, v in state.items()
+                                                          if k not in _DATE_KEYS and k != "page"},
+                                                       "preset": "all"})
+
+
 def _doc_api_params(state: dict[str, str], date_from: str, date_to: str, *, limit: int | None, offset: int = 0) -> dict:
     """The list_docs query for a page state. limit=None asks the API for every matching row."""
     is_drafts_view = state.get("view") == "drafts" or state.get("status") == "draft"
@@ -711,7 +719,8 @@ def _accounting_sync_filter(state: dict[str, str]) -> FT:
 
 
 def _docs_content(state: dict[str, str], docs: list[dict], total_count: int, summary: dict,
-                  chips: dict, page: int, per_page: int, currency: str | None, lang: str) -> FT:
+                  chips: dict, page: int, per_page: int, currency: str | None, lang: str,
+                  date_from: str = "", date_to: str = "") -> FT:
     """Summary, status cards, table and pager for a document list state: the page embeds it
     and the live search replaces it, so all four always describe the same result set."""
     doc_type = state.get("type", "")
@@ -737,6 +746,7 @@ def _docs_content(state: dict[str, str], docs: list[dict], total_count: int, sum
             lang=lang,
             currency=currency,
             is_drafts_view=state.get("view") == "drafts" or state.get("status") == "draft",
+            period=_list_period("docs", state, date_from, date_to),
         ),
         pagination(page, total_count, per_page, "/docs", _state_query(state, without=("per_page",))),
         id="doc-content",
@@ -767,7 +777,7 @@ async def _list_results(token: str, state: dict[str, str], date_from: str, date_
 
 
 def _lists_content(state: dict[str, str], lists: list[dict], total_count: int, summary: dict,
-                   page: int, per_page: int, lang: str) -> FT:
+                   page: int, per_page: int, lang: str, date_from: str = "", date_to: str = "") -> FT:
     """Status cards, table and pager for a lists page state: the page embeds it and the live
     search replaces it, so all three always describe the same result set."""
     all_issued = _list_api_params(state, "", "", limit=None).get("all_issued") == "1"
@@ -776,7 +786,7 @@ def _lists_content(state: dict[str, str], lists: list[dict], total_count: int, s
                            converted_to_type=state.get("converted_to_type", ""),
                            base_url="/lists?" + _state_query(state, without=_LIST_STATUS_KEYS),
                            dates_chosen=any(state.get(k) for k in _DATE_KEYS)),
-        _list_table(lists, lang=lang),
+        _list_table(lists, lang=lang, period=_list_period("lists", state, date_from, date_to)),
         pagination(page, total_count, per_page, "/lists", _state_query(state, without=("per_page",))),
         id="list-content",
     )
@@ -1720,7 +1730,8 @@ def setup_routes(app):
             ),
             _doc_type_intro(doc_type),
             date_bar,
-            _docs_content(state, docs, total_count, summary, chips, page, per_page, currency, lang),
+            _docs_content(state, docs, total_count, summary, chips, page, per_page, currency, lang,
+                          date_from, date_to),
             title=page_title(section_label_key),
             nav_active=_doc_nav_key(doc_type),
             lang=lang,
@@ -1746,7 +1757,8 @@ def setup_routes(app):
         lang = get_lang(request)
         can_export = role_has_permission(company.get("settings") or {}, _get_role(request), "import_export_data")
         return search_results(
-            _docs_content(state, docs, total_count, summary, chips, page, per_page, company.get("currency") or None, lang),
+            _docs_content(state, docs, total_count, summary, chips, page, per_page, company.get("currency") or None, lang,
+                          date_from, date_to),
             "/docs?" + _state_query(state),
             *_search_controls("docs", state, date_from, date_to, preset, can_export, lang, oob=True),
         )
@@ -4560,7 +4572,7 @@ celerpUpdateBulkAlloc();
             _list_type_tabs(list_type, state),
             # Self-explanatory page: the shipping tab says what these are and what to do next.
             (P(t("lists.shipping_intro", lang), cls="section-hint") if list_type == "shipping_doc" else ""),
-            _lists_content(state, lists, filtered_total, summary, page, per_page, lang),
+            _lists_content(state, lists, filtered_total, summary, page, per_page, lang, date_from, date_to),
             title=page_title("page.lists"),
             nav_active="lists",
             request=request,
@@ -4591,7 +4603,7 @@ celerpUpdateBulkAlloc();
         lang = get_lang(request)
         can_export = role_has_permission(company.get("settings") or {}, _get_role(request), "import_export_data")
         return search_results(
-            _lists_content(state, lists, filtered_total, summary, page, per_page, lang),
+            _lists_content(state, lists, filtered_total, summary, page, per_page, lang, date_from, date_to),
             "/lists?" + _state_query(state),
             *_search_controls("lists", state, date_from, date_to, preset, can_export, lang, oob=True),
         )
@@ -5465,7 +5477,9 @@ def _doc_table(
     lang: str = "en",
     currency: str | None = None,
     is_drafts_view: bool = False,
+    period: tuple[str, str, str] | None = None,
 ) -> FT:
+    """``period`` is the (from, to, All time url) window the list shows, for its empty state."""
     # Per-doc-type empty-state labels: (no_docs_key, create_btn_key)
     _EMPTY_STATE_KEYS: dict[str, tuple[str, str]] = {
         "invoice": ("label.no_documents_yet", "btn.new_invoice"),
@@ -5482,8 +5496,11 @@ def _doc_table(
     if not docs:
         dt_slug = doc_type if doc_type else "invoice"
         empty_keys = _EMPTY_STATE_KEYS.get(dt_slug, ("label.no_documents_yet", "btn.new_document"))
+        windowed = period_empty_text(period, lang)
         return Div(
-            empty_state_cta(t(empty_keys[0], lang), t(empty_keys[1], lang), f"/docs/create-blank?type={dt_slug}", hx_post=True),
+            empty_state_cta(windowed or t(empty_keys[0], lang), t(empty_keys[1], lang),
+                            f"/docs/create-blank?type={dt_slug}", hx_post=True,
+                            more=(period_all_time_link(period, lang, "btn btn--secondary"),) if windowed else ()),
             id="doc-table",
         )
 
@@ -11245,11 +11262,13 @@ def _summary_bar(summary: dict, doc_type: str = "", currency: str | None = None,
 # List listing-page helpers (kept for /lists table view)
 # ---------------------------------------------------------------------------
 
-def _list_table(lists: list[dict], lang: str = "en") -> FT:
+def _list_table(lists: list[dict], lang: str = "en", period: tuple[str, str, str] | None = None) -> FT:
     if not lists:
+        windowed = period_empty_text(period, lang)
         return Div(
-            empty_state_cta(t("label.no_lists_yet", lang), t("btn.new_list", lang), "/lists/create-blank", hx_post=True,
-                            hint=t("lists.empty_hint", lang)),
+            empty_state_cta(windowed or t("label.no_lists_yet", lang), t("btn.new_list", lang), "/lists/create-blank",
+                            hx_post=True, hint=t("lists.empty_hint", lang),
+                            more=(period_all_time_link(period, lang, "btn btn--secondary"),) if windowed else ()),
             id="list-table",
         )
 

@@ -1713,7 +1713,11 @@ class TestDocsPage:
             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value=_DOC_SUMMARY)),
         ):
             r = await ui_client.get("/docs")
-        assert b"No documents yet." in r.content
+        # The list opens on the company's default window, so its empty state names that
+        # window and offers All time rather than claiming there are no documents at all.
+        from ui.i18n import t
+        assert t("filter.empty_period", date_from="\0", date_to="\0").split("\0")[0].encode() in r.content
+        assert b"No documents yet." not in r.content
 
     @pytest.mark.asyncio
     async def test_doc_detail(self, ui_client):

@@ -14,6 +14,7 @@ in test_financial_reports_ui.py.
 from __future__ import annotations
 
 import json
+import re
 import os
 from unittest.mock import AsyncMock, patch
 
@@ -539,7 +540,8 @@ async def test_no_matches_state_differs_from_empty_period(ui_client, page, call)
     empty_period["total_debit"] = empty_period["total_credit"] = 0.0
     r = await _get_spied(ui_client, page, call, AsyncMock(return_value=empty_period))
     assert r.status_code == 200
-    assert t("acct.no_journal_entries") in r.text
+    # An empty period names its dates and offers All time.
+    assert re.search(r'<p class="empty-state">[^<]*<a href="[^"]*\?preset=all"', r.text)
     assert t("acct.no_matches") not in r.text
 
 

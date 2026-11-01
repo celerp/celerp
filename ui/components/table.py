@@ -680,6 +680,28 @@ def empty_state_cta(
     return Div(*inner, cls="empty-state-cta")
 
 
+def period_empty_text(period: tuple[str, str, str] | None, lang: str | None = None) -> str:
+    """What an empty dated list or report says when it shows a date window, or "" when it
+    does not. ``period`` is (date_from, date_to, all_time_url); None or no dates means the
+    view is not windowed, so the caller's own first-run message stands."""
+    if not period or not (period[0] or period[1]):
+        return ""
+    return t("filter.empty_period", lang, date_from=period[0] or EMPTY, date_to=period[1] or EMPTY)
+
+
+def period_all_time_link(period: tuple[str, str, str], lang: str | None = None, cls: str | None = None) -> FT:
+    return A(t("filter.all_time", lang), href=period[2], cls=cls)
+
+
+def period_empty_note(period: tuple[str, str, str] | None, lang: str | None = None) -> FT | str:
+    """A report's empty state for a date window: the window and a link to All time, so
+    records dated outside it never read as missing."""
+    text = period_empty_text(period, lang)
+    if not text:
+        return ""
+    return P(text, " ", period_all_time_link(period, lang), cls="empty-state")
+
+
 # A journal line's party picker: every contact, and no add-new. The forms that
 # post to a control account by hand share one search URL and one option shape, so
 # a party chosen on the reconciliation screen is the same party the manual entry
