@@ -320,7 +320,7 @@ class ExternalImportRecord:
 
         async with get_session_ctx() as session:
             row = await _locked_first_sync(session, *self.first_sync)
-            if row is None:
+            if row is None or row.operation_id is None:  # no first sync names a file
                 return
             batch = await _first_sync_batch(session, row)
             links = list((row.undo or {}).get("links") or [])

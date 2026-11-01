@@ -22,6 +22,7 @@ import json
 from celerp.connectors.http import RateLimitedClient, raise_for_store_status
 from celerp.services.outbound_url import validate_public_base_url
 from celerp.connectors.util import money
+from celerp.connectors.images import _CERT_TAGS, pull_store_files, retry_unpulled_files
 from celerp.connectors.base import (
     ConnectorBase,
     ConnectorCategory,
@@ -370,10 +371,11 @@ class WooCommerceConnector(ConnectorBase):
                 sell_by="service" if non_stock_virtual else None,
             )
             if entity_id:
-                try:
-                    await self._pull_product_files(ctx, remote.extra["files"], entity_id, first_sync)
-                except Exception as img_exc:
-                    log.warning("woocommerce file pull failed for item %s: %s", entity_id, img_exc)
+                await pull_store_files(
+                    ctx, self, key=remote.key, label=remote.name, entity_id=entity_id,
+                    files=self._product_files(remote.extra["files"]), pending=pending, processed=processed,
+                    operation=first_sync and first_sync.operation)
+        await retry_unpulled_files(ctx, self, attention, pending, processed)
 
         if full_scan:
             try:
@@ -523,59 +525,28 @@ class WooCommerceConnector(ConnectorBase):
                 await session.commit()
         return changed
 
-    async def _pull_product_files(
-        self, ctx: ConnectorContext, product: dict[str, Any], entity_id: str,
-        first_sync: FirstSync | None = None,
-    ) -> None:
-        """Pull images and certificate metafields onto an already-resolved item. Each
-        image is pulled once, recognised by its WooCommerce image id. The files a first
-        sync pulls onto an item it created join its import, and those it pulls onto an item it
-        linked join that link's undo record, so either undo removes them."""
-        from celerp.db import get_session_ctx as get_async_session
-        from celerp.models.projections import Projection
-        from celerp.connectors.images import download_and_emit_file, _CERT_TAGS
-
-        images: list[dict] = product.get("images", [])
-        meta_data: list[dict] = product.get("meta_data", [])
-        async with get_async_session() as session:
-            row = await session.get(
-                Projection, {"company_id": ctx.company_id, "entity_id": entity_id}
-            )
-            if row is None or row.entity_type != "item":
-                return
-            for i, img in enumerate(images):
-                src = img.get("src")
-                if not src:
-                    continue
-                await download_and_emit_file(
-                    session, ctx.company_id, row.entity_id, src,
-                    img.get("name") or f"product-{i}.jpg",
-                    "product_images", is_hero=(i == 0),
-                    platform=self.name, store=ctx.store_handle, remote_id=img.get("id"),
-                    operation=first_sync and first_sync.operation,
-                )
-            meta = {m["key"]: m["value"] for m in meta_data if m.get("key")}
-            for tag_key in _CERT_TAGS:
-                raw = meta.get(tag_key)
-                if not raw:
-                    continue
-                try:
-                    certs = json.loads(raw) if isinstance(raw, str) else raw
-                    for cert in (certs if isinstance(certs, list) else []):
-                        if cert.get("url"):
-                            await download_and_emit_file(
-                                session, ctx.company_id, row.entity_id,
-                                cert["url"], cert.get("name", "cert.pdf"),
-                                tag_key, is_hero=False,
-                                platform=self.name, store=ctx.store_handle,
-                                operation=first_sync and first_sync.operation,
-                            )
-                except Exception as exc:
-                    log.warning("woocommerce: failed to pull cert metafield %s: %s", tag_key, exc)
-            await session.commit()
-        if first_sync is not None:
-            await first_sync.record.attribute_files(entity_id)
-
+    @staticmethod
+    def _product_files(product: dict[str, Any]) -> list[dict]:
+        """The files a store product brings onto its item (images.pull_store_files): its
+        images, the first the hero, each recognised by its WooCommerce image id, then the
+        files its certificate metafields list."""
+        files = [{"url": img["src"], "filename": img.get("name") or f"product-{i}.jpg", "tag": "product_images",
+                  "is_hero": i == 0, "remote_id": img.get("id")}
+                 for i, img in enumerate(product.get("images") or []) if img.get("src")]
+        meta = {m["key"]: m["value"] for m in product.get("meta_data") or [] if m.get("key")}
+        for tag_key in _CERT_TAGS:
+            raw = meta.get(tag_key)
+            if not raw:
+                continue
+            try:
+                certs = json.loads(raw) if isinstance(raw, str) else raw
+            except ValueError as exc:
+                log.warning("woocommerce: failed to read cert metafield %s: %s", tag_key, exc)
+                continue
+            files += [{"url": cert["url"], "filename": cert.get("name", "cert.pdf"), "tag": tag_key,
+                       "is_hero": False, "remote_id": None}
+                      for cert in (certs if isinstance(certs, list) else []) if isinstance(cert, dict) and cert.get("url")]
+        return files
 
     @needs_modules("celerp-inventory")
     async def ensure_product_link(

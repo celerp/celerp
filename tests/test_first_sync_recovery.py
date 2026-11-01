@@ -113,9 +113,9 @@ def store(signed_in_to_cloud, monkeypatch):
         products = mock.get(url__regex=STORE + "/wp-json/wc/v3/products").mock(
             return_value=httpx.Response(200, json=PRODUCTS))
         orders = mock.get(url__regex=STORE + "/wp-json/wc/v3/orders").mock(return_value=httpx.Response(200, json=[]))
-        mock.get("https://cdn.example.com/new.jpg").mock(return_value=httpx.Response(
+        image = mock.get("https://cdn.example.com/new.jpg").mock(return_value=httpx.Response(
             200, content=b"img", headers={"content-type": "image/jpeg"}))
-        yield SimpleNamespace(products=products, orders=orders)
+        yield SimpleNamespace(products=products, orders=orders, image=image)
 
 
 async def _first_sync(cid):
@@ -237,21 +237,53 @@ async def _snapshot(cid) -> dict:
 DIRECTIONS = {"products": "inbound", "stock": "off", "orders": "inbound", "customers": "off"}
 
 
+async def test_an_image_the_first_sync_could_not_download_waits_on_a_person_and_joins_it_when_pulled(
+        real_engine, store):
+    """The store's image fails to download during the first sync: the product's item is
+    created without it and the image waits on a person, named on the products' attention
+    list. The next sync pulls it once the store serves it again, and the file joins the
+    first sync's import, so its undo removes it with the item."""
+    from celerp import connectors
+    from celerp.connectors.sync_runner import attention_entries, run_connector_sync
+    from celerp.db import get_session_ctx
+
+    store.image.mock(return_value=httpx.Response(503))
+    cid = await _started("ImageDown", DIRECTIONS)
+    await _execute(cid)
+    assert (await _first_sync(cid)).state == "completed"
+    waiting = [e for e in await attention_entries(str(cid), "woocommerce", "products") if e.get("kind") == "files"]
+    assert [(e["label"], e["entity_id"], [f["url"] for f in e["files"]]) for e in waiting] == [
+        ("New in store", "item:woocommerce:2", ["https://cdn.example.com/new.jpg"])], waiting
+    assert waiting[0]["reason"] and "connectors." not in waiting[0]["reason"]
+    async with get_session_ctx() as session:
+        assert (await item_state(session, cid, "item:woocommerce:2")).get("files") in (None, [])
+
+    store.image.mock(return_value=httpx.Response(200, content=b"img", headers={"content-type": "image/jpeg"}))
+    store.products.mock(return_value=httpx.Response(200, json=[]))
+    for _ in range(2):  # the second run finds the image already there
+        await run_connector_sync(connectors.get("woocommerce"), str(cid), purpose="manual_sync")
+    assert not [e for e in await attention_entries(str(cid), "woocommerce", "products") if e.get("kind") == "files"]
+    async with get_session_ctx() as session:
+        assert len((await item_state(session, cid, "item:woocommerce:2"))["files"]) == 1
+    batch = await _batch(cid)
+    assert set(batch.entity_ids) == {"item:woocommerce:2", "item:woocommerce:3"}
+    assert len(batch.idempotency_keys) == 3, batch.idempotency_keys  # two creations and the file
+
+
 async def test_an_item_created_before_a_crash_stays_in_the_first_syncs_batch(real_engine, store, monkeypatch):
     """The first created item commits; the process stops before the first sync ends. The
     item is already in the first sync's import batch, so Import History's undo removes it."""
     cid = await _started("CrashCreate", DIRECTIONS)
     pulled = []
-    original = __import__("celerp.connectors.woocommerce", fromlist=["x"]).WooCommerceConnector._pull_product_files
+    from celerp.connectors.images import pull_store_files
 
-    async def _stop_after_first_file(self, ctx, product, entity_id, *args, **kwargs):
-        await original(self, ctx, product, entity_id, *args, **kwargs)
+    async def _stop_after_first_file(*args, entity_id, **kwargs):
+        await pull_store_files(*args, entity_id=entity_id, **kwargs)
         pulled.append(entity_id)
         if entity_id == "item:woocommerce:2":
             raise _Crash("after the first created item's files")
 
-    monkeypatch.setattr("celerp.connectors.woocommerce.WooCommerceConnector._pull_product_files",
-                        _stop_after_first_file)
+    monkeypatch.setattr("celerp.connectors.woocommerce.pull_store_files", _stop_after_first_file)
     with pytest.raises(_Crash):
         await _execute(cid)
     assert pulled == ["item:match", "item:woocommerce:2"]

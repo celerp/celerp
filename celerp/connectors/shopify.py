@@ -23,6 +23,7 @@ import httpx
 
 from celerp.connectors.http import RateLimitedClient, raise_for_store_status
 from celerp.connectors.util import money
+from celerp.connectors.images import pull_store_files, retry_unpulled_files
 from celerp.connectors.base import (
     ConnectorBase,
     ConnectorCategory,
@@ -160,11 +161,11 @@ class ShopifyConnector(ConnectorBase):
             )
             if entity_id is None:
                 continue
-            # Pull product images after upsert (idempotent, best-effort)
-            try:
-                await self._pull_product_images(ctx, remote.extra["product"], entity_id, first_sync)
-            except Exception as img_exc:
-                log.warning("shopify image pull failed for %s: %s", remote.key, img_exc)
+            await pull_store_files(
+                ctx, self, key=remote.key, label=remote.name, entity_id=entity_id,
+                files=self._product_files(remote.extra["product"]), pending=pending, processed=processed,
+                operation=first_sync and first_sync.operation)
+        await retry_unpulled_files(ctx, self, attention, pending, processed)
 
         result.errors = errors or None
         result.attention = _upsert.carried_attention(attention, pending, processed)
@@ -213,34 +214,13 @@ class ShopifyConnector(ConnectorBase):
             total=money(o.get("total_price")), currency=o.get("currency"), posts=False,
         ) for o in orders]
 
-    async def _pull_product_images(
-        self, ctx: ConnectorContext, product: dict[str, Any], entity_id: str,
-        first_sync: FirstSync | None = None,
-    ) -> None:
-        """Pull images from a Shopify product and store them as the item's files. Those a
-        first sync pulls join its import or the link's undo record, as on WooCommerce."""
-        from celerp.db import get_session_ctx as get_async_session
-        from celerp.connectors.images import download_and_emit_file
-
-        images: list[dict] = product.get("images", [])
-        if not images:
-            return
-
-        async with get_async_session() as session:
-            for img in sorted(images, key=lambda x: x.get("position", 99)):
-                src = img.get("src")
-                if not src:
-                    continue
-                fname = img.get("alt") or f"product-{img.get('id', '')}.jpg"
-                await download_and_emit_file(
-                    session, ctx.company_id, entity_id, src, fname, "product_images",
-                    is_hero=(img.get("position", 99) == 1),
-                    platform=self.name, store=ctx.store_handle, remote_id=img.get("id"),
-                    operation=first_sync and first_sync.operation,
-                )
-            await session.commit()
-        if first_sync is not None:
-            await first_sync.record.attribute_files(entity_id)
+    @staticmethod
+    def _product_files(product: dict[str, Any]) -> list[dict]:
+        """The images a Shopify product brings onto its item (images.pull_store_files), in
+        the store's order, the first position the hero."""
+        return [{"url": img["src"], "filename": img.get("alt") or f"product-{img.get('id', '')}.jpg",
+                 "tag": "product_images", "is_hero": img.get("position", 99) == 1, "remote_id": img.get("id")}
+                for img in sorted(product.get("images") or [], key=lambda x: x.get("position", 99)) if img.get("src")]
 
     # -- Orders ----------------------------------------------------------------
 

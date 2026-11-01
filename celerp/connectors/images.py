@@ -17,6 +17,8 @@ _MAX_REMOTE_FILE_BYTES = 50 * 1024 * 1024
 
 _CERT_TAGS = ("certificates", "spec_sheets", "safety_docs")
 _PRODUCT_IMAGE_TAG = "product_images"
+# The id of a store product's attention entry for its files that could not be pulled: its key + this.
+_FILES_ENTRY = ":files"
 
 
 def _is_image_mime(mime: str) -> bool:
@@ -87,6 +89,67 @@ def _megabytes(size: int) -> str:
     return f"{size / (1024 * 1024):.1f}".removesuffix(".0")
 
 
+async def pull_store_files(ctx, connector, *, key: str, label: str, entity_id: str, files: list[dict],
+                           pending: dict, processed: set[str], operation: str | None) -> None:
+    """Pull a store product's files onto its item, each {"url", "filename", "tag", "is_hero",
+    "remote_id"}. The files that could not be downloaded or stored wait on a person in one
+    ``pending`` entry for the product (kind "files", listing them), and the next sync pulls
+    them again (retry_unpulled_files) until each is attached. The files a first sync pulls
+    (``operation``) join its import or its link's undo record, also when a later sync pulls them."""
+    from ui.i18n import t
+
+    entry_id = f"{key}{_FILES_ENTRY}"
+    processed.add(entry_id)
+    try:
+        failed = await _pull_item_files(ctx, connector.name, entity_id, files, operation)
+    except Exception as exc:
+        log.warning("connector: failed to pull the files of %s: %s", entity_id, exc)
+        failed = files
+    if failed:
+        pending[entry_id] = {
+            "id": entry_id, "label": label, "kind": "files", "entity_id": entity_id,
+            "files": failed, "operation": operation,
+            "reason": t("connectors.attention_files_unpulled", service=connector.display_name,
+                        names=", ".join(f["filename"] for f in failed)),
+        }
+
+
+async def retry_unpulled_files(ctx, connector, attention: list[dict] | None, pending: dict,
+                               processed: set[str]) -> None:
+    """Pull again the files an earlier sync could not (pull_store_files) for the products
+    this sync did not read, so a file waits only until the store serves it again."""
+    for entry in attention or []:
+        if entry.get("kind") == "files" and entry["id"] not in processed:
+            await pull_store_files(
+                ctx, connector, key=entry["id"].removesuffix(_FILES_ENTRY), label=entry["label"],
+                entity_id=entry["entity_id"], files=entry["files"], pending=pending, processed=processed,
+                operation=entry.get("operation"))
+
+
+async def _pull_item_files(ctx, platform: str, entity_id: str, files: list[dict],
+                           operation: str | None) -> list[dict]:
+    """Pull ``files`` onto the item in one transaction and return those that failed."""
+    from celerp.connectors.base import ExternalImportRecord
+    from celerp.db import get_session_ctx
+    from celerp.models.projections import Projection
+
+    failed = []
+    async with get_session_ctx() as session:
+        row = await session.get(Projection, {"company_id": ctx.company_id, "entity_id": entity_id})
+        if row is None or row.entity_type != "item":
+            return []
+        for file in files:
+            outcome = await download_and_emit_file(
+                session, ctx.company_id, entity_id, file["url"], file["filename"], file["tag"], file["is_hero"],
+                platform=platform, store=ctx.store_handle, remote_id=file.get("remote_id"), operation=operation)
+            if outcome == "failed":
+                failed.append(file)
+        await session.commit()
+    if operation is not None:
+        await ExternalImportRecord(first_sync=(str(ctx.company_id), platform)).attribute_files(entity_id)
+    return failed
+
+
 async def download_and_emit_file(
     session,
     company_id: str,
@@ -100,13 +163,14 @@ async def download_and_emit_file(
     store: str | None,
     remote_id=None,
     operation: str | None = None,
-) -> str | None:
+) -> str:
     """Download a platform file, store it, and attach it to the item, recording where it
     came from (its platform image id and store) on the attachment, and the first sync
     pulling it (``operation``, first_sync_metadata) so only that first sync's undo removes it.
 
-    Returns the attachment's ledger key, or None when nothing was attached: the item
-    already holds this file (a pull is idempotent), or the download or storing failed.
+    Returns "attached"; "present" when there is nothing to attach (the item already holds
+    this file, so a pull is idempotent, or the item is gone); or "failed" when the download
+    or storing failed, which a later pull tries again.
     """
     from celerp.connectors.base import first_sync_metadata
     from celerp.services.field_fingerprints import fingerprint
@@ -121,11 +185,11 @@ async def download_and_emit_file(
         Projection, {"company_id": company_id, "entity_id": entity_id}, populate_existing=True
     )
     if row is None:
-        return None
+        return "present"
     existing_files: list[dict] = row.state.get("files") or []
     remote = {"id": str(remote_id) if remote_id not in (None, "") else None, "src": url, "store": store}
     if _already_pulled(existing_files, platform, remote):
-        return None
+        return "present"
 
     try:
         from celerp.services.outbound_url import fetch_public_bytes
@@ -144,7 +208,7 @@ async def download_and_emit_file(
             content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     except Exception as exc:
         log.warning("connector: failed to download %s: %s", url, exc)
-        return None
+        return "failed"
 
     import io
     upload = UploadFile(
@@ -156,10 +220,10 @@ async def download_and_emit_file(
         meta = await store_upload(company_id, upload)
     except Exception as exc:
         log.warning("connector: failed to store %s: %s", filename, exc)
-        return None
+        return "failed"
 
     key = f"connector-file:{platform}:{entity_id}:{fingerprint(remote)}"
     await attach_file(session, company_id, "item", entity_id, meta, None, source="connector",
                       idempotency_key=key, document_tag=tag, is_hero=is_hero,
                       remote={platform: remote}, metadata_=first_sync_metadata(operation))
-    return key
+    return "attached"

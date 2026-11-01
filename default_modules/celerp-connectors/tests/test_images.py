@@ -15,6 +15,7 @@ import respx
 from celerp.connectors.images import (
     _is_image_mime,
     download_and_emit_file,
+    pull_store_files,
 )
 
 
@@ -53,33 +54,33 @@ def _public_url_validation():
 
 
 @pytest.mark.asyncio
-async def test_download_emit_no_projection_returns_false():
-    assert await download_and_emit_file(_sess(None), *_ARGS, **_FROM) is None
+async def test_download_emit_no_projection_is_present():
+    assert await download_and_emit_file(_sess(None), *_ARGS, **_FROM) == "present"
 
 
 @pytest.mark.asyncio
-async def test_download_emit_already_stored_returns_false():
+async def test_download_emit_already_stored_is_present():
     sess = _sess(_proj([{"url": "/static/x.jpg", "remote": {"woocommerce": {
         "id": "5", "src": "https://x.test/old.jpg", "store": "https://x.test"}}}]))
-    assert await download_and_emit_file(sess, *_ARGS, **_FROM) is None
+    assert await download_and_emit_file(sess, *_ARGS, **_FROM) == "present"
 
 
 @pytest.mark.asyncio
-async def test_download_emit_download_failure_returns_false():
+async def test_download_emit_download_failure_is_failed():
     sess = _sess(_proj([]))
     with respx.mock:
         respx.get("https://x.test/img.jpg").mock(return_value=httpx.Response(500))
-        assert await download_and_emit_file(sess, *_ARGS, **_FROM) is None
+        assert await download_and_emit_file(sess, *_ARGS, **_FROM) == "failed"
 
 
 @pytest.mark.asyncio
-async def test_download_emit_store_failure_returns_false():
+async def test_download_emit_store_failure_is_failed():
     sess = _sess(_proj([]))
     with respx.mock, \
          patch("celerp.services.attachments.store_upload", new=AsyncMock(side_effect=RuntimeError("disk full"))):
         respx.get("https://x.test/img.jpg").mock(
             return_value=httpx.Response(200, content=b"abc", headers={"content-type": "image/jpeg"}))
-        assert await download_and_emit_file(sess, *_ARGS, **_FROM) is None
+        assert await download_and_emit_file(sess, *_ARGS, **_FROM) == "failed"
 
 
 @pytest.mark.asyncio
@@ -93,7 +94,7 @@ async def test_download_emit_success_emits_event():
         respx.get("https://x.test/img.jpg").mock(
             return_value=httpx.Response(200, content=b"abc", headers={"content-type": "image/jpeg"}))
         result = await download_and_emit_file(sess, *_ARGS, **_FROM)
-    assert result.startswith("connector-file:woocommerce:item:1:")
+    assert result == "attached"
     emit.assert_awaited_once()
     kwargs = emit.await_args.kwargs
     assert kwargs["event_type"] == "item.file.attached"
@@ -120,7 +121,7 @@ async def test_download_emit_guesses_mime_when_header_missing():
          patch("celerp.services.attachments.emit_event", new=AsyncMock()):
         respx.get("https://x.test/img.jpg").mock(return_value=httpx.Response(200, content=b"abc"))  # no content-type
         result = await download_and_emit_file(sess, *_ARGS, **_FROM)
-    assert result
+    assert result == "attached"
     assert captured["ct"] == "image/jpeg"  # guessed from f.jpg
 
 
@@ -154,8 +155,10 @@ async def test_inbound_image_pull_is_idempotent(connector_session):
     with respx.mock, patch("celerp.services.attachments.store_upload", new=store):
         respx.get(url__regex=r"https://cdn\.example\.com/.*").mock(
             return_value=httpx.Response(200, content=b"abc", headers={"content-type": "image/jpeg"}))
-        await WooCommerceConnector()._pull_product_files(ctx, product, "item:img")
-        await WooCommerceConnector()._pull_product_files(ctx, product, "item:img")
+        for _ in range(2):
+            await pull_store_files(ctx, WooCommerceConnector(), key="1", label="a", entity_id="item:img",
+                                   files=WooCommerceConnector._product_files(product), pending={},
+                                   processed=set(), operation=None)
 
     files = (await item_state(session, cid, "item:img"))["files"]
     assert len(files) == 2
@@ -259,3 +262,113 @@ async def test_an_image_above_the_relays_limit_is_never_linked_and_says_why(medi
         images, reason = await store_images(ctx, "woocommerce", "WooCommerce", files, {})
     assert images == [] and not mint.called
     assert "big" in reason and "3" in reason and "2" in reason and "WooCommerce" in reason
+
+
+# ── a file that could not be pulled waits on a person and is pulled at a later sync ──
+
+_PICTURED = {"woocommerce": ("https://store.example.com", "https://store.example.com/wp-json/wc/v3/products"),
+             "shopify": ("pictured.myshopify.com",
+                         "https://pictured.myshopify.com/admin/api/2024-01/products.json")}
+
+
+def _store_products(platform: str, images: list[dict]):
+    """One store product with ``images`` (id, src, name), as the store answers it."""
+    if platform == "woocommerce":
+        return httpx.Response(200, json=[{"id": 7, "sku": "IMG-1", "name": "Pictured", "regular_price": "5.00",
+                                          "images": images}], headers={"X-WP-TotalPages": "1"})
+    return httpx.Response(200, json={"products": [{
+        "id": 7, "title": "Pictured", "variants": [{"id": 70, "sku": "IMG-1", "title": "Default Title", "price": "5"}],
+        "images": [{"id": i["id"], "src": i["src"], "alt": i["name"], "position": n}
+                   for n, i in enumerate(images, 1)]}]})
+
+
+async def _sync(platform: str, cid, *, images: list[dict], broken=(), store_fails=False, attention=None):
+    """One product pull of ``platform``'s store onto item:img: the images whose address is
+    in ``broken`` fail to download, and every store of a file fails with ``store_fails``."""
+    import itertools
+
+    from celerp.connectors import get
+    from celerp.connectors.base import ConnectorContext
+
+    connector = get(platform)
+    handle, products_url = _PICTURED[platform]
+    ctx = ConnectorContext(company_id=str(cid), access_token="k:s", store_handle=handle)
+    ids = itertools.count(1)
+
+    async def store(company_id, upload):
+        if store_fails:
+            raise OSError("disk full")
+        n = next(ids)
+        return {"id": f"{platform}-{upload.filename}-{n}", "filename": upload.filename, "mime": "image/jpeg",
+                "size": 3, "url": f"/static/attachments/{company_id}/{platform}-{n}.jpg"}
+
+    def cdn(request):
+        if str(request.url) in broken:
+            return httpx.Response(503)
+        return httpx.Response(200, content=b"abc", headers={"content-type": "image/jpeg"})
+
+    with respx.mock, patch("celerp.services.attachments.store_upload", new=store), patch(
+        "celerp_inventory.services.upsert_external_product", new=AsyncMock(return_value=("updated", "item:img")),
+    ), patch.object(type(connector), "_reconcile_missing_product_links", new=AsyncMock(return_value=0), create=True):
+        respx.get(products_url).mock(return_value=_store_products(platform, images))
+        respx.get(url__regex=r"https://cdn\.example\.com/.*").mock(side_effect=cdn)
+        return await connector.sync_products(ctx, attention=attention)
+
+
+def _unpulled(result) -> list[dict]:
+    return [e for e in result.attention or [] if e.get("kind") == "files"]
+
+
+_A = {"id": 11, "src": "https://cdn.example.com/a.jpg", "name": "a"}
+_B = {"id": 12, "src": "https://cdn.example.com/b.jpg", "name": "b"}
+
+
+@pytest.mark.usefixtures("inside_execution")
+@pytest.mark.parametrize("platform", ["woocommerce", "shopify"])
+@pytest.mark.asyncio
+async def test_an_image_that_fails_to_download_waits_on_a_person_and_the_others_are_attached(
+        connector_session, platform):
+    cid = await seed_company(connector_session, f"Partial{platform}")
+    await add_item(connector_session, cid, "item:img", "IMG-1")
+
+    result = await _sync(platform, cid, images=[_A, _B], broken={_B["src"]})
+
+    files = (await item_state(connector_session, cid, "item:img"))["files"]
+    assert [f["remote"][platform]["id"] for f in files] == ["11"]
+    [entry] = _unpulled(result)
+    assert (entry["label"], entry["entity_id"], [f["url"] for f in entry["files"]]) == (
+        "Pictured", "item:img", [_B["src"]])
+    assert entry["reason"] and "connectors." not in entry["reason"]
+
+
+@pytest.mark.usefixtures("inside_execution")
+@pytest.mark.asyncio
+async def test_images_that_cannot_be_stored_wait_on_a_person(connector_session):
+    cid = await seed_company(connector_session, "StoreDown")
+    await add_item(connector_session, cid, "item:img", "IMG-1")
+
+    result = await _sync("woocommerce", cid, images=[_A, _B], store_fails=True)
+
+    assert not (await item_state(connector_session, cid, "item:img")).get("files")
+    [entry] = _unpulled(result)
+    assert [f["url"] for f in entry["files"]] == [_A["src"], _B["src"]]
+
+
+@pytest.mark.usefixtures("inside_execution")
+@pytest.mark.parametrize("platform", ["woocommerce", "shopify"])
+@pytest.mark.asyncio
+async def test_an_image_that_failed_is_pulled_once_when_the_store_serves_it_again(connector_session, platform):
+    """The next sync pulls the waiting image even when it does not read the product again,
+    and a sync that reads the product afterwards attaches nothing twice."""
+    cid = await seed_company(connector_session, f"Retry{platform}")
+    await add_item(connector_session, cid, "item:img", "IMG-1")
+
+    first = await _sync(platform, cid, images=[_A, _B], broken={_B["src"]})
+    assert _unpulled(first)
+    retried = await _sync(platform, cid, images=[], attention=first.attention)
+    assert not _unpulled(retried)
+    again = await _sync(platform, cid, images=[_A, _B], attention=retried.attention)
+    assert not _unpulled(again)
+
+    files = (await item_state(connector_session, cid, "item:img"))["files"]
+    assert sorted(f["remote"][platform]["id"] for f in files) == ["11", "12"]

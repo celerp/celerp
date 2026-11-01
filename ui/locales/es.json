@@ -6699,6 +6699,7 @@
   "connectors.attention_image_unshared": "Its images were not sent: Celerp could not create a link {service} can fetch them from. Check that Celerp Connect is active, then sync again.",
   "connectors.attention_image_too_large": "Sus imágenes no se enviaron: {name} ocupa {size} MB, más que los {limit} MB que {service} puede obtener de Celerp. Use una imagen más pequeña y vuelva a sincronizar.",
   "connectors.attention_image_refused": "{service} did not take its images, so they were not changed; the other changes were sent. {detail}",
+  "connectors.attention_files_unpulled": "No se pudo descargar {names} de {service}. Celerp lo intentará de nuevo en la próxima sincronización.",
   "inventory.col_channels": "Channels",
   "inventory.channel_published": "Published",
   "inventory.channel_draft": "Draft in the store",

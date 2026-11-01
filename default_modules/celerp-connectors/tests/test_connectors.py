@@ -691,7 +691,7 @@ async def test_woocommerce_sync_products(wc, wc_ctx):
     with patch(
         "celerp_inventory.services.upsert_external_product",
         new=AsyncMock(return_value=("created", "item:test")),
-    ), patch.object(wc, "_pull_product_files", new=AsyncMock()), patch.object(
+    ), patch("celerp.connectors.woocommerce.pull_store_files", new=AsyncMock()), patch.object(
         wc, "_reconcile_missing_product_links", new=reconcile
     ):
         result = await wc.sync_products(wc_ctx)

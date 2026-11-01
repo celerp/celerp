@@ -319,11 +319,12 @@ async def test_watermark_only_advances_on_full_success(session, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_woocommerce_pull_product_files(use_test_session, monkeypatch):
-    """_pull_product_files emits each image + cert onto the resolved item."""
+    """A store product's files (each image and certificate) are pulled onto the resolved item."""
     import json
     from unittest.mock import AsyncMock
 
     from celerp.connectors.base import ConnectorContext
+    from celerp.connectors.images import pull_store_files
     from celerp.connectors.woocommerce import WooCommerceConnector
     from celerp_inventory.routes import ItemCreate
 
@@ -337,7 +338,7 @@ async def test_woocommerce_pull_product_files(use_test_session, monkeypatch):
         Projection.company_id == cid, Projection.entity_type == "item"))).scalar_one()
 
     monkeypatch.setattr("celerp.db.get_session_ctx", await own_sessions_on(session))
-    emit = AsyncMock(return_value=True)
+    emit = AsyncMock(return_value="attached")
     monkeypatch.setattr("celerp.connectors.images.download_and_emit_file", emit)
 
     product = {
@@ -346,11 +347,19 @@ async def test_woocommerce_pull_product_files(use_test_session, monkeypatch):
                        "value": json.dumps([{"url": "https://c.test/c.pdf", "name": "c.pdf"}])}],
     }
     ctx = ConnectorContext(company_id=str(cid), access_token="k:s", store_handle="https://shop.test")
-    await WooCommerceConnector()._pull_product_files(ctx, product, entity_id)
+    woo, files = WooCommerceConnector(), WooCommerceConnector._product_files(product)
+
+    async def pull(entity_id):
+        pending: dict = {}
+        await pull_store_files(ctx, woo, key="900", label="Widget", entity_id=entity_id, files=files,
+                               pending=pending, processed=set(), operation=None)
+        return pending
+
+    assert await pull(entity_id) == {}
     assert emit.await_count == 2  # the hero image + the certificate
 
     emit.reset_mock()
-    await WooCommerceConnector()._pull_product_files(ctx, product, "WID-1")
+    assert await pull("WID-1") == {}
     assert emit.await_count == 0  # a SKU is not an item id
 
 
@@ -2155,6 +2164,7 @@ async def _first_sync_then_undo(session, monkeypatch) -> None:
         config.first_sync.directions = dict(config.entity_directions)
         config.first_sync.batch_id, config.first_sync.match = str(batch.id), "take"
         config.first_sync.started_at = datetime.now(timezone.utc)
+        config.first_sync.operation_id = str(uuid.uuid4())
         config.first_sync.undo = {"links": []}
         config.first_sync.reviewed = {"1": "item:match", "2": None}  # as its preview showed the store
         await session.flush()

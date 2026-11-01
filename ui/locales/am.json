@@ -6699,6 +6699,7 @@
   "connectors.attention_image_unshared": "Its images were not sent: Celerp could not create a link {service} can fetch them from. Check that Celerp Connect is active, then sync again.",
   "connectors.attention_image_too_large": "ምስሎቹ አልተላኩም፦ {name} {size} MB ነው፣ ይህም {service} ከCelerp ሊያመጣው ከሚችለው {limit} MB ይበልጣል። ትንሽ ምስል ይጠቀሙ፣ ከዚያ እንደገና ያመሳስሉ።",
   "connectors.attention_image_refused": "{service} did not take its images, so they were not changed; the other changes were sent. {detail}",
+  "connectors.attention_files_unpulled": "{names} ከ{service} ማውረድ አልተቻለም። Celerp በሚቀጥለው ማመሳሰል እንደገና ይሞክራል።",
   "inventory.col_channels": "Channels",
   "inventory.channel_published": "Published",
   "inventory.channel_draft": "Draft in the store",

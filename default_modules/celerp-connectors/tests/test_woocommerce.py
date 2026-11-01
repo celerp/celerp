@@ -154,7 +154,7 @@ async def test_virtual_product_is_service_only_when_woo_does_not_manage_stock(
             "stock_quantity": 3,
         },
     ]
-    with patch.object(woo, "_pull_product_files", new=AsyncMock()), respx.mock:
+    with patch("celerp.connectors.woocommerce.pull_store_files", new=AsyncMock()), respx.mock:
         respx.get("https://store.example.com/wp-json/wc/v3/products").mock(
             return_value=httpx.Response(200, json=products)
         )
