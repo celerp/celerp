@@ -205,12 +205,18 @@ _NAME_HINTS: dict[AccountRole, frozenset[str]] = {
     AccountRole.COGS: frozenset({"cogs"}),
 }
 
+# Words that name another account of the same kind: withholding tax is held for someone
+# else, never the tax a sale collects or a purchase pays.
+_NOT_NAMED = frozenset({"withholding"})
+
 
 def _named(role: str, account: dict) -> bool:
-    """Whether the account's name shares a word with the role's label or its hints."""
+    """Whether the account's name shares a word with the role's label or its hints, and
+    names no account of another kind (``_NOT_NAMED``)."""
     words = {w for w in ROLE_LABELS[AccountRole(role)].lower().split() if len(w) > 3}
     words |= _NAME_HINTS.get(AccountRole(role), frozenset())
-    return bool(words & _words(str(account.get("name") or "")))
+    named = _words(str(account.get("name") or ""))
+    return bool(words & named) and not named & _NOT_NAMED
 
 
 def _words(text: str) -> set[str]:

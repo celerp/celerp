@@ -461,7 +461,7 @@ a:hover { text-decoration: underline; }
 .data-table td.cell--money, .data-table td.cell--number, .cell--number { text-align: right; font-family: var(--font-mono); }
 /* Free text that can run long (an asset's name) wraps at a readable measure instead of
    pushing every column after it out of view. */
-.data-table td.cell--text { white-space: normal; overflow-wrap: anywhere; max-width: 32ch; }
+.data-table td.cell--text { white-space: normal; overflow-wrap: break-word; max-width: 32ch; }
 .data-table td.cell--note { white-space: normal; }
 th.cell--number { font-family: inherit; }
 .data-table td { padding: 0 10px; height: var(--c-row-h); border-bottom: 1px solid var(--c-border); vertical-align: middle; }
