@@ -60,7 +60,7 @@ from celerp.services.document_lines import (
     DrawnLine, MemoDraw, MemoReturn, assert_line_holds_respected, assert_new_references_eligible,
     line_id_counts, line_item_id, linked_items, memo_out_refusal, out_on_another_memo, received_line_index,
     converted_from_memo, memo_of_line, new_line_id, refuse_drawn_line_action, refuse_drawn_memo_line_action,
-    shipped_elsewhere, strip_line_ids,
+    shipped_elsewhere, strip_line_ids, drop_neutral_line_values,
 )
 from celerp.services.attachments import attach_file, storing
 from celerp.services.csv_export import csv_stream, resolve_export_cols
@@ -2187,6 +2187,12 @@ def _assert_doc_editable(state: dict) -> None:
         doc_status=status))
 
 
+def _same_value(field: str, old, new) -> bool:
+    """Whether a document or list field is unchanged by an edit. An unset discount type is a flat
+    discount, so an editor writing "flat" over none changes nothing."""
+    return old == new or (field == "discount_type" and {old, new} <= {None, "flat"})
+
+
 async def write_doc_patch(session: AsyncSession, company_id, role: str, settings: dict, user, entity_id: str, payload: DocPatch,
                           *, scan_runs: list[dict] | None = None,
                           memo_draw: MemoDraw | MemoReturn | None = None) -> dict:
@@ -2250,6 +2256,7 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     _incoming_lines = (fields_changed.get("line_items") or {}).get("new")
     if isinstance(_incoming_lines, list):
         _reject_line_attributes(_incoming_lines)
+        drop_neutral_line_values(_incoming_lines, row.state.get("line_items"))
     if isinstance(_incoming_lines, list) and row.state.get("doc_type") in SALES_PRICED_DOC_TYPES:
         _stored_by_idx = {i: li for i, li in enumerate(row.state.get("line_items") or [])}
         if isinstance(memo_draw, MemoDraw):
@@ -2340,7 +2347,7 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     for k, change in fields_changed.items():
         old = _round_field(k, change.get("old") if change.get("old") is not None else row.state.get(k))
         new = _round_field(k, change.get("new"), incoming=True)
-        if old != new:
+        if not _same_value(k, old, new):
             effective[k] = {"old": old, "new": new}
     if not effective:
         return {"event_id": None, "version": row.version}
@@ -9125,6 +9132,7 @@ async def write_list_patch(session: AsyncSession, company_id, role: str, setting
         raise HTTPException(status_code=422, detail=t("documents.err_discount_number"))
     if isinstance(_new_lines, list):
         _normalize_line_item_ids(_new_lines)  # keep the item link the editable UI sends as entity_id
+        drop_neutral_line_values(_new_lines, row.state.get("line_items"))
         await _validate_list_line_quantities(
             _new_lines, session, company_id,
             require_positive=((row.state.get("list_type") or DEFAULT_LIST_TYPE) != "audit"),
@@ -9135,6 +9143,9 @@ async def write_list_patch(session: AsyncSession, company_id, role: str, setting
                 session, company_id, settings, role, _new_lines,
                 {i: line for i, line in enumerate(row.state.get("line_items") or [])},
             )
+    # A save that writes back what is stored records nothing, as for documents.
+    if all(_same_value(f, row.state.get(f), (c or {}).get("new")) for f, c in fields_changed.items()):
+        return {"event_id": None, "version": row.version}
     # expected_version is a concurrency guard, not list data - it never enters the event payload.
     entry = await _emit_list(session, company_id, entity_id, "list.updated",
                              {"fields_changed": fields_changed}, user, idem_key, meta={"request": digest})

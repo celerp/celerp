@@ -689,6 +689,28 @@ def normalize_line_ids(line_set, stored_lines) -> None:
             line["line_id"] = new_line_id()
 
 
+# The value an editor writes for a line field the user left empty, which reads the same as the
+# field being absent: no SKU or unit of its own, no line discount, no line rate, splittable.
+_NEUTRAL_LINE_VALUES = {"sku": "", "unit": "", "discount_pct": 0, "tax_rate": 0, "allow_splitting": True}
+
+
+def drop_neutral_line_values(line_set, stored_lines) -> None:
+    """Remove, in place, each field of an incoming line that carries only its neutral value
+    where the stored line with the same line id never had that field, so a save that writes
+    the editor's empty columns back is not mistaken for an edit of the line."""
+    stored = {line["line_id"]: line for line in stored_lines or []
+              if isinstance(line, dict) and line.get("line_id")}
+    for line in line_set or []:
+        before = stored.get(line["line_id"]) if isinstance(line, dict) and isinstance(line.get("line_id"), str) else None
+        if before is None:
+            continue
+        for key, neutral in _NEUTRAL_LINE_VALUES.items():
+            # True == 1 in Python, so a boolean only stands for a boolean neutral and a number for a number.
+            if (key in line and key not in before and line[key] == neutral
+                    and isinstance(line[key], bool) == isinstance(neutral, bool)):
+                del line[key]
+
+
 def strip_line_ids(line_items) -> list[dict]:
     """Copies of ``line_items`` without their line ids, for a new record built from an old
     one that must not share its line identities (a duplicate)."""

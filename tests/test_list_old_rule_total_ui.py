@@ -85,7 +85,7 @@ async def test_the_page_offers_recalculate_then_restore(client, session):
         await ui.post(f"/lists/{lid}/action/recalculate-total")
         h = auth["headers"]
         assert (await client.post(f"/lists/{lid}/revert-to-draft", headers=h, json={})).status_code == 200
-        r = await client.patch(f"/lists/{lid}", headers=h, json={"notes": "Agreed"})
+        r = await client.patch(f"/lists/{lid}", headers=h, json={"fields_changed": {"notes": {"new": "Agreed"}}})
         assert r.status_code == 200, r.text
         page = (await ui.get(f"/lists/{lid}")).text
         assert 'id="list-old-rule-notice"' not in page
