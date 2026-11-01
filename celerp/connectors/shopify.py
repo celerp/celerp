@@ -105,8 +105,7 @@ class ShopifyConnector(ConnectorBase):
                 resp.raise_for_status()
                 data = resp.json()
                 results.extend(data.get(key, []))
-                link = resp.headers.get("Link", "")
-                url = _next_page_url(link)
+                url = _next_page_url(resp.headers.get("Link", ""), _base_url(ctx))
                 base_params = None  # subsequent pages use the full URL from Link header
         return results
 
@@ -455,11 +454,18 @@ def _shopify_reason(body) -> str | None:
 
 # -- Pagination helper ---------------------------------------------------------
 
-def _next_page_url(link_header: str) -> str | None:
-    """Parse Shopify Link header for next page URL."""
+def _next_page_url(link_header: str, base_url: str) -> str | None:
+    """The next page named by Shopify's Link header, or None on the last page. The store's
+    token goes with it, so a link that leaves the store's admin API over https (another
+    scheme, host or path) is refused before anything is sent."""
+    from urllib.parse import urlsplit
+
     for part in link_header.split(","):
         part = part.strip()
         if 'rel="next"' in part:
-            url_part = part.split(";")[0].strip()
-            return url_part.strip("<>")
+            url = part.split(";")[0].strip().strip("<>")
+            link, base = urlsplit(url), urlsplit(base_url)
+            if (link.scheme, link.netloc) != ("https", base.netloc) or not link.path.startswith("/admin/api/"):
+                raise ValueError(f"Shopify named a next page outside the store's admin API: {url}")
+            return url
     return None

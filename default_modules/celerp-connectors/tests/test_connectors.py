@@ -31,6 +31,8 @@ from celerp.connectors.webhooks import WebhookEvent, topic_to_entity, handle_web
 import celerp.connectors as connector_registry
 from connector_test_support import connector_session  # noqa: F401
 
+_BASE = "https://test.myshopify.com/admin/api/2024-01"  # the store's admin API the next page must stay under
+
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -111,17 +113,17 @@ def test_shopify_validate_webhook_bad_signature(shopify):
 
 def test_next_page_url_present():
     header = '<https://test.myshopify.com/admin/api/2024-01/products.json?page_info=abc>; rel="next"'
-    url = _next_page_url(header)
+    url = _next_page_url(header, _BASE)
     assert url == "https://test.myshopify.com/admin/api/2024-01/products.json?page_info=abc"
 
 
 def test_next_page_url_absent():
     header = '<https://test.myshopify.com/admin/api/2024-01/products.json?page_info=abc>; rel="previous"'
-    assert _next_page_url(header) is None
+    assert _next_page_url(header, _BASE) is None
 
 
 def test_next_page_url_empty():
-    assert _next_page_url("") is None
+    assert _next_page_url("", _BASE) is None
 
 
 # ── sync_products ─────────────────────────────────────────────────────────────
