@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from playwright.sync_api import Page, expect
 
-from .conftest import css_class
+from .conftest import answer_confirms, css_class
 from .test_import_hint import _OVERLAPS_JS
 
 pytestmark = pytest.mark.browser
@@ -153,7 +153,7 @@ def test_link_lists_only_demo_items_with_hint_and_nothing_ticked(page: Page, fre
 
 
 def _select_all_and_delete(page: Page) -> None:
-    page.on("dialog", lambda d: d.accept())
+    answer_confirms(page)
     page.locator("#select-all-rows").check()
     expect(page.locator("#bulk-count")).to_contain_text("3")
     page.select_option("#bulk-action-select", "delete")
@@ -283,7 +283,7 @@ def test_a_sample_edited_on_the_demo_list_survives_its_delete(page: Page, fresh_
     field.fill("Kept: edited on the demo list")
     field.press("Enter")
     expect(page.locator("#data-table tbody tr", has_text="Kept: edited on the demo list")).to_have_count(1)
-    page.on("dialog", lambda d: d.accept())
+    answer_confirms(page)
     page.locator("#select-all-rows").check()
     expect(page.locator("#bulk-count")).to_contain_text("3")
     page.select_option("#bulk-action-select", "delete")

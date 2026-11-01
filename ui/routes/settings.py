@@ -3283,7 +3283,7 @@ def _company_tab(company: dict, lang: str = "en", is_owner: bool = False) -> FT:
                             Button(t("settings.uninstall_delete_data"),
                                 cls="btn btn--danger",
                                 data_confirm=t("settings.uninstall_confirm_js"),
-                                onclick="if(confirm(this.dataset.confirm)){window.celerp?.uninstallDeleteData()}"),
+                                onclick="celerpConfirm(this.dataset.confirm).then(function(yes){if(yes)window.celerp?.uninstallDeleteData();})"),
                             cls="settings-card settings-card--danger",
                         ),
                     ]

@@ -14,6 +14,8 @@ from playwright.sync_api import expect
 from .test_demo_items_link import _seed_demo_items
 from .test_fulfillment import _assert_no_crash
 
+from .conftest import answer_in_app
+
 pytestmark = pytest.mark.browser
 
 
@@ -86,9 +88,9 @@ def test_an_invoice_drawn_from_a_memo_issues_after_page_edits(page, ui_server, f
     assert len(api.get(f"/docs/{invoice}").json()["line_items"]) == 3
     extra.locator(".li-select").check()
     page.select_option("#li-bulk-select", "li-delete")
-    page.once("dialog", lambda d: d.accept())
     with page.expect_response(lambda r: r.request.method == "POST" and r.url.endswith("/lines")) as saved:
         page.click("#li-bulk-delete-btn")
+        answer_in_app(page)
     assert saved.value.ok, saved.value.text()
 
     stored = [li for li in api.get(f"/docs/{invoice}").json()["line_items"] if li.get("drawn_from")]

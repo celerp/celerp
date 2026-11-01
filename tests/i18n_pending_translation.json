@@ -179,6 +179,10 @@
     "contacts.new_both": {
       "en": "New Contact",
       "params": []
+    },
+    "table.confirm_delete_drafts_selected": {
+      "en": "Delete selected drafts? A draft nothing else uses is erased and cannot be brought back. A draft another record still names moves to Deleted, where Restore brings it back.",
+      "params": []
     }
   }
 }

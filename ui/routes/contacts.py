@@ -776,7 +776,7 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
       return;
     }}
     if (action === 'delete'){{
-      if (!confirm(CFG.confirmDelete)) return;
+      celerpConfirm(CFG.confirmDelete).then(function(yes){{ if (!yes) return;
       var ids = typeof CelerpSelection !== 'undefined' ? CelerpSelection.ids() : [];
       fetch('/crm/contacts/bulk/delete', {{
         method: 'POST',
@@ -792,6 +792,7 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
         }}
       }}).catch(function(err){{
         document.getElementById('bulk-action-result').innerHTML = '<p class="flash flash--error">' + CFG.deleteFailed + '</p>';
+      }});
       }});
       return;
     }}
@@ -878,7 +879,7 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
   var btn = document.getElementById('contact-delete-btn');
   if (!btn) return;
   btn.addEventListener('click', function(){{
-    if (!confirm({_json.dumps(t("contacts.confirm_delete_contact"))})) return;
+    celerpConfirm({_json.dumps(t("contacts.confirm_delete_contact"))}).then(function(yes){{ if (!yes) return;
     fetch('/crm/contacts/bulk/delete', {{
       method: 'POST',
       headers: {{'Content-Type': 'application/json'}},
@@ -888,9 +889,10 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
         sessionStorage.removeItem('celerp_contact_selection');
         window.location.href = {_json.dumps(back_href)};
       }} else {{
-        alert(d.detail || {_json.dumps(t("contacts.delete_failed"))});
+        celerpToast(d.detail || {_json.dumps(t("contacts.delete_failed"))}, 'error');
       }}
-    }}).catch(function(err){{ alert({_json.dumps(t("contacts.delete_failed"))}); }});
+    }}).catch(function(err){{ celerpToast({_json.dumps(t("contacts.delete_failed"))}, 'error'); }});
+    }});
   }});
 }})();
 """)

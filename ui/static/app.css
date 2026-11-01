@@ -3691,3 +3691,5 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .doctor-failures { margin: 0 0 12px; }
 .doctor-failures dd { margin: 4px 0 0; }
 .doctor-error { white-space: pre-wrap; word-break: break-word; }
+/* The app's own confirmation (celerpConfirm in shell.py): the question, then Cancel and Confirm. */
+.confirm-dialog__question { margin: 0; white-space: pre-line; }

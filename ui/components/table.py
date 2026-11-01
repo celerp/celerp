@@ -220,7 +220,8 @@ BULK_TOOLBAR_JS = """
     for(var i=0;i<acts.length;i++){if(acts[i].value===val)return acts[i];}return null;}
   function runAction(bar,a){
     var t=table(bar);if(!t||!a)return;var ids=checkedIds(t);if(!ids.length)return;
-    if(a.confirm&&!confirm(a.confirm.replace('{n}',ids.length)))return;
+    if(a.confirm){var q=a.confirm.replace('{n}',ids.length);a=Object.assign({},a,{confirm:null});
+      celerpConfirm(q).then(function(yes){if(yes)runAction(bar,a);});return;}
     if(a.method==='open'){window.open(a.url+(a.url.indexOf('?')>=0?'&':'?')+'ids='+encodeURIComponent(ids.join(',')),'_blank');return;}
     var form=document.createElement('form');
     ids.forEach(function(id){var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;form.appendChild(inp);});
@@ -1471,9 +1472,9 @@ def data_row(
             # Only a draft, or one already Deleted, can be deleted (the bulk bar's
             # rule); stock is written off.
             *([Button(t("btn.delete"), cls="row-menu-item row-menu-item--danger",
-                      onclick=f"if(!confirm({_confirm_delete_row}))return;"
+                      onclick=f"celerpConfirm({_confirm_delete_row}).then(function(yes){{if(yes)"
                               f"htmx.ajax('DELETE','{_delete_url}',"
-                              f"{{target:'#row-{safe_id}',swap:'outerHTML'}})")]
+                              f"{{target:'#row-{safe_id}',swap:'outerHTML'}});}})")]
               if str(row.get("status", "") or "").lower() in ("draft", "deleted") else []),
         )
     ]
@@ -1978,12 +1979,10 @@ function bulkActionChanged(action){
     // Archiving retires the product but leaves any remaining stock on the books. When stock is
     // still held the user must choose (keep on books vs write off) - never a silent ledger move.
     if(_selectedStockedIds().length){_stockGuardChoice(function(){_bulkImmediate('/api/items/bulk/status','bulk_status','archived');});return;}
-    if(!confirm('Archive selected items? They will be hidden from the default view.')) return;
-    _bulkImmediate('/api/items/bulk/status','bulk_status','archived');return;
+    celerpConfirm('Archive selected items? They will be hidden from the default view.').then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/status','bulk_status','archived');});return;
   }
   if(action==='restore'){
-    if(!confirm('Restore selected items to the catalog? They will become available again.')) return;
-    _bulkImmediate('/api/items/bulk/status','bulk_status','available');return;
+    celerpConfirm('Restore selected items to the catalog? They will become available again.').then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/status','bulk_status','available');});return;
   }
   if(action==='expire'){
     // Same guard as archive: an expired item that still holds stock needs the keep/write-off choice.
@@ -1994,25 +1993,21 @@ function bulkActionChanged(action){
     _bulkWriteOff();return;
   }
   if(action==='make_available'){
-    if(!confirm('Make selected draft items available? They will count as real stock.')) return;
-    _bulkImmediate('/api/items/bulk/make-available',null,null);return;
+    celerpConfirm('Make selected draft items available? They will count as real stock.').then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/make-available',null,null);});return;
   }
   if(action==='revert_to_draft'){
-    if(!confirm('Revert selected items to draft? Only items with no circulation history can revert.')) return;
-    _bulkImmediate('/api/items/bulk/revert-to-draft',null,null);return;
+    celerpConfirm('Revert selected items to draft? Only items with no circulation history can revert.').then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/revert-to-draft',null,null);});return;
   }
   if(action==='delete'){
     // The demo items list removes untouched samples outright; elsewhere Delete takes drafts.
     var samples=document.querySelector('#bulk-action-select option[value="delete"][data-samples]');
-    if(!confirm(samples?'Delete selected items? This cannot be undone.':'Delete selected drafts? A draft nothing else uses is erased and cannot be brought back. A draft another record still names moves to Deleted, where Restore brings it back.')) return;
-    _bulkImmediate('/api/items/bulk/delete',null,null);return;
+    celerpConfirm(samples?'Delete selected items? This cannot be undone.':'Delete selected drafts? A draft nothing else uses is erased and cannot be brought back. A draft another record still names moves to Deleted, where Restore brings it back.').then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/delete',null,null);});return;
   }
   if(action==='restore_deleted'){
     _bulkImmediate('/api/items/bulk/restore-deleted',null,null);return;
   }
   if(action==='duplicate'){
-    if(!confirm('Duplicate selected items? A copy of each will be created.')) return;
-    _bulkImmediate('/api/items/bulk/duplicate',null,null);return;
+    celerpConfirm('Duplicate selected items? A copy of each will be created.').then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/duplicate',null,null);});return;
   }
   // Context-driven actions - clone template (includes module actions via mod: prefix)
   // mod: actions use tpl-mod-{action_id} where action_id strips the mod: prefix.
@@ -2444,6 +2439,9 @@ function sendToTypeChanged(docType, docLabel){
                      _json.dumps(t("table.confirm_make_available_selected")))
             .replace("'Revert selected items to draft? Only items with no circulation history can revert.'",
                      _json.dumps(t("table.confirm_revert_to_draft_selected")))
+            .replace("'Delete selected drafts? A draft nothing else uses is erased and cannot be brought back. "
+                     "A draft another record still names moves to Deleted, where Restore brings it back.'",
+                     _json.dumps(t("table.confirm_delete_drafts_selected")))
             .replace("'Delete selected items? This cannot be undone.'",
                      _json.dumps(t("table.confirm_delete_selected")))
             .replace("'Duplicate selected items? A copy of each will be created.'",

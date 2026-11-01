@@ -12,6 +12,8 @@ import uuid
 
 import pytest
 
+from .conftest import answer_confirms
+
 pytestmark = pytest.mark.browser
 
 
@@ -46,7 +48,7 @@ def _parts(api, parcel: str, sku: str) -> tuple[dict, dict]:
 
 
 def _open_return_row(page, ui_server: str, bill: str):
-    page.on("dialog", lambda d: d.accept())
+    answer_confirms(page)
     page.goto(f"{ui_server}/docs/{bill}", wait_until="domcontentloaded")
     page.wait_for_selector("#li-select-all", timeout=8000)
     page.check("#li-select-all")

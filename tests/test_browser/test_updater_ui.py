@@ -67,7 +67,6 @@ def test_update_card_electron_mode_screenshot(page, ui_server):
             onUpdateDownloaded: () => {},
             checkForUpdates: () => Promise.resolve(),
             installUpdate: () => {},
-            showConfirm: () => true,
             openExternal: () => Promise.resolve(),
         };
     }""")
@@ -84,7 +83,6 @@ def test_update_card_electron_mode_screenshot(page, ui_server):
             onUpdateDownloaded: () => {},
             checkForUpdates: () => Promise.resolve(),
             installUpdate: () => {},
-            showConfirm: () => true,
             openExternal: () => Promise.resolve(),
         };
         // Manually set version display

@@ -36,6 +36,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from celerp.services.import_stage import read_stage, write_stage
 from ui.routes.csv_import import MAPPING_ATTRIBUTE, MAPPING_SKIP
 from ui.routes.inventory import _IMPORT_SPEC
+from ui.components.shell import _CLIENT_JS
 from ui.i18n import refusal_text, t
 from celerp.services.permissions import missing_permission_text
 from test_helpers import assert_not_permitted_redirect, make_test_token, authed_cookies, settle_background
@@ -4835,7 +4836,9 @@ class TestSprint4DocActions:
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)), \
              patch("ui.api_client.get_relay_status", new=_no_relay):
             r = await ui_client.get("/docs/doc:INV-2026-0001")
-        content = r.content.lower()
+        # The shared client bundle carries the app's confirmation dialog (asked before an
+        # action, never for data entry); the page's own markup is what is checked.
+        content = r.content.replace(_CLIENT_JS.encode(), b"").lower()
         assert b"<dialog" not in content
         # Two exceptional dialogs are legal on a draft: reserved-conflict
         # resolution and the partial-reprice warning for deleted inventory.
@@ -7843,8 +7846,9 @@ class TestSprint5NoPopups:
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/inventory/gc:123")
-        assert b"<dialog" not in r.content.lower()
-        assert b"modal" not in r.content.lower()
+        content = r.content.replace(_CLIENT_JS.encode(), b"").lower()
+        assert b"<dialog" not in content
+        assert b"modal" not in content
 
     @pytest.mark.asyncio
     async def test_no_dialog_in_deals(self, ui_client):
@@ -12054,7 +12058,7 @@ class TestPaymentsSettingsPage:
         assert "no longer linked to Stripe" in confirm and "record any refund of them here" in confirm
         assert "reconnect" not in confirm
         assert f'data-confirm="{_html.escape(confirm)}"' in r.text
-        assert 'onsubmit="return confirm(this.dataset.confirm)"' in r.text
+        assert "celerpConfirm(form.dataset.confirm)" in r.text
 
     @pytest.mark.asyncio
     async def test_non_admin_cannot_open(self, ui_client):

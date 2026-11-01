@@ -22,7 +22,7 @@ import uuid
 import pytest
 from playwright.sync_api import expect
 
-from .conftest import css_class
+from .conftest import answer_in_app, answer_confirms, css_class
 
 pytestmark = pytest.mark.browser
 
@@ -166,8 +166,8 @@ def test_manual_je_post_and_void_journey(page, ui_server, seeded_chart, party):
     reason.wait_for(state="visible", timeout=3000)
     reason.fill("browser test cleanup")
     # Confirm asks before it strikes: a mis-ticked box is caught here, not after.
-    page.once("dialog", lambda d: d.accept())
     bar.locator(".bulk-apply").click()
+    answer_in_app(page)
     page.wait_for_selector("tr.payment-voided .badge--void", timeout=10000)
 
 
@@ -303,7 +303,7 @@ def test_journal_bulk_void_confirms_then_posts(page, ui_server, api, two_posted_
     bar = page.locator("#bulkbar-journal-table")
 
     dialogs = []
-    page.on("dialog", lambda d: (dialogs.append(d.message), d.accept()))
+    answer_confirms(page, lambda question: dialogs.append(question) or True)
 
     # The optional reason stays hidden below the bar until void is chosen, then
     # appears with its own confirm rather than firing the instant void is picked.

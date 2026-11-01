@@ -17,6 +17,8 @@ import pytest
 from test_helpers import released_migration_history
 from ui.i18n import t
 
+from .conftest import answer_confirms
+
 pytestmark = pytest.mark.browser
 
 _WAIT_MS = 30_000
@@ -110,7 +112,7 @@ def recovery(page, ui_server, api, tmp_path, monkeypatch):
 
 def test_system_recovery_safety_failure_confirm_browser(page, recovery, tmp_path):
     dump, names, url = recovery
-    page.on("dialog", lambda d: d.accept())
+    answer_confirms(page)
     page.set_input_files("#backup-import-input", _archive(tmp_path / "whole.celerp-backup", dump))
     button = page.locator('button:has-text("Restore without safety copy")')
     button.wait_for(timeout=_WAIT_MS)
@@ -129,7 +131,7 @@ def test_system_recovery_safety_failure_confirm_browser(page, recovery, tmp_path
 
 def test_system_recovery_refuses_a_cut_short_dump_browser(page, recovery, tmp_path):
     dump, names, url = recovery
-    page.on("dialog", lambda d: d.accept())
+    answer_confirms(page)
     page.set_input_files("#backup-import-input", _archive(tmp_path / "cut.celerp-backup", dump[:len(dump) // 8]))
     page.wait_for_selector("#backup-flash.flash--error", timeout=_WAIT_MS)
     flash = page.locator("#backup-flash").inner_text()
@@ -139,19 +141,17 @@ def test_system_recovery_refuses_a_cut_short_dump_browser(page, recovery, tmp_pa
     assert not (tmp_path / "data" / "static" / "attachments").exists()
 
 
-def _slow_answer(accept: bool):
-    """A dialog handler that answers like a person reading the warning first."""
-    def answer(dialog):
-        time.sleep(6)
-        dialog.accept() if accept else dialog.dismiss()
-    return answer
+def _slow_answer(question: str) -> bool:
+    """Confirms like a person reading the warning first."""
+    time.sleep(6)
+    return True
 
 
 def test_import_backup_opens_the_file_picker_after_a_slow_confirm_browser(page, recovery, tmp_path):
     """Reading the warning for more than a few seconds must not stop the file picker
     from opening: the browser only lets a click open it for a short time."""
     dump, names, url = recovery
-    page.on("dialog", _slow_answer(accept=True))
+    answer_confirms(page, _slow_answer)
     with page.expect_file_chooser(timeout=_WAIT_MS) as chooser:
         page.click("#backup-import-btn")
     chooser.value.set_files(_archive(tmp_path / "whole.celerp-backup", dump))
@@ -162,7 +162,7 @@ def test_import_backup_cancelled_at_the_warning_sends_nothing_browser(page, reco
     dump, names, url = recovery
     sent = []
     page.on("request", lambda r: sent.append(r.url) if "/backup/import" in r.url else None)
-    page.on("dialog", lambda d: d.dismiss())
+    answer_confirms(page, lambda question: False)
     with page.expect_file_chooser(timeout=_WAIT_MS) as chooser:
         page.click("#backup-import-btn")
     chooser.value.set_files(_archive(tmp_path / "whole.celerp-backup", dump))
@@ -221,7 +221,7 @@ def test_failed_recovery_shows_its_outcome_after_signing_in_again_browser(
     with released_migration_history(settings.database_url):
         try:
             page.goto(f"{ui_server}/settings/system-recovery", wait_until="domcontentloaded")
-            page.on("dialog", lambda d: d.accept())
+            answer_confirms(page)
             page.set_input_files("#backup-import-input", _archive(tmp_path / "whole.celerp-backup", dump))
             page.wait_for_selector("#backup-flash .flash--error", timeout=_WAIT_MS)
             flash = page.locator("#backup-flash").inner_text()

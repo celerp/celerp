@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from playwright.sync_api import expect
 
-from .conftest import css_class
+from .conftest import answer_confirms, css_class
 
 pytestmark = pytest.mark.browser
 
@@ -111,7 +111,7 @@ def test_work_centers_crud(page, ui_server, fresh_company):
     assert any(w["name"] == "Polishing Bench" for w in centers)
 
     # Delete it (auto-accept the hx_confirm dialog). It is not the default, so it goes.
-    page.on("dialog", lambda d: d.accept())
+    answer_confirms(page)
     page.locator("#wc-table tbody tr", has_text="Polishing Bench").first.locator(
         "button:has-text('Delete')").click()
     page.wait_for_selector("#wc-table tbody tr:nth-child(2)", state="detached", timeout=8000)

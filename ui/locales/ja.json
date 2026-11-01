@@ -7033,5 +7033,6 @@
   "perm.name.manage_permissions": "Edit role permissions",
   "perm.name.manage_company_lifecycle": "Deactivate, reset & reseed company",
   "perm.name.manage_billing": "Manage billing",
-  "contacts.new_both": "New Contact"
+  "contacts.new_both": "New Contact",
+  "table.confirm_delete_drafts_selected": "Delete selected drafts? A draft nothing else uses is erased and cannot be brought back. A draft another record still names moves to Deleted, where Restore brings it back."
 }

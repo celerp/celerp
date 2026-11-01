@@ -204,6 +204,38 @@ function _celerpTryAgainWithin(root) {
 }
 document.addEventListener('htmx:load', function(e) { _celerpTryAgainWithin(e.detail.elt); });
 document.addEventListener('htmx:afterSwap', function(e) { _celerpTryAgainWithin(e.detail.target); });
+// The app's own confirmation dialog, never the browser's plain box: resolves true on Confirm, false on
+// Cancel or Esc. Every hx-confirm question opens it, so a control that asks first asks the same way
+// everywhere.
+function celerpConfirm(question) {
+  return new Promise(function(resolve) {
+    var dialog = document.createElement('dialog');
+    dialog.className = 'modal-dialog confirm-dialog';
+    var form = document.createElement('form');
+    form.method = 'dialog';
+    var text = document.createElement('p');
+    text.className = 'confirm-dialog__question';
+    text.textContent = question;
+    var actions = document.createElement('div');
+    actions.className = 'modal-dialog__actions';
+    [['', 'btn btn--ghost', window.__shellI18n.cancel], ['ok', 'btn btn--primary', window.__shellI18n.confirm]].forEach(function(b) {
+      var button = document.createElement('button');
+      button.value = b[0]; button.className = b[1]; button.textContent = b[2];
+      actions.append(button);
+    });
+    form.append(text, actions);
+    dialog.append(form);
+    dialog.addEventListener('close', function() { dialog.remove(); resolve(dialog.returnValue === 'ok'); });
+    document.body.append(dialog);
+    dialog.showModal();
+    actions.lastChild.focus();
+  });
+}
+document.addEventListener('htmx:confirm', function(e) {
+  if (!e.detail.question || e.defaultPrevented) return;
+  e.preventDefault();
+  celerpConfirm(e.detail.question).then(function(yes) { if (yes) e.detail.issueRequest(true); });
+});
 function celerpToast(message, type, persist, action) {
   var container = document.getElementById('toast-container');
   if (!container) { alert(message); return; }
@@ -1582,7 +1614,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
       if (restartBtn) {
         restartBtn.addEventListener('click', function() {
-          if (!confirm(restartBtn.dataset.confirm)) return;
+          celerpConfirm(restartBtn.dataset.confirm).then(function(yes) {
+          if (!yes) return;
           var before = lastStatus && lastStatus.last_result ? lastStatus.last_result.at : null;
           restartBtn.disabled = true;
           fetch('/system/update', { method: 'POST' }).then(function(r) {
@@ -1600,6 +1633,7 @@ document.addEventListener('DOMContentLoaded', function() {
           }).catch(function() {
             restartBtn.disabled = false;
             setState(i18n.updateCheckFailed, false);
+          });
           });
         });
       }
@@ -2111,6 +2145,8 @@ def _shell_js_i18n(lang: str = "en") -> dict:
         "copied": t("shell.copied", lang),
         "comboPickOrAdd": t("shell.combo_pick_or_add", lang),
         "copyLabel": t("btn.copy", lang),
+        "cancel": t("btn.cancel", lang),
+        "confirm": t("btn.confirm", lang),
         "requestFailed": t("shell.request_failed", lang),
         "networkError": t("shell.network_error", lang),
         "markAsRead": t("shell.mark_as_read", lang),

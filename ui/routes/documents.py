@@ -5705,7 +5705,7 @@ def _doc_table(
             }}));
             if (keys.size <= 1) return;
             e.preventDefault();
-            if (window.confirm({_json.dumps(t("shipment.mixed_confirm"))})) e.detail.issueRequest(true);
+            celerpConfirm({_json.dumps(t("shipment.mixed_confirm"))}).then(function(yes) {{ if (yes) e.detail.issueRequest(true); }});
         }});
     }}
     // Bulk delete now runs via htmx on the button (hx-delete + HX-Refresh); the
@@ -10284,7 +10284,7 @@ async function celerpCsvImport(input, entityId) {{
       return;
     }}
     var _confirm=(target==='reserved'?_L.confirm_set_reserved:_L.confirm_set_available);
-    if(!window.confirm(celerpCount(_confirm, rows.length))) return;
+    if(!(await celerpConfirm(celerpCount(_confirm, rows.length)))) return;
     // Persist pending edits first so the server sees every selected line, then act. A failed
     // save has already shown its reason; acting on top of it would use stale lines.
     if(!(await _celerpPersist())) return;
@@ -10329,10 +10329,10 @@ async function celerpCsvImport(input, entityId) {{
     if(sel) sel.value='';
     _hideBtns(); _update();
   }};
-  window.liBulkDeleteConfirmed=function(){{
+  window.liBulkDeleteConfirmed=async function(){{
     var rows=table?Array.prototype.slice.call(table.querySelectorAll('tbody .li-select:checked')):[];
     if(!rows.length) return;
-    if(!window.confirm(celerpCount(_L.confirm_delete_lines, rows.length))) return;
+    if(!(await celerpConfirm(celerpCount(_L.confirm_delete_lines, rows.length)))) return;
     rows.forEach(function(cb){{cb.closest('tr').remove();}});
     celerpUpdateTotals(); celerpAutoSave();
     if(sel) sel.value='';
@@ -10706,7 +10706,7 @@ async function celerpCsvImport(input, entityId) {{
     if(sold){{
       msg=_L.sold_reserve_warn.replace('{{n}}', sold);
     }}
-    if(!window.confirm(msg)) return;
+    if(!(await celerpConfirm(msg))) return;
     if(!(await celerpLineAction(_liBase+_liEid+'/reserve-lines', rows, [['new_status','reserved']], _liKey(), _L.could_not_set_reserved)))
       return false;
     window.location.reload();
@@ -10743,7 +10743,7 @@ async function celerpCsvImport(input, entityId) {{
       // The whole line coming back needs no quantity: everything still out returns.
       if(qty!==max) fields.push([inp.name,String(qty)]);
     }}
-    if(!window.confirm(celerpCount(_L.confirm_set_available, acting.length))) return;
+    if(!(await celerpConfirm(celerpCount(_L.confirm_set_available, acting.length)))) return;
     if(!(await celerpLineAction(_liBase+_liEid+'/set-available', acting, fields, _liKey(), _L.could_not_set_available)))
       return false;
     window.location.reload();
