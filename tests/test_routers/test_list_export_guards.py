@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 
 async def _reg(client) -> str:
@@ -155,9 +155,9 @@ async def test_doc_list_and_export_share_sort(client):
     assert csv.text.strip().splitlines() == ["total", "5.0", "20.0", "50.0"], csv.text
 
     bad_sort = await client.get("/docs?sort=sideways", headers=_h(tok))
-    assert bad_sort.status_code == 422 and "sideways" in bad_sort.json()["detail"], bad_sort.text
+    assert bad_sort.status_code == 422 and "sideways" in refusal_text(bad_sort.json()["detail"]), bad_sort.text
     bad_dir = await client.get("/docs?sort=total&dir=up", headers=_h(tok))
-    assert bad_dir.status_code == 422 and bad_dir.json()["detail"] == t("documents.err_sort_dir", "en"), bad_dir.text
+    assert bad_dir.status_code == 422 and refusal_text(bad_dir.json()["detail"]) == t("documents.err_sort_dir", "en"), bad_dir.text
 
 
 # ── query and sort equivalence ────────────────────────────────────────────────

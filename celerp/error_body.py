@@ -34,7 +34,12 @@ def keyed(detail: Any) -> bool:
 
 
 def agent_route(scope) -> bool:
+    """Whether the route the request reached is one the AI calls. A request whose method
+    the matched path does not take is answered 405 by the router, not by that route."""
     route = scope.get("route")
+    methods = getattr(route, "methods", None)
+    if methods and scope.get("method") not in methods:
+        return False
     return (getattr(route, "openapi_extra", None) or {}).get("x-celerp-agent") is True
 
 

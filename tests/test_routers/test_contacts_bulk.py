@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import uuid
 import pytest
+from ui.i18n import refusal_text
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +210,7 @@ async def test_create_doc_with_deleted_contact_rejected(client):
         "currency": "USD",
     })
     assert r2.status_code == 422
-    assert "deleted" in r2.json()["detail"].lower()
+    assert "deleted" in refusal_text(r2.json()["detail"]).lower()
 
 
 # ---------------------------------------------------------------------------

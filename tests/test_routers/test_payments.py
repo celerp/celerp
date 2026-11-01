@@ -8,7 +8,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 from test_helpers import doc_version
 
 
@@ -373,7 +373,7 @@ async def test_payment_requires_bank_account(client):
     r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
                           json={"payment_date": "2026-01-15", "amount": 100.0})
     assert r.status_code == 422
-    assert r.json()["detail"] == t("documents.err_bank_account_required", "en")
+    assert refusal_text(r.json()["detail"]) == t("documents.err_bank_account_required", "en")
 
 
 @pytest.mark.asyncio
@@ -384,7 +384,7 @@ async def test_bulk_payment_requires_bank_account(client):
     r = await client.post("/docs/bulk-payment", headers=_h(token),
                           json={"doc_ids": [inv], "amount": 100.0, "payment_date": "2026-01-15"})
     assert r.status_code == 422
-    assert r.json()["detail"] == t("documents.err_bank_account_required", "en")
+    assert refusal_text(r.json()["detail"]) == t("documents.err_bank_account_required", "en")
 
 
 @pytest.mark.asyncio
@@ -395,7 +395,7 @@ async def test_cn_refund_requires_bank_account(client):
     r = await client.post(f"/docs/{cn}/cn-refund", headers=_h(token),
                           json={"date": "2026-01-15", "amount": 50.0})
     assert r.status_code == 422
-    assert r.json()["detail"] == t("documents.err_bank_account_required", "en")
+    assert refusal_text(r.json()["detail"]) == t("documents.err_bank_account_required", "en")
 
 
 @pytest.mark.asyncio
@@ -459,7 +459,7 @@ async def test_payment_on_a_base_currency_doc_refuses_a_rate_other_than_one(clie
                           json={"payment_date": "2026-01-15", "amount": 100.0,
                                 "bank_account": "1111", "conversion_rate": 35.0})
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("error.rate_not_one_for_base", "en", base="USD", raw=35.0)
+    assert refusal_text(r.json()["detail"]) == t("error.rate_not_one_for_base", "en", base="USD", raw=35.0)
 
     doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
     assert doc.get("payments", []) == [], "the refused payment must not have been recorded"
@@ -992,7 +992,7 @@ async def test_unvoid_blocked_in_locked_period(client):
 
     r = await client.post(f"/docs/{inv}/unvoid", headers=_h(token), json={})
     assert r.status_code == 422, r.text
-    assert "locked" in r.json()["detail"].lower()
+    assert "locked" in refusal_text(r.json()["detail"]).lower()
 
 
 @pytest.mark.asyncio

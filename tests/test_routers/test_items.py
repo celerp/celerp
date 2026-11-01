@@ -7,7 +7,7 @@ import uuid
 import pytest
 from test_helpers import merge_items, reserve_item, sell_item
 
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 
 async def _token(client) -> str:
@@ -352,7 +352,7 @@ async def test_create_item_requires_sell_by(client):
     h = {"Authorization": f"Bearer {token}"}
     r = await client.post("/items", json={"status": "available", "sku": "NO-SB", "name": "Widget", "quantity": 1}, headers=h)
     assert r.status_code == 422
-    assert r.json()["detail"] == t("inventory.err_sell_by_required", "en")
+    assert refusal_text(r.json()["detail"]) == t("inventory.err_sell_by_required", "en")
 
 
 @pytest.mark.asyncio
@@ -2787,7 +2787,7 @@ async def test_set_item_status_rejects_disposed(client):
 
     r = await client.post(f"/items/{iid}/status", json={"new_status": "disposed"}, headers=h)
     assert r.status_code == 422, r.text
-    detail = (r.json().get("detail") or "").lower()
+    detail = refusal_text(r.json().get("detail")).lower()
     # Distinct from the generic "Unknown status ..." rejection - names the write-off flow.
     assert "unknown status" not in detail
     assert "write" in detail

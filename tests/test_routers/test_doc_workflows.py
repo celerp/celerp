@@ -10,7 +10,7 @@ import pytest
 from sqlalchemy import select
 
 from celerp.models.ledger import LedgerEntry
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 from test_helpers import sell_item, doc_version
 
 
@@ -455,7 +455,7 @@ async def test_edit_ref_id_uniqueness(client, session):
         json={"fields_changed": {"ref_id": {"old": None, "new": "DUP-001"}}},
     )
     assert r.status_code == 409
-    assert r.json()["detail"] == t("documents.err_doc_number_taken", "en", number="DUP-001")
+    assert refusal_text(r.json()["detail"]) == t("documents.err_doc_number_taken", "en", number="DUP-001")
 
 
 @pytest.mark.asyncio
@@ -1900,7 +1900,7 @@ async def test_patch_doc_status_rejected(client, session):
         json={"fields_changed": {"status": {"old": "draft", "new": "paid"}}},
     )
     assert r.status_code == 422, r.text
-    assert "status" in r.json()["detail"]
+    assert "status" in refusal_text(r.json()["detail"])
 
 
 @pytest.mark.asyncio
