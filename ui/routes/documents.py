@@ -2457,8 +2457,14 @@ celerpUpdateBulkAlloc();
             if isinstance(e, APIError) and e.status == 401:
                 raise
             if isinstance(e, APIError) and e.status == 404:
-                from starlette.responses import HTMLResponse as _HR
-                return _HR(f"<h2>{t('documents.document_not_found')}</h2><p><a href='/docs'>{t('documents.back_to_documents')}</a></p>", status_code=404)
+                # A missing document is final: the app's own page says so and leads back to the list.
+                from ui.components.files import files_error_block
+                return await base_shell(
+                    breadcrumbs([(t("nav.dashboard"), "/dashboard")]),
+                    files_error_block((t("documents.document_not_found"), " ",
+                                       A(t("documents.back_to_documents"), href="/docs")), 404),
+                    title=page_title("nav.invoices"), nav_active=_doc_nav_key("invoice"), request=request,
+                )
             doc = {}
 
         # Inject company fields so "My company info" box is populated

@@ -13987,6 +13987,7 @@
     "tests/test_new_line_tax_ui.py::test_save_list_lines_returns_the_stored_money[quotation-107]": 0.008,
     "tests/test_new_line_tax_ui.py::test_save_list_lines_returns_the_stored_money[shipping_doc-100]": 0.009,
     "tests/test_new_line_tax_ui.py::test_send_to_new_invoice_starts_with_the_default_line_tax": 0.009,
+    "tests/test_no_access_pages.py::test_a_missing_document_opens_inside_the_app_with_a_way_back": 0.5,
     "tests/test_no_access_pages.py::test_a_report_the_role_cannot_read_names_the_permission_and_a_way_back": 0.5,
     "tests/test_no_access_pages.py::test_the_journal_entry_form_names_the_permission_and_a_way_back": 0.5,
     "tests/test_no_arrow_labels.py::test_back_to_setup_has_no_arrow": 0.005,
