@@ -691,7 +691,6 @@
   "doc.unvoid": "التراجع عن الإلغاء",
   "doc.valid_until": "صالحة حتى:",
   "doc.voided": "باطل",
-  "error.api_unavailable": "خدمة Celerp الخلفية لا تعمل. أعد تشغيل Celerp، وإذا تكرر ذلك فاسأل في GitHub Issues أو Discussions.",
   "error.cannot_deactivate_self": "لا يمكنك تعطيل حسابك بنفسك. اطلب من مسؤول آخر أو من مالك الشركة القيام بذلك.",
   "error.company_name_blank": "أدخل اسم الشركة.",
   "error.company_settings_unavailable": "تعذّر على Celerp قراءة إعدادات شركتك (المنطقة الزمنية والسنة المالية)، لذلك لا يمكن حساب التواريخ هنا. إذا تكرر ذلك، أعد تشغيل Celerp.",
@@ -1108,7 +1107,6 @@
   "msg._web_access": "🌐 الوصول إلى الويب",
   "msg.accepted_formats_import": "التنسيقات المقبولة: ‎.csv (UTF-8) أو ‎.xlsx (مصنف Excel)",
   "msg.agentic_record_creation": "إنشاء سجل الوكيل",
-  "msg.api_server_not_running": "تأكد من تشغيل خادم API قبل فتح واجهة المستخدم:",
   "msg.ask_anything_about_your_business_data": "اسأل أي شيء عن بيانات عملك...",
   "msg.automated_daily_backups": "النسخ الاحتياطية اليومية الآلية",
   "msg.batch_invoice_pdf_processing": "فاتورة دفعة ومعالجة PDF",
@@ -1160,7 +1158,6 @@
   "msg.relay_not_connected": "غير متصل بالويب",
   "msg.releases": "الإصدارات",
   "msg.remaining": "متبقي",
-  "msg.restart_api": "uvicorn celerp.main:app --reload",
   "msg.rows_ready": "صفوف جاهزة",
   "msg.search_inventory_placeholder": "بحث SKU، الاسم، الوصف...",
   "msg.search_placeholder": "البحث عن العناصر وجهات الاتصال والمستندات...",
@@ -4383,7 +4380,7 @@
   "company_backup.reactivated_title": "تمت إعادة تنشيط الشركة",
   "company_backup.reactivated_notice": "أصبحت {name} نشطة مرة أخرى.",
   "company_backup.reconnect_connectors": "الموصلات التي فُصلت عند إلغاء تنشيط هذه الشركة: {count}. أعد توصيلها من الإعدادات.",
-  "company_backup.file_failed": "{name}: {reason}",
+  "company_backup.file_failed": "{reason} ({name})",
   "company_backup.part.records": "السجلات",
   "company_backup.part.settings": "الإعدادات",
   "company_backup.part.attachments": "الملفات المرفقة",
@@ -7042,5 +7039,7 @@
   "docs.draw_line_not_shipped": "{name} is not out on memo {memo}, so there is nothing to invoice. If it has not been shipped yet, select the line and use Set as shipped first.",
   "documents.memo_still_on_memo_hint": "Goods out with the customer that no invoice, draft or issued, has taken yet, with the shipping, tax and discount left on the memo.",
   "documents.memo_nothing_out_hint": "Nothing is out with the customer yet. Select lines and use Set as shipped to send them.",
-  "doc.memo_outstanding_hint": "A memo is not paid. This is the memo's full value; the customer pays the invoices drawn from it."
+  "doc.memo_outstanding_hint": "A memo is not paid. This is the memo's full value; the customer pays the invoices drawn from it.",
+  "settings.field_required": "Fill in {field}.",
+  "inventory.cost_unknown_count": "{n} with unknown cost"
 }

@@ -220,6 +220,18 @@
     "doc.memo_outstanding_hint": {
       "en": "A memo is not paid. This is the memo's full value; the customer pays the invoices drawn from it.",
       "params": []
+    },
+    "settings.field_required": {
+      "en": "Fill in {field}.",
+      "params": [
+        "field"
+      ]
+    },
+    "inventory.cost_unknown_count": {
+      "en": "{n} with unknown cost",
+      "params": [
+        "n"
+      ]
     }
   }
 }

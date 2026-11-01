@@ -69,6 +69,12 @@ def mark_running(monkeypatch, *names: str) -> None:
     monkeypatch.setattr(loader, "_loaded", [*loader._loaded, *({"name": n, "version": "1.0.0"} for n in names)])
 
 
+def mark_not_running(monkeypatch, *names: str) -> None:
+    """Record *names* as not loaded: this process has not started them."""
+    from celerp.modules import loader
+    monkeypatch.setattr(loader, "_loaded", [m for m in loader._loaded if m["name"] not in names])
+
+
 async def lock_every_company(session) -> None:
     """Every company's lock, in id order, as a full rebuild's owner takes it first
     (dev_release_guard)."""

@@ -568,7 +568,8 @@ async def test_setup_failure_states_keep_typed_values(ui, router, session):
     router.overrides[("GET", "/auth/bootstrap-status")] = _raise(httpx.ConnectError)
     r = await ui.get("/setup")
     assert r.status_code == 200
-    assert t("error.api_unavailable") in _page(r)
+    assert t("page.api_unavailable") in _page(r)
+    assert t("api.unreachable") in _page(r)
     del router.overrides[("GET", "/auth/bootstrap-status")]
 
     good = _GOOD_SETUP

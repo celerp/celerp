@@ -994,13 +994,8 @@ def _api_error_page(message: str) -> FT:
     return Div(
         Div(
             Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
-            H1(t("error.api_unavailable"), cls="auth-title"),
+            H1(t("page.api_unavailable"), cls="auth-title"),
             P(message, cls="auth-subtitle text-danger"),
-            P(t("msg.api_server_not_running"), cls="auth-subtitle"),
-            Pre(
-                "uvicorn celerp.main:app --reload",
-                cls="error-detail-box mt-sm",
-            ),
             A(t("btn.retry"), href="/login", cls="btn btn--primary mt-md"),
             cls="auth-header",
         ),

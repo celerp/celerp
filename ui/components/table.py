@@ -966,16 +966,18 @@ def purchase_display_cell(
     pu_disp = display_unit(pu_val) if pu_val not in (None, "") else EMPTY
     cf_disp = str(cf_val) if cf_val not in (None, "") else EMPTY
     sb_disp = display_unit(sb_val) if sb_val not in (None, "") else EMPTY
-    return Td(
-        Span(
-            pu_disp,
-            cls="paired-primary",
-            title=t("label.dblclick_to_edit"),
-            hx_get=pu_edit,
-            hx_target="closest td",
-            hx_swap="outerHTML",
-            hx_trigger="dblclick",
-        ),
+    pu_span = Span(
+        pu_disp,
+        cls="paired-primary",
+        title=t("label.dblclick_to_edit"),
+        hx_get=pu_edit,
+        hx_target="closest td",
+        hx_swap="outerHTML",
+        hx_trigger="dblclick",
+    )
+    # No purchase unit: nothing converts yet, so one mark that opens the unit editor, not "-- → 1 --".
+    parts = (pu_span,) if pu_val in (None, "") else (
+        pu_span,
         Span(" → ", cls="paired-sep", title=t("table.purchase_unit_conversion_hint")),
         Span(
             cf_disp,
@@ -988,6 +990,9 @@ def purchase_display_cell(
         ),
         Span(" ", cls="paired-sep"),
         Span(sb_disp, cls="paired-tertiary cell-readonly"),
+    )
+    return Td(
+        *parts,
         cls="cell cell--paired cell--conversion",
         data_col="purchase_unit",
     )

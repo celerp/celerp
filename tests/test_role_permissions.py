@@ -100,7 +100,7 @@ def test_permissions_registry_shape():
         assert p.default_role == default, key
         assert p.grantable is grantable, key
         assert p.floor_role == floor, key
-        assert p.label, key
+        assert t(p.label_key) != p.label_key, key
 
 
 def test_fixed_rows_not_grantable():
@@ -1493,7 +1493,7 @@ def test_edit_inventory_amounts_in_catalogue():
     assert p.default_role == "operator"
     assert p.grantable is True
     assert p.floor_role == "viewer"
-    assert p.label
+    assert t(p.label_key) != p.label_key
     assert "edit_inventory" in by_key  # the amounts key does not replace the base key
 
 

@@ -1368,8 +1368,8 @@ def mounted_modules_running(monkeypatch):
 @pytest.fixture
 def docs_not_started(monkeypatch, mounted_modules_running):
     """This process has not started Documents: the loader lists it as not running."""
-    from celerp.modules import loader
-    monkeypatch.setattr(loader, "_loaded", [m for m in loader._loaded if m["name"] != "celerp-docs"])
+    from test_helpers import mark_not_running
+    mark_not_running(monkeypatch, "celerp-docs")
 
 
 @pytest.fixture

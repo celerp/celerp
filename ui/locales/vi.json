@@ -691,7 +691,6 @@
   "doc.unvoid": "Khôi phục chứng từ đã hủy",
   "doc.valid_until": "Có hiệu lực cho đến:",
   "doc.voided": "Vô hiệu",
-  "error.api_unavailable": "Dịch vụ nền của Celerp không chạy. Hãy khởi động lại Celerp; nếu vẫn xảy ra, hãy hỏi trên GitHub Issues hoặc Discussions.",
   "error.cannot_deactivate_self": "Bạn không thể vô hiệu hóa tài khoản của chính mình. Hãy nhờ một quản trị viên khác hoặc chủ sở hữu công ty làm việc này.",
   "error.company_name_blank": "Hãy nhập tên công ty.",
   "error.company_settings_unavailable": "Celerp không đọc được cài đặt công ty của bạn (múi giờ và năm tài chính), nên không thể tính các ngày ở đây. Nếu vẫn xảy ra, hãy khởi động lại Celerp.",
@@ -1108,7 +1107,6 @@
   "msg._web_access": "🌐 Truy cập web",
   "msg.accepted_formats_import": "Các định dạng được chấp nhận: .csv (UTF-8) hoặc .xlsx (sổ làm việc Excel)",
   "msg.agentic_record_creation": "Tạo bản ghi đại lý",
-  "msg.api_server_not_running": "Đảm bảo máy chủ API đang chạy trước khi mở giao diện người dùng:",
   "msg.ask_anything_about_your_business_data": "Hỏi bất cứ điều gì về dữ liệu kinh doanh của bạn...",
   "msg.automated_daily_backups": "Tự động sao lưu hàng ngày",
   "msg.batch_invoice_pdf_processing": "Hóa đơn hàng loạt & xử lý PDF",
@@ -1160,7 +1158,6 @@
   "msg.relay_not_connected": "Chưa kết nối truy cập web",
   "msg.releases": "Phiên bản",
   "msg.remaining": "Còn lại",
-  "msg.restart_api": "uvicorn celerp.main:app --reload",
   "msg.rows_ready": "hàng đã sẵn sàng",
   "msg.search_inventory_placeholder": "Tìm kiếm SKU, tên, mô tả...",
   "msg.search_placeholder": "Tìm kiếm mục, danh bạ, tài liệu…",
@@ -4383,7 +4380,7 @@
   "company_backup.reactivated_title": "Đã kích hoạt lại công ty",
   "company_backup.reactivated_notice": "{name} đã hoạt động trở lại.",
   "company_backup.reconnect_connectors": "Trình kết nối bị ngắt khi công ty này bị ngừng kích hoạt: {count}. Hãy kết nối lại trong Cài đặt.",
-  "company_backup.file_failed": "{name}: {reason}",
+  "company_backup.file_failed": "{reason} ({name})",
   "company_backup.part.records": "bản ghi",
   "company_backup.part.settings": "cài đặt",
   "company_backup.part.attachments": "tệp đính kèm",
@@ -7042,5 +7039,7 @@
   "docs.draw_line_not_shipped": "{name} is not out on memo {memo}, so there is nothing to invoice. If it has not been shipped yet, select the line and use Set as shipped first.",
   "documents.memo_still_on_memo_hint": "Goods out with the customer that no invoice, draft or issued, has taken yet, with the shipping, tax and discount left on the memo.",
   "documents.memo_nothing_out_hint": "Nothing is out with the customer yet. Select lines and use Set as shipped to send them.",
-  "doc.memo_outstanding_hint": "A memo is not paid. This is the memo's full value; the customer pays the invoices drawn from it."
+  "doc.memo_outstanding_hint": "A memo is not paid. This is the memo's full value; the customer pays the invoices drawn from it.",
+  "settings.field_required": "Fill in {field}.",
+  "inventory.cost_unknown_count": "{n} with unknown cost"
 }

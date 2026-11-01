@@ -1390,13 +1390,16 @@ async def _save_decisions(request: Request, mode: WizardMode):
 # Step 4: review and start
 # ---------------------------------------------------------------------------
 
+# The first owner's account fields: form name, label key, input type.
+_ACCOUNT_FIELDS = (
+    ("name", "label.your_name", "text"),
+    ("email", "label.email", "email"),
+    ("password", "label.password", "password"),
+    ("confirm_password", "label.confirm_password", "password"),
+)
+
+
 def account_fields(values: dict) -> list:
-    fields = [
-        ("name", "label.your_name", "text"),
-        ("email", "label.email", "email"),
-        ("password", "label.password", "password"),
-        ("confirm_password", "label.confirm_password", "password"),
-    ]
     return [
         Div(
             Label(t(label), For=name, cls="form-label"),
@@ -1404,7 +1407,7 @@ def account_fields(values: dict) -> list:
                   value=values.get(name, "") if kind != "password" else None),
             cls="form-group",
         )
-        for name, label, kind in fields
+        for name, label, kind in _ACCOUNT_FIELDS
     ]
 
 
@@ -1468,8 +1471,9 @@ async def _review(request: Request, mode: WizardMode):
 def account_error(values: dict) -> str | None:
     """The first owner's account fields, checked before the API is called."""
     from celerp.services.auth import MIN_PASSWORD_LENGTH
-    if not all(values.get(k) for k in ("name", "email", "password")):
-        return t("settings.all_fields_required")
+    missing = next((label for name, label, _ in _ACCOUNT_FIELDS if not values.get(name)), None)
+    if missing is not None:
+        return t("settings.field_required", field=t(missing))
     if values["password"] != values.get("confirm_password"):
         return t("settings.passwords_do_not_match")
     if len(values["password"]) < MIN_PASSWORD_LENGTH:
@@ -1499,7 +1503,7 @@ async def _start(request: Request, mode: WizardMode):
         return await _review_page(request, mode, entry, values=values, **feedback)
 
     if not values["company_name"]:
-        return await review(error=t("settings.all_fields_required"))
+        return await review(error=t("settings.field_required", field=t("label.company_name")))
     try:
         if mode.bootstrap:
             if (problem := account_error(values)) is not None:

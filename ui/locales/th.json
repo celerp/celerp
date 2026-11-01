@@ -691,7 +691,6 @@
   "doc.unvoid": "ยกเลิกการเป็นโมฆะ",
   "doc.valid_until": "ใช้ได้จนถึง:",
   "doc.voided": "เป็นโมฆะ",
-  "error.api_unavailable": "บริการเบื้องหลังของ Celerp ไม่ได้ทำงาน รีสตาร์ต Celerp หากยังเกิดขึ้นอีก ให้สอบถามที่ GitHub Issues หรือ Discussions",
   "error.cannot_deactivate_self": "คุณปิดใช้งานบัญชีของตัวเองไม่ได้ ขอให้ผู้ดูแลระบบคนอื่นหรือเจ้าของบริษัทดำเนินการ",
   "error.company_name_blank": "ป้อนชื่อบริษัท",
   "error.company_settings_unavailable": "Celerp อ่านการตั้งค่าบริษัทของคุณ (เขตเวลาและปีบัญชี) ไม่ได้ จึงคำนวณวันที่ในหน้านี้ไม่ได้ หากยังเกิดขึ้นอีก ให้รีสตาร์ท Celerp",
@@ -1108,7 +1107,6 @@
   "msg._web_access": "🌐 การเข้าถึงเว็บ",
   "msg.accepted_formats_import": "รูปแบบที่ยอมรับ: .csv (UTF-8) หรือ .xlsx (เวิร์กบุ๊ก Excel)",
   "msg.agentic_record_creation": "การสร้างบันทึกตัวแทน",
-  "msg.api_server_not_running": "ตรวจสอบให้แน่ใจว่าเซิร์ฟเวอร์ API ทำงานก่อนที่จะเปิด UI:",
   "msg.ask_anything_about_your_business_data": "ถามอะไรก็ได้เกี่ยวกับข้อมูลธุรกิจของคุณ...",
   "msg.automated_daily_backups": "การสำรองข้อมูลรายวันอัตโนมัติ",
   "msg.batch_invoice_pdf_processing": "ใบแจ้งหนี้เป็นชุด & การประมวลผล PDF",
@@ -1160,7 +1158,6 @@
   "msg.relay_not_connected": "ไม่ได้เชื่อมต่อการเข้าถึงเว็บ",
   "msg.releases": "รุ่น",
   "msg.remaining": "ที่เหลืออยู่",
-  "msg.restart_api": "uvicorn celerp.main:app --reload",
   "msg.rows_ready": "แถวพร้อมแล้ว",
   "msg.search_inventory_placeholder": "ค้นหา SKU ชื่อ คำอธิบาย...",
   "msg.search_placeholder": "ค้นหารายการ ผู้ติดต่อ เอกสาร...",
@@ -4383,7 +4380,7 @@
   "company_backup.reactivated_title": "เปิดใช้งานบริษัทอีกครั้งแล้ว",
   "company_backup.reactivated_notice": "{name} กลับมาใช้งานได้แล้ว",
   "company_backup.reconnect_connectors": "ตัวเชื่อมต่อที่ถูกตัดการเชื่อมต่อเมื่อบริษัทนี้ถูกปิดใช้งาน: {count} เชื่อมต่อใหม่ได้ในการตั้งค่า",
-  "company_backup.file_failed": "{name}: {reason}",
+  "company_backup.file_failed": "{reason} ({name})",
   "company_backup.part.records": "ข้อมูลบันทึก",
   "company_backup.part.settings": "การตั้งค่า",
   "company_backup.part.attachments": "ไฟล์แนบ",
@@ -7042,5 +7039,7 @@
   "docs.draw_line_not_shipped": "{name} is not out on memo {memo}, so there is nothing to invoice. If it has not been shipped yet, select the line and use Set as shipped first.",
   "documents.memo_still_on_memo_hint": "Goods out with the customer that no invoice, draft or issued, has taken yet, with the shipping, tax and discount left on the memo.",
   "documents.memo_nothing_out_hint": "Nothing is out with the customer yet. Select lines and use Set as shipped to send them.",
-  "doc.memo_outstanding_hint": "A memo is not paid. This is the memo's full value; the customer pays the invoices drawn from it."
+  "doc.memo_outstanding_hint": "A memo is not paid. This is the memo's full value; the customer pays the invoices drawn from it.",
+  "settings.field_required": "Fill in {field}.",
+  "inventory.cost_unknown_count": "{n} with unknown cost"
 }

@@ -691,7 +691,6 @@
   "doc.unvoid": "Deshacer anulación",
   "doc.valid_until": "Válido hasta:",
   "doc.voided": "Anulado",
-  "error.api_unavailable": "El servicio en segundo plano de Celerp no está funcionando. Reinicie Celerp; si sigue pasando, pregunte en GitHub Issues o Discussions.",
   "error.cannot_deactivate_self": "No puede desactivar su propia cuenta. Pida a otro administrador o al dueño de la empresa que lo haga.",
   "error.company_name_blank": "Escriba un nombre de empresa.",
   "error.company_settings_unavailable": "Celerp no pudo leer la configuración de su empresa (zona horaria y año fiscal), así que no se pueden calcular las fechas aquí. Si sigue pasando, reinicie Celerp.",
@@ -1108,7 +1107,6 @@
   "msg._web_access": "🌐 Acceso web",
   "msg.accepted_formats_import": "Formatos aceptados: .csv (UTF-8) o .xlsx (libro de Excel)",
   "msg.agentic_record_creation": "Creación de registros agentes",
-  "msg.api_server_not_running": "Asegúrese de que el servidor API esté ejecutándose antes de abrir la interfaz de usuario:",
   "msg.ask_anything_about_your_business_data": "Pregunte cualquier cosa sobre los datos de su negocio...",
   "msg.automated_daily_backups": "Copias de seguridad diarias automatizadas",
   "msg.batch_invoice_pdf_processing": "Procesamiento de facturas por lotes y PDF",
@@ -1160,7 +1158,6 @@
   "msg.relay_not_connected": "Sin acceso web",
   "msg.releases": "Versiones",
   "msg.remaining": "Restante",
-  "msg.restart_api": "uvicorn celerp.main:app --reload",
   "msg.rows_ready": "filas listas",
   "msg.search_inventory_placeholder": "Buscar SKU, nombre, descripción...",
   "msg.search_placeholder": "Buscar elementos, contactos, documentos...",
@@ -4383,7 +4380,7 @@
   "company_backup.reactivated_title": "Empresa reactivada",
   "company_backup.reactivated_notice": "{name} vuelve a estar activa.",
   "company_backup.reconnect_connectors": "Conectores desconectados al desactivar esta empresa: {count}. Vuelva a conectarlos en Configuración.",
-  "company_backup.file_failed": "{name}: {reason}",
+  "company_backup.file_failed": "{reason} ({name})",
   "company_backup.part.records": "registros",
   "company_backup.part.settings": "ajustes",
   "company_backup.part.attachments": "archivos adjuntos",
@@ -7042,5 +7039,7 @@
   "docs.draw_line_not_shipped": "{name} is not out on memo {memo}, so there is nothing to invoice. If it has not been shipped yet, select the line and use Set as shipped first.",
   "documents.memo_still_on_memo_hint": "Goods out with the customer that no invoice, draft or issued, has taken yet, with the shipping, tax and discount left on the memo.",
   "documents.memo_nothing_out_hint": "Nothing is out with the customer yet. Select lines and use Set as shipped to send them.",
-  "doc.memo_outstanding_hint": "A memo is not paid. This is the memo's full value; the customer pays the invoices drawn from it."
+  "doc.memo_outstanding_hint": "A memo is not paid. This is the memo's full value; the customer pays the invoices drawn from it.",
+  "settings.field_required": "Fill in {field}.",
+  "inventory.cost_unknown_count": "{n} with unknown cost"
 }

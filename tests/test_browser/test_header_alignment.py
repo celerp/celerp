@@ -7,7 +7,9 @@ box typed into sits right like the figures it edits; and no header is cut short.
 from __future__ import annotations
 
 import pytest
+from playwright.sync_api import expect
 
+from .conftest import css_class
 from .test_mobile_reflow import _MAIN_PAGES, seed_main_pages, sweep_main_pages
 
 pytestmark = pytest.mark.browser
@@ -34,7 +36,7 @@ _ALIGNMENT_JS = """() => {
       else if (td.matches(FIGURES) && !right(td)) out.push(`${label}: figures sit ${getComputedStyle(td).textAlign}`);
     });
     for (const inp of t.querySelectorAll('input[type=number]'))
-      if (inp.offsetParent && !right(inp)) out.push(`number box ${inp.name || inp.className} sits ${getComputedStyle(inp).textAlign}`);
+      if (inp.offsetParent && !right(inp)) out.push(`number box ${inp.name || inp.id || inp.tagName} sits ${getComputedStyle(inp).textAlign}`);
   }
   return out;
 }"""
@@ -69,11 +71,11 @@ _LINE_EDITOR_JS = """() => {
   const out = [];
   const t = document.querySelector('table.doc-lines'), box = t.closest('.table-scroll-wrap');
   for (const el of t.querySelectorAll('thead th, tbody select'))
-    if (el.offsetParent && el.scrollWidth > el.clientWidth + 1) out.push(`cut short: ${el.tagName === 'SELECT' ? el.selectedOptions[0].text : el.innerText.trim() || el.className}`);
+    if (el.offsetParent && el.scrollWidth > el.clientWidth + 1) out.push(`cut short: ${el.tagName === 'SELECT' ? el.selectedOptions[0].text : el.innerText.trim() || el.tagName}`);
   for (const inp of t.querySelectorAll('tbody input[type=number]'))
     if (inp.offsetParent && inp.getBoundingClientRect().width < 40) out.push(`number box ${inp.name} too narrow`);
   const scrolls = box.scrollWidth > box.clientWidth;
-  return {wrong: out, scrolls, cue: box.classList.contains('scroll-more-right')};
+  return {wrong: out, scrolls};
 }"""
 
 
@@ -87,8 +89,9 @@ def test_the_line_editor_reads_whole_on_a_phone_and_in_spanish(page, ui_server, 
     seen = page.evaluate(_LINE_EDITOR_JS)
     assert not seen["wrong"], "\n".join(seen["wrong"])
     if width < 800:
-        assert seen["scrolls"] and seen["cue"], seen
+        assert seen["scrolls"], seen
+        box = page.locator(".table-scroll-wrap:has(table.doc-lines)")
+        expect(box).to_have_class(css_class("scroll-more-right"))
         # Scrolled to its end, the right edge no longer fades.
-        page.locator(".table-scroll-wrap:has(table.doc-lines)").evaluate("b => b.scrollLeft = b.scrollWidth")
-        page.wait_for_timeout(200)
-        assert page.evaluate(_LINE_EDITOR_JS)["cue"] is False
+        box.evaluate("b => b.scrollLeft = b.scrollWidth")
+        expect(box).not_to_have_class(css_class("scroll-more-right"))

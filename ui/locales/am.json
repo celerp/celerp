@@ -741,7 +741,6 @@
   "doc.unvoid": "ከውድቅ መልስ",
   "doc.valid_until": "የሚያገለግልበት ቀን፦",
   "doc.voided": "ውድቅ ተደርጓል",
-  "error.api_unavailable": "የCelerp የጀርባ አገልግሎት እየሠራ አይደለም። Celerpን እንደገና ያስጀምሩ፤ መከሰቱን ከቀጠለ በGitHub Issues ወይም Discussions ላይ ይጠይቁ።",
   "error.cannot_deactivate_self": "የራስዎን መለያ ማሰናከል አይችሉም። ሌላ አስተዳዳሪ ወይም የኩባንያውን ባለቤት እንዲያደርገው ይጠይቁ።",
   "error.company_name_blank": "የኩባንያ ስም ያስገቡ።",
   "error.company_settings_unavailable": "Celerp የኩባንያዎን ቅንብሮች (የሰዓት ሰቅ እና የበጀት ዓመት) ማንበብ አልቻለም፣ ስለዚህ እዚህ ያሉትን ቀናት ማስላት አይቻልም። ከቀጠለ Celerpን እንደገና ያስጀምሩ።",
@@ -1201,7 +1200,6 @@
   "msg._web_access": "🌐 የድር መዳረሻ",
   "msg.accepted_formats_import": "ተቀባይነት ያላቸው ፎርማቶች፦ .csv (UTF-8) ወይም .xlsx (Excel የስራ መጽሐፍ)",
   "msg.agentic_record_creation": "ራስ-ገዝ የመዝገብ አፈጣጠር",
-  "msg.api_server_not_running": "በይነገጹን ከመክፈትዎ በፊት የAPI አገልጋዩ እየሰራ መሆኑን ያረጋግጡ፦",
   "msg.ask_anything_about_your_business_data": "ስለ ንግድ ውሂብዎ ማንኛውንም ነገር ይጠይቁ...",
   "msg.automated_daily_backups": "በራስ-ሰር የየቀኑ ምትኬዎች",
   "msg.batch_invoice_pdf_processing": "የሽያጭ ደረሰኝ እና PDF በጅምላ ማስኬድ",
@@ -1254,7 +1252,6 @@
   "msg.relay_not_connected": "ከድር መዳረሻ ጋር አልተገናኘም",
   "msg.releases": "ስሪቶች",
   "msg.remaining": "የቀረ",
-  "msg.restart_api": "uvicorn celerp.main:app --reload",
   "msg.rows_ready": "ረድፎች ዝግጁ ናቸው",
   "msg.saved": "ተቀምጧል",
   "msg.search_help": "የፍለጋ አገባብ",
@@ -4383,7 +4380,7 @@
   "company_backup.reactivated_title": "ኩባንያው እንደገና ነቅቷል",
   "company_backup.reactivated_notice": "{name} እንደገና ንቁ ነው።",
   "company_backup.reconnect_connectors": "ይህ ኩባንያ ሲቦዝን የተቋረጡ አገናኞች: {count}። በቅንብሮች ውስጥ እንደገና ያገናኟቸው።",
-  "company_backup.file_failed": "{name}: {reason}",
+  "company_backup.file_failed": "{reason} ({name})",
   "company_backup.part.records": "መዝገቦች",
   "company_backup.part.settings": "ቅንብሮች",
   "company_backup.part.attachments": "የተያያዙ ፋይሎች",
@@ -7042,5 +7039,7 @@
   "docs.draw_line_not_shipped": "{name} is not out on memo {memo}, so there is nothing to invoice. If it has not been shipped yet, select the line and use Set as shipped first.",
   "documents.memo_still_on_memo_hint": "Goods out with the customer that no invoice, draft or issued, has taken yet, with the shipping, tax and discount left on the memo.",
   "documents.memo_nothing_out_hint": "Nothing is out with the customer yet. Select lines and use Set as shipped to send them.",
-  "doc.memo_outstanding_hint": "A memo is not paid. This is the memo's full value; the customer pays the invoices drawn from it."
+  "doc.memo_outstanding_hint": "A memo is not paid. This is the memo's full value; the customer pays the invoices drawn from it.",
+  "settings.field_required": "Fill in {field}.",
+  "inventory.cost_unknown_count": "{n} with unknown cost"
 }

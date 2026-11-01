@@ -691,7 +691,6 @@
   "doc.unvoid": "Pulihkan pembatalan",
   "doc.valid_until": "Berlaku hingga:",
   "doc.voided": "Tidak berlaku",
-  "error.api_unavailable": "Layanan latar belakang Celerp tidak berjalan. Mulai ulang Celerp; jika terus terjadi, tanyakan di GitHub Issues atau Discussions.",
   "error.cannot_deactivate_self": "Anda tidak dapat menonaktifkan akun Anda sendiri. Minta admin lain atau pemilik perusahaan melakukannya.",
   "error.company_name_blank": "Masukkan nama perusahaan.",
   "error.company_settings_unavailable": "Celerp tidak dapat membaca pengaturan perusahaan Anda (zona waktu dan tahun buku), sehingga tanggal di sini tidak dapat dihitung. Jika terus terjadi, mulai ulang Celerp.",
@@ -1108,7 +1107,6 @@
   "msg._web_access": "🌐 Akses Web",
   "msg.accepted_formats_import": "Format yang diterima: .csv (UTF-8) atau .xlsx (buku kerja Excel)",
   "msg.agentic_record_creation": "Pembuatan catatan agenik",
-  "msg.api_server_not_running": "Pastikan server API berjalan sebelum membuka UI:",
   "msg.ask_anything_about_your_business_data": "Tanyakan apa pun tentang data bisnis Anda...",
   "msg.automated_daily_backups": "Pencadangan harian otomatis",
   "msg.batch_invoice_pdf_processing": "Faktur batch & pemrosesan PDF",
@@ -1160,7 +1158,6 @@
   "msg.relay_not_connected": "Tidak terhubung ke akses web",
   "msg.releases": "Rilis",
   "msg.remaining": "Tersisa",
-  "msg.restart_api": "uvicorn celerp.main:app --reload",
   "msg.rows_ready": "baris siap",
   "msg.search_inventory_placeholder": "Cari SKU, nama, deskripsi...",
   "msg.search_placeholder": "Cari item, kontak, dokumen…",
@@ -4383,7 +4380,7 @@
   "company_backup.reactivated_title": "Perusahaan diaktifkan kembali",
   "company_backup.reactivated_notice": "{name} aktif kembali.",
   "company_backup.reconnect_connectors": "Konektor yang terputus saat perusahaan ini dinonaktifkan: {count}. Hubungkan kembali di Pengaturan.",
-  "company_backup.file_failed": "{name}: {reason}",
+  "company_backup.file_failed": "{reason} ({name})",
   "company_backup.part.records": "catatan",
   "company_backup.part.settings": "pengaturan",
   "company_backup.part.attachments": "file lampiran",
@@ -7042,5 +7039,7 @@
   "docs.draw_line_not_shipped": "{name} is not out on memo {memo}, so there is nothing to invoice. If it has not been shipped yet, select the line and use Set as shipped first.",
   "documents.memo_still_on_memo_hint": "Goods out with the customer that no invoice, draft or issued, has taken yet, with the shipping, tax and discount left on the memo.",
   "documents.memo_nothing_out_hint": "Nothing is out with the customer yet. Select lines and use Set as shipped to send them.",
-  "doc.memo_outstanding_hint": "A memo is not paid. This is the memo's full value; the customer pays the invoices drawn from it."
+  "doc.memo_outstanding_hint": "A memo is not paid. This is the memo's full value; the customer pays the invoices drawn from it.",
+  "settings.field_required": "Fill in {field}.",
+  "inventory.cost_unknown_count": "{n} with unknown cost"
 }
