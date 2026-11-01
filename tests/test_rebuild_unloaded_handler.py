@@ -8,7 +8,7 @@ import uuid
 import pytest
 from sqlalchemy import select
 
-from test_helpers import register_admin
+from test_helpers import lock_every_company, register_admin
 
 
 async def _rows(session, company_id) -> dict:
@@ -56,6 +56,7 @@ async def test_full_rebuild_with_a_module_handler_not_running_is_refused(client,
     slots.unregister_module("celerp-contacts")
     try:
         with pytest.raises(UnhandledEventsError) as raised:
+            await lock_every_company(session)
             await ProjectionEngine.rebuild(session)
     finally:
         slots._slots.clear()
@@ -85,5 +86,6 @@ async def test_ledger_with_retired_bom_events_still_rebuilds(client, session):
 
     r = await client.post("/ledger/rebuild", headers=h)
     assert r.status_code == 200, r.text
+    await lock_every_company(session)
     await ProjectionEngine.rebuild(session)
     assert bom in await _rows(session, cid)

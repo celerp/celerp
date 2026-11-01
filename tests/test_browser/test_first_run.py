@@ -67,6 +67,19 @@ def test_a_new_install_inherits_nothing_the_other_tests_set(monkeypatch):
     assert env["PATH"] == os.environ["PATH"]
 
 
+def test_a_new_test_waits_for_the_restart_the_last_one_started(install):
+    """Setup with a business type restarts the install and the test can end on the activating
+    page while the API is down: the next test waits for it to start again, never finding it gone."""
+    install.restart_requested.touch()  # as POST /system/restart does before stopping the API
+    api = install.servers.procs[0]
+    api.terminate()
+    api.wait(timeout=10)
+
+    install.ensure_new()
+
+    assert httpx.get(f"{install.api}/auth/bootstrap-status", timeout=10).json()["bootstrapped"] is False
+
+
 @pytest.mark.parametrize("width", [390, 1280])
 def test_first_run_one_form_to_dashboard(playwright, fresh, width):
     """INV-1, INV-12: one form, one submit, then the dashboard; nothing scrolls sideways."""

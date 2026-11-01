@@ -44,7 +44,9 @@ async def _seed(factory, auth_hash: str) -> dict:
         member = User(email=f"member-{suffix}@example.com", name="Member", auth_hash=auth_hash)
         owner = User(email=f"owner-{suffix}@example.com", name="Owner", auth_hash=hash_password(OLD))
         company = Company(name="Race Co", slug=f"race-{suffix}", settings={})
-        s.add_all([member, owner, company])
+        s.add_all([member, owner])
+        await s.flush()
+        s.add(company)
         await s.flush()
         s.add_all([
             UserCompany(user_id=member.id, company_id=company.id, role="manager", is_active=True),

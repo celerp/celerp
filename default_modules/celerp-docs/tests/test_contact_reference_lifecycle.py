@@ -11,7 +11,7 @@ import uuid
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from test_helpers import perm_setup
+from test_helpers import perm_setup, remove_company
 from ui.i18n import t
 
 
@@ -113,10 +113,8 @@ async def _seed(factory, company_id, events):
 @pytest.mark.parametrize("retire", ["merge", "delete"])
 async def test_selection_waits_for_a_merge_or_delete_in_progress(_db_engine, retire):
     from fastapi import HTTPException
-    from sqlalchemy import delete
 
     from celerp.models.company import Company, User
-    from celerp.models.ledger import LedgerEntry
     from celerp.models.projections import Projection
     from celerp_contacts import routes as contact_routes
     from celerp_docs import routes
@@ -125,8 +123,9 @@ async def test_selection_waits_for_a_merge_or_delete_in_progress(_db_engine, ret
     factory = async_sessionmaker(bind=_db_engine, class_=AsyncSession, expire_on_commit=False)
     company_id, user_id = uuid.uuid4(), uuid.uuid4()
     async with factory() as s:
-        s.add(Company(id=company_id, name="RetireCo", slug=f"retire-{company_id.hex[:8]}"))
         s.add(User(id=user_id, email=f"retire-{user_id.hex[:8]}@example.test", name="Editor"))
+        await s.flush()
+        s.add(Company(id=company_id, name="RetireCo", slug=f"retire-{company_id.hex[:8]}"))
         await s.commit()
     await _seed(factory, company_id, [
         ("contact:A", "contact", "crm.contact.created", {"name": "Alpha", "contact_type": "customer"}),
@@ -167,12 +166,7 @@ async def test_selection_waits_for_a_merge_or_delete_in_progress(_db_engine, ret
             state = (await s.get(Projection, {"company_id": company_id, "entity_id": "list:RET-1"})).state
         assert state.get("contact_id") is None
     finally:
-        async with factory() as s:
-            await s.execute(delete(Projection).where(Projection.company_id == company_id))
-            await s.execute(delete(LedgerEntry).where(LedgerEntry.company_id == company_id))
-            await s.execute(delete(Company).where(Company.id == company_id))
-            await s.execute(delete(User).where(User.id == user_id))
-            await s.commit()
+        await remove_company(factory, company_id, user_id)
 
 
 class _NoCommit:

@@ -231,8 +231,11 @@ async def test_a_company_with_its_own_module_list_gets_the_starter_modules_at_th
 async def test_a_start_that_fails_before_its_commit_leaves_the_installations_modules_as_they_were(
         client, session, monkeypatch, tmp_path):
     """Nothing is turned on that no company was told about: a start that fails before its
-    commit leaves the config file as it was, and the next start tries again."""
+    commit leaves the config file as it was and tells no company the modules were turned
+    on, and the next start tries again. (The start still tells each company it held the
+    records back, since their modules are off: that notice is not the starter one.)"""
     from celerp.models.notification import Notification
+    from celerp.services.starter_modules import NOTICE_TITLE
 
     _without(monkeypatch, *_STARTERS)
     cfg = _installed(monkeypatch, tmp_path, [])
@@ -247,7 +250,7 @@ async def test_a_start_that_fails_before_its_commit_leaves_the_installations_mod
     assert _enabled(cfg) == set()
     session.expire_all()
     assert not (await session.execute(select(Notification).where(
-        Notification.company_id == old["company_id"]))).scalars().all()
+        Notification.company_id == old["company_id"], Notification.title == NOTICE_TITLE))).scalars().all()
     await _start(monkeypatch)
     assert _STARTERS <= _enabled(cfg)
 

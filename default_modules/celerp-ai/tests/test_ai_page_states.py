@@ -219,7 +219,7 @@ async def test_plan_counts_from_account_methods_and_omitted_when_unknown(ui_clie
 
 # ── Relay refusals of a conversation reply ───────────────────────────────────
 # Each error is built the way the UI client builds it from the API's response,
-# carrying the relay's own body (relay/routers/ai.py).
+# carrying the relay's own body.
 
 def _refusal(status: int, detail):
     from ui.api_client import _api_error

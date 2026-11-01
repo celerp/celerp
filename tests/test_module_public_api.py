@@ -318,6 +318,7 @@ async def test_ai_query_legacy_positional_call_still_checks_authority(session, a
 @pytest.mark.asyncio
 async def test_ai_query_refused_for_another_company(session, ask):
     company_id, user_id = await seed_member(session)
+    await session.commit()       # each company is set up in its own transaction
     other_id, _ = await seed_member(session)
     async with signed_request(session, company_id, user_id):
         with pytest.raises(HTTPException) as exc:
@@ -367,6 +368,7 @@ async def test_ai_query_refused_without_a_signed_request(session, ask, with_sess
 async def test_ai_query_answers_only_the_signed_in_caller(session, ask, signed):
     """An AI query answers only for the signed-in user who asked it."""
     company_id, viewer_id = await seed_member(session, "viewer")
+    await session.commit()       # each company is set up in its own transaction
     _, other_id = await seed_member(session)
     from celerp.models.accounting import UserCompany
     session.add(UserCompany(user_id=other_id, company_id=company_id, role="operator", is_active=True))

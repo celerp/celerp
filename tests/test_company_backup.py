@@ -186,7 +186,6 @@ async def _bk_seed_portable(engine, cid, marker: str) -> None:
     from celerp.models.company import WorkCenter
     async with maker(engine)() as s:
         loc = await s.scalar(text("SELECT id FROM locations WHERE company_id = :c LIMIT 1"), {"c": cid})
-        s.add(WorkCenter(company_id=cid, name=f"{marker} bench", wip_location_id=loc, is_default=True))
         s.add(Account(company_id=cid, code="1111", name=f"{marker} cash", account_type="asset"))
         bank = BankAccount(company_id=cid, chart_account_code="1111", bank_name=f"{marker} bank",
                            account_number="****1234", bank_type="checking", currency="USD")
@@ -201,6 +200,8 @@ async def _bk_seed_portable(engine, cid, marker: str) -> None:
         s.add(ReconciliationRule(company_id=cid, bank_account_id=bank.id, match_pattern=f"{marker} fee",
                                  target_account_code="1111"))
         s.add(LabelTemplate(company_id=cid, name=f"{marker} label", fields=[{"key": "name"}]))
+        await s.flush()
+        s.add(WorkCenter(company_id=cid, name=f"{marker} bench", wip_location_id=loc, is_default=True))
         await s.commit()
 
 
@@ -435,6 +436,23 @@ async def test_activation_payload_has_no_handoff():
     with pytest.raises(TypeError):
         activate_payload("iid", handoff_id="h-1")
     assert "handoff_id" not in activate_payload("iid", first_boot=True, activation_verifier="v", boot_id="b")
+
+
+async def test_restore_inserts_every_row_under_the_restored_companys_lock(real_engine, real_client, tmp_path,
+                                                                         monkeypatch):
+    """Each table's bulk insert names the restored company, so the lock checker judges every
+    restored row under that company: the census finds no row the restore inserts outside it."""
+    _bk_local(monkeypatch, tmp_path)
+    _, _, tok = await _bk_setup(real_engine)
+    recorder = sys.modules["lock_rank"].RECORDER
+
+    def inserts() -> set[str]:
+        rows = {c for c in recorder.classes if c.startswith("row:")}
+        return {s for s in recorder.ungated_sites(rows, "celerp/services/company_backup.py") if " _insert " in s}
+
+    before = inserts()
+    assert (await restore(real_client, tok, await download(real_client, tok))).status_code == 201
+    assert inserts() - before == set()
 
 
 @pytest.mark.parametrize("verifier", ["", "pending-verifier"])
@@ -5402,3 +5420,21 @@ async def test_attachments_of_a_restore_that_stopped_are_reconciled(real_engine,
     await cb.reconcile_landings()
     assert (stored / new / "photo.png").is_file() and cb.attachments.landing_companies() == []
     assert (stored / str(cid) / "photo.png").read_bytes() == b"alpha-photo"
+
+
+async def test_a_restore_never_waits_for_its_landing_mark(real_engine, tmp_path, monkeypatch):
+    """A restore lands a company id it just drew, so no one else can hold that id's landing
+    key (reconciling only tries it): finding it held is a broken invariant and fails at once
+    instead of waiting while the restore holds its other locks."""
+    from sqlalchemy.ext.asyncio import AsyncSession
+    cb = _bk_cb()
+    _bk_local(monkeypatch, tmp_path)
+    company_id = uuid.uuid4()
+    async with AsyncSession(bind=real_engine) as holder, AsyncSession(bind=real_engine) as session:
+        await cb._land(holder, company_id)
+        with pytest.raises(RuntimeError):
+            await asyncio.wait_for(cb._land(session, company_id), timeout=10)
+        await session.rollback()
+        await holder.rollback()
+    assert cb.attachments.landing_companies() == [str(company_id)]
+    cb.attachments.clear_landing(str(company_id))

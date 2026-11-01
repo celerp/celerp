@@ -169,6 +169,16 @@ class StorageBackend(Protocol):
         """Content this backend stored for ``company_id`` under ``stored_id``, or None."""
         ...
 
+    async def size(self, company_id: str, url: str) -> int | None:
+        """Size in bytes of the file this backend stored for ``company_id`` at ``url``,
+        without reading it, or None."""
+        ...
+
+    def chunks(self, company_id: str, url: str, chunk_bytes: int) -> AsyncIterator[bytes]:
+        """The file this backend stored for ``company_id`` at ``url``, ``chunk_bytes`` at
+        a time, so it is never held whole; nothing for any other URL."""
+        ...
+
     async def delete(self, company_id: str, stored_id: str, mime: str) -> None:
         """Delete the file stored for ``company_id`` under ``stored_id``; one already gone
         counts as deleted. Raises when it cannot delete."""
@@ -218,6 +228,18 @@ class LocalBackend:
     async def read_stored(self, company_id: str, stored_id: str, mime: str, max_bytes: int) -> bytes | None:
         """Read back the file stored under ``stored_id``, or None when there is none."""
         return _read_local(local_attachment_path(company_id, stored_id + _stored_extension(mime)), max_bytes)
+
+    async def size(self, company_id: str, url: str) -> int | None:
+        path = local_attachment_url_path(company_id, url)
+        return path.stat().st_size if path else None
+
+    async def chunks(self, company_id: str, url: str, chunk_bytes: int) -> AsyncIterator[bytes]:
+        path = local_attachment_url_path(company_id, url)
+        if path is None:
+            return
+        with path.open("rb") as fh:
+            while chunk := await asyncio.to_thread(fh.read, chunk_bytes):
+                yield chunk
 
     async def delete(self, company_id: str, stored_id: str, mime: str) -> None:
         name = stored_id + _stored_extension(mime)
@@ -370,9 +392,36 @@ class S3Backend:
         """Read back an object this backend stored for ``company_id``, by its public URL.
 
         Any other URL, or an object larger than ``max_bytes``, yields None."""
+        return await self._read_name(company_id, self._name(company_id, url), max_bytes)
+
+    def _name(self, company_id: str, url: str) -> str:
+        """The stored name of an object at this company's public URL; "" for any other."""
         base = self._public_url(f"attachments/{company_id}/")
         name = url[len(base):] if url.startswith(base) else ""
-        return await self._read_name(company_id, name, max_bytes)
+        return name if is_plain_name(name) else ""
+
+    async def size(self, company_id: str, url: str) -> int | None:
+        name = self._name(company_id, url)
+        if not name:
+            return None
+        async with s3_client(self._endpoint, self._access_key, self._secret_key) as client:
+            try:
+                resp = await client.head_object(Bucket=self._bucket, Key=f"attachments/{company_id}/{name}")
+            except Exception as exc:
+                if getattr(exc, "response", {}).get("Error", {}).get("Code") in ("NoSuchKey", "404"):
+                    return None
+                raise
+        return int(resp.get("ContentLength") or 0)
+
+    async def chunks(self, company_id: str, url: str, chunk_bytes: int) -> AsyncIterator[bytes]:
+        name = self._name(company_id, url)
+        if not name:
+            return
+        async with s3_client(self._endpoint, self._access_key, self._secret_key) as client:
+            resp = await client.get_object(Bucket=self._bucket, Key=f"attachments/{company_id}/{name}")
+            async with resp["Body"] as stream:
+                while chunk := await stream.read(chunk_bytes):
+                    yield chunk
 
     async def read_stored(self, company_id: str, stored_id: str, mime: str, max_bytes: int) -> bytes | None:
         """Read back the object stored under ``stored_id``, or None when there is none."""
@@ -677,8 +726,10 @@ async def attach_file(
     is_hero: bool | None = None,
     description: str | None = None,
     metadata_: dict | None = None,
+    remote: dict | None = None,
 ):
     """Attach a stored file (``meta`` from store_file) to one contact, document or item.
+    ``remote`` records the platform file it was pulled from ({platform: {id, src, store}}).
 
     Returns the ledger entry of the file-attached event. When the attachment is refused
     (the record is gone), the stored file is deleted again (discarded_if_refused)."""
@@ -696,6 +747,8 @@ async def attach_file(
     }
     if is_hero is not None:
         data["is_hero"] = is_hero
+    if remote is not None:
+        data["remote"] = remote
     async with discarded_if_refused(company_id, meta):
         return await emit_event(
             session,
@@ -787,6 +840,16 @@ async def read_company_file(company_id, url: str, max_bytes: int) -> bytes | Non
     """Content of a file stored for this company, read through the backend holding it;
     None when it is missing or larger than ``max_bytes``."""
     return await _backend_holding(url).read(str(company_id), url, max_bytes)
+
+
+async def company_file_size(company_id, url: str) -> int | None:
+    """Size of a file stored for this company, without reading it; None when missing."""
+    return await _backend_holding(url).size(str(company_id), url)
+
+
+def company_file_chunks(company_id, url: str, chunk_bytes: int) -> AsyncIterator[bytes]:
+    """A file stored for this company, ``chunk_bytes`` at a time."""
+    return _backend_holding(url).chunks(str(company_id), url, chunk_bytes)
 
 
 async def store_company_file(company_id, name: str, content: bytes) -> str:

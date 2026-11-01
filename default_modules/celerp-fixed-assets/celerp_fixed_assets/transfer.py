@@ -96,13 +96,14 @@ def _company_id(value) -> uuid.UUID:
         raise setup.unprocessable("Choose the company to transfer the asset to.") from None
 
 
-async def _lock_in_order(session, ours, theirs) -> None:
-    """Take the other company's lock first when its id sorts first: every transfer takes
-    the two locks in id order, so two between the same companies never wait on each other."""
-    from celerp.services.company_lock import locked_company
+async def _lock_both(session, ours, theirs) -> None:
+    """Take both companies' locks, in id order, before any row of either: every later take
+    of either company is a retake, so a transfer never waits on a company while it holds
+    the other's membership or asset rows, and two transfers between the same companies
+    never wait on each other."""
+    from celerp.services.company_lock import lock_company
 
-    if theirs < uuid.UUID(str(ours)):
-        await locked_company(session, theirs)
+    await lock_company(session, uuid.UUID(str(ours)), theirs)
 
 
 async def _name(session, company_id) -> str:
@@ -166,7 +167,7 @@ async def transfer(session, company_id, user_id, asset_id: str, body: dict) -> d
     theirs = _company_id(body.get("target_company_id"))
     if theirs == uuid.UUID(str(company_id)):
         raise setup.unprocessable("Choose another company to transfer the asset to.")
-    await _lock_in_order(session, company_id, theirs)
+    await _lock_both(session, company_id, theirs)
 
     async def plan(fa):
         # Both companies' locks before the asset's row lock, as undo takes them.
@@ -286,7 +287,7 @@ async def undo(session, company_id, user_id, asset_id: str, body: dict) -> dict:
     latest = projections.live(await asset_movements(session, company_id, asset_id))[-1]
     target = latest["target"]
     theirs = uuid.UUID(target["company_id"])
-    await _lock_in_order(session, company_id, theirs)
+    await _lock_both(session, company_id, theirs)
 
     async def plan(fa):
         await locked_authority(session, theirs, user_id, KEYS)

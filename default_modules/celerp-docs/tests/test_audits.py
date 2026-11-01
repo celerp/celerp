@@ -3,7 +3,7 @@
 """Inventory audit on the unified list lifecycle (list_type=audit): a draft manifest is built/seeded,
 Finalize freezes the on-hand snapshot and opens the counting stage, scanning records presence, counts
 are entered, then a reversible stock adjustment overwrites item qty to the count and posts a
-shrinkage/overage JE. See context/2026-0617-unified-lists-lifecycle-plan.md."""
+shrinkage/overage JE."""
 from __future__ import annotations
 
 import uuid

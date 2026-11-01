@@ -15,6 +15,7 @@ which would otherwise be refused at posting time.
 from __future__ import annotations
 
 from alembic import op
+from celerp.migrations._locks import lock_tables
 import sqlalchemy as sa
 
 revision = "c9d8e7f6a5b4"
@@ -36,6 +37,7 @@ def upgrade() -> None:
     table_exists = conn.execute(sa.text("SELECT to_regclass('accounts')")).scalar()
     if not table_exists:
         return  # Nothing to backfill on fresh install
+    lock_tables(conn, "accounts")
 
     companies = conn.execute(
         sa.text("SELECT DISTINCT company_id FROM accounts WHERE code = :parent"),

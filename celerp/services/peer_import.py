@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.db import one_unit
 from celerp.importers.results import failure_reason
 from celerp.services import peer_access, peer_attention
+from celerp.services.company_lock import lock_company
 
 log = logging.getLogger(__name__)
 
@@ -164,6 +165,8 @@ async def receive_records(session: AsyncSession, peer: peer_access.PeerCaller, r
             if record.source_revision is None:
                 raise HTTPException(422, "A connected company's record needs its source revision.")
             grant = await _grant(session, peer)
+            # The company first, then the record's identity and attention rows, in every receiver.
+            await lock_company(session, grant.company_id)
             with one_unit(session):  # a record applies whole or not at all
                 status = await receive(session, grant=grant, source_entity_id=record.entity_id,
                                        source_revision=record.source_revision, data=record.data)

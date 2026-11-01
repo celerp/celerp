@@ -18,18 +18,17 @@ and a database built from a branch that used the colliding ID for a different ch
 from __future__ import annotations
 
 import ast
-import os
 import uuid
 from pathlib import Path
 
 import pytest
-from alembic import command
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
 
 from celerp.alembic_config import build_alembic_config
-from celerp.cli import _apply_migrations
 from celerp.migrations.compatibility import NEWEST_CELERP_KEY, running_version
+
+from alembic_support import alembic_run, apply_migrations as _apply_migrations, history_by_hand
 
 from .conftest import head_rev, schema_of, throwaway_db, upgrade_to
 
@@ -54,11 +53,13 @@ RELEASE_CHAIN = ["p3e4f5a6b7c8", "q4f5a6b7c8d9", "r5g6b7c8d9e0", "s6h7c8d9e0f1",
 # firm name a company key carries, then the password reset method check a restore keeps,
 # then the record of every AI charge, then the AI job table's question columns, then when a
 # pending AI charge may be read back, then the label a bank account's currency correction
-# replaced.
+# replaced, then per-record connector directions, then connector execution leases and
+# first-sync records, then the links a store fetches product images from.
 SHIPPED_HEAD = "y3p4q5r6s7t8"
 AFTER_SHIPPED = ["x2p3q4r5s6t7", "y3q4r5s6t7u8", "z4r5s6t7u8v9", "a5t6u7v8w9x0", "b6u7v8w9x0y1",
                  "c7v8w9x0y1z2", "d8w9x0y1z2a3", "e9x0y1z2a3b4", "f0y1z2a3b4c5", "g1z2a3b4c5d6",
-                 "h2a3b4c5d6e7", "h4c5d6e7f8a9", "i3b4c5d6e7f8", "j5d6e7f8a9b0"]
+                 "h2a3b4c5d6e7", "h4c5d6e7f8a9", "i3b4c5d6e7f8", "j5d6e7f8a9b0", "k5e6f7a8b9c0",
+                 "k6e7f8a9b0c1", "l7f8a9b0c1d2"]
 
 # The newest revision a database can already carry from the module and payment work
 # that reaches main before this release.
@@ -196,13 +197,71 @@ def test_peer_downgrade_preserves_persisted_records(table):
             eng.dispose()
 
 
+def test_a_downgrade_refused_below_the_top_revision_changes_nothing():
+    """Each revision commits on its own, so a refusal met part-way down the chain would
+    leave the revisions above it undone. Every refusal is asked before the first runs: a
+    connection whose directions no single old direction holds stops the run with the
+    first-sync and media tables of the revisions above it still in place."""
+    directions = "connector_entity_directions"
+    target = next(_declared(p)["down_revision"] for p in _revision_files() if directions in p.name)
+    off = '{"products": "off", "stock": "off", "orders": "off", "customers": "off"}'
+    with throwaway_db("refusal_first") as (_, sync_url):
+        upgrade_to(sync_url, head_rev())
+        before = schema_of(sync_url)
+        eng = create_engine(sync_url)
+        try:
+            with eng.begin() as conn:
+                conn.execute(text("INSERT INTO connector_configs (company_id, connector, entity_directions) "
+                                  "VALUES (:c, 'woocommerce', CAST(:d AS json))"),
+                             {"c": str(uuid.uuid4()), "d": off})
+        finally:
+            eng.dispose()
+        with pytest.raises(RuntimeError, match="Cannot downgrade connector directions"):
+            _downgrade_to(sync_url, target)
+        eng = create_engine(sync_url)
+        try:
+            with eng.connect() as conn:
+                version = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+        finally:
+            eng.dispose()
+        after = schema_of(sync_url)
+    assert version == head_rev()
+    assert after == before
+
+
+def _module_functions(tree: ast.Module) -> dict[str, ast.FunctionDef]:
+    return {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+
+
+def _reaches_a_raise(functions: dict[str, ast.FunctionDef], name: str, seen: set[str]) -> bool:
+    seen.add(name)
+    for node in ast.walk(functions[name]):
+        if isinstance(node, ast.Raise):
+            return True
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
+                and node.func.id in functions and node.func.id not in seen \
+                and _reaches_a_raise(functions, node.func.id, seen):
+            return True
+    return False
+
+
+def test_every_downgrade_that_can_refuse_declares_its_refusal():
+    """A downgrade that can raise, itself or through its module's helpers, says why in
+    ``downgrade_refusal(bind)``, which the migration env asks before any revision of the
+    run changes the schema (celerp/migrations/env.py _refusals_first)."""
+    undeclared = []
+    for path in _revision_files():
+        functions = _module_functions(ast.parse(path.read_text(encoding="utf-8")))
+        if "downgrade" in functions and _reaches_a_raise(functions, "downgrade", set()) \
+                and "downgrade_refusal" not in functions:
+            undeclared.append(path.name)
+    assert undeclared == []
+
+
 def test_ai_charges_from_before_the_usage_record_are_carried_over():
     """The assistant's tables are created at startup, so a database that has started the
     app holds them before the usage record exists; each charged question and receipts
     job becomes one final usage row, and nothing that was not charged does."""
-    from alembic import command
-
-    from celerp.alembic_config import build_alembic_config
     from celerp.models.base import Base
 
     ai = [Base.metadata.tables[t] for t in ("ai_conversations", "ai_messages", "ai_batch_jobs")]
@@ -212,11 +271,11 @@ def test_ai_charges_from_before_the_usage_record_are_carried_over():
         eng = create_engine(sync_url)
         try:
             with eng.begin() as conn:
-                conn.execute(text("INSERT INTO companies (id, name, slug, settings, is_active, created_at) "
-                                  "VALUES (:c, 'Kept', 'kept', '{}', true, now())"), {"c": ids["company"]})
                 conn.execute(text("INSERT INTO users (id, email, name, auth_hash, is_active, created_at) "
                                   "VALUES (:u, 'owner@example.test', 'Owner', 'x', true, now())"),
                              {"u": ids["user"]})
+                conn.execute(text("INSERT INTO companies (id, name, slug, settings, is_active, created_at) "
+                                  "VALUES (:c, 'Kept', 'kept', '{}', true, now())"), {"c": ids["company"]})
                 for table in ai:
                     table.create(conn)
                 # The jobs table as the app of that time created it, with its counters.
@@ -250,7 +309,7 @@ def test_ai_charges_from_before_the_usage_record_are_carried_over():
                 with eng.connect() as conn:
                     carried.append(conn.execute(text(
                         "SELECT operation_id, company_id, user_id, credits, pending FROM ai_usage")).all())
-                command.downgrade(build_alembic_config(), "-1")
+                _downgrade_to(sync_url, "h4c5d6e7f8a9")  # below the usage record's reconcile column
         finally:
             eng.dispose()
     expected = [(ids["asked"], ids["company"], ids["user"], 2, False), (ids["job"], ids["company"], ids["user"], 3, False)]
@@ -273,8 +332,7 @@ def _newest_celerp(sync_url: str) -> str | None:
 
 
 def _downgrade_to(sync_url: str, revision: str) -> None:
-    os.environ["DATABASE_URL"] = sync_url
-    command.downgrade(build_alembic_config(), revision)
+    alembic_run(sync_url, "downgrade", revision)
 
 
 def _populate(sync_url: str) -> dict[str, str]:
@@ -284,10 +342,10 @@ def _populate(sync_url: str) -> dict[str, str]:
     eng = create_engine(sync_url)
     try:
         with eng.begin() as conn:
-            conn.execute(text("INSERT INTO companies (id, name, slug, settings, is_active, created_at) "
-                              "VALUES (:c, 'Kept', 'kept', '{}', true, now())"), {"c": ids["company"]})
             conn.execute(text("INSERT INTO users (id, email, name, auth_hash, is_active, created_at) "
                               "VALUES (:u, 'owner@example.test', 'Owner', 'x', true, now())"), {"u": ids["user"]})
+            conn.execute(text("INSERT INTO companies (id, name, slug, settings, is_active, created_at) "
+                              "VALUES (:c, 'Kept', 'kept', '{}', true, now())"), {"c": ids["company"]})
             conn.execute(text("INSERT INTO user_companies (id, user_id, company_id, role, is_active) "
                               "VALUES (gen_random_uuid(), :u, :c, 'owner', true)"),
                          {"u": ids["user"], "c": ids["company"]})
@@ -383,13 +441,9 @@ def test_a_database_from_before_the_revisions_were_reordered_reaches_the_same_sc
     present. Migrating it must add the refunds table rather than trust the stamp."""
     with throwaway_db("graph_old") as (old_async, old_sync), throwaway_db("graph_new") as (new_async, new_sync):
         upgrade_to(old_sync, "r5g6b7c8d9e0")
-        eng = create_engine(old_sync)
-        try:
-            with eng.begin() as conn:
-                conn.execute(text("ALTER TABLE import_batches ADD COLUMN reversible BOOLEAN DEFAULT false NOT NULL"))
-                conn.execute(text("UPDATE alembic_version SET version_num = 's6h7c8d9e0f1'"))
-        finally:
-            eng.dispose()
+        with history_by_hand(old_sync) as conn:
+            conn.execute(text("ALTER TABLE import_batches ADD COLUMN reversible BOOLEAN DEFAULT false NOT NULL"))
+            conn.execute(text("UPDATE alembic_version SET version_num = 's6h7c8d9e0f1'"))
 
         _apply_migrations(old_async)
         _apply_migrations(new_async)

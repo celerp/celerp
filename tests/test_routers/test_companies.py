@@ -98,7 +98,7 @@ async def _owner_and_target(client, session):
     """Register an owner, invite a manager target, log the target in, and return
     (owner_headers, target_user_id, target_access, target_refresh)."""
     import base64, json as _json, uuid as _uuid
-    from celerp.services.session_tracker import clear as _clear_tracker
+    from test_helpers import clear_sessions as _clear_tracker
 
     reg = await client.post(
         "/auth/register",

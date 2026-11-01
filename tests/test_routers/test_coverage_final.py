@@ -449,9 +449,8 @@ async def test_health_readiness_db_error(client):
     """GET /health/ready when DB execute raises → 503 (lines 27-28)."""
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    # Patch the dependency override in the app directly
-    app = client._transport.app
     from celerp.db import get_session
+    from celerp.main import app
     previous = app.dependency_overrides.get(get_session)
 
     async def _failing_session():

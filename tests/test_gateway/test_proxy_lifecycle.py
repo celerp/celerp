@@ -27,6 +27,7 @@ import asyncio
 import pytest
 
 from celerp.gateway.client import GatewayClient
+from test_gateway.local_app import LocalClient
 
 
 @pytest.fixture
@@ -134,13 +135,7 @@ async def test_gateway_timeout_ms_deadline(client, monkeypatch):
     error response is emitted, rather than hanging to the fixed 180s cap."""
     import httpx
 
-    class _HangingClient:
-        def __init__(self, *a, **k):
-            pass
-        async def __aenter__(self):
-            return self
-        async def __aexit__(self, *a):
-            return False
+    class _HangingClient(LocalClient):
         async def request(self, *a, **k):
             await asyncio.sleep(3600)  # never returns within the deadline
 
@@ -176,13 +171,7 @@ async def test_gateway_stale_generation_dropped(client, monkeypatch):
 
     resume = asyncio.Event()
 
-    class _SlowClient:
-        def __init__(self, *a, **k):
-            pass
-        async def __aenter__(self):
-            return self
-        async def __aexit__(self, *a):
-            return False
+    class _SlowClient(LocalClient):
         async def request(self, *a, **k):
             await resume.wait()
 
@@ -231,14 +220,10 @@ async def test_gateway_shared_transport_isolates_each_request(client, monkeypatc
     constructed = []
     transports = []
 
-    class _CountingClient:
+    class _CountingClient(LocalClient):
         def __init__(self, *a, **k):
             constructed.append(self)
             transports.append(k.get("transport"))
-        async def __aenter__(self):
-            return self
-        async def __aexit__(self, *a):
-            return False
         async def request(self, *a, **k):
             class _R:
                 status_code = 200

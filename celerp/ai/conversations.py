@@ -24,6 +24,7 @@ from celerp.ai import jobs
 from celerp.models.ai import AIConversation, AIMessage
 from celerp.ai.service import NEW_QUESTION_ERRORS
 from celerp.ai.usage import record_usage
+from celerp.services.company_lock import holds_company_lock
 from ui.i18n import t
 
 log = logging.getLogger(__name__)
@@ -70,7 +71,9 @@ async def create_conversation(
     user_id: uuid.UUID,
     title: str | None = None,
 ) -> AIConversation:
-    """Create a new conversation. Prunes the user's oldest if the limit is exceeded."""
+    """Create a new conversation, under the company's lock as every AI writer of the company.
+    Prunes the user's oldest if the limit is exceeded."""
+    await jobs.lock_for_ai(session, company_id)
     conv = AIConversation(
         company_id=company_id,
         user_id=user_id,
@@ -104,7 +107,8 @@ async def create_conversation(
             protected_ids = await _protected_conversation_ids(session, old_ids)
             prunable = [cid for cid in old_ids if cid not in protected_ids]
             if prunable:
-                await session.execute(delete(AIConversation).where(AIConversation.id.in_(prunable)))
+                await session.execute(delete(AIConversation).where(
+                    AIConversation.company_id == company_id, AIConversation.id.in_(prunable)))
 
     return conv
 
@@ -172,6 +176,21 @@ async def list_conversation_history(
     return combined
 
 
+async def _lock_conversation(session: AsyncSession, conversation_id: uuid.UUID) -> None:
+    """Lock the conversation's company, unless this transaction holds it already, then the
+    conversation's row, before any of its messages. Every writer of a conversation's
+    messages takes this first, so two writers never wait on each other in opposite order
+    (company, job, conversation, messages)."""
+    company_id = await session.scalar(select(AIConversation.company_id).where(AIConversation.id == conversation_id))
+    if company_id is not None and not holds_company_lock(session, company_id):
+        await jobs.lock_for_ai(session, company_id)
+    await session.execute(
+        select(AIConversation.id)
+        .where(AIConversation.id == conversation_id, AIConversation.company_id == company_id)
+        .with_for_update(key_share=True)
+    )
+
+
 async def get_conversation(
     session: AsyncSession,
     conversation_id: uuid.UUID,
@@ -195,14 +214,20 @@ async def delete_conversation(
 ) -> bool:
     """Delete a conversation and its messages, and end its open jobs as stopped in the
     same transaction, so none outlives it open. Returns True if found. Raises
-    ``ConversationBusy``, and deletes nothing, while a job runs in it."""
+    ``ConversationBusy``, and deletes nothing, while a job runs in it.
+
+    One DELETE of the conversation's row: the row is locked first and the database's
+    foreign-key cascade then removes the messages, the same order every message writer
+    takes (conversation, then messages)."""
     await jobs.lock_for_ai(session, company_id)
     conv = await get_conversation(session, conversation_id, company_id, user_id)
     if conv is None:
         return False
     if not await jobs.end_conversation_jobs(session, conversation_id, company_id=company_id, user_id=user_id):
         raise ConversationBusy
-    await session.delete(conv)
+    await session.execute(delete(AIConversation).where(
+        AIConversation.id == conversation_id, AIConversation.company_id == company_id,
+        AIConversation.user_id == user_id))
     return True
 
 
@@ -217,7 +242,8 @@ async def rename_conversation(
     user_id: uuid.UUID,
     title: str,
 ) -> AIConversation | None:
-    """Rename a conversation. Returns updated conversation or None."""
+    """Rename a conversation, under the company's lock. Returns updated conversation or None."""
+    await jobs.lock_for_ai(session, company_id)
     conv = await get_conversation(session, conversation_id, company_id, user_id)
     if conv is None:
         return None
@@ -246,6 +272,7 @@ async def add_message(
     strings and pending-action records (dicts). Also sets the conversation title
     from the first user message if not already set, and bumps ``updated_at``.
     """
+    await _lock_conversation(session, conversation_id)
     msg = AIMessage(
         **({"id": message_id} if message_id is not None else {}),
         conversation_id=conversation_id,
@@ -292,7 +319,8 @@ async def add_message(
                 if message_id not in asked and not pending_actions(tools_called)
             ]
             if prunable:
-                await session.execute(delete(AIMessage).where(AIMessage.id.in_(prunable)))
+                await session.execute(delete(AIMessage).where(AIMessage.conversation_id == conversation_id,
+                                                              AIMessage.id.in_(prunable)))
 
     return msg
 
@@ -340,8 +368,11 @@ async def record_credits(
     in the usage record under the message's id (celerp.ai.usage.record_usage): the
     question's whole charge when the service named it (``known``), else the credits
     this run's replies added."""
+    await _lock_conversation(session, message.conversation_id)
     total = credits if known else AIMessage.credits_used + credits
-    await session.execute(update(AIMessage).where(AIMessage.id == message.id).values(credits_used=total))
+    await session.execute(update(AIMessage).where(AIMessage.id == message.id,
+                                                  AIMessage.conversation_id == message.conversation_id)
+                          .values(credits_used=total))
     await record_usage(session, company_id=company_id, user_id=user_id, operation_id=message.id,
                        credits=credits, known=known)
 
@@ -567,10 +598,11 @@ async def claim_tool_call(
 ) -> dict | None:
     """Atomically move a pending action to ``executing``; return its copy or None.
 
-    Locks the owning message row (FOR UPDATE) so two confirmations of the same
-    action cannot both claim it. Never mutates the JSON in place: a new list is
-    assigned so SQLAlchemy persists the change.
+    Locks the conversation, then the owning message row (FOR UPDATE), so two
+    confirmations of the same action cannot both claim it. Never mutates the JSON
+    in place: a new list is assigned so SQLAlchemy persists the change.
     """
+    await _lock_conversation(session, conversation_id)
     q = (
         select(AIMessage)
         .join(AIConversation, AIMessage.conversation_id == AIConversation.id)
@@ -625,6 +657,7 @@ async def finalize_tool_call(
     msg = await session.get(AIMessage, message_id)
     if msg is None or not msg.tools_called:
         return
+    await _lock_conversation(session, msg.conversation_id)
 
     summary: dict = {}
     data = (result or {}).get("data")
@@ -678,6 +711,7 @@ async def dismiss_tool_calls(
     wanted = set(tool_call_ids)
     if not wanted:
         return []
+    await _lock_conversation(session, conversation_id)
     q = (
         select(AIMessage)
         .join(AIConversation, AIMessage.conversation_id == AIConversation.id)

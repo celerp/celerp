@@ -275,7 +275,8 @@ async def test_cloud_disconnect_clears_session_token(client, session):
     disconnect even though the relay connection is gone.
     """
     import celerp.gateway.state as gw_state
-    from celerp.services.session_tracker import clear as _clear_tracker, register_token as _register_token
+    from test_helpers import clear_sessions as _clear_tracker
+    from celerp.services.session_tracker import register_token as _register_token
     import uuid as _uuid
 
     token = await _register(client, "disc-session")
@@ -1304,6 +1305,52 @@ async def test_connector_authorize_url_replaces_an_unfinished_authorization(clie
     assert "error" not in data
     assert "state=again" in data["authorize_url"]
     lock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_reauthorizing_folds_in_the_connection_kept_from_before_companies(client, session):
+    """An install upgraded from before companies keeps its connection under the install's
+    id. Starting the company's unfinished authorization again makes it the company's: the
+    old connection's first-sync record goes, the company's own stays."""
+    import sqlalchemy as sa
+
+    from celerp.config import ensure_instance_id
+    from celerp.models.connector_config import ConnectorConfig
+    from celerp.models.connector_first_sync import ConnectorFirstSync
+    from celerp.services.auth import decode_access_token
+    from connector_test_support import record_first_sync
+
+    token = await _register(client, "auth-url-legacy")
+    cid = decode_access_token(token)["company_id"]
+    legacy_id = ensure_instance_id()
+    for owner in (legacy_id, cid):
+        config = ConnectorConfig(company_id=owner, connector="quickbooks")
+        session.add(config)
+        await session.flush()
+        await record_first_sync(session, config, "pending")
+        await session.commit()  # each connection was made by a request of its own
+    url_resp = MagicMock()
+    url_resp.status_code = 200
+    url_resp.json.return_value = {"authorize_url": "https://accounts.intuit.com/oauth2/v1/authorize?state=fold"}
+    cancelled = MagicMock()
+    cancelled.status_code = 404
+
+    with _relay_settings() as mock_settings, \
+         patch("celerp.routers.health._relay_reports_connected", AsyncMock(return_value=False)), \
+         patch("celerp.gateway.state.with_relay_client", AsyncMock(side_effect=[cancelled, url_resp])):
+        mock_settings.gateway_token = "my-api-key"
+        response = await client.post(
+            "/settings/connectors/quickbooks/authorize-url", headers=_h(token)
+        )
+
+    assert response.status_code == 200, response.text
+    assert "error" not in response.json(), response.json()
+    session.expire_all()
+    owners = (await session.scalars(sa.select(ConnectorFirstSync.company_id).where(
+        ConnectorFirstSync.connector == "quickbooks"))).all()
+    assert owners == [cid]
+    assert (await session.scalars(sa.select(ConnectorConfig.company_id).where(
+        ConnectorConfig.connector == "quickbooks"))).all() == [cid]
 
 
 @pytest.mark.asyncio

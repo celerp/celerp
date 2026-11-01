@@ -93,7 +93,7 @@ async def test_doc_cogs_redacted_for_operator(client, session):
     assert "total_cogs" in mgr["data"]
 
     # Operator must not.
-    from celerp.services.session_tracker import clear as _clear_tracker
+    from test_helpers import clear_sessions as _clear_tracker
     await client.post("/companies/me/users", json={"email": "op@fulact.test", "name": "Op", "role": "operator", "password": "validpass1"}, headers=h)
     await _clear_tracker(session)
     op_tok = (await client.post("/auth/login", json={"email": "op@fulact.test", "password": "validpass1"})).json()["access_token"]

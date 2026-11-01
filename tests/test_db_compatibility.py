@@ -20,6 +20,8 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.pool import NullPool
 
+from alembic_support import alembic_run, history_by_hand
+
 from celerp.db_url import sync_url
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
@@ -86,24 +88,20 @@ def scratch():
         names.append(name)
         base, _, _ = DATABASE_URL.rpartition("/")
         url = f"{base}/{name}"
-        engine = sa.create_engine(sync_url(url), poolclass=NullPool)
-        try:
-            with engine.begin() as conn:
-                Base.metadata.create_all(conn)
-                conn.execute(sa.text("CREATE TABLE zz_sentinel (id int PRIMARY KEY, note text NOT NULL)"))
-                conn.execute(sa.text("INSERT INTO zz_sentinel VALUES (1, 'sentinel-before')"))
-                if revision is not None:
-                    conn.execute(sa.text("CREATE TABLE alembic_version (version_num varchar(32) PRIMARY KEY)"))
-                    conn.execute(sa.text("INSERT INTO alembic_version VALUES (:v)"),
-                                 {"v": _head() if revision == "head" else revision})
-                meta = (("projection_version", version), ("backfill_version", backfill), (OPENED_KEY, opened))
-                if any(value is not None for _, value in meta):
-                    conn.execute(sa.text("CREATE TABLE instance_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"))
-                    for key, value in meta:
-                        if value is not None:
-                            conn.execute(sa.text("INSERT INTO instance_meta VALUES (:k, :v)"), {"k": key, "v": value})
-        finally:
-            engine.dispose()
+        with history_by_hand(url) as conn:
+            Base.metadata.create_all(conn)
+            conn.execute(sa.text("CREATE TABLE zz_sentinel (id int PRIMARY KEY, note text NOT NULL)"))
+            conn.execute(sa.text("INSERT INTO zz_sentinel VALUES (1, 'sentinel-before')"))
+            if revision is not None:
+                conn.execute(sa.text("CREATE TABLE alembic_version (version_num varchar(32) PRIMARY KEY)"))
+                conn.execute(sa.text("INSERT INTO alembic_version VALUES (:v)"),
+                             {"v": _head() if revision == "head" else revision})
+            meta = (("projection_version", version), ("backfill_version", backfill), (OPENED_KEY, opened))
+            if any(value is not None for _, value in meta):
+                conn.execute(sa.text("CREATE TABLE instance_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"))
+                for key, value in meta:
+                    if value is not None:
+                        conn.execute(sa.text("INSERT INTO instance_meta VALUES (:k, :v)"), {"k": key, "v": value})
         return url
 
     def refused(case: str) -> str:
@@ -267,8 +265,8 @@ def test_check_runs_read_only(scratch):
 # ── Every path that opens a database ─────────────────────────────────────────
 
 def _apply_migrations(url):
-    from celerp.cli import _apply_migrations
-    _apply_migrations(url)
+    from alembic_support import apply_migrations
+    apply_migrations(url)
 
 
 def _celerp_migrate(url):
@@ -442,12 +440,10 @@ def test_older_schema_with_older_marker_migrates_forward(scratch, monkeypatch):
     """One revision behind, last opened by an older Celerp: migrated to head, data kept,
     this copy recorded as having opened it, and the projection reconcile's own version
     left for the server's successful start to advance."""
-    from alembic import command
-    from celerp.alembic_config import build_alembic_config
     from celerp.migrations.compatibility import check_url
     url = scratch("head", "2.5.3")
     monkeypatch.setenv("DATABASE_URL", url)
-    command.downgrade(build_alembic_config(), "-1")
+    alembic_run(url, "downgrade", "-1")
     older = snapshot(url)
     assert older["alembic_version"] != [(_head(),)]
     assert check_url(sync_url(url)).ok
@@ -468,13 +464,11 @@ def test_older_backup_restored_and_migrated_forward(scratch, tmp_path, monkeypat
     """A dump from an older Celerp, one revision behind, restored by pg_restore and
     brought to head by the recovery's schema reconcile, its data intact."""
     import asyncio
-    from alembic import command
-    from celerp.alembic_config import build_alembic_config
     from celerp.config import settings
     from celerp.services import backup, backup_import
     source = scratch("head", "2.5.3")
     monkeypatch.setenv("DATABASE_URL", source)
-    command.downgrade(build_alembic_config(), "-1")
+    alembic_run(source, "downgrade", "-1")
     dump = tmp_path / "database.dump"
     backup.dump_database(source, dump)
     target = scratch(None, None)
@@ -681,7 +675,7 @@ def test_migrate_records_this_copy_before_its_first_change(scratch, tmp_path, mo
 
     monkeypatch.setattr(cli, "_run_upgrade_with_auto_stamp", _upgrade_fails)
     with pytest.raises(RuntimeError, match="migration failed"):
-        cli._apply_migrations(url)
+        _apply_migrations(url)
     assert _meta(url)[OPENED_KEY] == NEWER
     monkeypatch.undo()
     monkeypatch.setattr(celerp, "__version__", RUNNING)

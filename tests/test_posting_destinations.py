@@ -382,6 +382,7 @@ async def test_seeding_the_chart_lists_a_bank_account_its_parent_cannot_take(ses
 
     headers, cid = auth["headers"], auth["company_id"]
     await session.execute(text("DELETE FROM bank_accounts WHERE company_id = :c"), {"c": cid})
+    await session.commit()
     await session.execute(text("DELETE FROM accounts WHERE company_id = :c AND code IN ('1111', '6970')"), {"c": cid})
     await session.execute(text("UPDATE accounts SET is_active = false WHERE company_id = :c AND code = '1110'"),
                           {"c": cid})

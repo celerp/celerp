@@ -68,7 +68,7 @@ from celerp.modules import requirements
 from celerp.modules.boundary import take_company_locks
 from celerp.modules.loader import module_label
 from celerp.modules.registry import commit_with_load_set, company_modules, hold_module_state, set_enabled
-from celerp.services import attachments, bootstrap, company_lifecycle
+from celerp.services import attachments, bootstrap, company_lifecycle, payments
 from celerp.services.auth import HAS_COMPANY, hold_companyless_login, password_attempts
 from celerp.services.company_settings import SET_BY_KEYS
 from celerp.services import company_backup_files as files
@@ -77,7 +77,7 @@ from celerp.services.company_lock import hold_company, lock_company, lock_compan
 from celerp.services.lot_origin import place_company_stock
 from celerp.services.migrations import COMPANY_NAME_MAX, company_name_error
 from celerp.services.permissions import act_for
-from celerp.services.provisioning import create_install_owner, provision_restored_company
+from celerp.services.provisioning import create_install_owner, hold_owner, provision_restored_company
 from ui.i18n import t
 
 logger = logging.getLogger(__name__)
@@ -104,8 +104,12 @@ EXCLUDED_TABLES = {
     "company_peer_accounts": "accounts linked to a connected company's chart",
     "marketplace_configs": "marketplace connection settings and credentials",
     "sync_runs": "connector sync history",
+    "connector_first_syncs": "connector first-sync state",
+    "connector_execution_leases": "connector sync runs in progress",
+    "connector_execution_heartbeats": "connector sync runs in progress",
     "outbound_queue": "messages waiting to leave this installation",
     "doc_share_tokens": "share links issued by this installation",
+    "connector_media_tokens": "image links issued by this installation",
     "notifications": "per-user notices",
     "ai_conversations": "per-user assistant history",
     "ai_batch_jobs": "assistant job state",
@@ -422,22 +426,19 @@ async def undeclared_module_tables(session: AsyncSession) -> dict[str, list[str]
     return found
 
 
-async def notify_undeclared_module_tables(session: AsyncSession) -> int:
+async def notify_undeclared_module_tables(session: AsyncSession) -> None:
     """A bell notice in every company for each installed module keeping data its manifest
-    does not place in or out of a company backup, deduped while it stands. Caller commits.
-    Returns the number of notifications created."""
+    does not place in or out of a company backup, deduped while it stands. Caller commits."""
     from celerp.notifications import service as notif_service
 
-    created = 0
     for module, tables in (await undeclared_module_tables(session)).items():
         logger.warning("The %s module does not declare how %s travel with a company backup", module, tables)
         label = module_label(module)
-        created += await notif_service.notify_every_company(
+        await notif_service.notify_every_company(
             session, "modules", f"The {label} module needs an update",
             f"The {label} module keeps data it has not said belongs in a company copy. No company "
             "copy can be made of a company holding that data until the module is updated.",
             action_url="/modules")
-    return created
 
 
 async def classify(session: AsyncSession) -> list[str]:
@@ -1250,8 +1251,11 @@ def _landing_key(company_id) -> str:
 async def _land(session: AsyncSession, company_id) -> None:
     """Mark the new company's attachment files as landing, held by this transaction: the
     mark outlives a crash, and the lock ends with the transaction, whether it commits,
-    rolls back or its connection is lost."""
-    await session.execute(_advisory("pg_advisory_xact_lock"), {"k": _landing_key(company_id)})
+    rolls back or its connection is lost. The id was just drawn and reconciling only tries
+    its key, so the key is free; it is tried, never waited on, while this restore holds
+    its other locks."""
+    if not await session.scalar(_advisory("pg_try_advisory_xact_lock"), {"k": _landing_key(company_id)}):
+        raise RuntimeError("A new company's landing mark is already held.")
     await asyncio.to_thread(attachments.mark_landing, str(company_id))
 
 
@@ -1470,7 +1474,7 @@ async def _replaceable(session: AsyncSession, backup: BackupFile, mode: str, use
 async def _plan(session: AsyncSession, backup: BackupFile, mode: str, user_id, current_company_id, *,
                 lock: bool) -> tuple[RestorePlan, Company | None]:
     """The plan and the destination company. With ``lock`` the source and destination
-    companies (in id order), then the caller's company names and membership of the
+    companies (in id order) and the caller's membership of the
     destination are locked, so the plan, including the name it picks and the source team
     and role permissions it carries, holds until the transaction ends."""
     m = backup.manifest
@@ -1482,8 +1486,6 @@ async def _plan(session: AsyncSession, backup: BackupFile, mode: str, user_id, c
     if lock:
         for cid in sorted({*([source] if same_lineage else []), *([str(found.id)] if found is not None else [])}):
             await lock_company(session, uuid.UUID(cid))
-        # One restore at a time per owner, so two cannot both take the same free name.
-        await session.execute(_advisory("pg_advisory_xact_lock"), {"k": f"restore-names:{me}"})
     if found is None:
         team = await _missing_team(session, source, me, None) if same_lineage else ()
         grants = await _source_grants(session, source) if same_lineage else None
@@ -1554,16 +1556,21 @@ def _row_batches(lines, limit: int):
 
 
 async def _insert(session: AsyncSession, zf: zipfile.ZipFile, table: str, columns: list[str],
-                  id_map: dict[str, str]) -> None:
+                  id_map: dict[str, str], schema: db_catalog.Table, company_id) -> None:
+    """Insert the backup's rows of ``table``. Its company column is the restored company,
+    bound once for the whole statement: the source company every row was checked to name
+    maps to it, so no restored row can name another company."""
     cols = ", ".join(db_catalog.ident(c) for c in columns)
-    picked = ", ".join(f"r.{db_catalog.ident(c)}" for c in columns)
+    company = f"CAST(CAST(:company AS text) AS {db_catalog.ident(schema.columns['company_id'].udt)})" \
+        if "company_id" in columns else ""
+    picked = ", ".join(company if c == "company_id" else f"r.{db_catalog.ident(c)}" for c in columns)
     statement = text(
         f"INSERT INTO {db_catalog.ident(table)} ({cols}) SELECT {picked} "
         f"FROM jsonb_array_elements(CAST(:rows AS jsonb)) WITH ORDINALITY AS e(v, n), "
         f"jsonb_populate_record(NULL::{db_catalog.ident(table)}, e.v) AS r ORDER BY e.n")
     batches = _row_batches(_lines(zf, f"tables/{table}.jsonl"), BATCH_ROWS)
     while rows := await asyncio.to_thread(next, batches, None):
-        await session.execute(statement, {"rows": _dump_rows(remap(rows, id_map))})
+        await session.execute(statement, {"rows": _dump_rows(remap(rows, id_map)), "company": str(company_id)})
 
 
 async def _verify(session: AsyncSession, checked: _Checked, manifest: dict, company_id,
@@ -1702,24 +1709,11 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
             await session.execute(text("SET LOCAL TimeZone = 'UTC'"))
             # Before any lock that waits, so a restore started twice is refused at once.
             await _claim(session, backup_id, source)
-            from celerp.connectors.ownership import lock_connector_key, lock_connector_maintenance
-            if replacing is not None:
-                # As a company reset takes it: before any other lock on the company.
-                await lock_connector_maintenance(session)
-            else:
-                # Restored items are opted out of Shopify (_turn_off_shop_sync) under its fence.
-                await lock_connector_key(session, "shopify")
-            await hold_module_state(session)
-            if replacing is not None:
-                # The company's lock after the module-state boundary, as every change to
-                # modules takes them, so a module turned on meanwhile waits, never deadlocks.
-                [found] = await take_company_locks(
-                    session, lambda: lock_company_for_deletion(session, replacing.company_id))
-                if not found:
-                    raise BackupError(404, t("error.company_unavailable") + _NOT_REPLACED)
-            checked = await check_backup(session, backup)
             if mode == "bootstrap":
                 await _wait_for(session, bootstrap.lock_bootstrap)  # any other first-owner setup
+            await hold_module_state(session)
+            checked = await check_backup(session, backup)
+            from celerp.connectors.ownership import lock_connector_key, lock_connector_maintenance
             if mode == "bootstrap":
                 plan = plan_bootstrap_restore(backup)
                 found = await _bootstrap_existing(session, backup, owner_account, caller)
@@ -1732,8 +1726,31 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                     return result
                 name = plan.destination_name if company_name is None else _chosen_name(company_name)
             else:
+                # One restore at a time per owner, so two cannot both take the same free name.
+                # Before the login's row: another restore by this owner holds this lock while
+                # it adds rows that reference the login.
+                await session.execute(_advisory("pg_advisory_xact_lock"), {"k": f"restore-names:{user_id}"})
                 if mode == "start_company" and not await hold_companyless_login(session, user_id):
                     raise BackupError(409, t(HAS_COMPANY))
+                await hold_owner(session, user_id)  # the create's login lock, before _plan locks companies
+                if replacing is not None:
+                    # As a company reset takes them: before any other lock on the company, after
+                    # the owner's locks, which another restore by this owner takes before it.
+                    await lock_connector_maintenance(session)
+                    # The new company's row before the replaced company's lock, as every create
+                    # takes it (its web address is unique, so its insert can wait). Its name is
+                    # the replaced company's, checked below; its settings come with the plan.
+                    owner = await session.get(User, uuid.UUID(str(user_id)))
+                    company = await provision_restored_company(session, owner=owner, company_name=replacing.typed_name,
+                                                               company_id=new_id, settings={})
+                    # Waited on under the module-state boundary, so the wait is bounded.
+                    [found] = await take_company_locks(
+                        session, lambda: lock_company_for_deletion(session, replacing.company_id))
+                    if not found:
+                        raise BackupError(404, t("error.company_unavailable") + _NOT_REPLACED)
+                else:
+                    # Restored items are opted out of Shopify (_turn_off_shop_sync) under its fence.
+                    await lock_connector_key(session, "shopify")
                 plan, destination = await _plan(session, backup, mode, user_id, current_company_id, lock=True)
                 if plan.action == REFUSE:
                     raise BackupError(409, t(NOT_A_MEMBER))
@@ -1768,6 +1785,9 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                     raise BackupError(409, t(ALREADY_SET_UP))
                 user = await create_install_owner(session, name=owner_account["name"],
                                                   email=owner_account["email"], password=owner_account["password"])
+                await hold_owner(session, user.id)  # the create's login lock, before the fence
+                # Restored items are opted out of Shopify (_turn_off_shop_sync) under its fence.
+                await lock_connector_key(session, "shopify")
             else:
                 user = await session.get(User, uuid.UUID(str(user_id)))
                 if user is None:
@@ -1802,13 +1822,19 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 # The carried team keeps what its roles may do in the current company.
                 if grants:
                     settings["role_grants"] = grants
-                company = await provision_restored_company(session, owner=user, company_name=name,
-                                                           company_id=new_id, settings=settings)
+                if replacing is not None:
+                    # The row this transaction inserted above, so the lock waits on nothing.
+                    [company] = await take_company_locks(session, lambda: locked_company(session, new_id))
+                    company.name, company.settings = name, settings
+                else:
+                    company = await provision_restored_company(session, owner=user, company_name=name,
+                                                               company_id=new_id, settings=settings)
                 # Its rows are written as the new company's, whose owner the caller now is.
                 act_for(session, new_id, user.id, "owner", LIFECYCLE)
                 try:
                     for name in checked.order:
-                        await _insert(session, zf, name, m["tables"][name]["columns"], id_map)
+                        await _insert(session, zf, name, m["tables"][name]["columns"], id_map,
+                                      checked.plan.schema[name], new_id)
                 except DBAPIError:
                     raise BackupError(422, t(UNSAVABLE)) from None
             await _verify(session, checked, m, new_id, {new: old for old, new in id_map.items()})
@@ -2017,6 +2043,9 @@ async def _check_replacing(session: AsyncSession, replacing: _Replacing, user_id
         raise BackupError(403, t(REPLACE_OWNER_ONLY, company=company.name), "not_owner")
     act_for(session, company.id, user_id, role, LIFECYCLE)
     await lock_company(session, company.id)
+    await payments.lock_recorded_unmatched(session, company.id)  # put back by the replace, before its rows
+    from celerp.services.company_reset import hold_member_sessions
+    await hold_member_sessions(session, company.id)  # the replace's reset takes them before its rows
     if replacing.typed_name != company.name:
         raise BackupError(422, t(REPLACE_NAME, company=company.name), "name_mismatch")
     canonical = lambda value: json.dumps(value, sort_keys=True)  # noqa: E731

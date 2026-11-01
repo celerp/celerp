@@ -110,13 +110,18 @@ async def test_migration_advisory_lock_wait_survives_statement_timeout():
     hconn = await holder.connect()
     hconn = await hconn.execution_options(isolation_level="AUTOCOMMIT")
     try:
-        await hconn.execute(sa.text("SELECT pg_advisory_lock(:k)"), {"k": _MIGRATION_LOCK_KEY})
+        held = asyncio.Event()
 
-        async def _release_after(delay: float):
+        # The holder is another flow, as another process is in production: it takes the
+        # key and releases it after the delay, while this flow waits for it.
+        async def _hold_then_release(delay: float):
+            await hconn.execute(sa.text("SELECT pg_advisory_lock(:k)"), {"k": _MIGRATION_LOCK_KEY})
+            held.set()
             await asyncio.sleep(delay)
             await hconn.execute(sa.text("SELECT pg_advisory_unlock(:k)"), {"k": _MIGRATION_LOCK_KEY})
 
-        releaser = asyncio.create_task(_release_after(2.0))
+        releaser = asyncio.create_task(_hold_then_release(2.0))
+        await held.wait()
         # No modules enabled: the phase just contends for the lock (blocking ~2s),
         # then releases it. It must not raise a cancelled-statement error.
         admission = await run_migration_phase(engine, Admission(admitted=[], refused={}))

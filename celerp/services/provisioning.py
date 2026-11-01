@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, Location, User
 from celerp.services.auth import hash_password
-from celerp.services.company_lock import locked_company
+from celerp.services.company_lock import lock_company, locked_company
 
 DEFAULT_LOCATION_NAME = "Head Office"
 DEFAULT_LOCATION_TYPE = "office"
@@ -43,10 +43,20 @@ async def unique_slug(session: AsyncSession, name: str) -> str:
     return slug
 
 
+async def hold_owner(session: AsyncSession, owner_id) -> None:
+    """Lock the owner's login FOR NO KEY UPDATE until the transaction ends (a retake when the
+    caller already holds it, ``hold_companyless_login``). Every company create takes it before any company
+    row, so one owner's creates run one after another: none waits on another's company row
+    with the same web address while that one's membership waits on the login. It leaves the
+    foreign-key share free, so other logins' memberships never wait on it."""
+    await session.execute(select(User.id).where(User.id == owner_id).with_for_update(key_share=True))
+
+
 async def _create_company(
     session: AsyncSession, *, owner: User, company_name: str, settings: dict, staged: bool = False,
     company_id: uuid.UUID | None = None,
 ) -> Company:
+    await hold_owner(session, owner.id)
     company = Company(
         id=company_id or uuid.uuid4(), name=company_name, slug=await unique_slug(session, company_name),
         settings=settings, is_active=not staged, is_migration_staged=staged,
@@ -143,7 +153,10 @@ async def ensure_default_location(session: AsyncSession, company_id: uuid.UUID) 
 
     An existing default is kept; otherwise the oldest location becomes the default;
     otherwise the standard default location is created. Only one is ever marked default.
+    Taken under the company's lock, as every location writer, so two callers settle it one
+    after the other.
     """
+    await lock_company(session, company_id)
     locations = list((await session.execute(
         select(Location).where(Location.company_id == company_id).order_by(Location.created_at, Location.id)
     )).scalars())

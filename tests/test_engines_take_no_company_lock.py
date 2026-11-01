@@ -24,7 +24,7 @@ ENGINES = ("celerp/projections/", "celerp/events/engine.py")
 # The functions the engines reach that take a company's lock themselves ("<file> <function>").
 # Each predates this rule and moves to the owning writers' boundary in its own follow-up.
 ALLOWED = {
-    "celerp/events/engine.py emit_event": "the lock before a change to an existing item is applied",
+    "celerp/events/engine.py emit_event": "the lock before every record the event writes",
     "celerp/services/physical_codes.py lock_item_code_namespace": "an item's code checked against the codes in use",
     "celerp/services/journal_reversals.py require_cancelled_once": "a cancel refused once its journal is reversed",
     "celerp/services/document_lines.py linked_items": "the items a document's lines link, read for its event",

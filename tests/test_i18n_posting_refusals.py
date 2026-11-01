@@ -134,7 +134,8 @@ async def test_an_unmapped_posting_account_notice_is_shown_in_the_readers_langua
     roles.pop("general_expense")
     company.settings = {**company.settings, ROLES_KEY: roles}
     await session.flush()
-    assert await notify_unmapped(session, cid)
+    await notify_unmapped(session, cid)
+    await session.commit()
     notice = (await session.execute(select(Notification).where(Notification.company_id == cid))).scalar_one()
     assert notice.i18n == {"title": "notice.posting_unmapped.title", "body": "notice.posting_unmapped.body",
                            "params": {"roles": ["general_expense"]}}

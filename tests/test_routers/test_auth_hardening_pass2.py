@@ -148,7 +148,7 @@ async def test_stale_snonce_cannot_revoke_newer_generation(session):
 async def test_reactivation_does_not_revive_old_tokens(client, session):
     """Deactivating a user's membership kills their tokens (nonce rotation);
     reactivating the membership does not resurrect the pre-deactivation tokens."""
-    from celerp.services.session_tracker import clear as _clear_tracker
+    from test_helpers import clear_sessions as _clear_tracker
 
     reg = await client.post(
         "/auth/register",
@@ -199,7 +199,7 @@ async def test_force_login_kills_dormant_refresh_without_live_jti(client, sessio
     """A user with a still-valid refresh token but no live access JTI must be
     rotated by another actor's force-login: the dormant refresh can no longer
     refresh afterwards."""
-    from celerp.services.session_tracker import clear as _clear_tracker
+    from test_helpers import clear_sessions as _clear_tracker
 
     # Displaced user: registers, then we drop their access JTI to simulate an
     # expired/absent access session while the refresh token stays valid.

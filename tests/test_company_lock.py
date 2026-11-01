@@ -102,6 +102,7 @@ async def test_locking_for_deletion_proves_only_a_company_that_is_there(session)
     company_id = await _company(session)
     missing = uuid.uuid4()
     assert await lock_company_for_deletion(session, missing) is False
+    await session.rollback()    # a deletion locks the one company it deletes
     assert await lock_company_for_deletion(session, company_id) is True
     assert noted(session, "deleting") == [company_id]
     await session.rollback()

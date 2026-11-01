@@ -443,10 +443,11 @@ async def test_a_message_that_is_no_question_is_answered_not_found(client, owner
     conv = await _conversation(client, token)
     message = await conversations.add_message(session, uuid.UUID(conv), "user", "a note")
     await session.commit()
-    r = await client.get(f"/ai/conversations/{conv}/questions/{message.id}", headers=AUTH(token))
+    message_id = message.id  # a refusing request rolls back the shared session, expiring the message
+    r = await client.get(f"/ai/conversations/{conv}/questions/{message_id}", headers=AUTH(token))
     assert r.status_code == 404, r.text
     r = await client.post(f"/ai/conversations/{conv}/query", headers=AUTH(token),
-                          json={"query": QUERY, "operation_id": str(message.id)})
+                          json={"query": QUERY, "operation_id": str(message_id)})
     assert r.status_code == 404, r.text
 
 
@@ -587,15 +588,17 @@ async def test_continue_never_reopens_a_job_a_runner_holds_and_stop_never_acts_o
                                state="pending" if held else "done"),
                      AIJobStep(job_id=job.id, seq=1, key="f2", operation_id=uuid.uuid4(), state="failed")])
     await session.commit()
+    # Read before the requests: one that refuses rolls back the shared session, expiring the job.
+    job_id, runner_id = job.id, job.runner_id
     for action, code in answers.items():
         await session.commit()      # a refused action rolls back the request's shared session
-        r = await client.post(f"/ai/jobs/{job.id}/{action}", headers=AUTH(token))
+        r = await client.post(f"/ai/jobs/{job_id}/{action}", headers=AUTH(token))
         assert r.status_code == code, (action, r.text)
         if code == 409:
             assert r.json()["detail"]["code"] == "job_not_open"
-    row = (await session.execute(select(AIBatchJob).where(AIBatchJob.id == job.id)
+    row = (await session.execute(select(AIBatchJob).where(AIBatchJob.id == job_id)
                                  .execution_options(populate_existing=True))).scalar_one()
-    assert (row.status, row.runner_id) == (status, job.runner_id)
+    assert (row.status, row.runner_id) == (status, runner_id)
 
 
 # ── Guard: the job module owns what a job's state means, who owns it, and how it moves ──

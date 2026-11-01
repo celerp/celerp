@@ -195,8 +195,9 @@ async def create_batch_job(
     conversation_id: uuid.UUID | None = None,
     job_id: uuid.UUID | None = None,
 ):
-    """Create a pending reading job, held by this process, and one step per file; the
-    caller commits and then starts it (celerp.ai.jobs.start_job).
+    """Create a pending reading job, held by this process, and one step per file, under
+    the company's lock (lock_for_ai, a retake for a caller that holds it); the caller
+    commits and then starts it (celerp.ai.jobs.start_job).
 
     ``job_id`` is the id of the question that asked for the job, when there is one."""
     request = jobs.JobRequest(company_id=company_id, user_id=user_id, kind="documents",
@@ -207,6 +208,7 @@ async def create_batch_job(
     if len(file_ids) > MAX_BATCH_FILES:
         raise ValueError(t("error.batch_too_many", max=MAX_BATCH_FILES))
     job, steps = jobs.documents_job(request=request, file_ids=file_ids, job_id=job_id)
+    await jobs.lock_for_ai(session, company_id)
     session.add(job)
     await session.flush()
     session.add_all(steps)

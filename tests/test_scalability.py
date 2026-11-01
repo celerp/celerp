@@ -75,7 +75,8 @@ class TestSessionTracker:
     @pytest.mark.asyncio
     async def test_register_and_active_user_ids(self, session):
         """register_token adds a JTI; active_user_ids returns the user."""
-        from celerp.services.session_tracker import register_token, active_user_ids, clear
+        from test_helpers import clear_sessions as clear
+        from celerp.services.session_tracker import register_token, active_user_ids
 
         await clear(session)
         uid = str(uuid.uuid4())
@@ -84,7 +85,8 @@ class TestSessionTracker:
     @pytest.mark.asyncio
     async def test_register_token_and_active_user_ids(self, session, client):
         """register_token stores a JTI; active_user_ids returns that user."""
-        from celerp.services.session_tracker import clear, register_token, active_user_ids
+        from test_helpers import clear_sessions as clear
+        from celerp.services.session_tracker import register_token, active_user_ids
 
         # Register a real user so FK constraint is satisfied
         r = await client.post("/auth/register", json={
@@ -108,7 +110,8 @@ class TestSessionTracker:
     @pytest.mark.asyncio
     async def test_active_user_ids_excludes_expired(self, session, client):
         """active_user_ids only returns users with at least one non-expired JTI."""
-        from celerp.services.session_tracker import clear, register_token, active_user_ids
+        from test_helpers import clear_sessions as clear
+        from celerp.services.session_tracker import register_token, active_user_ids
 
         # Register a real user so FK constraint is satisfied
         r = await client.post("/auth/register", json={
@@ -140,7 +143,8 @@ class TestSessionTracker:
         """get_nonce reads the nonce issuance stored, and creates no row for a user without one."""
         from celerp.models.auth import UserAuthState
         from celerp.models.company import User
-        from celerp.services.session_tracker import clear, get_nonce, invalidate_sessions
+        from test_helpers import clear_sessions as clear
+        from celerp.services.session_tracker import get_nonce, invalidate_sessions
 
         # Register a real user
         r = await client.post("/auth/register", json={
@@ -175,7 +179,8 @@ class TestSessionTracker:
     async def test_pop_evicted_by_ip_is_one_shot(self, session, client):
         """pop_evicted_by_ip returns the IP once, then None on subsequent calls."""
         from unittest.mock import patch
-        from celerp.services.session_tracker import clear, pop_evicted_by_ip
+        from test_helpers import clear_sessions as clear
+        from celerp.services.session_tracker import pop_evicted_by_ip
         import base64, json as _json
 
         r = await client.post("/auth/register", json={
@@ -409,12 +414,12 @@ class TestJtiCleanupLoop:
         The cleanup loop uses SessionLocal() which points to celerp.db.engine -
         a different connection than the rollback-isolated test session fixture.
         We verify correctness by seeding rows into the test session, then running
-        cleanup via a context manager that patches SessionLocal to yield it.
+        cleanup through SessionLocal sessions of its own on the test's connection.
         """
-        from celerp.services.session_tracker import clear
+        from test_helpers import clear_sessions as clear
         from celerp.models.auth import SessionRegistry
         from sqlalchemy import select
-        from contextlib import asynccontextmanager
+        from test_helpers import own_sessions_on
 
         # Register a real user
         r = await client.post("/auth/register", json={
@@ -436,12 +441,7 @@ class TestJtiCleanupLoop:
         session.add(SessionRegistry(jti=live_jti, user_id=user_id, company_id=company_id, expiry=_future(3600)))
         await session.commit()
 
-        # Patch SessionLocal so cleanup loop uses the test session
-        @asynccontextmanager
-        async def _fake_session_local():
-            yield session
-
-        with patch("celerp.services.session_tracker.SessionLocal", return_value=_fake_session_local()):
+        with patch("celerp.services.session_tracker.SessionLocal", await own_sessions_on(session)):
             with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
                 mock_sleep.side_effect = [None, asyncio.CancelledError()]
                 from celerp.services.session_tracker import run_jti_cleanup_loop
@@ -549,8 +549,9 @@ class TestLoginForceGlobalEviction:
     @pytest.mark.asyncio
     async def test_invalidate_all_sessions_clears_all_users(self, client, session):
         """invalidate_all_sessions wipes JTIs for ALL users and rotates their nonces."""
+        from test_helpers import clear_sessions as _clear
         from celerp.services.session_tracker import (
-            clear as _clear, register_token, get_nonce, active_user_ids, invalidate_all_sessions
+            register_token, get_nonce, active_user_ids, invalidate_all_sessions
         )
         from celerp.models.auth import SessionRegistry, UserAuthState
         from sqlalchemy import select
@@ -604,7 +605,8 @@ class TestLoginForceGlobalEviction:
     async def test_login_force_gate_resets_after_use(self, client, session):
         """After login-force, the gate is open for a new login (only force-login's JTI active)."""
         from unittest.mock import patch
-        from celerp.services.session_tracker import clear as _clear, active_user_ids
+        from test_helpers import clear_sessions as _clear
+        from celerp.services.session_tracker import active_user_ids
         import base64, json as _j
 
         r = await client.post("/auth/register", json={
@@ -649,7 +651,8 @@ class TestLoginForceGlobalEviction:
     async def test_force_login_does_not_store_eviction_ip_for_self(self, client, session):
         """Self-force-login: evicting_by_ip must NOT be set (user evicted themselves)."""
         from unittest.mock import patch
-        from celerp.services.session_tracker import clear as _clear, pop_evicted_by_ip
+        from test_helpers import clear_sessions as _clear
+        from celerp.services.session_tracker import pop_evicted_by_ip
         import base64, json as _j
 
         r = await client.post("/auth/register", json={
@@ -689,9 +692,7 @@ class TestRefreshJtiExpiry:
         from jose import jwt as _jwt
         from celerp.config import settings
         from celerp.models.auth import SessionRegistry
-        from contextlib import asynccontextmanager
         import time as _time
-        from unittest.mock import patch
 
         reg = await client.post("/auth/register", json={
             "company_name": "RefreshDbCo", "email": "refreshdb@test.com",
@@ -707,11 +708,6 @@ class TestRefreshJtiExpiry:
         assert row is not None
         expiry_before = row.expiry
 
-        # Patch get_session_ctx to yield the test session
-        @asynccontextmanager
-        async def _test_session_ctx():
-            yield session
-
         now = _time.time()
         total_ttl = int(settings.access_token_expire_minutes) * 60
         # A genuinely valid, past-half-life v2 token: keep the full claim set
@@ -720,8 +716,7 @@ class TestRefreshJtiExpiry:
         stale_payload["exp"] = int(now + total_ttl * 0.49)
         stale_token = _jwt.encode(stale_payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
-        with patch("celerp.middleware.get_session_ctx", return_value=_test_session_ctx()):
-            r = await client.get("/items", headers={"Authorization": f"Bearer {stale_token}"})
+        r = await client.get("/items", headers={"Authorization": f"Bearer {stale_token}"})
 
         assert r.status_code == 200
         assert "X-Refreshed-Token" in r.headers

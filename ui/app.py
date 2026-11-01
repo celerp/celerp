@@ -645,22 +645,18 @@ company_backup.company_backup_routes(app)
 
 import importlib as _importlib
 
-# AI is proprietary cloud-gated core (not a pluggable module): register its UI + nav directly so it is
-# always present and cannot be replaced by a user-supplied module. Mirrors the API wiring in main.py.
-import sys as _sys
-_ai_ui_pkg = os.path.join(os.path.dirname(os.path.dirname(__file__)), "default_modules", "celerp-ai")
-if os.path.isdir(_ai_ui_pkg) and _ai_ui_pkg not in _sys.path:
-    _sys.path.insert(0, _ai_ui_pkg)
-try:
-    from celerp.modules.slots import register as _register_ui_slot
-    from celerp.modules.loader import read_manifest as _read_manifest
-    from pathlib import Path as _Path
-    _ai_nav = _read_manifest(_Path(_ai_ui_pkg)).get("slots", {}).get("nav")
-    if _ai_nav:
-        _register_ui_slot("nav", {**_ai_nav, "_module": "celerp-ai"})
-    _importlib.import_module("celerp_ai.ui_routes").setup_ui_routes(app)
-except ImportError:
-    pass  # AI package not present — skip silently
+# The modules folded into core (AI, backup, connectors) are wired here, not by the module
+# loader, so they are always present and cannot be replaced by a user-supplied module.
+# Mirrors the API wiring in main.py.
+from pathlib import Path as _Path
+
+from celerp.modules.loader import register_core_folded_slots
+
+_default_modules = _Path(__file__).resolve().parent.parent / "default_modules"
+register_core_folded_slots(_default_modules)
+if str(_default_modules / "celerp-ai") not in sys.path:
+    sys.path.insert(0, str(_default_modules / "celerp-ai"))
+_importlib.import_module("celerp_ai.ui_routes").setup_ui_routes(app)
 
 # Register UI routes from the loaded modules.
 if _admission is not None:

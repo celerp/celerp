@@ -15,6 +15,8 @@ import httpx
 from celerp.connectors.shopify import ShopifyConnector, _next_page_url
 from celerp.connectors.base import SyncEntity
 
+_BASE = "https://store.myshopify.com/admin/api/2024-01"  # the store's admin API the next page must stay under
+
 
 @pytest.fixture
 def shopify():
@@ -31,16 +33,38 @@ def mock_upsert_item():
 
 def test_next_page_url_with_next():
     link = '<https://store.myshopify.com/admin/api/2024-01/products.json?page_info=abc>; rel="next"'
-    assert _next_page_url(link) == "https://store.myshopify.com/admin/api/2024-01/products.json?page_info=abc"
+    assert _next_page_url(link, _BASE) == "https://store.myshopify.com/admin/api/2024-01/products.json?page_info=abc"
 
 
 def test_next_page_url_no_next():
     link = '<https://store.myshopify.com/admin/api/2024-01/products.json?page_info=abc>; rel="previous"'
-    assert _next_page_url(link) is None
+    assert _next_page_url(link, _BASE) is None
 
 
 def test_next_page_url_empty():
-    assert _next_page_url("") is None
+    assert _next_page_url("", _BASE) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("next_url", [
+    "https://elsewhere.example.com/admin/api/2024-01/products.json?page_info=abc",
+    "http://test-store.myshopify.com/admin/api/2024-01/products.json?page_info=abc",
+    "https://test-store.myshopify.com/collect?page_info=abc",
+    "https://test-store.myshopify.com.elsewhere.example.com/admin/api/2024-01/products.json",
+])
+async def test_a_next_page_outside_the_stores_admin_api_is_refused_before_the_token_goes_out(
+        shopify, ctx_shopify, next_url):
+    """The next page is the store's own Link header: a link that leaves the store's admin
+    API over https is refused, and nothing is sent to it with the store's token."""
+    with respx.mock(assert_all_called=False) as store:
+        store.get("https://test-store.myshopify.com/admin/api/2024-01/products.json").mock(
+            return_value=httpx.Response(200, json={"products": []},
+                                        headers={"Link": f'<{next_url}>; rel="next"'}))
+        followed = store.route(url__startswith=next_url.split("?")[0]).mock(
+            return_value=httpx.Response(200, json={"products": []}))
+        with pytest.raises(ValueError):
+            await shopify._paginate(ctx_shopify, "/products.json", "products")
+    assert not followed.called
 
 
 # -- sync_products --
@@ -130,7 +154,7 @@ async def test_sync_products_variant_naming(shopify, ctx_shopify, mock_upsert_it
 
 @pytest.mark.asyncio
 async def test_sync_products_links_the_variant_and_pulls_images_by_item(shopify, ctx_shopify, mock_upsert_item):
-    with respx.mock, patch.object(ShopifyConnector, "_pull_product_images", new_callable=AsyncMock) as pull:
+    with respx.mock, patch("celerp.connectors.shopify.pull_store_files", new_callable=AsyncMock) as pull:
         respx.get("https://test-store.myshopify.com/admin/api/2024-01/products.json").mock(
             return_value=httpx.Response(200, json={"products": [
                 {"id": 1, "title": "Widget", "images": [{"src": "https://i.test/a.jpg", "position": 1}], "variants": [
@@ -143,13 +167,13 @@ async def test_sync_products_links_the_variant_and_pulls_images_by_item(shopify,
     kwargs = mock_upsert_item.call_args.kwargs
     assert (kwargs["platform"], kwargs["product_id"], kwargs["variation_id"]) == ("shopify", "1", "10")
     assert kwargs["seed_quantity"] is True
-    assert pull.await_args.args[2] == "item:resolved"
+    assert pull.await_args.kwargs["entity_id"] == "item:resolved"
 
 
 @pytest.mark.asyncio
 async def test_sync_products_skips_images_for_a_product_with_sync_turned_off(shopify, ctx_shopify, mock_upsert_item):
     mock_upsert_item.return_value = ("disabled", "item:resolved")
-    with respx.mock, patch.object(ShopifyConnector, "_pull_product_images", new_callable=AsyncMock) as pull:
+    with respx.mock, patch("celerp.connectors.shopify.pull_store_files", new_callable=AsyncMock) as pull:
         respx.get("https://test-store.myshopify.com/admin/api/2024-01/products.json").mock(
             return_value=httpx.Response(200, json={"products": [
                 {"id": 1, "title": "Widget", "images": [{"src": "https://i.test/a.jpg"}], "variants": [

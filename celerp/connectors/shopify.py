@@ -15,30 +15,43 @@ API version: 2024-01 (stable)
 """
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime
 from typing import Any
 
 import httpx
 
-from celerp.connectors.http import RateLimitedClient
+from celerp.connectors.http import RateLimitedClient, raise_for_store_status
 from celerp.connectors.util import money
+from celerp.connectors.images import pull_store_files, retry_unpulled_files
 from celerp.connectors.base import (
     ConnectorBase,
     ConnectorCategory,
     ConnectorContext,
+    EntityFlow,
+    FirstSync,
+    RemoteOrder,
+    RemoteProduct,
     SyncDirection,
     SyncEntity,
     SyncResult,
 )
 import celerp.connectors.upsert as _upsert
+from ui.i18n import t
 from celerp.modules.boundary import needs_modules
 
 log = logging.getLogger(__name__)
 
 _API_VERSION = "2024-01"
 _PAGE_LIMIT = 250  # Shopify max per page
+
+
+def _when(value) -> datetime | None:
+    """A Shopify ISO timestamp as a datetime, or None."""
+    try:
+        return datetime.fromisoformat(str(value)) if value else None
+    except ValueError:
+        return None
 
 
 def _base_url(ctx: ConnectorContext) -> str:
@@ -58,10 +71,22 @@ def _headers(ctx: ConnectorContext) -> dict[str, str]:
 class ShopifyConnector(ConnectorBase):
     name = "shopify"
     display_name = "Shopify"
+    reviewed_first_sync = True
     store_scoped_ids = False  # Shopify ids are unique across all stores
-    supported_entities = [SyncEntity.PRODUCTS, SyncEntity.ORDERS, SyncEntity.CONTACTS]
+    imported_doc_marker = "shopify_order_id"
+    entity_flows = {
+        "products": EntityFlow(inbound=("products",), outbound=("products_out",)),
+        "stock": EntityFlow(outbound=("inventory_out",)),
+        "orders": EntityFlow(inbound=("orders",)),
+        "customers": EntityFlow(inbound=("contacts",)),
+    }
+    # An order's payment state (financial_status), which the preview shows.
+    order_statuses = {
+        "pending": "pending", "authorized": "authorized", "partially_paid": "partially_paid", "paid": "paid",
+        "partially_refunded": "partially_refunded", "refunded": "refunded", "voided": "voided",
+        "expired": "expired",
+    }
     category = ConnectorCategory.WEBSITE
-    direction = SyncDirection.BOTH
     conflict_strategy = {
         SyncEntity.PRODUCTS: "newest",
         SyncEntity.ORDERS: "platform",
@@ -75,113 +100,139 @@ class ShopifyConnector(ConnectorBase):
         results: list[dict[str, Any]] = []
         base_params: dict | None = {"limit": _PAGE_LIMIT, **(params or {})}
         url = f"{_base_url(ctx)}{path}"
-        async with RateLimitedClient() as client:
+        async with RateLimitedClient(require_execution=True) as client:
             while url:
                 resp = await client.get(url, headers=_headers(ctx), params=base_params)
                 resp.raise_for_status()
                 data = resp.json()
                 results.extend(data.get(key, []))
-                link = resp.headers.get("Link", "")
-                url = _next_page_url(link)
+                url = _next_page_url(resp.headers.get("Link", ""), _base_url(ctx))
                 base_params = None  # subsequent pages use the full URL from Link header
         return results
 
     # -- Products --------------------------------------------------------------
 
     @needs_modules("celerp-inventory")
-    async def sync_products(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
+    async def sync_products(
+        self,
+        ctx: ConnectorContext,
+        since: datetime | None = None,
+        attention: list[dict] | None = None,
+        first_sync: FirstSync | None = None,
+    ) -> SyncResult:
         """
         Pull Shopify products into Celerp catalog product anchors (one per variant).
 
         Mapping:
           product.title + variant.title -> item.name
-          variant.sku                   -> item.sku  (skipped if blank)
+          variant.sku                   -> item.sku  (a variant without one waits on a person)
           variant.price                 -> item.sale_price
           variant.inventory_quantity    -> item.quantity (seeded once, for tracked variants)
           product.id + variant.id       -> the item's Shopify link
-        """
-        from celerp_inventory.services import upsert_external_product
 
+        A first sync (``first_sync``) reads every product and follows its choices.
+        """
         result = SyncResult(entity=SyncEntity.PRODUCTS)
         errors: list[str] = []
+        pending: dict[str, dict] = {}
+        processed: set[str] = set()
+        if first_sync is not None:
+            since = None
 
         try:
-            products = await self._paginate(ctx, "/products.json", "products", params={"updated_at_min": since.isoformat()} if since else None)
+            products = await self._store_products(ctx, since)
         except (httpx.HTTPStatusError, ValueError) as exc:
             result.errors = [f"Shopify API error: {exc}"]
             return result
 
-        for product in products:
-            for variant in product.get("variants", []):
-                sku = (variant.get("sku") or "").strip()
-                if not sku:
-                    result.skipped += 1
-                    continue
-
-                variant_title = variant.get("title", "")
-                name = product["title"]
-                if variant_title and variant_title.lower() != "default title":
-                    name = f"{name} - {variant_title}"
-
-                try:
-                    outcome, entity_id = await upsert_external_product(
-                        ctx.company_id,
-                        platform="shopify",
-                        product_id=str(product["id"]),
-                        variation_id=str(variant["id"]),
-                        sku=sku,
-                        name=name,
-                        sale_price=money(variant.get("price")),
-                        quantity=float(variant.get("inventory_quantity") or 0),
-                        seed_quantity=variant.get("inventory_management") == "shopify",
-                        sell_by="piece",
-                    )
-                except Exception as exc:
-                    errors.append(f"SKU {sku}: {exc}")
-                    continue
-                result.record(outcome)
-                if outcome == "disabled":
-                    continue
-                # Pull product images after upsert (idempotent, best-effort)
-                try:
-                    await self._pull_product_images(ctx, product, entity_id)
-                except Exception as img_exc:
-                    log.warning("shopify image pull failed for SKU %s: %s", sku, img_exc)
+        for remote in products:
+            processed.add(remote.key)
+            entity_id = await _upsert.import_store_product(
+                ctx, self, key=remote.key, label=remote.name, result=result, pending=pending,
+                first_sync=first_sync, errors=errors,
+                product_id=remote.product_id,
+                variation_id=remote.variation_id,
+                sku=remote.sku,
+                name=remote.name,
+                sale_price=remote.price,
+                quantity=float(remote.extra["inventory_quantity"] or 0),
+                seed_quantity=remote.extra["inventory_management"] == "shopify",
+                sell_by="piece",
+            )
+            if entity_id is None:
+                continue
+            await pull_store_files(
+                ctx, self, key=remote.key, label=remote.name, entity_id=entity_id,
+                files=self._product_files(remote.extra["product"]), pending=pending, processed=processed,
+                operation=first_sync and first_sync.operation)
+        await retry_unpulled_files(ctx, self, attention, pending, processed)
 
         result.errors = errors or None
+        result.attention = _upsert.carried_attention(attention, pending, processed)
         log.info(
             "shopify.sync_products company=%s created=%d skipped=%d errors=%d",
             ctx.company_id, result.created, result.skipped, len(errors),
         )
         return result
 
-    async def _pull_product_images(self, ctx: ConnectorContext, product: dict[str, Any], entity_id: str) -> None:
-        """Pull images from a Shopify product and store them as the item's files."""
-        from celerp.db import get_session_ctx as get_async_session
-        from celerp.connectors.images import download_and_emit_file
+    async def _store_products(self, ctx: ConnectorContext, since: datetime | None) -> list[RemoteProduct]:
+        """Every variant the store returns, each a sellable product of its own."""
+        products = await self._paginate(
+            ctx, "/products.json", "products",
+            params={"updated_at_min": since.isoformat()} if since else None)
+        out: list[RemoteProduct] = []
+        for product in products:
+            for variant in product.get("variants", []):
+                variant_title = variant.get("title", "")
+                name = product["title"]
+                if variant_title and variant_title.lower() != "default title":
+                    name = f"{name} - {variant_title}"
+                out.append(RemoteProduct(
+                    key=f"{product['id']}:{variant['id']}", product_id=str(product["id"]),
+                    variation_id=str(variant["id"]), sku=(variant.get("sku") or "").strip(),
+                    name=name, description=None, price=money(variant.get("price")),
+                    modified=_when(variant.get("updated_at") or product.get("updated_at")),
+                    stock=(float(variant.get("inventory_quantity") or 0)
+                           if variant.get("inventory_management") == "shopify" else None),
+                    extra={"inventory_quantity": variant.get("inventory_quantity"),
+                           "inventory_management": variant.get("inventory_management"),
+                           "product": product},
+                ))
+        return out
 
-        images: list[dict] = product.get("images", [])
-        if not images:
-            return
+    async def preview_products(self, ctx: ConnectorContext) -> list[RemoteProduct]:
+        return await self._store_products(ctx, None)
 
-        async with get_async_session() as session:
-            for img in sorted(images, key=lambda x: x.get("position", 99)):
-                src = img.get("src")
-                if not src:
-                    continue
-                fname = img.get("alt") or f"product-{img.get('id', '')}.jpg"
-                await download_and_emit_file(
-                    session, ctx.company_id, entity_id,
-                    "system", src, fname, "product_images", is_hero=(img.get("position", 99) == 1)
-                )
-            await session.commit()
+    async def preview_orders(self, ctx: ConnectorContext, orders_from: datetime) -> list[RemoteOrder]:
+        orders = await self._paginate(ctx, "/orders.json", "orders", params={
+            "status": "any", "created_at_min": orders_from.isoformat(),
+            "fields": "id,name,financial_status,created_at,total_price,currency",
+        })
+        return [RemoteOrder(
+            id=str(o["id"]), number=str(o.get("name") or o["id"]),
+            status=str(o.get("financial_status") or ""), created=_when(o.get("created_at")),
+            total=money(o.get("total_price")), currency=o.get("currency"), posts=False,
+        ) for o in orders]
+
+    @staticmethod
+    def _product_files(product: dict[str, Any]) -> list[dict]:
+        """The images a Shopify product brings onto its item (images.pull_store_files), in
+        the store's order, the first position the hero."""
+        return [{"url": img["src"], "filename": img.get("alt") or f"product-{img.get('id', '')}.jpg",
+                 "tag": "product_images", "is_hero": img.get("position", 99) == 1, "remote_id": img.get("id")}
+                for img in sorted(product.get("images") or [], key=lambda x: x.get("position", 99)) if img.get("src")]
 
     # -- Orders ----------------------------------------------------------------
 
     @needs_modules("celerp-docs")
-    async def sync_orders(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
+    async def sync_orders(
+        self, ctx: ConnectorContext, since: datetime | None = None,
+        orders_from: datetime | None = None, first_sync: FirstSync | None = None,
+    ) -> SyncResult:
         """
         Pull Shopify orders -> Celerp documents (type=invoice, status=unpaid/paid).
+        Orders placed before ``orders_from``, the connection's earliest order date,
+        are not fetched.
 
         Mapping:
           order.name (#1001)          -> doc.reference
@@ -197,6 +248,8 @@ class ShopifyConnector(ConnectorBase):
             params: dict = {"status": "any"}
             if since:
                 params["updated_at_min"] = since.isoformat()
+            if orders_from:
+                params["created_at_min"] = orders_from.isoformat()
             orders = await self._paginate(ctx, "/orders.json", "orders", params=params)
         except (httpx.HTTPStatusError, ValueError) as exc:
             result.errors = [f"Shopify API error: {exc}"]
@@ -204,7 +257,7 @@ class ShopifyConnector(ConnectorBase):
 
         for order in orders:
             try:
-                result.record(await _upsert.upsert_order_from_shopify(ctx.company_id, order))
+                result.record(await _upsert.upsert_order_from_shopify(ctx.company_id, order, first_sync))
             except Exception as exc:
                 msg = f"Order {order.get('name')}: {exc}"
                 log.warning("shopify.sync_orders error: %s", msg)
@@ -259,7 +312,7 @@ class ShopifyConnector(ConnectorBase):
             result.errors = [f"Failed to load inventory: {exc}"]
             return result
 
-        async with RateLimitedClient() as client:
+        async with RateLimitedClient(require_execution=True) as client:
             for item in items:
                 variant_id = item.get("shopify_variant_id")
                 location_id = item.get("shopify_location_id")
@@ -292,11 +345,17 @@ class ShopifyConnector(ConnectorBase):
 
     @needs_modules("celerp-inventory")
     async def sync_products_out(self, ctx: ConnectorContext) -> SyncResult:
-        """Push Celerp item updates -> Shopify products (fields, images, certificates)."""
-        from celerp.connectors.images import build_platform_image_payload, build_platform_cert_payload
+        """Push Celerp item updates -> Shopify products. Images go in a request of their
+        own after the fields, by Shopify's own id when Shopify holds them and by a
+        short-lived public link otherwise, so an image Shopify refuses (or one whose
+        link it cannot fetch) never holds back the fields; it waits on a person with
+        Shopify's reason. The ids Shopify returns are recorded on the link, so the next
+        run sends ids and never uploads an image again."""
+        from celerp.connectors.images import product_image_files, store_images
 
         result = SyncResult(entity=SyncEntity.PRODUCTS, direction=SyncDirection.OUTBOUND)
         errors: list[str] = []
+        attention: list[dict] = []
 
         try:
             items = await _upsert.list_items_modified_since_last_sync(ctx.company_id, platform="shopify")
@@ -304,59 +363,55 @@ class ShopifyConnector(ConnectorBase):
             result.errors = [f"Failed to load items: {exc}"]
             return result
 
-        async with RateLimitedClient() as client:
+        async with RateLimitedClient(require_execution=True) as client:
             for item in items:
                 product_id = item.get("shopify_product_id")
                 if not product_id:
                     result.skipped += 1
                     continue
+                url = f"{_base_url(ctx)}/products/{product_id}.json"
+                label = item.get("name") or item.get("sku")
+                fields: dict = {}
+                if item.get("name"):
+                    fields["title"] = item["name"]
+                if item.get("description"):
+                    fields["body_html"] = item["description"]
+                if item.get("sale_price") is not None:
+                    fields["variants"] = [{"price": str(item["sale_price"])}]
                 try:
-                    payload: dict = {"product": {}}
-                    if item.get("name"):
-                        payload["product"]["title"] = item["name"]
-                    if item.get("description"):
-                        payload["product"]["body_html"] = item["description"]
-                    if item.get("sale_price") is not None:
-                        payload["product"]["variants"] = [{"price": str(item["sale_price"])}]
+                    _raise_for_status(await client.put(url, headers=_headers(ctx), json={"product": fields}))
+                except Exception as exc:
+                    errors.append(f"Product {product_id}: {exc}")
+                    continue
+                result.updated += 1
 
-                    # Push images
-                    files: list[dict] = item.get("files") or []
-                    image_payload = build_platform_image_payload(files)
-                    if image_payload["hero_url"]:
-                        payload["product"]["images"] = [{"src": image_payload["hero_url"]}] + [
-                            {"src": u} for u in image_payload["additional_urls"]
-                        ]
-
-                    resp = await client.put(
-                        f"{_base_url(ctx)}/products/{product_id}.json",
-                        headers=_headers(ctx),
-                        json=payload,
-                    )
-                    resp.raise_for_status()
-
-                    # Push certificate metafields (separate calls per metafield)
-                    cert_payload = build_platform_cert_payload(files)
-                    for tag_key, certs in cert_payload.items():
-                        try:
-                            mf_resp = await client.post(
-                                f"{_base_url(ctx)}/products/{product_id}/metafields.json",
-                                headers=_headers(ctx),
-                                json={"metafield": {
-                                    "namespace": "custom",
-                                    "key": tag_key,
-                                    "value": json.dumps(certs),
-                                    "type": "json",
-                                }},
-                            )
-                            mf_resp.raise_for_status()
-                        except Exception as mf_exc:
-                            log.warning("shopify: metafield push failed product=%s tag=%s: %s", product_id, tag_key, mf_exc)
-
-                    result.updated += 1
+                link = dict(item.get("external_link") or {})
+                images, unsent = await store_images(ctx, self.name, self.display_name, item.get("files") or [], link)
+                if unsent:
+                    attention.append({"id": str(product_id), "label": label, "kind": "image", "reason": unsent})
+                    continue
+                if not images:
+                    continue  # an item with no images of its own never clears Shopify's
+                try:
+                    resp = await client.put(url, headers=_headers(ctx),
+                                            json={"product": {"id": int(product_id), "images": images}})
+                    _raise_for_status(resp)
+                except Exception as exc:
+                    attention.append({"id": str(product_id), "label": label, "kind": "image",
+                                      "reason": t("connectors.attention_image_refused",
+                                                  service=self.display_name, detail=exc)})
+                    continue
+                image_ids = [f["id"] for f in product_image_files(item.get("files") or [])]
+                returned = (resp.json().get("product") or {}).get("images") or []
+                media_ids = {**(link.get("media_ids") or {}),
+                             **{fid: str(img["id"]) for fid, img in zip(image_ids, returned) if img.get("id")}}
+                try:
+                    await _upsert.record_link_push(ctx, self.name, item, link, {"media_ids": media_ids})
                 except Exception as exc:
                     errors.append(f"Product {product_id}: {exc}")
 
         result.errors = errors or None
+        result.attention = attention
         log.info(
             "shopify.sync_products_out company=%s updated=%d skipped=%d errors=%d",
             ctx.company_id, result.updated, result.skipped, len(errors),
@@ -364,13 +419,33 @@ class ShopifyConnector(ConnectorBase):
         return result
 
 
+def _raise_for_status(resp: httpx.Response) -> None:
+    """Raise for a failed Shopify reply with Shopify's own errors."""
+    raise_for_store_status(resp, _shopify_reason)
+
+
+def _shopify_reason(body) -> str | None:
+    errors = body.get("errors") if isinstance(body, dict) else None
+    if isinstance(errors, dict):
+        return "; ".join(f"{field}: {', '.join(map(str, v)) if isinstance(v, list) else v}"
+                         for field, v in errors.items())
+    return str(errors) if errors else None
+
+
 # -- Pagination helper ---------------------------------------------------------
 
-def _next_page_url(link_header: str) -> str | None:
-    """Parse Shopify Link header for next page URL."""
+def _next_page_url(link_header: str, base_url: str) -> str | None:
+    """The next page named by Shopify's Link header, or None on the last page. The store's
+    token goes with it, so a link that leaves the store's admin API over https (another
+    scheme, host or path) is refused before anything is sent."""
+    from urllib.parse import urlsplit
+
     for part in link_header.split(","):
         part = part.strip()
         if 'rel="next"' in part:
-            url_part = part.split(";")[0].strip()
-            return url_part.strip("<>")
+            url = part.split(";")[0].strip().strip("<>")
+            link, base = urlsplit(url), urlsplit(base_url)
+            if (link.scheme, link.netloc) != ("https", base.netloc) or not link.path.startswith("/admin/api/"):
+                raise ValueError(f"Shopify named a next page outside the store's admin API: {url}")
+            return url
     return None

@@ -30,6 +30,7 @@ from sqlalchemy import func, select
 
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from connector_test_support import connector_session  # noqa: F401
 from stock_books import assert_books_carry_stock
 from test_cost_restatement import _state
 from test_money_stock_and_contact_invariants import _account_net
@@ -315,19 +316,6 @@ async def test_migrated_stock_keeps_its_source_account_and_the_import_books_no_o
 
 
 # --- Connectors ------------------------------------------------------------------------
-
-
-@pytest.fixture
-def connector_session(session, monkeypatch):
-    """The connector services open their own session; point it at the test session."""
-    import contextlib
-
-    @contextlib.asynccontextmanager
-    async def _local():
-        yield session
-
-    monkeypatch.setattr("celerp.db.SessionLocal", _local)
-    return session
 
 
 async def test_an_item_with_a_cost_from_an_accounting_system_arrives_as_a_draft_with_nothing_booked(

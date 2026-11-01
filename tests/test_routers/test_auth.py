@@ -86,7 +86,7 @@ async def test_login_unknown_user(client):
 
 @pytest.mark.asyncio
 async def test_change_password(client, session):
-    from celerp.services.session_tracker import clear as _clear_tracker
+    from test_helpers import clear_sessions as _clear_tracker
 
     await client.post(
         "/auth/register",
@@ -115,7 +115,7 @@ async def test_change_password(client, session):
 async def test_change_password_kills_old_access_and_refresh(client, session):
     """A self password change rotates the nonce, so the caller's own pre-change
     access and refresh tokens both return 401 afterwards."""
-    from celerp.services.session_tracker import clear as _clear_tracker
+    from test_helpers import clear_sessions as _clear_tracker
 
     await client.post(
         "/auth/register",
@@ -208,7 +208,7 @@ async def _seed_foreign_session(session, user_id: str, expiry_offset_s: float = 
 async def test_single_user_gate_blocks_any_concurrent_user(client, session):
     """Gate: a different user cannot log in while another user has an active JTI."""
     from unittest.mock import patch
-    from celerp.services.session_tracker import clear as _clear_tracker
+    from test_helpers import clear_sessions as _clear_tracker
 
     await client.post(
         "/auth/register",
@@ -226,7 +226,7 @@ async def test_single_user_gate_blocks_any_concurrent_user(client, session):
 @pytest.mark.asyncio
 async def test_single_user_gate_empty_tracker_allows_login(client, session):
     """Gate: login succeeds when tracker is empty (no active JTIs)."""
-    from celerp.services.session_tracker import clear as _clear_tracker
+    from test_helpers import clear_sessions as _clear_tracker
 
     await client.post(
         "/auth/register",
@@ -247,7 +247,7 @@ async def test_single_user_gate_blocks_same_user_relogin(client, session):
     """
     from unittest.mock import patch
     import base64, json as _json
-    from celerp.services.session_tracker import clear as _clear_tracker
+    from test_helpers import clear_sessions as _clear_tracker
 
     await client.post(
         "/auth/register",
@@ -273,7 +273,7 @@ async def test_single_user_gate_blocks_same_user_relogin(client, session):
 async def test_single_user_gate_bypassed_with_relay(client, session):
     """Gate is skipped when relay session token is active (cloud tier = multi-user)."""
     from unittest.mock import patch
-    from celerp.services.session_tracker import clear as _clear_tracker
+    from test_helpers import clear_sessions as _clear_tracker
 
     await client.post(
         "/auth/register",
@@ -291,7 +291,8 @@ async def test_single_user_gate_bypassed_with_relay(client, session):
 async def test_gate_opens_when_all_jtis_expired(client, session):
     """Gate must NOT fire when the only registered JTI has already expired."""
     from unittest.mock import patch
-    from celerp.services.session_tracker import clear as _clear_tracker, register_token as _reg
+    from test_helpers import clear_sessions as _clear_tracker
+    from celerp.services.session_tracker import register_token as _reg
 
     await client.post(
         "/auth/register",
@@ -335,7 +336,7 @@ async def test_logout_endpoint_invalidates_existing_tokens(client):
 async def test_force_login_invalidates_other_user_tokens(client, session):
     """login-force must rotate the nonce so any previously-active user's token returns 401."""
     from unittest.mock import patch
-    from celerp.services.session_tracker import clear as _clear_tracker
+    from test_helpers import clear_sessions as _clear_tracker
 
     await client.post(
         "/auth/register",
@@ -360,7 +361,7 @@ async def test_force_login_invalidates_other_user_tokens(client, session):
 async def test_login_possible_after_force_login_and_logout(client, session):
     """Regression (Nikolai 2026-05-12): A logs in, B force-logs in, B logs out, both can log in again."""
     from unittest.mock import patch
-    from celerp.services.session_tracker import clear as _clear_tracker
+    from test_helpers import clear_sessions as _clear_tracker
 
     await client.post(
         "/auth/register",
@@ -401,7 +402,8 @@ async def test_login_possible_after_force_login_and_logout(client, session):
 async def test_force_login_stores_evicting_ip(client, session):
     """login-force stores the requesting IP so evicted user sees it on next 401."""
     from unittest.mock import patch
-    from celerp.services.session_tracker import clear as _clear_tracker, pop_evicted_by_ip as _pop_ip
+    from test_helpers import clear_sessions as _clear_tracker
+    from celerp.services.session_tracker import pop_evicted_by_ip as _pop_ip
     import base64, json as _json
 
     await client.post(
@@ -630,7 +632,7 @@ async def test_old_refresh_token_rejected_after_logout(client):
 async def test_displaced_user_refresh_token_rejected_after_force_login(client, session):
     """After a force-login rotates the nonce, the displaced session's refresh token is dead."""
     from unittest.mock import patch
-    from celerp.services.session_tracker import clear as _clear_tracker
+    from test_helpers import clear_sessions as _clear_tracker
 
     await client.post(
         "/auth/register",
@@ -661,7 +663,7 @@ async def test_refresh_uses_current_db_role_not_jwt_claim(client, session):
     import base64, json as _json, uuid as _uuid
     from sqlalchemy import select
     from celerp.models.accounting import UserCompany
-    from celerp.services.session_tracker import clear as _clear_tracker
+    from test_helpers import clear_sessions as _clear_tracker
 
     owner_reg = await client.post(
         "/auth/register",
@@ -705,7 +707,7 @@ async def test_inactive_user_rejected_on_access_and_refresh(client, session):
     """A user marked inactive in DB is rejected on both a bearer access token and refresh."""
     import uuid as _uuid
     from celerp.models.company import User
-    from celerp.services.session_tracker import clear as _clear_tracker
+    from test_helpers import clear_sessions as _clear_tracker
 
     reg = await client.post(
         "/auth/register",
@@ -731,7 +733,7 @@ async def test_deactivated_membership_rejected_on_access_and_refresh(client, ses
     import base64, json as _json, uuid as _uuid
     from sqlalchemy import select
     from celerp.models.accounting import UserCompany
-    from celerp.services.session_tracker import clear as _clear_tracker
+    from test_helpers import clear_sessions as _clear_tracker
 
     owner_reg = await client.post(
         "/auth/register",

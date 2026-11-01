@@ -190,8 +190,11 @@ async def test_two_move_ins_for_one_login_with_the_relay_make_one_company(real_c
     await _one_company_for(real_engine, boss)
 
 
-async def test_a_membership_given_to_the_login_while_it_starts_a_company_waits_for_it(real_client, real_engine,
-                                                                                      monkeypatch, tmp_path):
+async def test_a_membership_given_to_the_login_while_it_starts_a_company_leaves_it_in_both(real_client, real_engine,
+                                                                                          monkeypatch, tmp_path):
+    """The start holds the login without its key (auth.hold_companyless_login), so a
+    membership another request gives the login commits meanwhile, and the start still makes
+    its company: the login ends in both, as when the membership is added just after."""
     from celerp.routers import auth as auth_router
     _local_files(monkeypatch, tmp_path)
     boss, _ = await _companyless_owner_with_backups(real_client, real_engine, 0)
@@ -210,19 +213,9 @@ async def test_a_membership_given_to_the_login_while_it_starts_a_company_waits_f
     monkeypatch.setattr(auth_router, "hold_companyless_login", paused)
     start = asyncio.create_task(_start(real_client, "Fresh Start Ltd"))
     await reached.wait()
-
-    added = asyncio.create_task(member(real_engine, boss, b, "viewer"))
-
-    async def settled():
-        while not added.done() and not await _waiting_on_a_lock(real_engine):
-            await asyncio.sleep(0.02)
-
     try:
-        await asyncio.wait_for(settled(), 20)
-        # The login's answer "no company" stays true until the start commits.
-        assert not added.done()
+        await asyncio.wait_for(member(real_engine, boss, b, "viewer"), 20)
     finally:
         release.set()
     assert (await start).status_code == 200
-    await added
     assert await count(real_engine, "user_companies", "user_id = :u", u=str(boss)) == 2

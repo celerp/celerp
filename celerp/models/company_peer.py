@@ -42,7 +42,7 @@ class CompanyPeerIdentity(Base):
     source_entity_id: Mapped[str] = mapped_column(sa.Text, nullable=False)
     source_key_hash: Mapped[str] = mapped_column(sa.String(64), nullable=False)
     target_entity_id: Mapped[str] = mapped_column(sa.Text, nullable=False)
-    last_revision: Mapped[int] = mapped_column(sa.BigInteger, nullable=False, default=0)
+    last_revision: Mapped[int] = mapped_column(sa.BigInteger, nullable=False, default=0, server_default="0")
     last_payload_hash: Mapped[str | None] = mapped_column(sa.String(64), nullable=True)
 
     __table_args__ = (

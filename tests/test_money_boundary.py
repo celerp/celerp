@@ -21,8 +21,9 @@ from test_cost_restatement import _cogs_adjustments, _sell, _set_cost, _state
 
 async def _company(session, currency: str) -> dict:
     cid, uid = uuid.uuid4(), uuid.uuid4()
-    session.add(Company(id=cid, name="MoneyCo", slug=f"money-{cid.hex[:8]}", settings={"currency": currency}))
     session.add(User(id=uid, email=f"admin-{cid.hex[:8]}@test.co", name="Admin", auth_hash="x", is_active=True))
+    await session.flush()
+    session.add(Company(id=cid, name="MoneyCo", slug=f"money-{cid.hex[:8]}", settings={"currency": currency}))
     await session.flush()
     session.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=cid, role="admin", is_active=True))
     from test_helpers import make_authed_token, provision_company_books

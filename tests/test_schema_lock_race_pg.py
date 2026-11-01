@@ -25,6 +25,7 @@ from sqlalchemy.pool import NullPool
 from ui.i18n import t
 
 from company_backup_support import auth, confirm, download, manifest, members, read
+from test_helpers import as_another_client
 from migration_support import real_client, real_engine  # noqa: F401
 from test_company_backup import (  # noqa: F401
     _BK_MODULE,
@@ -143,7 +144,7 @@ async def test_schema_change_in_progress_refuses_export_and_restore(
     preview = await read(real_client, tok, data, mode="new_company")
     assert preview.status_code == 200, preview.text
     async with real_engine.connect() as holder:
-        await holder.execute(text("SELECT pg_advisory_lock(:k)"), {"k": SCHEMA_KEY})
+        await as_another_client(holder.execute(text("SELECT pg_advisory_lock(:k)"), {"k": SCHEMA_KEY}))
         try:
             r = await real_client.get("/company-backups/download", headers=auth(tok))
             assert r.status_code == 409, r.text
@@ -332,8 +333,11 @@ def _record_order(monkeypatch, target, holder_name: str, enum_target, enum_name:
     return seen
 
 
-async def test_purge_takes_module_state_then_schema(real_engine, real_client, widgets_company, tmp_path,  # noqa: F811
+async def test_purge_takes_schema_then_module_state(real_engine, real_client, widgets_company, tmp_path,  # noqa: F811
                                                     monkeypatch):
+    """The schema key first, as every holder of it takes it (the instance locks lead the lock
+    order). Its wait is bounded, so a running copy or restore, which holds the module state for
+    its whole run, refuses the purge before the purge queues for the module state."""
     from celerp.modules import registry
     from celerp.routers import companies
 
@@ -344,7 +348,7 @@ async def test_purge_takes_module_state_then_schema(real_engine, real_client, wi
         seen = _record_order(monkeypatch, registry, "hold_module_state", companies, "_module_tables_with_row_counts")
         r = await real_client.post(f"/companies/me/modules/{name}/purge-data", headers=auth(tok))
         assert r.status_code == 200, r.text
-        assert seen == [set(), {"module-state"}, {"module-state", "schema"}]
+        assert seen == [{"schema"}, {"schema", "module-state"}, {"schema", "module-state"}]
     finally:
         await _bk_drop(real_engine, "zy_things")
 
