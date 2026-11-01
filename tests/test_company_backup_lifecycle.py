@@ -396,6 +396,10 @@ def installed(tmp_path, monkeypatch):
     return root, restarts
 
 
+# The copied company holds an item, so its copy needs Inventory too, which runs here already.
+_HOLDS_ITEMS = {"name": "celerp-inventory", "label": "Inventory", "status": "ready", "first_party": False}
+
+
 def _first_party(monkeypatch, *names: str) -> None:
     from celerp.modules import loader
     monkeypatch.setattr(loader, "is_first_party", lambda path: Path(path).name in names)
@@ -418,7 +422,7 @@ async def test_backup_needing_an_off_module_previews_its_preparation(real_client
     assert preview.status_code == 200, preview.text
     body = preview.json()
     assert body["modules"] == [{"name": "acme-widgets", "label": "Widgets", "status": "enable_required",
-                                "first_party": True}]
+                                "first_party": True}, _HOLDS_ITEMS]
     assert body["modules_ready"] is False
     before = await _companies(real_engine)
     r = await real_client.post("/company-backups/restore", json=confirm(preview), headers=auth(tok))
@@ -614,7 +618,7 @@ def _gadgets_zip() -> bytes:
 def _gadgets_ready(r, upload_token: str) -> None:
     assert r.status_code == 200, r.text
     assert r.json()["modules"] == [{"name": "acme-gadgets", "label": "Gadgets", "status": "enable_required",
-                                    "first_party": False}]
+                                    "first_party": False}, _HOLDS_ITEMS]
     assert r.json()["upload_token"] == upload_token
 
 

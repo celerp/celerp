@@ -1203,21 +1203,38 @@ def modules_owning_events(event_types: set[str]) -> list[str]:
 def event_owners(event_types: set[str]) -> tuple[list[str], list[str]]:
     """The display names of the installed modules whose projection handlers own these
     event types, enabled or not, and the event types no installed module owns."""
-    owners: dict[str, str] = {}
-    for pkg in _installed_packages():
-        manifest = read_manifest(pkg)
-        label = manifest.get("display_name") or manifest.get("name") or pkg.name
-        for contrib in (manifest.get("slots") or {}).get("projection_handler") or []:
-            owners.setdefault(contrib.get("prefix") or "", label)
+    owners = _event_prefix_owners()
     owned: set[str] = set()
     unowned: set[str] = set()
     for t in event_types:
-        label = next((label for prefix, label in owners.items() if prefix and t.startswith(prefix)), None)
-        if label:
-            owned.add(label)
+        if owner := _owner_of(t, owners):
+            owned.add(owner[1])
         else:
             unowned.add(t)
     return sorted(owned), sorted(unowned)
+
+
+def modules_holding_events(event_types: set[str]) -> set[str]:
+    """The names of the installed modules whose projection handlers own these event types,
+    enabled or not."""
+    owners = _event_prefix_owners()
+    return {owner[0] for t in event_types if (owner := _owner_of(t, owners))}
+
+
+def _event_prefix_owners() -> dict[str, tuple[str, str]]:
+    """Each installed module's projection prefix, with the module's name and display name;
+    the first module in search path order holding a prefix owns it."""
+    owners: dict[str, tuple[str, str]] = {}
+    for pkg in _installed_packages():
+        manifest = read_manifest(pkg)
+        name = manifest.get("name") or pkg.name
+        for contrib in (manifest.get("slots") or {}).get("projection_handler") or []:
+            owners.setdefault(contrib.get("prefix") or "", (name, manifest.get("display_name") or name))
+    return owners
+
+
+def _owner_of(event_type: str, owners: dict[str, tuple[str, str]]) -> tuple[str, str] | None:
+    return next((owner for prefix, owner in owners.items() if prefix and event_type.startswith(prefix)), None)
 
 
 def _installed_packages():

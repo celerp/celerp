@@ -29,7 +29,8 @@ from company_backup_support import (
     token,
 )
 from migration_support import auth, count, real_client, real_engine  # noqa: F401
-from test_company_backup import (
+from test_company_backup import (  # noqa: F401 (_bk_modules_running: autouse, every bundled module runs)
+    _bk_modules_running,
     _bk_seed_portable,
     _r_alter_rows,
     _r_created,

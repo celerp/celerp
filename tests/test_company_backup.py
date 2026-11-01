@@ -4586,7 +4586,7 @@ async def test_restored_company_uses_only_the_checked_module_list(real_engine, r
     the backup's copy of its settings."""
     from celerp.modules.registry import get_enabled
     _bk_local(monkeypatch, tmp_path)
-    _, _, tok = await _bk_setup(real_engine, settings={"enabled_modules": ["celerp-labels"]})
+    _, _, tok = await _bk_setup(real_engine, settings={"enabled_modules": ["celerp-inventory", "celerp-labels"]})
 
     def change(m):
         m["company"]["settings"]["enabled_modules"] = copied

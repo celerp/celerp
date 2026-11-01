@@ -46,7 +46,7 @@ async def test_backup_from_before_restores_and_replays_unchanged(real_engine, re
     monkeypatch.setattr(compatibility, "running_version",
                         lambda: f"{captured_by.major}.{captured_by.minor}.{captured_by.micro + 1}")
     _bk_local(monkeypatch, tmp_path)
-    _accounting_running(monkeypatch)
+    _modules_running(monkeypatch)
     _user, _cid, tok = await _bk_setup(real_engine)
     cid = await _bk_restore_new(real_client, tok, archive.read_bytes())
     async with maker(real_engine)() as s:
@@ -78,11 +78,12 @@ def _as_next_release(monkeypatch) -> bytes:
     return archive.read_bytes()
 
 
-def _accounting_running(monkeypatch) -> None:
-    """The module holding the copy's accounts runs here, as it does once the owner turned it on."""
+def _modules_running(monkeypatch) -> None:
+    """The modules holding the copy's data run here, as they do once the owner turned them on."""
     from celerp.modules import loader
-    monkeypatch.setattr(loader, "_loaded", [*(m for m in loader._loaded if m["name"] != "celerp-accounting"),
-                                            {"name": "celerp-accounting", "version": "99.0.0"}])
+    names = {"celerp-accounting", "celerp-inventory", "celerp-docs"}
+    monkeypatch.setattr(loader, "_loaded", [*(m for m in loader._loaded if m["name"] not in names),
+                                            *({"name": n, "version": "99.0.0"} for n in sorted(names))])
 
 
 async def _fresh_installation(engine) -> None:
@@ -111,17 +112,73 @@ async def test_older_copy_at_first_boot_asks_for_the_modules_its_data_needs(real
 async def test_older_copy_opens_as_the_first_company_with_the_modules_its_data_needs(real_engine, real_client,
                                                                                      tmp_path, monkeypatch,
                                                                                      code_config):
-    """Opened as the first company, the copy's company runs the modules whose data it carries;
-    a module holding nothing in it stays off."""
+    """Opened as the first company, the copy's company runs the modules whose data it carries,
+    its accounts and the items, documents and journal entries its ledger records; a module
+    holding nothing in it stays off."""
     from celerp.models.company import Company
     from celerp.modules.registry import get_enabled
     from test_company_backup import _r_bootstrap, _r_created, _r_env
 
     data = _as_next_release(monkeypatch)
     _r_env(tmp_path, monkeypatch)
-    _accounting_running(monkeypatch)
+    _modules_running(monkeypatch)
     await _fresh_installation(real_engine)
     body = _r_created(await _r_bootstrap(real_client, data, code_config))
     async with maker(real_engine)() as s:
         enabled = get_enabled((await s.get(Company, uuid.UUID(body["company_id"]))).settings)
-    assert "celerp-accounting" in enabled and "celerp-labels" not in enabled, enabled
+    assert {"celerp-accounting", "celerp-inventory", "celerp-docs"} <= enabled, enabled
+    assert "celerp-labels" not in enabled and "celerp-manufacturing" not in enabled, enabled
+
+
+def _labels_table_not_here(monkeypatch) -> None:
+    """The Labels module never ran here, so its table is not in place, as on a fresh installation."""
+    import dataclasses
+    from celerp.services import company_backup as cb
+
+    real = cb._classify
+
+    async def without_labels(*args, **kwargs):
+        plan = await real(*args, **kwargs)
+        return dataclasses.replace(plan, order=[n for n in plan.order if n != "label_templates"],
+                                   schema={n: v for n, v in plan.schema.items() if n != "label_templates"})
+    monkeypatch.setattr(cb, "_classify", without_labels)
+
+
+async def test_older_copy_opens_where_a_module_it_holds_nothing_for_never_ran(real_engine, real_client, tmp_path,
+                                                                            monkeypatch, code_config):
+    """The copy carries the Labels table empty. Where Labels never ran that table is not in place,
+    and an empty table of a module carries nothing, so the copy opens instead of being refused as
+    made by a newer version."""
+    from test_company_backup import _r_bootstrap, _r_created, _r_env
+
+    data = _as_next_release(monkeypatch)
+    _r_env(tmp_path, monkeypatch)
+    _modules_running(monkeypatch)
+    _labels_table_not_here(monkeypatch)
+    await _fresh_installation(real_engine)
+    with zipfile.ZipFile(FIXTURE / "company.celerp-company") as z:
+        assert json.loads(z.read("manifest.json"))["tables"]["label_templates"]["rows"] == 0
+    _r_created(await _r_bootstrap(real_client, data, code_config))
+
+
+async def test_a_table_this_installation_lacks_still_refuses_when_the_copy_holds_rows_in_it(
+        real_engine, real_client, tmp_path, monkeypatch, code_config):
+    """Rows in a table that is not in place here cannot be carried: still made by a newer version."""
+    import dataclasses
+    from celerp.services import company_backup as cb
+    from test_company_backup import _r_bread, _r_env, _r_refused
+
+    data = _as_next_release(monkeypatch)
+    _r_env(tmp_path, monkeypatch)
+    _modules_running(monkeypatch)
+    real = cb._classify
+
+    async def without_locations(*args, **kwargs):
+        plan = await real(*args, **kwargs)
+        return dataclasses.replace(plan, order=[n for n in plan.order if n != "locations"],
+                                   schema={n: v for n, v in plan.schema.items() if n != "locations"})
+    monkeypatch.setattr(cb, "_classify", without_locations)
+    await _fresh_installation(real_engine)
+    r = await _r_bread(real_client, data, code_config)
+    _r_refused(r)
+    assert "newer version" in r.json()["detail"], r.text
