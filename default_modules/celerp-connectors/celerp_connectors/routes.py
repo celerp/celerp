@@ -998,7 +998,7 @@ class FirstSyncRequest(BaseModel):
     """The choices a person made on the first sync's preview."""
     directions: dict[str, str]
     match: Literal["keep", "take"]
-    # The earliest order date to import; none starts at the first sync itself.
+    # The earliest order date to import; none starts at the start of today, as the preview reads it.
     orders_from: date | None = None
     # The version of the preview the person reviewed: Start refuses once it changed, and
     # without one (the preview never loaded) as if it had.
@@ -1023,7 +1023,7 @@ async def start_first_sync(
     webhooks, and when the store refuses, the first sync needs attention with the store's
     reason."""
     import uuid
-    from datetime import datetime, time, timezone
+    from datetime import datetime, timezone
 
     from celerp import connectors
     from celerp.connectors.base import DirectionError, entity_allowed, validate_directions
@@ -1065,8 +1065,7 @@ async def start_first_sync(
 
     now = datetime.now(timezone.utc)
     config.entity_directions = directions
-    config.orders_from = (datetime.combine(payload.orders_from, time(), tzinfo=timezone.utc)
-                          if payload.orders_from is not None else now)
+    config.orders_from = preview.orders_from  # the date the person reviewed, never a second default
     batch_id = None
     if entity_allowed(connector, "products", directions):
         batch = ImportBatch(

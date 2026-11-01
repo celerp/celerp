@@ -105,6 +105,50 @@ async def test_starting_the_first_sync_from_its_preview_runs_it_under_a_renewed_
         assert await execution.live_executions(s, store_owner.cid, PLATFORM) == []
 
 
+async def test_an_order_placed_earlier_today_is_previewed_and_imported_when_no_date_is_chosen(
+        store_owner, store_answers, real_engine, monkeypatch):
+    """Start with no order date runs from the date the preview showed (the start of today),
+    so an order placed earlier today is both in the preview and imported."""
+    from datetime import datetime, time, timedelta, timezone
+
+    from celerp import connectors
+    from celerp.connectors.base import RemoteOrder, SyncEntity, SyncResult
+    from celerp.models.connector_first_sync import ConnectorFirstSync
+    from celerp.services import background
+
+    directions = {"orders": "inbound"}
+    await connected(store_owner.cid, PLATFORM, directions, first_sync="pending")
+    now = datetime.now(timezone.utc)
+    placed = max(datetime.combine(now.date(), time(), tzinfo=timezone.utc), now - timedelta(minutes=1))
+    order = RemoteOrder(id="7", number="1007", status="processing", created=placed, total=20.0,
+                        currency="THB", posts=False)
+    imported: list[str] = []
+
+    async def _preview_orders(self, ctx, orders_from):
+        return [order] if order.created >= orders_from else []
+
+    async def _sync_orders(self, ctx, since=None, orders_from=None, **_k):
+        imported.extend([order.id] if orders_from is None or order.created >= orders_from else [])
+        return SyncResult(entity=SyncEntity.ORDERS)
+
+    store = type(connectors.get(PLATFORM))
+    monkeypatch.setattr(store, "preview_orders", _preview_orders)
+    monkeypatch.setattr(store, "sync_orders", _sync_orders)
+    headers = {"Authorization": f"Bearer {store_owner.tok}"}
+    seen = (await store_owner.api.get(f"/connectors/{PLATFORM}/first-sync/preview", headers=headers)).json()
+    assert [o["id"] for o in seen["orders"]] == ["7"]
+
+    before = set(background._BG_TASKS)
+    r = await store_owner.api.post(f"/connectors/{PLATFORM}/first-sync", headers=headers, json={
+        "directions": directions, "match": "keep", "preview_version": seen["version"]})
+    assert r.status_code == 200, r.text
+    await asyncio.wait_for(_settled(set(background._BG_TASKS) - before), 30)
+    async with maker(real_engine)() as s:
+        record = await s.get(ConnectorFirstSync, (store_owner.cid, PLATFORM))
+    assert record.state == "completed", record.error
+    assert imported == ["7"]
+
+
 async def test_the_first_sync_preview_its_summary_and_the_status_poll_read_through_their_requests(
         store_owner, store_answers, monkeypatch):
     """The read pages of a pending first sync, each through its own request: the preview page

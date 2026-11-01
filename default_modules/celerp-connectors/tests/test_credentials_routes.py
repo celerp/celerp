@@ -746,6 +746,8 @@ async def test_first_sync_runs_once(connector_session, empty_store):
 
 @pytest.mark.asyncio
 async def test_first_sync_without_products_in_records_no_batch(connector_session, empty_store):
+    from datetime import datetime, time, timezone
+
     from celerp.connectors.base import ConnectorContext
     from celerp.models.connector_first_sync import ConnectorFirstSync
     from celerp_connectors.routes import FirstSyncRequest, start_first_sync
@@ -767,5 +769,5 @@ async def test_first_sync_without_products_in_records_no_batch(connector_session
     row = await session.get(ConnectorFirstSync, (str(cid), "woocommerce"), populate_existing=True)
     assert row.batch_id is None
     await session.refresh(config)
-    # Orders start at the first sync by default: past orders are normally in the books already.
-    assert abs((config.orders_from - row.started_at).total_seconds()) < 1
+    # With no date chosen, orders start where the preview showed them from: the start of today.
+    assert config.orders_from == datetime.combine(row.started_at.date(), time(), tzinfo=timezone.utc)
