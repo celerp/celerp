@@ -7862,7 +7862,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     else:
         _pl_bar = Div(
             Span(t("doc.price_list"), cls="meta-label"),
-            Span(_current_pl or "-", cls="meta-value"),
+            Span(_current_pl or EMPTY, cls="meta-value"),
             cls="price-list-bar",
             style="display:flex;align-items:center;gap:0.5rem;justify-content:flex-end;max-width:250px;margin-left:auto;margin-bottom:0.5rem;padding-right:8px;",
         ) if _current_pl else ""
@@ -9620,7 +9620,7 @@ function celerpOpenDiscount() {{
     celerpDiscType((_hasExisting && tEl && tEl.value) ? tEl.value : 'percentage');
     // Nothing to remove yet -> the secondary button just cancels.
     const rmBtn = document.getElementById('disc-remove-btn');
-    if (rmBtn) rmBtn.textContent = _hasExisting ? 'Remove' : 'Cancel';
+    if (rmBtn) rmBtn.textContent = _hasExisting ? {_json.dumps(t("btn.remove"))} : {_json.dumps(t("btn.cancel"))};
     const willOpen = !pop.classList.contains('disc-popover--open');
     pop.classList.toggle('disc-popover--open', willOpen);
     if (willOpen && input) {{ input.focus(); input.select(); }}
@@ -11068,7 +11068,7 @@ async function celerpCsvImport(input, entityId) {{
                              placeholder=t("documents.customer_note_placeholder"), cls="form-input",
                              hx_post=f"{_base}/field/customer_note",
                              hx_trigger="blur", hx_swap="none") if is_draft
-                    else Div(doc.get("customer_note") or "-", cls="meta-value"),
+                    else Div(doc.get("customer_note") or EMPTY, cls="meta-value"),
                     cls="form-group",
                 ),
                 cls="doc-section doc-section--half",
