@@ -7,15 +7,15 @@ tables are created at startup, not by a revision, so a database that has never
 started the app has no ai_batch_jobs to change, and one created from the current
 model already has the column.
 
-Revision ID: k6e7f8a9b0c1
-Revises: j5d6e7f8a9b0
+Revision ID: m8a9b0c1d2e3
+Revises: l7f8a9b0c1d2
 """
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy import inspect
 
-revision = "k6e7f8a9b0c1"
-down_revision = "j5d6e7f8a9b0"
+revision = "m8a9b0c1d2e3"
+down_revision = "l7f8a9b0c1d2"
 branch_labels = None
 depends_on = None
 

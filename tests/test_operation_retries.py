@@ -21,10 +21,9 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.lot_origin import recognize_opening_lots
 from test_cost_restatement import _state
-from test_helpers import sell_item
+from test_helpers import remove_company, sell_item
 from test_money_stock_and_contact_invariants import (
     _account_net,
-    _cleanup,
     _seed_chart,
     _seed_company,
     _seed_user,
@@ -326,7 +325,7 @@ async def test_payment_sent_twice_at_once_is_recorded_once(_db_engine):
     finally:
         await first.close()
         await second.close()
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 @pytest.mark.asyncio
@@ -412,4 +411,4 @@ async def test_a_returned_sale_taken_back_twice_at_once_is_taken_back_once(_db_e
     finally:
         await first.close()
         await second.close()
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)

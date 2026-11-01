@@ -4,7 +4,8 @@
 """A migration run's routes act for the run's company, not the company the caller's
 token is scoped to. Loading the run registers that authority, so the company lock the
 start, finalize and discard take judges the caller's membership and role there again,
-and a cancel, which must not wait for the runner's batch, is judged again without it.
+and a cancel, which must not wait for the runner's batch, is judged again without it, on
+the membership as committed.
 A control lost meanwhile refuses the change and writes nothing.
 
 Each case runs on real PostgreSQL across two connections."""
@@ -44,8 +45,10 @@ def factory(committed_engine):
 async def _run(factory, status: MigrationStatus) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
     cid, uid, rid = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     async with factory() as s:
-        s.add(Company(id=cid, name="Staged Co", slug=f"mg-{cid.hex[:8]}", settings={}, is_migration_staged=True))
+        # The login before the company, as every create takes them.
         s.add(User(id=uid, email=f"mg-{uid.hex[:8]}@test.co", name="Owner", auth_hash="x", is_active=True))
+        await s.flush()
+        s.add(Company(id=cid, name="Staged Co", slug=f"mg-{cid.hex[:8]}", settings={}, is_migration_staged=True))
         await s.flush()
         s.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=cid, role="owner", is_active=True))
         await s.flush()
@@ -103,20 +106,17 @@ async def test_a_cancel_after_its_control_was_lost_is_refused(factory, lost):
     assert await _state(factory, cid, rid) == (MigrationStatus.RUNNING.value, True)
 
 
-async def test_a_cancel_waits_for_a_role_change_in_flight_and_is_judged_by_it(factory):
+async def test_a_cancel_is_not_held_by_a_role_change_in_flight(factory):
+    """Without the company lock the membership is read as committed and not held, so a
+    cancel never waits holding it on a discard or reset that deletes it: a role change
+    still in flight is ordered after the cancel."""
     cid, uid, rid = await _run(factory, MigrationStatus.RUNNING)
     async with factory() as losing, factory() as s:
         run = await migrations.get_owned_migration_run(s, rid, uid)
         await losing.execute(_lose(cid, uid, "demoted"))
-        cancelling = asyncio.create_task(migrations.request_cancel(s, run))
-        await asyncio.sleep(0.5)
-        assert not cancelling.done(), "the cancel did not wait for the role change in flight"
+        await asyncio.wait_for(migrations.request_cancel(s, run), 5)
         await losing.commit()
-        with pytest.raises(HTTPException) as refused:
-            await asyncio.wait_for(cancelling, 10)
-        assert refused.value.status_code == 403
-        await s.rollback()
-    assert await _state(factory, cid, rid) == (MigrationStatus.RUNNING.value, True)
+    assert await _state(factory, cid, rid) == (MigrationStatus.CANCEL_REQUESTED.value, True)
 
 
 async def test_a_cancel_while_the_runner_holds_the_company_lock_is_saved_at_once(factory):

@@ -74,10 +74,10 @@ async def test_reconcile_never_creates_an_account_and_changes_nothing_when_run_a
     from celerp.services.account_roles import reconcile_company
 
     cid = auth["company_id"]
-    await session.execute(Account.__table__.delete().where(Account.company_id == cid, Account.code == "1130-FRT"))
     company = await locked_company(session, cid)
+    await session.execute(Account.__table__.delete().where(Account.company_id == cid, Account.code == "1130-FRT"))
     company.settings = {k: v for k, v in company.settings.items() if not k.startswith("posting_")}
-    await session.flush()
+    await session.commit()
     count = (await session.execute(select(func.count()).select_from(Account).where(Account.company_id == cid))).scalar()
 
     unmapped = await reconcile_company(session, cid)
@@ -180,7 +180,7 @@ async def test_audit_shrinkage_and_overage_post_to_their_roles(session, auth):
     from celerp_accounting.models import Account
     session.add_all([Account(company_id=cid, code="6971", name="Shrink", account_type="expense"),
                      Account(company_id=cid, code="4301", name="Gain", account_type="revenue")])
-    await session.flush()
+    await session.commit()
     await set_role(session, cid, "stock_shrinkage", "6971")
     await set_role(session, cid, "stock_gain", "4301")
     await auto_je.create_for_audit_adjustment(

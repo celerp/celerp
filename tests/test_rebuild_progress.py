@@ -9,7 +9,7 @@ import re
 import pytest
 from sqlalchemy import func, select
 
-from test_helpers import register_admin
+from test_helpers import lock_every_company, register_admin
 
 _LINE = re.compile(r"Rebuilding records: (\d+) of (\d+) ledger entries")
 
@@ -25,6 +25,7 @@ async def test_full_rebuild_logs_progress_from_zero_to_every_entry(client, sessi
     total = (await session.execute(select(func.count()).select_from(LedgerEntry))).scalar_one()
 
     with caplog.at_level(logging.INFO, logger="celerp.projections.engine"):
+        await lock_every_company(session)
         await ProjectionEngine.rebuild(session)
 
     progress = [tuple(map(int, m.groups())) for m in map(_LINE.search, caplog.messages) if m]

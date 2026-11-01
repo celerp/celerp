@@ -9,6 +9,8 @@ import uuid
 
 import pytest
 
+from connector_test_support import connector_routes, connector_session, record_first_sync  # noqa: F401
+
 from celerp.services.je_keys import je_idempotency_key
 from stock_books import SAMPLE_STOCK_ENTRY
 
@@ -726,41 +728,9 @@ async def test_doctor_does_not_post_an_order_total_for_a_receipt(client, session
 # --- Connector sync error paths ---
 # All connector endpoints require X-Session-Token (cloud gate).
 
-_CONNECTOR_SESSION_TOKEN = "test-session-token-abc123"
-
-
-@pytest.fixture(autouse=False)
-def patch_connector_session_token(session):
-    from contextlib import asynccontextmanager
-    from unittest.mock import AsyncMock, patch
-    from celerp.connectors.base import ConnectorContext
-    import celerp.gateway.state as gw_state
-
-    async def _context(company_id, connector_name, **_kwargs):
-        return ConnectorContext(
-            company_id=str(company_id),
-            access_token="tok",
-            store_handle="test.myshopify.com",
-        )
-
-    @asynccontextmanager
-    async def _shared_session_ctx():
-        yield session
-
-    gw_state.set_session_token(_CONNECTOR_SESSION_TOKEN)
-    with patch(
-        "celerp.connectors.relay_token.fetch_context",
-        new=AsyncMock(side_effect=_context),
-    ), patch(
-        "celerp.db.get_session_ctx",
-        new=_shared_session_ctx,
-    ):
-        yield
-    gw_state.set_session_token("")
-
 
 @pytest.mark.asyncio
-async def test_connector_sync_not_implemented(client, session, patch_connector_session_token):
+async def test_connector_sync_not_implemented(client, session, connector_routes):
     """Sync with an entity that raises NotImplementedError -> 400."""
     from unittest.mock import AsyncMock, patch
     import celerp.connectors as conn_module
@@ -771,14 +741,15 @@ async def test_connector_sync_not_implemented(client, session, patch_connector_s
     })
     headers = {
         "Authorization": f"Bearer {resp.json()['access_token']}",
-        "X-Session-Token": _CONNECTOR_SESSION_TOKEN,
+        "X-Session-Token": connector_routes,
     }
 
     company_id = (await client.get("/companies/me", headers=headers)).json()["id"]
     from celerp.models.connector_config import ConnectorConfig
-    session.add(ConnectorConfig(
-        company_id=str(company_id), connector="shopify", direction="both"
-    ))
+    config = ConnectorConfig(company_id=str(company_id), connector="shopify")
+    session.add(config)
+    await session.flush()
+    await record_first_sync(session, config, "completed")
     await session.commit()
 
     connector = conn_module.get("shopify")
@@ -795,7 +766,7 @@ async def test_connector_sync_not_implemented(client, session, patch_connector_s
 
 
 @pytest.mark.asyncio
-async def test_connector_sync_generic_exception(client, session, patch_connector_session_token):
+async def test_connector_sync_generic_exception(client, session, connector_routes):
     """Sync that raises a generic exception -> 502."""
     from unittest.mock import AsyncMock, patch
     import celerp.connectors as conn_module
@@ -806,14 +777,15 @@ async def test_connector_sync_generic_exception(client, session, patch_connector
     })
     headers = {
         "Authorization": f"Bearer {resp.json()['access_token']}",
-        "X-Session-Token": _CONNECTOR_SESSION_TOKEN,
+        "X-Session-Token": connector_routes,
     }
 
     company_id = (await client.get("/companies/me", headers=headers)).json()["id"]
     from celerp.models.connector_config import ConnectorConfig
-    session.add(ConnectorConfig(
-        company_id=str(company_id), connector="shopify", direction="both"
-    ))
+    config = ConnectorConfig(company_id=str(company_id), connector="shopify")
+    session.add(config)
+    await session.flush()
+    await record_first_sync(session, config, "completed")
     await session.commit()
 
     connector = conn_module.get("shopify")
@@ -829,7 +801,7 @@ async def test_connector_sync_generic_exception(client, session, patch_connector
 # --- Connector sync: contacts and inventory paths ---
 
 @pytest.mark.asyncio
-async def test_connector_sync_contacts(client, session, patch_connector_session_token):
+async def test_connector_sync_contacts(client, session, connector_routes):
     """Sync contacts entity routes to sync_contacts."""
     from unittest.mock import AsyncMock, patch
     import celerp.connectors as conn_module
@@ -841,14 +813,15 @@ async def test_connector_sync_contacts(client, session, patch_connector_session_
     })
     headers = {
         "Authorization": f"Bearer {resp.json()['access_token']}",
-        "X-Session-Token": _CONNECTOR_SESSION_TOKEN,
+        "X-Session-Token": connector_routes,
     }
 
     company_id = (await client.get("/companies/me", headers=headers)).json()["id"]
     from celerp.models.connector_config import ConnectorConfig
-    session.add(ConnectorConfig(
-        company_id=str(company_id), connector="shopify", direction="both"
-    ))
+    config = ConnectorConfig(company_id=str(company_id), connector="shopify")
+    session.add(config)
+    await session.flush()
+    await record_first_sync(session, config, "completed")
     await session.commit()
 
     mock_result = SyncResult(entity=SyncEntity.CONTACTS)
@@ -1154,10 +1127,10 @@ async def _drop_document_entries(session, company_id, doc_id: str) -> None:
         Projection.company_id == company_id, Projection.entity_type == "journal_entry",
         Projection.entity_id.like(f"je:auto:{doc_id}:%")))).scalars())
     assert jes
-    await session.execute(delete(LedgerEntry).where(
-        LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(jes)))
     await session.execute(delete(Projection).where(
         Projection.company_id == company_id, Projection.entity_id.in_(jes)))
+    await session.execute(delete(LedgerEntry).where(
+        LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(jes)))
     await session.commit()
 
 

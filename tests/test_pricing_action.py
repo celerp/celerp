@@ -21,6 +21,13 @@ from fasthtml.common import to_xml
 from celerp.modules import slots
 from celerp.modules.loader import ModuleLoadError, _admission_checks, _load_one
 
+
+@pytest.fixture(autouse=True)
+def _only_this_tests_entries():
+    """The app registers the connectors module's own entries when it is imported; each
+    test here starts without them, so it sees only the entries it registers."""
+    slots.unregister_module("celerp-connectors")
+
 # Retail and Wholesale are manual sell lists, Trade is derived from Retail, Cost is a cost list.
 _LISTS = [
     {"name": "Retail", "description": ""},
@@ -305,7 +312,7 @@ async def test_hidden_action_route_still_refuses_the_role(client, session):
     from fastapi import APIRouter
     from celerp.main import app
     from celerp.services.permissions import require_permission
-    from celerp.services.session_tracker import clear as clear_sessions
+    from test_helpers import clear_sessions as clear_sessions
 
     router = APIRouter()
 

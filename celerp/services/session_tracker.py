@@ -152,38 +152,49 @@ async def invalidate_sessions(
         # with no auth state) must not rotate the current one. Do nothing; the
         # request/session closing releases the row lock.
         return
+    if row is None:
+        row = UserAuthState(user_id=uid)
+        session.add(row)
+    row.nonce = new_nonce
+    row.evicted_by_ip = evicting_ip
+    # The generation is written before the sessions go, the order issuance keeps.
+    await session.flush()
     await session.execute(
         delete(SessionRegistry).where(SessionRegistry.user_id == uid)
     )
-    if row is not None:
-        row.nonce = new_nonce
-        row.evicted_by_ip = evicting_ip
-    else:
-        session.add(UserAuthState(user_id=uid, nonce=new_nonce, evicted_by_ip=evicting_ip))
     await session.commit()
 
 
-async def _rotate_every_nonce(session: AsyncSession) -> list[UserAuthState]:
-    """Wipe ALL JTIs and rotate the nonce on every auth-state row; returns the rows.
+async def _rotate_every_nonce(
+    session: AsyncSession, evicting_uid: _uuid_mod.UUID | None = None,
+) -> list[UserAuthState]:
+    """Rotate the nonce on every auth-state row under its lock; returns the rows.
 
     Every existing auth-state nonce is rotated, not merely users with a live
     access JTI: a user whose access JTI has expired but whose refresh token is
-    still valid (a dormant session) must be rotated too. The caller commits.
+    still valid (a dormant session) must be rotated too. *evicting_uid*'s row is
+    created first when it has none, so it is rotated and held with the rest. The
+    caller wipes the JTIs, then commits.
     """
-    # Lock every auth-state row in a deterministic order (by user_id) so
-    # concurrent callers acquire the rows in the same sequence and cannot
-    # deadlock. This is the durable list of every v2 session (dormant included),
-    # so no refresh-token registry is needed to find users to rotate.
+    user_ids = set((await session.execute(select(UserAuthState.user_id))).scalars())
+    if evicting_uid is not None and evicting_uid not in user_ids:
+        session.add(UserAuthState(user_id=evicting_uid, nonce=str(_uuid_mod.uuid4())))
+        await session.flush()
+        user_ids.add(evicting_uid)
+    # Lock the rows by their keys, in one statement sorted by user_id, so concurrent
+    # callers acquire them in the same sequence and cannot deadlock, and a later lock
+    # of one of them by its key (the session issued next) finds it held. This is the
+    # durable list of every v2 session (dormant included), so no refresh-token
+    # registry is needed to find users to rotate.
     rows = (
         await session.execute(
             select(UserAuthState)
+            .where(UserAuthState.user_id.in_(sorted(user_ids)))
             .order_by(UserAuthState.user_id)
             .with_for_update()
             .execution_options(populate_existing=True)
         )
     ).scalars().all()
-
-    await session.execute(delete(SessionRegistry))
     for row in rows:
         row.nonce = str(_uuid_mod.uuid4())
     return list(rows)
@@ -204,18 +215,12 @@ async def invalidate_all_sessions(
     - After this call, the global active_user_ids() set is empty.
     """
     evicting_uid = _uuid_mod.UUID(evicting_user_id)
-    rows = await _rotate_every_nonce(session)
-
-    seen: set[_uuid_mod.UUID] = set()
-    for row in rows:
+    for row in await _rotate_every_nonce(session, evicting_uid):
         # Only store evicting IP for OTHER users (not the one taking over).
         row.evicted_by_ip = evicting_ip if row.user_id != evicting_uid else None
-        seen.add(row.user_id)
-
-    # Ensure the evicting user also has a rotated nonce even with no prior row.
-    if evicting_uid not in seen:
-        session.add(UserAuthState(user_id=evicting_uid, nonce=str(_uuid_mod.uuid4())))
+    # The generations are written before the sessions go, the order issuance keeps.
     await session.flush()
+    await session.execute(delete(SessionRegistry))
 
 
 async def end_all_sessions(session: AsyncSession) -> None:
@@ -227,6 +232,8 @@ async def end_all_sessions(session: AsyncSession) -> None:
     """
     for row in await _rotate_every_nonce(session):
         row.evicted_by_ip = None
+    await session.flush()
+    await session.execute(delete(SessionRegistry))
     await session.commit()
 
 
@@ -241,12 +248,6 @@ async def pop_evicted_by_ip(session: AsyncSession, user_id: str) -> str | None:
         row.evicted_by_ip = None
         await session.commit()
     return ip
-
-
-async def clear(session: AsyncSession) -> None:
-    """Wipe all session_registry rows.  Test helper only - does NOT rotate nonces."""
-    await session.execute(delete(SessionRegistry))
-    await session.commit()
 
 
 async def run_jti_cleanup_loop() -> None:

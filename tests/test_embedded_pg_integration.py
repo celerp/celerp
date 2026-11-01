@@ -23,7 +23,7 @@ from celerp.db_url import sync_url as sync_db_url
 pytestmark = [
     pytest.mark.embedded_pg,
     pytest.mark.skipif(not embedded_pg.is_available(), reason="celerp-postgres wheel not available here"),
-    # Windows: opt-in only, same pattern as celerp-cloud's RELAY_TEST_POSTGRES
+    # Windows: opt-in only
     # gate. GitHub's hosted-runner temp volumes break initdb's directory
     # handling ("File exists" on existing dirs / "The current directory is
     # invalid" from cmd.exe) on BOTH C: and D: drives, while the identical

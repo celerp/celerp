@@ -85,9 +85,10 @@ async def load(session, company: str = "main") -> dict:
     cid, uid = uuid.uuid4(), uuid.uuid4()
     raw = json.dumps(old).replace(old["company_id"], str(cid)).replace(old["user_id"], str(uid))
     data = json.loads(raw)
+    session.add(User(id=uid, email=f"admin-{cid.hex[:8]}@test.co", name="Admin", auth_hash="x", is_active=True))
+    await session.flush()
     session.add(Company(id=cid, name=data["company"]["name"], slug=f"pre366-{cid.hex[:8]}",
                         settings=data["company"]["settings"]))
-    session.add(User(id=uid, email=f"admin-{cid.hex[:8]}@test.co", name="Admin", auth_hash="x", is_active=True))
     await session.flush()
     session.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=cid, role="admin", is_active=True))
     for a in data["accounts"]:

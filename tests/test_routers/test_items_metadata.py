@@ -4,8 +4,8 @@
 """POST /items/metadata: bulk item-metadata read for list/doc/audit renderers.
 
 The endpoint returns, per requested entity_id, the same visibility-filtered flat
-item dict that GET /items/{entity_id} returns (minus the sold_price enrichment
-lists never consume). It is a read gated by the router-level authentication only,
+item dict that GET /items/{entity_id} returns (minus the sold_price and
+_channel_state enrichments lists never consume). It is a read gated by the router-level authentication only,
 with company_id derived server-side from the JWT, and it must reproduce the exact
 per-category, role-based field/cost visibility of the per-item route.
 """
@@ -52,7 +52,7 @@ async def _set_company_settings(session, patch: dict) -> None:
 @pytest.mark.asyncio
 async def test_items_metadata_single_query(client):
     """A single POST returns one entry per requested id; the flat shape matches
-    GET /items/{id} for the same item (minus sold_price)."""
+    GET /items/{id} for the same item (minus its enrichments)."""
     h, loc = await _admin_ctx(client)
     id1 = await create_item(client, h, loc, sku="META-1")
     id2 = await create_item(client, h, loc, sku="META-2")
@@ -64,6 +64,7 @@ async def test_items_metadata_single_query(client):
 
     single = (await client.get(f"/items/{id1}", headers=h)).json()
     single.pop("sold_price", None)
+    single.pop("_channel_state", None)
     assert items[id1] == single
 
 
@@ -80,6 +81,7 @@ async def test_items_metadata_preserves_visibility(client, session):
 
     single = (await client.get(f"/items/{item_id}", headers=op_h)).json()
     single.pop("sold_price", None)
+    single.pop("_channel_state", None)
 
     r = await client.post("/items/metadata", json={"entity_ids": [item_id]}, headers=op_h)
     assert r.status_code == 200, r.text
@@ -182,9 +184,10 @@ async def test_items_metadata_strips_derived_companions(client, session):
     assert "quantity" not in op_bulk and "qty_each" not in op_bulk, (
         "qty_each must be stripped when quantity is hidden")
 
-    # Parity: the bulk entry matches GET /items/{id} for the same role (minus sold_price).
+    # Parity: the bulk entry matches GET /items/{id} for the same role (minus its enrichments).
     op_single = (await client.get(f"/items/{item_id}", headers=op_h)).json()
     op_single.pop("sold_price", None)
+    op_single.pop("_channel_state", None)
     assert op_bulk == op_single
 
 

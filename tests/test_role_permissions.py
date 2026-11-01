@@ -1348,7 +1348,7 @@ def test_bulk_action_filter_enforced():
     from ui.routes.inventory import _bulk_toolbar
 
     actions = [
-        {"label": "Enable Shopify sync", "form_action": "/api/items/bulk/shopify-sync/enable",
+        {"label": "Push to Shopify", "form_action": "/api/items/bulk/channel-sync/shopify/resume",
          "icon": "🛍", "action_type": "htmx", "permission": "adjust_inventory",
          "_module": "celerp-connectors"},
         {"label": "Print Labels", "form_action": "/labels/print-bulk",
@@ -1364,9 +1364,9 @@ def test_bulk_action_filter_enforced():
 
     # adjust_inventory defaults to manager: the operator loses the gated action,
     # keeps the ungated one; the manager sees both.
-    assert "Enable Shopify sync" not in operator_html
+    assert "Push to Shopify" not in operator_html
     assert "Print Labels" in operator_html
-    assert "Enable Shopify sync" in manager_html
+    assert "Push to Shopify" in manager_html
 
 
 async def test_payments_page_requires_permission(ui):

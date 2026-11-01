@@ -78,6 +78,7 @@ async def _imported(session, client, auth, costs: list[float], **fields) -> list
         .execution_options(populate_existing=True))).scalars().all()
     for row in rows:
         row.state = {k: v for k, v in row.state.items() if k != _FIELD}
+    await session.flush()
     await session.execute(delete(LedgerEntry).where(
         LedgerEntry.company_id == auth["company_id"], LedgerEntry.entity_id.in_(ids),
         LedgerEntry.event_type == "item.inventory_account.recorded"))
@@ -401,8 +402,9 @@ async def test_the_posting_accounts_notice_stays_while_one_is_missing_and_goes_o
     roles = {k: v for k, v in company.settings[ROLES_KEY].items() if k not in ("general_expense", "sales_revenue")}
     company.settings = {**company.settings, ROLES_KEY: roles}
     await session.flush()
-    assert await notify_unmapped(session, auth["company_id"])
+    await notify_unmapped(session, auth["company_id"])
     await session.commit()
+    assert len(await _notices(session, auth, title)) == 1
 
     for role, code, left in (("general_expense", "6950", ["sales_revenue"]), ("sales_revenue", "4100", None)):
         r = await client.put(f"/accounting/posting-accounts/{role}", headers=auth["headers"], json={"code": code})

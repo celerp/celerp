@@ -50,9 +50,10 @@ async def _seed(engine, status: str):
     factory = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
     company_id, user_id = uuid.uuid4(), uuid.uuid4()
     async with factory() as s:
-        s.add(Company(id=company_id, name="Refs", slug=f"refs-{company_id.hex[:8]}", settings={}))
         s.add(User(id=user_id, email=f"a-{user_id.hex[:8]}@example.test", name="Admin",
                    auth_hash="x", is_active=True))
+        await s.flush()
+        s.add(Company(id=company_id, name="Refs", slug=f"refs-{company_id.hex[:8]}", settings={}))
         await s.flush()
         s.add(Location(id=uuid.uuid4(), company_id=company_id, name="Main", type="warehouse", is_default=True))
         s.add(UserCompany(user_id=user_id, company_id=company_id, role="admin", is_active=True))

@@ -188,8 +188,9 @@ async def test_product_peer_uses_canonical_inventory_writer_and_stable_restore_i
             return SimpleNamespace(records=[SimpleNamespace(status=status)]), None
         monkeypatch.setattr(inventory, "write_import_batch", canonical_writer)
         async with sessions() as session:
-            session.add(Company(id=target, name="Firm", slug="firm", settings={}))
             session.add(User(id=owner_id, email="firm@example.test", name="Accountant"))
+            await session.flush()
+            session.add(Company(id=target, name="Firm", slug="firm", settings={}))
             session.add(UserCompany(company_id=target, user_id=owner_id, role="owner"))
             await session.commit()
         async with sessions() as session:
@@ -242,11 +243,12 @@ async def test_peer_product_refuses_inactive_canonical_authority(blocked):
                 await connection.run_sync(table.create)
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         async with sessions() as session:
+            session.add(User(id=owner, email="owner@example.test", name="Owner",
+                             is_active=blocked != "inactive_owner"))
+            await session.flush()
             session.add(Company(id=target, slug="firm", name="Firm", settings={},
                                 is_active=blocked != "inactive_company",
                                 is_migration_staged=blocked == "staged_company"))
-            session.add(User(id=owner, email="owner@example.test", name="Owner",
-                             is_active=blocked != "inactive_owner"))
             session.add(UserCompany(user_id=owner, company_id=target, role="owner",
                                     is_active=blocked != "inactive_membership"))
             await session.commit()
@@ -271,9 +273,10 @@ async def test_peer_product_real_importer_preserves_catalog_without_creating_sto
     from celerp.services.peer_identity import receive_product, new_target_identity
 
     company_id, source, owner = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    session.add(User(id=owner, email=f"peer-{owner.hex[:8]}@example.test", name="Owner"))
+    await session.flush()
     session.add(Company(id=company_id, name="Product receiver",
                         slug=f"receiver-{company_id.hex[:8]}", settings={}))
-    session.add(User(id=owner, email=f"peer-{owner.hex[:8]}@example.test", name="Owner"))
     await session.flush()
     session.add(UserCompany(company_id=company_id, user_id=owner,
                             role="owner", is_active=True))

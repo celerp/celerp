@@ -152,9 +152,9 @@ async def test_runtime_audit_finds_undeclared_tables_and_notifies(real_engine, t
     try:
         async with maker(real_engine)() as s:
             assert await cb.undeclared_module_tables(s) == {"zz-widgets": ["zz_gadgets"]}
-            assert await cb.notify_undeclared_module_tables(s) == 2
+            await cb.notify_undeclared_module_tables(s)
             await s.commit()
-            assert await cb.notify_undeclared_module_tables(s) == 0
+            await cb.notify_undeclared_module_tables(s)  # deduped while the first stands
             await s.commit()
             notes = (await s.execute(select(Notification).where(Notification.company_id.in_([a, b])))).scalars().all()
         assert len(notes) == 2

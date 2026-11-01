@@ -96,9 +96,8 @@ class TestNotifyDemotedModules:
     @pytest.mark.asyncio
     async def test_creates_company_wide_notice_per_company(self, session, company, company_b):
         with patch("celerp.notifications.service.deliver"):
-            created = await notify_demoted_modules(session, ["celerp-widgets"])
+            await notify_demoted_modules(session, ["celerp-widgets"])
             await session.commit()
-        assert created == 2  # one per company
         for cid in (company.id, company_b.id):
             rows = await _modules_notifs(session, cid)
             assert len(rows) == 1
@@ -112,12 +111,11 @@ class TestNotifyDemotedModules:
     async def test_dedups_against_unread_notice(self, session, company):
         # A reboot while an unread notice already stands must not pile up a second.
         with patch("celerp.notifications.service.deliver"):
-            first = await notify_demoted_modules(session, ["celerp-widgets"])
+            await notify_demoted_modules(session, ["celerp-widgets"])
             await session.commit()
-            second = await notify_demoted_modules(session, ["celerp-widgets"])
+            assert len(await _modules_notifs(session, company.id)) == 1
+            await notify_demoted_modules(session, ["celerp-widgets"])
             await session.commit()
-        assert first == 1
-        assert second == 0
         assert len(await _modules_notifs(session, company.id)) == 1
 
     @pytest.mark.asyncio
@@ -130,15 +128,13 @@ class TestNotifyDemotedModules:
             rows = await _modules_notifs(session, company.id)
             assert await mark_read(session, rows[0].id, company.id, user.id)
             await session.commit()
-            again = await notify_demoted_modules(session, ["celerp-widgets"])
+            await notify_demoted_modules(session, ["celerp-widgets"])
             await session.commit()
-        assert again == 1
         assert len(await _modules_notifs(session, company.id)) == 2
 
     @pytest.mark.asyncio
     async def test_empty_list_creates_nothing(self, session, company):
         with patch("celerp.notifications.service.deliver"):
-            created = await notify_demoted_modules(session, [])
+            await notify_demoted_modules(session, [])
             await session.commit()
-        assert created == 0
         assert await _modules_notifs(session, company.id) == []

@@ -16,7 +16,7 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.services.cost_visibility import COST_DERIVED_ITEM_KEYS
+from celerp.services.cost_visibility import COST_DERIVED_ITEM_KEYS, COST_ITEM_KEYS
 from celerp.services.list_behavior import SUPPLIER_DOC_TYPES
 from celerp.services.money import round_rate
 
@@ -92,6 +92,16 @@ def line_price_list(doc_type: str | None, price_list: str | None) -> str:
 
 def is_cost_list_name(name: str) -> bool:
     return name.lower() in COST_PRICE_LIST_NAMES
+
+
+def is_cost_price_type(price_type: str) -> bool:
+    """True when a set_item_price price_type addresses the cost list, in either the
+    primitive-key form (cost_price/cost_total) or a list-name-derived key (e.g.
+    landed_price for a 'Landed' cost list)."""
+    if price_type in COST_ITEM_KEYS:
+        return True
+    name = price_type[:-len("_price")] if price_type.endswith("_price") else price_type
+    return is_cost_list_name(name)
 
 
 def is_derived(pl: dict) -> bool:

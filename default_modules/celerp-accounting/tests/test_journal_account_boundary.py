@@ -140,6 +140,7 @@ async def test_role_line_on_a_former_target_is_accepted(client, session):
     from celerp_accounting.models import Account
 
     cid = await _reg(client)
+    await locked_company(session, cid)  # the company first, then its chart, as a chart writer takes them
     session.add(Account(id=uuid.uuid4(), company_id=cid, code="1125", name="New AR",
                         account_type="asset", parent_code="1100"))
     await session.flush()

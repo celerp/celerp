@@ -2753,11 +2753,10 @@ async def _doc_recognition_jes(session, company_id, doc_id: str,
     rows = (await session.execute(_select(Projection).where(
         Projection.company_id == company_id,
         Projection.entity_type == "journal_entry",
+        Projection.entity_id.startswith(prefix, autoescape=True),
     ))).scalars().all()
     jes: dict[str, Projection] = {}
     for row in rows:
-        if not row.entity_id.startswith(prefix):
-            continue
         suffix = row.entity_id[len(prefix):]
         if _recognition_root(suffix, goods_movements) is not None:
             jes[suffix] = row
@@ -2786,10 +2785,11 @@ async def _doc_void_events(session, company_id, doc_id: str) -> list:
         .where(
             LedgerEntry.company_id == company_id,
             LedgerEntry.event_type == "acc.journal_entry.voided",
+            LedgerEntry.entity_id.startswith(prefix, autoescape=True),
         )
         .order_by(LedgerEntry.id)
     )).scalars().all()
-    return [r for r in rows if r.entity_id.startswith(prefix)]
+    return list(rows)
 
 
 async def _notify_asset_lines(session, company_id, user_id, doc_id: str, change: str) -> None:

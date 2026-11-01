@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Noah Severs. All rights reserved.
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """Freight inventory type (P1): a freight-typed item is a landed-cost charge line - non-stock,
-carries a landed_cost_kind, and validates the kind. See context/2026-0614-freight-tracking-plan.md."""
+carries a landed_cost_kind, and validates the kind."""
 from __future__ import annotations
 
 import uuid

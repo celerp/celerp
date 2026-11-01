@@ -83,3 +83,53 @@ async def test_two_first_sends_under_one_new_id_never_answer_a_server_error(
     assert [r.status_code for r in replies] == [200, 200], [r.text for r in replies]
     assert {r.json()["answer"] for r in replies} == {"This month's figures."}
     assert cloud.executions[str(job_id)] == 1
+
+
+async def test_a_send_that_reads_the_question_before_its_creator_starts_it_waits_for_its_answer(
+        real_client, real_engine, cloud, monkeypatch):
+    """The send that creates the question has committed it, held by this process, but not yet
+    started its task when the other send reads it: the other send waits for the question's
+    answer, never answers that it is running. The creator is held between its commit and its
+    start until the other send has begun to wait."""
+    real_maker = maker(real_engine)
+    created, other_waits = asyncio.Event(), asyncio.Event()
+    first = []
+
+    class _CreatorPauses:
+        """The first job session: once it has committed and is closing, it waits for the
+        other send to begin waiting."""
+        def __init__(self):
+            self.session = real_maker()
+            self.first = not first
+            first.append(self)
+
+        async def __aenter__(self):
+            return await self.session.__aenter__()
+
+        async def __aexit__(self, *exc):
+            await self.session.__aexit__(*exc)
+            if self.first:
+                created.set()
+                await other_waits.wait()
+
+    real_wait = jobs.wait_for_job
+
+    async def _wait_for_job(job_id, *, started):
+        if created.is_set() and not other_waits.is_set():
+            other_waits.set()
+        return await real_wait(job_id, started=started)
+
+    token = await register_admin(real_client)
+    monkeypatch.setattr(jobs, "SessionLocal", _CreatorPauses)
+    monkeypatch.setattr(jobs, "wait_for_job", _wait_for_job)
+    job_id = uuid.uuid4()
+    cloud.script = lambda identity, body: answer("This month's figures.")
+    send = lambda: real_client.post("/ai/query", headers=AUTH(token), json={"query": QUERY, "operation_id": str(job_id)})  # noqa: E731
+    creator = asyncio.create_task(send())
+    await created.wait()
+    other = await send()
+    assert other.status_code == 200, other.text
+    assert other.json().get("answer") == "This month's figures.", other.json()
+    mine = await creator
+    assert mine.json().get("answer") == "This month's figures.", mine.json()
+    assert cloud.executions[str(job_id)] == 1

@@ -19,6 +19,7 @@ does not bring the old tokens back.
 import uuid
 
 from alembic import op
+from celerp.migrations._locks import lock_tables
 import sqlalchemy as sa
 
 revision = "p3e4f5a6b7c8"
@@ -28,6 +29,7 @@ depends_on = None
 
 
 def upgrade() -> None:
+    lock_tables(op.get_bind(), "session_registry", "user_auth_state")
     op.execute("DELETE FROM session_registry")
     bind = op.get_bind()
     for (user_id,) in bind.execute(sa.text("SELECT user_id FROM user_auth_state")).all():

@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.db import get_session
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
+from celerp.services.company_lock import lock_company
 from celerp.services.permissions import get_current_company_settings, require_permission, role_has_permission
 from celerp.schemas.numbers import FiniteFloat
 from celerp_labels.models import LabelTemplate
@@ -100,6 +101,7 @@ async def create_template(
     _: None = require_permission("manage_labels"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    await lock_company(session, company_id)
     t = LabelTemplate(
         id=uuid.uuid4(),
         company_id=company_id,
@@ -129,7 +131,7 @@ async def update_template(
     _: None = require_permission("manage_labels"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    t = await _get_or_404(session, company_id, template_id)
+    t = await _get_or_404(session, company_id, template_id, for_update=True)
     for k, v in body.model_dump(exclude_none=True).items():
         setattr(t, k, v)
     await session.commit()
@@ -143,7 +145,7 @@ async def delete_template(
     _: None = require_permission("manage_labels"),
     session: AsyncSession = Depends(get_session),
 ) -> None:
-    t = await _get_or_404(session, company_id, template_id)
+    t = await _get_or_404(session, company_id, template_id, for_update=True)
     await session.delete(t)
     await session.commit()
 
@@ -282,13 +284,25 @@ async def _templates(session: AsyncSession, company_id: uuid.UUID) -> list[Label
 
 async def _seed_presets(session: AsyncSession, company_id: uuid.UUID) -> None:
     """Give a company with no templates the default presets, on first read, so every consumer
-    (inventory/doc print dropdowns, the labels page) sees them without visiting Settings first."""
+    (inventory/doc print dropdowns, the labels page) sees them without visiting Settings first.
+    A plain read takes no lock; a seeder takes the company's lock, as every template writer
+    does, and reads again under it, so two first reads seed the presets once."""
     if await _templates(session, company_id):
         return
+    await lock_company(session, company_id)
+    if await _add_presets(session, company_id):
+        await session.commit()
+
+
+async def _add_presets(session: AsyncSession, company_id: uuid.UUID) -> bool:
+    """Add the default presets when the company has no templates, read under the company's
+    lock the caller holds; the caller commits. Returns whether it added them."""
+    if await _templates(session, company_id):
+        return False
     from .presets import PRESET_TEMPLATES
     for preset in PRESET_TEMPLATES:
         session.add(LabelTemplate(id=uuid.uuid4(), company_id=company_id, **TemplateCreate(**preset).model_dump()))
-    await session.commit()
+    return True
 
 
 def _fitting(rows: list[LabelTemplate], keys: set[str]) -> list[dict]:
@@ -312,7 +326,10 @@ async def _source_templates(session: AsyncSession, company_id: uuid.UUID, entry:
     fits = _fitting(await _templates(session, company_id), keys)
     if fits:
         return fits
-    await _seed_presets(session, company_id)
+    await lock_company(session, company_id)
+    if fits := _fitting(await _templates(session, company_id), keys):
+        return fits
+    await _add_presets(session, company_id)
     preset = entry["preset"]
     fields = [{**f, "label": translate(f["label"]) if f.get("label") else ""} for f in preset.get("fields") or []]
     # The contract requires neither a name nor a size: a preset without a name is named after
@@ -335,15 +352,14 @@ async def _unit_map(session: AsyncSession, company_id: uuid.UUID) -> dict[str, d
     return build_unit_map(await read_company_units(session, company_id))
 
 
-async def _get_or_404(session: AsyncSession, company_id: uuid.UUID, template_id: uuid.UUID) -> LabelTemplate:
-    t = (
-        await session.execute(
-            select(LabelTemplate).where(
-                LabelTemplate.id == template_id,
-                LabelTemplate.company_id == company_id,
-            )
-        )
-    ).scalar_one_or_none()
+async def _get_or_404(session: AsyncSession, company_id: uuid.UUID, template_id: uuid.UUID,
+                      *, for_update: bool = False) -> LabelTemplate:
+    query = select(LabelTemplate).where(LabelTemplate.id == template_id, LabelTemplate.company_id == company_id)
+    if for_update:
+        # A writer takes the company's lock before the template, as every template writer does.
+        await lock_company(session, company_id)
+        query = query.with_for_update()
+    t = (await session.execute(query)).scalar_one_or_none()
     if not t:
         raise HTTPException(status_code=404, detail="Template not found")
     return t

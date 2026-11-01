@@ -13,9 +13,13 @@ anything is written, so a table added later can never be skipped or wiped by mis
 
 from __future__ import annotations
 
+import asyncio
+import time
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from fastapi import HTTPException
 from sqlalchemy import delete, select, text
 from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,6 +36,7 @@ from celerp.models.migration import MigrationCleanupTask, MigrationRun
 from celerp.services import payments
 from celerp.services.auth import first_usable_company_link
 from celerp.services.company_lock import lock_company_for_deletion
+from celerp.services.session_tracker import lock_auth_state
 from ui.i18n import t
 
 # Tables that belong to the installation rather than any one company, and why.
@@ -51,7 +56,12 @@ INSTALL_WIDE = {
 AI_BATCH_ACTIVE = ("Wait for the assistant to finish its work before resetting this company. "
                    "Nothing was deleted.")
 # Another transaction in the way: the reset rolls back and is refused as busy.
-_BUSY = ("40P01", "40001", "55P03")  # deadlock, serialization failure, lock wait timed out
+_LEASE_TABLES = ("connector_execution_leases", "connector_execution_heartbeats")
+BUSY = ("40P01", "40001", "55P03")  # deadlock, serialization failure, lock wait timed out
+_LOCK_NOT_AVAILABLE = "55P03"
+# How long a reset keeps trying tables another transaction is writing, and how often.
+_LOCK_PATIENCE_S = 2.0
+_LOCK_RETRY_S = 0.05
 PAYMENTS_NOT_CLOSED = {
     "disconnected": (503, "Reconnect Celerp Cloud so this company's online invoice payments can be "
                           "closed, then reset it. Nothing was deleted."),
@@ -84,6 +94,7 @@ class Reset:
     to run, and the payment closure to settle (``payments.settle_company_closure``)."""
     task_id: uuid.UUID
     closure: uuid.UUID | None
+    issued: dict | None = None
 
 
 def _busy() -> ResetRefused:
@@ -168,11 +179,25 @@ def _lock_writers(schema: dict) -> list[str]:
     outlive the company (a payment closure is recorded from its own connection during the
     reset), but no key can be added to it. So do sessions: issuing one holds the company FOR
     KEY SHARE, which waits for the reset, and a sign-out during the reset only deletes them.
-    Concurrent resets take it in the same order, one after the other."""
+    Concurrent resets take it in the same order, one after the other.
+
+    A company table is held EXCLUSIVE: that also keeps out a transaction that holds a row of
+    it without having written yet (FOR UPDATE, or a key share a reference takes), which would
+    otherwise make the deletes below wait on a row while its holder's next write waits on the
+    table. So no row the reset takes ever waits on another transaction. The companies table
+    is the exception, held SHARE ROW EXCLUSIVE: the one row the reset deletes there is its own
+    company, already held FOR UPDATE, and a transaction queued on that row holds the table
+    ROW SHARE, which EXCLUSIVE would refuse, so the reset could never pass a waiting writer.
+
+    NOWAIT: the reset already holds its company's key exclusively, and a transaction writing
+    one of these tables may go on to share that key (a notice naming the company, a row
+    referring to it), so waiting here could close a cycle (lock_without_waiting)."""
     writable = sorted(set(schema) & (INSTALL_WIDE.keys() | {SessionRegistry.__tablename__}))
-    company = sorted(set(schema) - set(writable))
-    return [f"LOCK TABLE {', '.join(map(db_catalog.ident, names))} IN {mode} MODE"
-            for names, mode in ((company, "SHARE ROW EXCLUSIVE"), (writable, "ROW EXCLUSIVE")) if names]
+    company = sorted(set(schema) - set(writable) - {Company.__tablename__})
+    keyed = sorted(set(schema) & {Company.__tablename__})
+    return [f"LOCK TABLE {', '.join(map(db_catalog.ident, names))} IN {mode} MODE NOWAIT"
+            for names, mode in ((keyed, "SHARE ROW EXCLUSIVE"), (company, "EXCLUSIVE"),
+                                (writable, "ROW EXCLUSIVE")) if names]
 
 
 def _held_elsewhere(schema: dict) -> str:
@@ -229,6 +254,37 @@ def _company_deletes(schema: dict) -> list[str]:
             for name, where in reversed(_company_rows(schema).items())]
 
 
+async def lock_without_waiting(session: AsyncSession, schema: dict, cid: str) -> None:
+    """Take the reset's table locks (_lock_writers), then the company's connector lease rows,
+    never waiting on another transaction. A connector execution's release takes its lease
+    row, then its heartbeat row, then writes them, which the table locks make wait: the rows
+    are taken in that order, so a release in flight refuses the reset instead of deadlocking
+    with it.
+
+    Each attempt runs in a savepoint and fails at once (NOWAIT) on a lock another transaction
+    holds, which its rollback gives back. The tables are shared by every company, so another
+    company's write ordinarily commits within moments: the reset tries again for a short while,
+    and only a transaction still in the way after that refuses it as busy, with nothing changed.
+    A migration's discard deletes a whole company too, so it takes the same locks (raising the
+    DBAPIError of a lock still unavailable for its caller to refuse as busy)."""
+    deadline = time.monotonic() + _LOCK_PATIENCE_S
+    while True:
+        try:
+            async with session.begin_nested():
+                for lock in _lock_writers(schema):
+                    await session.execute(text(lock))
+                for table in _LEASE_TABLES:
+                    if table in schema:
+                        await session.execute(text(
+                            f"SELECT 1 FROM {table} WHERE company_id = :c ORDER BY connector, resource "
+                            "FOR UPDATE NOWAIT"), {"c": cid})
+            return
+        except DBAPIError as exc:
+            if sqlstate(exc) != _LOCK_NOT_AVAILABLE or time.monotonic() >= deadline:
+                raise
+        await asyncio.sleep(_LOCK_RETRY_S)
+
+
 async def _company_schema(session: AsyncSession, cid: str) -> dict:
     """The catalog's keys, read and locked for the reset of the company bound as ``cid``
     once every table is placed and no row the reset would reach belongs to another
@@ -244,11 +300,7 @@ async def _company_schema(session: AsyncSession, cid: str) -> dict:
         raise _changed_outside("partition_key", await db_catalog.label(session, tables[0]))
     _placed(schema)
     _company_rows(schema)
-    # Another transaction writing these tables can hold them for longer than a request
-    # may wait, or lock in the opposite order so Postgres aborts one of the two. Either
-    # way the rollback leaves everything as it was and the owner is asked to try again.
-    for lock in _lock_writers(schema):
-        await session.execute(text(lock))
+    await lock_without_waiting(session, schema, cid)
     if await db_catalog.read(session) != schema:  # a table or key added before the lock
         raise _busy()
     if changed := await db_catalog.changed_outside(session, schema):
@@ -262,7 +314,21 @@ async def _company_schema(session: AsyncSession, cid: str) -> dict:
     return keys
 
 
-async def reset(session: AsyncSession, company: Company, typed_name: str) -> Reset:
+async def hold_member_sessions(session: AsyncSession, company_id) -> list[uuid.UUID]:
+    """Lock every member's session generation, in user order, and return the members. Taken
+    under the company's deletion lock, before any of its deletes: a sign-out takes the
+    generation and then the sessions, so it waits for the whole reset. A replace takes them
+    before it share-locks the rows it keeps (company_backup._check_replacing), so the reset
+    it ends with retakes them."""
+    members = sorted(set((await session.scalars(
+        select(UserCompany.user_id).where(UserCompany.company_id == company_id))).all()))
+    for member in members:
+        await lock_auth_state(session, str(member))
+    return members
+
+
+async def reset(session: AsyncSession, company: Company, typed_name: str,
+                next_session: Callable[[], Awaitable[dict | None]] | None = None) -> Reset:
     """Delete *company* and every row it owns in the session's transaction, and record its
     files for deletion after the commit. The caller holds the connector maintenance lock,
     took ``lock_company_for_deletion`` before any other company lock, and ends the
@@ -270,7 +336,9 @@ async def reset(session: AsyncSession, company: Company, typed_name: str) -> Res
     (also when this raises ResetRefused carrying one) and, after a commit, runs the
     cleanup task. Nothing is written unless every check passes, and a company connected
     to Celerp Cloud has its online payments closed there first; a database failure part
-    way leaves the transaction to roll back."""
+    way leaves the transaction to roll back. *next_session* issues the caller's next session
+    without committing, or returns None when the caller has no other company; it runs under
+    the members' session generations, before the deletes."""
     if typed_name != company.name:
         raise ResetRefused(422, refusal(
             "company_reset.name_mismatch",
@@ -283,7 +351,7 @@ async def reset(session: AsyncSession, company: Company, typed_name: str) -> Res
     try:
         keys = await _company_schema(session, cid)
     except DBAPIError as exc:
-        if sqlstate(exc) not in _BUSY:
+        if sqlstate(exc) not in BUSY:
             raise
         raise _busy() from exc
     connected = sorted(set((await session.scalars(
@@ -309,8 +377,6 @@ async def reset(session: AsyncSession, company: Company, typed_name: str) -> Res
         raise ResetRefused(409, AI_BATCH_ACTIVE)
     run_ids = [str(r) for r in (await session.scalars(
         select(MigrationRun.id).where(MigrationRun.company_id == company.id))).all()]
-    members = set((await session.scalars(
-        select(UserCompany.user_id).where(UserCompany.company_id == company.id))).all())
     # Last, so a refusal above never closes the payments of a company that stays. They
     # are reopened when the deletion below does not commit.
     try:
@@ -318,19 +384,27 @@ async def reset(session: AsyncSession, company: Company, typed_name: str) -> Res
     except payments.PaymentsNotClosed as exc:
         raise ResetRefused(*PAYMENTS_NOT_CLOSED[exc.reason]) from None
     try:
-        for statement in _company_deletes(keys):
-            await session.execute(text(statement), {"c": cid})
+        # Payments recorded on the company's invoices first: every writer of a payment takes
+        # the company, then the unmatched payment, then the company's documents.
         await payments.unrecord_company(session, company.id)
+        # The caller's next session is issued under the members' generations, before the
+        # deletes take their sessions.
+        members = await hold_member_sessions(session, company.id)
+        issued = await next_session() if next_session is not None else None
         # A login left with no company is signed out everywhere, so it no longer holds
         # the single direct sign-in place.
-        left = [u for u in members if await first_usable_company_link(session, u) is None]
+        left = [u for u in members if await first_usable_company_link(session, u, company.id) is None]
         if left:
             await session.execute(delete(SessionRegistry).where(SessionRegistry.user_id.in_(left)))
+        for statement in _company_deletes(keys):
+            await session.execute(text(statement), {"c": cid})
         task = MigrationCleanupTask(company_id=company.id, run_ids=run_ids)
         session.add(task)
         await session.flush()
+    except HTTPException as exc:  # the next session refused: a sign-out came first
+        raise ResetRefused(exc.status_code, exc.detail, closure) from exc
     except SQLAlchemyError as exc:
-        if isinstance(exc, DBAPIError) and sqlstate(exc) in _BUSY:
+        if isinstance(exc, DBAPIError) and sqlstate(exc) in BUSY:
             raise ResetRefused(409, _busy().detail, closure) from exc
         raise ResetRefused(500, t("settings.reset_not_done"), closure) from exc
-    return Reset(task.id, closure)
+    return Reset(task.id, closure, issued)

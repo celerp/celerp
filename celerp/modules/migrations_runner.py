@@ -34,7 +34,7 @@ import sqlalchemy as sa
 from alembic.operations import Operations
 from alembic.runtime.migration import MigrationContext
 
-from celerp.db import _MIGRATION_LOCK_KEY, lifecycle_timeouts_disabled, mask_db_credentials
+from celerp.db import lifecycle_timeouts_disabled, mask_db_credentials, migration_key_async
 from celerp.modules import loader
 
 # Bounds every per-module migration transaction. A lock wait or runaway statement
@@ -189,53 +189,45 @@ async def run_migration_phase(engine, admission: loader.Admission) -> loader.Adm
         # The advisory-lock wait blocks until any other worker's phase finishes;
         # the request statement_timeout would cancel that wait and abort the boot,
         # so clear it on this connection for the whole locked section.
-        async with lifecycle_timeouts_disabled(lock_conn):
-            await lock_conn.execute(
-                sa.text("SELECT pg_advisory_lock(:key)"), {"key": _MIGRATION_LOCK_KEY}
-            )
-            try:
-                # Every admitted module is prepared before any migration runs, since a
-                # migration may import another module's code, including a module that
-                # has no migrations of its own.
-                for module in admission.admitted:
-                    try:
+        async with lifecycle_timeouts_disabled(lock_conn), migration_key_async(lock_conn):
+            # Every admitted module is prepared before any migration runs, since a
+            # migration may import another module's code, including a module that
+            # has no migrations of its own.
+            for module in admission.admitted:
+                try:
+                    loader._prepare_module_execution(module)
+                except loader.ModuleLoadError as exc:
+                    if module.first_party:
+                        raise
+                    failed[module.name] = str(exc)
+            for module in admission.admitted:
+                if module.name in failed:
+                    continue
+                dep = next((d for d in module.manifest["depends_on"] if d in failed), None)
+                if dep is not None:
+                    failed[module.name] = f"Requires {dep!r}, which failed to load."
+                    continue
+                migrations_pkg = module.manifest.get("migrations")
+                if not migrations_pkg:
+                    continue
+                try:
+                    # Both checks raise inside the transaction, so either rolls the
+                    # migration back: the module's code ran as module code, and its
+                    # files are still those admission checked.
+                    async with engine.begin() as conn:
                         loader._prepare_module_execution(module)
-                    except loader.ModuleLoadError as exc:
-                        if module.first_party:
-                            raise
-                        failed[module.name] = str(exc)
-                for module in admission.admitted:
-                    if module.name in failed:
-                        continue
-                    dep = next((d for d in module.manifest["depends_on"] if d in failed), None)
-                    if dep is not None:
-                        failed[module.name] = f"Requires {dep!r}, which failed to load."
-                        continue
-                    migrations_pkg = module.manifest.get("migrations")
-                    if not migrations_pkg:
-                        continue
-                    try:
-                        # Both checks raise inside the transaction, so either rolls the
-                        # migration back: the module's code ran as module code, and its
-                        # files are still those admission checked.
-                        async with engine.begin() as conn:
-                            loader._prepare_module_execution(module)
-                            with loader._activating(module.name, module.path, trusted=module.first_party):
-                                await conn.run_sync(
-                                    run_module_migrations, module.name, module.path,
-                                    migrations_pkg, module.manifest.get("table_prefix") or "",
-                                )
-                            loader.check_unchanged(module)
-                    except Exception as exc:
-                        if module.first_party:
-                            raise
-                        failed[module.name] = mask_db_credentials(
-                            f"Migration failed: {type(exc).__name__}: {exc}"
-                        )
-            finally:
-                await lock_conn.execute(
-                    sa.text("SELECT pg_advisory_unlock(:key)"), {"key": _MIGRATION_LOCK_KEY}
-                )
+                        with loader._activating(module.name, module.path, trusted=module.first_party):
+                            await conn.run_sync(
+                                run_module_migrations, module.name, module.path,
+                                migrations_pkg, module.manifest.get("table_prefix") or "",
+                            )
+                        loader.check_unchanged(module)
+                except Exception as exc:
+                    if module.first_party:
+                        raise
+                    failed[module.name] = mask_db_credentials(
+                        f"Migration failed: {type(exc).__name__}: {exc}"
+                    )
     finally:
         await lock_conn.close()
     return admission.without(failed)

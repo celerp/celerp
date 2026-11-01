@@ -11,13 +11,13 @@ each case also runs on a database this version started on before the upgrade.
 
 from __future__ import annotations
 
-import os
 import uuid
 
 import pytest
 from sqlalchemy import create_engine, text
 
-from celerp.cli import _apply_migrations
+
+from alembic_support import alembic_run, apply_migrations as _apply_migrations
 
 from .conftest import throwaway_db, upgrade_to
 
@@ -102,15 +102,12 @@ def test_migration_drops_reset_columns_and_keeps_users(started_first, path):
 def test_downgrade_and_upgrade_keep_users():
     """Back on the previous head the columns are there again, empty, and the users and
     their passwords are untouched; upgrading again removes them once more."""
-    from alembic import command
 
-    from celerp.alembic_config import build_alembic_config
 
     with throwaway_db("pwresets") as (_, sync_url):
         users = _at_parent(sync_url, started_first=False)
         upgrade_to(sync_url, REVISION)
-        os.environ["DATABASE_URL"] = sync_url
-        command.downgrade(build_alembic_config(), PARENT)
+        alembic_run(sync_url, "downgrade", PARENT)
         rows, columns, tables = _state(sync_url)
         assert rows == _expected_users(users)
         assert RESET_COLUMNS <= columns

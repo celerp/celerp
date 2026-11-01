@@ -103,7 +103,8 @@ def _route_to_app(monkeypatch, sent: list):
     from celerp.main import app
 
     class FirmClient(httpx.AsyncClient):
-        def __init__(self, *, public_only: bool = False, timeout: float | None = None):
+        def __init__(self, *, public_only: bool = False, require_execution: bool = False,
+                     timeout: float | None = None):
             assert public_only
             super().__init__(transport=httpx.ASGITransport(app=app), timeout=timeout or 30.0)
 
@@ -120,14 +121,15 @@ def _route_to_app(monkeypatch, sent: list):
 
 async def _sync(company_id: str, credential: str) -> list:
     """One outbound run in the connector's own order; returns each entity's result."""
-    from celerp.connectors.base import ConnectorContext, SyncDirection
+    from celerp.connectors.base import ConnectorContext
     from celerp.connectors.celerp import CelerpConnector
     from celerp.connectors.sync_runner import sync_plan
 
     connector = CelerpConnector()
     ctx = ConnectorContext(company_id=company_id, store_handle=FIRM, access_token=credential)
+    sending = {key: "outbound" if flow.outbound else "off" for key, flow in connector.entity_flows.items()}
     results = []
-    for entity in sync_plan(connector, SyncDirection.OUTBOUND):
+    for entity in sync_plan(connector, sending):
         results.append(await getattr(connector, f"sync_{entity}")(ctx))
     return results
 
@@ -233,6 +235,39 @@ async def test_peer_pushes_stock_moving_documents(real_client, real_engine, monk
     assert documents.attention == [] and documents.errors == []
     assert await _stock(real_client, firm_tok) == await _stock(real_client, tok)
     assert await _books(real_client, firm_tok) == await _books(real_client, tok)
+
+
+async def test_a_documents_file_reaches_the_copy_under_its_company_lock(real_client, real_engine, monkeypatch):
+    """A file on a client's document reaches the accountant's copy of that document once, and
+    the receiver takes the copy's document row under the company lock; the test requires that
+    it ran the receiver (the lock checker cannot judge a writer no test ran)."""
+    import sys
+
+    from celerp.models.ledger import LedgerEntry
+
+    tok, firm_tok, client_company, credential, contacts = await _paired(real_client, real_engine)
+    shipped = (await _client_activity(real_client, real_engine, tok, contacts))["shipped"]
+    r = await real_client.post(f"/docs/{shipped}/files", headers=auth(tok),
+                               files={"file": ("delivery-note.pdf", b"%PDF-1.4 delivery note", "application/pdf")})
+    assert r.status_code == 200, r.text
+    _route_to_app(monkeypatch, [])
+    lock_rank = sys.modules["lock_rank"]
+
+    with lock_rank.writers_taken("celerp/services/peer_attachments.py") as seen, \
+            lock_rank.ungated_takes(("row:projections",), "celerp/services/peer_attachments.py") as found:
+        results = await _sync(client_company, credential)
+        again = await _sync(client_company, credential)
+
+    files = next(r for r in results if r.entity.value == "attachments")
+    assert (files.created, files.errors) == (1, [])
+    assert next(r for r in again if r.entity.value == "attachments").created == 0
+    async with maker(real_engine)() as s:
+        attached = (await s.execute(select(LedgerEntry.entity_id).where(
+            LedgerEntry.company_id == uuid.UUID(_company_of(firm_tok)),
+            LedgerEntry.event_type == "doc.file_attached"))).scalars().all()
+    assert len(attached) == 1
+    assert sorted(found) == [], "\n".join(sorted(found))
+    assert "celerp/services/peer_attachments.py receive_attachment" in seen
 
 
 async def test_old_peer_receivers_are_gone(real_client, real_engine):

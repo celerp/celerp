@@ -18,9 +18,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from test_cost_restatement import _item, _state
+from test_helpers import remove_company
 from test_money_stock_and_contact_invariants import (
     _account_net,
-    _cleanup,
     _seed_chart,
     _seed_company,
     _seed_item,
@@ -478,4 +478,4 @@ async def test_concurrent_receipts_both_count(_db_engine):
     finally:
         await first.close()
         await second.close()
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)

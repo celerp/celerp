@@ -113,6 +113,7 @@ async def _remove_woocommerce_webhooks(
 ) -> None:
     """Remove every Celerp hook from the store while its credential still
     exists. Unconfirmed removal fails unless the disconnect is forced."""
+    from celerp.connectors.execution import store_teardown
     from celerp.connectors.registry import get as get_connector
     from celerp.connectors.woocommerce import webhook_delivery_url
 
@@ -120,15 +121,16 @@ async def _remove_woocommerce_webhooks(
         credential = await _woocommerce_credential()
         if credential is None:
             raise ConnectorRemoteCleanupError("Store credentials were not available.")
-        await get_connector("woocommerce").deregister_webhooks(
-            ConnectorContext(
-                company_id=str(company_id),
-                access_token=credential[0],
-                store_handle=credential[1],
-            ),
-            webhook_delivery_url(),
-            webhook_ids,
-        )
+        with store_teardown():
+            await get_connector("woocommerce").deregister_webhooks(
+                ConnectorContext(
+                    company_id=str(company_id),
+                    access_token=credential[0],
+                    store_handle=credential[1],
+                ),
+                webhook_delivery_url(),
+                webhook_ids,
+            )
     except Exception as exc:
         if not force:
             raise ConnectorRemoteCleanupError(

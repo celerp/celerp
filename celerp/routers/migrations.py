@@ -488,11 +488,13 @@ async def start_company_start(request: Request, payload: StartCompanyStartIn,
     lost is the same, and signing in lands on the company being moved in."""
     from celerp.credentials import issue_token_pair
     async with _start_errors(session):
+        # The scan's claim first, as every start from a scan takes it: before the login's row.
+        started = await migrations.lock_scan_claim(session, store.scan_claim(payload.scan_token))
         user = await companyless_login(session, payload.email, payload.password, request_caller(request))
         await hold_direct_slot(session)
         if not await hold_companyless_login(session, user.id):
             raise HTTPException(status_code=409, detail=t(HAS_COMPANY))
-        if await migrations.lock_scan_claim(session, store.scan_claim(payload.scan_token)) is not None:
+        if started is not None:
             raise migrations.MigrationError(409, t(migrations.SCAN_ALREADY_STARTED))
         scan = store.load_scan(payload.scan_token, owner=(START_COMPANY, user.id))
         plan = await _prepare(scan)

@@ -15,7 +15,8 @@ import pytest
 from fastapi import HTTPException
 
 from celerp.events.engine import emit_event
-from test_list_outcome_concurrency import _barcode, _cleanup, _factory, _seed_company, _state
+from test_helpers import remove_company
+from test_list_outcome_concurrency import _barcode, _factory, _seed_company, _state
 
 
 async def _seed_unique_item(factory, company_id, user, *, sku, barcode, splitting, quantity=1,
@@ -86,7 +87,7 @@ async def _both_survive(_db_engine, doc_type):
         assert len(state["line_items"]) == 2
         assert {r.get("key") for r in state.get("scan_runs") or []} == {"kX", "kY"}
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 @pytest.mark.asyncio
@@ -118,7 +119,7 @@ async def test_concurrent_same_unique_item_lands_once(_db_engine):
         state = await _state(factory, company_id, doc)
         assert [line.get("entity_id") or line.get("item_id") for line in state["line_items"]] == [item]
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 @pytest.mark.asyncio
@@ -142,7 +143,7 @@ async def test_concurrent_same_lot_lands_one_full_line(_db_engine):
         assert [line.get("item_id") for line in state["line_items"]] == [item]
         assert float(state["line_items"][0]["quantity"]) == 5.0
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 @pytest.mark.asyncio
@@ -164,4 +165,4 @@ async def test_concurrent_scans_of_a_splittable_lot_are_one_line_of_two(_db_engi
         assert [line.get("item_id") for line in state["line_items"]] == [item]
         assert [float(line["quantity"]) for line in state["line_items"]] == [2.0]
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)

@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """Connector routes reach the shared connector services.
 
-POST /connectors/{name}/sync-plan writes nothing itself: it reads the company's
-connector row, fetches the channel context and starts run_connector_sync in the
-background with the stored direction. Every record the sync writes goes through
-that runner.
+POST /connectors/{name}/sync-plan writes nothing itself: it checks the company's
+connector row and starts run_connector_sync in the background as a manual sync. The
+runner's execution reads the channel context and the stored directions, and every
+record the sync writes goes through that runner.
 
 POST /connectors/{name}/credentials claims the connector for the company through
 claim_connector_ownership, stores the credential on the relay and saves the
@@ -46,18 +46,19 @@ def connect_session(monkeypatch):
     monkeypatch.setattr(state, "_session_token", SESSION_TOKEN)
 
 
-async def test_sync_plan_runs_the_shared_sync_runner_with_the_stored_direction(client, session, connect_session):
-    from celerp.connectors.base import SyncDirection
+async def test_sync_plan_runs_the_shared_sync_runner(client, session, connect_session):
     from celerp.models.connector_config import ConnectorConfig
 
     h, cid = await _register(client)
-    session.add(ConnectorConfig(company_id=cid, connector="woocommerce",
-                                direction=SyncDirection.INBOUND.value))
+    from connector_test_support import record_first_sync
+
+    config = ConnectorConfig(company_id=cid, connector="woocommerce")
+    session.add(config)
+    await session.flush()
+    await record_first_sync(session, config, "completed")
     await session.commit()
-    ctx = object()
     runner = AsyncMock()
-    with patch("celerp_connectors.routes._connector_context", AsyncMock(return_value=ctx)), \
-         patch("celerp.connectors.sync_runner.run_connector_sync", runner):
+    with patch("celerp.connectors.sync_runner.run_connector_sync", runner):
         r = await client.post("/connectors/woocommerce/sync-plan", headers=h)
         assert r.status_code == 200, r.text
         assert r.json() == {"ok": True}
@@ -66,9 +67,11 @@ async def test_sync_plan_runs_the_shared_sync_runner_with_the_stored_direction(c
                 break
             await asyncio.sleep(0.01)
     assert runner.await_count == 1
-    connector, passed_ctx = runner.await_args.args
-    assert connector.name == "woocommerce" and passed_ctx is ctx
-    assert runner.await_args.kwargs == {"direction": SyncDirection.INBOUND}
+    connector, passed_company = runner.await_args.args
+    assert connector.name == "woocommerce" and str(passed_company) == cid
+    # The runner's execution reads the connection's own context and directions; the
+    # route passes only why it runs.
+    assert runner.await_args.kwargs == {"purpose": "manual_sync"}
 
 
 async def test_sync_plan_refuses_a_channel_that_is_not_connected(client, connect_session):
@@ -96,9 +99,6 @@ async def test_store_credentials_claims_the_connector_and_keeps_its_webhook_secr
          patch("celerp.services.outbound_url.fetch_public_bytes",
                AsyncMock(return_value=SimpleNamespace(status_code=200))), \
          patch("celerp.connectors.remote_state.revoke_connector_remote_state", AsyncMock()), \
-         patch("celerp.connectors.woocommerce.WooCommerceConnector.register_webhooks",
-               AsyncMock(return_value=["11"])), \
-         patch("celerp.connectors.woocommerce.WooCommerceConnector.deregister_webhooks", AsyncMock()), \
          respx.mock(assert_all_called=False) as relay:
         stored = relay.post(f"{RELAY}/tokens/woocommerce").mock(
             return_value=httpx.Response(200, json={"stored": True}))
@@ -113,4 +113,5 @@ async def test_store_credentials_claims_the_connector_and_keeps_its_webhook_secr
     rows = (await session.execute(select(ConnectorConfig).where(
         ConnectorConfig.connector == "woocommerce"))).scalars().all()
     assert [str(row.company_id) for row in rows] == [cid]
-    assert rows[0].webhook_ids == ["11"] and rows[0].webhook_secret
+    assert rows[0].webhook_ids == [] and rows[0].webhook_secret
+    assert rows[0].first_sync_state == "pending"

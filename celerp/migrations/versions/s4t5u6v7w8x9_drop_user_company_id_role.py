@@ -15,6 +15,7 @@ email address. UserCompany is now the sole source of role and company membership
 from __future__ import annotations
 
 from alembic import op
+from celerp.migrations._locks import lock_tables
 import sqlalchemy as sa
 
 revision = "s4t5u6v7w8x9"
@@ -26,6 +27,7 @@ depends_on = None
 def upgrade() -> None:
     # 1. Ensure every user has a UserCompany row (migrate any orphans that exist
     #    only in users.company_id/role but lack a user_companies row).
+    lock_tables(op.get_bind(), "user_companies")
     op.execute(
         """
         INSERT INTO user_companies (id, user_id, company_id, role, is_active)

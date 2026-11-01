@@ -11,6 +11,7 @@ from celerp.events.engine import emit_event
 from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.projections.engine import ProjectionEngine
+from test_helpers import remove_company
 from celerp.services.company_lock import lock_company
 
 
@@ -76,10 +77,8 @@ async def test_concurrent_events_on_one_entity_keep_both_writes(_db_engine):
     the ledger holds both events."""
     import asyncio
 
-    from sqlalchemy import delete
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-    from celerp.models.ledger import LedgerEntry
 
     factory = async_sessionmaker(bind=_db_engine, class_=AsyncSession, expire_on_commit=False)
     company_id = uuid.uuid4()
@@ -130,8 +129,4 @@ async def test_concurrent_events_on_one_entity_keep_both_writes(_db_engine):
     finally:
         await s1.close()
         await s2.close()
-        async with factory() as cleanup:
-            await cleanup.execute(delete(LedgerEntry).where(LedgerEntry.company_id == company_id))
-            await cleanup.execute(delete(Projection).where(Projection.company_id == company_id))
-            await cleanup.execute(delete(Company).where(Company.id == company_id))
-            await cleanup.commit()
+        await remove_company(factory, company_id)

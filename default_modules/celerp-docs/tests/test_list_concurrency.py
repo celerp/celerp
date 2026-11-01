@@ -22,9 +22,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.events.engine import emit_event
 from celerp.models.company import Company, User
-from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.lot_origin import recognize_opening_lots
+from test_helpers import remove_company
 
 
 async def _seed_company(factory) -> uuid.UUID:
@@ -50,16 +50,6 @@ async def _seed_list(factory, company_id) -> str:
         )
         await s.commit()
     return entity_id
-
-
-async def _cleanup(factory, company_id):
-    from celerp_accounting.models import Account
-    async with factory() as s:
-        await s.execute(delete(Projection).where(Projection.company_id == company_id))
-        await s.execute(delete(LedgerEntry).where(LedgerEntry.company_id == company_id))
-        await s.execute(delete(Account).where(Account.company_id == company_id))
-        await s.execute(delete(Company).where(Company.id == company_id))
-        await s.commit()
 
 
 async def _seed_typed_list(factory, company_id, entity_id, list_type, status):
@@ -128,7 +118,7 @@ async def test_terminal_route_takes_list_row_lock(_db_engine, fn_name, list_type
     finally:
         await s_lock.close()
         await s_route.close()
-        await _cleanup(factory, company_id)
+        await remove_company(factory, company_id)
 
 
 @pytest.mark.asyncio
@@ -162,7 +152,7 @@ async def test_get_list_for_update_serializes_concurrent_writers(_db_engine):
     finally:
         await s1.close()
         await s2.close()
-        await _cleanup(factory, company_id)
+        await remove_company(factory, company_id)
 
 
 async def _seed_chart(factory, company_id):
@@ -273,7 +263,7 @@ async def test_writeoff_concurrent_same_item_two_lists_one_wins(_db_engine):
     finally:
         await s_a.close()
         await s_b.close()
-        await _cleanup(factory, company_id)
+        await remove_company(factory, company_id)
         async with factory() as s:
             await s.execute(delete(User).where(User.id == user.id))
             await s.commit()
@@ -295,7 +285,7 @@ async def test_get_list_for_update_404s_non_list(_db_engine):
                 await _get_list_for_update(s, company_id, "list:NOPE")
             assert exc.value.status_code == 404
     finally:
-        await _cleanup(factory, company_id)
+        await remove_company(factory, company_id)
 
 
 async def _hold_namespace_then_lock_item(factory, company_id, item_id, route_call):
@@ -353,7 +343,7 @@ async def test_lot_locking_takes_code_namespace_before_item_rows(_db_engine):
         )
         assert set(locked) == {item_id}
     finally:
-        await _cleanup(factory, company_id)
+        await remove_company(factory, company_id)
 
 
 @pytest.mark.asyncio
@@ -382,7 +372,7 @@ async def test_partial_writeoff_takes_code_namespace_before_item_rows(_db_engine
                 Projection.company_id == company_id, Projection.entity_id == item_id))).scalar_one()
             assert float(item.state["quantity"]) == 3
     finally:
-        await _cleanup(factory, company_id)
+        await remove_company(factory, company_id)
         if user_id is not None:
             async with factory() as s:
                 await s.execute(delete(User).where(User.id == user_id))

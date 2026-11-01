@@ -58,9 +58,11 @@ def factory(committed_engine, monkeypatch):
 async def _company(factory) -> tuple[uuid.UUID, uuid.UUID]:
     cid, uid = uuid.uuid4(), uuid.uuid4()
     async with factory() as s:
+        # The user first, then the company, in the order provisioning writes them.
+        s.add(User(id=uid, email=f"sp-{uid.hex[:8]}@test.co", name="Member", auth_hash="x", is_active=True))
+        await s.flush()
         s.add(Company(id=cid, name="Savepoint Co", slug=f"sp-{cid.hex[:8]}",
                       settings=set_enabled({}, {DOCS})))
-        s.add(User(id=uid, email=f"sp-{uid.hex[:8]}@test.co", name="Member", auth_hash="x", is_active=True))
         await s.flush()
         s.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=cid, role=ROLE, is_active=True))
         await s.commit()
@@ -230,3 +232,32 @@ async def test_a_released_savepoint_keeps_its_lock_judged(factory):
         await _write(s, cid)
         await s.commit()
     assert await _written(factory, cid) == 1
+
+
+async def test_a_lock_already_held_is_not_asked_for_again(factory, committed_engine):
+    """A transaction asks PostgreSQL for its company's row lock once: taking it again
+    while it is held (in the transaction or in a savepoint under it) sends nothing, and a
+    lock released by a rolled-back savepoint is asked for again."""
+    from sqlalchemy import event
+    cid, uid = await _company(factory)
+    sent: list[str] = []
+
+    def _count(conn, cursor, statement, *args):
+        if "FROM companies" in statement and "FOR NO KEY UPDATE" in statement:
+            sent.append(statement)
+    event.listen(committed_engine.sync_engine, "before_cursor_execute", _count)
+    try:
+        async with factory() as s:
+            await lock_company(s, cid)
+            await lock_company(s, cid)
+            async with s.begin_nested():
+                await lock_company(s, cid)
+            assert len(sent) == 1
+            await s.rollback()
+            nested = await s.begin_nested()
+            await lock_company(s, cid)
+            await nested.rollback()
+            await lock_company(s, cid)
+            assert len(sent) == 3
+    finally:
+        event.remove(committed_engine.sync_engine, "before_cursor_execute", _count)

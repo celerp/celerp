@@ -30,11 +30,10 @@ os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from test_helpers import DATABASE_URL
+from test_helpers import DATABASE_URL, remove_company
 
 from celerp.ai.conversations import claim_tool_call
 from celerp.models.ai import AIConversation, AIMessage
@@ -81,7 +80,9 @@ async def seeded(committed_maker):
     async with committed_maker() as s:
         company = Company(name="RaceCo", slug=f"raceco-{tag}", settings={})
         user = User(email=f"race-{tag}@test.invalid", name="Race")
-        s.add_all([company, user])
+        s.add(user)
+        await s.flush()
+        s.add(company)
         await s.flush()
         conv = AIConversation(company_id=company.id, user_id=user.id, title="race")
         s.add(conv)
@@ -98,11 +99,7 @@ async def seeded(committed_maker):
     yield ids
 
     company_id, user_id, conv_id, _ = ids
-    async with committed_maker() as s:
-        await s.execute(delete(AIConversation).where(AIConversation.id == conv_id))
-        await s.execute(delete(Company).where(Company.id == company_id))
-        await s.execute(delete(User).where(User.id == user_id))
-        await s.commit()
+    await remove_company(committed_maker, company_id, user_id)
 
 
 @pytest.mark.asyncio

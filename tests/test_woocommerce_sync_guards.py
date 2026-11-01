@@ -1,10 +1,10 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
 
-from celerp.connectors.base import SyncDirection
+from celerp.connectors.base import entity_allowed
 from celerp.connectors.woocommerce import (
+    WooCommerceConnector,
     _deleted_variation_requires_import,
-    _direction_allows_remote_product_create,
     _link_matches_deleted_product,
     _link_needs_rediscovery,
 )
@@ -19,11 +19,10 @@ from celerp_inventory.services import (
 )
 
 
-def test_woocommerce_remote_create_respects_global_direction():
-    assert _direction_allows_remote_product_create(SyncDirection.OUTBOUND)
-    assert _direction_allows_remote_product_create("both")
-    assert not _direction_allows_remote_product_create("inbound")
-    assert not _direction_allows_remote_product_create(None)
+def test_woocommerce_remote_create_follows_the_products_direction():
+    woo = WooCommerceConnector()
+    for products, creates in (("outbound", True), ("both", True), ("inbound", False), ("off", False)):
+        assert entity_allowed(woo, "products_out", {"products": products}) is creates
 
 
 def test_deleted_parent_matches_all_variations_but_exact_variation_is_scoped():

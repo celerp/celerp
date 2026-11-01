@@ -1043,6 +1043,11 @@ def test_es_uses_usted_register():
     assert not informal, informal
 
 
+# Placeholders that name who or what something belongs to, never a number: "Primera
+# sincronización de {service}" is the first sync of that store, as the English means.
+_OWNER_PLACEHOLDERS = {"{service}", "{company}", "{name}", "{firm}", "{contact}"}
+
+
 @pytest.mark.parametrize("lang", ["es", "pt"])
 def test_leading_count_stays_a_count(lang):
     """"{n} invoices" is a number of invoices; "facturas de {n}" reads as invoices
@@ -1051,5 +1056,6 @@ def test_leading_count_stays_a_count(lang):
     tr = json.loads((Path(_LOCALES_DIR) / f"{lang}.json").read_text(encoding="utf-8"))
     inverted = {k: tr[k] for k, v in en.items()
                 if (m := re.match(r"(\{\w+\}) ", v)) and k in tr
+                and m.group(1) not in _OWNER_PLACEHOLDERS
                 and re.search(rf"\bde {re.escape(m.group(1))}$", tr[k])}
     assert not inverted, inverted

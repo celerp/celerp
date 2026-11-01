@@ -30,6 +30,27 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
 
+@pytest.fixture(autouse=True)
+def _no_revision_takes_a_row_outside_its_table_lock():
+    """Every migration test is a census of the revisions it runs: a data step that takes a
+    company's row the lock checker counts (outside the company's lock, its table not locked
+    EXCLUSIVE, and not a leaf) fails the test. A revision can run inside a serving process
+    (System Recovery), so such a take can meet a request holding that company's lock."""
+    with sys.modules["lock_rank"].ungated_takes(None, "celerp/migrations/") as found:
+        yield
+    assert sorted(found) == [], "revision row takes outside lock_tables:\n" + "\n".join(sorted(found))
+
+
+@contextlib.contextmanager
+def _under_migration_key(engine):
+    """A connection in a transaction, under the migration key held on an autocommit
+    connection of its own, as every production run holds it (celerp.db.migration_key)."""
+    from celerp.db import migration_key
+    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as key_conn, migration_key(key_conn), \
+            engine.connect() as conn, conn.begin():
+        yield conn
+
+
 def _run_migration(engine, module_name: str, fn: str) -> None:
     """Run versions/<module_name>.<fn>() against `engine` through an op mock.
 
@@ -38,16 +59,15 @@ def _run_migration(engine, module_name: str, fn: str) -> None:
     connection.
     """
     full = f"celerp.migrations.versions.{module_name}"
-    with engine.connect() as conn:
-        with conn.begin():
-            mock_op = MagicMock()
-            mock_op.get_bind.return_value = conn
-            if full in sys.modules:
-                del sys.modules[full]
-            with patch.dict("sys.modules", {"alembic.op": mock_op}):
-                mig = importlib.import_module(full)
-                with patch.object(mig, "op", mock_op):
-                    getattr(mig, fn)()
+    with _under_migration_key(engine) as conn:
+        mock_op = MagicMock()
+        mock_op.get_bind.return_value = conn
+        if full in sys.modules:
+            del sys.modules[full]
+        with patch.dict("sys.modules", {"alembic.op": mock_op}):
+            mig = importlib.import_module(full)
+            with patch.object(mig, "op", mock_op):
+                getattr(mig, fn)()
 
 
 def run_migration_ops(engine, module_name: str, direction: str = "upgrade") -> None:
@@ -65,14 +85,13 @@ def run_migration_ops(engine, module_name: str, direction: str = "upgrade") -> N
     from alembic.runtime.migration import MigrationContext
 
     full = f"celerp.migrations.versions.{module_name}"
-    with engine.connect() as conn:
-        with conn.begin():
-            ctx = MigrationContext.configure(conn)
-            if full in sys.modules:
-                del sys.modules[full]
-            with Operations.context(ctx):
-                mig = importlib.import_module(full)
-                getattr(mig, direction)()
+    with _under_migration_key(engine) as conn:
+        ctx = MigrationContext.configure(conn)
+        if full in sys.modules:
+            del sys.modules[full]
+        with Operations.context(ctx):
+            mig = importlib.import_module(full)
+            getattr(mig, direction)()
 
 
 class MigDB:
@@ -207,12 +226,9 @@ def head_rev() -> str:
 
 def upgrade_to(sync_url: str, revision: str) -> None:
     """Run plain alembic upgrade to `revision` against `sync_url`, as an older release did."""
-    from alembic import command
+    from alembic_support import alembic_run
 
-    from celerp.alembic_config import build_alembic_config
-
-    os.environ["DATABASE_URL"] = sync_url
-    command.upgrade(build_alembic_config(), revision)
+    alembic_run(sync_url, "upgrade", revision)
 
 
 def schema_of(sync_url: str) -> dict[str, set]:

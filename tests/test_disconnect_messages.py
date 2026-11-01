@@ -22,7 +22,7 @@ _NAMES_WEB_ACCESS = [
     "error.connect_account_first", "error.relay_sign_in_failed", "error.billing_portal_failed",
     "error.connector_not_here", "error.relay_signed_out", "error.connector_multi_company",
     "error.connector_company_invalid", "error.connector_other_company", "error.connector_legacy_conflict",
-    "error.connector_not_connected", "error.woocommerce_credentials", "error.connector_sync_error",
+    "error.connector_not_connected", "error.connector_sync_error",
     "error.cloud_backup_disconnected", "error.cloud_backup_no_account", "error.ai_signed_out",
     "doc.send_relay_error_notice", "doc.send_relay_error_link", "ai.service_unavailable", "pay.settings_revoked",
     "connectors.ambiguous", "connectors.unassigned", "company_backup.integrations_disconnected",

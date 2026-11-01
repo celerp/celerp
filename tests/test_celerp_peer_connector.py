@@ -4,12 +4,13 @@ from __future__ import annotations
 import asyncio
 import uuid
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from celerp.connectors.base import ConnectorContext, SyncDirection
 from celerp.connectors.registry import get
-from celerp.connectors.sync_runner import supported_outbound, sync_plan
+from celerp.connectors.sync_runner import sync_plan
 from celerp.connectors import celerp as peer
 from peer_marks_support import KEY, memory_marks  # noqa: F401
 
@@ -19,9 +20,11 @@ pytestmark = pytest.mark.usefixtures("memory_marks")
 def test_celerp_sends_records_and_takes_journals_and_the_lock_date():
     connector = get("celerp")
     outbound = ["products_out", "contacts_out", "journals_out", "documents_out", "inventory_out", "attachments_out"]
-    assert supported_outbound(connector) == outbound
-    assert sync_plan(connector, SyncDirection.OUTBOUND) == outbound
-    assert sync_plan(connector, SyncDirection.INBOUND) == ["journals", "period_lock"]
+    sending = {key: "outbound" if flow.outbound else "off" for key, flow in connector.entity_flows.items()}
+    taking = {key: "inbound" if flow.inbound else "off" for key, flow in connector.entity_flows.items()}
+    assert sync_plan(connector, sending) == outbound
+    assert sync_plan(connector, taking) == ["journals", "period_lock"]
+    assert sync_plan(connector, connector.default_directions) == ["journals", "period_lock", *outbound]
 
 
 @pytest.mark.parametrize("url", [
@@ -47,7 +50,7 @@ async def test_versioned_contact_outbound_and_retry_reporting(monkeypatch):
         return first if not after else []
     class Client:
         def __init__(self, **kwargs):
-            assert kwargs == {"public_only": True}
+            assert kwargs == {"public_only": True, "require_execution": True}
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def post(self, url, **kwargs):
@@ -126,7 +129,7 @@ async def test_product_sync_transmits_catalog_only_and_preserves_revision(monkey
                                   "sku": "W1", "quantity": 400, "cost_base": 123})] if not after else []
     class Client:
         def __init__(self, **kwargs):
-            assert kwargs == {"public_only": True}
+            assert kwargs == {"public_only": True, "require_execution": True}
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def post(self, url, **kwargs):
@@ -169,7 +172,7 @@ async def test_shared_peer_delivery_marks_failed_product_without_losing_source_r
         return [("item:a", 9, {"name": "Part", "sell_by": "piece"})] if not after else []
     class Client:
         def __init__(self, **kwargs):
-            assert kwargs == {"public_only": True}
+            assert kwargs == {"public_only": True, "require_execution": True}
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def post(self, url, **kwargs):
@@ -209,7 +212,7 @@ async def test_draft_document_outbound_filters_private_and_excluded_fields(monke
         ]
     class Client:
         def __init__(self, **kwargs):
-            assert kwargs == {"public_only": True}
+            assert kwargs == {"public_only": True, "require_execution": True}
         async def __aenter__(self):
             return self
         async def __aexit__(self, *args):
@@ -253,7 +256,7 @@ async def test_receiving_company_refusal_is_the_attention_reason(monkeypatch):
         ] if not after else []
     class Client:
         def __init__(self, **kwargs):
-            assert kwargs == {"public_only": True}
+            assert kwargs == {"public_only": True, "require_execution": True}
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def post(self, url, **kwargs):
@@ -278,7 +281,7 @@ async def test_receiving_company_refusal_is_the_attention_reason(monkeypatch):
 def test_physical_counts_depend_on_document_reconciliation():
     connector = peer.CelerpConnector()
     assert connector.outbound_dependencies["inventory_out"] == {"documents_out"}
-    plan = sync_plan(connector, SyncDirection.OUTBOUND)
+    plan = sync_plan(connector, connector.default_directions)
     assert plan.index("documents_out") < plan.index("inventory_out")
     assert plan.index("inventory_out") < plan.index("attachments_out")
 
@@ -300,7 +303,7 @@ async def test_stock_audit_does_not_require_contact_or_product_name(monkeypatch)
         })] if not after else []
     class Client:
         def __init__(self, **kwargs):
-            assert kwargs == {"public_only": True}
+            assert kwargs == {"public_only": True, "require_execution": True}
         async def __aenter__(self): return self
         async def __aexit__(self, *args): pass
         async def post(self, url, **kwargs):
@@ -325,23 +328,24 @@ async def test_stock_audit_does_not_require_contact_or_product_name(monkeypatch)
 @pytest.mark.asyncio
 async def test_accountant_downstream_stops_when_required_outbound_entity_failed(monkeypatch):
     from contextlib import asynccontextmanager
-    from celerp import db
-    from celerp.connectors import ownership, sync_runner
+    from celerp.connectors import execution, sync_runner
     from celerp.connectors.base import SyncEntity, SyncResult
 
-    class Session:
-        async def commit(self):
-            pass
+    company_id = str(uuid.uuid4())
+    ctx = ConnectorContext(company_id=company_id, access_token="cp1.fake",
+                           store_handle="https://firm.example")
+
+    async def sending_only(cid, name):
+        return {key: "outbound" if flow.outbound else "off"
+                for key, flow in peer.CelerpConnector.entity_flows.items()}
 
     @asynccontextmanager
-    async def session():
-        yield Session()
-
-    async def no_config(*args, **kwargs):
-        return None
+    async def one_execution(cid, connector, purpose, resources):
+        assert (cid, purpose) == (company_id, "manual_sync")
+        yield SimpleNamespace(ctx=ctx)
 
     seen = []
-    async def fake_run_sync(connector, ctx, entity, **kwargs):
+    async def fake_run_sync(connector, cid, entity, **kwargs):
         seen.append(entity)
         return SyncResult(
             entity=SyncEntity.PRODUCTS if entity == "products_out" else SyncEntity.CONTACTS,
@@ -349,22 +353,19 @@ async def test_accountant_downstream_stops_when_required_outbound_entity_failed(
             errors=["Source product needs review"] if entity == "products_out" else [],
         )
 
-    monkeypatch.setattr(db, "get_session_ctx", session)
-    monkeypatch.setattr(ownership, "lock_connector_operation", no_config)
+    monkeypatch.setattr(sync_runner, "_directions", sending_only)
+    monkeypatch.setattr(execution, "connector_execution", one_execution)
     monkeypatch.setattr(sync_runner, "run_sync", fake_run_sync)
     connector = peer.CelerpConnector()
+    monkeypatch.setattr(connector, "before_outbound", AsyncMock())
     assert connector.outbound_dependencies["documents_out"] == frozenset(
         {"contacts_out", "products_out"})
     assert connector.outbound_dependencies["attachments_out"] == frozenset({"documents_out"})
     assert connector.outbound_dependencies["journals_out"] == frozenset({"contacts_out"})
-    results = await sync_runner.run_connector_sync(
-        connector,
-        ConnectorContext(company_id=str(uuid.uuid4()), access_token="cp1.fake",
-                         store_handle="https://firm.example"),
-        SyncDirection.OUTBOUND,
-    )
+    results = await sync_runner.run_connector_sync(connector, company_id, purpose="manual_sync")
     assert seen == ["products_out", "contacts_out", "journals_out"]
     assert len(results) == 3 and not results[0].ok
+    connector.before_outbound.assert_awaited_once_with(ctx)
 
 
 async def test_a_key_the_accountant_closed_says_so_on_the_journals_pull(monkeypatch):

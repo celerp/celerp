@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: BUSL-1.1
 """Shared image and file helpers for connectors.
 
-Used by WooCommerce and Shopify connectors to push/pull product images
-and certificate metafields in a DRY, platform-agnostic way.
+Used by WooCommerce and Shopify connectors to pull product images and certificate
+metafields, and to send product images, in a DRY, platform-agnostic way.
 """
 from __future__ import annotations
 
@@ -17,81 +17,185 @@ _MAX_REMOTE_FILE_BYTES = 50 * 1024 * 1024
 
 _CERT_TAGS = ("certificates", "spec_sheets", "safety_docs")
 _PRODUCT_IMAGE_TAG = "product_images"
+# The id of a store product's attention entry for its files that could not be pulled: its key + this.
+_FILES_ENTRY = ":files"
 
 
 def _is_image_mime(mime: str) -> bool:
     return mime.startswith("image/")
 
 
-def _file_already_stored(files: list[dict], url: str) -> bool:
-    """Check whether a remote URL is already present in the item's files list."""
-    return any(f.get("url") == url for f in files)
+def _already_pulled(files: list[dict], platform: str, remote: dict) -> bool:
+    """Whether the item already holds this platform file: the same image id from the
+    same store, or the same address when the platform gives no id."""
+    key = "id" if remote.get("id") else "src"
+    return any(
+        (f.get("remote") or {}).get(platform, {}).get(key) == remote[key]
+        and (f.get("remote") or {}).get(platform, {}).get("store") == remote.get("store")
+        for f in files
+    )
 
 
-def build_platform_image_payload(files: list[dict]) -> dict:
-    """Return hero_url and additional_urls from an item's files list.
-
-    Returns:
-        {"hero_url": str | None, "additional_urls": list[str]}
-    """
-    hero = next((f for f in files if f.get("is_hero") and _is_image_mime(f.get("mime", ""))), None)
-    additional = [
-        f["url"] for f in files
-        if f.get("document_tag") == _PRODUCT_IMAGE_TAG
-        and not f.get("is_hero")
-        and _is_image_mime(f.get("mime", ""))
-        and f.get("url")
-    ]
-    return {
-        "hero_url": hero["url"] if hero and hero.get("url") else None,
-        "additional_urls": additional,
-    }
+def product_image_files(files: list[dict]) -> list[dict]:
+    """An item's product images in the order a store shows them: the hero first, then
+    the other product images."""
+    images = [f for f in files if _is_image_mime(f.get("mime", "")) and f.get("id")]
+    hero = [f for f in images if f.get("is_hero")][:1]
+    rest = [f for f in images if not f.get("is_hero") and f.get("document_tag") == _PRODUCT_IMAGE_TAG]
+    return hero + rest
 
 
-def build_platform_cert_payload(files: list[dict]) -> dict:
-    """Return {tag_slug: [{"name": filename, "url": url}]} for each cert-like tag.
+def store_media_id(file: dict, platform: str, link: dict, store: str | None) -> str | None:
+    """The store's own id for an image it already holds: the one it gave when the image
+    was pulled from this store, or the one it returned when Celerp sent it."""
+    remote = (file.get("remote") or {}).get(platform) or {}
+    if remote.get("id") and remote.get("store") == store:
+        return str(remote["id"])
+    known = (link.get("media_ids") or {}).get(file["id"])
+    return str(known) if known else None
 
-    Only includes tags that have at least one file.
-    """
-    result: dict[str, list[dict]] = {}
-    for tag in _CERT_TAGS:
-        entries = [
-            {"name": f.get("filename", ""), "url": f["url"]}
-            for f in files
-            if f.get("document_tag") == tag and f.get("url")
-        ]
-        if entries:
-            result[tag] = entries
-    return result
+
+async def store_images(ctx, platform: str, service: str, files: list[dict],
+                       link: dict) -> tuple[list[dict], str | None]:
+    """The image list to send a store for an item's product images, or the reason none
+    can be sent. An image the store holds goes by its id; any other by a short-lived
+    public link (relay_share.mint_media_url) when it is within the size a store can fetch
+    (connector_media.media_max_bytes); never by a Celerp address the store cannot reach.
+    When one image cannot be sent none are, so the store's images are never replaced by
+    part of the item's."""
+    from celerp.services import relay_share
+    from ui.i18n import t
+    from celerp.services.attachments import company_file_size
+    from celerp.services.connector_media import media_max_bytes
+
+    images, limit = [], media_max_bytes()
+    for file in product_image_files(files):
+        media_id = store_media_id(file, platform, link, ctx.store_handle)
+        if media_id is not None:
+            images.append({"id": int(media_id) if media_id.isdigit() else media_id})
+            continue
+        size = await company_file_size(ctx.company_id, file["url"]) if file.get("url") else None
+        if size is not None and size > limit:
+            return [], t("connectors.attention_image_too_large", service=service,
+                         name=file.get("filename") or file["id"], size=_megabytes(size), limit=_megabytes(limit))
+        url = await relay_share.mint_media_url(ctx.company_id, file) if size is not None else None
+        if url is None:
+            return [], t("connectors.attention_image_unshared", service=service)
+        images.append({"src": url})
+    return images, None
+
+
+def _megabytes(size: int) -> str:
+    return f"{size / (1024 * 1024):.1f}".removesuffix(".0")
+
+
+async def pull_store_files(ctx, connector, *, key: str, label: str, entity_id: str, files: list[dict],
+                           pending: dict, processed: set[str], operation: str | None) -> None:
+    """Pull a store product's files onto its item, each {"url", "filename", "tag", "is_hero",
+    "remote_id"}. The files that could not be downloaded or stored wait on a person in one
+    ``pending`` entry for the product (kind "files", listing them), and the next sync pulls
+    them again (retry_unpulled_files) until each is attached. The files a first sync pulls
+    (``operation``) join its import or its link's undo record, also when a later sync pulls them.
+    Files are pulled only while the item takes store changes from that product
+    (product_links.takes_store_product); once it does not (the link stopped, undone or moved
+    to another product since), they are not pulled and no longer wait."""
+    from ui.i18n import t
+
+    entry_id = f"{key}{_FILES_ENTRY}"
+    processed.add(entry_id)
+    try:
+        failed = await _pull_item_files(ctx, connector.name, key, entity_id, files, operation)
+    except Exception as exc:
+        log.warning("connector: failed to pull the files of %s: %s", entity_id, exc)
+        failed = files
+    if failed:
+        pending[entry_id] = {
+            "id": entry_id, "label": label, "kind": "files", "entity_id": entity_id,
+            "files": failed, "operation": operation,
+            "reason": t("connectors.attention_files_unpulled", service=connector.display_name,
+                        names=", ".join(f["filename"] for f in failed)),
+        }
+
+
+async def retry_unpulled_files(ctx, connector, attention: list[dict] | None, pending: dict,
+                               processed: set[str]) -> None:
+    """Pull again the files an earlier sync could not (pull_store_files) for the products
+    this sync did not read, so a file waits only until the store serves it again."""
+    for entry in attention or []:
+        if entry.get("kind") == "files" and entry["id"] not in processed:
+            await pull_store_files(
+                ctx, connector, key=entry["id"].removesuffix(_FILES_ENTRY), label=entry["label"],
+                entity_id=entry["entity_id"], files=entry["files"], pending=pending, processed=processed,
+                operation=entry.get("operation"))
+
+
+async def _pull_item_files(ctx, platform: str, key: str, entity_id: str, files: list[dict],
+                           operation: str | None) -> list[dict]:
+    """Pull ``files`` of store product ``key`` onto the item in one transaction and return
+    those that failed; none when the item is gone or no longer takes store changes from that
+    product."""
+    from celerp.connectors.base import ExternalImportRecord
+    from celerp.connectors.product_links import takes_store_product
+    from celerp.db import get_session_ctx
+    from celerp.models.projections import Projection
+
+    failed = []
+    async with get_session_ctx() as session:
+        row = await session.get(Projection, {"company_id": ctx.company_id, "entity_id": entity_id})
+        if row is None or row.entity_type != "item" or not takes_store_product(row.state or {}, platform, key):
+            return []
+        for file in files:
+            outcome = await download_and_emit_file(
+                session, ctx.company_id, entity_id, file["url"], file["filename"], file["tag"], file["is_hero"],
+                platform=platform, store=ctx.store_handle, remote_id=file.get("remote_id"), operation=operation)
+            if outcome == "failed":
+                failed.append(file)
+        await session.commit()
+    if operation is not None:
+        await ExternalImportRecord(first_sync=(str(ctx.company_id), platform)).attribute_files(entity_id)
+    return failed
 
 
 async def download_and_emit_file(
     session,
     company_id: str,
     entity_id: str,
-    actor_id: str,
     url: str,
     filename: str,
     tag: str,
     is_hero: bool,
-) -> bool:
-    """Download a remote file URL, store it, and attach it to the item.
+    *,
+    platform: str,
+    store: str | None,
+    remote_id=None,
+    operation: str | None = None,
+) -> str:
+    """Download a platform file, store it, and attach it to the item, recording where it
+    came from (its platform image id and store) on the attachment, and the first sync
+    pulling it (``operation``, first_sync_metadata) so only that first sync's undo removes it.
 
-    Returns True if stored successfully, False if download failed.
-    Skips if URL already stored (idempotent).
+    Returns "attached"; "present" when there is nothing to attach (the item already holds
+    this file, so a pull is idempotent, or the item is gone); or "failed" when the download
+    or storing failed, which a later pull tries again.
     """
+    from celerp.connectors.base import first_sync_metadata
+    from celerp.services.field_fingerprints import fingerprint
+
     from celerp.models.projections import Projection
     from celerp.services.attachments import attach_file, store_upload
     from fastapi import UploadFile
     from starlette.datastructures import Headers
 
     # Idempotency: check current state
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    row = await session.get(
+        Projection, {"company_id": company_id, "entity_id": entity_id}, populate_existing=True
+    )
     if row is None:
-        return False
+        return "present"
     existing_files: list[dict] = row.state.get("files") or []
-    if _file_already_stored(existing_files, url):
-        return False  # already have this URL
+    remote = {"id": str(remote_id) if remote_id not in (None, "") else None, "src": url, "store": store}
+    if _already_pulled(existing_files, platform, remote):
+        return "present"
 
     try:
         from celerp.services.outbound_url import fetch_public_bytes
@@ -110,7 +214,7 @@ async def download_and_emit_file(
             content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     except Exception as exc:
         log.warning("connector: failed to download %s: %s", url, exc)
-        return False
+        return "failed"
 
     import io
     upload = UploadFile(
@@ -122,8 +226,10 @@ async def download_and_emit_file(
         meta = await store_upload(company_id, upload)
     except Exception as exc:
         log.warning("connector: failed to store %s: %s", filename, exc)
-        return False
+        return "failed"
 
-    await attach_file(session, company_id, "item", entity_id, meta, actor_id, source="connector",
-                      document_tag=tag, is_hero=is_hero)
-    return True
+    key = f"connector-file:{platform}:{entity_id}:{fingerprint(remote)}"
+    await attach_file(session, company_id, "item", entity_id, meta, None, source="connector",
+                      idempotency_key=key, document_tag=tag, is_hero=is_hero,
+                      remote={platform: remote}, metadata_=first_sync_metadata(operation))
+    return "attached"

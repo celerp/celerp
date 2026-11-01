@@ -52,8 +52,8 @@ def _columns(conn, table: str) -> set[str]:
 def test_lock_date_and_attachment_columns_upgrade_and_downgrade(parent_db):
     company_id, user_id, run_id, task_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     with parent_db.begin() as conn:
-        conn.execute(text("INSERT INTO companies (id, name) VALUES (:id, 'Staged')"), {"id": company_id})
         conn.execute(text("INSERT INTO users (id, email) VALUES (:id, 'owner@example.com')"), {"id": user_id})
+        conn.execute(text("INSERT INTO companies (id, name) VALUES (:id, 'Staged')"), {"id": company_id})
         conn.execute(text(
             "INSERT INTO migration_runs (id, company_id, created_by_user_id, scan_claim_sha256, source_system,"
             " source_artifact_sha256, adapter_version, cif_version, mode, status, created_at)"

@@ -18,6 +18,7 @@ from sqlalchemy import select, update
 from celerp.ai import deadlines, jobs, llm, usage
 from celerp.models.ai import AIUsage
 from test_ai_usage import _usage, owner  # noqa: F401
+from test_helpers import as_another_client
 
 
 def _status(op, state, credits=0) -> dict:
@@ -146,7 +147,8 @@ async def test_a_send_after_the_read_keeps_the_row_pending(session, owner, monke
     (op,) = await _pending(session, company_id, user_id, 1)
 
     async def _operations_status(ids):
-        await usage.record_usage(session, company_id=company_id, user_id=user_id, operation_id=op, send_bytes=0)
+        await as_another_client(usage.record_usage(session, company_id=company_id, user_id=user_id,
+                                                   operation_id=op, send_bytes=0))
         return [_status(op, "not_charged")]
     monkeypatch.setattr(llm, "operations_status", _operations_status)
     await usage.reconcile_usage(session)

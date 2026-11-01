@@ -139,7 +139,7 @@ async def reconcile_company(session: AsyncSession, company_id, claim=frozenset()
     """Map the company's unmapped roles to the seeded chart's accounts where they
     exist and fit (see ``reconciled_settings``, and ``claim`` there). Returns the roles left unmapped.
     Does nothing when accounting is not running."""
-    from celerp.services.company_lock import lock_chart, locked_company
+    from celerp.services.company_lock import locked_company
     from celerp.services.journal_accounts import lock_accounts
 
     # The same lock order as set_role: a child added under a seeded account meanwhile
@@ -147,7 +147,6 @@ async def reconcile_company(session: AsyncSession, company_id, claim=frozenset()
     company = await locked_company(session, company_id)
     if company is None:
         return []
-    await lock_chart(session, company_id)
     accounts = await lock_accounts(session, company_id, set(SEEDED_TARGETS.values()))
     if accounts is None:
         return []
@@ -603,7 +602,7 @@ async def set_role(session: AsyncSession, company_id, role: str, code: str, user
     """Point ``role`` at ``code`` for new recognition, recorded as changed by ``user_id``.
     Existing balances stay where they were posted; the old account stays in the role's
     scope for historical readers."""
-    from celerp.services.company_lock import lock_chart, locked_company
+    from celerp.services.company_lock import locked_company
     from celerp.services.journal_accounts import lock_accounts
 
     if not is_role(role):
@@ -616,8 +615,6 @@ async def set_role(session: AsyncSession, company_id, role: str, code: str, user
         raise HTTPException(status_code=404, detail=refusal(
             "posting.company_not_found",
             "Celerp couldn't find this company. It may have been deleted. Select Try again."))
-    # A child added under the account meanwhile would turn it into a header.
-    await lock_chart(session, company_id)
     before = dict(company.settings or {})
     settings = with_role(before, role, code)
     new_map = role_map(settings)
