@@ -115,11 +115,14 @@ async def test_an_order_placed_earlier_today_is_previewed_and_imported_when_no_d
     from celerp.connectors.base import RemoteOrder, SyncEntity, SyncResult
     from celerp.models.connector_first_sync import ConnectorFirstSync
     from celerp.services import background
+    from celerp.services.business_time import company_timezone, company_today
 
     directions = {"orders": "inbound"}
     await connected(store_owner.cid, PLATFORM, directions, first_sync="pending")
-    now = datetime.now(timezone.utc)
-    placed = max(datetime.combine(now.date(), time(), tzinfo=timezone.utc), now - timedelta(minutes=1))
+    async with maker(real_engine)() as s:
+        today = datetime.combine(await company_today(s, store_owner.cid), time(),
+                                 tzinfo=await company_timezone(s, store_owner.cid))
+    placed = max(today, datetime.now(timezone.utc) - timedelta(minutes=1))
     order = RemoteOrder(id="7", number="1007", status="processing", created=placed, total=20.0,
                         currency="THB", posts=False)
     imported: list[str] = []
