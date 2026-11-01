@@ -3,9 +3,10 @@
 The AI calls the app's own routes (those marked ``x-celerp-agent``) and keeps what a
 refusing route answered, to show the person who confirmed the action, then and after a
 reload. So a refusal those routes raise, or any function they call raises, is keyed
-where it is raised (celerp.accounting_roles.refusal, or keyed_error) or translated there
-(``t``), or raised as ``Refused`` with its catalog key. This walks the routes and their
-callees and fails on any other detail."""
+where it is raised (celerp.accounting_roles.refusal, or keyed_error), or raised as
+``Refused`` with its catalog key. This walks the routes, every handler a module adds to a
+slot and every exception handler the app answers with, and their callees, and fails on
+any other detail."""
 from __future__ import annotations
 
 import ast
@@ -24,10 +25,13 @@ from celerp.ai.tools import _api_routes, keyed_error
 from ui import i18n
 
 
-_EN = json.loads((Path(i18n.__file__).parent / "locales" / "en.json").read_text(encoding="utf-8"))
+_ROOT = Path(__file__).resolve().parents[1]
+# The English catalog as the app merges it: the central file and every bundled module's own.
+_EN = {k: v for path in (Path(i18n.__file__).parent / "locales" / "en.json",
+                         *_ROOT.glob("default_modules/*/*/locales/en.json"))
+       for k, v in json.loads(path.read_text(encoding="utf-8")).items()}
 # The canonical makers of a keyed refusal, and the index of the catalog key they take.
 _MAKERS = {refusal: 0, keyed_error: 1}
-_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _first_party(obj) -> bool:
@@ -69,14 +73,23 @@ def _resolve(node, scope):
     return None
 
 
-def _argument(cls, call, name):
-    """The expression ``call`` (which builds ``cls``) passes as ``name``: None when it
-    passes none, False when ``cls`` takes no such argument."""
-    params = [p for p in inspect.signature(cls.__init__).parameters if p != "self"]
+def _argument(callee, call, name):
+    """The expression ``call`` (which builds the class or calls the function ``callee``)
+    passes as ``name``: None when it passes none, False when ``callee`` takes no such argument."""
+    target = callee.__init__ if isinstance(callee, type) else callee
+    params = [p for p in inspect.signature(target).parameters if p != "self"]
     if name not in params:
         return False
     return next((k.value for k in call.keywords if k.arg == name),
                 call.args[params.index(name)] if len(call.args) > params.index(name) else None)
+
+
+def _given(fn, tree, detail) -> bool:
+    """Whether ``detail`` is one of ``fn``'s parameters, passed on as it was given."""
+    return isinstance(detail, ast.Name) and detail.id in inspect.signature(fn).parameters and not any(
+        isinstance(n, (ast.Assign, ast.AugAssign, ast.AnnAssign)) and any(
+            isinstance(t, ast.Name) and t.id == detail.id for t in getattr(n, "targets", [getattr(n, "target", None)]))
+        for n in ast.walk(tree))
 
 
 def _held_keyed(value, every: bool = False) -> bool:
@@ -85,6 +98,31 @@ def _held_keyed(value, every: bool = False) -> bool:
     if isinstance(value, dict) and "message_key" in value:
         return value["message_key"] in _EN
     return every and isinstance(value, dict) and bool(value) and all(_held_keyed(v) for v in value.values())
+
+
+def _slot_handlers() -> list[tuple]:
+    """Every handler a module contributes to a slot, as (function, owner): core calls them by
+    the dotted path the module registers, never by a name a route's code spells, so a walk
+    from the routes alone never reaches the refusals they raise on a route's behalf."""
+    from celerp.modules.slots import all_slots, resolve_handler
+
+    found = []
+    for entries in all_slots().values():
+        for entry in entries:
+            if isinstance(entry.get("handler"), str):
+                obj = resolve_handler(entry["handler"])
+                found += [(f, obj) for f in vars(obj).values() if inspect.isfunction(f)] \
+                    if isinstance(obj, type) else [(obj, None)]
+    assert found
+    return found
+
+
+def _exception_handlers(app) -> list[tuple]:
+    """Every exception handler the app answers a refused request with, as (handler, the
+    exception class it answers, None for a status code)."""
+    found = [(handler, None if isinstance(key, int) else key) for key, handler in app.exception_handlers.items()]
+    assert found
+    return found
 
 
 class _Walk:
@@ -98,10 +136,12 @@ class _Walk:
         self.raised: list[tuple[type, bool, str]] = []  # (exception class, keyed text, where)
         self.carried: dict[type, str] = {}  # exception classes whose text a detail carries
         self._returns: dict = {}
+        self._passers: dict = {}
         todo = [(route.endpoint, None) for _path, _methods, route in _api_routes(app)
                 if (route.openapi_extra or {}).get("x-celerp-agent") is True]
         assert todo
-        walked = set()
+        todo += _slot_handlers() + [(handler, None) for handler, _ in _exception_handlers(app)]
+        walked = self.walked = set()
         while todo:
             fn, owner = todo.pop()
             fn = inspect.unwrap(fn)
@@ -146,16 +186,36 @@ class _Walk:
             callee = _resolve(node.func, scope)
             if ast.unparse(node.func) == "super().__init__" and owner is not None:
                 callee = owner.__mro__[1]
+            if inspect.isfunction(callee) and _first_party(callee) and (given := self._passes(callee)):
+                # A helper raising the detail it is given: the detail is the one each call passes.
+                detail = _argument(callee, node, given)
+                if detail is not None and not self._keyed(detail, fn, scope, tree):
+                    self.unkeyed.append(f"{self._where(fn, node)} {ast.unparse(node)}")
+                continue
             if not (isinstance(callee, type) and issubclass(callee, HTTPException)):
                 continue
             detail = _argument(callee, node, "detail")
             if detail is False:
                 continue  # the class builds its detail in its own __init__, walked with it
-            if isinstance(detail, ast.Name) and owner is not None and issubclass(owner, HTTPException) \
-                    and detail.id in inspect.signature(fn).parameters:
-                continue  # a subclass passes its detail on: checked where the subclass is built
+            if _given(fn, tree, detail):
+                continue  # a subclass or helper passes its detail on: checked where it is built or called
             if detail is None or not self._keyed(detail, fn, scope, tree):
                 self.unkeyed.append(f"{self._where(fn, node)} {ast.unparse(detail) if detail else '<no detail>'}")
+
+    def _passes(self, fn) -> str | None:
+        """The parameter a helper raises as an HTTPException's detail, as it was given."""
+        fn = inspect.unwrap(fn)
+        if fn not in self._passers:
+            self._passers[fn] = None
+            tree = _tree(fn)
+            scope = _scope(fn, tree) if tree is not None else {}
+            for node in ast.walk(tree or ast.Module(body=[])):
+                callee = _resolve(node.func, scope) if isinstance(node, ast.Call) else None
+                if isinstance(callee, type) and issubclass(callee, HTTPException):
+                    detail = _argument(callee, node, "detail")
+                    if _given(fn, tree, detail):
+                        self._passers[fn] = detail.id
+        return self._passers[fn]
 
     def _caught(self, use, tree, scope) -> list:
         """The exception classes the name ``use`` refers to is bound to by the

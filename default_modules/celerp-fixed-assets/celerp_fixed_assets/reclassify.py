@@ -48,7 +48,7 @@ async def reclassify(session, company_id, user_id, asset_id: str, body: dict) ->
         if row is None or row.entity_type != "fa_asset":
             raise HTTPException(status_code=404, detail="No such asset.")
         asset = row.state
-        in_use(asset_id, asset, "it cannot be reclassified")
+        in_use(asset_id, asset, "reclassify")
         day = _date(body.get("date"), "The reclassification date")
         await sales.refuse_waiting(session, company_id, asset_id, asset)
         old = await setup.get_class(session, company_id, asset.get("class_id"))
@@ -67,8 +67,7 @@ async def reclassify(session, company_id, user_id, asset_id: str, body: dict) ->
             raise conflict(f"Depreciation is posted through {period_label(books.last)}. Reclassify from "
                            f"{period_label(books.last + 1)}-01 or later.")
         movements = await asset_movements(session, company_id, asset_id)
-        disposal.check_date(books, asset, projections.live(movements), day, what="reclassification",
-                            verb="Reclassify")
+        disposal.check_date(books, asset, projections.live(movements), day, what="reclassification")
         owed, _ = disposal.owed(books, asset, movements, month - 1, month - 1)
         caught_up = sum(owed.values(), Decimal(0))
         cost, ad, imp = _dec(asset.get("cost")), _dec(asset.get(_AD)), _dec(asset.get(_IMP))

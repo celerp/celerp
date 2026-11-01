@@ -123,8 +123,8 @@ def _plan(books: runs.Books, asset_id: str, asset: dict, cls: dict, movements: l
     fair value for a revaluation and the recoverable amount for an impairment or its reversal."""
     from celerp.services.module_journals import JournalLine
 
-    in_use(asset_id, asset, "it cannot be remeasured")
-    disposal.check_date(books, asset, projections.live(movements), day, what="measurement", verb="Measure")
+    in_use(asset_id, asset, "remeasure")
+    disposal.check_date(books, asset, projections.live(movements), day, what="measurement")
     currency = books.currency
     at = _position(books, asset, movements, day)
     carrying, impairment, surplus = at["carrying"], _dec(asset.get(_IMP)), _dec(asset.get(_SURPLUS))
@@ -268,7 +268,7 @@ async def remeasure(session, company_id, user_id, asset_id: str, body: dict, ope
 
     async def plan(fa):
         asset, cls = await _asset_and_class(session, company_id, asset_id)
-        in_use(asset_id, asset, "it cannot be remeasured")
+        in_use(asset_id, asset, "remeasure")
         day = _date(body.get("date"), "The measurement date")
         if operation == "revaluation":
             if setup.measurement(cls) != "revaluation":
@@ -448,7 +448,7 @@ async def record_review(session, company_id, user_id, asset_id: str, body: dict)
     if row is None or row.entity_type != "fa_asset":
         raise HTTPException(status_code=404, detail="No such asset.")
     asset = row.state
-    in_use(asset_id, asset, "it is not reviewed")
+    in_use(asset_id, asset, "review")
     day = _date(body.get("date"), "The review date")
     setup.not_after_today("The review date", day, settings)
     if day < (asset.get("available_date") or day):

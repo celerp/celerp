@@ -22,7 +22,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import CONTINUED_ROLES, POSTABLE_ROLES, ROLE_LABELS, AccountRole, allowed_types, refusal
+from celerp.accounting_roles import CONTINUED_ROLES, POSTABLE_ROLES, ROLE_LABELS, AccountRole, allowed_types, catalog_refusal, refusal
 from celerp.models.projections import Projection
 from celerp.services.account_roles import current_settings, role_map, scope_codes
 from celerp.services.company_lock import lock_chart, lock_company
@@ -194,22 +194,22 @@ def posting_targets(settings: dict) -> dict[str, list[str]]:
 
 def parent_problem(
     account_type: str, parent: Account | dict | None, parent_code: str | None, targets: dict[str, list[str]],
-) -> str | None:
-    """Why ``parent_code`` cannot hold an account of ``account_type``, or None.
+) -> dict | None:
+    """Why ``parent_code`` cannot hold an account of ``account_type`` (a ``refusal``), or None.
     ``targets`` is posting_targets() of the company's settings."""
     if parent_code is None:
         return None
     if parent_code in targets:
-        return (f"Account {parent_code} is the posting account for {', '.join(targets[parent_code])}, "
-                "so no account can sit under it.")
+        return catalog_refusal("chart.parent_is_posting_account", parent_code=parent_code,
+                               roles=", ".join(targets[parent_code]))
     if parent is None:
-        return f"Parent account {parent_code} is not in the chart of accounts."
+        return catalog_refusal("chart.parent_missing", parent_code=parent_code)
     get = parent.get if isinstance(parent, dict) else lambda k: getattr(parent, k)
     if not get("is_active"):
-        return f"Parent account {parent_code} is inactive."
+        return catalog_refusal("chart.parent_inactive", parent_code=parent_code)
     if get("account_type") not in PARENT_TYPES.get(account_type, frozenset()):
-        return (f"An account of type {account_type} cannot sit under {parent_code}, "
-                f"an account of type {get('account_type')}.")
+        return catalog_refusal("chart.parent_type_mismatch", types=[account_type], parent_code=parent_code,
+                               type=get("account_type"))
     return None
 
 

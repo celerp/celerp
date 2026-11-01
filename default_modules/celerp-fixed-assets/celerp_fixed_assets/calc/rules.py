@@ -235,15 +235,23 @@ def available(kind: str, settings: dict | None) -> dict:
     return {key: rule for key, rule in registry().rules[kind].items() if is_available(kind, key, settings)}
 
 
-def unavailable_reason(kind: str, key: str) -> str:
-    """Why a company cannot use a rule: its module is turned off, or nothing provides it."""
-    from ui.i18n import t
+def unavailable_refusal(kind: str, key: str) -> dict:
+    """Why a company cannot use a rule, as a ``refusal``: its module is turned off, or
+    nothing provides it."""
+    from celerp.accounting_roles import catalog_refusal
 
     owner = module_of(kind, key)
     if owner is None:
-        return f"{key} is not provided by any installed module."
-    label = t(registry().rules[kind][key].label_key)
-    return f"{label} needs the {owner[1]} module, which is turned off."
+        return catalog_refusal("fixed_assets.err_rule_not_provided", rule=key)
+    return catalog_refusal("fixed_assets.err_rule_module_off", module=owner[1],
+                           rule=catalog_refusal(registry().rules[kind][key].label_key))
+
+
+def unavailable_reason(kind: str, key: str) -> str:
+    """unavailable_refusal in the reader's language."""
+    from ui.i18n import refusal_text
+
+    return refusal_text(unavailable_refusal(kind, key))
 
 
 def problems() -> tuple:

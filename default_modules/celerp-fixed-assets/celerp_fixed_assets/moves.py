@@ -100,7 +100,7 @@ async def move(session, company_id, user_id, body: dict, asset_ids=None) -> dict
     async def plan(fa):
         assets = await _locked_assets(session, company_id, asset_ids if asset_ids is not None else body.get("asset_ids"))
         for asset_id, asset in assets:
-            in_use(asset_id, asset, "it cannot be moved")
+            in_use(asset_id, asset, "move")
         day = _date(body.get("date"), "The move date")
         location = await _location(session, company_id, body.get("location_id"))
         custodian = await _custodian(session, company_id, body.get("custodian"))
@@ -135,7 +135,7 @@ async def undo_move(session, company_id, user_id, asset_id: str, body: dict) -> 
 
     async def plan(fa):
         ((_, asset),) = await _locked_assets(session, company_id, [asset_id])
-        in_use(asset_id, asset, "its move cannot be undone")
+        in_use(asset_id, asset, "undo_move")
         placements = asset.get("placements") or []
         if not placements:
             raise setup.unprocessable(f"{asset['number']} has not been moved.")

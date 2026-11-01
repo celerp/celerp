@@ -68,7 +68,7 @@ from celerp.services.money import (
 )
 from celerp.services.permissions import locked_authority, require_permission
 from celerp.schemas.numbers import FiniteFloat
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 logger = logging.getLogger(__name__)
 
@@ -547,7 +547,7 @@ def plan_chart_import(records: list[Any], existing: dict[str, dict], targets: di
                     row["account_type"], existing.get(parent) or valid[adding[parent]], parent, targets,
                 )
                 if problem:
-                    bad[i] = f"{label(i, row['code'])}: {problem}"
+                    bad[i] = f"{label(i, row['code'])}: {refusal_text(problem)}"
                 continue
             if parent in in_file:
                 bad[i] = f"{label(i, row['code'])}: its parent {parent} in this file could not be added."

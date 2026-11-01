@@ -23,12 +23,11 @@ class RecipeError(ValueError):
     """Raised on a cyclic or too-deeply-nested recipe graph, or one that cannot make anything.
 
     ``str()`` is the English text; ``detail`` is what a route refuses with, keyed as
-    ``mfg.<key>`` with ``params`` when the UI can say it in the user's language."""
+    ``mfg.<key>`` with ``params`` so the UI says it in the user's language."""
 
-    def __init__(self, message: str, key: str | None = None, /, **params) -> None:
+    def __init__(self, message: str, key: str, /, **params) -> None:
         super().__init__(message)
-        self.detail = ({"message": message, "message_key": f"mfg.{key}", "params": params}
-                       if key else message)
+        self.detail = {"message": message, "message_key": f"mfg.{key}", "params": params}
 
 
 THIS_PRODUCT = {"message": "This product", "message_key": "mfg.this_product", "params": {}}

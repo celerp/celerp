@@ -98,7 +98,7 @@ async def add(session, company_id, user_id, asset_id: str, body: dict) -> dict:
 
     async def plan(fa):
         asset = await _locked_asset(session, company_id, asset_id)
-        in_use(asset_id, asset, "nothing can be added to it")
+        in_use(asset_id, asset, "add")
         kind = body.get("kind")
         if kind not in KINDS:
             raise setup.unprocessable("Choose what is added: an improvement or a replacement part.")
@@ -108,7 +108,7 @@ async def add(session, company_id, user_id, asset_id: str, body: dict) -> dict:
         funding = await _funding(session, company_id, body, cls["asset_account"], currency)
         day = _date(funding["day"], "The date")
         movements = await asset_movements(session, company_id, asset_id)
-        disposal.check_date(books, asset, projections.live(movements), day, what="addition", verb="Add")
+        disposal.check_date(books, asset, projections.live(movements), day, what="addition")
         life = _life(body.get("life_months"))
         shown = {"kind": kind, "date": day, "number": asset["number"], "amount": money(funding["amount"], currency),
                  "life_months": life}
@@ -237,7 +237,7 @@ async def place_in_service(session, company_id, user_id, asset_id: str, body: di
         books = await runs._books(session, company_id)
         currency = books.currency
         disposal.check_date(books, site, projections.live(await asset_movements(session, company_id, asset_id)), day,
-                            what="available-for-use", verb="Place in service")
+                            what="available_for_use")
         rows = body.get("allocations")
         if not isinstance(rows, list) or not rows or not all(isinstance(r, dict) for r in rows):
             raise setup.unprocessable("Allocate the cost to at least one asset.")

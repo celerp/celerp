@@ -261,8 +261,8 @@ async def create_asset(body: dict = Body(...), company_id=Depends(get_current_co
 
 def _left_use(asset_id: str, state: dict) -> dict | None:
     """How an asset no longer in use left it and the way back, as its forms say it first."""
-    message = operations.left_use(state)
-    return None if message is None else {"message": message, "links": operations.left_use_links(asset_id, state)}
+    why = operations.left_use(state)
+    return None if why is None else {"message": why, "links": operations.left_use_links(asset_id, state)}
 
 
 async def _undo_refused(session, company_id, asset_id: str, state: dict) -> dict:

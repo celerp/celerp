@@ -133,7 +133,7 @@ async def _live_asset(session, company_id, asset_id: str) -> dict:
     if not state.get("number"):
         raise HTTPException(status_code=404, detail="No such asset.")
     if state.get("status") in _GONE:
-        in_use(asset_id, state, "no upkeep is kept for it")
+        in_use(asset_id, state, "upkeep")
     return state
 
 

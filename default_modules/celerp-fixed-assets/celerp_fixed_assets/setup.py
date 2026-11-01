@@ -14,6 +14,8 @@ from decimal import Decimal, InvalidOperation
 from fastapi import HTTPException
 from sqlalchemy import select
 
+from celerp.accounting_roles import catalog_refusal
+from celerp.accounting_roles import catalog_refusal
 from celerp.models.projections import Projection
 from celerp.services.business_time import business_today, company_today
 from celerp_fixed_assets.calc import rules
@@ -58,8 +60,14 @@ def policy_of(cls: dict, fa: dict) -> dict:
             "params": dict(cls.get("params") or {})}
 
 
-def unprocessable(message: str | dict) -> HTTPException:
-    return HTTPException(status_code=422, detail=message)
+def unprocessable(detail: dict) -> HTTPException:
+    """A 422 refusing with ``detail``, a ``refusal``."""
+    return HTTPException(status_code=422, detail=detail)
+
+
+def refuse(key: str, /, **params) -> HTTPException:
+    """The 422 refusal ``key`` of the catalog, with ``params``."""
+    return unprocessable(catalog_refusal(key, **params))
 
 
 def number(value, field: str) -> Decimal:
@@ -67,27 +75,27 @@ def number(value, field: str) -> Decimal:
     try:
         out = Decimal(str(value))
     except InvalidOperation:
-        raise unprocessable(f"{field} must be a number.") from None
+        raise refuse("fixed_assets.err_not_number", field=field) from None
     if not out.is_finite():
-        raise unprocessable(f"{field} must be a number.")
+        raise refuse("fixed_assets.err_not_number", field=field)
     return out
 
 
-def refused(status: int, message: str, **params) -> HTTPException:
-    """A refusal with the way on: ``href`` and ``action`` (the link's label key), or ``links``
-    (each {"label", "href"}), which the page shows beside the message."""
-    return HTTPException(status_code=status, detail={"message": message, "params": params})
+def refused(status: int, key: str, /, **params) -> HTTPException:
+    """The refusal ``key`` of the catalog with the way on: ``href`` and ``action`` (the link's
+    label key), or ``links`` (each {"label", "href"}), which the page shows beside the message."""
+    return HTTPException(status_code=status, detail=catalog_refusal(key, **params))
 
 
 def day(value, field: str) -> date:
     """``value`` as an ISO date. Blank asks for ``field`` ("The disposal date"); anything else
     says how to write a date."""
     if value in (None, ""):
-        raise unprocessable(f"Enter {field[0].lower()}{field[1:]}.")
+        raise refuse("fixed_assets.err_enter_date", field=f"{field[0].lower()}{field[1:]}")
     try:
         return date.fromisoformat(str(value))
     except ValueError:
-        raise unprocessable(f"{field} {value} is not a date. Enter it as YYYY-MM-DD, such as 2026-09-30.") from None
+        raise refuse("fixed_assets.err_not_a_date", field=field, value=str(value)) from None
 
 
 def not_after_today(field: str, value: str, company_settings: dict | None) -> None:
@@ -96,7 +104,7 @@ def not_after_today(field: str, value: str, company_settings: dict | None) -> No
     today = business_today((company_settings or {}).get("timezone")).isoformat()
     if value > today:
         zone = (company_settings or {}).get("timezone") or "UTC"
-        raise refused(422, f"{field} {value} is after the company's today, {today} (time zone {zone}).",
+        raise refused(422, "fixed_assets.err_after_today", field=field, value=value, today=today, zone=zone,
                       href="/settings/general?tab=company", action="settings.company_details")
 
 
@@ -104,8 +112,7 @@ def require_open(lock: date | None, day: str) -> None:
     """Refuses ``day`` when it falls in the locked period, naming the first open date."""
     if lock is not None and date.fromisoformat(day) <= lock:
         first = lock + timedelta(days=1)
-        raise unprocessable(f"Locked up to {lock.day} {lock:%b %Y}. Use a date from {first.day} {first:%b %Y}, "
-                            "or ask an accountant to unlock.")
+        raise refuse("fixed_assets.err_locked", lock=lock.isoformat(), first=first.isoformat())
 
 
 def settings_of(company_settings: dict | None) -> dict:
@@ -236,7 +243,7 @@ async def classes(session, company_id, *, include_archived: bool = False) -> lis
 async def get_class(session, company_id, class_id) -> dict:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": str(class_id or "")})
     if row is None or row.entity_type != "fa_class":
-        raise unprocessable("Choose an asset class.")
+        raise refuse("fixed_assets.err_choose_class")
     return {"id": row.entity_id, **row.state}
 
 
@@ -295,7 +302,7 @@ def _money(value, field: str) -> str | None:
         return None
     amount = number(value, field)
     if amount < 0:
-        raise unprocessable(f"{field} must be zero or more.")
+        raise refuse("fixed_assets.err_zero_or_more", field=field)
     return str(amount)
 
 
@@ -332,7 +339,7 @@ async def update_settings(session, company_id, user_id, body: dict) -> dict:
     if "convention" in body:
         if body["convention"] != fa.get("convention") and not rules.is_available(
                 "convention", body["convention"], company.settings):
-            raise unprocessable("Choose a timing convention.")
+            raise refuse("fixed_assets.err_choose_convention")
         fa["convention"] = body["convention"]
     if "tax_year_end" in body:
         fa["tax_year_end"] = _month_day(body["tax_year_end"])
@@ -378,25 +385,25 @@ def method_params(method: str, params) -> dict:
     if params is None:
         params = {}
     if not isinstance(params, dict):
-        raise unprocessable("Method settings are a set of named values.")
+        raise refuse("fixed_assets.err_method_settings")
     unknown = set(params) - set(schema)
     if unknown:
-        raise unprocessable(f"{sorted(unknown)[0]} is not a setting of this method.")
+        raise refuse("fixed_assets.err_not_a_setting", name=sorted(unknown)[0])
     out = {}
     for name, value in params.items():
         if value in (None, ""):
             continue
         if schema[name] == "bool":
             if not isinstance(value, bool):
-                raise unprocessable(f"{name} is true or false.")
+                raise refuse("fixed_assets.err_true_or_false", name=name)
             out[name] = value
             continue
         amount = Decimal(_money(value, name))
         if amount == 0:
-            raise unprocessable(f"{name} must be more than zero.")
+            raise refuse("fixed_assets.err_more_than_zero", field=name)
         out[name] = str(amount)
     if rules.method(method).uses_readings and "total_units" not in out:
-        raise unprocessable("A units-of-use class needs the total units the asset is expected to produce.")
+        raise refuse("fixed_assets.err_total_units")
     return out
 
 
@@ -408,24 +415,24 @@ def check_policy(data: dict, company_settings: dict | None, current: dict | None
     method = data.get("method")
     kept = method == current.get("method") and not rules.is_available("method", method, company_settings)
     if not kept and not (isinstance(method, str) and rules.is_available("method", method, company_settings)):
-        raise unprocessable("Choose a depreciation method.")
+        raise refuse("fixed_assets.err_choose_method")
     convention = data.get("convention")
     if convention is not None and convention != current.get("convention") and not (
             isinstance(convention, str) and rules.is_available("convention", convention, company_settings)):
-        raise unprocessable("Choose a timing convention.")
+        raise refuse("fixed_assets.err_choose_convention")
     life = data.get("life_months")
     if life is not None and (not isinstance(life, int) or isinstance(life, bool) or life <= 0):
-        raise unprocessable("The useful life is a whole number of months.")
+        raise refuse("fixed_assets.err_life_months")
     if kept:
         if data.get("params") != current.get("params"):
-            raise unprocessable(rules.unavailable_reason("method", method))
+            raise unprocessable(rules.unavailable_refusal("method", method))
     else:
         if method != "none" and not rules.method(method).uses_readings and life is None:
-            raise unprocessable("A depreciated class needs a useful life.")
+            raise refuse("fixed_assets.err_needs_life")
         data["params"] = method_params(method, data.get("params"))
     residual = Decimal(_money(data.get("residual_percent"), "Residual percent") or 0)
     if residual >= 100:
-        raise unprocessable("The residual percent is below 100.")
+        raise refuse("fixed_assets.err_residual_percent")
 
 
 def _active_market(value) -> dict | None:
