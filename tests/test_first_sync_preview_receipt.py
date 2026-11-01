@@ -192,3 +192,68 @@ async def test_start_without_a_preview_version_is_refused_as_a_changed_preview(s
     assert r.status_code == 409, r.text
     assert r.json()["detail"] == t("connectors.err_preview_changed", service="WooCommerce")
     assert (await store.record()).state == "pending"
+
+
+def _shown_preview():
+    """A preview with one row in every list, each field set as the preview shows it."""
+    from datetime import datetime, timezone
+
+    from celerp.connectors.first_sync import FirstSyncPreview
+
+    at = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    product = {"key": "1", "sku": "A-1", "name": "Mug", "modified": at, "price": 9.5, "stock": 4}
+    return FirstSyncPreview(
+        directions=dict(DIRECTIONS), orders_from=at,
+        matches=[{**product, "entity_id": "item:a", "celerp_name": "Mug", "differences": {"name": ["Cup", "Mug"]},
+                  "celerp_stock": 3.0, "stock_change": {"store": 4, "celerp": 3.0}}],
+        new=[{**product, "key": "2", "sku": "B-2"}],
+        no_sku=[{**product, "key": "3", "sku": None}],
+        problems=[{**product, "key": "4", "sku": "D-4", "reason": "linked twice"}],
+        to_publish=[{"entity_id": "item:e", "sku": "E-5", "name": "Plate", "modified": at}],
+        orders=[{"id": 7, "number": "1007", "status": "processing", "created": at,
+                 "status_key": "connectors.order_status_processing", "total": 20.0, "currency": "THB", "posts": True}],
+    )
+
+
+def _changed(value):
+    from datetime import timedelta
+
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, (int, float)):
+        return value + 1
+    if isinstance(value, dict):
+        return {**value, "changed": True}
+    if value is None:
+        return "set"
+    if hasattr(value, "tzinfo"):
+        return value + timedelta(seconds=1)
+    return f"{value}-changed"
+
+
+async def test_the_receipt_changes_with_every_field_the_preview_shows():
+    """The version is read from the same rows the preview shows: a change to any field of
+    any row of any list gives another version, and the order rows are listed in does not."""
+    import dataclasses
+
+    from celerp.connectors.first_sync import FirstSyncPreview, _version
+
+    connector, ctx = SimpleNamespace(name=PLATFORM), SimpleNamespace(store_handle="shop")
+    seen = _version(connector, ctx, 1, _shown_preview())
+    lists = [f.name for f in dataclasses.fields(FirstSyncPreview) if f.default_factory is list]
+    unseen = []
+    for name in lists:
+        for column in getattr(_shown_preview(), name)[0]:
+            preview = _shown_preview()
+            row = getattr(preview, name)[0]
+            row[column] = _changed(row[column])
+            if _version(connector, ctx, 1, preview) == seen:
+                unseen.append(f"{name}.{column}")
+    assert not unseen, f"the receipt does not change with: {unseen}"
+
+    preview, again = _shown_preview(), _shown_preview()
+    for name in lists:
+        rows = getattr(preview, name)
+        rows.append({**rows[0], "key": "z", "entity_id": "item:z", "id": 99})
+        getattr(again, name).insert(0, dict(rows[-1]))
+    assert _version(connector, ctx, 1, preview) == _version(connector, ctx, 1, again)

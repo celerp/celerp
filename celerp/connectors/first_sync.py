@@ -12,7 +12,7 @@ does to the books.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import datetime
 
 from celerp.connectors.base import (
@@ -41,8 +41,8 @@ class FirstSyncPreview:
     posting_orders: int = 0
     order_effect: str = ""
     stock_changes: int = 0  # matches whose store stock becomes Celerp's
-    # The receipt Start must hand back: a digest of everything above that the first sync
-    # acts on, with the connection and store it was read from (_version).
+    # The receipt Start must hand back: a digest of every row above, with the connection
+    # and store it was read from (_version).
     version: str = ""
 
     @property
@@ -66,23 +66,23 @@ def _differences(state: dict, remote) -> dict:
 
 
 def _version(connector: ConnectorBase, ctx: ConnectorContext, config_id: int, preview: FirstSyncPreview) -> str:
-    """The preview's receipt: the same choices, connection, store and effects give the
-    same digest, and any change to one of them gives another."""
+    """The preview's receipt: the same choices, connection, store and rows give the same
+    digest, and any change to one of them gives another. It reads every field of every row
+    of every list the preview shows, whatever order they are listed in; the counts and the
+    sentence about the books follow from those rows."""
     import hashlib
     import json
 
     facts = {
         "connector": connector.name, "config": config_id, "store": ctx.store_handle,
         "directions": preview.directions, "orders_from": preview.orders_from.isoformat(),
-        "matches": sorted([r["key"], r["entity_id"], r["differences"], r["stock_change"]] for r in preview.matches),
-        "new": sorted(r["key"] for r in preview.new),
-        "no_sku": sorted(r["key"] for r in preview.no_sku),
-        "problems": sorted(r["key"] for r in preview.problems),
-        "to_publish": sorted(r["entity_id"] for r in preview.to_publish),
-        "orders": sorted([str(o["id"]), bool(o["posts"])] for o in preview.orders),
+        **{name: sorted(json.dumps(row, sort_keys=True, default=str) for row in getattr(preview, name))
+           for name in _LISTS},
     }
-    return hashlib.sha256(json.dumps(facts, sort_keys=True, default=str).encode()).hexdigest()
+    return hashlib.sha256(json.dumps(facts, sort_keys=True).encode()).hexdigest()
 
+
+_LISTS = tuple(f.name for f in fields(FirstSyncPreview) if f.default_factory is list)
 
 
 def order_effect(posting: int, total: int, service: str) -> str:
