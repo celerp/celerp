@@ -271,8 +271,12 @@ _PICTURED = {"woocommerce": ("https://store.example.com", "https://store.example
                          "https://pictured.myshopify.com/admin/api/2024-01/products.json")}
 
 
-def _store_products(platform: str, images: list[dict]):
-    """One store product with ``images`` (id, src, name), as the store answers it."""
+def _store_products(platform: str, images: list[dict] | None):
+    """One store product with ``images`` (id, src, name), as the store answers it; with
+    ``images`` None the store lists no product."""
+    if images is None:
+        return (httpx.Response(200, json=[], headers={"X-WP-TotalPages": "1"}) if platform == "woocommerce"
+                else httpx.Response(200, json={"products": []}))
     if platform == "woocommerce":
         return httpx.Response(200, json=[{"id": 7, "sku": "IMG-1", "name": "Pictured", "regular_price": "5.00",
                                           "images": images}], headers={"X-WP-TotalPages": "1"})
@@ -282,9 +286,10 @@ def _store_products(platform: str, images: list[dict]):
                    for n, i in enumerate(images, 1)]}]})
 
 
-async def _sync(platform: str, cid, *, images: list[dict], broken=(), store_fails=False, attention=None):
-    """One product pull of ``platform``'s store onto item:img: the images whose address is
-    in ``broken`` fail to download, and every store of a file fails with ``store_fails``."""
+async def _sync(platform: str, cid, *, images: list[dict] | None, broken=(), store_fails=False, attention=None):
+    """One product pull of ``platform``'s store onto item:img (no product with ``images`` None):
+    the images whose address is in ``broken`` fail to download, and every store of a file
+    fails with ``store_fails``."""
     import itertools
 
     from celerp.connectors import get
@@ -358,17 +363,20 @@ async def test_images_that_cannot_be_stored_wait_on_a_person(connector_session):
 @pytest.mark.parametrize("platform", ["woocommerce", "shopify"])
 @pytest.mark.asyncio
 async def test_an_image_that_failed_is_pulled_once_when_the_store_serves_it_again(connector_session, platform):
-    """The next sync pulls the waiting image even when it does not read the product again,
-    and a sync that reads the product afterwards attaches nothing twice."""
+    """The next sync pulls the waiting image although the store no longer lists its product,
+    and later syncs, with or without the product, attach nothing twice."""
     cid = await seed_company(connector_session, f"Retry{platform}")
     await add_item(connector_session, cid, "item:img", "IMG-1")
 
     first = await _sync(platform, cid, images=[_A, _B], broken={_B["src"]})
     assert _unpulled(first)
-    retried = await _sync(platform, cid, images=[], attention=first.attention)
+    retried = await _sync(platform, cid, images=None, attention=first.attention)
     assert not _unpulled(retried)
-    again = await _sync(platform, cid, images=[_A, _B], attention=retried.attention)
-    assert not _unpulled(again)
+    files = (await item_state(connector_session, cid, "item:img"))["files"]
+    assert sorted(f["remote"][platform]["id"] for f in files) == ["11", "12"]
 
+    unread = await _sync(platform, cid, images=None, attention=retried.attention)
+    again = await _sync(platform, cid, images=[_A, _B], attention=unread.attention)
+    assert not _unpulled(unread) and not _unpulled(again)
     files = (await item_state(connector_session, cid, "item:img"))["files"]
     assert sorted(f["remote"][platform]["id"] for f in files) == ["11", "12"]
