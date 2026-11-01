@@ -712,7 +712,7 @@ def _contacts_content(
 
     own = next((c for c in contacts if c.get("is_self")), None)
     own_note = P(t("contacts.own_record_note", name=own.get("name") or EMPTY), " ",
-                 A(t("settings.company_details"), href="/finance/company-details"),
+                 A(t("settings.company_details"), href="/finance/company-details"), ".",
                  cls="form-hint") if own else ""
     return Div(
         own_note,
