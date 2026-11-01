@@ -623,7 +623,7 @@ async def test_negative_cost_is_refused_on_any_lot(client, session):
     auth = await _new_company(session)
     item = await _item(client, auth, 10.0)
     detail = await _refused(client, session, auth, item, -1.0, "cannot be negative")
-    assert (await _state(session, auth, item))["sku"] in detail
+    assert (await _state(session, auth, item))["sku"] in refusal_text(detail)
 
 
 @pytest.mark.asyncio

@@ -151,7 +151,7 @@ async def test_import_file_csv_and_xlsx(client):
     foreign_id = _seed_upload(other_company, _user_id(other), _CSV, "theirs.csv", "text/csv")
     r = await _import_file(client, h, recon["id"], foreign_id)
     assert r.status_code == 422
-    assert foreign_id in r.json()["detail"]
+    assert r.json()["detail"]["message_key"] == "error.file_not_found"
 
     broken_id = _seed_upload(company_id, _user_id(h), b"not a workbook", "broken.xlsx", XLSX_CONTENT_TYPE)
     r = await _import_file(client, h, recon["id"], broken_id)

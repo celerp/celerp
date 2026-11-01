@@ -309,4 +309,5 @@ def test_document_rate_problem_is_not_wrapped_twice():
     from celerp_docs.routes import _require_doc_rate_http
     with pytest.raises(HTTPException) as ei:
         _require_doc_rate_http({"currency": "EUR"}, "USD")
-    assert ei.value.detail == t("error.rate_required", "en", currency="EUR", base="USD")
+    assert ei.value.detail["message_key"] == "error.rate_required"
+    assert ei.value.detail["message"] == t("error.rate_required", "en", currency="EUR", base="USD")
