@@ -18898,6 +18898,7 @@
     "tests/test_routers/test_items.py::test_split_omitting_child_weight_gives_child_no_weight": 0.343,
     "tests/test_routers/test_items.py::test_split_preview_clamps_qty": 0.223,
     "tests/test_routers/test_items.py::test_split_preview_no_proportional_defaults": 0.254,
+    "tests/test_routers/test_items.py::test_split_preview_of_an_item_out_of_stock_says_it_cannot_split": 0.5,
     "tests/test_routers/test_items.py::test_split_preview_reads_pieces_from_top_level_state": 0.248,
     "tests/test_routers/test_items.py::test_split_preview_suggests_parent_sku": 0.252,
     "tests/test_routers/test_items.py::test_split_preview_weight_uses_weight_unit_decimals": 0.22,

@@ -232,6 +232,10 @@
       "params": [
         "n"
       ]
+    },
+    "inventory.err_split_not_in_stock": {
+      "en": "This item is no longer in stock, so it can't be split.",
+      "params": []
     }
   }
 }

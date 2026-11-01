@@ -7041,5 +7041,6 @@
   "documents.memo_nothing_out_hint": "Nothing is out with the customer yet. Select lines and use Set as shipped to send them.",
   "doc.memo_outstanding_hint": "A memo is not paid. This is the memo's full value; the customer pays the invoices drawn from it.",
   "settings.field_required": "Fill in {field}.",
-  "inventory.cost_unknown_count": "{n} with unknown cost"
+  "inventory.cost_unknown_count": "{n} with unknown cost",
+  "inventory.err_split_not_in_stock": "This item is no longer in stock, so it can't be split."
 }

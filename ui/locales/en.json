@@ -4935,6 +4935,7 @@
   "inventory.err_price_derived": "{lists} is worked out from the {base} price. Edit the {base} price instead, or change the price list's factor in Global Config, Contacts, Price Lists.",
   "inventory.err_price_not_number": "{field} must be a number. Enter digits only, for example 12.50.",
   "inventory.err_split_nothing_left": "This item has no quantity left to split.",
+  "inventory.err_split_not_in_stock": "This item is no longer in stock, so it can't be split.",
   "inventory.err_split_no_children": "Add at least one new item to split into.",
   "inventory.err_split_weight_negative": "The weight of a new item can't be below zero.",
   "inventory.err_split_qty_over": "The new items add up to {total}, but the original only has {available}. Lower the quantities.",
