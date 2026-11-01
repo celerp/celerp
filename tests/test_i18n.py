@@ -479,6 +479,12 @@ _FULFILL_NON_FAMILY_PROSE = {
 }
 
 
+# Strings still waiting for their translation read as English in every locale, so
+# their reviewed value is pinned once they leave the pending list.
+_PENDING_TRANSLATION = set(json.loads(
+    (Path(__file__).parent / "i18n_pending_translation.json").read_text(encoding="utf-8"))["keys"])
+
+
 def _fulfillment_family_keys(en: dict) -> list[str]:
     explicit = {
         "doc.fulfilled",
@@ -489,7 +495,7 @@ def _fulfillment_family_keys(en: dict) -> list[str]:
     }
     return sorted(
         k for k in en
-        if k not in _FULFILL_NON_FAMILY_PROSE
+        if k not in _FULFILL_NON_FAMILY_PROSE and k not in _PENDING_TRANSLATION
         and (k in explicit or "fulfil" in en[k].lower())
     )
 

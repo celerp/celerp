@@ -692,6 +692,294 @@
         "paid",
         "where"
       ]
+    },
+    "error.payment_stripe_owned": {
+      "en": "This payment was received through Stripe, so it can only be refunded or reversed in Stripe.",
+      "params": []
+    },
+    "error.payment_not_named": {
+      "en": "A payment can be taken off a document only by naming it, and a deletion keeps its place.",
+      "params": []
+    },
+    "import.err_choose_header_row": {
+      "en": "Choose the row that holds the column names.",
+      "params": []
+    },
+    "import.err_sheet_required": {
+      "en": "This file has more than one sheet with data. Choose the sheet to import.",
+      "params": []
+    },
+    "import.err_header_duplicate": {
+      "en": "Columns {first} and {column} have the same header {header}; give each column its own header.",
+      "params": [
+        "column",
+        "first",
+        "header"
+      ]
+    },
+    "error.origin_ambiguous": {
+      "en": "Document {doc} was recorded against more than one {role} account ({codes}), so Celerp cannot tell which one to use. The books check lists it for correction.",
+      "params": [
+        "codes",
+        "doc",
+        "role"
+      ]
+    },
+    "inventory.err_legacy_cogs_no_entry": {
+      "en": "but the invoice has no posted entry of its own, so its cost of goods sold cannot be adjusted automatically; correct it with a journal entry instead",
+      "params": []
+    },
+    "inventory.err_legacy_cogs_unroled": {
+      "en": "whose entries hold a line on an account with no posting role, so whether its cost of goods sold was posted cannot be told; correct it with a journal entry instead",
+      "params": []
+    },
+    "inventory.err_legacy_cogs_pending": {
+      "en": "whose cost of goods sold Celerp has not posted yet; it is posted the next time Celerp starts, after which the cost can be corrected",
+      "params": []
+    },
+    "inventory.err_legacy_cogs_ambiguous": {
+      "en": "whose cost of goods sold was never posted because its lines cannot be matched to exact lots; correct it with a journal entry instead",
+      "params": []
+    },
+    "documents.err_line_two_items": {
+      "en": "Line {line} names two different items ({item} and {other}). Keep one item per line.",
+      "params": [
+        "item",
+        "line",
+        "other"
+      ]
+    },
+    "inventory.err_cost_unknown_flag": {
+      "en": "{event} cannot record whether a goods cost is known",
+      "params": [
+        "event"
+      ]
+    },
+    "inventory.err_cost_in_patch": {
+      "en": "a patch cannot set a goods cost",
+      "params": []
+    },
+    "inventory.err_cost_negative": {
+      "en": "{lot}: a cost cannot be negative",
+      "params": [
+        "lot"
+      ]
+    },
+    "acct.err_recon_line_created": {
+      "en": "This line already created a journal entry. Unmatch it first so that entry is reversed.",
+      "params": []
+    },
+    "acct.err_recon_line_matched": {
+      "en": "This line is already matched. Unmatch it before creating a journal entry.",
+      "params": []
+    },
+    "documents.this_contact": {
+      "en": "This contact",
+      "params": []
+    },
+    "documents.err_contact_not_customer": {
+      "en": "{name} is not a customer. Choose a customer, or change the contact's type to customer or both.",
+      "params": [
+        "name"
+      ]
+    },
+    "documents.err_contact_not_vendor": {
+      "en": "{name} is not a vendor. Choose a vendor, or change the contact's type to vendor or both.",
+      "params": [
+        "name"
+      ]
+    },
+    "error.idempotency_key_too_long": {
+      "en": "idempotency_key is longer than {max} characters",
+      "params": [
+        "max"
+      ]
+    },
+    "inventory.err_restore_only": {
+      "en": "A deleted item comes back only through Restore, as a draft.",
+      "params": []
+    },
+    "inventory.err_left_books_sold": {
+      "en": "This item was sold; reverse its fulfilment to bring it back.",
+      "params": []
+    },
+    "inventory.err_gave_up_stock": {
+      "en": "This item holds no stock on the books: it was sold, or its stock went into other items (a split, transform or merge), or its receipt or return was undone, so a status edit cannot bring it back.",
+      "params": []
+    },
+    "inventory.err_sold_via_invoice": {
+      "en": "An item is sold by fulfilling its invoice, not a direct status edit.",
+      "params": []
+    },
+    "inventory.err_merged_via_merge": {
+      "en": "An item is merged through the Merge action, not a direct status edit.",
+      "params": []
+    },
+    "inventory.err_expired_via_expire": {
+      "en": "Use the Expire action to expire an item, not a direct status edit.",
+      "params": []
+    },
+    "inventory.err_reserved_via_document": {
+      "en": "An item is reserved by the sales order or invoice that holds it, not a direct status edit.",
+      "params": []
+    },
+    "inventory.err_memo_out_via_memo": {
+      "en": "An item goes out on memo by fulfilling its memo, not a direct status edit.",
+      "params": []
+    },
+    "inventory.err_deleted_via_delete": {
+      "en": "An item is deleted through the Delete action, not a direct status edit.",
+      "params": []
+    },
+    "inventory.err_left_books_disposed": {
+      "en": "This stock was written off; use Undo write-off to bring it back.",
+      "params": []
+    },
+    "inventory.err_left_books_merged": {
+      "en": "This item was merged into another; use Undo merge to bring it back.",
+      "params": []
+    },
+    "inventory.err_left_books_void": {
+      "en": "This item was deleted.",
+      "params": []
+    },
+    "inventory.err_held_by_document": {
+      "en": "This item is held by document {doc}; resolve the document first (release or return the goods, or convert the document), then its status can change to {lot_status}.",
+      "params": [
+        "doc",
+        "lot_status"
+      ]
+    },
+    "inventory.err_status_unknown": {
+      "en": "Unknown status '{value}'; allowed: {allowed}",
+      "params": [
+        "allowed",
+        "value"
+      ]
+    },
+    "inventory.err_revert_via_action": {
+      "en": "Use the item's 'Revert to Draft' action, not a direct status edit.",
+      "params": []
+    },
+    "inventory.err_draft_via_make_available": {
+      "en": "A draft item can only become available through the 'Make Available' action, not a direct status edit.",
+      "params": []
+    },
+    "inventory.err_import_rows_invalid": {
+      "en": "{count} problems in the rows need changes before they can be imported.",
+      "params": [
+        "count"
+      ]
+    },
+    "inventory.err_import_preview_stale": {
+      "en": "The file, its mapping or its rows changed since the preview. Preview it again, then import.",
+      "params": []
+    },
+    "inventory.err_create_status": {
+      "en": "An item is created as draft or available, not {lot_status}.",
+      "params": [
+        "lot_status"
+      ]
+    },
+    "inventory.err_landed_cost_kind": {
+      "en": "landed_cost_kind must be one of {allowed}",
+      "params": [
+        "allowed"
+      ]
+    },
+    "inventory.err_inventory_type": {
+      "en": "inventory_type must be one of {allowed}",
+      "params": [
+        "allowed"
+      ]
+    },
+    "inventory.err_restate_lineage_missing": {
+      "en": "{lot} is merged, but its merge lineage is not recorded",
+      "params": [
+        "lot"
+      ]
+    },
+    "inventory.err_restate_sale_untraced": {
+      "en": "{lot} is sold, but its sale cannot be traced to one invoice line, so its cost of goods sold cannot be adjusted automatically; correct it with a journal entry instead",
+      "params": [
+        "lot"
+      ]
+    },
+    "inventory.err_restate_unit_cost_only": {
+      "en": "{lot} has a unit cost but no total cost, so a correction cannot be carried from it automatically; correct it with a journal entry instead",
+      "params": [
+        "lot"
+      ]
+    },
+    "inventory.err_restate_returned": {
+      "en": "{lot} is sold, and {sku} was later returned on {doc}, so a correction cannot be carried into the returned stock automatically; correct it with a journal entry instead",
+      "params": [
+        "doc",
+        "lot",
+        "sku"
+      ]
+    },
+    "inventory.err_restate_sold_on": {
+      "en": "{lot} was sold on {doc}, {reason}",
+      "params": [
+        "doc",
+        "lot",
+        "reason"
+      ]
+    },
+    "inventory.err_restate_cost_used": {
+      "en": "{lot}'s cost was already split, transformed, or used, so the correction cannot be carried automatically",
+      "params": [
+        "lot"
+      ]
+    },
+    "inventory.err_restate_changed_meanwhile": {
+      "en": "{lot} changed while the correction was being applied; try again",
+      "params": [
+        "lot"
+      ]
+    },
+    "inventory.err_restate_merged_part": {
+      "en": "{lot} was merged, and a merge result's cost is the sum of its parts, so clearing the cost of one part cannot be carried automatically; correct the merge result's cost instead",
+      "params": [
+        "lot"
+      ]
+    },
+    "inventory.err_restate_lineage_loop": {
+      "en": "{lot}: the merge lineage loops back on itself at {item}",
+      "params": [
+        "item",
+        "lot"
+      ]
+    },
+    "inventory.err_restate_lineage_broken": {
+      "en": "{lot} was merged into {item}, which is not an item; the merge lineage is broken",
+      "params": [
+        "item",
+        "lot"
+      ]
+    },
+    "inventory.err_restate_successor_used": {
+      "en": "{lot}'s cost went into {successor}, which was later split, transformed, used, or written off, so the correction cannot be carried through it automatically",
+      "params": [
+        "lot",
+        "successor"
+      ]
+    },
+    "inventory.err_restate_successor_negative": {
+      "en": "{lot}'s cost went into {successor}, whose cost cannot absorb a change of {change}",
+      "params": [
+        "change",
+        "lot",
+        "successor"
+      ]
+    },
+    "inventory.err_restate_lot_partly_priced": {
+      "en": "{lot} was sold on {doc}, but that invoice does not price the whole lot, so its cost of goods sold cannot be adjusted automatically; correct it with a journal entry instead",
+      "params": [
+        "doc",
+        "lot"
+      ]
     }
   }
 }
