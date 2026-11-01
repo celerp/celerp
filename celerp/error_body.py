@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi.responses import JSONResponse, Response
+from starlette.datastructures import Headers
 from starlette.requests import Request
 
 unkeyed: list[str] | None = None
@@ -35,7 +36,11 @@ def keyed(detail: Any) -> bool:
 
 def agent_route(scope) -> bool:
     """Whether the route the request reached is one the AI calls. A request whose method
-    the matched path does not take is answered 405 by the router, not by that route."""
+    the matched path does not take is answered 405 by the router, not by that route. A
+    request signed with a connected company's integration key (``Authorization: Peer``)
+    is that company's own sync, never the AI's."""
+    if Headers(scope=scope).get("authorization", "").startswith("Peer "):
+        return False
     route = scope.get("route")
     methods = getattr(route, "methods", None)
     if methods and scope.get("method") not in methods:

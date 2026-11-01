@@ -77,8 +77,8 @@ class ReconciledHistoryChanged(HTTPException):
 
     CODE = "reconciled_history_changed"
 
-    def __init__(self, message: str):
-        super().__init__(status_code=409, detail={"code": self.CODE, "message": message})
+    def __init__(self, refusal: dict):
+        super().__init__(status_code=409, detail={"code": self.CODE, **refusal})
 
 
 class UntrustedChartError(ValueError):

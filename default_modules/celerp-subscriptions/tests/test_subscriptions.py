@@ -11,7 +11,7 @@ import uuid
 
 import pytest
 
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 
 async def _register(client, name: str | None = None) -> str:
@@ -549,7 +549,7 @@ async def test_generate_in_a_locked_period_is_refused_and_writes_nothing(client,
 
     r = await client.post(f"/subscriptions/{eid}/generate", headers=h)
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("error.period_locked", "en", date=date.today().isoformat())
+    assert refusal_text(r.json()["detail"]) == t("error.period_locked", "en", date=date.today().isoformat())
     assert (await client.get("/docs?doc_type=invoice", headers=h)).json()["items"] == before
     assert await _generated(client, h, eid) == []
 

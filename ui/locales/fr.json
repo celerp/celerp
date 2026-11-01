@@ -6801,7 +6801,7 @@
   "inventory.err_revert_via_action": "Utilisez l'action « Revenir au brouillon » de l'article plutôt qu'une modification directe du statut.",
   "inventory.err_draft_via_make_available": "Un article en brouillon ne peut devenir disponible qu'avec l'action « Rendre disponible », pas par une modification directe du statut.",
   "inventory.err_import_rows_invalid": "{count} problèmes dans les lignes doivent être corrigés avant l'importation.",
-  "inventory.err_import_preview_stale": "Le fichier, la correspondance des colonnes ou les lignes ont changé depuis l'aperçu. Actualisez l'aperçu avant d'importer.",
+  "inventory.err_import_preview_stale": "Le fichier, la correspondance des colonnes ou les lignes ont changé depuis l'aperçu. Prévisualisez-le de nouveau, puis importez.",
   "inventory.err_create_status": "Un article est créé à l'état brouillon ou disponible, pas à l'état {lot_status}.",
   "inventory.err_landed_cost_kind": "Choose what this landed cost is for: freight, insurance, duty or import VAT.",
   "inventory.err_inventory_type": "Choose what kind of item this is: stocked inventory, non-stocked inventory, component, service or freight.",

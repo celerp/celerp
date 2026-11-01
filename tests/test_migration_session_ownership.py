@@ -32,7 +32,7 @@ from migration_support import (
     staged_run,
 )
 from test_helpers import create_item, default_location_id, make_authed_token, register_admin
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 NOT_FOUND = t("migration.err_not_found", "en")
 STAGED = t("auth.company_staged", "en")
@@ -87,12 +87,12 @@ async def test_staged_token_reaches_only_migration_routes(real_client, real_engi
     token = await _token(real_engine, user_id, company_id)
 
     r = await real_client.post("/docs", json={"doc_type": "invoice"}, headers=auth(token))
-    assert r.status_code == 403 and r.json()["detail"] == STAGED, r.text
+    assert r.status_code == 403 and refusal_text(r.json()["detail"]) == STAGED, r.text
     r = await real_client.patch(f"/items/{uuid.uuid4()}", headers=auth(token),
                                 json={"fields_changed": {"name": {"old": None, "new": "X"}}})
-    assert r.status_code == 403 and r.json()["detail"] == STAGED, r.text
+    assert r.status_code == 403 and refusal_text(r.json()["detail"]) == STAGED, r.text
     r = await real_client.get("/companies/me", headers=auth(token))
-    assert r.status_code == 403 and r.json()["detail"] == STAGED, r.text
+    assert r.status_code == 403 and refusal_text(r.json()["detail"]) == STAGED, r.text
 
     assert (await real_client.get(f"/migrations/{run_id}", headers=auth(token))).status_code == 200
     r = await real_client.post(f"/migrations/{run_id}/start", headers=auth(token))

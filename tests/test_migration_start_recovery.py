@@ -31,7 +31,7 @@ from migration_support import (
     scan_upload,
 )
 from test_helpers import register_admin
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 STAGED = t("auth.company_staged", "en")
 
@@ -334,7 +334,7 @@ async def test_bootstrap_lost_response_recovers_through_login(real_client, real_
     assert r.status_code == 200, r.text
     token = r.json()["access_token"]
     r = await real_client.get("/companies/me", headers=auth(token))
-    assert r.status_code == 403 and r.json()["detail"] == STAGED
+    assert r.status_code == 403 and refusal_text(r.json()["detail"]) == STAGED
     r = await real_client.get("/migrations/staged", headers=auth(token))
     assert r.status_code == 200 and r.json()["id"] == run_id
 

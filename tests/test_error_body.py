@@ -19,11 +19,11 @@ from celerp.ai.tools import _api_routes
 from celerp.main import app
 
 
-def _request(agent: bool) -> Request:
+def _request(agent: bool, headers: list | None = None) -> Request:
     route = next(r for _p, _m, r in _api_routes(app)
                  if ((r.openapi_extra or {}).get("x-celerp-agent") is True) == agent)
-    return Request({"type": "http", "method": sorted(route.methods)[0], "path": route.path, "headers": [],
-                    "query_string": b"", "route": route})
+    return Request({"type": "http", "method": sorted(route.methods)[0], "path": route.path,
+                    "headers": headers or [], "query_string": b"", "route": route})
 
 
 @pytest.fixture
@@ -111,6 +111,15 @@ async def test_a_signed_out_session_is_not_a_refusal_the_ai_keeps(recorded):
     browser reads its detail as the sign-in redirect's reason."""
     handler = app.exception_handlers[StarletteHTTPException]
     await handler(_request(agent=True), HTTPException(401, "Session expired"))
+    assert recorded == []
+
+
+async def test_a_connected_companys_key_is_not_the_ai(recorded):
+    """A request signed with a connected company's integration key is that company's own
+    sync, never the AI's, so its refusal is not one the AI keeps."""
+    handler = app.exception_handlers[StarletteHTTPException]
+    await handler(_request(agent=True, headers=[(b"authorization", b"Peer k")]),
+                  HTTPException(403, "Integration operation unavailable"))
     assert recorded == []
 
 
