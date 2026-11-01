@@ -218,7 +218,8 @@ def first_sync_summary_card(platform: str, summary: dict, lang: str, error: str 
     created with their opening stock; Undo links detaches the products it linked and
     brings back values it took from the store; each imported invoice is voided on its
     own, which keeps its audit trail (posted accounting is never deleted). A first sync
-    that stopped shows the reason and a way to run it again."""
+    that stopped shows the reason and a way to run it again; one waiting to be tried
+    again by itself shows the reason and a way to try it now."""
     if not summary.get("started_at"):
         return Span(error, cls="flash flash--warning") if error else Span()
     service = get_connector(platform).display_name
@@ -226,16 +227,21 @@ def first_sync_summary_card(platform: str, summary: dict, lang: str, error: str 
     links = summary.get("links") or []
     undone = all(link.get("outcome") for link in links)
     invoices = summary.get("invoices") or []
+    stopped = None
+    if summary.get("state") == "failed":
+        stopped = "connectors.first_sync_failed"
+    elif summary.get("state") in ("starting", "running") and summary.get("next_attempt_at"):
+        stopped = "connectors.first_sync_waiting"
     return Div(
         P(t("connectors.first_sync_title", lang), cls="settings-section-title"),
         P(t("connectors.first_sync_started", lang, when=_when(summary["started_at"]))),
         Div(
-            P(t("connectors.first_sync_failed", lang, reason=_failure_reason(summary.get("error"), lang))),
+            P(t(stopped, lang, reason=_failure_reason(summary.get("error"), lang))),
             Button(t("connectors.first_sync_retry", lang), cls="btn btn--sm btn--primary",
                    hx_post=f"/settings/connectors/{platform}/first-sync/retry",
                    hx_target=f"#first-sync-summary-{platform}", hx_swap="outerHTML"),
             cls="flash flash--warning",
-        ) if summary.get("state") == "failed" else Span(),
+        ) if stopped else Span(),
         P(t("connectors.first_sync_created", lang, n=batch["rows"]), " ",
           A(t("connectors.first_sync_import_history", lang), href="/settings/inventory?tab=import-history"))
         if batch else Span(),

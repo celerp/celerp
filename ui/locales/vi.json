@@ -6672,6 +6672,7 @@
   "connectors.first_sync_title": "First sync",
   "connectors.first_sync_failed": "Lần đồng bộ đầu tiên đã dừng trước khi hoàn tất: {reason}",
   "connectors.first_sync_retry": "Thử lại lần đồng bộ đầu tiên",
+  "connectors.first_sync_waiting": "Lần đồng bộ đầu tiên không thể tiếp tục: {reason}. Celerp sẽ tự thử lại, hoặc bạn có thể thử lại ngay bây giờ.",
   "connectors.first_sync_started": "Started {when}.",
   "connectors.first_sync_created": "It created {n} products.",
   "connectors.first_sync_import_history": "Undo them in Import History",

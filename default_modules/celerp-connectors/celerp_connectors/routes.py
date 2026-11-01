@@ -946,6 +946,8 @@ async def first_sync_summary(
         "started_at": first_sync.started_at.isoformat() if first_sync is not None and first_sync.started_at else None,
         "state": first_sync.state if first_sync is not None else None,
         "error": first_sync.error if first_sync is not None else None,
+        "next_attempt_at": first_sync.next_attempt_at.isoformat()
+        if first_sync is not None and first_sync.next_attempt_at else None,
         "batch": batch,
         "links": [_link_summary(link, items.get(link["entity_id"])) for link in links],
         "invoices": invoices,

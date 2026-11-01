@@ -6676,6 +6676,7 @@
   "connectors.first_sync_title": "First sync",
   "connectors.first_sync_failed": "The first sync stopped before it finished: {reason}",
   "connectors.first_sync_retry": "Retry first sync",
+  "connectors.first_sync_waiting": "The first sync could not continue: {reason}. Celerp tries again by itself, or you can retry now.",
   "connectors.first_sync_started": "Started {when}.",
   "connectors.first_sync_created": "It created {n} products.",
   "connectors.first_sync_import_history": "Undo them in Import History",

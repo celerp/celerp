@@ -6672,6 +6672,7 @@
   "connectors.first_sync_title": "First sync",
   "connectors.first_sync_failed": "La primera sincronización se detuvo antes de terminar: {reason}",
   "connectors.first_sync_retry": "Reintentar la primera sincronización",
+  "connectors.first_sync_waiting": "La primera sincronización no pudo continuar: {reason}. Celerp lo intentará de nuevo por sí mismo, o puede reintentarlo ahora.",
   "connectors.first_sync_started": "Started {when}.",
   "connectors.first_sync_created": "It created {n} products.",
   "connectors.first_sync_import_history": "Undo them in Import History",

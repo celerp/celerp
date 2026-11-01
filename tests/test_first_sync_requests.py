@@ -151,7 +151,8 @@ async def test_a_stopped_first_sync_shows_why_and_its_retry_runs_it_to_the_end(
 
     r = await store_owner.api.get(f"/connectors/{PLATFORM}/first-sync/summary",
                                   headers={"Authorization": f"Bearer {store_owner.tok}"})
-    assert (r.json()["state"], r.json()["error"]) == ("failed", {"key": "connectors.err_read_only_key"})
+    assert (r.json()["state"], r.json()["error"], r.json()["next_attempt_at"]) == (
+        "failed", {"key": "connectors.err_read_only_key"}, None)
     from ui.routes.settings_connectors_first_sync import first_sync_summary_card
     from fasthtml.common import to_xml
     card = to_xml(first_sync_summary_card(PLATFORM, r.json(), "en"))

@@ -6672,6 +6672,7 @@
   "connectors.first_sync_title": "First sync",
   "connectors.first_sync_failed": "Sinkronisasi pertama berhenti sebelum selesai: {reason}",
   "connectors.first_sync_retry": "Coba lagi sinkronisasi pertama",
+  "connectors.first_sync_waiting": "Sinkronisasi pertama tidak dapat dilanjutkan: {reason}. Celerp akan mencoba lagi dengan sendirinya, atau Anda dapat mencoba lagi sekarang.",
   "connectors.first_sync_started": "Started {when}.",
   "connectors.first_sync_created": "It created {n} products.",
   "connectors.first_sync_import_history": "Undo them in Import History",

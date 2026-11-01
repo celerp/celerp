@@ -183,6 +183,24 @@ def test_summary_offers_every_way_back():
     assert 'href="/docs/doc:woocommerce:order:10"' in html
 
 
+def test_a_first_sync_waiting_to_be_tried_again_shows_why_and_offers_retry_now():
+    """A first sync stopped by a cause that can clear on its own waits its backoff: the card
+    says why and that Celerp tries again by itself, with Retry to try now."""
+    from fasthtml.common import to_xml
+
+    from ui.routes.settings_connectors_first_sync import first_sync_summary_card
+
+    summary = {"started_at": "2026-09-01T00:00:00+00:00", "state": "running", "batch": None, "links": [],
+               "invoices": [], "error": {"detail": "The store did not answer"},
+               "next_attempt_at": "2026-09-01T00:05:00+00:00"}
+    html = to_xml(first_sync_summary_card("woocommerce", summary, "en"))
+    assert t("connectors.first_sync_waiting", "en", reason="The store did not answer") in html
+    assert 'hx-post="/settings/connectors/woocommerce/first-sync/retry"' in html
+
+    running = to_xml(first_sync_summary_card("woocommerce", {**summary, "next_attempt_at": None, "error": None}, "en"))
+    assert "first-sync/retry" not in running
+
+
 def test_a_refused_undo_is_shown_even_when_there_is_no_first_sync_to_summarize():
     from fasthtml.common import to_xml
 

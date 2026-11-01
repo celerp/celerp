@@ -6672,6 +6672,7 @@
   "connectors.first_sync_title": "First sync",
   "connectors.first_sync_failed": "توقفت المزامنة الأولى قبل اكتمالها: {reason}",
   "connectors.first_sync_retry": "إعادة محاولة المزامنة الأولى",
+  "connectors.first_sync_waiting": "تعذّر متابعة المزامنة الأولى: {reason}. سيعيد Celerp المحاولة تلقائيًا، أو يمكنك إعادة المحاولة الآن.",
   "connectors.first_sync_started": "Started {when}.",
   "connectors.first_sync_created": "It created {n} products.",
   "connectors.first_sync_import_history": "Undo them in Import History",
