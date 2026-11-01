@@ -137,7 +137,7 @@ async def test_guard_skips_rebuild_for_release_origin(session):
     result = await run_upgrade_guard(session)
 
     assert result == {"changed": True, "rebuilt": False, "current": True}
-    assert await _projection_count(session, cid) == 0  # NOT rebuilt — release origin
+    assert await _projection_count(session, cid) == 0  # NOT rebuilt: release origin
     assert await _marker(session) == __version__  # but the boot version is recorded
 
 
