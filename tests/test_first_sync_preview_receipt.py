@@ -203,7 +203,7 @@ def _shown_preview():
     at = datetime(2026, 10, 1, tzinfo=timezone.utc)
     product = {"key": "1", "sku": "A-1", "name": "Mug", "modified": at, "price": 9.5, "stock": 4}
     return FirstSyncPreview(
-        directions=dict(DIRECTIONS), orders_from=at,
+        directions=dict(DIRECTIONS), orders_from=at.date(),
         matches=[{**product, "entity_id": "item:a", "celerp_name": "Mug", "differences": {"name": ["Cup", "Mug"]},
                   "celerp_stock": 3.0, "stock_change": {"store": 4, "celerp": 3.0}}],
         new=[{**product, "key": "2", "sku": "B-2"}],

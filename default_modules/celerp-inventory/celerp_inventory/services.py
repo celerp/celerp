@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import LOT_ACCOUNT_FIELD, refusal
 from celerp.connectors.ownership import PRODUCT_CHANNEL_PLATFORMS
+from celerp.connectors.product_links import link_takes_store_changes, variant_key
 from celerp.services.currencies import KNOWN_CURRENCY_CODES
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.importers.results import ImportOutcome
@@ -1150,7 +1151,7 @@ async def _assert_external_identity_available(
     product_id = str(link.get("product_id") or "")
     if not product_id:
         raise ExternalLinkConflictError(t("inventory.err_store_product_unknown"))
-    variation_id = link.get(_external_variant_key(platform))
+    variation_id = link.get(variant_key(platform))
     rows = (await session.execute(
         _external_identity_candidates(uuid.UUID(str(company_id)), platform, product_id)
     )).scalars().all()
@@ -1205,16 +1206,12 @@ def _is_product_anchor_state(state: dict) -> bool:
     return not bool(state.get("barcode") or state.get("rfid_epc"))
 
 
-def _external_variant_key(platform: str) -> str:
-    return "variant_id" if platform == "shopify" else "variation_id"
-
-
 def _same_external_identity(
     platform: str, link: dict, product_id: str, variation_id: str | None
 ) -> bool:
     if str(link.get("product_id") or "") != str(product_id):
         return False
-    actual = link.get(_external_variant_key(platform))
+    actual = link.get(variant_key(platform))
     return (str(actual) if actual not in (None, "") else None) == (
         str(variation_id) if variation_id not in (None, "") else None
     )
@@ -1435,7 +1432,7 @@ async def upsert_external_product(
             **(link_fields or {}),
         }
         if variation_id:
-            incoming_link[_external_variant_key(platform)] = variation_id
+            incoming_link[variant_key(platform)] = variation_id
         remote_fields: dict = {"sku": sku, "name": name}
         if description is not None:
             remote_fields["description"] = description
@@ -1569,7 +1566,7 @@ async def upsert_external_product(
                 restore = {key: state.get(key) for key in applied}
                 remote = {"product_id": product_id}
                 if variation_id:
-                    remote[_external_variant_key(platform)] = variation_id
+                    remote[variant_key(platform)] = variation_id
                 await record.attribute(session, linked={
                     "entity_id": entity_id, "remote": remote, "restore": restore or None, "applied": applied or None})
         links[platform] = {
@@ -1614,7 +1611,7 @@ async def upsert_external_product(
             metadata_={},
         )
         await session.commit()
-        if links[platform].get("sync_enabled") is False:
+        if not link_takes_store_changes(links[platform]):
             # Identity repair for a remotely deleted product is allowed even when the
             # user intentionally left product sync disabled, but callers must not
             # continue with product-side mutation such as media pulls.
@@ -1686,9 +1683,9 @@ async def set_external_link(
     links = dict(state.get("external_links") or {})
     normalized = dict(link)
     normalized["product_id"] = str(normalized["product_id"])
-    variant_key = _external_variant_key(platform)
-    if normalized.get(variant_key) not in (None, ""):
-        normalized[variant_key] = str(normalized[variant_key])
+    variant = variant_key(platform)
+    if normalized.get(variant) not in (None, ""):
+        normalized[variant] = str(normalized[variant])
     links[platform] = normalized
     if links == (state.get("external_links") or {}):
         return normalized
@@ -1788,7 +1785,7 @@ async def undo_external_link(
     current = external_link_for_state(state, platform)
     remote = link.get("remote") or {}
     if current and not _same_external_identity(
-            platform, current, remote.get("product_id"), remote.get(_external_variant_key(platform))):
+            platform, current, remote.get("product_id"), remote.get(variant_key(platform))):
         # Nothing is changed, so every store value and pulled file still on the item stays
         # and is reported for the person to edit.
         applied = link.get("applied") or {}
@@ -2278,8 +2275,7 @@ def build_channel_states(
 def external_identity_key(platform: str, link: dict) -> tuple[str, str | None]:
     """Canonical external product identity for one platform."""
     product_id = str(link.get("product_id") or "")
-    variant_key = _external_variant_key(platform)
-    variant = link.get(variant_key)
+    variant = link.get(variant_key(platform))
     return product_id, (str(variant) if variant not in (None, "") else None)
 
 

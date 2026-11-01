@@ -225,11 +225,10 @@ async def test_the_order_date_is_the_company_business_day_for_the_default_and_a_
         store_owner, store_answers, real_engine, monkeypatch):
     """The first sync's order date is a day in the company's business time zone. With no date
     chosen it is the company's today: at 18:00 on 31 May in Los Angeles (01:00 on 1 June in
-    UTC), the preview names 31 May and shows an order placed at 09:00 that morning. A chosen
-    date starts at that day's midnight in Los Angeles, in the preview and in what Start saves."""
+    UTC), the preview names 31 May and shows an order placed at 09:00 that morning. Start saves
+    the chosen day itself, never an instant to read it back from."""
     import datetime as dt_module
-    from datetime import datetime, timezone
-    from zoneinfo import ZoneInfo
+    from datetime import date, datetime, timezone
 
     from celerp import connectors
     from celerp.connectors.base import RemoteOrder
@@ -238,7 +237,6 @@ async def test_the_order_date_is_the_company_business_day_for_the_default_and_a_
 
     now = datetime(2026, 6, 1, 1, 0, tzinfo=timezone.utc)
     placed = datetime(2026, 5, 31, 16, 0, tzinfo=timezone.utc)
-    los_angeles = ZoneInfo("America/Los_Angeles")
 
     class _Frozen(datetime):
         @classmethod
@@ -264,12 +262,12 @@ async def test_the_order_date_is_the_company_business_day_for_the_default_and_a_
         clock.setattr(dt_module, "datetime", _Frozen)
         clock.setattr(business_time, "datetime", _Frozen)
         seen = (await store_owner.api.get(f"/connectors/{PLATFORM}/first-sync/preview", headers=headers)).json()
-    assert datetime.fromisoformat(seen["orders_from"]) == datetime(2026, 5, 31, tzinfo=los_angeles)
+    assert seen["orders_from"] == "2026-05-31"
     assert [o["id"] for o in seen["orders"]] == ["7"]
 
     chosen = (await store_owner.api.get(f"/connectors/{PLATFORM}/first-sync/preview",
                                         params={"orders_from": "2026-05-20"}, headers=headers)).json()
-    assert datetime.fromisoformat(chosen["orders_from"]) == datetime(2026, 5, 20, tzinfo=los_angeles)
+    assert chosen["orders_from"] == "2026-05-20"
     before = set(background._BG_TASKS)
     r = await store_owner.api.post(f"/connectors/{PLATFORM}/first-sync", headers=headers, json={
         "directions": directions, "match": "keep", "orders_from": "2026-05-20",
@@ -280,7 +278,7 @@ async def test_the_order_date_is_the_company_business_day_for_the_default_and_a_
         config = (await s.scalars(sa.select(ConnectorConfig).where(
             ConnectorConfig.company_id == store_owner.cid,
             ConnectorConfig.connector == PLATFORM))).one()
-    assert config.orders_from == datetime(2026, 5, 20, tzinfo=los_angeles)
+    assert config.orders_from == date(2026, 5, 20)
 
 
 # How each connector's order-date filter reads in what it asks its platform: the fetch it
@@ -296,25 +294,34 @@ _ORDER_DATE_FILTERS = {
 }
 
 
-@pytest.mark.parametrize("zone", ["Asia/Bangkok", "America/Los_Angeles", "UTC"])
+async def _set_company_zone(engine, cid, zone: str) -> None:
+    async with maker(engine)() as s:
+        await s.execute(sa.text(
+            "UPDATE companies SET settings = (COALESCE(settings::jsonb, '{}'::jsonb) "
+            "|| jsonb_build_object('timezone', CAST(:z AS text)))::json WHERE id = :c"), {"c": cid, "z": zone})
+        await s.commit()
+
+
+@pytest.mark.parametrize("zone,later", [
+    ("Asia/Bangkok", None), ("America/Los_Angeles", None), ("UTC", None),
+    ("UTC", "America/New_York"), ("Asia/Bangkok", "Asia/Kolkata"),
+])
 async def test_every_connector_filters_the_import_from_the_day_its_preview_showed(
-        store_owner, store_answers, real_engine, monkeypatch, zone):
+        store_owner, store_answers, real_engine, monkeypatch, zone, later):
     """The person picks 1 June in the company's time zone (UTC+7, UTC-7 or UTC). Each connector
     that previews orders asks its platform for the same orders, with the same filter, in the
-    preview and in the import that follows Start."""
+    preview and in the import that follows Start. When the company's time zone changes after
+    Start, every later import still starts on 1 June, now at midnight in the new zone."""
     import inspect
     from datetime import datetime
+    from zoneinfo import ZoneInfo
 
     from celerp import connectors
     from celerp.connectors.base import ConnectorBase, ConnectorContext, SyncEntity, SyncResult
+    from celerp.connectors.sync_runner import run_connector_sync
     from celerp.services import background
 
-    async with maker(real_engine)() as s:
-        await s.execute(sa.text(
-            "UPDATE companies SET settings = (COALESCE(settings::jsonb, '{}'::jsonb) "
-            "|| jsonb_build_object('timezone', CAST(:z AS text)))::json WHERE id = :c"),
-            {"c": store_owner.cid, "z": zone})
-        await s.commit()
+    await _set_company_zone(real_engine, store_owner.cid, zone)
     directions = {"orders": "inbound"}
     await connected(store_owner.cid, PLATFORM, directions, first_sync="pending")
     handed: dict[str, datetime] = {}
@@ -340,7 +347,13 @@ async def test_every_connector_filters_the_import_from_the_day_its_preview_showe
             "preview_version": chosen["version"]})
         assert r.status_code == 200, r.text
         await asyncio.wait_for(_settled(set(background._BG_TASKS) - before), 30)
-    assert set(handed) == {"preview", "import"}, handed
+        assert set(handed) == {"preview", "import"}, handed
+        assert handed["preview"] == datetime(2026, 6, 1, tzinfo=ZoneInfo(zone))
+        if later:
+            await _set_company_zone(real_engine, store_owner.cid, later)
+            del handed["import"]
+            await run_connector_sync(connectors.get(PLATFORM), store_owner.cid, purpose="manual_sync")
+    picked = datetime(2026, 6, 1, tzinfo=ZoneInfo(later or zone))
 
     previewing = {c.name for c in connectors.all_connectors()
                   if type(c).preview_orders is not ConnectorBase.preview_orders
@@ -356,7 +369,6 @@ async def test_every_connector_filters_the_import_from_the_day_its_preview_showe
 
         with monkeypatch.context() as m:
             m.setattr(fetch, _fetch)
-            await connector.preview_orders(ctx, handed["preview"])
+            await connector.preview_orders(ctx, picked)
             await connector.sync_orders(ctx, since=None, orders_from=handed["import"])
-        assert len(sent) == 2 and sent[0] == sent[1], (name, zone, sent)
-    assert handed["import"].astimezone(handed["preview"].tzinfo).date().isoformat() == "2026-06-01"
+        assert len(sent) == 2 and sent[0] == sent[1], (name, zone, later, sent)

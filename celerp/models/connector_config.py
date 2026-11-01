@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import date, datetime
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -28,7 +28,8 @@ class ConnectorConfig(Base):
     way it syncs (see ConnectorBase.entity_flows). ``first_sync`` is the connection's
     first-sync record (ConnectorFirstSync), loaded with it; nothing runs on a schedule,
     and webhooks deliver nothing, until it completed. ``orders_from`` is the earliest
-    order date the connection imports.
+    order day the connection imports, the day the person picked; each import starts it at
+    midnight in the company's time zone at the time (first_sync.orders_start).
     ``connect_lapsed_at`` is set while Celerp Connect has ended and syncing is paused.
     ``webhooks_dirty`` is set while the store's webhooks may not match the directions;
     ``webhooks_version`` changes with every change that asks for them to be reconciled,
@@ -46,7 +47,7 @@ class ConnectorConfig(Base):
     webhook_ids_json: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
     webhook_secret: Mapped[str | None] = mapped_column(sa.String(128), nullable=True)
     last_daily_sync_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
-    orders_from: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+    orders_from: Mapped[date | None] = mapped_column(sa.Date, nullable=True)
     connect_lapsed_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
     webhooks_dirty: Mapped[bool] = mapped_column(sa.Boolean, nullable=False, default=False, server_default=sa.false())
     webhooks_version: Mapped[int] = mapped_column(sa.BigInteger, nullable=False, default=0, server_default="0")

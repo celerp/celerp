@@ -47,15 +47,28 @@ def external_link_for_state(state: dict, platform: str) -> dict:
     return _legacy_external_link(platform, str(state.get("idempotency_key") or ""))
 
 
-def linked_store_product(state: dict, platform: str) -> str | None:
-    """The key of the store product the item is linked to on *platform* (the product id,
-    or "product:variation"), as the platform's sync reads it (RemoteProduct.key); None
-    when the item holds no link there."""
+def variant_key(platform: str) -> str:
+    """The field of a link that holds the platform's variant of the product."""
+    return "variant_id" if platform == "shopify" else "variation_id"
+
+
+def link_takes_store_changes(link: dict | None) -> bool:
+    """Whether a link takes product-side work from its store product (fields, files): not
+    while the person has stopped its sync, nor while the store has deleted the product."""
+    return bool(link) and link.get("sync_enabled") is not False and link.get("remote_deleted") is not True
+
+
+def takes_store_product(state: dict, platform: str, key: str) -> bool:
+    """Whether the item takes product-side work from store product *key* (the product id,
+    or "product:variation", as the platform's sync reads it: RemoteProduct.key) now: it is
+    linked to that product on *platform* and the link takes store changes. A file of an
+    earlier sync waiting to be pulled is pulled only on this rule, as one of this sync is."""
     link = external_link_for_state(state, platform)
-    if not link:
-        return None
-    variant = link.get("variant_id" if platform == "shopify" else "variation_id")
-    return f"{link['product_id']}:{variant}" if variant not in (None, "") else str(link["product_id"])
+    if not link_takes_store_changes(link):
+        return False
+    variant = link.get(variant_key(platform))
+    linked = f"{link['product_id']}:{variant}" if variant not in (None, "") else str(link["product_id"])
+    return linked == key
 
 
 async def woocommerce_order_anchor_ids(session: AsyncSession, company_id, doc) -> list[str]:

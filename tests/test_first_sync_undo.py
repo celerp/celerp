@@ -227,6 +227,19 @@ async def test_an_image_waiting_from_the_first_sync_is_not_pulled_onto_an_item_l
     await _next_sync_leaves_no_file(cid, store)
 
 
+async def test_an_image_waiting_from_the_first_sync_is_not_pulled_onto_an_item_whose_sync_was_stopped(
+        real_engine, real_client, store):
+    cid, uid = await _image_waiting_after_first_sync("StopThenImage", store)
+    neighbour = await _item(cid, "item:match")
+    r = await real_client.post("/connector-items/woocommerce/sync", headers=await _headers(real_engine, cid, uid),
+                               json={"entity_ids": ["item:match2"], "action": "stop"})
+    assert r.status_code == 200 and r.json()["updated"] == 1, r.text
+    assert _linked_to_store(await _item(cid, "item:match2"))
+    store.image.reset()
+    await _next_sync_leaves_no_file(cid, store)
+    assert (await _item(cid, "item:match")).get("files") == neighbour.get("files")
+
+
 async def test_an_interrupted_undo_changes_nothing_and_its_repeat_completes(real_engine, real_client, store, monkeypatch):
     from celerp_inventory import services
 

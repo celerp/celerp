@@ -96,8 +96,9 @@ async def pull_store_files(ctx, connector, *, key: str, label: str, entity_id: s
     ``pending`` entry for the product (kind "files", listing them), and the next sync pulls
     them again (retry_unpulled_files) until each is attached. The files a first sync pulls
     (``operation``) join its import or its link's undo record, also when a later sync pulls them.
-    Files of a product the item is no longer linked to (the link undone or moved to another
-    product since) are not pulled and no longer wait."""
+    Files are pulled only while the item takes store changes from that product
+    (product_links.takes_store_product); once it does not (the link stopped, undone or moved
+    to another product since), they are not pulled and no longer wait."""
     from ui.i18n import t
 
     entry_id = f"{key}{_FILES_ENTRY}"
@@ -131,16 +132,17 @@ async def retry_unpulled_files(ctx, connector, attention: list[dict] | None, pen
 async def _pull_item_files(ctx, platform: str, key: str, entity_id: str, files: list[dict],
                            operation: str | None) -> list[dict]:
     """Pull ``files`` of store product ``key`` onto the item in one transaction and return
-    those that failed; none when the item is gone or no longer linked to that product."""
+    those that failed; none when the item is gone or no longer takes store changes from that
+    product."""
     from celerp.connectors.base import ExternalImportRecord
-    from celerp.connectors.product_links import linked_store_product
+    from celerp.connectors.product_links import takes_store_product
     from celerp.db import get_session_ctx
     from celerp.models.projections import Projection
 
     failed = []
     async with get_session_ctx() as session:
         row = await session.get(Projection, {"company_id": ctx.company_id, "entity_id": entity_id})
-        if row is None or row.entity_type != "item" or linked_store_product(row.state or {}, platform) != key:
+        if row is None or row.entity_type != "item" or not takes_store_product(row.state or {}, platform, key):
             return []
         for file in files:
             outcome = await download_and_emit_file(

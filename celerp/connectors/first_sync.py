@@ -30,7 +30,7 @@ from ui.i18n import t
 @dataclass
 class FirstSyncPreview:
     directions: dict
-    orders_from: datetime
+    orders_from: date  # the day the person reviewed, which Start saves
     # Each list is newest first by when the platform (or Celerp) last changed it.
     matches: list[dict] = field(default_factory=list)     # store products Celerp has by SKU
     new: list[dict] = field(default_factory=list)         # store products new to Celerp
@@ -99,26 +99,21 @@ def _status_key(connector: ConnectorBase, status: str) -> str | None:
     return f"connectors.order_status_{label}" if label else None
 
 
-async def orders_start(session, company_id, orders_from: date | datetime | None) -> datetime:
-    """The earliest order date a connector reads, the same for the preview and the import:
-    midnight in the company's business time zone starting ``orders_from`` (a day), or the day
-    a saved start falls on in that zone, or the company's today when none is given. The day
-    is never taken from a stored instant read in UTC."""
-    from celerp.services.business_time import company_timezone, company_today
+async def orders_start(session, company_id, orders_from: date) -> datetime:
+    """The earliest order date a connector reads, the same for the preview and every import:
+    midnight starting the day ``orders_from`` in the company's business time zone at the
+    time of the request, so the day stays the one the person picked when the zone changes."""
+    from celerp.services.business_time import company_timezone
 
-    zone = await company_timezone(session, company_id)
-    if isinstance(orders_from, datetime):
-        day = orders_from.astimezone(zone).date()
-    else:
-        day = orders_from or await company_today(session, company_id)
-    return datetime.combine(day, time(), tzinfo=zone)
+    return datetime.combine(orders_from, time(), tzinfo=await company_timezone(session, company_id))
 
 
 async def build_preview(
-    connector: ConnectorBase, ctx: ConnectorContext, directions: dict, orders_from: datetime, config_id: int
+    connector: ConnectorBase, ctx: ConnectorContext, directions: dict, orders_from: date, start: datetime,
+    config_id: int,
 ) -> FirstSyncPreview:
-    """What a first sync in ``directions``, importing orders from ``orders_from``, would
-    do on the connection ``config_id``. Reads only: nothing is written to Celerp or to the
+    """What a first sync in ``directions``, importing orders from the day ``orders_from``
+    (starting at ``start``, orders_start), would do on the connection ``config_id``. Reads only: nothing is written to Celerp or to the
     platform. The directions are read as the full map Start saves, so the same choices
     give the same version however they were named."""
     directions = validate_directions(connector, directions)
@@ -127,7 +122,7 @@ async def build_preview(
         await _preview_products(connector, ctx, directions, preview)
 
     if entity_allowed(connector, "orders", directions):
-        orders = await connector.preview_orders(ctx, orders_from)
+        orders = await connector.preview_orders(ctx, start)
         preview.orders = _newest_first([
             {"id": o.id, "number": o.number, "status": o.status, "created": o.created,
              "status_key": _status_key(connector, o.status),

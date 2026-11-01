@@ -384,3 +384,30 @@ async def test_an_image_that_failed_is_pulled_once_when_the_store_serves_it_agai
     assert not _unpulled(unread) and not _unpulled(again)
     files = (await item_state(connector_session, cid, "item:img"))["files"]
     assert sorted(f["remote"][platform]["id"] for f in files) == ["11", "12"]
+
+
+@pytest.mark.usefixtures("inside_execution")
+@pytest.mark.parametrize("change", ["stopped", "detached", "other_platform"])
+@pytest.mark.asyncio
+async def test_a_waiting_image_is_dropped_once_its_link_no_longer_takes_store_changes(connector_session, change):
+    """The image that failed waits; the person then stops the link, or it is detached, or
+    the item is linked to another platform's product instead. The next sync pulls nothing,
+    as a products sync would not, and the image no longer waits."""
+    from celerp_inventory.services import detach_external_link, set_external_link, set_external_link_state
+
+    cid = await seed_company(connector_session, f"Dropped{change}")
+    await add_item(connector_session, cid, "item:img", "IMG-1", external_links={"woocommerce": _LINKS["woocommerce"]})
+    first = await _sync("woocommerce", cid, images=[_A, _B], broken={_B["src"]})
+    assert _unpulled(first)
+    if change == "stopped":
+        await set_external_link_state(connector_session, cid, "item:img", "woocommerce", sync_enabled=False)
+    else:
+        await detach_external_link(connector_session, cid, "item:img", "woocommerce")
+        if change == "other_platform":
+            await set_external_link(connector_session, cid, "item:img", "shopify", _LINKS["shopify"])
+    await connector_session.commit()
+
+    retried = await _sync("woocommerce", cid, images=None, attention=first.attention)
+    files = (await item_state(connector_session, cid, "item:img")).get("files") or []
+    assert [f["remote"]["woocommerce"]["id"] for f in files if "woocommerce" in (f.get("remote") or {})] == ["11"]
+    assert not _unpulled(retried)

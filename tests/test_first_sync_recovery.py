@@ -78,7 +78,7 @@ async def _started(name: str, directions: dict, *, match: str = "take", reviewed
         batch = ImportBatch(id=uuid.uuid4(), company_id=cid, entity_type="item", filename="WooCommerce first sync",
                             row_count=0, entity_ids=[], idempotency_keys=[], reversible=True)
         now = datetime.now(timezone.utc)
-        config.orders_from = now - timedelta(days=30)
+        config.orders_from = (now - timedelta(days=30)).date()
         config.first_sync.directions = dict(directions)
         config.first_sync.batch_id, config.first_sync.match = str(batch.id), match
         config.first_sync.operation_id = str(uuid.uuid4())

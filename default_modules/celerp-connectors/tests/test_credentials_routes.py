@@ -705,7 +705,7 @@ def empty_store(monkeypatch):
 async def test_first_sync_runs_once(connector_session, empty_store):
     """Starting the first sync saves its choices on the first-sync record, asks for the
     store's webhooks to be set up and runs it; a second start is refused."""
-    from datetime import date, datetime
+    from datetime import date
 
     from celerp.connectors.base import ConnectorContext
     from celerp.models.connector_first_sync import ConnectorFirstSync
@@ -735,9 +735,7 @@ async def test_first_sync_runs_once(connector_session, empty_store):
     assert again.value.status_code == 409 and again.value.detail == t("connectors.err_first_sync_done")
     await session.refresh(config)
     assert config.entity_directions["products"] == "both"
-    from celerp.services.business_time import company_timezone
-
-    assert config.orders_from == datetime(2026, 9, 1, tzinfo=await company_timezone(session, cid))
+    assert config.orders_from == date(2026, 9, 1)
     assert config.webhooks_dirty
     row = await session.get(ConnectorFirstSync, (str(cid), "woocommerce"), populate_existing=True)
     assert row.state == "starting" and row.match == "take" and row.started_by == "user-1"
@@ -748,8 +746,6 @@ async def test_first_sync_runs_once(connector_session, empty_store):
 
 @pytest.mark.asyncio
 async def test_first_sync_without_products_in_records_no_batch(connector_session, empty_store):
-    from datetime import datetime, time
-
     from celerp.connectors.base import ConnectorContext
     from celerp.models.connector_first_sync import ConnectorFirstSync
     from celerp_connectors.routes import FirstSyncRequest, start_first_sync
@@ -771,9 +767,8 @@ async def test_first_sync_without_products_in_records_no_batch(connector_session
     row = await session.get(ConnectorFirstSync, (str(cid), "woocommerce"), populate_existing=True)
     assert row.batch_id is None
     await session.refresh(config)
-    # With no date chosen, orders start where the preview showed them from: the start of the
+    # With no date chosen, orders start on the day the preview showed them from: the
     # company's today, in its business time zone.
-    from celerp.services.business_time import company_timezone, company_today
+    from celerp.services.business_time import company_today
 
-    today = datetime.combine(await company_today(session, cid), time(), tzinfo=await company_timezone(session, cid))
-    assert config.orders_from == today
+    assert config.orders_from == await company_today(session, cid)

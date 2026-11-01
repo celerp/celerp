@@ -874,18 +874,20 @@ async def preview_first_sync(
 async def _read_preview(session: AsyncSession, connector, company_id, config_id: int, directions: dict,
                         orders_from: date | None):
     """The first sync's preview read from the store, outside any lock: what the preview
-    page shows and what Start compares the person's receipt with. Orders start where the
-    import starts them (first_sync.orders_start). Ends the session's transaction before the
-    store is read."""
+    page shows and what Start compares the person's receipt with. Orders start on the day
+    ``orders_from``, the company's today when not given, where the import starts them
+    (first_sync.orders_start). Ends the session's transaction before the store is read."""
     from celerp.connectors.first_sync import build_preview, orders_start
+    from celerp.services.business_time import company_today
 
-    start = await orders_start(session, company_id, orders_from)
+    day = orders_from or await company_today(session, company_id)
+    start = await orders_start(session, company_id, day)
     await session.commit()
     ctx = await _connector_context(str(company_id), connector.name)
     if ctx is None:
         raise HTTPException(status_code=409, detail=t("error.connector_not_connected", service=connector.display_name))
     try:
-        return await build_preview(connector, ctx, directions, start, config_id)
+        return await build_preview(connector, ctx, directions, day, start, config_id)
     except (httpx.HTTPError, ValueError) as exc:
         raise HTTPException(status_code=502, detail=t(
             "connectors.err_preview", service=connector.display_name, detail=exc)) from exc
@@ -1066,7 +1068,7 @@ async def start_first_sync(
 
     now = datetime.now(timezone.utc)
     config.entity_directions = directions
-    config.orders_from = preview.orders_from  # the date the person reviewed, never a second default
+    config.orders_from = preview.orders_from  # the day the person reviewed, never a second default
     batch_id = None
     if entity_allowed(connector, "products", directions):
         batch = ImportBatch(

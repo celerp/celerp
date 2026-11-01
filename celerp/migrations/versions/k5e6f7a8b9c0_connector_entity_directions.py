@@ -60,7 +60,7 @@ def _old_direction(connector: str, directions: dict) -> str:
 
 def upgrade() -> None:
     op.add_column("connector_configs", sa.Column("entity_directions", sa.JSON(), nullable=True))
-    op.add_column("connector_configs", sa.Column("orders_from", sa.DateTime(timezone=True), nullable=True))
+    op.add_column("connector_configs", sa.Column("orders_from", sa.Date(), nullable=True))
     op.add_column("connector_configs", sa.Column("connect_lapsed_at", sa.DateTime(timezone=True), nullable=True))
     bind = op.get_bind()
     lock_tables(bind, "connector_configs")

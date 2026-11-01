@@ -15,7 +15,7 @@ from ui.i18n import t
 
 WOO = {"products": "both", "stock": "outbound", "orders": "inbound", "customers": "off"}
 PREVIEW = {
-    "directions": WOO, "orders_from": "2026-09-01T00:00:00+00:00",
+    "directions": WOO, "orders_from": "2026-09-01",
     "matches": [{"key": "1", "sku": "MATCH-1", "name": "Store shirt", "celerp_name": "Celerp shirt",
                  "modified": "2026-09-02T10:00:00+00:00", "entity_id": "item:m",
                  "differences": {"sale_price": [25.0, 30.0]},

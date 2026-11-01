@@ -127,6 +127,8 @@ EXTERNAL_LINK_CALLERS: dict[tuple[str, str], tuple[str, str]] = {
         ("SYNC", "acts only on an entry of the owned connector's attention list"),
     ("celerp/connectors/product_links.py", "refuse_while_links_cannot_detach"):
         ("PURE", "decides whether a link is left to detach"),
+    ("celerp/connectors/product_links.py", "takes_store_product"):
+        ("SYNC", "decides inside the owned connector's products sync whether a store product's files are pulled"),
     ("celerp/connectors/outbound_queue.py", "enqueue_item_change"):
         ("SYNC", "queues Woo pushes only while an outbound WooCommerce config is held by the company"),
     ("default_modules/celerp-connectors/celerp_connectors/routes.py", "set_item_sync"):
