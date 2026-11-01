@@ -458,7 +458,10 @@ a:hover { text-decoration: underline; }
 .data-table th.col-drag-over { border-left: 2px solid var(--c-accent); }
 .data-table td { text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* A header over figures sits right, over them, but reads as a label in the headers' face. */
-.data-table td.cell--money, .data-table td.cell--number, .cell--number { text-align: right; font-family: var(--font-mono); }
+.data-table td.cell--money, .data-table td.cell--rate, .data-table td.cell--weight,
+.data-table td.cell--number, .cell--number { text-align: right; font-family: var(--font-mono); }
+/* A quantity with its unit ("1 piece") is a figure too: it sits right with the other numbers. */
+.data-table td.cell--paired:not(.cell--conversion) { text-align: right; }
 /* Free text that can run long (an asset's name) wraps at a readable measure instead of
    pushing every column after it out of view. */
 .data-table td.cell--text { white-space: normal; overflow-wrap: break-word; max-width: 32ch; }
@@ -565,6 +568,8 @@ th.cell--number { font-family: inherit; }
   opacity: 0.55; cursor: not-allowed;
 }
 .cell-input--number { text-align: right; font-family: var(--font-mono); }
+/* Every number box sits right, like the figures it edits. */
+input[type="number"] { text-align: right; }
 .cell-input--select { cursor: pointer; background: var(--c-bg2); }
 .cell-input--select option { background: var(--c-bg2); color: var(--c-text); }
 .cell-input--status { cursor: pointer; background: var(--c-bg2); }
@@ -1687,7 +1692,7 @@ form:has(> #fa-preview:not(:empty)) ~ .empty-state-cta { display: none; }
      cut off at the edge of its scroll box or card. */
   .table-scroll-wrap, .detail-card { overflow: visible !important; }
   .data-table { width: 100%; }
-  .data-table td:not(.cell--number, .cell--money) { white-space: normal; overflow-wrap: anywhere; }
+  .data-table td:not(.cell--number, .cell--money, .cell--rate, .cell--weight, .cell--paired) { white-space: normal; overflow-wrap: anywhere; }
   /* A header wraps between its words, never inside one, in a face small enough that the
      longest header word still fits over its figures. */
   .data-table th { white-space: normal; overflow-wrap: normal; font-size: 9px; letter-spacing: 0; }

@@ -988,7 +988,7 @@ def purchase_display_cell(
         ),
         Span(" ", cls="paired-sep"),
         Span(sb_disp, cls="paired-tertiary cell-readonly"),
-        cls="cell cell--paired",
+        cls="cell cell--paired cell--conversion",
         data_col="purchase_unit",
     )
 
@@ -1533,6 +1533,10 @@ def data_row(
     )
 
 
+# Cell types that hold figures: their cells and headers sit right, so a header stays over its numbers.
+NUMERIC_CELL_TYPES = frozenset({"number", "money", "rate", "weight"})
+
+
 def data_table(
     schema: list[dict],
     rows: list[dict],
@@ -1599,7 +1603,8 @@ def data_table(
         spec = (column_filters or {}).get(key)
         funnel = _filter_funnel_btn(spec["param"], spec["options"], spec.get("selected"),
                                     field_label(f)) if spec else ""
-        th_cls = f"col-{key}" + (" colfilter-th" if spec else "")
+        th_cls = (f"col-{key}" + (" colfilter-th" if spec else "")
+                  + (" cell--number" if f.get("type") in NUMERIC_CELL_TYPES else ""))
         if sort_url and f.get("sortable", True):
             params = {**(extra_params or {}), "sort": key}
             new_dir = "asc" if (sort_key == key and sort_dir == "desc") else "desc"
