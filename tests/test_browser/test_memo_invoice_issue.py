@@ -25,7 +25,7 @@ def _demo_gem(api, sell_by: str) -> dict:
                 and float(i.get("quantity") or 0) > 0)
 
 
-def _issued_memo(api, contact_id: str, items: list[dict]) -> tuple[str, list[str]]:
+def _issued_memo(api, contact_id: str, items: list[dict], ship: bool = True) -> tuple[str, list[str]]:
     lines = [{"item_id": i["id"], "sku": i["sku"], "description": i["sku"], "quantity": float(i["quantity"]),
               "unit_price": 50.0, "sell_by": i["sell_by"]} for i in items]
     memo = api.post("/docs", json={"doc_type": "memo", "contact_id": contact_id, "line_items": lines})
@@ -33,7 +33,8 @@ def _issued_memo(api, contact_id: str, items: list[dict]) -> tuple[str, list[str
     memo = memo.json()["id"]
     assert api.post(f"/docs/{memo}/finalize").status_code == 200
     lids = [li["line_id"] for li in api.get(f"/docs/{memo}").json()["line_items"]]
-    assert api.post(f"/docs/{memo}/fulfill-lines", json={"line_ids": lids}).status_code == 200
+    if ship:
+        assert api.post(f"/docs/{memo}/fulfill-lines", json={"line_ids": lids}).status_code == 200
     return memo, lids
 
 
@@ -112,3 +113,38 @@ def test_an_invoice_drawn_from_a_memo_issues_after_page_edits(page, ui_server, f
     parcel_now = api.get(f"/items/{parcel['id']}").json()
     assert float(parcel_now["quantity"]) == pytest.approx(float(parcel["quantity"]) - 10.0)
     assert parcel_now.get("status_doc_id") == memo
+
+
+def test_the_memo_page_explains_its_lines_and_totals(page, ui_server, fresh_company):
+    """On a memo, a stone a draft invoice has taken still reads On memo with the memo's number,
+    the totals say what Still on memo counts, the header buttons sit on one line, Ship To is a
+    value to click rather than an open list, and a line not yet shipped refuses Invoice selected
+    with what to do."""
+    api = fresh_company
+    _seed_demo_items(api, "gemstones")
+    parcel, stone = _demo_gem(api, "carat"), _demo_gem(api, "piece")
+    customer = api.post("/crm/contacts", json={"name": "Showroom Customer", "contact_type": "customer"}).json()["id"]
+    memo, (_, stone_line) = _issued_memo(api, customer, [parcel, stone])
+    _draw(api, memo, {stone_line: float(stone["quantity"])})
+    memo_number = api.get(f"/docs/{memo}").json()["ref_id"]
+
+    page.set_viewport_size({"width": 1440, "height": 900})
+    page.goto(f"{ui_server}/docs/{memo}", wait_until="domcontentloaded")
+    _assert_no_crash(page, "memo after a draw")
+    chips = page.locator("td.col-item-status")
+    expect(chips.nth(1)).to_contain_text(memo_number)
+    expect(page.locator(".total-hint")).to_be_visible()
+    boxes = {name: page.locator(".doc-actions").get_by_text(name, exact=True).first.bounding_box()
+             for name in ("Invoice all", "Close", "Revert to Draft", "Void")}
+    assert len({(round(b["y"]), round(b["height"])) for b in boxes.values()}) == 1, boxes
+    ship_to = page.locator(".doc-section", has_text="Ship To").last
+    expect(ship_to.locator("select")).to_have_count(0)
+    ship_to.locator(".editable-cell").first.click()
+    expect(ship_to.locator("select")).to_have_count(1)
+
+    unshipped, _ = _issued_memo(api, customer, [_demo_gem(api, "piece")], ship=False)
+    page.goto(f"{ui_server}/docs/{unshipped}", wait_until="domcontentloaded")
+    expect(page.locator(".total-hint")).to_contain_text("Nothing is out with the customer yet")
+    page.locator("tbody .li-select").first.check()
+    page.select_option("#li-bulk-select", "li-invoice")
+    expect(page.locator("#draw-preview")).to_contain_text("Set as shipped first", timeout=15000)

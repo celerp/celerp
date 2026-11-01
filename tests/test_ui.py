@@ -12512,8 +12512,8 @@ class TestDocContactBoxLayout:
 
     @pytest.mark.asyncio
     async def test_doc_detail_ship_to_section_present(self, ui_client):
-        """Doc detail page: Ship To section is rendered with address and attn fields."""
-        doc = {**_DOC_DETAIL, "contact_id": "ct:1", "contact_shipping_address": "123 Ship St", "shipping_attn": "Bob"}
+        """Draft doc detail page: Ship To section is rendered with the address picker and attn field."""
+        doc = {**_DOC_DETAIL, "contact_id": "ct:1", "contact_shipping_address": "123 Ship St", "shipping_attn": "Bob", "status": "draft"}
         ui_client.cookies.update(_authed())
         with (
             patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),

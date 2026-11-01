@@ -7039,5 +7039,8 @@
   "contacts.err_own_contact_kept": "This is your company's own record, shown as the sender on your documents, so it cannot be deleted or merged into another contact. Change its details in Company Details.",
   "contacts.own_record_note": "Your company's own record, {name}, is listed here because your documents show it as the sender. Change it in",
   "contacts.identity_on_documents": "The details here are the sender on your documents: every new invoice, quote and memo shows them.",
-  "docs.draw_line_not_shipped": "{name} is not out on memo {memo}, so there is nothing to invoice. If it has not been shipped yet, select the line and use Set as shipped first."
+  "docs.draw_line_not_shipped": "{name} is not out on memo {memo}, so there is nothing to invoice. If it has not been shipped yet, select the line and use Set as shipped first.",
+  "documents.memo_still_on_memo_hint": "Goods out with the customer that no invoice, draft or issued, has taken yet, with the shipping, tax and discount left on the memo.",
+  "documents.memo_nothing_out_hint": "Nothing is out with the customer yet. Select lines and use Set as shipped to send them.",
+  "doc.memo_outstanding_hint": "A memo is not paid. This is the memo's full value; the customer pays the invoices drawn from it."
 }

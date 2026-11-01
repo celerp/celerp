@@ -208,6 +208,18 @@
         "memo",
         "name"
       ]
+    },
+    "documents.memo_still_on_memo_hint": {
+      "en": "Goods out with the customer that no invoice, draft or issued, has taken yet, with the shipping, tax and discount left on the memo.",
+      "params": []
+    },
+    "documents.memo_nothing_out_hint": {
+      "en": "Nothing is out with the customer yet. Select lines and use Set as shipped to send them.",
+      "params": []
+    },
+    "doc.memo_outstanding_hint": {
+      "en": "A memo is not paid. This is the memo's full value; the customer pays the invoices drawn from it.",
+      "params": []
     }
   }
 }

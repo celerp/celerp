@@ -285,12 +285,17 @@ def _status_doc(item: dict) -> tuple[str, str] | None:
     return (doc_id, doc_number) if doc_id and doc_number else None
 
 
-def _line_status_doc(li: dict, eid: str, item_status_doc_map: dict | None) -> tuple[str, str] | None:
+def _line_status_doc(li: dict, eid: str, item_status_doc_map: dict | None, status: str = "",
+                     memo: tuple[str, str] | None = None) -> tuple[str, str] | None:
     """The document a line's status badge names: for a line invoiced from a memo, the memo its
-    goods are out on (the invoice holding them is the page itself); otherwise the item's own."""
+    goods are out on (the invoice holding them is the page itself); on a memo page (``memo``),
+    a lot still out names that memo even once a draw has restamped it onto its invoice (the
+    Shipped column names the invoice); otherwise the item's own."""
     drawn = li.get("drawn_from") or {}
     if drawn.get("memo_id"):
         return drawn["memo_id"], drawn.get("memo_number") or drawn["memo_id"]
+    if memo and status == "memo_out":
+        return memo
     return (item_status_doc_map or {}).get(eid)
 
 
@@ -2479,10 +2484,7 @@ celerpUpdateBulkAlloc();
             try:
                 _resolved_contact = await api.get_contact(token, cid)
                 doc = prepare_document_output(doc, contact=_resolved_contact)
-                contact_shipping_addresses = [
-                    a for a in (_resolved_contact.get("addresses") or [])
-                    if isinstance(a, dict) and a.get("address_type") == "shipping"
-                ]
+                contact_shipping_addresses = _shipping_addresses(_resolved_contact)
             except Exception:
                 pass
 
@@ -2844,6 +2846,22 @@ celerpUpdateBulkAlloc();
             if isinstance(_all_locs, list) and any(unwrap_address(l.get("address")) for l in _all_locs):
                 return _company_address_picker(entity_id, value, _all_locs)
             # else: no usable location addresses -> fall through to the plain text input below.
+        if field == "contact_shipping_address":
+            # Once issued, Ship To shows as a click-to-edit value; editing it opens the same picker
+            # a draft shows (company locations on purchasing documents, the contact's addresses
+            # on sales documents).
+            try:
+                if doc.get("doc_type") in ("purchase_order", "consignment_in", "bill"):
+                    _loc_resp = await api.get_locations(token)
+                    _locs = _loc_resp.get("items") or _loc_resp.get("locations") or (_loc_resp if isinstance(_loc_resp, list) else [])
+                    if isinstance(_locs, list) and _locs:
+                        return _ship_to_picker(entity_id, value, _locs)
+                elif doc.get("contact_id"):
+                    return _contact_ship_to_picker(
+                        entity_id, value, _shipping_addresses(await api.get_contact(token, doc["contact_id"])),
+                        doc["contact_id"])
+            except APIError:
+                pass
         if field == "status":
             # Status is a state-machine field; transitions happen via lifecycle buttons only.
             # Return a non-editable display to block direct manipulation via URL.
@@ -6387,6 +6405,12 @@ def _ship_to_picker(doc_id: str, current_address: str, locations: list, is_list:
     ) if locations else _doc_display_cell(doc_id, "contact_shipping_address", current_address or "--")
 
 
+def _shipping_addresses(contact: dict) -> list[dict]:
+    """A contact's shipping addresses, the choices of a sales document's Ship To."""
+    return [a for a in (contact.get("addresses") or [])
+            if isinstance(a, dict) and a.get("address_type") == "shipping"]
+
+
 def _contact_ship_to_picker(doc_id: str, current_address: str, contact_shipping_addresses: list, contact_id: str = "") -> FT:
     """Sales-doc Ship To: dropdown of contact's shipping addresses; GDR Add new → contact detail."""
     def _addr_text(a: dict) -> str:
@@ -7049,13 +7073,21 @@ def _memo_take_rows(doc: dict, currency: str) -> list:
         # None on a memo no draw can come from (draft, closed, void): nothing is still on it to bill.
         still = ([Div(Span(t("documents.memo_still_on_memo"), cls="total-label"),
                       Span(fmt_money(float(fixed["still_on_memo"]), currency), id="doc-still-on-memo",
-                           cls="total-value"), cls="total-row")]
+                           cls="total-value"), cls="total-row"),
+                  P(t("documents.memo_nothing_out_hint" if _nothing_out(doc) else "documents.memo_still_on_memo_hint"),
+                    cls="form-hint total-hint")]
                  if fixed.get("still_on_memo") is not None else [])
         return [*taken, *still]
     return [Div(A(t("documents.invoice_amount_from_memo", amounts=_fixed_amounts_text(tk, currency),
                     memo=tk.get("memo_number") or tk.get("memo_id")), href=doc_href(tk.get("memo_id"))),
                 cls="total-row total-label--conversion")
             for tk in doc.get("memo_fixed_taken") or [] if _fixed_amounts_text(tk, currency)]
+
+
+def _nothing_out(doc: dict) -> bool:
+    """True when no line of a memo has been shipped to the customer yet."""
+    lines = [li for li in doc.get("line_items") or [] if li.get("shipped_label")]
+    return bool(lines) and all(li["shipped_label"] == "Not shipped" for li in lines)
 
 
 # A memo line's shipped state as get_doc derives it (shipped_label) -> its catalog key.
@@ -7235,6 +7267,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
 
     _is_vendor_doc = doc_type in ("bill", "purchase_order", "consignment_in")
     ref = _pick("ref_id", "doc_number", "ref", "external_id") or entity_id
+    _memo_self = (entity_id, ref) if doc_type == "memo" else None
 
     def _cell(field: str, value) -> FT:
         """Editable display cell, routing to the correct /docs/ or /lists/ URL."""
@@ -8137,7 +8170,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             if _draft_show_item_status:
                 cells.insert(1, _item_status_badge_cell(
                     (item_status_map or {}).get(li_entity_id, ""), li_entity_id,
-                    status_doc=_line_status_doc(li, li_entity_id, item_status_doc_map),
+                    status_doc=_line_status_doc(li, li_entity_id, item_status_doc_map,
+                                               (item_status_map or {}).get(li_entity_id, ""), _memo_self),
                     held=_line_held(li, (item_status_doc_map or {}).get(li_entity_id))))
             if category_cell:
                 cells.append(category_cell)
@@ -10471,7 +10505,7 @@ async function celerpCsvImport(input, entityId) {{
                     status_val = item_status_map.get(li_eid, "") if item_status_map else ""
                     cells.append(_item_status_badge_cell(
                         status_val, li_eid,
-                        status_doc=_line_status_doc(li, li_eid, item_status_doc_map),
+                        status_doc=_line_status_doc(li, li_eid, item_status_doc_map, status_val, _memo_self),
                         held=_line_held(li, (item_status_doc_map or {}).get(li_eid))))
             if _show_shipped_label:
                 _lbl = li.get("shipped_label")
@@ -10544,7 +10578,7 @@ async function celerpCsvImport(input, entityId) {{
                 acct_code = li.get("account_code") or ""
                 acct_display = _acct_map.get(acct_code) or acct_code or ""
                 cells.append(Td(_li_field_display_cell(entity_id, str(idx), "account_code", acct_display), title=acct_display, cls="col-account"))
-            cells.append(Td(format_value(line_total, "money"), cls="cell--number col-total"))
+            cells.append(Td(format_value(line_total, "money", currency), cls="cell--number col-total"))
             if pol["show_onhand"]:
                 _item_key = li.get("item_id") or li.get("entity_id") or ""
                 _onhand = li.get("on_hand")  # frozen at Finalize; else the live qty
@@ -10918,6 +10952,8 @@ async function celerpCsvImport(input, entityId) {{
             _contact_rows.append(Div(Div(t("label.conversion_rate"), cls="form-label"), _cell("conversion_rate", _rate_display), cls="form-group"))
         if not is_list and outstanding_value is not None:
             _contact_rows.append(Div(Div(t("doc.outstanding"), cls="form-label"), Span(fmt_money(float(outstanding_value or 0), currency), id="doc-outstanding", cls="meta-value", **DOC_MONEY_ATTRS), cls="form-group"))
+            if doc_type == "memo":
+                _contact_rows.append(P(t("doc.memo_outstanding_hint"), cls="form-hint"))
 
     _is_sub_template = doc_type in ("subscription_invoice", "subscription_po")
 
@@ -10994,6 +11030,8 @@ async function celerpCsvImport(input, entityId) {{
                 Div(
                     Div(Span("🚚", cls="section-icon"), H3(t("page.ship_to"), cls="section-title"), cls="section-header"),
                     Div(Div(t("doc.address"), cls="form-label"),
+                        _cell("contact_shipping_address", doc.get("contact_shipping_address") or "--")
+                        if not is_draft and not is_list else
                         _ship_to_picker(entity_id, doc.get("contact_shipping_address") or "", locations or [], is_list)
                         if _is_vendor_doc else
                         (_contact_ship_to_picker(entity_id, doc.get("contact_shipping_address") or "", contact_shipping_addresses or [], doc.get("contact_id") or "")
