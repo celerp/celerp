@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from fa_fixtures import FA
 from test_runs import _contributed, _lines, _lock, _managed_from, _movements, _notices, _run, _run_journals
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -178,7 +179,7 @@ async def test_s3_classification_default_and_override_authority(fa):
     refused = await fa.post(f"/assets/{car}/corrections", {
         "changes": {"life_months": 48}, "classification": "error", "override_reason": "Life was keyed wrong",
         "op_key": "ask"}, headers=operator)
-    assert refused.status_code == 403 and "Manage accounting" in refused.json()["detail"]
+    assert refused.status_code == 403 and "Manage accounting" in refusal_text(refused.json()["detail"])
     blank = await fa.post(f"/assets/{car}/correct", {"changes": {"life_months": 48}, "classification": "error",
                                                      "preview": True, "op_key": "o"})
     assert blank.status_code == 422 and "reason" in blank.json()["detail"].lower()

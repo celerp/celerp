@@ -25,6 +25,7 @@ from celerp.accounting_roles import (
     ROLE_TYPES,
     AccountRole,
     Refused,
+    catalog_refusal,
     refusal,
 )
 from celerp.events.engine import emit_event
@@ -637,7 +638,7 @@ def refuse_misplaced_tax(settings: dict, doc_type: str | None, state: dict, line
         from fastapi import HTTPException
 
         key = "documents.err_tax_purchase_only" if doc_side(doc_type) == "sales" else "documents.err_tax_sales_only"
-        raise HTTPException(status_code=422, detail=t(key, tax=name))
+        raise HTTPException(status_code=422, detail=catalog_refusal(key, tax=name))
 
 
 def refuse_unissuable_taxes(settings: dict, doc_type: str | None, doc: dict) -> None:

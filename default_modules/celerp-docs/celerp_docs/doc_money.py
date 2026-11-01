@@ -20,7 +20,7 @@ from celerp.tax_regimes import line_tax_unset, tax_entries, tax_text, unreadable
 from celerp_docs.doc_constants import (DRAFT_REVERT_RETURNED, DRAFT_REVERT_STATUSES, INBOUND_DOC_TYPES,
                                       INBOUND_DRAFT_REVERT_STATUSES)
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
-from ui.i18n import t
+from celerp.accounting_roles import catalog_refusal
 
 
 class UnratedTaxError(ValueError):
@@ -62,9 +62,9 @@ def draft_route(state: dict) -> list[str]:
     return steps + [last]
 
 
-def _issued_detail(key: str, state: dict, **values) -> str:
+def _issued_detail(key: str, state: dict, **values) -> dict:
     """A past-draft refusal *key* ending with the way back to a draft (draft_route)."""
-    return t(key, route=" ".join(t(step) for step in draft_route(state)), **values)
+    return catalog_refusal(key, route=[catalog_refusal(step) for step in draft_route(state)], **values)
 
 
 def unreadable_tax_refusal(tax: str, state: dict | None = None) -> HTTPException:
@@ -72,7 +72,7 @@ def unreadable_tax_refusal(tax: str, state: dict | None = None) -> HTTPException
     document *state* past draft the message names the way back to one (draft_route)."""
     if _past_draft(state):
         return HTTPException(status_code=422, detail=_issued_detail("documents.err_tax_unreadable_issued", state, tax=tax))
-    return HTTPException(status_code=422, detail=t("documents.err_tax_unreadable", tax=tax))
+    return HTTPException(status_code=422, detail=catalog_refusal("documents.err_tax_unreadable", tax=tax))
 
 
 def refuse_unset_line_tax(lines, state: dict | None = None, numbers: list[int] | None = None, *,
@@ -88,8 +88,8 @@ def refuse_unset_line_tax(lines, state: dict | None = None, numbers: list[int] |
             if _past_draft(state):
                 detail = _issued_detail("documents.err_line_tax_unset_issued", state, line=number)
             else:
-                detail = t("documents.err_line_tax_unset_receive" if receiving else "documents.err_line_tax_unset",
-                           line=number)
+                detail = catalog_refusal("documents.err_line_tax_unset_receive" if receiving else "documents.err_line_tax_unset",
+                                         line=number)
             raise HTTPException(status_code=422, detail=detail)
 
 

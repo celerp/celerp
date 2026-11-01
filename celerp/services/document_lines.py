@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from celerp.accounting_roles import refusal
+from celerp.accounting_roles import catalog_refusal, refusal
 from celerp.models.projections import Projection
 from celerp.services.company_lock import lock_company
 from celerp.services.line_measures import splitting_allowed
@@ -401,7 +401,7 @@ async def linked_items(session, company_id, line_items, *, known: Counter | None
                 status_code=422,
                 detail={
                     "code": "invalid_reference",
-                    "message": t("documents.err_item_missing", where=where, ident=ident),
+                    **catalog_refusal("documents.err_item_missing", where=where, ident=ident),
                     "item_id": ident,
                     "line": n,
                 },
@@ -597,7 +597,7 @@ async def assert_document_item_uniqueness(session, company_id, doc_type, line_it
                 status_code=409,
                 detail={
                     "code": "duplicate_document_item",
-                    "message": t("documents.duplicate_item_on_document"),
+                    **catalog_refusal("documents.duplicate_item_on_document"),
                     "item_id": ident,
                 },
             )

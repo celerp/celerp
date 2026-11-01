@@ -12,7 +12,7 @@ from fastapi import HTTPException
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
-from celerp.accounting_roles import KeyedRefusal
+from celerp.accounting_roles import KeyedRefusal, catalog_refusal
 from celerp.inventory_codes import (
     BarcodeConflictError,
     RfidEpcConflictError,
@@ -21,7 +21,7 @@ from celerp.inventory_codes import (
 )
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
-from ui.i18n import t
+
 from celerp.projections.handlers.system import apply_system_event
 from celerp.projections.retired import RETIRED
 
@@ -45,7 +45,7 @@ _KERNEL_PREFIX = "sys."
 
 
 def _not_found(entity_type: str) -> HTTPException:
-    return HTTPException(status_code=404, detail=t(
+    return HTTPException(status_code=404, detail=catalog_refusal(
         "inventory.err_item_not_found" if entity_type == "item" else "error.record_not_found"))
 
 

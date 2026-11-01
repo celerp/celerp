@@ -13,6 +13,7 @@ from __future__ import annotations
 import importlib
 
 import pytest
+from ui.i18n import refusal_text
 
 EXPECTED = {
     ('manage_accounting',): {
@@ -135,7 +136,7 @@ async def test_l2_operator_is_told_what_disposing_needs(fa):
     operator = await fa.role_headers("operator")
     r = await fa.post(f"/assets/{car}/dispose", {"date": "2026-05-01", "reason": "lost", "preview": True,
                                                  "op_key": "l2"}, operator)
-    assert r.status_code == 403 and "Manage accounting" in r.json()["detail"], r.text
+    assert r.status_code == 403 and "Manage accounting" in refusal_text(r.json()["detail"]), r.text
 
 
 @pytest.mark.asyncio

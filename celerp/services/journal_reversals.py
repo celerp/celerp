@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.projections import Projection
-from ui.i18n import t
+from celerp.accounting_roles import catalog_refusal
 
 
 async def _states(session: AsyncSession, company_id, ids) -> dict[str, dict]:
@@ -92,6 +92,6 @@ async def require_cancelled_once(session: AsyncSession, company_id, entity_id: s
             continue
         if void and eid == entity_id and standing:
             first = nodes[standing[0]]
-            raise HTTPException(status_code=422, detail=t(
+            raise HTTPException(status_code=422, detail=catalog_refusal(
                 "acct.err_je_already_reversed", **_named(first, standing[0])))
-        raise HTTPException(status_code=422, detail=t("acct.err_je_cancelled_twice", **_named(state, eid)))
+        raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_je_cancelled_twice", **_named(state, eid)))

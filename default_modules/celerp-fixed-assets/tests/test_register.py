@@ -19,6 +19,7 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from fa_fixtures import FA, demo_owner
+from ui.i18n import refusal_text
 
 
 pytestmark = pytest.mark.asyncio
@@ -446,7 +447,7 @@ async def test_adding_an_asset_by_hand_needs_the_right_permission(fa):
     opening = {"kind": "opening", "class_id": cls["id"], "name": "Warehouse", "available_date": "2020-01-01",
                "cost": "1000", "preview": True, "op_key": "perm-1"}
     refused = await fa.post("/assets", opening, headers=operator)
-    assert refused.status_code == 403 and refused.json()["detail"] == missing_permission_text("manage_accounting")
+    assert refused.status_code == 403 and refusal_text(refused.json()["detail"]) == missing_permission_text("manage_accounting")
     physical = {"kind": "physical", "name": "Forklift", "preview": True, "op_key": "perm-2"}
     assert (await fa.post("/assets", physical, headers=operator)).status_code == 200
     blocked = await fa.post("/assets", physical, headers=viewer)

@@ -28,7 +28,8 @@ from typing import IO, Any, Callable, Collection, Iterator, Mapping
 import openpyxl
 from openpyxl.utils.exceptions import InvalidFileException
 
-from ui.i18n import t
+from celerp.accounting_roles import catalog_refusal
+from ui.i18n import refusal_text, t
 
 
 ValidateFn = Callable[[str, str, dict], bool]
@@ -128,11 +129,13 @@ class TabularError(ValueError):
     position (``row``/``column``) for formula errors and the available sheet
     names (``sheets``) or the leading lines (``header_lines``) when the caller
     must choose a sheet or a header row, and for a header that would lose
-    values a ``code``: ``no_header``, ``extra_columns`` or ``duplicate_header``."""
+    values a ``code``: ``no_header``, ``extra_columns`` or ``duplicate_header``.
+    ``detail`` is the keyed refusal (catalog_refusal); its text is the refusal in the
+    language of the request that met it."""
 
     def __init__(
         self,
-        message: str,
+        detail: dict,
         *,
         row: int | None = None,
         column: str | None = None,
@@ -140,7 +143,8 @@ class TabularError(ValueError):
         code: str | None = None,
         header_lines: list[list[str]] | None = None,
     ) -> None:
-        super().__init__(message)
+        super().__init__(refusal_text(detail))
+        self.detail = detail
         self.row = row
         self.column = column
         self.sheets = sheets
@@ -673,10 +677,10 @@ def _rows_to_csv(rows: list[dict], cols: list[str]) -> str:
 def _enforce_bounds(n_cols: int, n_rows: int, limits: Limits | None = None) -> None:
     bounds = _limits(limits)
     if n_rows > bounds.rows:
-        raise TabularError(t("import.err_too_many_rows", n_rows=n_rows, max=bounds.rows))
+        raise TabularError(catalog_refusal("import.err_too_many_rows", n_rows=n_rows, max=bounds.rows))
     cells = n_rows * max(n_cols, 1)
     if cells > bounds.cells:
-        raise TabularError(t("import.err_too_many_cells", cells=cells, max=bounds.cells))
+        raise TabularError(catalog_refusal("import.err_too_many_cells", cells=cells, max=bounds.cells))
 
 
 def _filled_width(line: list[str]) -> int:
@@ -743,7 +747,7 @@ def _table(lines: list[list[str]], header_row: int) -> tuple[list[str], list[dic
     no filled cell are skipped, as empty sheet rows are.
     """
     if header_row < 0 or (lines and header_row >= len(lines)):
-        raise TabularError(t("import.err_header_row_missing"), code="header_row")
+        raise TabularError(catalog_refusal("import.err_header_row_missing"), code="header_row")
     header = lines[header_row] if lines else []
     data = [line for line in lines[header_row + 1:] if any(line)]
     _enforce_bounds(max(_filled_width(line) for line in [header, *data]), len(data))
@@ -789,7 +793,7 @@ def _grid(header: list[str], lines: list[list[str]]) -> tuple[list[str], list[di
         if name:
             if name in seen:
                 raise TabularError(
-                    t("import.err_header_duplicate", first=_column_letter(seen[name]),
+                    catalog_refusal("import.err_header_duplicate", first=_column_letter(seen[name]),
                       column=_column_letter(i), header=repr(name)),
                     column=_column_letter(i), code="duplicate_header",
                 )
@@ -797,11 +801,11 @@ def _grid(header: list[str], lines: list[list[str]]) -> tuple[list[str], list[di
         elif any(i < len(line) and line[i] for line in lines):
             if i > last_named:
                 raise TabularError(
-                    t("import.err_column_unnamed", column=_column_letter(i)),
+                    catalog_refusal("import.err_column_unnamed", column=_column_letter(i)),
                     column=_column_letter(i), code="extra_columns",
                 )
             raise TabularError(
-                t("import.err_column_unnamed", column=_column_letter(i)),
+                catalog_refusal("import.err_column_unnamed", column=_column_letter(i)),
                 column=_column_letter(i), code="no_header",
             )
     rows = [{cols[i]: (line[i] if i < len(line) else "") for i in range(width)} for line in lines]
@@ -847,43 +851,43 @@ def _xlsx_lines(data: bytes, *, sheet: str | None, limits: Limits | None = None)
     """
     bounds = _limits(limits)
     if len(data) > bounds.file_bytes:
-        raise TabularError(t("import.err_file_too_large"))
+        raise TabularError(catalog_refusal("import.err_file_too_large"))
 
     file = io.BytesIO(data)
     if not zip_directory_fits(file):
-        raise TabularError(t("import.err_xlsx_entries"))
+        raise TabularError(catalog_refusal("import.err_xlsx_entries"))
     try:
         archive = zipfile.ZipFile(file)
     except ZIP_ERRORS as exc:
-        raise TabularError(t("import.err_not_xlsx"), code="not_workbook") from exc
+        raise TabularError(catalog_refusal("import.err_not_xlsx"), code="not_workbook") from exc
     infos = archive.infolist()
     if len(infos) > MAX_XLSX_ENTRIES:
-        raise TabularError(t("import.err_xlsx_entries"))
+        raise TabularError(catalog_refusal("import.err_xlsx_entries"))
     if sum(info.file_size for info in infos) > bounds.uncompressed:
-        raise TabularError(t("import.err_xlsx_uncompressed"))
+        raise TabularError(catalog_refusal("import.err_xlsx_uncompressed"))
     try:
         for info in infos:  # openpyxl unpacks them itself, so each is checked here first
             check_zip_member(info)
     except ZipMemberRefused as exc:
-        raise TabularError(t("import.err_not_xlsx"), code="not_workbook") from exc
+        raise TabularError(catalog_refusal("import.err_not_xlsx"), code="not_workbook") from exc
 
     try:
         workbook = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=False)
     except (InvalidFileException, KeyError, *ZIP_ERRORS) as exc:
-        raise TabularError(t("import.err_xlsx_open"), code="not_workbook") from exc
+        raise TabularError(catalog_refusal("import.err_xlsx_open"), code="not_workbook") from exc
 
     try:
         names = list(workbook.sheetnames)
         if sheet is not None:
             if sheet not in names:
-                raise TabularError(t("import.err_no_sheet", sheet=repr(sheet)), sheets=names)
+                raise TabularError(catalog_refusal("import.err_no_sheet", sheet=repr(sheet)), sheets=names)
             worksheet = workbook[sheet]
         else:
             non_empty = [name for name in names if not _sheet_is_empty(workbook[name])]
             if not non_empty:
-                raise TabularError(t("import.err_workbook_empty"), code="empty")
+                raise TabularError(catalog_refusal("import.err_workbook_empty"), code="empty")
             if len(non_empty) > 1:
-                raise TabularError(t("import.err_sheet_required"), sheets=non_empty)
+                raise TabularError(catalog_refusal("import.err_sheet_required"), sheets=non_empty)
             worksheet = workbook[non_empty[0]]
 
         # The stored sheet dimension is written by whatever produced the file;
@@ -899,7 +903,7 @@ def _xlsx_lines(data: bytes, *, sheet: str | None, limits: Limits | None = None)
                     isinstance(value, str) and value.startswith("=")
                 ):
                     raise TabularError(
-                        t("import.err_formula"),
+                        catalog_refusal("import.err_formula"),
                         row=cell.row,
                         column=getattr(cell, "column_letter", None),
                         code="formula",
@@ -926,13 +930,13 @@ def _lines(data: bytes, filename: str, *, sheet: str | None) -> list[list[str]]:
     """Dispatch on the file suffix. CSV and .xlsx are supported; .xlsm/.xls and
     everything else raise."""
     if len(data) > MAX_TABLE_BYTES:
-        raise TabularError(t("import.err_file_too_large"))
+        raise TabularError(catalog_refusal("import.err_file_too_large"))
     suffix = Path(filename).suffix.lower()
     if suffix == ".csv":
         return _csv_lines(data.decode("utf-8-sig"))
     if suffix == ".xlsx":
         return _xlsx_lines(data, sheet=sheet)
-    raise TabularError(t("import.err_unsupported_type", type=suffix or repr(filename)), code="unsupported_type")
+    raise TabularError(catalog_refusal("import.err_unsupported_type", type=suffix or repr(filename)), code="unsupported_type")
 
 
 def read_table(
@@ -976,12 +980,12 @@ def read_table_at_header(
     """
     lines = _lines(data, filename, sheet=sheet)
     if not any(any(line) for line in lines):
-        raise TabularError(t("import.err_empty", file=filename), code="empty")
+        raise TabularError(catalog_refusal("import.err_empty", file=filename), code="empty")
     if header_row is None:
         header_row = detect_header_row(lines[:HEADER_SEARCH_LINES], known)
         if header_row is None:
             raise TabularError(
-                t("import.err_choose_header_row"), code="header_row",
+                catalog_refusal("import.err_choose_header_row"), code="header_row",
                 header_lines=lines[:HEADER_SEARCH_LINES],
             )
     return (*_table(lines, header_row), header_row)

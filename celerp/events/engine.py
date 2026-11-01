@@ -10,7 +10,7 @@ from fastapi import HTTPException
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
-from celerp.accounting_roles import Refused, refusal
+from celerp.accounting_roles import Refused, catalog_refusal, refusal
 from celerp.events.schemas import EVENT_SCHEMA_MAP
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
@@ -30,7 +30,6 @@ from celerp.services.document_lines import (
     normalize_line_ids,
 )
 from celerp.services.business_time import business_date_of
-from ui.i18n import t
 
 
 def apply_event(state: dict, event: LedgerEntry) -> dict:
@@ -116,7 +115,7 @@ async def refuse_stripe_payment_removal(session, company_id, entity_id, payments
         raise HTTPException(status_code=422, detail=STRIPE_OWNED_PAYMENT)
     if (event_type == "doc.payment.deleted" and payment is not None
             and is_stripe_receipt(payment, await stripe_receipt_references(session, company_id, entity_id))):
-        raise HTTPException(status_code=422, detail=t("error.stripe_receipt_kept"))
+        raise HTTPException(status_code=422, detail=catalog_refusal("error.stripe_receipt_kept"))
 
 
 async def _refuse_stripe_payment_removal(session, kwargs: dict) -> None:
@@ -193,7 +192,7 @@ async def _check_period_lock(session, company_id, data: dict) -> None:
     if event_date <= lock_date:
         raise HTTPException(
             status_code=422,
-            detail=t("error.period_locked", date=lock_date_str),
+            detail=catalog_refusal("error.period_locked", date=lock_date_str),
         )
 
 
@@ -556,9 +555,9 @@ async def _item_applied(session, entry: LedgerEntry, transition, held_lot_carve:
     )
 
     if transition.before is None and entry.event_type not in ITEM_BIRTHS:
-        raise HTTPException(status_code=404, detail=t("inventory.err_item_not_found"))
+        raise HTTPException(status_code=404, detail=catalog_refusal("inventory.err_item_not_found"))
     if transition.before is not None and entry.event_type in ITEM_BIRTHS:
-        raise HTTPException(status_code=409, detail=t("inventory.err_item_exists"))
+        raise HTTPException(status_code=409, detail=catalog_refusal("inventory.err_item_exists"))
     assert_draft_not_circulated(entry.event_type, transition)
     # Modules hold an item to what its lineage may still take (a production run's open
     # output, for one); a handler that cannot be resolved fails the event, never skips it.
@@ -621,7 +620,7 @@ async def emit_event(
     # (reads, which never emit, are unaffected) so nothing changes mid-backup.
     from celerp.services.backup_state import is_active as _backup_active
     if _backup_active():
-        raise HTTPException(status_code=503, detail=t("error.backup_running"))
+        raise HTTPException(status_code=503, detail=catalog_refusal("error.backup_running"))
 
     # Work inside a module writes only while its company still uses that module.
     from celerp.services.company_lock import judge_module_writes

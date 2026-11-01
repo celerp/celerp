@@ -326,10 +326,13 @@ def refusal(key: str, message: str, /, **params) -> dict:
 
 
 def catalog_refusal(key: str, /, **params) -> dict:
-    """The ``refusal`` whose English is the en catalog's text for ``key``."""
-    from ui.i18n import t  # ui.i18n reads prices, whose cost rules raise Refused
+    """The ``refusal`` whose English is the en catalog's text for ``key``, its params read
+    as refusal_text reads them (a nested refusal as its own text)."""
+    from ui.i18n import english, refusal_text  # ui.i18n reads prices, whose cost rules raise Refused
 
-    return refusal(key, t(key, "en", **params), **params)
+    with english():
+        message = refusal_text(refusal(key, "", **params))
+    return refusal(key, message, **params)
 
 
 class KeyedRefusal(Exception):

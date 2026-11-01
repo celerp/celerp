@@ -21,12 +21,13 @@ from fastapi import Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.accounting_roles import catalog_refusal
 from celerp.db import get_session
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company
 from celerp.services.auth import ROLE_LEVELS, get_current_company_id, get_current_role, normalize_role
 from celerp.services.company_lock import AUTHORITY, locked_company
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 
 class Role(NamedTuple):
@@ -145,15 +146,20 @@ def role_has_permission(settings: dict | None, role: str, key: str) -> bool:
     return granted
 
 
-def missing_permission_text(key: str) -> str:
+def missing_permission_refusal(key: str) -> dict:
     """The refusal for a role without *key*, naming the permission as the role editor labels it."""
     perm = _PERMISSIONS_BY_KEY.get(key)
-    return t("error.permission_missing", label=perm.label if perm else key)
+    return catalog_refusal("error.permission_missing", label=perm.label if perm else key)
+
+
+def missing_permission_text(key: str) -> str:
+    """missing_permission_refusal in the user's language."""
+    return refusal_text(missing_permission_refusal(key))
 
 
 def missing_permission(key: str) -> HTTPException:
     """The 403 for a role without *key*."""
-    return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=missing_permission_text(key))
+    return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=missing_permission_refusal(key))
 
 
 def assert_role_permission(settings: dict | None, role: str, key: str) -> None:

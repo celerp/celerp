@@ -24,6 +24,7 @@ from celerp.models.ledger import LedgerEntry
 from fa_fixtures import FA
 from test_runs import _contributed, _lines, _lock, _managed_from, _movements, _notices, _owner_id, _run, _set_module
 from test_helpers import doc_version
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -437,7 +438,7 @@ async def test_s4_mixed_invoice_goods_only_credit_leaves_clearing(fa):
              "source_line_id": "no-such-line"}
     refused = await _discard_refused(fa, await fa.client.post("/docs", headers=fa.h, json={
         "doc_type": "credit_note", "original_doc_id": inv, "line_items": [stray], "total": 100.0}))
-    assert refused.status_code == 422 and "Car" in refused.json()["detail"]
+    assert refused.status_code == 422 and "Car" in refusal_text(refused.json()["detail"])
 
 
 async def test_s4_paid_sale_asset_returned(fa):
@@ -622,7 +623,7 @@ async def test_s4_document_write_validation(fa):
         return {"name": name, "quantity": 1, "unit_price": 100.0, **({"asset_id": asset_id} if asset_id else {}), **kw}
 
     on_bill = await create("bill", [line("Bill line", car)])
-    assert on_bill.status_code == 422 and "Bill line" in on_bill.json()["detail"]
+    assert on_bill.status_code == 422 and "Bill line" in refusal_text(on_bill.json()["detail"])
     not_pending = await create("invoice", [line("Unsold car", car)])
     assert not_pending.status_code in (409, 422) and car_number in not_pending.json()["detail"]
     inv = await _sell(fa, car, on="2026-01-20")

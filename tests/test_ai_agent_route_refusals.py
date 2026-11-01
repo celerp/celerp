@@ -22,11 +22,11 @@ from fastapi import HTTPException
 from celerp.accounting_roles import Refused, refusal
 from celerp.ai.tools import _api_routes, keyed_error
 from ui import i18n
-from ui.i18n import t
+
 
 _EN = json.loads((Path(i18n.__file__).parent / "locales" / "en.json").read_text(encoding="utf-8"))
 # The canonical makers of a keyed refusal, and the index of the catalog key they take.
-_MAKERS = {refusal: 0, keyed_error: 1, t: 0}
+_MAKERS = {refusal: 0, keyed_error: 1}
 _ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -199,7 +199,7 @@ class _Walk:
         if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.attr == "detail":
             # A caught exception's detail: keyed when its class keys it.
             classes = self._caught(node.value, tree, scope)
-            return bool(classes) and all(self._carries_detail(c) for c in classes)
+            return bool(classes) and all(self._carries_detail(c, self._where(fn, node)) for c in classes)
         if isinstance(node, ast.Call):
             callee = _resolve(node.func, scope)
             if callee is str and len(node.args) == 1 and isinstance(node.args[0], ast.Name):
@@ -235,9 +235,10 @@ class _Walk:
             self._returns[fn] = bool(returns) and all(self._keyed(r, fn, scope, tree) for r in returns)
         return self._returns[fn]
 
-    def _carries_detail(self, cls) -> bool:
+    def _carries_detail(self, cls, where: str) -> bool:
         """An exception class whose ``detail`` is keyed: an HTTPException subclass the walk
-        checks where it builds it, or a class whose __init__ sets ``self.detail`` keyed."""
+        checks where it builds it, a class whose __init__ sets ``self.detail`` keyed, or one
+        that keeps the detail it is given, whose every raise must then give a keyed one."""
         if not isinstance(cls, type) or not _first_party(cls):
             return False
         if issubclass(cls, HTTPException):
@@ -250,6 +251,10 @@ class _Walk:
             scope = _scope(init, tree)
             sets = [n.value for n in ast.walk(tree) if isinstance(n, ast.Assign) and any(
                 ast.unparse(target) == "self.detail" for target in n.targets)]
+            given = list(inspect.signature(init).parameters)[1:2]
+            if sets and all(isinstance(v, ast.Name) and v.id in given for v in sets):
+                self.carried[cls] = where
+                return True
             if sets:
                 return all(self._keyed(v, init, scope, tree) for v in sets)
         return False

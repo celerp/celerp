@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 from functools import lru_cache
@@ -447,6 +448,16 @@ def get_lang(request) -> str:
 def set_lang(lang: str) -> None:
     """Set the context language for the current request."""
     _current_lang.set(lang)
+
+
+@contextmanager
+def english():
+    """Read text in English inside the block, whatever the request's language."""
+    token = _current_lang.set("en")
+    try:
+        yield
+    finally:
+        _current_lang.reset(token)
 
 
 def current_lang() -> str:

@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from test_helpers import perm_setup
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 
 async def _contact(client, h: dict, name: str, **fields) -> str:
@@ -90,7 +90,7 @@ async def test_create_list_rejects_a_deleted_or_non_contact_reference(client, se
     assert "deleted" in r.text
     r = await client.post("/lists", headers=h, json={"list_type": "quotation", "contact_id": ctx["item_id"]})
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("documents.err_contact_not_contact", "en")
+    assert refusal_text(r.json()["detail"]) == t("documents.err_contact_not_contact", "en")
 
 
 # A selection and a merge or delete of the same contact are serialized by the contact row

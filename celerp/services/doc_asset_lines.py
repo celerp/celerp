@@ -13,7 +13,8 @@ from fastapi import HTTPException
 
 from celerp.services.line_measures import line_label
 from celerp.services.money import to_decimal
-from ui.i18n import t
+from celerp.accounting_roles import catalog_refusal
+
 
 # The documents a line may sell or credit an asset on.
 ASSET_DOC_TYPES = ("invoice", "credit_note")
@@ -26,7 +27,7 @@ def asset_lines(doc: dict) -> list[dict]:
 
 def _refuse(key: str, line: dict, index: int) -> None:
     """Refuse (422) naming the line as every document message names it, else by its position."""
-    raise HTTPException(status_code=422, detail=t(key, line=line_label(line) or index + 1))
+    raise HTTPException(status_code=422, detail=catalog_refusal(key, line=line_label(line) or index + 1))
 
 
 async def notify(session, *, company_id, user_id, doc_id: str, doc: dict, change: str) -> None:
@@ -39,7 +40,7 @@ async def notify(session, *, company_id, user_id, doc_id: str, doc: dict, change
 
     handlers = sorted({c["handler"] for c in get_slot("doc_asset_lines")})
     if not handlers:
-        raise HTTPException(status_code=409, detail=t("documents.err_asset_lines_unhandled"))
+        raise HTTPException(status_code=409, detail=catalog_refusal("documents.err_asset_lines_unhandled"))
     for handler in handlers:
         await resolve_handler(handler)(session=session, company_id=company_id, user_id=user_id,
                                        doc_id=doc_id, doc=doc, change=change)
@@ -66,7 +67,7 @@ async def check_write(session, *, company_id, user_id, doc_id: str, doc: dict, b
         return
     if (doc.get("status") or "draft") != "draft":
         if sorted(li["asset_id"] for _, li in named) != sorted(li["asset_id"] for li in asset_lines(before)):
-            raise HTTPException(status_code=409, detail=t("documents.err_asset_lines_issued"))
+            raise HTTPException(status_code=409, detail=catalog_refusal("documents.err_asset_lines_issued"))
         return
     if gone:
         await notify(session, company_id=company_id, user_id=user_id, doc_id=doc_id,
