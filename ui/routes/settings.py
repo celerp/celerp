@@ -3445,7 +3445,7 @@ def _role_matrix_row(perm, settings: dict | None, is_owner: bool) -> FT:
 
     reason = _FIXED_ROW_REASON.get(perm.key) if not perm.grantable else None
     label = Td(
-        perm.label,
+        t(perm.label_key),
         Span(reason, cls="role-ref-reason") if reason else "",
         cls="text-left",
     )

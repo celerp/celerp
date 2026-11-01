@@ -337,6 +337,13 @@ def catalog_refusal(key: str, /, **params) -> dict:
     return refusal(key, message, **params)
 
 
+def period_locked_refusal(lock_date: str | date) -> dict:
+    """A date at or before the lock date refused, naming who can move the lock and where."""
+    return catalog_refusal("error.period_locked", date=lock_date,
+                           permission=catalog_refusal("perm.name.manage_accounting"),
+                           place=catalog_refusal("page.period_lock"))
+
+
 class KeyedRefusal(Exception):
     """A refusal raised where it is met: ``detail`` is the ``refusal`` a route answers
     with, so it reads in each reader's language; its text is the refusal in the language

@@ -11,6 +11,8 @@ cannot be reproduced exactly, the correction is refused and nothing changes.
 """
 from __future__ import annotations
 
+from celerp.accounting_roles import period_locked_refusal
+
 import uuid
 from datetime import date, datetime, timezone
 
@@ -533,7 +535,7 @@ async def test_locked_current_period_refuses_and_writes_nothing(client, session)
     before = await _snapshot(session, auth)
     r = await _set_cost(client, auth, ctx["a"], 100.0)
     assert r.status_code == 422, r.text
-    assert refusal_text(r.json()["detail"]) == t("error.period_locked", date=date_text(date.fromisoformat(lock_date)))
+    assert refusal_text(r.json()["detail"]) == refusal_text(period_locked_refusal(date_text(date.fromisoformat(lock_date))))
     assert await _snapshot(session, auth) == before
 
 

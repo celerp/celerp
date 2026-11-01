@@ -12,5 +12,169 @@
     "th",
     "vi"
   ],
-  "keys": {}
+  "keys": {
+    "posting.go_to_section": {
+      "en": "Go to the posting accounts",
+      "params": []
+    },
+    "filter.empty_period": {
+      "en": "Nothing dated {date_from} to {date_to}. Records outside these dates are not shown here.",
+      "params": [
+        "date_from",
+        "date_to"
+      ]
+    },
+    "documents.status_received_before_import": {
+      "en": "Received before import",
+      "params": []
+    },
+    "contacts.back_to_list": {
+      "en": "Open the customer list",
+      "params": []
+    },
+    "perm.name.view_dashboards": {
+      "en": "View dashboards",
+      "params": []
+    },
+    "perm.name.view_documents": {
+      "en": "View documents",
+      "params": []
+    },
+    "perm.name.view_contacts": {
+      "en": "View contacts",
+      "params": []
+    },
+    "perm.name.view_inventory": {
+      "en": "View inventory",
+      "params": []
+    },
+    "perm.name.edit_documents": {
+      "en": "Create & edit documents",
+      "params": []
+    },
+    "perm.name.edit_contacts": {
+      "en": "Create & edit contacts",
+      "params": []
+    },
+    "perm.name.edit_inventory": {
+      "en": "Create & edit inventory",
+      "params": []
+    },
+    "perm.name.edit_inventory_amounts": {
+      "en": "Edit quantities & weights",
+      "params": []
+    },
+    "perm.name.finalize_documents": {
+      "en": "Finalize & void documents",
+      "params": []
+    },
+    "perm.name.fulfill_documents": {
+      "en": "Fulfill & receive documents",
+      "params": []
+    },
+    "perm.name.record_payments": {
+      "en": "Record payments",
+      "params": []
+    },
+    "perm.name.manage_labels": {
+      "en": "Manage label templates",
+      "params": []
+    },
+    "perm.name.manage_manufacturing": {
+      "en": "Manage manufacturing",
+      "params": []
+    },
+    "perm.name.view_fixed_assets": {
+      "en": "View fixed assets",
+      "params": []
+    },
+    "perm.name.manage_fixed_assets": {
+      "en": "Manage fixed assets",
+      "params": []
+    },
+    "perm.name.check_fixed_assets": {
+      "en": "Record asset checks",
+      "params": []
+    },
+    "perm.name.use_ai_assistant": {
+      "en": "Use AI assistant",
+      "params": []
+    },
+    "perm.name.run_backups": {
+      "en": "Run backups",
+      "params": []
+    },
+    "perm.name.view_subscriptions": {
+      "en": "View subscriptions",
+      "params": []
+    },
+    "perm.name.view_inventory_costs": {
+      "en": "See inventory costs",
+      "params": []
+    },
+    "perm.name.set_inventory_prices": {
+      "en": "Set inventory prices",
+      "params": []
+    },
+    "perm.name.set_sales_doc_prices": {
+      "en": "Set sales document prices",
+      "params": []
+    },
+    "perm.name.delete_documents": {
+      "en": "Delete documents",
+      "params": []
+    },
+    "perm.name.adjust_inventory": {
+      "en": "Adjust stock & bulk operations",
+      "params": []
+    },
+    "perm.name.revert_items_to_draft": {
+      "en": "Revert items to draft",
+      "params": []
+    },
+    "perm.name.import_export_data": {
+      "en": "Import / export data",
+      "params": []
+    },
+    "perm.name.view_payments": {
+      "en": "View payments",
+      "params": []
+    },
+    "perm.name.view_financial_reports": {
+      "en": "View financial reports",
+      "params": []
+    },
+    "perm.name.manage_accounting": {
+      "en": "Manage accounting",
+      "params": []
+    },
+    "perm.name.manage_module_settings": {
+      "en": "Manage module settings",
+      "params": []
+    },
+    "perm.name.manage_users": {
+      "en": "Manage users",
+      "params": []
+    },
+    "perm.name.manage_company_settings": {
+      "en": "Manage company settings",
+      "params": []
+    },
+    "perm.name.manage_integrations": {
+      "en": "Manage integrations",
+      "params": []
+    },
+    "perm.name.manage_permissions": {
+      "en": "Edit role permissions",
+      "params": []
+    },
+    "perm.name.manage_company_lifecycle": {
+      "en": "Deactivate, reset & reseed company",
+      "params": []
+    },
+    "perm.name.manage_billing": {
+      "en": "Manage billing",
+      "params": []
+    }
+  }
 }

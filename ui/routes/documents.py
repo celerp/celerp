@@ -1142,11 +1142,15 @@ def _reopened_toast(answer) -> dict:
                         action={"href": doc_href(memos[0].get("id")), "label": memos[0].get("doc_number") or ""})
 
 
-def _action_error(msg: str | dict, *, persist: bool = False, action: dict | list[dict] | None = None, **triggers):
+def _action_error(msg: str | dict | APIError, *, persist: bool = False, action: dict | list[dict] | None = None,
+                  **triggers):
     """Fire a toast popup for action errors and restore any open editable cell to display mode.
+    An APIError shows as its refusal, so a refusal resolved on another page links to it.
     ``persist`` and ``action`` are toast_header's; ``triggers`` are further client events fired
     with it."""
     from starlette.responses import HTMLResponse as _HR
+    if isinstance(msg, APIError):
+        msg = msg.data if isinstance(msg.data, dict) and msg.data.get("message_key") else error_message(msg)
     return _HR(
         "",
         status_code=200,
@@ -3044,7 +3048,7 @@ celerpUpdateBulkAlloc();
                 await api.reprice_doc(token, entity_id, new_pl, int(version))
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            return _action_error(error_message(e))
+            return _action_error(e)
         # Contact, price_list, terms_template, or currency changes affect multiple sections - full page refresh
         if field in ("contact_id", "price_list", "terms_template"):
             from starlette.responses import Response as _R
@@ -3156,7 +3160,7 @@ celerpUpdateBulkAlloc();
             line_items[idx] = {**line_items[idx], field: value}
             await api.patch_doc(token, entity_id, {"line_items": line_items}, expected_version=doc.get("version"))
         except APIError as e:
-            return _action_error(error_message(e))
+            return _action_error(e)
         display_value = value
         if field == "account_code" and value:
             try:
@@ -3239,7 +3243,7 @@ celerpUpdateBulkAlloc();
             try:
                 await api.update_doc_note(token, entity_id, note_id, note)
             except APIError as e:
-                return _action_error(error_message(e))
+                return _action_error(e)
         return await _doc_notes_section_response(token, entity_id, is_list=False)
 
     @app.delete("/docs/{entity_id}/notes/{note_id}")
@@ -3309,7 +3313,7 @@ celerpUpdateBulkAlloc();
             try:
                 await api.update_list_note(token, entity_id, note_id, note)
             except APIError as e:
-                return _action_error(error_message(e))
+                return _action_error(e)
         return await _doc_notes_section_response(token, entity_id, is_list=True)
 
     @app.delete("/lists/{entity_id}/notes/{note_id}")
@@ -3536,7 +3540,7 @@ celerpUpdateBulkAlloc();
                     {"href": f"/inventory/{x['params']['id']}", "label": x["params"]["sku"]}
                     for x in refused["params"]["lots"]])
             # Return error inline
-            return _action_error(error_message(e))
+            return _action_error(e)
         return _R("", status_code=204, headers={**notice, "HX-Redirect": f"/docs/{entity_id}"})
 
     # T4: Record payment
@@ -3571,7 +3575,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 raise
-            return _action_error(error_message(e))
+            return _action_error(e)
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     # T1: Convert quotation to invoice
@@ -3587,7 +3591,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 raise
-            return _action_error(error_message(e))
+            return _action_error(e)
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{target_id}"})
 
     def _draw_picks(form) -> dict:
@@ -3676,7 +3680,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 raise
-            return _action_error(error_message(e))
+            return _action_error(e)
         summary = _receive_summary(result.get("line_counts"))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}",
                                                 **(toast_header(summary, "info") if summary else {})})
@@ -3724,7 +3728,7 @@ celerpUpdateBulkAlloc();
             line = (data.get("params") or {}).get("line")
             if data.get("message_key") in _RETURN_BY_LOT_KEYS and isinstance(line, int):
                 return _action_error(error_message(e), celerpOpenReturnLots={"line": line})
-            return _action_error(error_message(e))
+            return _action_error(e)
         count = len({idx for idx, _, _ in picked_lots}) or len(lines)
         done = t(f"documents.return_done_{'one' if count == 1 else 'many'}", n=count)
         # Goods already paid for come back as a supplier credit note: say so until it is read.
@@ -3745,7 +3749,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 raise
-            return _action_error(error_message(e))
+            return _action_error(e)
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}",
                                                 **toast_header(t("documents.receipt_undone"), "info")})
 
@@ -3777,7 +3781,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 raise
-            return _action_error(error_message(e))
+            return _action_error(e)
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     # ---- Payment management routes ----
@@ -3796,7 +3800,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 raise
-            return _action_error(error_message(e))
+            return _action_error(e)
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     @app.post("/docs/{entity_id}/delete-payment")
@@ -3812,7 +3816,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 raise
-            return _action_error(error_message(e))
+            return _action_error(e)
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     async def _apply_note(request: Request, entity_id: str, apply):
@@ -3829,7 +3833,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 raise
-            return _action_error(error_message(e))
+            return _action_error(e)
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     @app.post("/docs/{entity_id}/apply-credit")
@@ -3858,7 +3862,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 raise
-            return _action_error(error_message(e))
+            return _action_error(e)
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     @app.delete("/docs/bulk-draft")
@@ -3877,7 +3881,7 @@ celerpUpdateBulkAlloc();
         try:
             await api.delete_bulk_drafts(token, doc_ids)
         except APIError as e:
-            return _action_error(error_message(e))
+            return _action_error(e)
         # Reload once the docs are actually gone (htmx triggers a full refresh).
         return _R("", status_code=204, headers={"HX-Refresh": "true"})
 
@@ -3897,7 +3901,7 @@ celerpUpdateBulkAlloc();
         try:
             result = await api.create_shipment_from_docs(token, doc_ids)
         except APIError as e:
-            return _action_error(error_message(e))
+            return _action_error(e)
         ship_id = result.get("entity_id") or result.get("id", "")
         return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{ship_id}"})
 
@@ -3947,7 +3951,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 raise
-            return _action_error(error_message(e))
+            return _action_error(e)
         # A doc concurrently closed, already paid, or shrunk under its row lock is skipped
         # by the API, not paid. Report every skipped doc by name and reason so the user is
         # never told a partial run fully succeeded; only a clean run refreshes the list.
@@ -4201,7 +4205,7 @@ celerpUpdateBulkAlloc();
         try:
             return _share_panel(entity_id, await api.get_share_status(token, entity_id), await _company_today(token))
         except APIError as e:
-            return _action_error(error_message(e))
+            return _action_error(e)
 
     @app.post("/docs/{entity_id}/share")
     async def create_share_link_route(request: Request, entity_id: str):
@@ -4214,7 +4218,7 @@ celerpUpdateBulkAlloc();
         try:
             return _share_panel(entity_id, await api.create_share_link(token, entity_id, expires_at), await _company_today(token))
         except APIError as e:
-            return _action_error(error_message(e))
+            return _action_error(e)
 
     @app.delete("/docs/{entity_id}/share")
     async def revoke_share_link_route(request: Request, entity_id: str):
@@ -4225,7 +4229,7 @@ celerpUpdateBulkAlloc();
         try:
             return _share_panel(entity_id, await api.revoke_share_link(token, entity_id), await _company_today(token))
         except APIError as e:
-            return _action_error(error_message(e))
+            return _action_error(e)
 
     # -----------------------------------------------------------------------
     # Fulfillment toggle routes
@@ -4256,7 +4260,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 raise
-            return _action_error(error_message(e))
+            return _action_error(e)
         # Goods another invoice named: say whose, and that it can no longer ship them, in a
         # notice that stays until it is closed.
         moved = (answer.get("taken_from") or []) if isinstance(answer, dict) else []
@@ -4356,7 +4360,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 raise
-            return _action_error(error_message(e))
+            return _action_error(e)
         try:
             doc = await api.get_doc(token, entity_id)
         except Exception:
@@ -4375,7 +4379,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 raise
-            return _action_error(error_message(e))
+            return _action_error(e)
         try:
             doc = await api.get_doc(token, entity_id)
         except Exception:
@@ -4529,7 +4533,7 @@ celerpUpdateBulkAlloc();
         try:
             r = await api.download_doc_file(token, entity_id, file_id)
         except APIError as e:
-            return _action_error(error_message(e))
+            return _action_error(e)
         return _R(content=r.content, status_code=r.status_code, headers=dict(r.headers))
 
     @app.get("/lists")
@@ -5009,7 +5013,7 @@ celerpUpdateBulkAlloc();
             try:
                 await api.change_list_type(token, entity_id, value)
             except APIError as e:
-                return _action_error(error_message(e))
+                return _action_error(e)
             return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"})
         if field == "contact_id":
             if value == "__new__":
@@ -5018,14 +5022,14 @@ celerpUpdateBulkAlloc();
                 # The backend copies the customer's details, currency and prices in the same save.
                 await api.patch_list(token, entity_id, {"contact_id": value}, expected_version=_form_version(form))
             except APIError as e:
-                return _action_error(error_message(e))
+                return _action_error(e)
             # Customer details and repriced lines change together - re-render the page.
             return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"})
         try:
             result = await api.patch_list(token, entity_id, {field: value})
             lst = await api.get_list(token, entity_id)
         except APIError as e:
-            return _action_error(error_message(e))
+            return _action_error(e)
         cell = _doc_display_cell(entity_id, field, lst.get(field), "list")
         return _R(
             to_xml(cell),
@@ -5137,7 +5141,7 @@ celerpUpdateBulkAlloc();
             if isinstance(e.data, dict) and e.data.get("code") == "list_old_rule_total":
                 return _action_error(error_message(e), action={
                     "href": "#list-old-rule-notice", "label": t("documents.btn_recalculate_total")})
-            return _action_error(error_message(e))
+            return _action_error(e)
         return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"})
 
     async def _audit_line_tbody(token: str, entity_id: str, offset: int, limit: int) -> FT:
@@ -5320,7 +5324,7 @@ celerpUpdateBulkAlloc();
         try:
             await api.set_audit_count(token, entity_id, item_id, cq)
         except APIError as e:
-            return _action_error(error_message(e))
+            return _action_error(e)
         display_val = f"{float(cq):g}" if cq is not None else _EMPTY
         edit_url = f"/lists/{entity_id}/line/{item_id}/counted/edit"
         return Div(

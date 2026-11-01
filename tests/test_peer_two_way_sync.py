@@ -345,9 +345,9 @@ async def test_a_lock_refusal_is_known_in_the_language_the_firm_wrote_it_in(lang
     day on an older Celerp: either way the client knows the same lock refused it."""
     from celerp.services.peer_journals import refused_by_lock
 
-    written = t("error.period_locked", lang, date=date_text(date(2026, 3, 31), lang))
+    written = t("error.period_locked", lang, date=date_text(date(2026, 3, 31), lang), permission=t("perm.name.manage_accounting", lang), place=t("page.period_lock", lang))
     assert refused_by_lock(written, "2026-03-31")
-    assert refused_by_lock(t("error.period_locked", lang, date="2026-03-31"), "2026-03-31")
+    assert refused_by_lock(t("error.period_locked", lang, date="2026-03-31", permission=t("perm.name.manage_accounting", lang), place=t("page.period_lock", lang)), "2026-03-31")
     assert not refused_by_lock(written, "2026-04-30")
 
 

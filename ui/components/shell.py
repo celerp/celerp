@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 from fasthtml.common import *
 
+from celerp.accounting_roles import PERIOD_LOCK_PATH
 from celerp.services.update import CARD_REASONS, PIP_BLOCKERS, REASON_CODES, reason_key
 from ui.config import COOKIE_NAME, get_role
 from ui.i18n import t, get_lang, available_langs, lang_label, refusal_text, try_again_pattern
@@ -3062,13 +3063,27 @@ def secret_input(name: str, value: str = "", lang: str = "en", cls: str = "form-
     )
 
 
+# A refusal the reader can resolve on one page: its key, that page and the catalog key naming it.
+_REFUSAL_FIXES = {
+    "error.period_locked": (PERIOD_LOCK_PATH, "page.period_lock"),
+}
+
+
+def refusal_fix(detail) -> dict | None:
+    """The {href, label} link to the page that resolves a keyed refusal, when there is one."""
+    fix = _REFUSAL_FIXES.get(detail.get("message_key")) if isinstance(detail, dict) else None
+    return {"href": fix[0], "label": t(fix[1])} if fix else None
+
+
 def toast_header(message: str | dict, kind: str = "success", *, persist: bool = False,
                  action: dict | list[dict] | None = None, **extra_triggers) -> dict:
     """HX-Trigger header for the shell's celerpToast listener. A keyed refusal *message* is shown
-    in the reader's language (refusal_text). ``action`` ({href, label},
+    in the reader's language (refusal_text), with a link to the page that resolves it when
+    there is one (refusal_fix). ``action`` ({href, label},
     or a list of them) adds a link to the toast for each. Extra keyword arguments become sibling client events fired
     from the same header."""
     toast: dict = {"message": message if isinstance(message, str) else refusal_text(message), "type": kind}
+    action = action or refusal_fix(message)
     if persist:
         toast["persist"] = True
     if action:

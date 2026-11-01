@@ -10,6 +10,8 @@ Undoing the merge reverses that exact entry and puts every lot back where it was
 """
 from __future__ import annotations
 
+from celerp.accounting_roles import period_locked_refusal
+
 import uuid
 
 import pytest
@@ -292,7 +294,7 @@ async def test_a_locked_period_refuses_the_merge_and_changes_nothing(session, cl
     before = await _entries(session, auth)
     r = await _merge(client, auth, [a, b])
     assert r.status_code == 422, r.text
-    assert refusal_text(r.json()["detail"]) == t("error.period_locked", "en", date="31 Dec 2999")
+    assert refusal_text(r.json()["detail"]) == refusal_text(period_locked_refusal("31 Dec 2999"))
     assert await _entries(session, auth) == before
     for lot in (a, b):
         state = await _state(session, auth, lot)
