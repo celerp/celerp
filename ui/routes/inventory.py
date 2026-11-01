@@ -7547,7 +7547,7 @@ def _with_draft_cost_list(price_lists: list[dict], item: dict, company_settings:
         return price_lists
     if any(is_cost_list_name(pl.get("name", "")) for pl in price_lists):
         return price_lists
-    cost_defs = [pl for pl in (company_settings.get("price_lists") or []) if is_cost_list_name(pl.get("name", ""))]
+    cost_defs = [pl for pl in price_lists_in(company_settings) if is_cost_list_name(pl.get("name", ""))]
     return price_lists + cost_defs if cost_defs else price_lists
 
 
@@ -7568,7 +7568,7 @@ def _with_draft_cost_schema(schema: list[dict], item: dict, company_settings: di
         return schema
     if any(f.get("key") in COST_SCHEMA_KEYS for f in schema):
         return schema
-    return schema + cost_columns(company_settings.get("price_lists") or [])
+    return schema + cost_columns(price_lists_in(company_settings))
 
 
 def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency: str | None,

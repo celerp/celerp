@@ -29,9 +29,15 @@ DEFAULT_PRICE_LIST_NAME: str = "Retail"
 # The cost list: its price is the item's cost_price.
 COST_PRICE_LIST_NAME: str = "Cost"
 
-# Read fallback for companies whose settings were never seeded. Includes Cost so
-# cost columns and valuation keep working before first settings access.
-PRICE_LISTS_FALLBACK: list[dict] = [{"name": "Retail"}, {"name": "Wholesale"}, {"name": "Cost"}]
+# The system's cost list: every company has it, whatever its stored lists hold (price_lists_in).
+SYSTEM_COST_LIST: dict = {"name": COST_PRICE_LIST_NAME, "description": "Cost / landed price"}
+
+# The price lists of a company that never saved its own, in the one default order.
+PRICE_LISTS_FALLBACK: list[dict] = [
+    {"name": DEFAULT_PRICE_LIST_NAME, "description": "Standard retail price"},
+    {"name": "Wholesale", "description": "Wholesale / trade price"},
+    SYSTEM_COST_LIST,
+]
 
 # Rounding increments offered by the settings UI; the API accepts any positive number.
 ROUNDING_CHOICES: tuple[str, ...] = ("0.01", "0.05", "0.10", "0.50", "1", "5", "10")
@@ -256,7 +262,8 @@ def new_cost_name_error(price_lists: list[dict], stored_price_lists: list[dict])
     for pl in price_lists:
         name = str(pl.get("name", "")).strip()
         if is_cost_list_name(name) and name.lower() not in stored_cost:
-            return f"'{name}' is a reserved cost name; the cost list is managed by the system"
+            return (f"'{name}' is a name Celerp keeps for cost. Every company already has the Cost list, "
+                    "which shows each item's cost, so give this list another name.")
     return None
 
 
@@ -287,8 +294,13 @@ def normalized_price_lists(price_lists: list[dict]) -> list[dict]:
 
 
 def price_lists_in(settings: dict) -> list[dict]:
-    """The company's price lists from its settings, or the fallback lists."""
-    return settings.get("price_lists") or PRICE_LISTS_FALLBACK
+    """The company's price lists from its settings, or the fallback lists, always holding a
+    cost list: one stored without it (an older copy, an import) gets the system's, which the
+    next save of the lists stores. A copy, so a caller may change it."""
+    lists = [dict(pl) for pl in settings.get("price_lists") or PRICE_LISTS_FALLBACK]
+    if not any(is_cost_list_name(str(pl.get("name", "")).strip()) for pl in lists):
+        lists.append(dict(SYSTEM_COST_LIST))
+    return lists
 
 
 async def get_price_config(session: AsyncSession, company_id) -> tuple[list[dict], str, str]:

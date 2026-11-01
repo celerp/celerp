@@ -264,7 +264,7 @@ async def test_reading_the_price_lists_shows_the_defaults_and_saves_nothing(clie
     await session.commit()
     r = await client.get("/companies/me/price-lists", headers=h)
     assert r.status_code == 200
-    assert [pl["name"] for pl in r.json()] == ["Retail", "Wholesale"]
+    assert [pl["name"] for pl in r.json()] == ["Retail", "Wholesale", "Cost"]
     await session.refresh(company)
     assert "price_lists" not in company.settings
     r = await client.patch("/companies/me/base-price-list", json={"name": "Wholesale"}, headers=h)
@@ -584,7 +584,7 @@ class TestValidationGateHardening:
         stored = [{"name": "Cost"}, {"name": "Retail"}]
         assert new_cost_name_error([{"name": "Cost"}, {"name": "Retail"}], stored) is None
         err = new_cost_name_error([{"name": "Landed Cost"}, {"name": "Retail"}], stored)
-        assert err and "reserved" in err
+        assert err and "another name" in err
 
     def test_normalized_price_lists_coerces_to_float(self):
         from celerp.services.pricing import normalized_price_lists
@@ -684,7 +684,7 @@ async def test_patch_price_lists_rejects_exotic_factors_and_new_cost_names(clien
     assert r.status_code == 422
     r = await _set_config(client, h, price_lists=[{"name": "Retail"}, {"name": "Landed Cost"}])
     assert r.status_code == 422
-    assert "reserved" in r.json()["detail"]
+    assert "another name" in r.json()["detail"]
     r = await _set_config(client, h, price_lists=[{"name": "Retail"}, {"name": "retail"}])
     assert r.status_code == 422
     assert "unique" in r.json()["detail"]
@@ -767,3 +767,43 @@ def test_settings_status_error_resets_span_and_toasts():
     assert "flash--error" not in body
     trigger = resp.headers["HX-Trigger"]
     assert "celerpToast" in trigger and "cannot be the base" in trigger
+
+
+@pytest.mark.asyncio
+async def test_a_company_without_a_cost_list_reads_and_saves_the_system_one(client, session):
+    """A company whose stored price lists hold no cost list (an older copy, an import) still
+    has the system's Cost list: it reads it, its items carry the cost columns, and saving
+    the lists as read stores it."""
+    from sqlalchemy import update
+
+    from celerp.models.company import Company
+    from celerp.services.auth import decode_access_token
+    token = await _register(client)
+    h = _auth(token)
+    company = await session.get(Company, uuid.UUID(decode_access_token(token)["company_id"]))
+    await session.execute(update(Company).where(Company.id == company.id).values(
+        settings={**company.settings, "price_lists": [{"name": "Retail"}, {"name": "Wholesale"}]}))
+    await session.commit()
+    lists = (await client.get("/companies/me/price-lists", headers=h)).json()
+    assert [pl["name"] for pl in lists] == ["Retail", "Wholesale", "Cost"]
+    schema = (await client.get("/companies/me/item-schema", headers=h)).json()
+    assert {"cost_price", "cost_price_total"} <= {f["key"] for f in schema}
+    r = await _set_config(client, h, price_lists=[*lists, {"name": "Trade", "multiplier": 0.7}])
+    assert r.status_code == 200, r.text
+    await session.refresh(company)
+    assert [pl["name"] for pl in company.settings["price_lists"]] == ["Retail", "Wholesale", "Cost", "Trade"]
+
+
+def test_every_default_lists_retail_then_wholesale_then_cost():
+    """One default set of price lists, in one order, wherever a company has none stored."""
+    from celerp.services.field_schema import effective_field_schema
+    from celerp.services.pricing import price_lists_in
+    assert [pl["name"] for pl in price_lists_in({})] == ["Retail", "Wholesale", "Cost"]
+    keys = [f["key"] for f in effective_field_schema({}) if f["key"].endswith("_price")]
+    assert keys == ["retail_price", "wholesale_price", "cost_price"]
+
+
+def test_a_new_cost_name_is_refused_with_what_to_do():
+    from celerp.services.pricing import new_cost_name_error
+    err = new_cost_name_error([{"name": "Retail"}, {"name": "Landed Cost"}], [{"name": "Retail"}])
+    assert "Landed Cost" in err and "another name" in err

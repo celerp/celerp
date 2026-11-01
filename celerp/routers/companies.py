@@ -2660,19 +2660,8 @@ from celerp.services.pricing import (
     is_derived,
     normalized_price_lists,
     price_config_error,
+    price_lists_in,
 )
-
-DEFAULT_PRICE_LISTS: list[dict] = [
-    {"name": "Retail", "description": "Standard retail price"},
-    {"name": "Wholesale", "description": "Wholesale / trade price"},
-]
-
-
-def _stored_price_lists(settings: dict) -> list[dict]:
-    """The company's price lists; the defaults until it saves its own."""
-    existing = settings.get("price_lists")
-    return copy.deepcopy(DEFAULT_PRICE_LISTS) if existing is None else existing
-
 
 class PriceListsPatch(BaseModel):
     price_lists: list[dict]
@@ -2693,7 +2682,7 @@ async def get_price_lists(
     company = await session.get(Company, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
-    price_lists = _stored_price_lists(company.settings)
+    price_lists = price_lists_in(company.settings)
     if not role_has_permission(company.settings, role, "view_inventory_costs"):
         # Without view_inventory_costs: no cost lists, and names/descriptions only. A
         # derived list's factor stays gated because price ÷ factor would reveal a
@@ -2719,7 +2708,7 @@ async def patch_price_lists(
     settings = dict(company.settings)
     error = price_config_error(payload.price_lists,
                                payload.base_price_list or settings.get("base_price_list"),
-                               _stored_price_lists(settings))
+                               price_lists_in(settings))
     if error:
         raise HTTPException(status_code=422, detail=error)
     settings["price_lists"] = normalized_price_lists(payload.price_lists)
@@ -2752,7 +2741,7 @@ async def patch_base_price_list(
     if company is None:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     settings = dict(company.settings)
-    price_lists = _stored_price_lists(settings)
+    price_lists = price_lists_in(settings)
     target = next((pl for pl in price_lists if pl.get("name") == payload.name), None)
     if target is None:
         raise HTTPException(status_code=422, detail=t("company.err_price_list_missing", name=payload.name))
