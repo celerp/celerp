@@ -62,7 +62,7 @@ def draft_route(state: dict) -> list[str]:
     return steps + [last]
 
 
-def _issued_detail(key: str, state: dict, **values) -> dict:
+def _issued_detail(key: str, state: dict, /, **values) -> dict:
     """A past-draft refusal *key* ending with the way back to a draft (draft_route)."""
     return catalog_refusal(key, route=[catalog_refusal(step) for step in draft_route(state)], **values)
 

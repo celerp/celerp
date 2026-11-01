@@ -112,6 +112,7 @@ def test_unmet_dependencies_are_refused_in_the_reader_language():
         [{"id": "a", "status": "completed", "result_summary": {"id": "1"}}, bad_target], bad_target)[1])
     errors.append(routes._resolve_action_arguments([{"id": "b", "bindings": ["x"]}], {"bindings": ["x"]})[1])
     errors.append(routes._action_error({"ok": False, "status": 500}))
+    errors.append(routes._action_error({"ok": False, "status": 401, "data": {"detail": "Session expired"}}))
     errors.append(routes._action_error({"ok": False, "status": 422, "data": {"detail": [{"msg": "Field required"}]}}))
     assert all(e.get("message_key") for e in errors)
     assert _english([i18n.refusal_text(e) for e in errors]) == []

@@ -14,7 +14,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 from celerp.services.permissions import missing_permission_text
 
 
@@ -325,7 +325,7 @@ async def test_reports_permission_can_read_it(client, session):
                     {"account": "4100", "debit": 0.0, "credit": 10.0}],
     }, headers=_h(reader))
     assert w.status_code == 403, w.text
-    assert w.json()["detail"] == missing_permission_text("manage_accounting")
+    assert refusal_text(w.json()["detail"]) == missing_permission_text("manage_accounting")
 
 
 # ---------------------------------------------------------------------------

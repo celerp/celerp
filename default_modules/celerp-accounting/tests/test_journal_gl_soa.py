@@ -26,7 +26,7 @@ import uuid
 
 import pytest
 
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 from celerp.services.permissions import missing_permission_text
 
 
@@ -221,7 +221,7 @@ async def test_manual_je_locked_period_rejected(client):
     assert r.status_code == 200
     r = await _post_manual_je(client, tok, _bal(10.0), ts="2026-01-15")
     assert r.status_code == 422
-    assert "locked" in r.json()["detail"].lower()
+    assert "locked" in refusal_text(r.json()["detail"]).lower()
     # After the lock date it posts fine
     r = await _post_manual_je(client, tok, _bal(10.0), ts="2026-02-01")
     assert r.status_code == 200, r.text
@@ -498,7 +498,7 @@ async def test_bulk_void_requires_manage_accounting(client, session):
 
     r = await _bulk_void(client, reader, [je_id], reason="Not mine to void")
     assert r.status_code == 403, r.text
-    assert r.json()["detail"] == missing_permission_text("manage_accounting")
+    assert refusal_text(r.json()["detail"]) == missing_permission_text("manage_accounting")
     entry = [e for e in (await _journal(client, admin))["entries"] if e["je_id"] == je_id][0]
     assert entry["status"] == "posted"
 
@@ -1272,7 +1272,7 @@ async def test_revert_to_draft_blocked_in_locked_period(client):
 
     r = await client.post(f"/docs/{inv}/revert-to-draft", headers=_h(tok), json={})
     assert r.status_code == 422, r.text
-    assert "locked" in r.json()["detail"].lower()
+    assert "locked" in refusal_text(r.json()["detail"]).lower()
     # The finalize entry still stands
     tb = (await client.get("/accounting/trial-balance", headers=_h(tok),
                            params={"date_to": "2026-01-31"})).json()
@@ -1298,7 +1298,7 @@ async def test_delete_payment_blocked_in_locked_period(client):
 
     r = await client.delete(f"/docs/{inv}/payments/0", headers=_h(tok))
     assert r.status_code == 422, r.text
-    assert "locked" in r.json()["detail"].lower()
+    assert "locked" in refusal_text(r.json()["detail"]).lower()
 
 
 @pytest.mark.asyncio
@@ -2463,7 +2463,7 @@ async def test_a_line_naming_a_contact_that_is_not_there_is_refused(client):
         {"account": "4100", "debit": 0, "credit": 10.0},
     ])
     assert r.status_code == 422, r.text
-    assert "contact:nobody" in r.json()["detail"]
+    assert "contact:nobody" in refusal_text(r.json()["detail"])
     assert (await _journal(client, tok))["entries"] == start["entries"]
 
 

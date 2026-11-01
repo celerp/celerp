@@ -62,6 +62,14 @@ async def test_a_route_the_ai_does_not_call_is_not_checked(recorded):
     assert recorded == []
 
 
+async def test_a_signed_out_session_is_not_a_refusal_the_ai_keeps(recorded):
+    """A 401 refuses the session: the AI answers it with its own signed-out text and the
+    browser reads its detail as the sign-in redirect's reason."""
+    handler = app.exception_handlers[StarletteHTTPException]
+    await handler(_request(agent=True), HTTPException(401, "Session expired"))
+    assert recorded == []
+
+
 async def test_outside_tests_the_body_is_sent_as_built(monkeypatch):
     monkeypatch.setattr(error_body, "unkeyed", None)
     handler = app.exception_handlers[StarletteHTTPException]

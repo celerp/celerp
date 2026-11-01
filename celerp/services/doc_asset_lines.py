@@ -25,7 +25,7 @@ def asset_lines(doc: dict) -> list[dict]:
     return [li for li in doc.get("line_items") or [] if isinstance(li, dict) and li.get("asset_id")]
 
 
-def _refuse(key: str, line: dict, index: int) -> None:
+def _refuse(key: str, line: dict, index: int, /) -> None:
     """Refuse (422) naming the line as every document message names it, else by its position."""
     raise HTTPException(status_code=422, detail=catalog_refusal(key, line=line_label(line) or index + 1))
 

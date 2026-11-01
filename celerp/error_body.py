@@ -39,8 +39,11 @@ def agent_route(scope) -> bool:
 
 
 def check(where: str, status_code: int, detail: Any, agent: bool) -> None:
-    """Record an agent route's refusal that carries no key, when tests are watching."""
-    if unkeyed is not None and agent and status_code >= 400 and not keyed(detail):
+    """Record an agent route's refusal that carries no key, when tests are watching. A 401
+    refuses the session, not the request: the AI answers it with its own signed-out text
+    (jobs.caller_refusal, celerp_ai routes._action_error) and the browser reads its detail
+    as the sign-in redirect's reason, so it is not a refusal the AI keeps."""
+    if unkeyed is not None and agent and status_code >= 400 and status_code != 401 and not keyed(detail):
         unkeyed.append(f"{where} answered {status_code} with an unkeyed refusal: {detail!r}")
 
 

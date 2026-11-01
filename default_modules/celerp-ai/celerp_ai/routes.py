@@ -165,7 +165,7 @@ def _attachment_kinds(file_ids: list[str] | None, company_id, user_id) -> set[st
     return kinds
 
 
-def _conflict(code: str, key: str) -> HTTPException:
+def _conflict(code: str, key: str, /) -> HTTPException:
     from celerp.ai.tools import keyed_error
     return HTTPException(status_code=409, detail=keyed_error(code, key))
 
@@ -1059,7 +1059,8 @@ def _action_error(result: dict) -> dict | None:
     """Why a confirmed action failed: the executor's own keyed error, or the rejecting
     route's refusal kept whole (code, message, message_key, params, errors), which the
     routes the AI calls key where they raise it (or translate there, kept as written).
-    Field validation gets its catalog text,
+    Field validation gets its catalog text, a 401 (the session, not the request) reads
+    as signed out, as a read's does (jobs.caller_refusal),
     and a reply no text explains (none, or a bare code) reads as the keyed request
     failure, so the reply always says the reason in the reader's language."""
     from celerp.ai.tools import keyed_error
@@ -1067,6 +1068,8 @@ def _action_error(result: dict) -> dict | None:
         return None
     if result.get("error"):
         return result["error"]
+    if result.get("status") == 401:
+        return keyed_error("session_expired", "error.session_expired")
     data = result.get("data")
     detail = data.get("detail") if isinstance(data, dict) else None
     if isinstance(detail, dict) and (detail.get("message_key") or detail.get("errors")):

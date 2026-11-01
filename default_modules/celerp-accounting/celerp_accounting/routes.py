@@ -3650,7 +3650,7 @@ def _statement_csv_bytes(content: bytes, filename: str, content_type: str | None
         try:
             cols, rows = read_table(content, "statement.xlsx")
         except TabularError as e:
-            raise HTTPException(status_code=422, detail=str(e))
+            raise HTTPException(status_code=422, detail=e.detail)
         return _rows_to_csv(rows, cols).encode("utf-8")
     return content
 
@@ -3674,7 +3674,7 @@ async def _import_statement_lines(
     try:
         parsed = parse_bank_csv(content, col_map)
     except TabularError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=422, detail=e.detail)
 
     if parsed["needs_mapping"]:
         return {
@@ -3799,7 +3799,7 @@ async def import_recon_csv(
     try:
         content = await read_upload_bytes(file)
     except TabularError as e:
-        raise HTTPException(status_code=413, detail=str(e))
+        raise HTTPException(status_code=413, detail=e.detail)
     col_map = _json.loads(column_map) if column_map else None
     return await _import_statement_lines(db, recon, company_id, content, file.filename or "statement.csv", col_map)
 

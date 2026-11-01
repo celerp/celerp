@@ -699,7 +699,7 @@ async def read_upload_bytes(upload: Any, limit: int = MAX_TABLE_BYTES) -> bytes:
     while chunk := await upload.read(1024 * 1024):
         size += len(chunk)
         if size > limit:
-            raise TabularError(t("import.err_file_over_limit", mb=limit // (1024 * 1024)))
+            raise TabularError(catalog_refusal("import.err_file_over_limit", mb=limit // (1024 * 1024)))
         chunks.append(chunk)
     return b"".join(chunks)
 
