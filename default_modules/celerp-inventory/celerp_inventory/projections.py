@@ -5,6 +5,7 @@ from copy import deepcopy
 
 from celerp.accounting_roles import CONSIGNOR_FIELD, CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD
 from celerp.services.money import round_basis
+from celerp.services.goods_cost import GOODS_COST_UNKNOWN
 
 # Maps old weight_unit abbreviations to new unit names
 _WEIGHT_UNIT_MAP: dict[str, str] = {
@@ -46,7 +47,7 @@ CORE_ITEM_KEYS: frozenset[str] = frozenset({
     "quantity", "sell_by", "unit", "weight", "weight_unit", "gross_weight", "gross_weight_unit",
     "reserved_quantity", "quantity_fulfilled",
     # cost bases (per-list *_price fields are matched by suffix, not listed)
-    "cost_total", "cost_price", "cost_base", "cost_landed", "landed_costs",
+    "cost_total", "cost_price", "cost_base", "cost_landed", "landed_costs", GOODS_COST_UNKNOWN,
     # reorder / planning
     "reorder_point", "reorder_qty",
     # flags / classification
@@ -310,14 +311,16 @@ def _recompute_cost(current: dict) -> None:
     current.pop("cost_price", None)  # always derived from cost_total at read time (flatten_item)
 
 
-def _apply_goods_cost(current: dict, field: str, value) -> None:
+def _apply_goods_cost(current: dict, field: str, value, unknown=None) -> None:
     """The one normalization of a manual goods-cost change (cost_price or cost_total).
 
     cost_total is the goods basis itself. cost_price is a unit cost that _recompute_cost turns
     into basis = unit x quantity, or keeps as the unit cost of a zero-quantity lot until stock
     arrives. Clearing either removes the goods cost; landed cost stays and is re-added on top.
+    ``unknown`` (the event's GOODS_COST_UNKNOWN) marks the goods part as not a known cost;
+    any other change sets a known one.
     """
-    for key in ("cost_base", "cost_price", "cost_total", "cost_landed"):
+    for key in ("cost_base", "cost_price", "cost_total", "cost_landed", GOODS_COST_UNKNOWN):
         current.pop(key, None)
     if value not in (None, ""):
         if field == "cost_total":
@@ -325,6 +328,17 @@ def _apply_goods_cost(current: dict, field: str, value) -> None:
         else:
             current["cost_price"] = float(value)
     _recompute_cost(current)
+    if unknown:
+        current[GOODS_COST_UNKNOWN] = True
+
+
+def _set_unknown(current: dict, data: dict) -> None:
+    """An event naming GOODS_COST_UNKNOWN sets (true) or clears (false) it; absent, it stays."""
+    if GOODS_COST_UNKNOWN in data:
+        if data[GOODS_COST_UNKNOWN]:
+            current[GOODS_COST_UNKNOWN] = True
+        else:
+            current.pop(GOODS_COST_UNKNOWN, None)
 
 
 def _set_quantity(current: dict, new_qty, cost_base=None, landed_costs=None) -> None:
@@ -502,14 +516,14 @@ def _apply_item_event(state: dict, event_type: str, data: dict) -> dict:
                 current["attributes"] = attrs
                 current.pop(field, None)
         for field, value in cost_changes:
-            _apply_goods_cost(current, field, value)
+            _apply_goods_cost(current, field, value, data.get(GOODS_COST_UNKNOWN))
         current = _sync_expiry_from_attributes(current)
         _recompute_cost(current)
     elif event_type == "item.pricing.set":
         pt = data["price_type"]
         price = data["new_price"]
         if pt in ("cost_price", "cost_total"):
-            _apply_goods_cost(current, pt, price)
+            _apply_goods_cost(current, pt, price, data.get(GOODS_COST_UNKNOWN))
         else:
             current[pt] = price
     elif event_type == "item.status.set":
@@ -528,12 +542,14 @@ def _apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         if "consignment_flag" in data:
             current["consignment_flag"] = data["consignment_flag"]
         _set_quantity(current, data["new_qty"], data.get("cost_base"), data.get("landed_costs"))
+        _set_unknown(current, data)
     elif event_type == "item.cost_adjusted":
         # Restate the goods cost of a lot after the fact: manufacturing re-costs a produced lot to the
         # run's actual input cost once completion knows the true received quantity. cost_total in the
         # payload is the new absolute cost_base; the landed pools stay on top of it.
         current["cost_base"] = float(data["cost_total"])
         _recompute_cost(current)
+        _set_unknown(current, data)
     elif event_type in ("item.inventory_account.recorded", "item.inventory_account.moved"):
         current[LOT_ACCOUNT_FIELD] = data[LOT_ACCOUNT_FIELD]
     elif event_type == "item.consignor_payable.recorded":
@@ -548,6 +564,7 @@ def _apply_item_event(state: dict, event_type: str, data: dict) -> dict:
             current.pop("status_doc_number", None)
         current[LOT_ACCOUNT_FIELD] = data[LOT_ACCOUNT_FIELD]
         current["cost_base"] = float(data["cost_total"])
+        current.pop(GOODS_COST_UNKNOWN, None)
         _recompute_cost(current)
     elif event_type == "item.inventory_on_books.recorded":
         pass  # _keep_on_books

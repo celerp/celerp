@@ -124,7 +124,12 @@ function packagedApp({ argv = process.argv } = {}) {
 }
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
-const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// Polls until `done()` holds: the fake launches fail or start on timers, and a fixed sleep
+// can end before a loaded machine has run them.
+async function until(done, ms = 2000) {
+  const end = Date.now() + ms;
+  while (!done() && Date.now() < end) await new Promise((resolve) => setTimeout(resolve, 5));
+}
 const TAG = "https://github.com/celerp/celerp/releases/tag/v2.6.1";
 
 test("an installer that fails to start after quitting has begun keeps Celerp open, shows the failure and offers the installer",
@@ -136,7 +141,8 @@ test("an installer that fails to start after quitting has begun keeps Celerp ope
     await t.listeners["install-update"]();
     await settle();
     expect(t.quits).toEqual([]);            // the installer has not started yet
-    await wait(60);                         // the launch and the elevated retry both fail
+    // the launch and the elevated retry both fail
+    await until(() => t.handlers["get-update-state"]().status === "error");
     expect(t.quits).toEqual([]);
     const state = t.handlers["get-update-state"]();
     expect([state.status, state.failure, state.releaseUrl]).toEqual(["error", "install", TAG]);
@@ -161,7 +167,7 @@ test("Celerp quits for the installer only once the installer has started",
     await t.listeners["install-update"]();
     await settle();
     expect(t.quits).toEqual([]);
-    await wait(40);
+    await until(() => t.quits.length > 0);
     expect(t.quits).toEqual([true]);
     expect(t.shown).toEqual([]);
   });

@@ -102,13 +102,13 @@ async def test_transfer_between_accounts(client):
     r1 = await client.post(
         "/accounting/bank-accounts",
         json={"bank_name": "KBank From", "account_number": "111",
-              "currency": "THB", "bank_type": "checking"},
+              "currency": "USD", "bank_type": "checking"},
         headers=headers,
     )
     r2 = await client.post(
         "/accounting/bank-accounts",
         json={"bank_name": "KBank To", "account_number": "222",
-              "currency": "THB", "bank_type": "savings"},
+              "currency": "USD", "bank_type": "savings"},
         headers=headers,
     )
     from_id = r1.json()["id"]

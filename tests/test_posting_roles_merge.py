@@ -19,9 +19,13 @@ from celerp.models.projections import Projection
 from celerp.services.account_roles import set_role
 from celerp.services.company_lock import locked_company
 from test_helpers import invite_user, merge_items
+from stock_books import assert_settled
 from test_cost_restatement import _state
+from test_landed_cost_lineage import _doc_pools
+from test_landed_cost_pools import _po_into, _post
+from test_landed_cost_removals import _split
 from test_posting_roles_landed import _freight_bill
-from test_receipt_accounting import _finalize, _receive
+from test_receipt_accounting import _finalize, _receive, _return
 from ui.i18n import t
 
 _FIELD = "inventory_account_code"
@@ -187,6 +191,32 @@ async def test_a_lot_carrying_landed_cost_moves_its_full_carrying_value(session,
     assert (state[_FIELD], state["cost_total"]) == ("1131", 40.0)  # 30 goods + 10 freight
     out = await _merged(client, auth, [a, parcel], resolved_attributes={})
     assert _lines(await _reclass(session, auth, out["id"])) == {"1130-OB": (40.0, 0), "1131": (0, 40.0)}
+
+
+@pytest.mark.asyncio
+async def test_a_revert_takes_the_freight_off_a_lot_merged_into_another_account(session, client, auth):
+    """A lot on 1131 that an order brought 2 more units into with 10.00 freight, billed, gives half
+    its units to a merge into a lot on 1130-OB; the bill's 2 go back to the supplier and the bill
+    goes back to its order: the freight leaves the merged lot and its account, and every account
+    still carries exactly the lots recorded on it."""
+    a = await _lot(client, auth, 600.0, sku="A")
+    await _remap(session, client, auth, "1131")
+    lot = await _lot(client, auth, 20.0, qty=2, sku="A")
+    await _remap(session, client, auth, "1130-OB", create=False)
+    bill = await _po_into(client, auth, lot, 2, 15.0, shipping=10.0)
+    [part] = await _split(client, auth, lot, 2)
+    out = (await _merged(client, auth, [a, part], resolved_attributes={}))["id"]
+    merged = await _state(session, auth, out)
+    assert (merged[_FIELD], merged["cost_total"], _doc_pools(merged, bill)) == ("1130-OB", 630.0, {
+        f"{bill}::freight": 5.0})
+    await assert_settled(client, session, auth)
+    r = await _return(client, auth, bill, lot, 2)
+    assert r.status_code == 200, r.text
+    r = await _post(client, auth, bill, "revert-to-draft")
+    assert r.status_code == 200, r.text
+    merged = await _state(session, auth, out)
+    assert (merged["cost_total"], _doc_pools(merged, bill)) == (625.0, {})
+    await assert_settled(client, session, auth)
 
 
 @pytest.mark.asyncio

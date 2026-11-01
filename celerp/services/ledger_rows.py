@@ -40,21 +40,30 @@ async def journal_rows(
     ).scalars().all()
     out: list[tuple[str, dict, str]] = []
     for row in rows:
-        state = row.state
-        status = state.get("status")
-        ts_raw = state.get("ts") or state.get("created_at") or ""
-        day = str(ts_raw)[:10] if ts_raw else ""
-        if status == "void" and state.get("reversed_on"):
-            # Voided out of a locked period: the entry stays posted in its own period and
-            # its reversal posts on reversed_on (posting_dates.void_reversal).
-            out.append((row.entity_id, {**state, "status": "posted"}, day))
-            out.append((f"{row.entity_id}{REVERSAL_SUFFIX}", reversal_state(row.entity_id, state), state["reversed_on"]))
-            continue
-        if status != "posted" and not (include_void and status == "void"):
-            continue
-        out.append((row.entity_id, state, day))
+        out.extend(entry_rows(row.entity_id, row.state, include_void=include_void))
     return out
 
+
+def entry_rows(entity_id: str, state: dict, *, include_void: bool = False) -> list[tuple[str, dict, str]]:
+    """One journal entry as the ledger reads it: (row id, state, date) tuples.
+
+    A posted entry is one row; an entry voided in place is none (or itself, with
+    include_void); an entry voided out of a locked period is the original on its own
+    day plus its reversal row ``<id>:reversal`` on reversed_on.
+    """
+    status = state.get("status")
+    ts_raw = state.get("ts") or state.get("created_at") or ""
+    day = str(ts_raw)[:10] if ts_raw else ""
+    if status == "void" and state.get("reversed_on"):
+        # Voided out of a locked period: the entry stays posted in its own period and
+        # its reversal posts on reversed_on (posting_dates.void_reversal).
+        return [
+            (entity_id, {**state, "status": "posted"}, day),
+            (f"{entity_id}{REVERSAL_SUFFIX}", reversal_state(entity_id, state), state["reversed_on"]),
+        ]
+    if status != "posted" and not (include_void and status == "void"):
+        return []
+    return [(entity_id, state, day)]
 
 _SWAPPED = {"debit": "credit", "credit": "debit", "fx_debit": "fx_credit", "fx_credit": "fx_debit"}
 

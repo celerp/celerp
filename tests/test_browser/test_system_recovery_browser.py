@@ -29,6 +29,24 @@ def _company_names(url: str) -> list[str]:
         return [row[0] for row in cur.fetchall()]
 
 
+_SIGNED_IN_DURING_RECOVERY = "signed-in-during-recovery"
+
+
+def _sign_in_during_recovery(url: str, email: str) -> None:
+    with psycopg2.connect(url) as conn, conn.cursor() as cur:
+        cur.execute("INSERT INTO session_registry (jti, user_id, company_id, expiry) "
+                    "SELECT %s, uc.user_id, uc.company_id, now() + interval '1 hour' "
+                    "FROM user_companies uc JOIN users u ON u.id = uc.user_id WHERE u.email = %s LIMIT 1",
+                    (_SIGNED_IN_DURING_RECOVERY, email))
+        assert cur.rowcount == 1
+
+
+def _session_live(url: str, jti: str) -> bool:
+    with psycopg2.connect(url) as conn, conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM session_registry WHERE jti = %s", (jti,))
+        return cur.fetchone() is not None
+
+
 def _rename_companies(url: str, name: str) -> None:
     with psycopg2.connect(url) as conn, conn.cursor() as cur:
         cur.execute("UPDATE companies SET name = %s", (name,))
@@ -188,6 +206,10 @@ def test_failed_recovery_shows_its_outcome_after_signing_in_again_browser(
             failed.append(True)
             raise RuntimeError("DuplicateColumn: column already exists")
         await real_reconcile()
+        # Someone signs in while the installation is being put back; the recovery still
+        # ends that session. Without this the sign-out only finds a session when a request
+        # happens to land in that window.
+        _sign_in_during_recovery(url, seeded_user["email"])
 
     monkeypatch.setattr(settings, "data_dir", tmp_path / "data")
     monkeypatch.setattr(settings, "backup_encryption_key", None)
@@ -206,6 +228,7 @@ def test_failed_recovery_shows_its_outcome_after_signing_in_again_browser(
             assert "System Recovery did not complete" in flash and "DuplicateColumn" in flash
             assert t("system_recovery.failed_signed_out", "en") in flash
             assert _company_names(url) == names
+            assert not _session_live(url, _SIGNED_IN_DURING_RECOVERY)
 
             page.click('#backup-flash a:has-text("Sign in")')
             page.wait_for_selector("#email", timeout=_WAIT_MS)

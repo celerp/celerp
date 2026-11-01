@@ -14,7 +14,9 @@ from fasthtml.common import *
 from celerp.services.update import CARD_REASONS, PIP_BLOCKERS, REASON_CODES, reason_key
 from ui.config import COOKIE_NAME, get_role
 from ui.i18n import t, get_lang, available_langs, lang_label, try_again_pattern
+from ui.components.doc_money import DOC_MONEY_JS
 from ui.components.icons import icon
+from ui.components.preview_confirm import PREVIEW_CONFIRM_JS
 from ui.components.table import searchable_select
 
 # Cache-bust static assets by hashing app.css content
@@ -212,15 +214,17 @@ function celerpToast(message, type, persist, action) {
   body.textContent = message;
   celerpTryAgain(body);
   toast.appendChild(body);
-  // Optional action link (e.g. "Reconnect in Settings" pointing at /settings/cloud):
-  // keeps a persistent error toast actionable instead of dead-ending the user.
-  if (action && action.href && action.label) {
+  // Optional action links, one {href, label} or a list of them (e.g. "Reconnect in
+  // Settings" pointing at /settings/cloud): keep a persistent error toast actionable
+  // instead of dead-ending the user.
+  [].concat(action || []).forEach(function(a) {
+    if (!a || !a.href || !a.label) return;
     var link = document.createElement('a');
     link.className = 'toast__action';
-    link.href = action.href;
-    link.textContent = action.label;
+    link.href = a.href;
+    link.textContent = a.label;
     toast.appendChild(link);
-  }
+  });
   var close = document.createElement('button');
   close.className = 'toast__close';
   close.textContent = '×';
@@ -292,6 +296,13 @@ function showGlobalUiError(message) {
    The editor is removed, so its pending blur save never fires. */
 var _cellBeforeEdit = null;
 document.addEventListener('htmx:beforeSwap', function(e) {
+  /* A refusal the server marks as an answer (a cost changed since its editor opened) is
+     swapped in like any answer, so the editor shows what changed. */
+  var x = e.detail.xhr;
+  if (x && x.status === 409 && x.getResponseHeader('X-Swap-Refusal') === '1') {
+    e.detail.shouldSwap = true;
+    e.detail.isError = false;
+  }
   var t = e.detail.target;
   _cellBeforeEdit = (t && t.matches && t.matches('td.cell:not(.cell--editing)')) ? t.outerHTML : null;
 });
@@ -2288,6 +2299,8 @@ def _shell_document(*content, nav: FT, title: str = "Celerp", companies: list[di
         Link(rel="stylesheet", href=f"/static/app.css?v={_CSS_VER}"),
         *client_scripts(lang, request),
         Script(ESC_BLURS_FIELD),
+        Script(PREVIEW_CONFIRM_JS),
+        Script(DOC_MONEY_JS),
         Script(_idle_logout_js()),
         Script(_HEALTH_BANNER_JS),
         Script(_POLL_CONTROLLER_JS),
@@ -3061,9 +3074,9 @@ def secret_input(name: str, value: str = "", lang: str = "en", cls: str = "form-
 
 
 def toast_header(message: str, kind: str = "success", *, persist: bool = False,
-                 action: dict | None = None, **extra_triggers) -> dict:
-    """HX-Trigger header for the shell's celerpToast listener. ``action`` ({href, label})
-    adds a link to the toast. Extra keyword arguments become sibling client events fired
+                 action: dict | list[dict] | None = None, **extra_triggers) -> dict:
+    """HX-Trigger header for the shell's celerpToast listener. ``action`` ({href, label},
+    or a list of them) adds a link to the toast for each. Extra keyword arguments become sibling client events fired
     from the same header."""
     toast: dict = {"message": message, "type": kind}
     if persist:

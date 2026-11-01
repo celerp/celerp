@@ -64,6 +64,7 @@ _VALID = {
         {"key": "size", "label": "Size", "type": "select", "options": ["5", "6"]}]}],
     "on_company_created": [{"handler": "{inner}.hooks:hook"}],
     "on_modules_ready": [{"handler": "{inner}.hooks:hook"}],
+    "on_books_currency_set": [{"handler": "{inner}.hooks:hook"}],
     "send_to_targets": [{"label": "Quote", "doc_type": "quotation", "statuses": ["in_stock"]}],
     "catalog_channel": [{"id": "shop", "label": "Shop", "marker": "S", "can_create": True,
                          "write_permission": "edit_inventory", "requires_connector": "shop"}],

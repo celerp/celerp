@@ -80,6 +80,8 @@ class EventType(StrEnum):
     DOC_PAYMENT_REFUND_REVERSED = "doc.payment.refund_reversed"
     DOC_PAYMENT_STRIPE_RELEASED = "doc.payment.stripe_released"
     DOC_CONVERTED = "doc.converted"
+    DOC_LINES_INVOICED = "doc.lines_invoiced"
+    DOC_LINES_RETURNED = "doc.lines_returned"
     DOC_RECEIVED = "doc.received"
     DOC_ITEMS_RETURNED = "doc.items_returned"
     DOC_SUPPLIER_RETURN_UNDONE = "doc.supplier_return_undone"

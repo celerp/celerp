@@ -201,9 +201,10 @@ async def _adjust(
     if new_qty < 0:
         return RecordOutcome("", "rejected", f"Item {record.item_external_id} would have a negative quantity.")
     data = {"new_qty": float(new_qty), "prior_qty": float(current), "reason": f"Migration {record.kind}"}
-    if record.value is not None:
-        cost = Decimal(0) if opening else Decimal(str(state.get("cost_base") or 0))
-        data["cost_base"] = to_stored_float(cost + record.value)
+    if opening and record.value is not None:
+        data["cost_base"] = to_stored_float(record.value)
+    elif record.value is not None:
+        data.update(services.topped_up_cost(state, to_stored_float(record.value)))
     try:
         await services.adjust_item_quantity(
             session, context.company_id, context.user_id, item_id, data,

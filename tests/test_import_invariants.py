@@ -1672,13 +1672,13 @@ class _ImportApi:
         self.seen: set = set()
 
     def _answer(self, keys: tuple, count: int) -> dict:
-        from ui.api_client import APIError
+        from ui.api_client import APIError, _api_error
         if self.aspect == "permission_denial":
             raise APIError(403, "Forbidden")
         if self.aspect == "preflight_rejection":
             raise APIError(422, "Row 1 has an invalid value")
         if self.aspect == "stale_preview":
-            raise APIError(409, "The data changed since it was reviewed")
+            raise _api_error(409, {"detail": {"code": "preview_stale"}}, "")
         fresh = 0 if keys in self.seen else count
         self.seen.add(keys)
         return {"created": fresh, "skipped": count - fresh, "updated": 0, "errors": []}

@@ -248,7 +248,7 @@ def test_statement_reconcile_journey(page: Page, ui_server, api, agent_caps):
 
     bank = api.post("/accounting/bank-accounts", json={
         "bank_name": "Journey Bank", "account_number": "****4242", "bank_type": "checking",
-        "currency": "THB", "opening_balance": 100000.0,
+        "currency": "USD", "opening_balance": 100000.0,
     }).json()
     start_body = {"bank_account_id": bank["id"], "statement_date": "2026-03-31", "statement_balance": 99500.0}
 

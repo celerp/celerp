@@ -81,7 +81,7 @@ async def test_build_issue_receive_restocks_product_and_posts_je(client, session
 
     ledger = (await client.get("/ledger?entity_type=journal_entry", headers=_h(token))).json()["items"]
     jes = {e["data"]["memo"].split(" ")[0]: e for e in ledger
-           if run in (e["data"].get("memo") or "") and e["event_type"] == "acc.journal_entry.created"}
+           if e["entity_id"].startswith(f"je:auto:{run}:") and e["event_type"] == "acc.journal_entry.created"}
     # Issuing moves the components, entered by hand, from opening inventory into work in progress;
     # receiving moves that value on to the output, which is produced stock.
     assert sorted(jes) == ["Components", "Output"]

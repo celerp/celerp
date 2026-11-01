@@ -6,6 +6,8 @@ from __future__ import annotations
 from copy import deepcopy
 from decimal import Decimal
 
+from celerp.services.goods_cost import GOODS_COST_UNKNOWN
+
 from .expansion import merge_inputs
 
 # The run's own accounting facts. Only movement events write them, so a created event (from an
@@ -45,6 +47,8 @@ def _held(current: dict, data: dict) -> None:
         c = held.pop(inp.get("item_id"), None) if _positive(inp) else None
         if c is not None:
             inp["issued_qty"], inp["issued_value"] = float(c["quantity"]), _money(c["value"])
+        else:
+            inp.pop(GOODS_COST_UNKNOWN, None)
     current["inputs"] = [*current.get("inputs", []), *(
         {"item_id": i, "quantity": float(c["quantity"]), "issued_qty": float(c["quantity"]),
          "issued_value": _money(c["value"])} for i, c in held.items() if float(c["quantity"]) > 0)]
@@ -73,8 +77,8 @@ def apply_manufacturing_event(state: dict, event_type: str, data: dict) -> dict:
         # One line per component: a component listed on two lines needs both amounts. A line at
         # zero or below (only an older release stored one) is kept as written, after them, and
         # holds the run back from going ahead (movements._require_executable_shape). What was issued,
-        # and the value it took, are written only by movements.
-        lines = [{k: v for k, v in i.items() if k not in ("issued_qty", "issued_value")}
+        # the value it took and whether its goods cost was known are written only by movements.
+        lines = [{k: v for k, v in i.items() if k not in ("issued_qty", "issued_value", GOODS_COST_UNKNOWN)}
                  for i in current.get("inputs", [])]
         valid = [i for i in lines if _positive(i)]
         current["inputs"] = [{**i, "issued_qty": 0.0}
@@ -100,6 +104,7 @@ def apply_manufacturing_event(state: dict, event_type: str, data: dict) -> dict:
         # The same item may appear more than once in an event; every occurrence counts.
         issued: dict = {}
         values: dict = {}
+        unknown = {i.get("item_id") for i in data.get("items", []) if i.get(GOODS_COST_UNKNOWN)}
         for i in data.get("items", []):
             issued[i.get("item_id")] = issued.get(i.get("item_id"), 0.0) + float(i.get("quantity") or 0)
             if "value" in i:
@@ -114,6 +119,8 @@ def apply_manufacturing_event(state: dict, event_type: str, data: dict) -> dict:
                 else:
                     inp.pop("issued_value", None)
                 inp["issued_qty"] = float(inp.get("issued_qty") or 0) + issued.pop(item_id)
+                if item_id in unknown:
+                    inp[GOODS_COST_UNKNOWN] = True
         if "value" in data:
             _add(current, "wip_issued", data["value"])
             if data.get("wip_account_code"):
@@ -127,6 +134,8 @@ def apply_manufacturing_event(state: dict, event_type: str, data: dict) -> dict:
             if line is not None:
                 inp["issued_qty"] = max(0.0, round(float(inp.get("issued_qty") or 0) - float(line["quantity"]), 9))
                 _add(inp, "issued_value", -Decimal(str(line["value"])))
+                if not inp["issued_qty"]:
+                    inp.pop(GOODS_COST_UNKNOWN, None)
         _add(current, "wip_issued", -Decimal(str(data["value"])))
     elif event_type == "mfg.order.received":
         current["received_qty"] = float(current.get("received_qty") or 0) + float(data.get("quantity") or 0)

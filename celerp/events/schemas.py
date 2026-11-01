@@ -132,6 +132,9 @@ class ItemUpdated(BaseModel):
     fields_changed: dict[str, dict[str, Any]]
     # Set by an edit that archives stock the company keeps (lot_origin.in_stock).
     inventory_on_books: bool | None = None
+    # Set by a goods-cost change that leaves the lot's goods cost unknown (a clear that keeps
+    # landed cost, a part of a lot whose goods cost is unknown).
+    goods_cost_unknown: bool | None = None
 
     @classmethod
     def normalize_for_storage(cls, data: dict) -> None:
@@ -148,6 +151,8 @@ class ItemUpdated(BaseModel):
 class ItemPricingSet(BaseModel):
     price_type: str
     new_price: float
+    # As ItemUpdated.goods_cost_unknown, for a goods-cost price_type.
+    goods_cost_unknown: bool | None = None
 
 
 class ItemStatusSet(BaseModel):
@@ -196,6 +201,9 @@ class ItemQuantityAdjusted(BaseModel):
     # Set only when stock consumed earlier is given back (materials returned from production):
     # the quantity no longer counts as used.
     quantity_returned: float | None = None
+    # Goods added to a lot on hand: true when the lot held goods of unknown cost, false when it
+    # held none and the received cost is now its whole goods cost. Omitted, it stays as it is.
+    goods_cost_unknown: bool | None = None
 
 
 class ItemLandedCostAllocated(BaseModel):
@@ -355,6 +363,8 @@ class ItemCostAdjusted(BaseModel):
     # absolute cost_base; landed contributions rescale from it.
     cost_total: float
     manufacturing_order_id: str | None = None   # the run that re-costed the lot (audit trail)
+    # Whether the restated goods cost is known: set or cleared when named, kept when omitted.
+    goods_cost_unknown: bool | None = None
 
 
 class ItemInventoryAccountRecorded(BaseModel):
@@ -802,6 +812,42 @@ class DocConverted(BaseModel):
     target_doc_id: str
     target_doc_type: str
     pre_convert_status: str | None = None
+
+
+class MemoTakeLine(BaseModel):
+    invoice_line_id: str
+    memo_line_id: str
+    lot_ids: list[str]
+    quantity: float
+    memo_amount: float
+    memo_line_amount: float
+
+
+class MemoTake(BaseModel):
+    draw_id: str
+    invoice_id: str
+    doc_number: str | None = None
+    lines: list[MemoTakeLine]
+    shipping: float = 0
+    discount: float = 0
+    tax: float = 0
+
+
+class DocLinesInvoiced(BaseModel):
+    """A memo's goods drawn onto an invoice: what the draw took, recorded on the memo."""
+    take: MemoTake
+
+
+class ReturnedLine(BaseModel):
+    invoice_line_id: str
+    draw_id: str
+
+
+class DocLinesReturned(BaseModel):
+    """Drawn goods back on a memo: the invoice lines returned, and the draws that stop counting."""
+    invoice_id: str
+    lines: list[ReturnedLine] = Field(default_factory=list)
+    release: list[str] = Field(default_factory=list)
 
 
 class DocConvertedToBill(BaseModel):
@@ -1518,6 +1564,8 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "doc.payment.voided": DocPaymentVoided,
     "doc.payment.deleted": DocPaymentDeleted,
     "doc.converted": DocConverted,
+    "doc.lines_invoiced": DocLinesInvoiced,
+    "doc.lines_returned": DocLinesReturned,
     "doc.received": DocReceived,
     "doc.shared_import": DocSharedImport,
     "received_doc.imported": ReceivedDocImported,

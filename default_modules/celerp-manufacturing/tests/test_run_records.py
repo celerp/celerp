@@ -65,7 +65,7 @@ async def _run_entries(client, token, run) -> list[list[dict]]:
     """The lines of every entry the run posted: its issues, its receipts and its completion."""
     led = (await client.get("/ledger?entity_type=journal_entry", headers=_h(token))).json()["items"]
     return [e["data"]["entries"] for e in led
-            if run in (e["data"].get("memo") or "") and e["event_type"] == "acc.journal_entry.created"]
+            if e["entity_id"].startswith(f"je:auto:{run}:") and e["event_type"] == "acc.journal_entry.created"]
 
 
 def _net(run_entries: list[list[dict]], account: str) -> float:

@@ -38,7 +38,7 @@ async def _session(client):
     h = await _company(client)
     bank = (await client.post("/accounting/bank-accounts", headers=h, json={
         "bank_name": "Main", "account_number": "1", "bank_type": "checking",
-        "currency": "THB", "opening_balance": 1000.0,
+        "currency": "USD", "opening_balance": 1000.0,
     })).json()
     deposit = await _post(client, h, bank["chart_account_code"], "2026-03-05", 500.0, "4100")
     rent = await _post(client, h, bank["chart_account_code"], "2026-03-10", -200.0, "6200")
@@ -76,7 +76,7 @@ async def test_auto_match_then_bulk_confirm_reconcile_both_book_entries(client):
     assert (await _state(client, h, sid))["reconciled_je_ids"] == [deposit]
 
     r = await client.post(f"/accounting/reconciliation/{sid}/bulk-confirm", headers=h)
-    assert r.json() == {"confirmed": 1}
+    assert r.json() == {"confirmed": 1, "skipped": []}
     assert (await _lines(client, h, sid))["Rent"]["status"] == "matched"
     state = await _state(client, h, sid)
     assert sorted(state["reconciled_je_ids"]) == sorted([deposit, rent])

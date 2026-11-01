@@ -26,7 +26,7 @@ _CONTACTS = [{"id": "c1", "name": "Acme Ltd"}]
 
 
 def _render(builder):
-    return to_xml(builder("sess-1", "line-1", _LINE, _CHART, "USD", _CONTACTS))
+    return to_xml(builder("sess-1", "line-1", _LINE, _CHART, _BANK, _CONTACTS))
 
 
 def test_create_form_renders_with_party_search_url():
@@ -47,7 +47,7 @@ _RECON = {
     "tolerance": 1.0,
     "statement_date": "2026-08-01",
 }
-_BANK = {"bank_name": "Test Bank", "account_number": "1234"}
+_BANK = {"bank_name": "Test Bank", "account_number": "1234", "currency": "USD", "books_currency": "USD"}
 
 
 def test_statement_line_is_selectable_not_a_match_picker():

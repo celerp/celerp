@@ -407,6 +407,14 @@ _SLOT_CONTRIBUTIONS = _nav_slot_contributions() + [
         },
     },
     {
+        "slot": "on_books_currency_set",
+        "contrib": {
+            "handler": "celerp_accounting.routes:default_bank_follows_books_hook",
+            "_module": "celerp-accounting",
+            "_first_party": True,
+        },
+    },
+    {
         "slot": "projection_handler",
         "contrib": {
             "prefix": "mfg.",

@@ -196,6 +196,7 @@ _SPLIT_CALLERS = {
     (_DOCS, "write_off_stock"): "value_moved",
     (_DOCS, "_apply_split_plan"): "lot_to_lot",
     (_DOCS, "_revert_lines_impl"): "lot_to_lot",
+    (_DOCS, "_write_draw"): "lot_to_lot",
 }
 
 

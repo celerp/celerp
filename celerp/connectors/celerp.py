@@ -7,6 +7,7 @@ import uuid
 from typing import NamedTuple
 from urllib.parse import urlsplit
 
+from fastapi import HTTPException
 from sqlalchemy import select
 
 from celerp.connectors.base import (
@@ -14,6 +15,7 @@ from celerp.connectors.base import (
     SyncDirection, SyncEntity, SyncResult,
 )
 from celerp.connectors.http import RateLimitedClient
+from celerp.importers.results import failure_reason
 from celerp.models.projections import Projection
 from celerp.services.peer_access import ENTITY_ROUTE, SOURCE_HEADER
 
@@ -606,7 +608,7 @@ class CelerpConnector(ConnectorBase):
                         result.errors.append("Journal entry fetch incomplete")
                         result.attention.append({
                             "id": str(item.get("id")) if isinstance(item, dict) else "", "label": label,
-                            "reason": (str(exc) if isinstance(exc, (_Refused, ValueError))
+                            "reason": (failure_reason(exc) if isinstance(exc, (ValueError, HTTPException))
                                        else "Receiving installation needs attention")})
                 after = body.get("next")
                 if not isinstance(after, str) or not after:

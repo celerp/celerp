@@ -400,17 +400,13 @@ async def test_convert_same_sku_distinct_tax(client):
 
 @pytest.mark.asyncio
 async def test_convert_unbound_sibling_credited_to_its_own_line(client):
-    """A cross-lot sibling drawn by a spanning line is billed onto the same-SKU line that
-    drew it, at that line's price; a different-SKU bound line is untouched.
+    """A cross-lot sibling drawn by a spanning line is billed on the line that drew it; a
+    different-SKU bound line is untouched.
 
     Line A (SKU-P, qty1, its own lot) and line B (SKU-Q, qty2 at unit 30 with an explicit
-    discounted line_total of 40, spanning lot B plus a same-SKU sibling C). Bound lot B
-    holds 1 still-out unit and sibling C holds 1. Post-fix the bound half of line B keeps
-    its discount (40 scaled by the kept fraction 1/2 = 20) and the unbound sibling is added
-    once at line B's unit_price (30), so SKU-Q bills 20 + 30 = 50 across qty2. At merge-base
-    the SKU rollup dumps the full still-out qty (2) onto line B at the kept fraction 2/2 = 1,
-    scaling line_total to a flat 40: the sibling never gets its own undiscounted unit price,
-    understating the invoice."""
+    discounted line_total of 40, spanning lot B plus a same-SKU sibling C). Invoice all bills
+    every unit line B has out, lot B and sibling C, at line B's own amount: 40, the discount
+    the memo gave on both units, never the sibling at an undiscounted price."""
     token = await _register(client)
     h = _h(token)
     sku_p, sku_q = f"XU-P-{uuid.uuid4().hex[:5]}", f"XU-Q-{uuid.uuid4().hex[:5]}"
@@ -438,12 +434,10 @@ async def test_convert_unbound_sibling_credited_to_its_own_line(client):
     assert by_sku.get(sku_p) == pytest.approx(1.0), f"the SKU-P line must stay qty 1; got {by_sku!r}"
     assert by_sku.get(sku_q) == pytest.approx(2.0), (
         f"the SKU-Q line must carry bound lot B + sibling C = 2 units; got {by_sku!r}")
-    # SKU-Q bills the bound half at its discount (20) plus the sibling once at unit 30 = 50,
-    # never collapsing to the flat rollup total (40) that loses the sibling's own price.
+    # SKU-Q bills line B's own amount for its two units.
     q_total = sum(float(li.get("line_total") or (float(li.get("quantity") or 0) * float(li.get("unit_price") or 0)))
                   for li in lines if li.get("sku") == sku_q)
-    assert q_total == pytest.approx(50.0), (
-        f"SKU-Q must bill discounted bound half (20) + sibling (30) = 50; got {q_total} from {lines!r}")
+    assert q_total == pytest.approx(40.0), f"SKU-Q must bill line B's 40; got {q_total} from {lines!r}"
     # Both physical lots for SKU-Q go to the invoice, and its finalize sells them.
     for lot in (lot_b, lot_c):
         state = (await client.get(f"/items/{lot}", headers=h)).json()

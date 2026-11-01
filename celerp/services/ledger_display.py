@@ -11,10 +11,26 @@ Stored entries are never changed.
 
 from __future__ import annotations
 
+import re
+
 from sqlalchemy import select
 
 from celerp.models.projections import Projection
 from celerp.services.business_time import business_timezone
+
+
+def run_reference(order_id: str) -> str:
+    """A production run as people see it: WO- and the first eight characters of its id."""
+    return "WO-" + str(order_id).split(":")[-1][:8]
+
+
+_RUN_ID = re.compile(r"mfg:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def readable_memo(memo: str) -> str:
+    """A journal memo as people read it: a production run named by its internal id, as
+    older releases posted it, reads as the run's reference. The stored memo is unchanged."""
+    return _RUN_ID.sub(lambda m: run_reference(m.group(0)), memo)
 
 
 def _zone(settings: dict | None):

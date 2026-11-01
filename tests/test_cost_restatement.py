@@ -407,17 +407,23 @@ async def test_sale_with_no_document_saves_the_cost_and_posts_nothing(client, se
     assert await _count(session, auth, event_type="acc.journal_entry.created") == jes
 
 
-async def _memo_converted(client, session, auth, item: str) -> str:
-    """The lot out on a memo, then the memo converted to a draft invoice; returns the invoice."""
+async def _memo_converted(client, session, auth, item: str, *, older: bool = False) -> str:
+    """The lot out on a memo, then the memo invoiced in full onto a draft invoice, or with
+    *older* converted the way an older release did it; returns the invoice."""
+    from memo_draw_support import legacy_convert
+
     sku = (await _state(session, auth, item))["sku"]
     r = await client.post("/docs", headers=auth["headers"], json={"doc_type": "memo", "line_items": [
         {"entity_id": item, "sku": sku, "name": sku, "quantity": 1, "unit_price": 150.0, "sell_by": "piece"}]})
     assert r.status_code == 200, r.text
     memo = r.json()["id"]
-    for path, body in ((f"/docs/{memo}/finalize", {}), (f"/docs/{memo}/fulfill-lines", {"line_entity_ids": [item]}),
-                       (f"/docs/{memo}/convert", {})):
+    for path, body in ((f"/docs/{memo}/finalize", {}), (f"/docs/{memo}/fulfill-lines", {"line_entity_ids": [item]})):
         r = await client.post(path, headers=auth["headers"], json=body)
         assert r.status_code == 200, r.text
+    if older:
+        return await legacy_convert(client, session, auth, memo, [])
+    r = await client.post(f"/docs/{memo}/convert", headers=auth["headers"], json={})
+    assert r.status_code == 200, r.text
     return r.json()["target_doc_id"]
 
 
@@ -427,7 +433,7 @@ async def test_sale_without_an_exact_invoice_line_refuses_correction(client, ses
     from celerp.events.engine import emit_event
 
     item = await _item(client, auth, 100.0)
-    invoice = await _memo_converted(client, session, auth, item)
+    invoice = await _memo_converted(client, session, auth, item, older=True)
     memo = (await _state(session, auth, invoice))["source_memo_id"]
     await emit_event(session, company_id=auth["company_id"], entity_id=item, entity_type="item",
                      event_type="item.status.set", data={"new_status": "sold", "source_doc_id": memo},
@@ -517,7 +523,7 @@ async def test_csv_cost_upsert_that_cannot_reconcile_changes_nothing(client, ses
     assert state["cost_total"] == 100.0 and state["name"] == "Lot"
 
 
-# -- Zero-quantity unit cost: one normalization for price, edit and CSV -------
+# -- Zero-quantity unit cost: the API keeps it waiting, the CSV door refuses it ---
 
 async def _set_unit_cost_at_zero(client, auth, item_id: str, path: str) -> None:
     if path == "price":
@@ -536,7 +542,26 @@ async def _set_unit_cost_at_zero(client, auth, item_id: str, path: str) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("path", ["price", "patch", "csv"])
+async def test_zero_quantity_unit_cost_typed_in_a_csv_is_refused(client, session, auth):
+    # An owner's file is a door: a unit cost there needs units to apply to.
+    item_id = await _item(client, auth, 40.0, qty=0)
+    before = await _state(session, auth, item_id)
+    record = {"entity_id": item_id, "event_type": "item.patched", "source": "csv_import",
+              "data": {"name": "Lot", "cost_price": 12.5},
+              "idempotency_key": f"csv:item:{item_id}:patch:{uuid.uuid4().hex}"}
+    r = await client.post("/items/import/batch", headers=auth["headers"], json={"records": [record]})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["updated"] == 0, body
+    assert [e["params"]["refusal"]["message_key"] for e in body["errors"]] == \
+        ["inventory.cost_unit_needs_quantity"], body
+    after = await _state(session, auth, item_id)
+    assert {k: after.get(k) for k in ("cost_price", "cost_total", "cost_base")} == \
+        {k: before.get(k) for k in ("cost_price", "cost_total", "cost_base")}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["price", "patch"])
 async def test_zero_quantity_unit_cost_survives_new_stock_and_sale(client, session, auth, path):
     # A lot that once had a cost basis, now empty: the new unit cost replaces it.
     item_id = await _item(client, auth, 40.0, qty=0)

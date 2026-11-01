@@ -344,28 +344,32 @@ class TestVirtualCostTotalColumn:
         assert "cost_price_total" in visible
         assert visible.index("cost_price_total") == visible.index("cost_price") + 1
 
-    def test_render_virtual_total_cell(self):
-        """_render_virtual_total_cell computes unit_price * qty and formats with currency."""
+    def test_cost_total_cell_shows_the_lot_value(self):
+        """The cost total is the lot's book value (cost_total), formatted with the currency."""
         from fasthtml.common import to_xml
-        from ui.routes.inventory import _render_virtual_total_cell
-        td = _render_virtual_total_cell("item:1", "cost_price_total", 100.0, 5.0, "THB")
-        html = to_xml(td)
-        assert "500" in html  # 100 * 5
+        from ui.routes.inventory import _virtual_total_cell
+        html = to_xml(_virtual_total_cell("item:1", "cost_price_total", {"cost_total": 500.0, "quantity": 5}, "THB"))
+        assert "500" in html
 
-    def test_render_virtual_total_cell_zero_qty(self):
-        """Zero quantity results in '--' display."""
+    def test_cost_total_cell_shows_a_known_zero(self):
+        """A known cost of 0 reads 0.00, not "--" (which means no cost)."""
         from fasthtml.common import to_xml
-        from ui.routes.inventory import _render_virtual_total_cell
-        td = _render_virtual_total_cell("item:1", "cost_price_total", 100.0, 0.0, "THB")
-        html = to_xml(td)
+        from ui.routes.inventory import _virtual_total_cell
+        html = to_xml(_virtual_total_cell("item:1", "cost_price_total", {"cost_total": 0.0, "quantity": 5}, "THB"))
+        assert "0.00" in html and "<span>--</span>" not in html
+
+    def test_price_total_cell_zero_qty(self):
+        """A price total is unit price x quantity: zero quantity results in '--' display."""
+        from fasthtml.common import to_xml
+        from ui.routes.inventory import _virtual_total_cell
+        html = to_xml(_virtual_total_cell("item:1", "retail_price_total", {"retail_price": 100.0, "quantity": 0}, "THB"))
         assert "--" in html
 
-    def test_render_virtual_total_cell_zero_price(self):
+    def test_price_total_cell_zero_price(self):
         """Zero unit price results in '--' display."""
         from fasthtml.common import to_xml
-        from ui.routes.inventory import _render_virtual_total_cell
-        td = _render_virtual_total_cell("item:1", "cost_price_total", 0.0, 10.0, "THB")
-        html = to_xml(td)
+        from ui.routes.inventory import _virtual_total_cell
+        html = to_xml(_virtual_total_cell("item:1", "retail_price_total", {"retail_price": 0.0, "quantity": 10}, "THB"))
         assert "--" in html
 
 

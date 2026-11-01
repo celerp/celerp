@@ -175,7 +175,7 @@ async def test_partial_completion_rolls_back(client):
     assert len(runs) == 1 and runs[0]["status"] == "planned"  # savepoint rolled back the issue
     assert await _qty(client, token, gold) == 100  # consumption undone
     ledger = (await client.get("/ledger?entity_type=journal_entry", headers=_h(token))).json()["items"]
-    assert not any(runs[0]["id"] in (e["data"].get("memo") or "") for e in ledger)  # and its entry
+    assert not any(e["entity_id"].startswith(f"je:auto:{runs[0]['id']}:") for e in ledger)  # and its entry
     notes = await _notifs(client, token)
     assert any(n["category"] == "manufacturing" and n["priority"] == "high" for n in notes)
 

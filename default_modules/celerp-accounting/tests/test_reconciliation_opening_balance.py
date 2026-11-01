@@ -31,7 +31,7 @@ async def _company(client) -> dict:
 async def _bank(client, h, opening: float) -> dict:
     r = await client.post("/accounting/bank-accounts", headers=h, json={
         "bank_name": "Main", "account_number": "1", "bank_type": "checking",
-        "currency": "THB", "opening_balance": opening,
+        "currency": "USD", "opening_balance": opening,
     })
     assert r.status_code == 200, r.text
     return r.json()
@@ -116,15 +116,21 @@ async def test_matching_every_offered_entry_reconciles_a_statement_that_agrees_w
 
 
 @pytest.mark.asyncio
-async def test_clearing_the_opening_entry_by_hand_still_counts_it_once(client):
+async def test_an_opening_entry_held_by_hand_still_counts_once(client, session):
+    from celerp_accounting.models import ReconciliationSession
+
     h = await _company(client)
     bank = await _bank(client, h, 1000.0)
     deposit = await _deposit(client, h, bank["chart_account_code"], 500.0)
     sid = await _start(client, h, bank["id"], 1500.0)
 
     r = await client.post(f"/accounting/reconciliation/{sid}/match", headers=h,
-                          json={"je_ids": [_opening(bank), deposit]})
-    assert r.status_code == 200, r.text
+                          json={"je_ids": [_opening(bank)]})
+    assert r.status_code == 400, r.text
+    # A session from before matching was checked may hold the opening entry by id.
+    recon = await session.get(ReconciliationSession, uuid.UUID(sid))
+    recon.reconciled_je_ids = [_opening(bank), deposit]
+    await session.flush()
     view = await _view(client, h, sid)
     assert (view["book_balance"], view["matched_balance"], view["difference"]) == (1500.0, 1500.0, 0.0)
     assert view["unreconciled_entries"] == []
@@ -142,7 +148,7 @@ async def test_write_off_takes_only_the_true_difference(client):
     sid = await _start(client, h, bank["id"], 1500.5)
 
     r = await client.post(f"/accounting/reconciliation/{sid}/match", headers=h,
-                          json={"je_ids": [_opening(bank), deposit]})
+                          json={"je_ids": [deposit]})
     assert r.status_code == 200, r.text
     r = await client.post(f"/accounting/reconciliation/{sid}/write-off", headers=h, json={})
     assert r.status_code == 200, r.text

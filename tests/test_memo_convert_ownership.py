@@ -67,10 +67,11 @@ def _tag(doc_id: str) -> str:
 
 
 async def test_convert_hands_the_lots_to_the_draft_invoice(client, session, auth):
-    hd, (lot_id,), memo, _, inv = await _converted(client, auth)
+    hd, (lot_id,), memo, memo_status, inv = await _converted(client, auth)
     assert await _owner(client, hd, lot_id) == ("memo_out", inv)
-    assert (await state(client, hd, inv))["source_memo_id"] == memo
-    assert (await state(client, hd, memo))["status"] == "converted"
+    assert [li["drawn_from"]["memo_id"] for li in (await state(client, hd, inv))["line_items"]] == [memo]
+    m = await state(client, hd, memo)
+    assert (m["status"], [take["invoice_id"] for take in m["invoiced_on"]]) == (memo_status, [inv])
     assert await gl_totals(session, auth["company_id"], entry_id_part=_tag(inv)) == {}
     await assert_settled(client, session, auth)
 
@@ -192,8 +193,9 @@ async def test_a_retried_convert_makes_one_invoice(client, session, auth):
     second = await _ok(await client.post(f"/docs/{memo}/convert", headers=hd, json={"idempotency_key": key}))
     assert first == second
     assert await _owner(client, hd, lot_id) == ("memo_out", first["target_doc_id"])
+    assert [take["invoice_id"] for take in (await state(client, hd, memo))["invoiced_on"]] == [first["target_doc_id"]]
     session.expire_all()
     invoices = (await session.execute(select(Projection.entity_id).where(
         Projection.company_id == auth["company_id"], Projection.entity_type == "doc",
-        Projection.state["source_memo_id"].as_string() == memo))).scalars().all()
+        Projection.state["doc_type"].as_string() == "invoice"))).scalars().all()
     assert invoices == [first["target_doc_id"]]

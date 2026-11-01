@@ -45,7 +45,9 @@ def test_merge_across_inventory_accounts_is_disclosed_and_can_be_undone(page, ui
     note = page.locator("#merge-reclass-note")
     note.wait_for(state="visible", timeout=8000)
     assert note.inner_text() == ("These items are held in different inventory accounts. "
-                                 "Merging will move $400.00 from Stock Room B to Inventory - Opening Balance.")
+                                 "Merging will move $400.00 from Stock Room B to Inventory - Opening Balance. "
+                                 "The merged item's unit prices: Retail --, Wholesale --. "
+                                 "Its value: $1,000.00, unit cost $500.00.")
 
     page.click("#merge-confirm button:has-text('Confirm')")
     result = page.locator(".toast-container .toast--success")

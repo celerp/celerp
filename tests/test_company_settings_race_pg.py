@@ -29,6 +29,16 @@ pytestmark = pytest.mark.asyncio
 _START, _NEXT = "agricultural", "electronics"
 
 
+@pytest.fixture(autouse=True)
+def _type_change_waits_out_the_first_writer(monkeypatch):
+    """A business type change waits only briefly for the company lock and is then refused
+    (test_module_use_serializes_pg covers that refusal). Here it must wait for the first
+    writer however long a busy runner takes, so the order of the writes is what is tested."""
+    from celerp.modules import boundary
+
+    monkeypatch.setattr(boundary, "_WAIT_UNDER_BOUNDARY_MS", 30_000)
+
+
 def _skus(vertical: str) -> set[str]:
     return {d["sku"] for d in demo._VERTICAL_ITEMS[vertical]}
 

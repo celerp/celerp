@@ -48,8 +48,11 @@ _DE_MEMO_DOC_KEYS = ("documents.finalize_tip_memo", "documents.tip_convert_memo"
 
 
 def test_german_consignment_and_memo_wording():
-    """Consignment reads "Kommission", and the memo document is a "Memo", not a note."""
+    """Consignment reads "Kommission", and the memo document is a "Memo", not a note.
+    A string still waiting for its translation carries the English text, so it is checked
+    once it is translated."""
     cat = json.loads((_LOCALES / "de.json").read_text(encoding="utf-8"))
+    pending = json.loads((_LOCALES.parents[1] / "tests" / "i18n_pending_translation.json").read_text(encoding="utf-8"))["keys"]
     assert not {k: v for k, v in cat.items() if "Konsignation" in v}
-    for key in _DE_MEMO_DOC_KEYS:
+    for key in (k for k in _DE_MEMO_DOC_KEYS if k not in pending):
         assert "Memo" in cat[key] and not any(w in cat[key] for w in ("Vermerk", "Notiz", "Mitteilung")), key

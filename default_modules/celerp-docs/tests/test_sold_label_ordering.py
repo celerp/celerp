@@ -57,6 +57,12 @@ async def _sell_from_memo(client, h, memo: str, item_ids: list[str]) -> str:
     return invoice
 
 
+async def _sold_on(client, h, invoice: str) -> str:
+    """A drawn line's label names the invoice that sold it."""
+    inv = (await client.get(f"/docs/{invoice}", headers=h)).json()
+    return f"Sold {inv.get('ref_id') or inv.get('doc_number')}"
+
+
 def _label_for(doc: dict, eid: str):
     for li in doc.get("line_items") or []:
         if (li.get("entity_id") or li.get("item_id")) == eid:
@@ -112,9 +118,9 @@ async def test_sold_label_requires_post_fulfillment_sale(client):
         f"{_label_for(doc, stale)!r}")
 
     # A genuine post-consignment sale (its sold id > its fulfilled id).
-    await _sell_from_memo(client, h, memo, [stale, fresh])
+    invoice = await _sell_from_memo(client, h, memo, [stale, fresh])
     doc = (await client.get(f"/docs/{memo}", headers=h)).json()
-    assert _label_for(doc, fresh) == "Sold", (
+    assert _label_for(doc, fresh) == await _sold_on(client, h, invoice), (
         f"a genuine post-fulfillment sale must read Sold; got {_label_for(doc, fresh)!r}")
 
 
@@ -137,4 +143,4 @@ async def test_sale_taken_back_on_the_converted_invoice_reads_returned(client):
 
     doc = (await client.get(f"/docs/{memo}", headers=h)).json()
     assert _label_for(doc, back) == "Returned"
-    assert _label_for(doc, kept) == "Sold"
+    assert _label_for(doc, kept) == await _sold_on(client, h, invoice)

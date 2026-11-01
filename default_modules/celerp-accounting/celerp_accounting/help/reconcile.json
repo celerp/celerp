@@ -3,7 +3,7 @@
   "title": "Reconcile a bank account",
   "summary": "Match your bank statement against journal entries, line by line.",
   "keywords": ["reconcile", "reconciliation", "bank statement", "match", "bank account"],
-  "routes": ["/accounting/reconcile/start", "/accounting/reconcile/{entity_id}"],
+  "routes": ["/accounting/reconcile/start", "/accounting/reconcile/{entity_id}", "/accounting/reconcile/history/{entity_id}"],
   "permission": "manage_accounting",
   "order": 3,
   "steps": [

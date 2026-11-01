@@ -18,6 +18,7 @@ import pytest
 
 from celerp.events.engine import emit_event
 from celerp.modules import slots
+from memo_draw_support import legacy_convert
 from mfg_runs import PURCHASED, complete, issue, product, receive, refusal, role, run, snapshot
 from test_mfg_output_lineage import refused_unchanged
 from stock_books import assert_settled
@@ -94,11 +95,10 @@ async def _older_memo_convert(client, session, auth, lot):
         {"entity_id": lot, "sku": "OUT", "name": "Lot", "quantity": 2, "unit_price": 150.0, "sell_by": "piece"}]})
     assert r.status_code == 200, r.text
     memo = r.json()["id"]
-    for path, body in ((f"/docs/{memo}/finalize", {}), (f"/docs/{memo}/fulfill-lines", {"line_entity_ids": [lot]}),
-                       (f"/docs/{memo}/convert", {})):
+    for path, body in ((f"/docs/{memo}/finalize", {}), (f"/docs/{memo}/fulfill-lines", {"line_entity_ids": [lot]})):
         r = await client.post(path, headers=auth["headers"], json=body)
         assert r.status_code == 200, r.text
-    invoice = r.json()["target_doc_id"]
+    invoice = await legacy_convert(client, session, auth, memo, [])
     await emit_event(session, company_id=auth["company_id"], entity_id=lot, entity_type="item",
                      event_type="item.status.set", data={"new_status": "sold", "source_doc_id": memo},
                      actor_id=auth["user_id"], location_id=None, source="memo_convert",

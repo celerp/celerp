@@ -26,6 +26,10 @@ Screens shown on the Celerp accountants page, captured with fictional demo data.
 ### Bank reconciliation - an imported statement matched to the books with no difference left
 
 ![Bank reconciliation - an imported statement matched to the books with no difference left](bank-reconciliation.webp)
+
+### AI receipt review - a supplier invoice read into a draft bill that posts nothing until you confirm it
+
+![AI receipt review - a supplier invoice read into a draft bill that posts nothing until you confirm it](ai-receipt-review.webp)
 <!-- PRESS_KIT:gallery end -->
 
 ## Usage & copyright

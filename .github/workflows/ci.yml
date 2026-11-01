@@ -24,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
 
     services:
       postgres:
@@ -55,7 +55,7 @@ jobs:
       - name: Install deps
         run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split -c constraints.txt
 
-      - name: Run tests (shard ${{ matrix.group }}/16)
+      - name: Run tests (shard ${{ matrix.group }}/17)
         env:
           ALLOW_INSECURE_JWT: "true"
           # Run on the Postgres service (each xdist worker gets its own database).
@@ -63,7 +63,7 @@ jobs:
           # Each test process writes what the write observer saw here; the census job reads all shards.
           CELERP_MUTATION_CENSUS: ${{ runner.temp }}/mutation-census
         # ubuntu-latest has 2 vCPUs, so a single `-n auto` run can't keep up.
-        # pytest-split fans the suite across 16 parallel runners; each still uses -n auto
+        # pytest-split fans the suite across 17 parallel runners; each still uses -n auto
         # within its 2 cores.
         # Process tests run in their own job so the split stays even.
         # The split balances measured time from tests/.test_durations (refresh it with
@@ -76,7 +76,7 @@ jobs:
         run: >
           timeout 600 pytest tests/ default_modules/*/tests/ -n auto -q --tb=short --no-cov
           -m "not browser and not embedded_pg and not process and not integration"
-          --splits 16 --group ${{ matrix.group }} --splitting-algorithm least_duration
+          --splits 17 --group ${{ matrix.group }} --splitting-algorithm least_duration
           --durations-path tests/.test_durations
           --ignore=tests/test_visual.py
           --ignore=tests/test_browser

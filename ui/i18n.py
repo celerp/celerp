@@ -132,6 +132,15 @@ def t(key: str, lang: str | None = None, **kwargs) -> str:
     return text.format(**kwargs) if kwargs else text
 
 
+def list_text(items, lang: str | None = None) -> str:
+    """Names listed in running text with the locale's own separator and conjunction
+    ("A, B and C"), never a hardcoded English word."""
+    items = list(items)
+    if len(items) < 2:
+        return "".join(items)
+    return t("list.and", lang, items=t("list.separator", lang).join(items[:-1]), last=items[-1])
+
+
 _JS_SPECIAL = re.compile(r"[.*+?^${}()|[\]\\/]")
 _PARAM = re.compile(r"\{\w+\}")
 

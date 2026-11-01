@@ -770,12 +770,12 @@ async def test_a_memo_blocks_what_it_has_still_to_send_and_its_lot_while_out_nev
     assert await holders() == sku
     r = await client.post(f"/docs/{memo}/convert", headers=auth["headers"])
     assert r.status_code == 200, r.text
-    assert (await _state(session, auth, memo))["status"] == "converted"
+    assert (await _state(session, auth, memo))["status"] == "final"
     # The invoice draft carries its lines until it is issued over the lot it already holds.
     invoice = r.json()["target_doc_id"]
     assert (await client.post(f"/docs/{invoice}/finalize", headers=auth["headers"])).status_code == 200
     # Only the lot, which counts in every status but written off or returned, holds 0.275 now: the
-    # converted memo never does.
+    # memo it was invoiced from never does.
     assert await holders() == sku
     assert await _carat_decimals(client, auth) == 3
 

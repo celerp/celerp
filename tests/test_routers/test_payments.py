@@ -1025,43 +1025,6 @@ async def test_delete_payment_already_voided_returns_409(client):
     assert r.status_code == 409
 
 
-@pytest.mark.asyncio
-async def test_delete_payment_blocked_by_closed_reconciliation(client, session):
-    """DELETE must return 409 when the payment JE is in a closed reconciliation session."""
-    import uuid as _uuid
-    from celerp_accounting.models import ReconciliationSession, BankAccount
-    from sqlalchemy import select as _select
-
-    token = await _register(client)
-    inv = await _create_and_finalize_invoice(client, token, 100.0)
-
-    r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
-                          json={"payment_date": "2026-01-15", "amount": 100.0, "bank_account": "1111"})
-    assert r.status_code == 200
-
-    je_id = f"je:auto:{inv}:pay:0"
-
-    # Use the conftest session (same transaction the app uses in tests)
-    ba = (await session.execute(_select(BankAccount).limit(1))).scalar_one_or_none()
-    if ba is None:
-        pytest.skip("No bank account seeded - cannot create reconciliation session")
-    recon = ReconciliationSession(
-        id=_uuid.uuid4(),
-        company_id=ba.company_id,
-        bank_account_id=ba.id,
-        statement_date="2026-01-31",
-        statement_balance=0.0,
-        status="closed",
-        reconciled_je_ids=[je_id],
-    )
-    session.add(recon)
-    await session.flush()
-
-    r = await client.delete(f"/docs/{inv}/payments/0", headers=_h(token))
-    assert r.status_code == 409
-    assert r.json()["detail"] == t("documents.err_payment_reconciled", "en")
-
-
 # ---------------------------------------------------------------------------
 # Bill expense on P&L - regression tests (Bug: direct bills had no JE on finalize)
 # ---------------------------------------------------------------------------

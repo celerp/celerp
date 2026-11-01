@@ -502,9 +502,38 @@ def run_restore_script(script: Path, database_url: str, *, runner=None) -> None:
 
     psql = _find_pg_tool("psql")
     pg_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
+    _drop_unknown_settings(script, database_url)
     with mutating_scope(sync_url(database_url)) as held, _migration_lock(database_url), held.write_window():
         _run_tool([psql, "-X", "-q", "-w", "-v", "ON_ERROR_STOP=1", "--single-transaction",
                    "-c", _EMPTY_PUBLIC, "-f", script.name, "-d", pg_url], runner, cwd=script.parent)
+
+
+# pg_restore opens a script with the session settings of its own version, then the first entry.
+_PREAMBLE_BYTES = 1 << 16
+_PREAMBLE_SET = re.compile(rb"SET ([a-z_][a-z0-9_]*) = [^\r\n]*;\r?\n")
+_PREAMBLE_OTHER = re.compile(rb"(?:--[^\r\n]*|\\[^\r\n]*|SELECT pg_catalog\.set_config\([^\r\n]*\);|)\r?\n")
+
+
+def _drop_unknown_settings(script: Path, database_url: str) -> None:
+    """Comment out each setting of the script's opening SET block that the target server
+    does not have: tools newer than the server set parameters it refuses (pg_restore 17
+    writes transaction_timeout, which a 16 server does not know). Only those lines change,
+    in place and to the same length, so the script body is never rewritten."""
+    with script.open("r+b") as f:
+        head = f.read(_PREAMBLE_BYTES)
+        found, at = [], 0
+        while match := _PREAMBLE_SET.match(head, at) or _PREAMBLE_OTHER.match(head, at):
+            if match.re is _PREAMBLE_SET:
+                found.append((at, match[1].decode()))
+            at = match.end()
+        if not found:
+            return
+        known = set(_psql(database_url, f"SELECT name FROM pg_settings WHERE name IN "
+                                        f"({_literals({name for _, name in found})})").split())
+        for offset, name in found:
+            if name not in known:
+                f.seek(offset)
+                f.write(b"-- ")
 
 
 def _text(output: bytes) -> str:

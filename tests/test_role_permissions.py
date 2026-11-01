@@ -2250,8 +2250,10 @@ async def test_consignment_receive_without_rate(client, session, role_h):
 
 
 async def test_merge_cost_override_denied_without_permission(client, session):
-    """A resulting cost that differs from the sources' sum is a price write: refused for
-    an operator without set_inventory_prices; sending the computed sum back is allowed."""
+    """A role that cannot see cost is refused any resulting cost with one answer, whether
+    or not it matches the sources' sum, so the answer says nothing of the cost. A role that
+    sees cost but may not set prices is refused a resulting cost that differs from the
+    sum, as a price write, and may send the computed sum back."""
     ctx = await perm_setup(client, session)
     ids = []
     for sku in ("MRG-C-A", "MRG-C-B"):
@@ -2260,14 +2262,21 @@ async def test_merge_cost_override_denied_without_permission(client, session):
             "location_id": ctx["location_id"], "sell_by": "piece", "cost_total": 10,
         })
         ids.append(r.json()["id"])
-    r = await merge_items(client, headers=ctx["operator_h"], json={
-        "source_entity_ids": ids, "target_sku_from": ids[0], "resulting_cost_total": 99999,
-    })
+
+    async def merge(cost_total):
+        return await merge_items(client, headers=ctx["operator_h"], json={
+            "source_entity_ids": ids, "target_sku_from": ids[0], "resulting_cost_total": cost_total,
+        })
+
+    for cost_total in (99999, 20):
+        r = await merge(cost_total)
+        assert r.status_code == 403, r.text
+        assert r.json()["detail"] == missing_permission_text("view_inventory_costs")
+    await grant_permission(client, ctx["admin_h"], "view_inventory_costs", "operator")
+    r = await merge(99999)
     assert r.status_code == 403, r.text
     assert r.json()["detail"] == _PRICE_DENIED
-    r = await merge_items(client, headers=ctx["operator_h"], json={
-        "source_entity_ids": ids, "target_sku_from": ids[0], "resulting_cost_total": 20,
-    })
+    r = await merge(20)
     assert r.status_code == 200, r.text
 
 

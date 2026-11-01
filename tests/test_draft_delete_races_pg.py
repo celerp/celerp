@@ -140,7 +140,7 @@ async def test_finalize_first_keeps_its_document_out_of_a_waiting_bulk_delete(co
         )
     _ok(finalized)
     _ok(deleted)
-    assert deleted.json() == {"deleted": [other], "count": 1}
+    assert deleted.json() == {"deleted": [other], "count": 1, "reopened_memos": []}
     status, events, entries = await _record(factory, c["company_id"], raced)
     assert status == "final" and events == 2 and entries
     assert await _record(factory, c["company_id"], other) == (None, 0, [])

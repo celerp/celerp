@@ -167,12 +167,16 @@ async def assert_wip_carried(session, company_id) -> dict[str, Decimal]:
     return books
 
 
-async def assert_settled(client, session, auth) -> None:
-    """The books carry the stock and the work in progress, and the books check finds
-    nothing to report."""
+async def assert_settled(client, session, auth, *, in_transit: dict[str, Decimal] | None = None) -> None:
+    """The books carry the stock (with ``in_transit`` as in assert_books_carry_stock) and the
+    work in progress, and the books check finds nothing to report beyond the goods billed and
+    not received, which it shows as stock the books carry and no lot holds."""
     from celerp.services.lot_origin import stock_off_books
 
     cid = auth["company_id"]
-    await assert_books_carry_stock(session, cid)
+    await assert_books_carry_stock(session, cid, in_transit=in_transit)
     await assert_wip_carried(session, cid)
-    assert (found := await stock_off_books(session, cid)) == [], found
+    found = await stock_off_books(session, cid)
+    billed = [f for f in found if f["kind"] == "stock_gap" and f["account"] in (in_transit or {})
+              and Decimal(str(f["books"])) - Decimal(str(f["stock"])) == in_transit[f["account"]]]
+    assert len(billed) == len(in_transit or {}) and [f for f in found if f not in billed] == [], found

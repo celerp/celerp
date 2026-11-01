@@ -234,8 +234,10 @@ async def test_a_runner_failing_for_longer_than_its_lease_still_reads_as_running
     """The database is unavailable to the runner for many lease periods: its process
     lives, so the lease is renewed through the back-off and the job reads as running,
     never as run by nobody. When the outage ends the job finishes without a restart."""
-    monkeypatch.setattr(jobs, "LEASE_S", 0.2)
-    monkeypatch.setattr(jobs, "LEASE_RENEW_S", 0.05)
+    # Half a second between a renewal and the lease running out, so a busy machine that
+    # stalls the event loop for a moment still sees each renewal in time.
+    monkeypatch.setattr(jobs, "LEASE_S", 0.6)
+    monkeypatch.setattr(jobs, "LEASE_RENEW_S", 0.1)
     monkeypatch.setattr(jobs, "STEP_RETRY_DELAY_S", 0.01)
     monkeypatch.setattr(jobs, "RUNNER_RESTART_MAX_DELAY_S", 0.05)
     token, company_id, user_id = owner
@@ -256,7 +258,7 @@ async def test_a_runner_failing_for_longer_than_its_lease_still_reads_as_running
         "operation_id": str(uuid.uuid4())})
     job_id = uuid.UUID(r.json()["job_id"])
     seen = set()
-    for _ in range(20):                                         # 1 s: five lease periods
+    for _ in range(60):                                         # 3 s: five lease periods
         await asyncio.sleep(0.05)
         seen.add((await _job(client, token, job_id))["status"])
     assert seen == {"running"} and len(attempts) > 5

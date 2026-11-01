@@ -146,6 +146,15 @@ def unit_decimals(sell_by: str | None, unit_map: dict[str, dict]) -> int | None:
     return int(unit_map[sell_by].get("decimals") or 0)
 
 
+def sum_quantities(quantities, decimals: int | None) -> float:
+    """Quantities added exactly and rounded to the unit's decimal places (none: as summed), so
+    0.1 and 0.2 carat make 0.3, never the float sum 0.30000000000000004."""
+    total = sum((Decimal(str(float(q or 0))) for q in quantities), Decimal(0))
+    if decimals is not None:
+        total = total.quantize(Decimal(10) ** -decimals, rounding=ROUND_HALF_UP)
+    return float(total)
+
+
 def quantity_step(unit_name: str | None, unit_map: dict[str, dict]) -> float | None:
     """The smallest quantity the named unit allows (1 for piece, 0.01 for gram), or None when
     the unit is unknown or a service, whose quantities are not constrained."""

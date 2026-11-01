@@ -1028,7 +1028,7 @@ async def test_consignment_bill_starts_without_the_scan_ledger(client):
     """Converting a consignment to its vendor bill drops the consignment's scan runs, as every other
     conversion does: a run key replayed on the bill is a new run."""
     t = await _register(client)
-    template = await _item(client, t, "LG-CON", qty=0)
+    template = await _item(client, t, "LG-CON", qty=0, cost_price=5.0)
     r = await client.post("/docs", headers=_h(t), json={
         "doc_type": "consignment_in", "contact_id": "supplier:1", "line_items": []})
     assert r.status_code == 200, r.text

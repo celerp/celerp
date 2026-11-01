@@ -60,9 +60,6 @@ def test_bill_line_charges_keep_a_free_line_free():
 # Every read of a stored line amount outside money.py, with why it is not an amount
 # being worked out. A new read fails here: call money.document_line_amount instead.
 _ALLOWED_READS = {
-    "default_modules/celerp-docs/celerp_docs/routes.py": (
-        4, "scales a stored line amount by the share of the quantity billed; a line with "
-           "no stored amount is priced by money on the billed quantity"),
     "ui/routes/docs_import.py": (1, "shows the amount the received file states, as received"),
 }
 _READ = re.compile(r"""(\.get\(\s*|\[)["']line_total["'](?!\]\s*=[^=])""")

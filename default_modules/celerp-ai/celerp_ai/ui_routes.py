@@ -506,7 +506,7 @@ def setup_ui_routes(app) -> None:
                 raise
             data = e.data if isinstance(e.data, dict) else {}
             failure = await _refusal_reply(token, e, user_bubble, query, lang)
-            closed = e.status == 409 and _api_error_code(e) == "operation_conflict"
+            closed = e.status == 409 and api.error_code(e) == "operation_conflict"
             return _reply(failure, done=False,
                           question_id=None if closed else str(data.get("message_id") or operation_id),
                           asked_again=bool(data.get("asked_again")))
@@ -656,7 +656,7 @@ def setup_ui_routes(app) -> None:
                 token, session_token, conversation_id, message_id, tool_call_id,
             )
         except APIError as e:
-            if e.status == 409 and _api_error_code(e) == "action_not_pending":
+            if e.status == 409 and api.error_code(e) == "action_not_pending":
                 return _action_panel(t("ai.action_expired", lang), ok=False)
             return _action_panel(_api_error_text(e), ok=False)
         if result.get("action_status") == "retryable":
@@ -689,7 +689,7 @@ def setup_ui_routes(app) -> None:
                 token, session_token, conversation_id, message_id, tool_call_id,
             )
         except APIError as e:
-            if e.status == 409 and _api_error_code(e) == "action_not_pending":
+            if e.status == 409 and api.error_code(e) == "action_not_pending":
                 # Another tab may already have handled it. Its desired visible
                 # state is still "gone", so make dismissal idempotent in the UI.
                 return _R("")
@@ -748,7 +748,7 @@ def setup_ui_routes(app) -> None:
                 token, session_token, conversation_id, message_id, tool_call_ids=chunk,
             )
         except APIError as e:
-            if e.status == 409 and _api_error_code(e) == "action_not_pending":
+            if e.status == 409 and api.error_code(e) == "action_not_pending":
                 error = t("ai.action_expired", lang)
             else:
                 error = _api_error_text(e)
@@ -1146,14 +1146,6 @@ def _failed_reply(user_bubble: FT, e: APIError, lang: str) -> tuple[FT, FT]:
     if e.status == 429:
         return user_bubble, _msg_bubble("ai", t("ai.busy", lang))
     return user_bubble, _msg_bubble("ai", _api_error_text(e), error=True)
-
-
-def _api_error_code(e: APIError) -> str:
-    """The API's typed error code, from the 409 detail dict."""
-    for source in (e.data, e.detail):
-        if isinstance(source, dict) and source.get("code"):
-            return str(source["code"])
-    return ""
 
 
 def _api_error_text(e: APIError) -> str:
