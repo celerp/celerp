@@ -607,7 +607,7 @@ def files_section(
     children = [
         H3(title or t("label.files"), cls="section-title"),
         filter_bar,
-        table,
+        Div(table, cls="table-scroll-wrap"),
         Script(resize_js),
         Script(COLUMN_FILTER_JS),
         Script(f"window.celerpRefreshFilters&&window.celerpRefreshFilters(document.getElementById('files-section-{sid}'));"),
