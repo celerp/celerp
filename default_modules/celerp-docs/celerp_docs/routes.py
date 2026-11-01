@@ -11629,7 +11629,10 @@ def draw_problems(snap: _DrawSnapshot, body: InvoiceLinesRequest, *,
         out = snap.out(i)
         qty = float(quantities.get(lid, out))
         if not out:
-            problems.append(refusal("lines.revert_nothing_out", f"{name}: nothing is out on this line", name=name))
+            problems.append(refusal("docs.draw_line_not_shipped",
+                                    f"{name} is not out on memo {memo_ref}, so there is nothing to invoice. "
+                                    "If it has not been shipped yet, select the line and use Set as shipped first.",
+                                    name=name, memo=memo_ref))
         elif qty <= 0:
             problems.append(refusal("docs.draw_quantity_positive",
                                     f"{name}: the quantity to invoice must be greater than zero.", name=name))

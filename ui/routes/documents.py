@@ -3604,15 +3604,18 @@ celerpUpdateBulkAlloc();
         """The Invoice selected panel as a draw request: the units of each selected line by its
         line id and the draft invoice chosen (None for a new one)."""
         quantities = {}
+        # A selected line with nothing out sends no quantity; the server says why it cannot be invoiced.
+        picked = [str(form.get(k)) for k in sorted((k for k in form.keys() if re.fullmatch(r"pick_\d+", k)),
+                                                    key=lambda k: int(k[5:])) if form.get(k)]
         for idx, qty in _selected_line_quantities(form):
             line_id = str(form.get(f"line_id_{idx}") or "")
             if qty is None:
                 raise ValueError(t("documents.select_lines_to_invoice"))
             if line_id:
                 quantities[line_id] = qty
-        if not quantities:
+        if not quantities and not picked:
             raise ValueError(t("documents.select_lines_to_invoice"))
-        return {"line_ids": list(quantities), "quantities": quantities,
+        return {"line_ids": [*quantities, *picked], "quantities": quantities,
                 "target_doc_id": str(form.get("target_doc_id") or "").strip() or None}
 
     # Invoice selected: chosen units of a memo onto a new or a draft invoice of its customer.
@@ -6540,14 +6543,16 @@ _RETURN_BY_LOT_KEYS = ("docs.return_line_by_lot", "docs.return_line_measure_lots
 
 
 def _line_action_rows(line_items: list, available, unit, none_left: str, unit_map: dict, note=None,
-                      extra=None) -> list:
+                      extra=None, refusable: bool = False) -> list:
     """One row per document line for a form acting on the selected lines, a fieldset the page
     script shows and enables only while its line is selected. A line with something to act on
     offers all of it, ``available(line)`` in ``unit(line)``, stepping by what that unit allows in
     ``unit_map``; any other line says ``none_left``
     and submits nothing. ``note(line, has_some)``, when given, may return a plain reason shown
     in place of ``none_left`` or beside the field. ``extra(line, index)``, when given, returns
-    further fields shown after the quantity of a line that has something to act on."""
+    further fields shown after the quantity of a line that has something to act on. With
+    ``refusable``, a selected line with nothing to act on still names itself (``pick_<i>``), so
+    the server can say why it cannot be acted on rather than the form going quiet."""
     rows = []
     for i, li in enumerate(line_items):
         qty = available(li)
@@ -6555,6 +6560,8 @@ def _line_action_rows(line_items: list, available, unit, none_left: str, unit_ma
         why = note(li, qty > 1e-9) if note else ""
         if qty <= 1e-9:
             body = [label, Span(why or none_left, cls="text-muted")]
+            if refusable and li.get("line_id"):
+                body.append(Input(type="hidden", name=f"pick_{i}", value=li["line_id"]))
         else:
             body = [label, _line_qty_input(f"qty_{i}", qty, unit(li), qty, step=quantity_step(unit(li), unit_map)),
                     *(extra(li, i) if extra else [])]
@@ -7051,13 +7058,32 @@ def _memo_take_rows(doc: dict, currency: str) -> list:
             for tk in doc.get("memo_fixed_taken") or [] if _fixed_amounts_text(tk, currency)]
 
 
+# A memo line's shipped state as get_doc derives it (shipped_label) -> its catalog key.
+SHIPPED_LABEL_KEYS = {
+    "Returned": "documents.line_label_returned",
+    "Not shipped": "documents.line_label_not_shipped",
+    "On Memo": "inventory.status_on_memo",
+    "Sold": "enum.item_status.sold",
+}
+
+
+def _shipped_label(li: dict) -> str:
+    """A memo line's shipped state in the user's language, or "" when it was not derived."""
+    key = SHIPPED_LABEL_KEYS.get(li.get("shipped_label") or "")
+    return t(key) if key else ""
+
+
 def _draw_panel(entity_id: str, doc: dict, targets: list | None, unit_map: dict) -> FT:
     """Invoice selected on a memo: the units of each selected line to invoice (all it has out
     unless changed), the draft invoice of the same customer to add them to or a new one, and
     the server's preview of what that invoice bills and what stays on the memo."""
     lines = doc.get("line_items") or []
+    # A line with nothing out says where its goods are and still asks the preview, which says
+    # what to do (set it as shipped first) rather than leaving nothing to confirm.
     rows = _line_action_rows(lines, lambda li: float(li.get("out_quantity") or 0),
-                             lambda li: li.get("unit") or "", t("documents.line_label_not_shipped"), unit_map)
+                             lambda li: li.get("unit") or "", t("documents.line_label_not_shipped"), unit_map,
+                             note=lambda li, has_some: "" if has_some else _shipped_label(li),
+                             refusable=True)
     options = [("", t("documents.invoice_target_new")), *((tid, ref) for tid, ref in targets or [])]
     return Form(
         *rows,
@@ -10408,12 +10434,6 @@ async function celerpCsvImport(input, entityId) {{
         # Absent the derivation (a ledger-read fault degraded it away), the column
         # simply shows nothing.
         _show_shipped_label = doc_type == "memo" and bool(line_items)
-        _SHIPPED_LABEL_KEYS = {
-            "Returned": "documents.line_label_returned",
-            "Not shipped": "documents.line_label_not_shipped",
-            "On Memo": "inventory.status_on_memo",
-            "Sold": "enum.item_status.sold",
-        }
 
         # Account code -> its label (account_label), for finalized line display
         _acct_map: dict[str, str] = {
@@ -10455,7 +10475,7 @@ async function celerpCsvImport(input, entityId) {{
                         held=_line_held(li, (item_status_doc_map or {}).get(li_eid))))
             if _show_shipped_label:
                 _lbl = li.get("shipped_label")
-                _key = _SHIPPED_LABEL_KEYS.get(_lbl) if _lbl else None
+                _key = SHIPPED_LABEL_KEYS.get(_lbl) if _lbl else None
                 _text = t(_key) if _key else None
                 # Part taken back: say how much of the line is still out.
                 _still_out = float(li.get("out_quantity") or 0)

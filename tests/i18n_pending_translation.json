@@ -201,6 +201,13 @@
     "contacts.identity_on_documents": {
       "en": "The details here are the sender on your documents: every new invoice, quote and memo shows them.",
       "params": []
+    },
+    "docs.draw_line_not_shipped": {
+      "en": "{name} is not out on memo {memo}, so there is nothing to invoice. If it has not been shipped yet, select the line and use Set as shipped first.",
+      "params": [
+        "memo",
+        "name"
+      ]
     }
   }
 }

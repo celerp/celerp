@@ -6900,6 +6900,7 @@
   "docs.back_to_memo_not_drawn": "{lines} did not come from a memo, so there is no memo to send it back to. Delete the line instead.",
   "docs.close_drawn_draft": "Memo {memo} can't be closed while draft invoice {invoice} holds its products. Finalize that invoice or send them back to the memo, then close the memo.",
   "docs.draw_lot_unattributed": "{sku} is out on memo {memo}, but nothing records which line it went out on.",
+  "docs.draw_line_not_shipped": "{name} is not out on memo {memo}, so there is nothing to invoice. If it has not been shipped yet, select the line and use Set as shipped first.",
   "docs.draw_not_memo": "Only goods out on a memo can be invoiced this way.",
   "docs.draw_preview_differs": "Memo {memo}, the invoice or the lines and quantities chosen changed after the preview. Check the new preview, then confirm again.",
   "docs.memo_rate_preview_differs": "Memo {memo} or the rate entered changed after the preview. Check the new preview, then save again.",

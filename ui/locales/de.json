@@ -7038,5 +7038,6 @@
   "error.email_invalid": "Enter one email address, like name@example.com.",
   "contacts.err_own_contact_kept": "This is your company's own record, shown as the sender on your documents, so it cannot be deleted or merged into another contact. Change its details in Company Details.",
   "contacts.own_record_note": "Your company's own record, {name}, is listed here because your documents show it as the sender. Change it in",
-  "contacts.identity_on_documents": "The details here are the sender on your documents: every new invoice, quote and memo shows them."
+  "contacts.identity_on_documents": "The details here are the sender on your documents: every new invoice, quote and memo shows them.",
+  "docs.draw_line_not_shipped": "{name} is not out on memo {memo}, so there is nothing to invoice. If it has not been shipped yet, select the line and use Set as shipped first."
 }
