@@ -22,7 +22,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import LOT_ACCOUNT_FIELD, refusal
 from celerp.connectors.ownership import PRODUCT_CHANNEL_PLATFORMS
-from celerp.connectors.product_links import link_takes_store_changes, variant_key
 from celerp.services.currencies import KNOWN_CURRENCY_CODES
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.importers.results import ImportOutcome
@@ -1147,7 +1146,7 @@ async def _assert_external_identity_available(
     *,
     exclude_entity_id: str | None = None,
 ) -> None:
-    from celerp.connectors.product_links import external_link_for_state
+    from celerp.connectors.product_links import external_link_for_state, variant_key
     product_id = str(link.get("product_id") or "")
     if not product_id:
         raise ExternalLinkConflictError(t("inventory.err_store_product_unknown"))
@@ -1209,6 +1208,7 @@ def _is_product_anchor_state(state: dict) -> bool:
 def _same_external_identity(
     platform: str, link: dict, product_id: str, variation_id: str | None
 ) -> bool:
+    from celerp.connectors.product_links import variant_key
     if str(link.get("product_id") or "") != str(product_id):
         return False
     actual = link.get(variant_key(platform))
@@ -1368,7 +1368,7 @@ async def upsert_external_product(
     ``expected_entity`` is the item a reviewed preview showed the product resolving to
     (None: created); when the product now resolves otherwise nothing is written
     ("unreviewed")."""
-    from celerp.connectors.product_links import external_link_for_state
+    from celerp.connectors.product_links import external_link_for_state, link_takes_store_changes, variant_key
     from celerp.db import SessionLocal as AsyncSessionLocal
     from celerp.services.field_fingerprints import LINK_KEY, fingerprint
 
@@ -1661,7 +1661,7 @@ async def set_external_link(
     actor_id=None, source: str = "connector",
 ) -> dict:
     """Create or replace one channel link without touching any other channel."""
-    from celerp.connectors.product_links import external_link_for_state
+    from celerp.connectors.product_links import external_link_for_state, variant_key
     cid = uuid.UUID(str(company_id))
     await lock_external_identity_namespace(session, cid, platform)
     row = await session.get(
@@ -1768,7 +1768,7 @@ async def undo_external_link(
     Returns {"outcome", "kept", "files"}: outcome "undone", "relinked" (the item now holds
     another product: nothing is changed, and every store value and pulled file still on the
     item is returned as kept) or "gone" (the item no longer exists)."""
-    from celerp.connectors.product_links import external_link_for_state
+    from celerp.connectors.product_links import external_link_for_state, variant_key
     from celerp.services.field_fingerprints import fingerprint
     from celerp.services.field_schema import AMOUNT_EDIT_GATED_KEYS
     from celerp.services.permissions import missing_permission, reject_price_change
@@ -2274,6 +2274,7 @@ def build_channel_states(
 
 def external_identity_key(platform: str, link: dict) -> tuple[str, str | None]:
     """Canonical external product identity for one platform."""
+    from celerp.connectors.product_links import variant_key
     product_id = str(link.get("product_id") or "")
     variant = link.get(variant_key(platform))
     return product_id, (str(variant) if variant not in (None, "") else None)
