@@ -74,3 +74,18 @@ async def test_an_unchanged_list_save_records_no_update(client, auth):
                            "discount_type": {"new": "flat"}}})
     assert r.status_code == 200, r.text
     assert r.json() == {"event_id": None, "version": lst["version"]}
+
+
+@pytest.mark.asyncio
+async def test_a_changed_discount_type_is_stored(client, auth):
+    doc = await _invoice(client, auth)
+    line = _as_editor_sends(doc["line_items"][0])
+    for value, kind, total in ((10, "percentage", 90), (20, "percentage", 80), (25, "flat", 75)):
+        r = await client.patch(f"/docs/{doc['id']}", headers=auth["headers"], json={
+            "expected_version": doc["version"],
+            "fields_changed": {"line_items": {"new": [line]}, "discount": {"old": None, "new": value},
+                               "discount_type": {"old": doc.get("discount_type"), "new": kind},
+                               "doc_taxes": {"new": []}}})
+        assert r.status_code == 200, r.text
+        doc = await _get(client, auth, doc["id"])
+        assert doc.get("discount_type") == kind and float(doc["total"]) == total, doc
