@@ -380,7 +380,8 @@ a:hover { text-decoration: underline; }
    narrow screen are not mistaken for none. The shade is an overlay drawn above the table (an
    inset shadow on the box would sit under the table's own background and never show), held
    at the visible edge by --scroll-x, and it takes no clicks. Never a mask: a mask would hide
-   the row menus and tips a table opens past its edge. The shell's scroll-cue script sets the
+   the row menus and tips a table opens past its edge. A tab strip (.category-tabs) takes the
+   same cue. The shell's scroll-cue script sets the
    classes and --scroll-x. */
 .scroll-more-left, .scroll-more-right { position: relative; }
 .scroll-more-left::before, .scroll-more-right::after {
@@ -879,23 +880,21 @@ input[type="number"] { text-align: right; }
 .doc-meta { display: flex; gap: 24px; margin-bottom: 16px; flex-wrap: wrap; }
 .doc-meta-left, .doc-meta-right { display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
 .doc-lines { margin-top: 12px; }
-/* width:max-content sizes the table to its columns and lets it exceed the
-   section (so dragging a column wider overflows into the .table-scroll-wrap,
-   which scrolls — like inventory); width:auto would cap it at the container.
-   min-width:0 overrides the base .data-table's min-width:100% so columns are not
-   stretched to fill — a resize handle sits on each column's real edge and saved
-   widths restore exactly. */
-.data-table.doc-lines { table-layout: fixed; width: 100%; }
+/* The lines fill the section, and never squeeze below readable column widths: on a narrow
+   screen the table keeps them and scrolls sideways in its .table-scroll-wrap. A header wraps
+   onto a second line rather than being cut short. */
+.data-table.doc-lines { table-layout: fixed; width: 100%; min-width: 920px; }
 .doc-lines th, .doc-lines td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc-lines th { white-space: normal; text-overflow: clip; vertical-align: bottom; }
 .doc-lines tbody tr.doc-line--reprice-warning { outline: 2px solid var(--c-amber); outline-offset: -2px; }
 /* Tight cell padding so the full-width inputs nearly fill each cell (dense, spreadsheet-like)
    rather than sitting inside the base table's 10px gutters. Per-column overrides still apply. */
 .doc-lines th, .doc-lines td { padding-left: 4px; padding-right: 4px; }
-/* doc-lines column widths — fixed layout, all px, must sum to ≤ table width */
+/* doc-lines column widths: fixed layout, all px, summing to about the table's 920px min-width */
 .doc-lines th.col-checkbox,    .doc-lines td.col-checkbox    { width: 36px;  padding: 0 4px; text-align: center; }
 .doc-lines th.col-item-status, .doc-lines td.col-item-status { width: 160px; }
 .doc-lines th.col-shipped-label, .doc-lines td.col-shipped-label { width: 120px; }
-.doc-lines th.col-sku,         .doc-lines td.col-sku         { width: 70px;  }
+.doc-lines th.col-sku,         .doc-lines td.col-sku         { width: 96px;  }
 .doc-lines th.col-desc,        .doc-lines td.col-desc        { width: 300px; }
 .doc-lines th.col-cat,         .doc-lines td.col-cat         { width: 60px;  }
 .doc-lines th.col-type,        .doc-lines td.col-type        { width: 55px;  }
@@ -929,7 +928,7 @@ input[type="number"] { text-align: right; }
 .doc-lines--audit td.col-desc { background: var(--audit-row-bg, transparent); }
 .doc-lines--audit tr.data-row--audited { --audit-row-bg: rgba(14,165,122,0.14); }
 .doc-lines--audit tr.data-row--adjusted { --audit-row-bg: var(--c-blue-light); }
-.doc-lines--invoice th.col-qty, .doc-lines--invoice td.col-qty { width: 75px; }
+.doc-lines--invoice th.col-qty, .doc-lines--invoice td.col-qty { width: 90px; }
 .drawn-from { font-size: 11px; line-height: 1.3; }
 /* Draft tables showing the item Status column: the badge column's width comes out of the
    description column (the flexible one), so every other column keeps its usual width and
@@ -989,13 +988,14 @@ input[type="number"] { text-align: right; }
 .li-deleted-mark { margin-left: 4px; font-size: 11px; color: var(--c-danger, #b42318); white-space: nowrap; }
 .doc-lines th.col-unit,        .doc-lines td.col-unit        { width: 44px;  }
 .doc-lines th.col-unit-price,  .doc-lines td.col-unit-price  { width: 90px;  text-align: right; }
-.doc-lines th.col-disc,        .doc-lines td.col-disc        { width: 44px;  text-align: right; }
-.doc-lines th.col-tax,         .doc-lines td.col-tax         { width: 50px;  text-align: right; }
+.doc-lines th.col-disc,        .doc-lines td.col-disc        { width: 60px;  text-align: right; }
+/* Wide enough for a tax's whole name in its select ("Sin impuestos", "GST 18%"). */
+.doc-lines th.col-tax,         .doc-lines td.col-tax         { width: 110px; text-align: right; }
 /* An account reads "code name": wide enough for the usual name, and a long one wraps rather than clips. */
 .doc-lines th.col-account,     .doc-lines td.col-account     { width: 160px; }
 .doc-lines td.col-account { white-space: normal; overflow-wrap: anywhere; }
 .doc-lines td.col-account select { width: 100%; }
-.doc-lines th.col-total,       .doc-lines td.col-total       { width: 100px; text-align: right; padding-right: 8px; }
+.doc-lines th.col-total,       .doc-lines td.col-total       { width: 120px; text-align: right; padding-right: 8px; }
 /* A line cell holding badges or links (a line's status, what became of a memo line, the memo an
    invoice line came from) wraps them inside the column, whatever its width, so each shows whole.
    After the column rules so it wins over their nowrap at equal specificity. */
@@ -1046,6 +1046,8 @@ input[type="number"] { text-align: right; }
 .settings-card { margin-top: 16px; padding: 16px 20px; border: 1px solid var(--c-border); border-radius: var(--radius); background: var(--c-bg); }
 .settings-hint { font-size: 11px; color: var(--c-text2); margin-bottom: 10px; }
 .settings-section-title { font-size: 14px; font-weight: 600; color: var(--c-text); margin: 0 0 8px; }
+/* A section title after other content in the card starts a new section, set apart from it. */
+.settings-card > * + .settings-section-title { margin-top: 20px; }
 /* Underline via inset shadow, not border + negative tab margins: overflow-x:auto
    forces overflow-y to auto too, and tabs protruding 2px below the content box
    (margin-bottom:-2px) then read as vertical overflow and grow a scrollbar. */

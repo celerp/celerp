@@ -57,3 +57,34 @@ def test_every_header_sits_over_its_figures(page, ui_server, fresh_company):
                                                        _MAIN_PAGES + _MONEY_PAGES)
              for m in page.evaluate(_ALIGNMENT_JS)]
     assert not wrong, "\n".join(wrong)
+
+
+# The draft line editor: every header and select whole, every number box wide enough to read,
+# and on a phone the lines keep their widths and scroll in their own box, its hidden edge faded.
+_LINE_EDITOR_JS = """() => {
+  const out = [];
+  const t = document.querySelector('table.doc-lines'), box = t.closest('.table-scroll-wrap');
+  for (const el of t.querySelectorAll('thead th, tbody select'))
+    if (el.offsetParent && el.scrollWidth > el.clientWidth + 1) out.push(`cut short: ${el.tagName === 'SELECT' ? el.selectedOptions[0].text : el.innerText.trim() || el.className}`);
+  for (const inp of t.querySelectorAll('tbody input[type=number]'))
+    if (inp.offsetParent && inp.getBoundingClientRect().width < 40) out.push(`number box ${inp.name} too narrow`);
+  const scrolls = box.scrollWidth > box.clientWidth;
+  return {wrong: out, scrolls, cue: box.classList.contains('scroll-more-right')};
+}"""
+
+
+@pytest.mark.parametrize("width,lang", [(390, "en"), (1440, "es")])
+def test_the_line_editor_reads_whole_on_a_phone_and_in_spanish(page, ui_server, fresh_company, width, lang):
+    ids = seed_main_pages(fresh_company)
+    page.context.add_cookies([{"name": "celerp_lang", "value": lang, "url": ui_server}])
+    page.set_viewport_size({"width": width, "height": 900})
+    page.goto(f"{ui_server}/docs/{ids['doc']}", wait_until="load")
+    page.wait_for_timeout(600)
+    seen = page.evaluate(_LINE_EDITOR_JS)
+    assert not seen["wrong"], "\n".join(seen["wrong"])
+    if width < 800:
+        assert seen["scrolls"] and seen["cue"], seen
+        # Scrolled to its end, the right edge no longer fades.
+        page.locator(".table-scroll-wrap:has(table.doc-lines)").evaluate("b => b.scrollLeft = b.scrollWidth")
+        page.wait_for_timeout(200)
+        assert page.evaluate(_LINE_EDITOR_JS)["cue"] is False

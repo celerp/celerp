@@ -2101,8 +2101,9 @@ _STICKY_HEADER_JS = """
 })();
 
 (function(){
-  // Scroll cue: a data table's box that scrolls sideways shades the edge it can still scroll
-  // toward (a box that does not scroll is never shaded) (app.css .scroll-more-left/right), so hidden columns read as there.
+  // Scroll cue: a data table's box or a tab strip that scrolls sideways shades the edge it can still
+  // scroll toward (a box that does not scroll is never shaded) (app.css .scroll-more-left/right), so
+  // hidden columns and tabs read as there.
   function update(box){
     var max = /auto|scroll/.test(getComputedStyle(box).overflowX) ? box.scrollWidth - box.clientWidth : 0;
     box.classList.toggle('scroll-more-right', max > 1 && box.scrollLeft < max - 1);
@@ -2113,15 +2114,16 @@ _STICKY_HEADER_JS = """
   var sizes = new ResizeObserver(function(entries){
     entries.forEach(function(e){ update(e.target.matches('table') ? e.target.parentElement : e.target); });
   });
+  function cue(box, inner){
+    if(!box || box.dataset.scrollCue) return;
+    box.dataset.scrollCue = '1';
+    box.addEventListener('scroll', function(){ update(box); }, {passive: true});
+    sizes.observe(box); if(inner) sizes.observe(inner);
+    update(box);
+  }
   function watch(){
-    document.querySelectorAll('table.data-table').forEach(function(t){
-      var box = t.parentElement;
-      if(!box || box.dataset.scrollCue) return;
-      box.dataset.scrollCue = '1';
-      box.addEventListener('scroll', function(){ update(box); }, {passive: true});
-      sizes.observe(box); sizes.observe(t);
-      update(box);
-    });
+    document.querySelectorAll('table.data-table').forEach(function(t){ cue(t.parentElement, t); });
+    document.querySelectorAll('.category-tabs').forEach(function(strip){ cue(strip); });
   }
   document.addEventListener('DOMContentLoaded', watch);
   document.addEventListener('htmx:afterSwap', watch);

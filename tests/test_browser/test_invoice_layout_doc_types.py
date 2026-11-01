@@ -88,7 +88,8 @@ def test_print_view_preserves_weight_unit(page, ui_server, api, doc_type):
 
 def test_doc_lines_columns_scale_proportionally(page, ui_server, api):
     """The line table fills its container (rightmost column pinned to the right edge), column
-    widths are percentages, and they rescale when the viewport changes — not fixed pixels."""
+    widths are percentages, and they rescale when the viewport changes — not fixed pixels.
+    Below its readable minimum (a phone) it scrolls instead: test_header_alignment covers that."""
     doc_id = _make_draft(api, "invoice")
     page.set_viewport_size({"width": 1400, "height": 900})
     page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
@@ -113,7 +114,7 @@ def test_doc_lines_columns_scale_proportionally(page, ui_server, api):
     assert abs(wide_table - wide_container) <= 4, (wide_table, wide_container)
 
     # Shrink the viewport: the table scales down with the container (proportional, not fixed px).
-    page.set_viewport_size({"width": 900, "height": 900})
+    page.set_viewport_size({"width": 1240, "height": 900})
     page.wait_for_function(
         "(w) => document.querySelector('table.doc-lines').offsetWidth < w",
         arg=wide_table, timeout=5000)  # poll until the layout settles (no fixed sleep -> no flake)
