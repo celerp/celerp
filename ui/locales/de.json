@@ -3522,6 +3522,7 @@
   "error.upload_too_large": "Dieser Upload ist zu groß. Wählen Sie eine kleinere Datei oder teilen Sie sie in mehrere kleinere Dateien auf.",
   "error.invalid_content_length": "Der Content-Length-Header der Anfrage ist keine Zahl.",
   "error.maintenance": "Celerp führt gerade Wartungsarbeiten aus. Warten Sie eine Minute und versuchen Sie es dann erneut.",
+  "error.still_starting": "Celerp wird noch gestartet. Versuchen Sie es gleich noch einmal.",
   "error.recovery_incomplete": "Die Systemwiederherstellung wurde nicht abgeschlossen, daher bleibt Celerp bis dahin nicht verfügbar. Starten Sie Celerp neu, um die Wiederherstellung erneut zu versuchen.",
   "error.api_not_found": "Celerp konnte diese Seite nicht finden. Prüfen Sie die Adresse oder gehen Sie zurück und nutzen Sie das Menü.",
   "error.business_type_unavailable": "Die Geschäftsart {vertical} ist nicht verfügbar. Wählen Sie eine andere Geschäftsart.",

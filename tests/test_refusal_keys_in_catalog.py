@@ -199,6 +199,9 @@ _DYNAMIC_KEY_SITES = {
         "module_journal.source", "module_journal.unbalanced", "module_journal.unknown_operation",
         "posting.destination.not_in_chart",
     ],
+    # celerp/error_body.py: as_refusal answers a t() text as its own key's refusal; t()
+    # read that key from the catalog, so there is no key here to check
+    "celerp/error_body.py": [],
     # celerp/services/document_lines.py: key, text = _PROTECTED_MESSAGES[why]
     "celerp/services/document_lines.py": ["line.protected_held", "line.protected_received"],
     # default_modules/celerp-inventory/celerp_inventory/services.py: each CostRefused

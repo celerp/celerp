@@ -517,7 +517,7 @@ class ModuleStartupMiddleware:
         if ready:
             await self.app(scope, receive, send)
             return
-        response = error_response(Request(scope), 503, outcome.STARTING)
+        response = error_response(Request(scope), 503, t("error.still_starting"))
         await response(scope, receive, send)
 
 

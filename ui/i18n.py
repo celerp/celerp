@@ -153,7 +153,7 @@ def date_text(day: date, lang: str | None = None) -> str:
     """A day as people read it in running text, in the locale's own order and month names
     ("31 Mar 2026")."""
     month = t("date.months_short", lang).split()[day.month - 1]
-    return t("date.text", lang, day=day.day, month=month, month_number=day.month, year=day.year)
+    return t("date.text", lang, day=day.day, month=month, year=day.year)
 
 
 def list_text(items, lang: str | None = None) -> str:

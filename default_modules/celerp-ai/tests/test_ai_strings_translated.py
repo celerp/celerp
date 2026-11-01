@@ -241,6 +241,7 @@ def test_a_refusal_stored_without_its_key_is_never_shown_in_english():
     assert ui_routes._error_text(ui_routes._keyed({"message": "Something broke"}), "qx") == \
         i18n.t("ai.err_unexpected", "qx")
     assert ui_routes._keyed("Something broke") is None
+    assert ui_routes._keyed([{"loc": ["body", "q"], "msg": "Field required", "type": "missing"}]) is None
 
 
 def test_answer_errors_read_in_the_reader_language():

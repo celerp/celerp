@@ -3521,6 +3521,7 @@
   "error.upload_too_large": "ไฟล์ที่อัปโหลดใหญ่เกินไป เลือกไฟล์ที่เล็กกว่า หรือแบ่งเป็นหลายไฟล์ที่เล็กลง",
   "error.invalid_content_length": "ส่วนหัว Content-Length ของคำขอไม่ใช่ตัวเลข",
   "error.maintenance": "Celerp กำลังบำรุงรักษาระบบ รอสักครู่แล้วลองอีกครั้ง",
+  "error.still_starting": "Celerp ยังเริ่มทำงานไม่เสร็จ ลองอีกครั้งในอีกสักครู่",
   "error.recovery_incomplete": "การกู้คืนระบบยังไม่เสร็จ Celerp จึงยังใช้งานไม่ได้จนกว่าจะเสร็จ รีสตาร์ต Celerp เพื่อลองกู้คืนอีกครั้ง",
   "error.api_not_found": "Celerp ไม่พบหน้านี้ ตรวจสอบที่อยู่ หรือย้อนกลับแล้วใช้เมนู",
   "error.business_type_unavailable": "ประเภทธุรกิจ {vertical} ไม่มีให้ใช้ เลือกประเภทธุรกิจอื่น",

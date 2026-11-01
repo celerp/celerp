@@ -3521,6 +3521,7 @@
   "error.upload_too_large": "هذا الملف المرفوع كبير جداً. اختر ملفاً أصغر، أو قسّمه إلى عدة ملفات أصغر.",
   "error.invalid_content_length": "ترويسة Content-Length في الطلب ليست رقمًا.",
   "error.maintenance": "Celerp مشغول بالصيانة. انتظر دقيقة، ثم حاول مرة أخرى.",
+  "error.still_starting": "لا يزال Celerp قيد التشغيل. حاول مرة أخرى بعد لحظة.",
   "error.recovery_incomplete": "لم تكتمل استعادة النظام، لذا يبقى Celerp غير متاح حتى تكتمل. أعد تشغيل Celerp لمحاولة الاستعادة مرة أخرى.",
   "error.api_not_found": "لم يعثر Celerp على هذه الصفحة. تحقق من العنوان، أو ارجع واستخدم القائمة.",
   "error.business_type_unavailable": "نوع النشاط التجاري {vertical} غير متاح. اختر نوع نشاط آخر.",

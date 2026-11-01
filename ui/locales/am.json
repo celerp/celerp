@@ -1922,6 +1922,7 @@
   "error.upload_too_large": "ይህ የሚጫን ፋይል በጣም ትልቅ ነው። ትንሽ ፋይል ይምረጡ፣ ወይም ወደ ብዙ ትናንሽ ፋይሎች ይክፈሉት።",
   "error.invalid_content_length": "የጥያቄው Content-Length ራስጌ ቁጥር አይደለም።",
   "error.maintenance": "Celerp በጥገና ላይ ነው። አንድ ደቂቃ ይጠብቁና እንደገና ይሞክሩ።",
+  "error.still_starting": "Celerp አሁንም በመጀመር ላይ ነው። ከትንሽ ቆይታ በኋላ እንደገና ይሞክሩ።",
   "error.recovery_incomplete": "የሲስተም መልሶ ማግኛው አልተጠናቀቀም፣ ስለዚህ እስኪጠናቀቅ ድረስ Celerp አይገኝም። መልሶ ማግኛውን እንደገና ለመሞከር Celerpን እንደገና ያስጀምሩ።",
   "error.api_not_found": "Celerp ይህን ገጽ ማግኘት አልቻለም። አድራሻውን ያረጋግጡ፣ ወይም ወደ ኋላ ተመልሰው ምናሌውን ይጠቀሙ።",
   "error.business_type_unavailable": "የንግድ ዓይነት {vertical} አይገኝም። ሌላ የንግድ ዓይነት ይምረጡ።",

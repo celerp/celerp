@@ -41,7 +41,8 @@ def test_every_exception_handler_answers_through_the_one_builder():
     assert not bypass, bypass
 
 
-@pytest.mark.parametrize("detail", ["Barcode '1001' already exists", {"code": "x", "message": "No key."}])
+@pytest.mark.parametrize("detail", ["Barcode '1001' already exists", {"code": "x", "message": "No key."},
+                                    ["That name is taken"], [catalog_refusal("error.server_error"), "That name is taken"], []])
 async def test_an_agent_route_refusal_without_a_key_is_recorded(recorded, detail):
     handler = app.exception_handlers[StarletteHTTPException]
     response = await handler(_request(agent=True), HTTPException(409, detail))
@@ -51,7 +52,7 @@ async def test_an_agent_route_refusal_without_a_key_is_recorded(recorded, detail
 
 @pytest.mark.parametrize("detail", [catalog_refusal("error.server_error"),
                                     {"errors": [catalog_refusal("error.server_error")]},
-                                    [{"loc": ["body", "sku"], "msg": "Field required"}]])
+                                    [{"loc": ["body", "sku"], "msg": "Field required", "type": "missing"}]])
 async def test_a_keyed_agent_route_refusal_is_not_recorded(recorded, detail):
     handler = app.exception_handlers[StarletteHTTPException]
     await handler(_request(agent=True), HTTPException(409, detail))
@@ -81,7 +82,7 @@ def _examples() -> dict:
         404: StarletteHTTPException(404),
         StarletteHTTPException: HTTPException(409, catalog_refusal("error.server_error")),
         Exception: RuntimeError("boom"),
-        RequestValidationError: RequestValidationError([{"loc": ["body", "sku"], "msg": "Field required"}]),
+        RequestValidationError: RequestValidationError([{"loc": ["body", "sku"], "msg": "Field required", "type": "missing"}]),
         # The handler reads nothing from the exception; a Limit needs a live limiter to build.
         RateLimitExceeded: RateLimitExceeded.__new__(RateLimitExceeded),
         CodeConflictError: BarcodeConflictError("1001"),
@@ -153,3 +154,94 @@ async def test_a_refusal_written_with_t_is_answered_keyed_and_reads_as_before(re
             assert detail["message"] == refusal_text(detail)
     finally:
         set_lang("en")
+
+
+class _Refuser:
+    """Code the static walker cannot reach by name: a refusal raised from an instance
+    method, and one reached by a dispatch on a name built at run time."""
+
+    def refuse(self):
+        from ui.i18n import t
+
+        raise HTTPException(409, t("error.access_changed"))
+
+
+def _dispatched():
+    from ui.i18n import t
+
+    raise HTTPException(409, t("error.access_changed"))
+
+
+def _agent_app():
+    """An app whose routes the AI calls, answered by the app's own exception handlers."""
+    import sys
+
+    from fastapi import FastAPI
+
+    probe = FastAPI()
+    for kind, handler in app.exception_handlers.items():
+        probe.add_exception_handler(kind, handler)
+    agent = {"x-celerp-agent": True}
+    probe.add_api_route("/instance", lambda: _Refuser().refuse(), methods=["POST"], openapi_extra=agent)
+    probe.add_api_route("/dispatch", lambda: getattr(sys.modules[__name__], "_dis" + "patched")(),
+                        methods=["POST"], openapi_extra=agent)
+    return probe
+
+
+@pytest.mark.parametrize("path", ["/instance", "/dispatch"])
+async def test_a_t_refusal_no_walker_can_reach_is_answered_keyed(recorded, path):
+    """Whatever path raised a t() refusal, the one builder answers it keyed: neither the
+    static walker (direct calls only) nor the strict check (exercised paths only) is
+    needed to keep it in the reader's language."""
+    import httpx
+
+    from ui.i18n import refusal_text, set_lang, t
+
+    set_lang("th")
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=_agent_app()), base_url="http://t") as c:
+            response = await c.post(path)
+        detail = response.json()["detail"]
+        assert response.status_code == 409 and detail["message_key"] == "error.access_changed"
+        assert refusal_text(detail) == t("error.access_changed")
+        assert recorded == []
+    finally:
+        set_lang("en")
+
+
+def test_a_middleware_answers_through_the_one_builder():
+    """A middleware answers before any route is matched, so it is never an agent route to
+    the strict check; it answers only through error_response, which keys a t() refusal."""
+    import inspect
+
+    built = [m.cls.__qualname__ for m in app.user_middleware
+             if any(f"{kind}(" in inspect.getsource(m.cls)
+                    for kind in ("JSONResponse", "PlainTextResponse", "HTMLResponse", " Response"))]
+    assert not built, built
+
+
+async def test_a_middleware_refusal_is_answered_keyed(recorded, monkeypatch):
+    """A module route asked before Celerp has finished starting is refused by a
+    middleware; the AI reaches it the same way, so the refusal is keyed."""
+    from celerp.middleware import ModuleStartupMiddleware
+    from celerp.modules import loader, outcome
+
+    async def not_ready(*_args):
+        return False
+
+    monkeypatch.setattr(outcome, "ui_report_applied", lambda: False)
+    monkeypatch.setattr(outcome, "confirm_ui_report", not_ready)
+    monkeypatch.setattr(loader, "route_module", lambda _scope: "module")
+    sent: list[dict] = []
+
+    async def send(message):
+        sent.append(message)
+
+    async def receive():
+        return {"type": "http.request", "body": b""}
+
+    scope = {"type": "http", "method": "GET", "path": "/m", "headers": [], "query_string": b"", "app": app}
+    await ModuleStartupMiddleware(app)(scope, receive, send)
+    assert sent[0]["status"] == 503
+    assert json.loads(sent[1]["body"])["detail"]["message_key"] == "error.still_starting"
+    assert recorded == []

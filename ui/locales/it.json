@@ -3522,6 +3522,7 @@
   "error.upload_too_large": "Questo caricamento è troppo grande. Scegli un file più piccolo o dividilo in più file più piccoli.",
   "error.invalid_content_length": "L'intestazione Content-Length della richiesta non è un numero.",
   "error.maintenance": "Celerp è in manutenzione. Attendi un minuto, poi riprova.",
+  "error.still_starting": "Celerp si sta ancora avviando. Riprova tra un momento.",
   "error.recovery_incomplete": "Il ripristino del sistema non è stato completato, quindi Celerp resta non disponibile finché non termina. Riavvia Celerp per riprovare il ripristino.",
   "error.api_not_found": "Celerp non ha trovato questa pagina. Controlla l'indirizzo, oppure torna indietro e usa il menu.",
   "error.business_type_unavailable": "Il tipo di attività {vertical} non è disponibile. Scegli un altro tipo di attività.",

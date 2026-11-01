@@ -849,6 +849,7 @@
   "error.upload_too_large": "This upload is too large. Choose a smaller file, or split it into several smaller files.",
   "error.invalid_content_length": "The request's Content-Length header is not a number.",
   "error.maintenance": "Celerp is busy with maintenance. Wait a minute, then try again.",
+  "error.still_starting": "Celerp is still starting. Try again in a moment.",
   "error.recovery_incomplete": "System Recovery did not finish, so Celerp stays unavailable until it does. Restart Celerp to try the recovery again.",
   "error.api_not_found": "Celerp couldn't find this page. Check the address, or go back and use the menu.",
   "error.business_type_unavailable": "The business type {vertical} isn't available. Choose another business type.",

@@ -24,10 +24,11 @@ unkeyed: list[str] | None = None
 
 def keyed(detail: Any) -> bool:
     """Whether a refusal detail reads in each reader's language: a ``refusal`` with its
-    catalog key, a list of them under ``errors``, or field validation (a list, which the AI
-    shows as its own keyed invalid-arguments text)."""
+    catalog key, a list of them under ``errors``, or field validation (a list of entries
+    each naming its field ``loc`` and its ``type``, which the AI shows as its own keyed
+    invalid-arguments text). A list holding anything else, a sentence say, is not keyed."""
     if isinstance(detail, list):
-        return True
+        return bool(detail) and all(isinstance(e, dict) and "loc" in e and "type" in e for e in detail)
     if not isinstance(detail, dict):
         return False
     if detail.get("message_key"):

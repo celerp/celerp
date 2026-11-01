@@ -3521,6 +3521,7 @@
   "error.upload_too_large": "Este envio é grande demais. Escolha um arquivo menor ou divida-o em vários arquivos menores.",
   "error.invalid_content_length": "O cabeçalho Content-Length da solicitação não é um número.",
   "error.maintenance": "O Celerp está em manutenção. Aguarde um minuto e tente novamente.",
+  "error.still_starting": "O Celerp ainda está iniciando. Tente novamente em instantes.",
   "error.recovery_incomplete": "A recuperação do sistema não terminou, então o Celerp fica indisponível até que termine. Reinicie o Celerp para tentar a recuperação novamente.",
   "error.api_not_found": "O Celerp não encontrou esta página. Verifique o endereço, ou volte e use o menu.",
   "error.business_type_unavailable": "O tipo de negócio {vertical} não está disponível. Escolha outro tipo de negócio.",

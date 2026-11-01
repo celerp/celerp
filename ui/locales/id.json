@@ -3521,6 +3521,7 @@
   "error.upload_too_large": "Unggahan ini terlalu besar. Pilih file yang lebih kecil, atau bagi menjadi beberapa file yang lebih kecil.",
   "error.invalid_content_length": "Header Content-Length pada permintaan bukan angka.",
   "error.maintenance": "Celerp sedang dalam pemeliharaan. Tunggu sebentar, lalu coba lagi.",
+  "error.still_starting": "Celerp masih dalam proses memulai. Coba lagi sebentar lagi.",
   "error.recovery_incomplete": "Pemulihan Sistem tidak selesai, jadi Celerp tidak tersedia sampai selesai. Mulai ulang Celerp untuk mencoba pemulihan lagi.",
   "error.api_not_found": "Celerp tidak menemukan halaman ini. Periksa alamatnya, atau kembali dan gunakan menu.",
   "error.business_type_unavailable": "Jenis usaha {vertical} tidak tersedia. Pilih jenis usaha lain.",

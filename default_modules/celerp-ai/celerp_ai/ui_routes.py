@@ -10,6 +10,7 @@ from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
+from celerp.error_body import keyed
 from celerp.gateway.state import PAID_TIERS
 import ui.api_client as api
 from ui.api_client import APIError
@@ -1158,9 +1159,9 @@ def _error_text(detail, lang: str) -> str:
 
 def _keyed(refusal) -> dict | None:
     """A refusal no code explains, kept when it is the app's own: every refusal the app
-    raises during AI work is keyed. An unkeyed record is the AI service's English and
-    is never shown."""
-    return refusal if isinstance(refusal, dict) and refusal.get("message_key") else None
+    raises during AI work is keyed (celerp.error_body.keyed). An unkeyed record, or a
+    field validation list, is the AI service's English and is never shown."""
+    return refusal if isinstance(refusal, dict) and keyed(refusal) else None
 
 
 def _action_error_text(action: dict, otherwise: str | None, lang: str) -> str:
