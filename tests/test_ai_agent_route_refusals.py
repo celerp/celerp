@@ -262,6 +262,8 @@ class _Walk:
             return keyed(node.body) and keyed(node.orelse)
         if isinstance(node, ast.BoolOp):
             return all(keyed(v) for v in node.values)
+        if isinstance(node, ast.Await):
+            return keyed(node.value)  # what a coroutine helper returns
         if isinstance(node, ast.Dict):
             fields = dict((getattr(k, "value", None), v) for k, v in zip(node.keys, node.values) if k is not None)
             if "message_key" in fields or ("message" in fields and keyed(fields["message"])):
