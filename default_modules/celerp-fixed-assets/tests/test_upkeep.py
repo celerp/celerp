@@ -16,6 +16,7 @@ from celerp.services.business_time import business_today
 from fa_fixtures import FA
 from test_files_tags import PDF, _ui
 from test_runs import _contributed, _managed_from, _tick
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -94,7 +95,7 @@ async def test_reminder_refusals_are_named(fa):
               "not a member of this company")]
     for body, message in cases:
         r = await _remind(fa, car, **body)
-        assert r.status_code == 422 and message in r.json()["detail"], (body, r.text)
+        assert r.status_code == 422 and message in refusal_text(r.json()["detail"]), (body, r.text)
     viewer = await fa.role_headers("viewer")
     r = await _remind(fa, car, headers=viewer, kind="warranty", provider="Dealer", due=_on(5))
     assert r.status_code == 403
@@ -116,9 +117,9 @@ async def test_done_schedules_the_next_when_recurring_and_closes_otherwise(fa):
     closed = await fa.ok(await fa.post(f"/reminders/{warranty['id']}/done", {"date": _on(0)}))
     assert closed["status"] == "done"
     again = await fa.post(f"/reminders/{warranty['id']}/done", {"date": _on(0)})
-    assert again.status_code == 422 and "already done" in again.json()["detail"]
+    assert again.status_code == 422 and "already done" in refusal_text(again.json()["detail"])
     undated = await fa.post(f"/reminders/{service['id']}/done", {})
-    assert undated.status_code == 422 and "date the work was done" in undated.json()["detail"]
+    assert undated.status_code == 422 and "date the work was done" in refusal_text(undated.json()["detail"])
 
 
 async def test_postpone_needs_a_later_date_and_a_reason_and_edits_are_kept(fa):
@@ -127,15 +128,15 @@ async def test_postpone_needs_a_later_date_and_a_reason_and_edits_are_kept(fa):
     cover = await _reminder(fa, car, kind="insurance", insurer="Mutual", due="2026-11-01")
     path = f"/reminders/{cover['id']}"
     r = await fa.post(f"{path}/postpone", {"to": "2026-11-20"})
-    assert r.status_code == 422 and "Say why" in r.json()["detail"]
+    assert r.status_code == 422 and "Say why" in refusal_text(r.json()["detail"])
     r = await fa.post(f"{path}/postpone", {"to": "2026-10-01", "reason": "Broker away"})
-    assert r.status_code == 422 and "after 2026-11-01" in r.json()["detail"]
+    assert r.status_code == 422 and "after 2026-11-01" in refusal_text(r.json()["detail"])
     moved = await fa.ok(await fa.post(f"{path}/postpone", {"to": "2026-11-20", "reason": "Broker away"}))
     assert moved["due"] == "2026-11-20"
     edited = await fa.ok(await fa.patch(path, {"changes": {"policy": "P-9", "insured_value": "9000"}}))
     assert (edited["policy"], edited["insured_value"]) == ("P-9", "9000.00")
     bad = await fa.patch(path, {"changes": {"kind": "warranty"}})
-    assert bad.status_code == 422 and "kind" in bad.json()["detail"]
+    assert bad.status_code == 422 and "kind" in refusal_text(bad.json()["detail"])
     history = edited["history"]
     assert [h["action"] for h in history] == ["edited", "postponed", "created"], "newest first"
     assert (history[1]["reason"], history[1]["before"]["due"], history[1]["after"]["due"]) == (
@@ -160,7 +161,7 @@ async def test_undo_reverts_the_latest_change_and_a_done_maintenance_log(fa):
     restored = await fa.ok(await fa.post(f"{path}/undo", {}))
     assert restored["status"] == "open"
     nothing = await fa.post(f"{path}/undo", {})
-    assert nothing.status_code == 422 and "Nothing to undo" in nothing.json()["detail"]
+    assert nothing.status_code == 422 and "Nothing to undo" in refusal_text(nothing.json()["detail"])
 
 
 async def test_due_soon_list_and_register_card(fa):
@@ -252,7 +253,7 @@ async def test_maintenance_log_entry_with_next_due_and_a_file(fa):
     edited = await fa.ok(await fa.patch(f"/maintenance/{entry['id']}", {"changes": {"by": "Dealer workshop"}}))
     assert edited["by"] == "Dealer workshop"
     r = await fa.post(f"/assets/{car}/maintenance", {"date": "2026-10-01"})
-    assert r.status_code == 422 and "Describe the maintenance work" in r.json()["detail"]
+    assert r.status_code == 422 and "Describe the maintenance work" in refusal_text(r.json()["detail"])
     removed = await fa.ok(await fa.post(f"/maintenance/{entry['id']}/remove", {}))
     assert removed["status"] == "removed"
     restored = await fa.ok(await fa.post(f"/maintenance/{entry['id']}/restore", {}))
@@ -270,11 +271,11 @@ async def test_maintenance_from_a_bill_shows_its_cost_read_only(fa):
     entry = log[0]["id"]
     await fa.ok(await fa.patch(f"/maintenance/{entry}", {"changes": {"work": "Laptop repairs"}}))
     r = await fa.patch(f"/maintenance/{entry}", {"changes": {"date": "2026-01-01"}})
-    assert r.status_code == 422 and "comes from the bill" in r.json()["detail"]
+    assert r.status_code == 422 and "comes from the bill" in refusal_text(r.json()["detail"])
     r = await fa.patch(f"/maintenance/{entry}", {"changes": {"amount": "1"}})
     assert r.status_code == 422
     r = await fa.post(f"/maintenance/{entry}/remove", {})
-    assert r.status_code == 422 and "undo its registration" in r.json()["detail"]
+    assert r.status_code == 422 and "undo its registration" in refusal_text(r.json()["detail"])
     clerk = await fa.role_headers("operator")
     seen = (await fa.ok(await fa.client.get(f"/fixed-assets/api/assets/{asset_id}/upkeep", headers=clerk)))
     assert seen["maintenance"][0]["amount"] is None, "money only for roles that see it"

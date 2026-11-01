@@ -16,11 +16,12 @@ import inspect
 import json
 import textwrap
 import types
+import typing
 from pathlib import Path
 
 from fastapi import HTTPException
 
-from celerp.accounting_roles import Refused, refusal
+from celerp.accounting_roles import Refused, catalog_refusal, refusal
 from celerp.ai.tools import _api_routes, keyed_error
 from ui import i18n
 
@@ -31,7 +32,28 @@ _EN = {k: v for path in (Path(i18n.__file__).parent / "locales" / "en.json",
                          *_ROOT.glob("default_modules/*/*/locales/en.json"))
        for k, v in json.loads(path.read_text(encoding="utf-8")).items()}
 # The canonical makers of a keyed refusal, and the index of the catalog key they take.
-_MAKERS = {refusal: 0, keyed_error: 1}
+_MAKERS = {refusal: 0, catalog_refusal: 0, keyed_error: 1}
+
+
+def _key_index(callee, seen: frozenset = frozenset()) -> int | None:
+    """Where a maker of a keyed refusal takes its catalog key: a canonical maker, or a
+    first-party helper taking a positional-only ``key`` it hands on, as it is, to a maker
+    (such as a module's refuse(key, /, **params))."""
+    if callee in _MAKERS:
+        return _MAKERS[callee]
+    if not (inspect.isfunction(callee) and _first_party(callee)) or callee in seen:
+        return None
+    params = list(inspect.signature(callee).parameters.values())
+    index = next((i for i, p in enumerate(params) if p.name == "key" and p.kind is p.POSITIONAL_ONLY), None)
+    tree = _tree(callee) if index is not None else None
+    if tree is None:
+        return None
+    scope = _scope(callee, tree)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and (inner := _key_index(_resolve(node.func, scope), seen | {callee})) is not None \
+                and len(node.args) > inner and isinstance(node.args[inner], ast.Name) and node.args[inner].id == "key":
+            return index
+    return None
 
 
 def _first_party(obj) -> bool:
@@ -186,6 +208,11 @@ class _Walk:
             callee = _resolve(node.func, scope)
             if ast.unparse(node.func) == "super().__init__" and owner is not None:
                 callee = owner.__mro__[1]
+            if (index := _key_index(callee)) is not None:
+                key = node.args[index] if len(node.args) > index else None
+                if isinstance(key, ast.Constant) and key.value not in _EN:
+                    self.unkeyed.append(f"{self._where(fn, node)} {ast.unparse(node)} (key not in en.json)")
+                continue
             if inspect.isfunction(callee) and _first_party(callee) and (given := self._passes(callee)):
                 # A helper raising the detail it is given: the detail is the one each call passes.
                 detail = _argument(callee, node, given)
@@ -260,6 +287,14 @@ class _Walk:
             # A caught exception's detail: keyed when its class keys it.
             classes = self._caught(node.value, tree, scope)
             return bool(classes) and all(self._carries_detail(c, self._where(fn, node)) for c in classes)
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Call) and node.attr == "detail":
+            # The detail of an exception a helper builds: keyed when the class it returns keys it.
+            callee = _resolve(node.value.func, scope)
+            try:
+                cls = typing.get_type_hints(callee).get("return") if inspect.isfunction(callee) else callee
+            except (NameError, TypeError):
+                cls = None
+            return self._carries_detail(cls, self._where(fn, node))
         if isinstance(node, ast.Call):
             callee = _resolve(node.func, scope)
             if callee is str and len(node.args) == 1 and isinstance(node.args[0], ast.Name):
@@ -269,8 +304,8 @@ class _Walk:
                     return False
                 self.carried.update((c, self._where(fn, node)) for c in classes)
                 return True
-            if callee in _MAKERS:
-                key = node.args[_MAKERS[callee]] if len(node.args) > _MAKERS[callee] else None
+            if (index := _key_index(callee)) is not None:
+                key = node.args[index] if len(node.args) > index else None
                 return not isinstance(key, ast.Constant) or key.value in _EN
             if inspect.isfunction(callee) and _first_party(callee):
                 return self._returns_keyed(callee)

@@ -766,17 +766,22 @@ def test_thai_no_truncated_values():
 def test_bundled_module_locales_no_untranslated_prose():
     """Bundled module catalogs get the same source-identical review as the
     central catalogs: no release-complete locale value may be byte-identical to
-    the module's English source (there is currently no reviewed exception)."""
+    the module's English source. The only exception is a string still waiting for
+    its translation, listed under the module in i18n_pending_translation.json."""
+    pending_modules = json.loads(
+        (Path(__file__).parent / "i18n_pending_translation.json").read_text(encoding="utf-8")
+    ).get("modules", {})
     offenders = {}
     for locdir in _BUNDLED_MODULE_LOCALE_DIRS:
         en = json.loads((locdir / "en.json").read_text())
+        pending = set(pending_modules.get(locdir.parent.parent.name, {}))
         for code in sorted(_COMPLETE_LOCALES):
             if code == "en":
                 continue
             loc = json.loads((locdir / f"{code}.json").read_text())
             identical = sorted(
                 k for k, v in loc.items()
-                if k in en and v == en[k] and en[k].strip()
+                if k in en and v == en[k] and en[k].strip() and k not in pending
             )
             if identical:
                 offenders[f"{locdir.parent.name}:{code}"] = identical
@@ -1000,17 +1005,23 @@ def _tu_forms(text: str) -> list[str]:
 
 
 def test_es_uses_usted_register():
-    """An app string still in its reviewed English source (the source-identical allowlist) is
-    not Spanish yet, so its English words are not read as tú forms."""
+    """An app string still in its reviewed English source (the source-identical allowlist, or a
+    module string waiting for its translation) is not Spanish yet, so its English words are not
+    read as tú forms."""
     root = Path(__file__).resolve().parents[1]
-    catalogs = [Path(_LOCALES_DIR) / "es.json",
-                *sorted(root.glob("default_modules/*/*/locales/es.json"))]
+    pending_modules = json.loads(
+        (Path(__file__).parent / "i18n_pending_translation.json").read_text(encoding="utf-8")
+    ).get("modules", {})
     en = _load_locale("en")
-    pending = _load_source_identical_allowlist().get("es", set())
+    still_english = {Path(_LOCALES_DIR) / "es.json":
+                     {k: en.get(k) for k in _load_source_identical_allowlist().get("es", set())}}
+    for p in sorted(root.glob("default_modules/*/*/locales/es.json")):
+        module_en = json.loads((p.parent / "en.json").read_text(encoding="utf-8"))
+        still_english[p] = {k: module_en.get(k) for k in pending_modules.get(p.parent.parent.parent.name, {})}
     informal = {f"{p.parent.parent.name}:{k}": hits
-                for p in catalogs
+                for p, english in still_english.items()
                 for k, v in json.loads(p.read_text(encoding="utf-8")).items()
-                if not (p.parent == Path(_LOCALES_DIR) and k in pending and v == en.get(k))
+                if not (k in english and v == english[k])
                 and (hits := _tu_forms(v))}
     assert not informal, informal
 

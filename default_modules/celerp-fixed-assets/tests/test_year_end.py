@@ -10,6 +10,7 @@ import pytest
 
 from fa_fixtures import FA
 from test_runs import _contributed, _managed_from, _run
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -66,7 +67,7 @@ async def test_year_end_noted_keeps_close_blocked(fa, zz):
     (item,) = [i for i in ye["items"] if i["key"] == "run:2026-04"]
     assert item["state"] == "noted" and item["reason"] == "Run next week" and ye["ready"] is False
     refused = await fa.post("/tax-years/zz_asset/2026/close", {})
-    assert refused.status_code == 409 and "run:2026-04" in refused.json()["detail"]
+    assert refused.status_code == 409 and "run:2026-04" in refusal_text(refused.json()["detail"])
 
 
 async def test_year_end_accepted_lets_close_proceed(fa, zz):

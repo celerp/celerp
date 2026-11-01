@@ -15,6 +15,7 @@ from decimal import Decimal
 import pytest
 
 from fa_fixtures import FA, demo_owner
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -102,11 +103,11 @@ async def test_s7_first_period_explicit(client, session):
     await fa.register(van["source"], mode="separate")
     past_van = (date.fromisoformat(van["date"]).replace(day=1) + timedelta(days=32)).replace(day=1).isoformat()
     moved = await fa.patch("/settings", {"first_managed_period": past_van})
-    assert moved.status_code == 409 and "Delivery van" in moved.json()["detail"]
+    assert moved.status_code == 409 and "Delivery van" in refusal_text(moved.json()["detail"])
     month = date.fromisoformat(van["date"]).strftime("%Y-%m")
     await _run(fa, month)
     moved = await fa.patch("/settings", {"first_managed_period": suggested.isoformat()})
-    assert moved.status_code == 409 and "run" in moved.json()["detail"].lower()
+    assert moved.status_code == 409 and "run" in refusal_text(moved.json()["detail"]).lower()
 
 
 async def test_s7_cutover_moves_with_opening_assets_while_no_run(fa):
@@ -171,7 +172,7 @@ async def test_s7_opening_asset_after_cutover_refused(fa):
     body = {"kind": "opening", "class_id": cls["id"], "name": "Warehouse", "cost": "1000"}
     late = (date.fromisoformat(cutover) + timedelta(days=1)).isoformat()
     refused = await fa.post("/assets", {**body, "available_date": late, "preview": True, "op_key": "late"})
-    assert refused.status_code == 422 and f"Dated after the cutover {cutover}" in refused.json()["detail"]
+    assert refused.status_code == 422 and f"Dated after the cutover {cutover}" in refusal_text(refused.json()["detail"])
     done = await fa.operate("/assets", {**body, "available_date": cutover}, key="on")
     assert done["assets"][0]["number"].startswith("FA-")
 

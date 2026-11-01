@@ -18,6 +18,7 @@ from pathlib import Path
 from fa_fixtures import FA
 from test_runs import _contributed, _managed_from, _run
 from test_sales import _finalize, _sell
+from ui.i18n import refusal_text
 
 D = Decimal
 ZZ_MODULE = "celerp_l10n_zz"
@@ -78,7 +79,7 @@ async def test_l10n_registers_method_and_regimes(fa, zz):
     s = (await fa.ok(await fa.get("/setup")))["settings"]
     assert s["tax_regimes"] == ["zz_asset", "zz_pool"] and s["tax_year_end"] == "12-31"
     bad = await fa.patch("/settings", {"tax_regimes": ["xx_unknown"]})
-    assert bad.status_code == 422 and "xx_unknown" in bad.json()["detail"]
+    assert bad.status_code == 422 and "xx_unknown" in refusal_text(bad.json()["detail"])
 
 
 async def test_l10n_pool_regime_additions_disposals(fa, zz):
@@ -129,7 +130,7 @@ async def test_l10n_class_table_preview_confirm_undo_cas(fa, zz):
     # A table entry that cannot be a class is refused by name, before anything changes.
     bad = await fa.post("/class-table", {"classes": [{"name": "Rafts", "method": "no_such_method"}],
                                          "preview": True, "op_key": "ct2"})
-    assert bad.status_code == 422 and "Rafts" in bad.json()["detail"]
+    assert bad.status_code == 422 and "Rafts" in refusal_text(bad.json()["detail"])
 
 
 async def test_l10n_bad_entry_skipped_named(fa, zz):
@@ -176,7 +177,7 @@ async def test_l10n_rule_unavailable_when_module_off(fa, zz):
     book = await _tax_book(fa, "zz_pool", 2026)
     assert book["read_only"] is True and "ZZ localization" in book["read_only_reason"]
     close = await fa.post("/tax-years/zz_pool/2025/close", {})
-    assert close.status_code == 409 and "ZZ localization" in close.json()["detail"]
+    assert close.status_code == 409 and "ZZ localization" in refusal_text(close.json()["detail"])
     # Turned back on, the rules resolve again.
     await _set_zz(fa, True)
     assert "zz_fixed_rate" in {m["key"] for m in (await _rules(fa))["methods"]}

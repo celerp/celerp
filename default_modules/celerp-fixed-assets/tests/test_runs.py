@@ -19,6 +19,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from fa_fixtures import FA
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -117,7 +118,7 @@ async def test_run_posts_one_journal_per_month_at_month_end(fa):
     await _managed_from(fa)
     # Review refuses a run with nothing in it, as Confirm would.
     refused = await fa.post("/runs", {"month": "2026-03", "preview": True, "op_key": "e"})
-    assert refused.status_code == 422 and "Nothing to depreciate yet" in refused.json()["detail"]
+    assert refused.status_code == 422 and "Nothing to depreciate yet" in refusal_text(refused.json()["detail"])
 
     car = await _contributed(fa)
     preview = await fa.ok(await fa.post("/runs", {"month": "2026-03", "preview": True, "op_key": "p"}))
@@ -195,7 +196,7 @@ async def test_s3_reverse_run_latest_open_only(fa):
     car = await _contributed(fa)
     await _run(fa, "2026-03")
     older = await fa.post("/runs/2026-02/reverse", {"preview": True, "op_key": "r0"})
-    assert older.status_code == 409 and "Correct" in older.json()["detail"]
+    assert older.status_code == 409 and "Correct" in refusal_text(older.json()["detail"])
     await _reverse(fa, "2026-03")
     journals = await _run_journals(fa)
     assert journals["run:2026-03:1"]["status"] == "void"
@@ -210,7 +211,7 @@ async def test_s3_reverse_run_latest_open_only(fa):
     assert D((await fa.asset(car))["accumulated_depreciation"]) == D("600")
     await _lock(fa, "2026-03-31")
     locked = await fa.post("/runs/2026-03/reverse", {"preview": True, "op_key": "r1"})
-    assert locked.status_code == 409 and "Correct" in locked.json()["detail"]
+    assert locked.status_code == 409 and "Correct" in refusal_text(locked.json()["detail"])
 
 
 async def test_s3_reverse_run_refused_after_newer_movement(fa):

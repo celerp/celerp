@@ -14,7 +14,7 @@ from decimal import Decimal
 import pytest
 
 from fa_fixtures import FA
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 pytestmark = pytest.mark.asyncio
 
@@ -130,14 +130,14 @@ async def test_j5_row_errors_named(fa):
     preview = await _preview(fa, rows[:2])
     refused = await fa.post("/imports", {"rows": rows[:2], "as_at": cut, "op_key": "bad",
                                          "fingerprint": preview["fingerprint"]})
-    assert refused.status_code == 422 and "Fix or leave out" in refused.json()["detail"]
+    assert refused.status_code == 422 and "Fix or leave out" in refusal_text(refused.json()["detail"])
 
 
 async def test_j5_as_at_must_be_the_cutover(fa):
     cut = await _cutover(fa)
     other = (date.fromisoformat(cut) - timedelta(days=1)).isoformat()
     refused = await fa.post("/imports", {"rows": [_building(cut)], "as_at": other, "preview": True, "op_key": "x"})
-    assert refused.status_code == 422 and f"as at the cutover {cut}" in refused.json()["detail"]
+    assert refused.status_code == 422 and f"as at the cutover {cut}" in refusal_text(refused.json()["detail"])
     empty = await fa.post("/imports", {"rows": [], "as_at": cut, "preview": True, "op_key": "x"})
     assert empty.status_code == 422
 
@@ -171,7 +171,7 @@ async def test_j5_clean_subset_then_fix_and_import(fa):
     assert mv["provenance"] == batch_id
     # A row already imported is not imported twice.
     twice = await fa.post(f"/imports/{batch_id}/rows", {**fixed, "preview": True, "op_key": "fix2"})
-    assert twice.status_code == 422 and "row 2" in twice.json()["detail"].lower()
+    assert twice.status_code == 422 and "row 2" in refusal_text(twice.json()["detail"]).lower()
 
 
 async def test_j5_numbers_from_the_file_and_assigned(fa):

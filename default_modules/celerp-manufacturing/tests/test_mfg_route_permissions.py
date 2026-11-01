@@ -16,6 +16,7 @@ import pytest
 
 from celerp.services.permissions import missing_permission_text
 from celerp_manufacturing.routes import router
+from ui.i18n import refusal_text
 
 MFG = "manage_manufacturing"
 
@@ -83,7 +84,7 @@ async def test_a_viewer_without_the_grant_is_refused(client, session, path):
     viewer = await _member(client, session, owner, "viewer")
     r = await client.get(path, headers=viewer)
     assert r.status_code == 403, r.text
-    assert r.json()["detail"] == missing_permission_text(MFG)
+    assert refusal_text(r.json()["detail"]) == missing_permission_text(MFG)
 
 
 @pytest.mark.asyncio
@@ -103,4 +104,4 @@ async def test_manufacturing_without_accounting_cannot_reconcile(client, session
     assert (await client.get("/manufacturing/to-make", headers=operator)).status_code == 200
     r = await client.post("/manufacturing/wo:none/reconcile", headers=operator, json={})
     assert r.status_code == 403, r.text
-    assert r.json()["detail"] == missing_permission_text("manage_accounting")
+    assert refusal_text(r.json()["detail"]) == missing_permission_text("manage_accounting")

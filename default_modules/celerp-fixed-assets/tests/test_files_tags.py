@@ -21,6 +21,7 @@ from fa_fixtures import FA
 from test_disposal import _dispose
 from test_runs import _contributed, _managed_from, _race_company
 from test_transfer import _location, _move
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -118,9 +119,9 @@ async def test_files_upload_tag_describe_download_delete(fa):
 async def test_file_refusals_are_named(fa):
     car = await _contributed(fa)
     refused = await _upload(fa, car, name="setup.exe", content=b"MZ", mime="application/x-msdownload")
-    assert refused.status_code == 413 and "application/x-msdownload" in refused.json()["detail"]
+    assert refused.status_code == 413 and "application/x-msdownload" in refusal_text(refused.json()["detail"])
     bad_tag = await _upload(fa, car, tag="product_images")
-    assert bad_tag.status_code == 422 and "product_images" in bad_tag.json()["detail"]
+    assert bad_tag.status_code == 422 and "product_images" in refusal_text(bad_tag.json()["detail"])
     viewer = await fa.role_headers("viewer")
     assert (await _upload(fa, car, headers=viewer)).status_code == 403
     assert (await fa.asset(car))["files"] == []
@@ -163,7 +164,7 @@ async def test_tags_unique_among_the_company_assets(fa):
     assert (await _tag(fa, car, "TAG-001")).status_code == 200
     taken = await _tag(fa, van, "tag-001")
     assert taken.status_code == 422
-    assert "TAG-001" in taken.json()["detail"] and (await fa.asset(car))["number"] in taken.json()["detail"]
+    assert "TAG-001" in refusal_text(taken.json()["detail"]) and (await fa.asset(car))["number"] in refusal_text(taken.json()["detail"])
     assert (await _tag(fa, car, None)).status_code == 200
     assert (await _tag(fa, van, "TAG-001")).status_code == 200
 

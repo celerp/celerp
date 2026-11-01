@@ -12,6 +12,7 @@ import pytest
 from fa_fixtures import FA
 from test_runs import _contributed, _managed_from, _run, _set_module, _tick
 from test_sales import _sell
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -64,7 +65,7 @@ async def test_s11_turn_off_refused_naming_a_pending_sale(fa):
     van_number = (await fa.asset(van))["number"]
 
     refused = await _turn_off(fa)
-    assert refused.status_code == 409 and number in refused.json()["detail"], refused.text
+    assert refused.status_code == 409 and number in refusal_text(refused.json()["detail"]), refused.text
     listed = await _listed(fa)
     assert [i["href"] for i in listed["blocking"]] == [f"/fixed-assets/assets/{car}"]
     assert any(van_number in i["label"] for i in listed["listed"])

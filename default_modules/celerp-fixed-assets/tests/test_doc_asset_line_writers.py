@@ -19,6 +19,7 @@ from fa_fixtures import FA
 from test_runs import _contributed, _managed_from, _run
 from test_sales import _asset_line, _assert_clearing, _doc, _finalize, _patch, _sale, _sell
 from test_transfer import _second_company
+from ui.i18n import refusal_text
 
 D = Decimal
 
@@ -154,7 +155,7 @@ async def test_f10_last_asset_line_off_a_draft_is_refused_until_the_sale_is_canc
 
     # Taking the line off: refused, naming the way back.
     r = await _patch(fa, inv, [{"name": "Delivery", "quantity": 1, "unit_price": 50.0}])
-    assert r.status_code == 409 and "cancel the sale" in r.json()["detail"], r.text
+    assert r.status_code == 409 and "cancel the sale" in refusal_text(r.json()["detail"]), r.text
     assert (await _sale(fa, car))["state"] == "pending"
     assert (await _asset_line(fa, inv))["asset_id"] == car
     # Swapping it for another asset, and changing the document's type: refused too.
@@ -172,7 +173,7 @@ async def test_f10_last_asset_line_off_a_draft_is_refused_until_the_sale_is_canc
     await fa.ok(await _doc(fa, inv, "revert-to-draft"))
     assert (await _sale(fa, car))["state"] == "pending"
     r = await _patch(fa, inv, [{"name": "Delivery", "quantity": 1, "unit_price": 50.0}])
-    assert r.status_code == 409 and "cancel the sale" in r.json()["detail"], r.text
+    assert r.status_code == 409 and "cancel the sale" in refusal_text(r.json()["detail"]), r.text
     await _finalize(fa, inv)
     await fa.ok(await _doc(fa, inv, "void"))
     assert (await fa.asset(car))["status"] == "active"

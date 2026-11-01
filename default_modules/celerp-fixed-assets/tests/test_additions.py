@@ -14,6 +14,7 @@ import pytest
 
 from fa_fixtures import FA
 from test_runs import _contributed, _lines, _managed_from, _movements, _run
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -119,7 +120,7 @@ async def test_s2_construction_allocated_exactly_once(fa):
     over = await fa.post(path, {"date": day, "allocations": [
         {"class_id": classes["Furniture and fittings"]["id"], "name": "Reception desk", "amount": "3000.01"}],
         "preview": True, "op_key": "pis2"})
-    assert over.status_code == 422 and "$3,000.00 FA-0001 holds" in over.json()["detail"]
+    assert over.status_code == 422 and "$3,000.00 FA-0001 holds" in refusal_text(over.json()["detail"])
     rest = {"date": day, "allocations": [
         {"class_id": classes["Furniture and fittings"]["id"], "name": "Reception desk", "amount": "3000"}]}
     await fa.operate(path, rest, key="pis3")
