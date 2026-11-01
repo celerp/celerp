@@ -3520,6 +3520,7 @@
   "error.restore_failed_unknown": "La restauration ne s'est pas terminée et Celerp n'a pas pu en déterminer la cause. Réessayez ; si cela continue, posez la question dans GitHub Issues ou Discussions.",
   "error.restore_already_set_up": "Celerp est déjà configuré sur cet ordinateur, une sauvegarde ne peut donc pas être restaurée ici. Demandez au propriétaire de l'installation de se connecter et d'utiliser Récupération du système. Cela remplace tout le contenu de cet ordinateur.",
   "error.upload_too_large": "Ce fichier envoyé est trop volumineux. Choisissez un fichier plus petit ou divisez-le en plusieurs fichiers plus petits.",
+  "error.invalid_content_length": "L'en-tête Content-Length de la requête n'est pas un nombre.",
   "error.maintenance": "Celerp est en maintenance. Patientez une minute, puis réessayez.",
   "error.recovery_incomplete": "La restauration du système n'est pas allée au bout, donc Celerp reste indisponible jusqu'à ce qu'elle se termine. Redémarrez Celerp pour relancer la restauration.",
   "error.api_not_found": "Celerp n'a pas trouvé cette page. Vérifiez l'adresse, ou revenez en arrière et utilisez le menu.",

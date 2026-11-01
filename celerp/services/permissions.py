@@ -27,7 +27,7 @@ from celerp.models.accounting import UserCompany
 from celerp.models.company import Company
 from celerp.services.auth import ROLE_LEVELS, get_current_company_id, get_current_role, normalize_role
 from celerp.services.company_lock import AUTHORITY, locked_company
-from ui.i18n import refusal_text, t
+from ui.i18n import refusal_text
 
 
 class Role(NamedTuple):
@@ -207,7 +207,7 @@ class RequestAuthority:
         route it reached; then refresh the settings it was handed."""
         role, settings = await read_authority(session, self.company_id, self.user_id)
         if role != self.role:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("error.access_changed"))
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=catalog_refusal("error.access_changed"))
         for key in sorted(self.keys):
             assert_role_permission(settings, role, key)
         if self.module:

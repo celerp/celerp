@@ -847,6 +847,7 @@
   "error.restore_failed_unknown": "The restore didn't finish and Celerp couldn't tell why. Try again; if it keeps happening, ask on GitHub Issues or Discussions.",
   "error.restore_already_set_up": "Celerp is already set up on this computer, so a backup can't be restored from here. Ask the installation owner to sign in and use System Recovery. This replaces everything on this computer.",
   "error.upload_too_large": "This upload is too large. Choose a smaller file, or split it into several smaller files.",
+  "error.invalid_content_length": "The request's Content-Length header is not a number.",
   "error.maintenance": "Celerp is busy with maintenance. Wait a minute, then try again.",
   "error.recovery_incomplete": "System Recovery did not finish, so Celerp stays unavailable until it does. Restart Celerp to try the recovery again.",
   "error.api_not_found": "Celerp couldn't find this page. Check the address, or go back and use the menu.",

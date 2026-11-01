@@ -3520,6 +3520,7 @@
   "error.restore_failed_unknown": "Il ripristino non è terminato e Celerp non è riuscito a capire perché. Riprova; se continua a succedere, chiedi su GitHub Issues o Discussions.",
   "error.restore_already_set_up": "Celerp è già configurato su questo computer, quindi da qui non si può ripristinare un backup. Chiedi al proprietario dell'installazione di accedere e usare Ripristino del sistema. Questo sostituisce tutto su questo computer.",
   "error.upload_too_large": "Questo caricamento è troppo grande. Scegli un file più piccolo o dividilo in più file più piccoli.",
+  "error.invalid_content_length": "L'intestazione Content-Length della richiesta non è un numero.",
   "error.maintenance": "Celerp è in manutenzione. Attendi un minuto, poi riprova.",
   "error.recovery_incomplete": "Il ripristino del sistema non è stato completato, quindi Celerp resta non disponibile finché non termina. Riavvia Celerp per riprovare il ripristino.",
   "error.api_not_found": "Celerp non ha trovato questa pagina. Controlla l'indirizzo, oppure torna indietro e usa il menu.",

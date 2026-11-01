@@ -128,3 +128,28 @@ async def test_outside_tests_the_body_is_sent_as_built(monkeypatch):
     handler = app.exception_handlers[StarletteHTTPException]
     response = await handler(_request(agent=True), HTTPException(409, "Plain text", headers={"X-A": "1"}))
     assert response.body == b'{"detail":"Plain text"}' and response.headers["X-A"] == "1"
+
+
+@pytest.mark.parametrize("agent", [True, False])
+async def test_a_refusal_written_with_t_is_answered_keyed_and_reads_as_before(recorded, agent):
+    """A t() text carries its key, so whatever path raised it (an instance method, a
+    dispatch by name, a middleware), the one builder answers it keyed; the person reads the
+    same sentence as before, in their language, live and after a reload."""
+    from ui.i18n import english, refusal_text, set_lang, t
+
+    set_lang("th")
+    try:
+        text = t("error.permission_missing", label=t("error.access_changed"))
+        assert text == str(text) and json.dumps(text) == json.dumps(str(text))
+        handler = app.exception_handlers[StarletteHTTPException]
+        response = await handler(_request(agent=agent), HTTPException(403, text))
+        detail = json.loads(response.body)["detail"]
+        assert detail["message_key"] == "error.permission_missing"
+        assert refusal_text(detail) == text
+        assert recorded == []
+        set_lang("es")
+        assert refusal_text(detail) == t("error.permission_missing", label=t("error.access_changed"))
+        with english():
+            assert detail["message"] == refusal_text(detail)
+    finally:
+        set_lang("en")

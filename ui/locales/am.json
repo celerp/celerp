@@ -1920,6 +1920,7 @@
   "error.restore_failed_unknown": "መልሶ ማስመለሱ አልተጠናቀቀም፤ Celerp ምክንያቱን ማወቅ አልቻለም። እንደገና ይሞክሩ፤ መከሰቱን ከቀጠለ በGitHub Issues ወይም Discussions ይጠይቁ።",
   "error.restore_already_set_up": "Celerp በዚህ ኮምፒውተር ላይ አስቀድሞ ተዘጋጅቷል፤ ስለዚህ ምትኬ ከዚህ መመለስ አይቻልም። የመጫኛውን ባለቤት እንዲገባና የሥርዓት መልሶ ማግኛን እንዲጠቀም ይጠይቁ። ይህ በዚህ ኮምፒውተር ላይ ያለውን ሁሉ ይተካል።",
   "error.upload_too_large": "ይህ የሚጫን ፋይል በጣም ትልቅ ነው። ትንሽ ፋይል ይምረጡ፣ ወይም ወደ ብዙ ትናንሽ ፋይሎች ይክፈሉት።",
+  "error.invalid_content_length": "የጥያቄው Content-Length ራስጌ ቁጥር አይደለም።",
   "error.maintenance": "Celerp በጥገና ላይ ነው። አንድ ደቂቃ ይጠብቁና እንደገና ይሞክሩ።",
   "error.recovery_incomplete": "የሲስተም መልሶ ማግኛው አልተጠናቀቀም፣ ስለዚህ እስኪጠናቀቅ ድረስ Celerp አይገኝም። መልሶ ማግኛውን እንደገና ለመሞከር Celerpን እንደገና ያስጀምሩ።",
   "error.api_not_found": "Celerp ይህን ገጽ ማግኘት አልቻለም። አድራሻውን ያረጋግጡ፣ ወይም ወደ ኋላ ተመልሰው ምናሌውን ይጠቀሙ።",

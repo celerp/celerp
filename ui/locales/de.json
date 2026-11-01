@@ -3520,6 +3520,7 @@
   "error.restore_failed_unknown": "Die Wiederherstellung wurde nicht abgeschlossen, und Celerp konnte den Grund nicht feststellen. Versuchen Sie es erneut; wenn es weiter passiert, fragen Sie in GitHub Issues oder Discussions.",
   "error.restore_already_set_up": "Celerp ist auf diesem Computer bereits eingerichtet, daher kann hier keine Sicherung wiederhergestellt werden. Bitten Sie den Eigentümer der Installation, sich anzumelden und Systemwiederherstellung zu verwenden. Dabei wird alles auf diesem Computer ersetzt.",
   "error.upload_too_large": "Dieser Upload ist zu groß. Wählen Sie eine kleinere Datei oder teilen Sie sie in mehrere kleinere Dateien auf.",
+  "error.invalid_content_length": "Der Content-Length-Header der Anfrage ist keine Zahl.",
   "error.maintenance": "Celerp führt gerade Wartungsarbeiten aus. Warten Sie eine Minute und versuchen Sie es dann erneut.",
   "error.recovery_incomplete": "Die Systemwiederherstellung wurde nicht abgeschlossen, daher bleibt Celerp bis dahin nicht verfügbar. Starten Sie Celerp neu, um die Wiederherstellung erneut zu versuchen.",
   "error.api_not_found": "Celerp konnte diese Seite nicht finden. Prüfen Sie die Adresse oder gehen Sie zurück und nutzen Sie das Menü.",

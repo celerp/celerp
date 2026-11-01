@@ -3519,6 +3519,7 @@
   "error.restore_failed_unknown": "復元が完了せず、Celerp は原因を特定できませんでした。もう一度お試しください。繰り返し起きる場合は、GitHub Issues または Discussions でお問い合わせください。",
   "error.restore_already_set_up": "このコンピューターでは Celerp がすでにセットアップされているため、ここからバックアップを復元できません。インストールの所有者にサインインしてもらい、「システム復旧」を使ってください。この操作でこのコンピューター上のすべてが置き換えられます。",
   "error.upload_too_large": "アップロードが大きすぎます。小さいファイルを選ぶか、複数の小さいファイルに分けてください。",
+  "error.invalid_content_length": "リクエストの Content-Length ヘッダーが数値ではありません。",
   "error.maintenance": "Celerp はメンテナンス中です。1 分ほど待ってから、もう一度お試しください。",
   "error.recovery_incomplete": "システム復旧が完了していないため、完了するまで Celerp は使用できません。Celerp を再起動して、復旧をもう一度実行してください。",
   "error.api_not_found": "このページが見つかりませんでした。アドレスを確認するか、前の画面に戻ってメニューを使ってください。",

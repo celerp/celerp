@@ -7,9 +7,12 @@ marked ``x-celerp-agent`` is one the AI calls, and the AI keeps what it answered
 the person who confirmed the action, then and after a reload, in that person's language.
 So its refusal carries a catalog key (celerp.accounting_roles.refusal). Under tests
 ``unkeyed`` is a list, and every agent-route refusal without a key is recorded in it for
-the test that met it to fail on; outside tests it is None and the body is sent as built."""
+the test that met it to fail on; outside tests it is None and the body is sent as built.
+A refusal written with t() carries its key (ui.i18n.Text) and is answered keyed on every
+route, whatever path raised it."""
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 from fastapi.responses import JSONResponse, Response
@@ -57,9 +60,32 @@ def check(where: str, status_code: int, detail: Any, agent: bool) -> None:
         unkeyed.append(f"{where} answered {status_code} with an unkeyed refusal: {detail!r}")
 
 
+def as_refusal(detail: Any) -> Any:
+    """``detail`` as the refusal it reads as: a t() text (ui.i18n.Text) as its key's
+    ``refusal``, a t() text among its params as a refusal of its own; anything else as given."""
+    from ui.i18n import Text
+
+    if not isinstance(detail, Text):
+        return detail
+    from celerp.accounting_roles import catalog_refusal
+
+    return catalog_refusal(detail.key, **{name: _param(value) for name, value in detail.params.items()})
+
+
+def _param(value: Any) -> Any:
+    """A t() param as JSON carries it: a t() text as its refusal, a date as its day (the
+    ``refusal`` turns it into one), any other value that is not JSON as the text t() wrote."""
+    if isinstance(value, str):
+        return as_refusal(value)
+    if value is None or isinstance(value, (int, float, date)):
+        return value
+    return str(value)
+
+
 def error_response(request: Request, status_code: int, detail: Any, *,
                    headers: dict | None = None, **fields) -> Response:
-    """The error body ``{"detail": detail, **fields}`` for ``request``."""
+    """The error body ``{"detail": detail, **fields}`` for ``request``, a t() text keyed."""
+    detail = as_refusal(detail)
     check(f"{request.method} {request.url.path}", status_code, detail, agent_route(request.scope))
     if status_code in (204, 304) or status_code < 200:
         return Response(status_code=status_code, headers=headers)

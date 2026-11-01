@@ -120,18 +120,33 @@ def available_langs() -> list[str]:
     return sorted(_DISK_LANGS | _registry.keys())
 
 
+class Text(str):
+    """What t() reads a catalog key as: the text, carrying the ``key`` and ``params`` it was
+    read from. It is a str, equal, hashed and written as JSON as its text; a refusal that
+    is one is answered as that key's refusal (celerp.error_body.error_response), so it
+    reads in each reader's language whatever path raised it."""
+
+    key: str
+    params: dict
+
+
 def t(key: str, lang: str | None = None, **kwargs) -> str:
     """Translate *key*. Uses context language when *lang* is not passed.
 
     Falls back: locale -> English -> key itself.
     Supports ``{param}`` interpolation via **kwargs.
+    A key a catalog has reads as a Text carrying the key and *kwargs*.
     """
     if lang is None:
         lang = _current_lang.get()
     locale = _cached_load(lang)
     en = _cached_load("en")
-    text = locale.get(key, en.get(key, key))
-    return text.format(**kwargs) if kwargs else text
+    text = locale.get(key, en.get(key))
+    if text is None:
+        return key
+    out = Text(text.format(**kwargs) if kwargs else text)
+    out.key, out.params = key, kwargs
+    return out
 
 
 def date_text(day: date, lang: str | None = None) -> str:

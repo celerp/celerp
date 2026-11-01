@@ -3519,6 +3519,7 @@
   "error.restore_failed_unknown": "Quá trình khôi phục chưa hoàn tất và Celerp không xác định được nguyên nhân. Hãy thử lại; nếu vẫn xảy ra, hãy hỏi trên GitHub Issues hoặc Discussions.",
   "error.restore_already_set_up": "Celerp đã được thiết lập trên máy tính này nên không thể khôi phục bản sao lưu từ đây. Hãy nhờ chủ sở hữu bản cài đặt đăng nhập và dùng Khôi phục hệ thống. Thao tác này sẽ thay thế mọi thứ trên máy tính này.",
   "error.upload_too_large": "Tệp tải lên quá lớn. Hãy chọn tệp nhỏ hơn hoặc chia thành nhiều tệp nhỏ hơn.",
+  "error.invalid_content_length": "Tiêu đề Content-Length của yêu cầu không phải là số.",
   "error.maintenance": "Celerp đang bảo trì. Hãy đợi một phút rồi thử lại.",
   "error.recovery_incomplete": "Khôi phục hệ thống chưa hoàn tất nên Celerp sẽ không dùng được cho đến khi hoàn tất. Hãy khởi động lại Celerp để thử khôi phục lại.",
   "error.api_not_found": "Celerp không tìm thấy trang này. Hãy kiểm tra địa chỉ, hoặc quay lại và dùng menu.",
