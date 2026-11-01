@@ -19,6 +19,7 @@ from test_company_handoff_identity_restore import _link_verified  # noqa: F401
 from test_firm_view import _locked_invoice, _today
 from test_peer_sync_end_to_end import FIRM, _company_of, _paired, _route_to_app
 from ui.routes.settings_connectors import _attention_list
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -333,9 +334,9 @@ async def test_firm_cannot_void_what_the_client_sent(real_client, real_engine, m
     doc_id = synced.get("entity_id") or synced["id"]
     r = await real_client.patch(f"/docs/{doc_id}", json={"fields_changed": {"notes": {"new": "firm edit"}}},
                                 headers=auth(firm_tok))
-    assert r.status_code == 422 and "journal entry" in r.json()["detail"].lower(), r.text
+    assert r.status_code == 422 and "journal entry" in refusal_text(r.json()["detail"]).lower(), r.text
     r = await real_client.post(f"/docs/{doc_id}/void", json={}, headers=auth(firm_tok))
-    assert r.status_code == 422 and "journal entry" in r.json()["detail"].lower(), r.text
+    assert r.status_code == 422 and "journal entry" in refusal_text(r.json()["detail"]).lower(), r.text
 
 
 async def test_lock_refusal_told_once_and_not_resent(real_client, real_engine, monkeypatch):

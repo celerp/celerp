@@ -578,7 +578,7 @@ async def _delete_event(engine, company_id, entity_id):
                              actor_id=None, location_id=None, source="api", idempotency_key="delete-pi_1")
         except HTTPException as refused:
             await s.rollback()
-            return refused.status_code, refused.detail
+            return refused.status_code, refusal_text(refused.detail)
         await s.commit()
         return 200, None
 

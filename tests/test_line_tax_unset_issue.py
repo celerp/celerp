@@ -23,7 +23,7 @@ from celerp.models.projections import Projection
 from test_consignment_in_sale import _consign
 from test_money_stock_and_contact_invariants import _auth_company
 from test_tax_refusal_draft_route import route
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 from test_helpers import doc_version
 
 _LINES = [{"description": "Taxed", "quantity": 1, "unit_price": 100.0, "taxes": []},
@@ -31,7 +31,7 @@ _LINES = [{"description": "Taxed", "quantity": 1, "unit_price": 100.0, "taxes": 
 
 
 def _refused(r, line: int = 2, key: str = "documents.err_line_tax_unset", steps: tuple = ()) -> bool:
-    return r.status_code == 422 and r.json().get("detail") == t(key, line=line, route=route(*steps))
+    return r.status_code == 422 and refusal_text(r.json().get("detail")) == t(key, line=line, route=route(*steps))
 
 
 async def _doc(client, auth, doc_type: str = "invoice", lines: list | None = None) -> str:

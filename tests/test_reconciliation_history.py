@@ -23,7 +23,7 @@ from migration_support import auth, maker, real_client, real_engine  # noqa: F40
 from test_company_reset_payments import _harbor, _waiting_on_a_lock
 from test_helpers import invite_user, register_admin
 from test_reconciliation_reopen import _ui_as
-from ui.i18n import t
+from ui.i18n import t, refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -606,7 +606,7 @@ async def test_three_decimal_currency_completes_at_its_own_precision(client, ses
         if refused:
             r = await client.post(f"/accounting/reconciliation/{sid}/complete", headers=h)
             assert r.status_code == 422, r.text
-            assert "0.001" in r.json()["detail"]
+            assert "0.001" in refusal_text(r.json()["detail"])
         else:
             await complete(client, h, sid)
 
@@ -644,7 +644,7 @@ async def test_foreign_currency_account_refuses_the_base_figure(client, session)
     sid = (await start(client, h, b["id"], "2026-09-30", 12)).json()["id"]
     assert (await match(client, h, sid, [je])).status_code == 200
     r = await client.post(f"/accounting/reconciliation/{sid}/complete", headers=h)
-    assert r.status_code == 422 and "1838" in r.json()["detail"], r.text
+    assert r.status_code == 422 and "1838" in refusal_text(r.json()["detail"]), r.text
 
 
 async def test_entry_with_no_amount_in_the_account_currency_is_flagged_not_converted(client, session):
@@ -657,7 +657,7 @@ async def test_entry_with_no_amount_in_the_account_currency_is_flagged_not_conve
     assert got["difference"] is None and got["balanced"] is False and got["book_balance"] is None
     for action in ("complete", "write-off"):
         r = await client.post(f"/accounting/reconciliation/{sid}/{action}", headers=h, json={})
-        assert r.status_code == 422 and "JPY" in r.json()["detail"], r.text
+        assert r.status_code == 422 and "JPY" in refusal_text(r.json()["detail"]), r.text
 
 
 async def test_default_bank_account_is_kept_in_the_base_currency(client, session):

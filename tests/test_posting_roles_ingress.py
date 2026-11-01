@@ -172,7 +172,7 @@ async def test_an_item_created_available_on_a_locked_day_is_not_created(session,
     before = await _events(session, auth["company_id"])
     r = await _create(client, auth, cost_total=200.0, status="available", sku="LOCKED-1")
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("error.period_locked", "en", date=today)
+    assert refusal_text(r.json()["detail"]) == t("error.period_locked", "en", date=today)
     assert await _events(session, auth["company_id"]) == before
     assert await _items_by_sku(session, auth["company_id"], "LOCKED-1") == []
 

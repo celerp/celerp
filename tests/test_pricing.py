@@ -26,7 +26,7 @@ from celerp.services.pricing import (
     round_half_up_to_increment,
     validate_price_lists,
 )
-from ui.i18n import t
+from ui.i18n import t, refusal_text
 
 
 # ---------------------------------------------------------------------------
@@ -406,7 +406,7 @@ async def test_patch_item_rejects_derived_key(client):
         headers=h,
     )
     assert r.status_code == 422
-    assert r.json()["detail"] == t("inventory.err_price_derived", "en", lists="Trade", base="Retail")
+    assert refusal_text(r.json()["detail"]) == t("inventory.err_price_derived", "en", lists="Trade", base="Retail")
 
 
 @pytest.mark.asyncio
@@ -700,7 +700,7 @@ async def test_patch_item_rejects_non_numeric_price(client):
         headers=h,
     )
     assert r.status_code == 422
-    assert "must be a number" in r.json()["detail"]
+    assert "must be a number" in refusal_text(r.json()["detail"])
 
 
 @pytest.mark.asyncio

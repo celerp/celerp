@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
-from ui.i18n import t
+from ui.i18n import refusal_text, set_lang, t
 
 _ROOT = Path(__file__).resolve().parents[1]
 _LOCALES = _ROOT / "ui" / "locales"
@@ -48,8 +48,8 @@ async def test_missing_document_says_where_to_go(client):
     h = await _headers(client)
     r = await client.get("/docs/doc:nope", headers=h)
     assert r.status_code == 404
-    assert r.json()["detail"] == t("documents.document_not_found", "en")
-    assert r.json()["detail"].startswith("Celerp couldn't find this document.")
+    assert refusal_text(r.json()["detail"]) == t("documents.document_not_found", "en")
+    assert refusal_text(r.json()["detail"]).startswith("Celerp couldn't find this document.")
 
 
 @pytest.mark.asyncio
@@ -58,7 +58,7 @@ async def test_lifecycle_refusals_say_what_to_do(client):
     eid = await _invoice(client, h, finalize=True)
     r = await client.delete(f"/docs/{eid}", headers=h)
     assert r.status_code == 409
-    assert r.json()["detail"] == t("documents.err_delete_not_draft", "en")
+    assert refusal_text(r.json()["detail"]) == t("documents.err_delete_not_draft", "en")
     r = await client.post(f"/docs/{eid}/unvoid", headers=h, json={})
     assert r.status_code == 409
     assert r.json()["detail"]["message_key"] == "docs.unvoid_not_void"
@@ -70,14 +70,18 @@ async def test_empty_note_says_type_one(client):
     eid = await _invoice(client, h)
     r = await client.post(f"/docs/{eid}/notes", headers=h, json={"note": "   "})
     assert r.status_code == 422
-    assert r.json()["detail"] == t("documents.err_note_empty", "en")
+    assert refusal_text(r.json()["detail"]) == t("documents.err_note_empty", "en")
 
 
 @pytest.mark.asyncio
 async def test_document_messages_follow_the_users_language(client):
     h = await _headers(client, **{"Accept-Language": "th"})
     r = await client.get("/docs/doc:nope", headers=h)
-    assert r.json()["detail"] == t("documents.document_not_found", "th")
+    set_lang("th")
+    try:
+        assert refusal_text(r.json()["detail"]) == t("documents.document_not_found", "th")
+    finally:
+        set_lang("en")
     assert t("documents.document_not_found", "th") != t("documents.document_not_found", "en")
 
 
@@ -97,7 +101,7 @@ def test_damaged_tax_says_which_tax_and_where_to_fix_it(entries, named):
     line = {"quantity": 1, "unit_price": 100}
     with pytest.raises(HTTPException) as exc:
         document_money({"doc_taxes": entries}, [line], "USD", keep_unrated_tax=True)
-    assert exc.value.detail == t("documents.err_tax_unreadable", "en", tax=named)
+    assert refusal_text(exc.value.detail) == t("documents.err_tax_unreadable", "en", tax=named)
 
 
 @pytest.mark.parametrize(("stored", "key", "steps"), [
@@ -115,7 +119,7 @@ def test_damaged_tax_on_a_document_past_draft_names_the_way_back_to_draft(stored
                        stored=stored)
     from test_tax_refusal_draft_route import route
 
-    assert exc.value.detail == t(key, "en", tax="bad", route=route(*steps, locale="en"))
+    assert refusal_text(exc.value.detail) == t(key, "en", tax="bad", route=route(*steps, locale="en"))
 
 
 def test_online_payment_pause_is_translated():

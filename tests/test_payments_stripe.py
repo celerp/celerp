@@ -16,7 +16,7 @@ import pytest
 from httpx import AsyncClient
 
 from celerp.services.company_lock import locked_company
-from ui.i18n import t
+from ui.i18n import t, refusal_text
 
 
 
@@ -743,7 +743,7 @@ async def test_manual_payment_racing_online_confirm(client, session, payments_on
                                     reference="pi_race", amount_minor=107000, currency="usd",
                                     paid_at=PAID, context=BOOKS, managed=True)
     assert refused.value.status_code == 409
-    assert refused.value.detail == t("documents.err_payment_too_much", "en", amount=1070.0, outstanding=570.0)
+    assert refusal_text(refused.value.detail) == t("documents.err_payment_too_much", "en", amount=1070.0, outstanding=570.0)
     await session.rollback()
 
     doc = await _doc_state(client, tok, eid)

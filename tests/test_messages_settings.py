@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from ui.i18n import t
+from ui.i18n import t, refusal_text
 
 _LOCALES = Path(__file__).resolve().parents[1] / "ui" / "locales"
 _LANGS = ("en", "th", "de", "fr", "es", "it", "pt", "id", "vi", "ja", "ar", "am")
@@ -82,8 +82,8 @@ def test_missing_permission_names_it_as_the_role_editor_does():
     with pytest.raises(HTTPException) as exc:
         assert_role_permission({}, "operator", "set_inventory_prices")
     assert exc.value.status_code == 403
-    assert exc.value.detail == t("error.permission_missing", "en", label="Set inventory prices")
-    assert "Global Config, Users" in exc.value.detail and "set_inventory_prices" not in exc.value.detail
+    assert refusal_text(exc.value.detail) == t("error.permission_missing", "en", label="Set inventory prices")
+    assert "Global Config, Users" in refusal_text(exc.value.detail) and "set_inventory_prices" not in refusal_text(exc.value.detail)
 
 
 def test_failed_update_step_says_it_stopped_without_its_output():

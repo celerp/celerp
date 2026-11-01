@@ -13,7 +13,7 @@ from fasthtml.common import *
 
 from celerp.services.update import CARD_REASONS, PIP_BLOCKERS, REASON_CODES, reason_key
 from ui.config import COOKIE_NAME, get_role
-from ui.i18n import t, get_lang, available_langs, lang_label, try_again_pattern
+from ui.i18n import t, get_lang, available_langs, lang_label, refusal_text, try_again_pattern
 from ui.components.doc_money import DOC_MONEY_JS
 from ui.components.preview_confirm import PREVIEW_CONFIRM_JS
 from ui.components.table import searchable_select
@@ -3062,12 +3062,13 @@ def secret_input(name: str, value: str = "", lang: str = "en", cls: str = "form-
     )
 
 
-def toast_header(message: str, kind: str = "success", *, persist: bool = False,
+def toast_header(message: str | dict, kind: str = "success", *, persist: bool = False,
                  action: dict | list[dict] | None = None, **extra_triggers) -> dict:
-    """HX-Trigger header for the shell's celerpToast listener. ``action`` ({href, label},
+    """HX-Trigger header for the shell's celerpToast listener. A keyed refusal *message* is shown
+    in the reader's language (refusal_text). ``action`` ({href, label},
     or a list of them) adds a link to the toast for each. Extra keyword arguments become sibling client events fired
     from the same header."""
-    toast: dict = {"message": message, "type": kind}
+    toast: dict = {"message": message if isinstance(message, str) else refusal_text(message), "type": kind}
     if persist:
         toast["persist"] = True
     if action:

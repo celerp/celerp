@@ -127,7 +127,7 @@ async def test_available_amount_edit_still_gated(client, session):
         json={"fields_changed": {"quantity": {"old": 5, "new": 8}}},
         headers=ctx["operator_h"])
     assert patch.status_code == 403, patch.text
-    assert patch.json()["detail"] == t("inventory.err_fields_restricted", "en", fields=_field_name("quantity"))
+    assert refusal_text(patch.json()["detail"]) == t("inventory.err_fields_restricted", "en", fields=_field_name("quantity"))
 
 
 async def test_draft_cost_visible_without_costs_permission(client, session):
@@ -232,7 +232,7 @@ async def test_cost_at_creation_still_gated_for_available_item(client, session):
     body["status"] = "available"
     r = await client.post("/items", json=body, headers=ctx["operator_h"])
     assert r.status_code == 403, r.text
-    assert r.json()["detail"] == missing_permission_text("set_inventory_prices")
+    assert refusal_text(r.json()["detail"]) == missing_permission_text("set_inventory_prices")
 
 
 def test_with_draft_cost_list_reinjects_for_authorable_draft():
@@ -385,7 +385,7 @@ async def test_revert_requires_permission(client, session):
 
     denied = await _revert_to_draft(client, ctx["operator_h"], item_id)
     assert denied.status_code == 403, denied.text
-    assert denied.json()["detail"] == missing_permission_text("revert_items_to_draft")
+    assert refusal_text(denied.json()["detail"]) == missing_permission_text("revert_items_to_draft")
 
 
 async def test_clean_revert_succeeds(client, session):
@@ -418,7 +418,7 @@ async def test_revert_blocked_by_circulation_event(client, session):
 
     rv = await _revert_to_draft(client, ctx["admin_h"], item_id)
     assert rv.status_code == 409, rv.text
-    assert rv.json()["detail"] == t("inventory.err_revert_used", "en", uses=event_label("item.quantity.adjusted"))
+    assert refusal_text(rv.json()["detail"]) == t("inventory.err_revert_used", "en", uses=event_label("item.quantity.adjusted"))
 
 
 async def test_revert_blocked_when_on_document(client, session):
@@ -438,7 +438,7 @@ async def test_revert_blocked_when_on_document(client, session):
 
     rv = await _revert_to_draft(client, ctx["admin_h"], item_id)
     assert rv.status_code == 409, rv.text
-    assert "document" in rv.json()["detail"].lower()
+    assert "document" in refusal_text(rv.json()["detail"]).lower()
 
 
 async def test_revert_blocked_when_on_document_via_patch_path(client, session):
@@ -472,7 +472,7 @@ async def test_revert_blocked_when_on_document_via_patch_path(client, session):
 
     rv = await _revert_to_draft(client, ctx["admin_h"], item_id)
     assert rv.status_code == 409, rv.text
-    assert "document" in rv.json()["detail"].lower()
+    assert "document" in refusal_text(rv.json()["detail"]).lower()
 
 
 async def test_revert_of_reserved_item_rejected(client, session):
@@ -487,8 +487,8 @@ async def test_revert_of_reserved_item_rejected(client, session):
 
     rv = await _revert_to_draft(client, ctx["admin_h"], item_id)
     assert rv.status_code == 409, rv.text
-    assert "available" in rv.json()["detail"].lower()
-    assert "reserved" in rv.json()["detail"].lower()
+    assert "available" in refusal_text(rv.json()["detail"]).lower()
+    assert "reserved" in refusal_text(rv.json()["detail"]).lower()
 
 
 async def test_revert_via_item_patch_rejected_regardless_of_permission(client, session):

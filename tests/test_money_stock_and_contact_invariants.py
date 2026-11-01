@@ -20,7 +20,7 @@ from celerp.models.projections import Projection
 from celerp.services.lot_origin import recognize_opening_lots
 from stock_books import book_older_opening, older_release_lot
 from test_helpers import make_authed_token, perm_setup, provision_company_books
-from ui.i18n import t
+from ui.i18n import t, refusal_text
 
 
 async def _auth_company(session, currency: str = "USD") -> dict:
@@ -421,7 +421,7 @@ async def test_payment_rejects_currency_that_differs_from_document(client, sessi
         "currency": "USD",
     })
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("documents.err_payment_currency", "en", payment_currency="USD", doc_currency="KWD")
+    assert refusal_text(r.json()["detail"]) == t("documents.err_payment_currency", "en", payment_currency="USD", doc_currency="KWD")
 
 
 def test_payment_form_uses_document_currency_precision_and_rate():

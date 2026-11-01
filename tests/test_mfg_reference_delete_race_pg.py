@@ -32,7 +32,7 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp_inventory import routes as inventory
 from celerp_manufacturing import routes as mfg
-from ui.i18n import t
+from ui.i18n import t, refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -136,7 +136,7 @@ async def test_delete_first_refuses_the_waiting_run(committed_engine):
 
     assert (deleted["deleted"], deleted["moved_to_deleted"]) == (1, 0)
     assert isinstance(created, HTTPException) and created.status_code == 422, created
-    assert created.detail == t("manufacturing.err_item_unknown", "en")
+    assert refusal_text(created.detail) == t("manufacturing.err_item_unknown", "en")
     part, runs, run_events = await _state(factory, company_id)
     assert part is None and runs == [] and run_events == 0
 

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from ui.i18n import t
+from ui.i18n import t, refusal_text
 
 _LOCALES = Path(__file__).resolve().parents[1] / "ui" / "locales"
 _LANGS = ("en", "th", "de", "fr", "es", "it", "pt", "id", "vi", "ja", "ar", "am")
@@ -58,7 +58,7 @@ async def test_backwards_report_range_says_which_date_to_move(client):
 async def test_missing_bank_account_says_refresh(client):
     r = await client.get(f"/accounting/bank-accounts/{uuid.uuid4()}", headers=await _headers(client))
     assert r.status_code == 404
-    assert r.json()["detail"] == t("acct.err_bank_account_not_found", "en")
+    assert refusal_text(r.json()["detail"]) == t("acct.err_bank_account_not_found", "en")
 
 
 @pytest.mark.asyncio
@@ -80,7 +80,7 @@ async def test_empty_bulk_void_says_tick_entries(client):
 async def test_missing_reconciliation_says_open_it_again(client):
     r = await client.get(f"/accounting/reconciliation/{uuid.uuid4()}", headers=await _headers(client))
     assert r.status_code == 404
-    assert r.json()["detail"] == t("acct.err_recon_not_found", "en")
+    assert refusal_text(r.json()["detail"]) == t("acct.err_recon_not_found", "en")
 
 
 @pytest.mark.asyncio

@@ -17,6 +17,7 @@ from celerp.models.company import Company, User
 from celerp.models.projections import Projection
 from celerp.services import auto_je
 from test_cost_restatement import _cogs_adjustments, _sell, _set_cost, _state
+from ui.i18n import refusal_text
 
 
 async def _company(session, currency: str) -> dict:
@@ -136,7 +137,7 @@ async def test_bill_total_above_its_lines_is_refused_with_a_message(client, sess
     assert r.status_code == 200, r.text
     r = await client.post(f"/docs/{r.json()['id']}/finalize", headers=auth["headers"])
     assert r.status_code == 422, r.text
-    assert "don't add up to the total of 120.00 USD" in r.json()["detail"]
+    assert "don't add up to the total of 120.00 USD" in refusal_text(r.json()["detail"])
 
 
 @pytest.mark.asyncio

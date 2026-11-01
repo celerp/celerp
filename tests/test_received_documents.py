@@ -12,7 +12,7 @@ import json
 import pytest
 from httpx import AsyncClient
 from celerp.services.permissions import missing_permission_text
-from ui.i18n import t
+from ui.i18n import t, refusal_text
 
 
 async def _token(client: AsyncClient) -> str:
@@ -260,7 +260,7 @@ async def test_booking_needs_the_sales_price_permission_only_for_a_sales_target(
         assert made["line_items"][0]["unit_price"] == 150.0
     else:
         assert r.status_code == 403, r.text
-        assert r.json()["detail"] == missing_permission_text("set_sales_doc_prices")
+        assert refusal_text(r.json()["detail"]) == missing_permission_text("set_sales_doc_prices")
 
 
 def test_mapping_covers_every_shareable_type():
@@ -1431,7 +1431,7 @@ async def test_list_with_an_unsupported_currency_is_rejected(client):
         "line_items": [{"description": "Widget", "quantity": 1, "unit_price": 10.0}],
     })
     assert r.status_code == 422
-    assert "currency" in r.json()["detail"]
+    assert "currency" in refusal_text(r.json()["detail"])
 
 
 @pytest.mark.asyncio

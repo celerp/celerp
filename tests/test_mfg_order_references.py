@@ -26,7 +26,7 @@ from celerp.models.projections import Projection
 from celerp.projections.engine import ProjectionEngine
 from celerp.services.company_lock import lock_company
 from test_helpers import create_item, perm_setup
-from ui.i18n import t
+from ui.i18n import t, refusal_text
 
 
 
@@ -83,7 +83,7 @@ async def test_new_run_naming_a_non_item_component_is_refused(client, session, k
         "output_item_id": s["product"],
     }, headers=s["admin_h"])
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("manufacturing.err_item_unknown", "en")
+    assert refusal_text(r.json()["detail"]) == t("manufacturing.err_item_unknown", "en")
     assert await _runs(session, company_id) == before
 
 

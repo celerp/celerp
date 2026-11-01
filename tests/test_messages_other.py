@@ -13,7 +13,7 @@ import httpx
 import pytest
 from fastapi import HTTPException
 
-from ui.i18n import t
+from ui.i18n import t, refusal_text
 
 _ROOT = Path(__file__).resolve().parents[1]
 _LOCALES = _ROOT / "ui" / "locales"
@@ -40,14 +40,16 @@ async def test_unhandled_error_says_try_again_and_where_to_ask():
     from starlette.requests import Request
     req = Request({"type": "http", "method": "GET", "path": "/x", "headers": [], "query_string": b""})
     resp = await unhandled_exception_handler(req, RuntimeError("boom"))
-    assert json.loads(resp.body)["detail"] == t("error.server_error", "en")
+    assert refusal_text(json.loads(resp.body)["detail"]) == t("error.server_error", "en")
 
 
 @pytest.mark.asyncio
 async def test_rate_limit_says_wait_a_minute():
     from celerp.main import rate_limit_handler
-    resp = await rate_limit_handler(None, None)
-    assert json.loads(resp.body)["detail"] == t("error.rate_limited", "en")
+    from starlette.requests import Request
+    req = Request({"type": "http", "method": "GET", "path": "/x", "headers": [], "query_string": b""})
+    resp = await rate_limit_handler(req, None)
+    assert refusal_text(json.loads(resp.body)["detail"]) == t("error.rate_limited", "en")
 
 
 def _response(status: int, body=None, headers=None) -> httpx.Response:
@@ -129,7 +131,7 @@ def test_quantity_messages_name_the_rule():
         "quantity.precision", {"label": "Ring", "qty": "1.234", "decimals": 2})
     with pytest.raises(HTTPException) as ei:
         validate_positive(-1, label="Ring")
-    assert ei.value.detail == t("error.qty_positive", "en", label="Ring")
+    assert refusal_text(ei.value.detail) == t("error.qty_positive", "en", label="Ring")
 
 
 def test_stripe_amount_says_pay_another_way():
@@ -209,7 +211,7 @@ async def test_long_search_says_how_long(client):
     from celerp.routers.search import _MAX_Q_LEN
     r = await client.get("/search", params={"q": "x" * (_MAX_Q_LEN + 1)}, headers=await _headers(client))
     assert r.status_code == 422
-    assert r.json()["detail"] == t("search.err_too_long", "en", max=_MAX_Q_LEN)
+    assert refusal_text(r.json()["detail"]) == t("search.err_too_long", "en", max=_MAX_Q_LEN)
 
 
 # -- AI assistant -----------------------------------------------------------

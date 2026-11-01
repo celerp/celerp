@@ -369,7 +369,8 @@ def _refusal_param(name: str, value):
     semicolons, others as sentences), in the user's language; a
     ``role`` as its label and ``roles`` as their labels; ``type``/``types`` as account types;
     ``status`` as an item status, ``lot_status`` as one read mid-sentence and
-    ``doc_status`` as a document status; ``reason``
+    ``doc_status`` as a document status, each only when the value is an enum slug (a
+    file type such as ".pdf" or a name reads as written); ``reason``
     as why a production run waits for reconciling."""
     from ui.components.table import display_enum
 
@@ -383,6 +384,12 @@ def _refusal_param(name: str, value):
         return role_label(str(value), str(value).replace("_", " "))
     if name == "roles" and isinstance(value, list):
         return ", ".join(role_label(str(r), str(r).replace("_", " ")) for r in value)
+    if name == "reason":
+        return reconcile_reason(str(value))
+    if name == "types" and isinstance(value, list):
+        return t("posting.type_or").join(_refusal_param("type", v) for v in value)
+    if not (isinstance(value, str) and _ENUM_SLUG.fullmatch(value)):
+        return value  # text such as a file type (".pdf") or a name reads as written
     if name == "status":
         return display_enum(value, "item_status")
     if name == "lot_status":
@@ -391,13 +398,13 @@ def _refusal_param(name: str, value):
         return label if current_lang() == "de" else label.lower()
     if name == "doc_status":
         return display_enum(value, "doc_status")
-    if name == "reason":
-        return reconcile_reason(str(value))
     if name == "type":
         return display_enum(value, "account_type")
-    if name == "types" and isinstance(value, list):
-        return t("posting.type_or").join(display_enum(v, "account_type") for v in value)
     return value
+
+
+# An enum value as stored: a lowercase slug. A param holding anything else is already text.
+_ENUM_SLUG = re.compile(r"[a-z][a-z0-9_]*")
 
 
 def field_label(f: dict) -> str:

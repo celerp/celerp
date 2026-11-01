@@ -84,7 +84,7 @@ async def import_contact_records(
         try:
             require_currency_code(rec.data.get("currency"))
         except HTTPException as exc:
-            outcome.add(rec.entity_id, "rejected", f"{label}: {exc.detail}")
+            outcome.add(rec.entity_id, "rejected", f"{label}: {failure_reason(exc)}")
             continue
         identity = contact_import_identity(rec.data)
         keyed = await find_event_by_idempotency(session, company_id, rec.idempotency_key)

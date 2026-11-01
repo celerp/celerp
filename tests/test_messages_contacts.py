@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from ui.i18n import t
+from ui.i18n import t, refusal_text
 
 _LOCALES = Path(__file__).resolve().parents[1] / "ui" / "locales"
 
@@ -26,7 +26,7 @@ async def _headers(client) -> dict:
 async def test_missing_contact_says_it_no_longer_exists_and_to_choose_again(client):
     r = await client.get("/crm/contacts/contact:nope", headers=await _headers(client))
     assert r.status_code == 404
-    assert r.json()["detail"] == "This contact no longer exists. Choose it again from the list."
+    assert refusal_text(r.json()["detail"]) == "This contact no longer exists. Choose it again from the list."
 
 
 @pytest.mark.asyncio

@@ -7,7 +7,7 @@ import uuid
 
 import pytest
 
-from ui.i18n import t
+from ui.i18n import t, refusal_text
 
 
 async def _token(client) -> str:
@@ -59,4 +59,4 @@ def test_subscription_messages_say_what_to_do(key, says):
 async def test_unknown_api_address_gets_the_generic_message(client):
     r = await client.get("/no-such-route-anywhere")
     assert r.status_code == 404
-    assert r.json()["detail"] == t("error.api_not_found", "en")
+    assert refusal_text(r.json()["detail"]) == t("error.api_not_found", "en")

@@ -20,6 +20,7 @@ from celerp.modules import api, loader
 from celerp.services.permissions import authorize_request, missing_permission_text
 from test_helpers import seed_member, signed_request
 from test_modules.test_admission import _clean_loader_state, _modules, _uid, _write_module  # noqa: F401
+from ui.i18n import refusal_text
 
 
 # ── api_request ──────────────────────────────────────────────────────────────
@@ -333,7 +334,7 @@ async def test_ai_query_refused_without_the_ai_permission(session, ask):
         with pytest.raises(HTTPException) as exc:
             await api.ai_query("hello", str(company_id), db_session=session)
     assert exc.value.status_code == 403
-    assert exc.value.detail == missing_permission_text("use_ai_assistant")
+    assert refusal_text(exc.value.detail) == missing_permission_text("use_ai_assistant")
     ask.assert_not_awaited()
 
 

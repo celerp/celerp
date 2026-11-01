@@ -60,7 +60,7 @@ async def test_no_child_can_be_added_under_a_role_target(session, auth):
         await create_chart_account(session, cid, code="1120-9", name="Sub", account_type="asset",
                                    parent_code="1120")
     assert err.value.status_code == 422
-    assert "posting account for Accounts receivable" in err.value.detail
+    assert "posting account for Accounts receivable" in refusal_text(err.value.detail)
 
 
 async def test_no_account_can_be_moved_under_a_role_target(session, auth):
@@ -70,7 +70,7 @@ async def test_no_account_can_be_moved_under_a_role_target(session, auth):
     with pytest.raises(HTTPException) as err:
         await change_account(session, cid, "9200", parent_code="1120")
     assert err.value.status_code == 422
-    assert "posting account for Accounts receivable" in err.value.detail
+    assert "posting account for Accounts receivable" in refusal_text(err.value.detail)
 
 
 async def test_a_grouping_target_still_takes_children(session, auth):
@@ -126,4 +126,4 @@ async def test_a_refused_type_is_named_without_a_wrong_article(session, auth):
         "Account 9300-1 (asset) sits under 9300; it cannot sit under an account of type Expense.")
     with pytest.raises(HTTPException) as parent:
         await create_chart_account(session, cid, code="9301", name="Fees", account_type="expense", parent_code="9300")
-    assert parent.value.detail == "An account of type expense cannot sit under 9300, an account of type asset."
+    assert refusal_text(parent.value.detail) == "An account of type Expense cannot sit under 9300, an account of type Asset."

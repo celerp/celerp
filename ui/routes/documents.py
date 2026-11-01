@@ -1129,7 +1129,7 @@ def _reopened_toast(answer) -> dict:
                         action={"href": doc_href(memos[0].get("id")), "label": memos[0].get("doc_number") or ""})
 
 
-def _action_error(msg: str, *, persist: bool = False, action: dict | list[dict] | None = None, **triggers):
+def _action_error(msg: str | dict, *, persist: bool = False, action: dict | list[dict] | None = None, **triggers):
     """Fire a toast popup for action errors and restore any open editable cell to display mode.
     ``persist`` and ``action`` are toast_header's; ``triggers`` are further client events fired
     with it."""
