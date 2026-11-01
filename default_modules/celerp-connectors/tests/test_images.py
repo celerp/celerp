@@ -229,7 +229,7 @@ async def test_mint_media_url_asks_the_relay_with_the_image_name(media_tokens_in
         assert await mint_media_url("c1", image) == "https://share.example.com/m/e/f1.jpg"
         sent = __import__("json").loads(mint.calls[0].request.content)
         assert sent["filename"] == "f1.jpg"
-        # The relay wraps only its own token shape (relay/services/connector_media.py MEDIA_TOKEN).
+        # The relay wraps only its own token shape.
         assert __import__("re").fullmatch(r"[A-Za-z0-9_-]{43}", sent["media_token"])
         mint.mock(return_value=httpx.Response(402))
         assert await mint_media_url("c1", image) is None

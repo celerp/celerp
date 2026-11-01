@@ -13264,7 +13264,6 @@ async def delete_doc_file(
 #     type-specific (audit records presence, transfer receives, quotation is locked);
 #   - terminal actions close a finalized list: convert (quotation, above), adjust (audit),
 #     receive (transfer). Adjust + undo route stock through inventory events + auto_je.
-# See context/2026-0617-unified-lists-lifecycle-plan.md.
 # ---------------------------------------------------------------------------
 
 

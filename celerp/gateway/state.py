@@ -14,8 +14,8 @@ _subscription_status: str = ""
 _feature_flags: dict = {}
 _commercial_context: dict = {}
 _instance_id: str = ""
-# The tunnel limits the relay advertised on this connection's hello_ack (the relay's
-# relay/services/tunnel_limits.py advertised()); empty when it advertised none.
+# The tunnel limits the relay advertised on this connection's hello_ack; empty when it
+# advertised none.
 _tunnel_limits: dict = {}
 
 # The client understands commercial-context envelopes up to this schema_version.

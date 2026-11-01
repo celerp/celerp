@@ -25,7 +25,7 @@ from celerp.models.connector_media import ConnectorMediaToken
 # The relay's media share address lives as long.
 MEDIA_TTL = timedelta(minutes=15)
 # 32 random bytes, urlsafe base64 without padding. The relay is the authority on this
-# shape (relay/services/connector_media.py MEDIA_TOKEN) and wraps nothing else.
+# shape and wraps nothing else.
 MEDIA_TOKEN = re.compile(r"[A-Za-z0-9_-]{43}")
 
 

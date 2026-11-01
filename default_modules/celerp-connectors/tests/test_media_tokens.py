@@ -16,8 +16,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-# The relay's media token shape, copied from relay/services/connector_media.py
-# (MEDIA_TOKEN), which is the authority: the relay mints a share address for nothing else.
+# The relay's media token shape. The relay is the authority: the relay mints a share address for nothing else.
 RELAY_MEDIA_TOKEN = r"[A-Za-z0-9_-]{43}"
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 300
 
