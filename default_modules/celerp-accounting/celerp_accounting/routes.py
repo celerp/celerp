@@ -1256,6 +1256,7 @@ async def _journal_payload(
     session: AsyncSession, company_id: uuid.UUID,
     date_from: str | None, date_to: str | None,
     filt: _JournalFilter | None = None,
+    survivors: dict[str, str] | None = None,
 ) -> tuple[dict, dict, str]:
     """The journal, its source-doc refs and the base currency.
 
@@ -1263,6 +1264,9 @@ async def _journal_payload(
     item detail attached afterwards, so the two can never show different entries,
     different lines or different totals for the same period. The filter is applied
     here for the same reason: both books, and both of their exports, narrow alike.
+    Given the merge survivors, each line also carries its ``party_id`` (_line_party),
+    read from the stored line it was built from, so a reader never has to line the
+    stored lines up with these again.
     """
     _require_date_range(date_from, date_to)
     rows = await journal_rows(session, company_id, include_void=True)
@@ -1331,6 +1335,8 @@ async def _journal_payload(
                 "fx_currency": line_currency,
                 "fx_rate": float(line_rate) if line_rate else None,
             })
+            if survivors is not None:
+                lines[-1]["party_id"] = _line_party(refs, je_id, entry, survivors)
         out = {
             "je_id": je_id,
             "ts": ts,
@@ -1575,7 +1581,7 @@ async def extended_journal(
 
 async def _party_names(session: AsyncSession, company_id: uuid.UUID, ids: set[str]) -> dict[str, str]:
     """Display names for contact ids, read from the contact projections. A contact
-    that no longer resolves is simply absent, and the caller shows the id."""
+    that no longer resolves is absent: it has no name to show, and its id is not one."""
     if not ids:
         return {}
     rows = (await session.execute(
@@ -1610,34 +1616,23 @@ async def journal_by_doc(
     if doc is None:
         raise HTTPException(status_code=404, detail=t("documents.document_not_found"))
     state = doc.state or {}
-    payload, refs, base = await _journal_payload(session, company_id, None, None)
+    # Each line's party is the one every ledger and statement files it under
+    # (_line_party): a line's own contact wins over the document's.
     survivors = await merge_survivors(session, company_id)
+    payload, refs, base = await _journal_payload(session, company_id, None, None, survivors=survivors)
     own_party = state.get("contact_id") or state.get("customer_id") or state.get("supplier_id") or ""
     own_party = survivors.get(own_party, own_party)
 
     entries = [e for e in payload["entries"] if (e.get("source_doc") or {}).get("doc_id") == doc_id]
-    wanted = {e["je_id"] for e in entries}
-    # A line's own contact (a manual posting) wins over the document's, exactly as
-    # in the ledgers (_line_party). The payload's lines do not carry it, so it is
-    # read from the stored lines, which the payload walks in the same order and with
-    # the same skips; that is why it is stamped on before item detail replaces a
-    # posted line with a row per item.
-    own: dict[str, list[str]] = {}
-    for je_id, st, _ts in await journal_rows(session, company_id, include_void=True):
-        if je_id in wanted:
-            own[je_id] = [
-                c if isinstance(c, str) else ""
-                for c in (ln.get("contact") for ln in st.get("entries", [])
-                          if ln.get("account") and _line_amounts(ln) is not None)]
     for entry in entries:
-        named = own.get(entry["je_id"], [])
-        for ln, c in zip(entry["lines"], named + [""] * len(entry["lines"])):
-            ln["party_id"] = survivors.get(c, c) if c else own_party
         lines, status = _expand_item_lines(entry["lines"], refs.get(entry["je_id"]), base)
         entry["lines"] = lines
         entry["items_status"] = status
     names = await _party_names(session, company_id,
                                {ln["party_id"] for e in entries for ln in e["lines"] if ln["party_id"]})
+    # A party that no longer resolves keeps its id (the bucket the ledgers file it
+    # under) but has no name; the document's own party falls back to the name the
+    # document recorded.
     for entry in entries:
         for ln in entry["lines"]:
             ln["party_name"] = names.get(ln["party_id"]) or (

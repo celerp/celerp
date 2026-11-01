@@ -11284,7 +11284,7 @@ def _doc_gl_impact_section(data: dict, entity_id: str, currency: str | None) -> 
                 Td(f"{ln.get('account')} {ln.get('name') or ''}".strip()),
                 Td(fmt_money(ln["debit"], currency) if ln.get("debit") else EMPTY, cls="cell--number"),
                 Td(fmt_money(ln["credit"], currency) if ln.get("credit") else EMPTY, cls="cell--number"),
-                Td(ln.get("party_name") or ln.get("party_id") or EMPTY),
+                Td(ln.get("party_name") or EMPTY),
                 Td(memo or EMPTY),
             ))
         link = A(e.get("je_id") or "", href="/accounting?q=" + quote_plus(str((e.get("source_doc") or {}).get("doc_ref") or e.get("je_id") or "")),

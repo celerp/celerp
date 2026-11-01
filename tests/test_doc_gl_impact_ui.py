@@ -67,8 +67,8 @@ def test_posted_document_lists_accounts_party_items_and_journal_links():
                      "Widget x 2", "je:auto:doc:inv-1", "je:auto:doc:inv-1:fulfill", t("documents.gl_impact_void")):
         assert expected in html, expected
     assert "/accounting?q=INV-1" in html
-    # A line with no resolvable party name falls back to the id rather than an empty cell.
-    assert "contact:1" in html
+    # A line with no resolvable party name shows an empty cell, never the raw contact id.
+    assert "contact:1" not in html
 
 
 def test_draft_invoice_says_it_is_not_posted_yet():

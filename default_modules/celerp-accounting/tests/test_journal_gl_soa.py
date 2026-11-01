@@ -2552,6 +2552,34 @@ async def test_by_doc_lines_carry_the_documents_contact_as_party(client):
 
 
 @pytest.mark.asyncio
+async def test_by_doc_files_a_stale_line_contact_where_the_ledger_does_and_shows_no_id_for_its_name(
+        client, session):
+    """A line naming a contact that no longer exists sits in the same party bucket as on
+    the ledger (_line_party), and has no name rather than its raw id; a line naming no
+    contact still falls back to the document's party."""
+    from celerp.services.auto_je import _emit_auto_posted_je
+
+    tok = await _reg(client)
+    doc = await _doc_with_items(client, tok, "invoice", [("WIDGET", 1, 10.0)])
+    company_id, user_id = _ids(tok)
+    je_id = f"je:test:{doc}:stale"
+    await _emit_auto_posted_je(
+        session, company_id=company_id, user_id=user_id, je_id=je_id,
+        idem_create=f"{je_id}:c", idem_posted=f"{je_id}:p", memo="Stale party", ts="2026-02-04",
+        entries=[{"account": "1120", "debit": 7.0, "credit": 0, "contact": "contact:gone"},
+                 {"account": "4100", "debit": 0, "credit": 7.0}],
+        metadata_={"doc_id": doc})
+    await session.commit()
+
+    entry = next(e for e in (await _by_doc(client, tok, doc))["entries"] if e["je_id"] == je_id)
+    by_account = {l["account"]: l for l in entry["lines"]}
+    assert (by_account["1120"]["party_id"], by_account["1120"]["party_name"]) == ("contact:gone", "")
+    assert by_account["4100"]["party_id"] == "contact:1"
+    ledger = await _ledger(client, tok, "1120")
+    assert [l["contact_id"] for l in ledger["lines"] if l["je_id"] == je_id] == ["contact:gone"]
+
+
+@pytest.mark.asyncio
 async def test_by_doc_for_a_draft_or_unposted_document_has_no_entries(client):
     tok = await _reg(client)
     r = await client.post("/docs", headers=_h(tok), json={

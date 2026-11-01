@@ -65,7 +65,7 @@ async def global_search(
         select(Projection)
         .where(*where)
         .order_by(
-            # A List has no issue date; it must not float above every dated document.
+            # A List made before Lists stored an issue date has none; it must not float above every dated document.
             Projection.state["issue_date"].as_string().desc().nulls_last(),
             Projection.entity_id.desc(),
         )
