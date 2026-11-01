@@ -546,6 +546,9 @@ _FULFILL_EXPECTED = {
         "lines.cannot_fulfil": "ትዕዛዝ መፈጸም አልተቻለም፦ {reasons}",
         "lines.fulfil_status": "የዚህ መዝገብ ሁኔታ {doc_status} እስከሆነ ድረስ መስመሮችን መፈጸም አይቻልም።",
         "lines.shipped_elsewhere": "{went} መጀመሪያ የትዕዛዝ አፈጻጸምን ይቀልብሱ፦ በ{docs} ላይ ዕቃዎቹን እንዳለ አዘጋጅን ይጠቀሙ።",
+        "inventory.err_left_books_sold": "ይህ ዕቃ ተሽጧል። መልሰው ለማግኘት የማስረከብ ሂደቱን ይቀልብሱ።",
+        "inventory.err_sold_via_invoice": "ዕቃ የሚሸጠው በደረሰኙ መሠረት በማስረከብ ነው፤ ሁኔታን በቀጥታ በመቀየር አይደለም።",
+        "inventory.err_memo_out_via_memo": "ዕቃ በመልእክት ሰነድ የሚላከው ሰነዱን በማስፈጸም ነው፤ ሁኔታን በቀጥታ በመቀየር አይደለም።",
     },
     "ar": {
         "doc.fulfilled": "تم تنفيذه",
@@ -560,6 +563,9 @@ _FULFILL_EXPECTED = {
         "lines.cannot_fulfil": "تعذر تنفيذ الطلب: {reasons}",
         "lines.fulfil_status": "لا يمكن تنفيذ البنود ما دامت حالة هذا السجل {doc_status}.",
         "lines.shipped_elsewhere": "{went} تراجع عن تنفيذ الطلب أولًا: عيّن البضاعة كـ «متاح» في {docs}.",
+        "inventory.err_left_books_sold": "بِيع هذا الصنف؛ اعكس تنفيذ التسليم لإعادته.",
+        "inventory.err_sold_via_invoice": "يُباع الصنف من خلال تنفيذ تسليم فاتورته، وليس بتعديل حالته مباشرةً.",
+        "inventory.err_memo_out_via_memo": "يخرج الصنف بموجب مذكرة عند تنفيذ تسليمها، وليس بتعديل حالته مباشرةً.",
     },
     "es": {
         "doc.fulfilled": "Procesado",
@@ -574,6 +580,9 @@ _FULFILL_EXPECTED = {
         "lines.cannot_fulfil": "No se puede procesar: {reasons}",
         "lines.fulfil_status": "No se pueden procesar líneas mientras el estado de este registro sea {doc_status}.",
         "lines.shipped_elsewhere": "{went} Revierta primero el procesamiento: marque la mercancía como disponible en {docs}.",
+        "inventory.err_left_books_sold": "Este artículo se vendió. Revierta su entrega para recuperarlo.",
+        "inventory.err_sold_via_invoice": "Un artículo se vende al completar la entrega de su factura, no mediante un cambio directo de estado.",
+        "inventory.err_memo_out_via_memo": "Un artículo se entrega en depósito al cumplir su memo, no mediante un cambio directo de estado.",
     },
     "id": {
         "doc.fulfilled": "Diproses",
@@ -588,6 +597,9 @@ _FULFILL_EXPECTED = {
         "lines.cannot_fulfil": "Tidak dapat memproses: {reasons}",
         "lines.fulfil_status": "Baris tidak dapat diproses selama status catatan ini {doc_status}.",
         "lines.shipped_elsewhere": "{went} Batalkan pemrosesan pesanan terlebih dahulu: tetapkan barang sebagai tersedia di {docs}.",
+        "inventory.err_left_books_sold": "Barang ini sudah terjual. Batalkan pemenuhannya untuk mengembalikannya.",
+        "inventory.err_sold_via_invoice": "Barang terjual melalui pemenuhan faktur, bukan dengan mengubah status secara langsung.",
+        "inventory.err_memo_out_via_memo": "Barang dikirim dalam memo melalui pemenuhan memo tersebut, bukan dengan mengubah status secara langsung.",
     },
     "pt": {
         "doc.fulfilled": "Processado",
@@ -602,6 +614,9 @@ _FULFILL_EXPECTED = {
         "lines.cannot_fulfil": "Não é possível processar: {reasons}",
         "lines.fulfil_status": "As linhas não podem ser processadas enquanto o status deste registro for {doc_status}.",
         "lines.shipped_elsewhere": "{went} Reverta primeiro o processamento do pedido: defina a mercadoria como disponível em {docs}.",
+        "inventory.err_left_books_sold": "Este item foi vendido. Reverta sua entrega para recuperá-lo.",
+        "inventory.err_sold_via_invoice": "A venda de um item ocorre pela entrega vinculada à sua fatura, não pela alteração direta do status.",
+        "inventory.err_memo_out_via_memo": "Um item sai em consignação pela entrega vinculada ao seu memorando, não pela alteração direta do status.",
     },
 }
 
