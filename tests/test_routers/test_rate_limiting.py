@@ -20,6 +20,7 @@ from celerp.routers import auth as auth_router
 from celerp.services.auth import CALLER_HEADER, CONNECT_CALLER, CONNECT_HEADER, request_caller
 from email_codes_support import CODE, relay, short_floor  # noqa: F401 - fixtures
 from migration_support import real_client, real_engine  # noqa: F401 - fixtures
+from ui.i18n import refusal_text
 
 
 @pytest.fixture
@@ -247,7 +248,7 @@ async def test_an_account_slows_down_after_five_failures_from_every_address_toge
         r = await _ask(client, path, "v@test.example", "pwvalid1", "192.0.2.50")
         assert r.status_code == 429, (path, r.text)
         assert r.headers["Retry-After"] == "1", r.headers
-        assert "Try again in 1 second" in r.json()["detail"], r.text
+        assert "Try again in 1 second" in refusal_text(r.json()["detail"]), r.text
     assert (await _ask(client, "/auth/login", "w@test.example", "pwvalid1", "198.51.100.1")).status_code == 200
     await clear(session)
 

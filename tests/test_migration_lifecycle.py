@@ -38,7 +38,7 @@ from migration_support import (
     upload_parts,
 )
 from test_helpers import as_another_client, make_authed_token, register_admin
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 OWNER_ONLY = t("migration.err_owner_only", "en")
 NOT_FOUND = t("migration.err_not_found", "en")
@@ -233,7 +233,7 @@ async def test_migration_run_company_isolation(client, session, migration_env):
     co_owner_token = await _member_token(session, admin_company_id, "owner", "co-owner@example.com")
     for method, path in RUN_ROUTES:
         r = await getattr(client, method)(f"/migrations/{run_id}{path}", headers=auth(co_owner_token))
-        assert r.status_code == 404 and r.json() == {"detail": NOT_FOUND}, (path, r.text)
+        assert r.status_code == 404 and refusal_text(r.json()["detail"]) == NOT_FOUND, (path, r.text)
     run = await session.get(MigrationRun, uuid.UUID(run_id))
     await session.refresh(run)
     assert run.status == "running" and run.cancel_requested_at is None
@@ -256,7 +256,7 @@ async def test_migration_run_company_isolation(client, session, migration_env):
     member_token = await _member_token(session, run.company_id, "admin", "member@example.com")
     for method, path in RUN_ROUTES:
         r = await getattr(client, method)(f"/migrations/{run_id}{path}", headers=auth(member_token))
-        assert r.status_code == 404 and r.json() == {"detail": NOT_FOUND}, (path, r.text)
+        assert r.status_code == 404 and refusal_text(r.json()["detail"]) == NOT_FOUND, (path, r.text)
     assert (await client.get(f"/migrations/{run_id}", headers=auth(admin_token))).status_code == 200
     r = await client.get(f"/migrations/{run_id}/reconciliation", headers=auth(admin_token))
     assert r.status_code == 200
@@ -782,7 +782,7 @@ async def test_reconciliation_pack_matches_stored_verification(client, session, 
     monkeypatch.setattr(migrations, "reconciliation_pack_csv", unreadable)
     r = await client.get(pack, headers=auth(token))
     assert r.status_code == 500
-    assert r.json() == {"detail": t("migration.err_pack_failed", "en")}
+    assert refusal_text(r.json()["detail"]) == t("migration.err_pack_failed", "en")
 
 
 @pytest.mark.asyncio

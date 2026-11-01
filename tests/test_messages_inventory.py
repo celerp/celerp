@@ -67,7 +67,7 @@ async def test_missing_item_says_refresh(client):
     assert refusal_text(r.json()["detail"]) == t("inventory.err_item_not_found", "en")
     r = await client.post("/items/bulk/status", headers=h, json={"entity_ids": ["item:nope"], "status": "archived"})
     assert r.status_code == 404
-    assert r.json()["detail"] == t("inventory.err_items_not_found", "en")
+    assert refusal_text(r.json()["detail"]) == t("inventory.err_items_not_found", "en")
     r = await client.post("/items/bulk/status", headers=h, json={"entity_ids": [], "status": "archived"})
     assert r.status_code == 422
     assert r.json()["detail"] == t("inventory.err_none_selected", "en")
@@ -93,7 +93,7 @@ async def test_merge_and_undo_messages(client):
     iid = await _item(client, h, f"MG-{uuid.uuid4().hex[:6]}")
     r = await client.post("/items/merge", headers=h, json={"source_entity_ids": [iid], "target_sku_from": iid})
     assert r.status_code == 422
-    assert r.json()["detail"] == t("inventory.err_merge_min_two", "en")
+    assert refusal_text(r.json()["detail"]) == t("inventory.err_merge_min_two", "en")
     r = await client.post("/items/merge", headers=h, json={"source_entity_ids": [iid, iid], "target_sku_from": iid})
     assert r.status_code == 422
     assert r.json()["detail"] == t("inventory.err_merge_duplicate", "en")
@@ -107,7 +107,7 @@ async def test_work_center_messages(client):
     h = await _headers(client)
     r = await client.post("/manufacturing/work-centers", headers=h, json={"name": "  "})
     assert r.status_code == 422
-    assert r.json()["detail"] == t("manufacturing.err_wc_name_required", "en")
+    assert refusal_text(r.json()["detail"]) == t("manufacturing.err_wc_name_required", "en")
     r = await client.delete(f"/manufacturing/work-centers/{uuid.uuid4()}", headers=h)
     assert r.status_code == 404
     assert r.json()["detail"] == t("manufacturing.err_wc_not_found", "en")

@@ -66,7 +66,7 @@ async def test_unmatching_an_entry_a_statement_line_holds_points_to_that_line(cl
     await session.commit()
     assert (await match(client, h, sid, [je])).status_code == 200
     r = await client.post(f"/accounting/reconciliation/{sid}/unmatch", json={"je_ids": [je]}, headers=h)
-    assert r.status_code == 409 and r.json()["detail"] == t("acct.err_recon_book_entry_matched"), r.text
+    assert r.status_code == 409 and refusal_text(r.json()["detail"]) == t("acct.err_recon_book_entry_matched"), r.text
 
 
 async def test_an_opening_balance_posted_without_its_own_amount_still_counts_on_a_foreign_account(client, session):

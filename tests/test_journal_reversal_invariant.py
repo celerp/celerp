@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -20,7 +21,7 @@ from migration_support import auth, maker, real_client, real_engine  # noqa: F40
 from test_company_backup_lifecycle import _data_dir  # noqa: F401
 from test_company_handoff_identity_restore import _link_verified  # noqa: F401
 from test_peer_sync_end_to_end import _company_of, _route_to_app
-from ui.i18n import refusal_text
+from ui.i18n import date_text, refusal_text
 from test_peer_two_way_sync import (ADJUSTED, _journals, _notices, _pair_journals, _post_journal,
                                     _received, _two_way)
 
@@ -90,7 +91,7 @@ async def test_firm_cannot_void_an_entry_the_client_reversed(real_client, real_e
     r = await _void(real_client, firm_tok, firm_je)
     assert r.status_code == 422, r.text
     detail = refusal_text(r.json()["detail"])
-    assert "Reversal of Accrue audit fee" in detail and ADJUSTED in detail and "undo" in detail.lower(), detail
+    assert "Reversal of Accrue audit fee" in detail and date_text(date.fromisoformat(ADJUSTED)) in detail and "undo" in detail.lower(), detail
     assert await _ledger_rows(real_engine, firm_company) == rows  # nothing written
     assert (await _journals(real_engine, firm_company))[firm_je]["status"] == "posted"
     assert await _books(real_client, real_engine, tok, firm_tok, client_company, firm_company) == settled

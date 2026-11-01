@@ -1105,7 +1105,7 @@ async def test_same_revision_with_different_content_is_rejected(client):
     r = await client.post("/docs/import-bundle", json=_bundle(_doc(price=999.0), revision=1),
                           headers=_h(tok), follow_redirects=False)
     assert r.status_code == 422
-    assert "different content" in r.json()["detail"]
+    assert "different content" in refusal_text(r.json()["detail"])
     received = await _received(client, tok, rid)
     assert received["total"] == 200.0
     assert received["revision_count"] == 1
@@ -1271,7 +1271,7 @@ async def test_tax_amount_without_a_rate_is_not_imported(client):
     r = await client.post("/docs/import-bundle", json=_bundle(_priced(tax=35.0, total=535.0)),
                           headers=_h(tok), follow_redirects=False)
     assert r.status_code == 422
-    assert r.json()["detail"] == t("documents.err_share_tax_no_rate", "en")
+    assert refusal_text(r.json()["detail"]) == t("documents.err_share_tax_no_rate", "en")
     listed = await client.get("/docs/received", headers=_h(tok))
     assert listed.status_code == 200, listed.text
     assert listed.json()["items"] == []
@@ -1406,7 +1406,7 @@ async def test_non_finite_number_is_rejected(client, patch_doc):
     r = await client.post("/docs/import-bundle", content=json.dumps(_bundle(doc)),
                           headers={**_h(tok), "Content-Type": "application/json"}, follow_redirects=False)
     assert r.status_code == 422
-    assert r.json()["detail"] == t("documents.err_share_bad_number", "en")
+    assert refusal_text(r.json()["detail"]) == t("documents.err_share_bad_number", "en")
 
 
 @pytest.mark.asyncio
@@ -1420,7 +1420,7 @@ async def test_bundle_without_a_supported_currency_is_rejected(client, currency)
         doc["currency"] = currency
     r = await client.post("/docs/import-bundle", json=_bundle(doc), headers=_h(tok), follow_redirects=False)
     assert r.status_code == 422
-    assert "currency" in r.json()["detail"]
+    assert "currency" in refusal_text(r.json()["detail"])
 
 
 @pytest.mark.asyncio

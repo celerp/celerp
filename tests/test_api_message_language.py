@@ -9,7 +9,7 @@ import pytest
 
 import ui.api_client as api
 from test_install_owner_invariant import _two_owners
-from ui.i18n import set_lang, t
+from ui.i18n import refusal_text, set_lang, t
 
 pytestmark = pytest.mark.asyncio
 
@@ -20,7 +20,7 @@ async def test_api_answers_in_the_requested_language(client, session):
     h = {"Authorization": f"Bearer {second_token}"}
     r = await client.patch(url, json=body, headers={**h, "Accept-Language": "th"})
     assert r.status_code == 400, r.text
-    assert r.json()["detail"] == t("error.install_owner_deactivate", "th")
+    assert refusal_text(r.json()["detail"]) == t("error.install_owner_deactivate", "th")
     assert r.json()["detail"] != t("error.install_owner_deactivate", "en")
     r = await client.patch(url, json=body, headers={**h, "Accept-Language": "xx"})
     assert r.json()["detail"] == t("error.install_owner_deactivate", "en")

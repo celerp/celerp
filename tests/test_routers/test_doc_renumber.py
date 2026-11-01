@@ -188,7 +188,7 @@ async def test_renumber_voided_doc_blocked(client, session):
 
     r = await client.post(f"/docs/{doc['id']}/renumber", headers=_h(token), json={"ref_id": "NEW-NUM"})
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == t("documents.err_renumber_void", "en")
+    assert refusal_text(r.json()["detail"]) == t("documents.err_renumber_void", "en")
 
 
 # ---------------------------------------------------------------------------

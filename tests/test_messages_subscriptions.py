@@ -23,7 +23,7 @@ async def test_missing_subscription_says_refresh(client):
     h = {"Authorization": f"Bearer {await _token(client)}"}
     r = await client.post("/subscriptions/doc:missing/pause", headers=h)
     assert r.status_code == 404
-    assert r.json()["detail"] == t("subscriptions.err_not_found", "en")
+    assert refusal_text(r.json()["detail"]) == t("subscriptions.err_not_found", "en")
 
 
 @pytest.mark.asyncio
@@ -36,7 +36,7 @@ async def test_pausing_a_draft_says_only_active_can_pause(client):
     assert r.status_code in {200, 201}
     r = await client.post(f"/subscriptions/{r.json()['id']}/pause", headers=h)
     assert r.status_code == 409
-    assert r.json()["detail"] == t("subscriptions.err_pause_not_active", "en")
+    assert refusal_text(r.json()["detail"]) == t("subscriptions.err_pause_not_active", "en")
 
 
 @pytest.mark.parametrize("key, says", [

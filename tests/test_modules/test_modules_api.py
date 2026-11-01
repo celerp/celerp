@@ -730,7 +730,7 @@ class TestModuleDataPurge:
             r = await client.post(
                 "/companies/me/modules/acme-widgets/purge-data", headers=_h(token))
         assert r.status_code == 409, r.text
-        detail = r.json()["detail"]
+        detail = refusal_text(r.json()["detail"])
         assert detail == t("company.err_purge_dependency")
         # Rolled back: the module table and its row survive untouched.
         assert (await session.execute(

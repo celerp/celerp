@@ -252,7 +252,7 @@ async def test_an_unknown_category_is_rejected_and_the_valid_ones_named(client):
     r = await client.patch("/accounting/accounts/6200",
                            json={"cash_flow_category": "bogus"}, headers=_h(tok))
     assert r.status_code == 422, r.text
-    detail = r.json()["detail"]
+    detail = refusal_text(r.json()["detail"])
     for name in ("operating", "investing", "financing"):
         assert t(f"enum.cash_flow.{name}", "en") in detail
 

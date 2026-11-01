@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import pytest
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 
 async def _headers(client) -> dict:
@@ -63,7 +63,7 @@ async def test_patch_user_last_owner_guard(client):
     # Demoting the only owner must fail
     r = await client.patch(f"/companies/me/users/{owner_id}", json={"role": "admin"}, headers=headers)
     assert r.status_code == 400
-    assert r.json()["detail"] == t("company.err_last_owner_demote")
+    assert refusal_text(r.json()["detail"]) == t("company.err_last_owner_demote")
 
 
 @pytest.mark.asyncio

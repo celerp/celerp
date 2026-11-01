@@ -17,6 +17,7 @@ from httpx import ASGITransport, AsyncClient
 from celerp.main import app
 from test_helpers import invite_user, register_admin
 from ui.app import app as ui_app
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -53,7 +54,7 @@ async def test_api_refuses_to_deactivate_the_installation_owner_in_any_company(c
     r = await client.patch(f"/companies/me/users/{admin_id}", json={"is_active": False},
                            headers={"Authorization": f"Bearer {second_token}"})
     assert r.status_code == 400, r.text
-    detail = r.json()["detail"]
+    detail = refusal_text(r.json()["detail"])
     assert "installation owner" in detail
     assert "Global Config" in detail and "Users" in detail
     users = (await client.get("/companies/me/users", headers=admin_h)).json()["items"]

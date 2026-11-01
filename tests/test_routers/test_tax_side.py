@@ -103,7 +103,7 @@ async def test_a_sale_whose_taxes_come_to_less_than_zero_does_not_finalize(clien
     doc_id = r.json()["id"]
     r = await client.post(f"/docs/{doc_id}/finalize", headers=auth["headers"])
     assert r.status_code == 409, r.text
-    assert "less than zero" in r.json()["detail"]
+    assert "less than zero" in refusal_text(r.json()["detail"])
     doc = (await client.get(f"/docs/{doc_id}", headers=auth["headers"])).json()
     assert doc["status"] == "draft"
 

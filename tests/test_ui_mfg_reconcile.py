@@ -108,7 +108,7 @@ async def test_a_refusal_keeps_what_was_entered_and_says_why_in_the_users_langua
     r = await _send(ui_client, [("item:flour", "30")], "1120", reconcile, lang="th")
 
     assert r.status_code == 200, r.text
-    assert "บัญชีถูกล็อกสำหรับวันที่ 2026-01-31" in r.text
+    assert "บัญชีถูกล็อกสำหรับวันที่ 31 ม.ค. 2026" in r.text
     assert 'value="30"' in r.text and 'value="k1"' in r.text
 
 

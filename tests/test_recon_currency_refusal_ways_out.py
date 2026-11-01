@@ -41,7 +41,7 @@ async def _currency_in_use(client, h, session, tok):
     b = await bank(client, h, currency="EUR", opening=0.0)
     await fx_deposit(client, h, b, 100, 1.08, 108)
     r = await client.patch(f"/accounting/bank-accounts/{b['id']}", json={"currency": "USD"}, headers=h)
-    assert r.status_code == 409 and r.json()["detail"] == t("acct.err_bank_currency_has_history", currency="EUR"), r.text
+    assert r.status_code == 409 and refusal_text(r.json()["detail"]) == t("acct.err_bank_currency_has_history", currency="EUR"), r.text
     usd = await bank(client, h, currency="USD", opening=0.0, name="Home Bank", number="0002")
     async with _ui_as(tok) as ui:
         form = (await ui.get("/accounting/journal/new")).text
@@ -63,7 +63,7 @@ async def _currency_reconciled(client, h, session, tok):
     je = await legacy_deposit(client, h, session, b, "2026-09-10", 50.0)
     sid = await legacy_session(session, b, "2026-09-30", balance=50.0, je_ids=[je])
     r = await client.patch(f"/accounting/bank-accounts/{b['id']}", json={"currency": "USD"}, headers=h)
-    assert r.status_code == 409 and r.json()["detail"] == t("acct.err_bank_currency_reconciled", currency="THB"), r.text
+    assert r.status_code == 409 and refusal_text(r.json()["detail"]) == t("acct.err_bank_currency_reconciled", currency="THB"), r.text
     assert (await client.post(f"/accounting/reconciliation/{sid}/reopen", headers=h)).status_code == 200
     assert (await client.patch(f"/accounting/bank-accounts/{b['id']}", json={"currency": "USD"},
                                headers=h)).status_code == 200
@@ -98,7 +98,7 @@ async def _je_bank_currency(client, h, session, tok):
     r = await client.post("/accounting/journal-entries", headers=h, json={
         "ts": "2026-09-10", "memo": "Sale", "idempotency_token": uuid.uuid4().hex,
         "entries": [{"account": code, "debit": 15, "credit": 0}, {"account": "4100", "debit": 0, "credit": 15}]})
-    assert r.status_code == 422 and r.json()["detail"] == t(
+    assert r.status_code == 422 and refusal_text(r.json()["detail"]) == t(
         "acct.err_je_bank_currency", account=code, currency="JPY"), r.text
     async with _ui_as(tok) as ui:
         form = (await ui.get("/accounting/journal/new")).text
@@ -162,7 +162,7 @@ async def _transfer_to_amount(client, h, session, tok):
     b = await bank(client, h, currency="EUR", opening=0.0)
     body = {"from_bank_id": usd["id"], "to_bank_id": b["id"], "amount": 54.0, "date": "2026-09-10"}
     r = await client.post("/accounting/transfers", headers=h, json=body)
-    assert r.status_code == 422 and r.json()["detail"] == t("acct.err_transfer_to_amount", currency="EUR"), r.text
+    assert r.status_code == 422 and refusal_text(r.json()["detail"]) == t("acct.err_transfer_to_amount", currency="EUR"), r.text
     assert (await client.post("/accounting/transfers", headers=h, json=body | {"to_amount": 50})).status_code == 200
     sid = (await start(client, h, b["id"], "2026-09-30", 50.0)).json()["id"]
     ids = [e["je_id"] for e in (await client.get(f"/accounting/reconciliation/{sid}", headers=h)).json()["unreconciled_entries"]]

@@ -12,7 +12,7 @@ import pytest_asyncio
 from httpx import AsyncClient
 
 from celerp.main import app
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 
 @pytest.mark.asyncio
@@ -49,7 +49,7 @@ async def test_rate_limit_on_login(client: AsyncClient) -> None:
     assert codes == [401] * 5
     assert last.status_code == 429
     assert last.headers["Retry-After"] == "1"
-    assert last.json() == {"detail": t("auth.sign_ins_paused_one")}
+    assert refusal_text(last.json()["detail"]) == t("auth.sign_ins_paused_one")
 
 
 @pytest.mark.asyncio
@@ -57,4 +57,4 @@ async def test_max_body_size_rejects(client: AsyncClient) -> None:
     too_big = b"x" * (10 * 1024 * 1024 + 1)
     res = await client.post("/health", content=too_big)
     assert res.status_code == 413
-    assert res.json() == {"detail": t("error.upload_too_large", "en")}
+    assert refusal_text(res.json()["detail"]) == t("error.upload_too_large", "en")

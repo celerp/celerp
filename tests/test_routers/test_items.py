@@ -540,7 +540,7 @@ async def test_split_qty_exceeds_parent_rejected(client):
         "children": [{"sku": "C1", "quantity": 3}, {"sku": "C2", "quantity": 3}]
     }, headers=h)
     assert r.status_code == 422
-    assert r.json()["detail"] == t("inventory.err_split_qty_over", "en", total="6", available="5")
+    assert refusal_text(r.json()["detail"]) == t("inventory.err_split_qty_over", "en", total="6", available="5")
 
 
 @pytest.mark.asyncio
@@ -921,7 +921,7 @@ async def test_merge_rejects_different_sell_units(client):
     b = (await client.post("/items", json={"status": "available", "sku": "WU-B", "name": "Gold B", "quantity": 3, "sell_by": "carat"}, headers=h)).json()["id"]
     r = await merge_items(client, json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)
     assert r.status_code == 422
-    assert "unit" in r.json()["detail"].lower()
+    assert "unit" in refusal_text(r.json()["detail"]).lower()
     assert "gram" in r.json()["detail"] and "carat" in r.json()["detail"]
 
 
@@ -936,7 +936,7 @@ async def test_merge_rejects_different_net_weight_units(client):
                                            "weight": 3, "weight_unit": "carat"}, headers=h)).json()["id"]
     r = await merge_items(client, json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)
     assert r.status_code == 422
-    assert "weight unit" in r.json()["detail"].lower()
+    assert "weight unit" in refusal_text(r.json()["detail"]).lower()
 
 
 @pytest.mark.asyncio

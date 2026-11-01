@@ -485,7 +485,7 @@ async def test_currency_change_refused_once_a_posting_carries_a_foreign_amount(c
     for target in ("USD", "GBP"):
         r = await client.patch(f"/accounting/bank-accounts/{b['id']}", json={"currency": target}, headers=h)
         assert r.status_code == 409, r.text
-        detail = r.json()["detail"]
+        detail = refusal_text(r.json()["detail"])
         assert "EUR" in detail and "new bank account" in detail and "journal entry" in detail
         assert (await client.get(f"/accounting/bank-accounts/{b['id']}", headers=h)).json()["currency"] == "EUR"
 
@@ -512,7 +512,7 @@ async def test_currency_change_refused_once_the_account_has_history(client, sess
     assert (await start(client, h, reconciled_only["id"], "2026-09-30", 0.0)).status_code == 200
     for b in (posted, reconciled_only):
         r = await client.patch(f"/accounting/bank-accounts/{b['id']}", json={"currency": "THB"}, headers=h)
-        assert r.status_code == 409 and r.json()["detail"] == t(
+        assert r.status_code == 409 and refusal_text(r.json()["detail"]) == t(
             "acct.err_bank_currency_has_history", currency="USD"), r.text
         assert (await client.get(f"/accounting/bank-accounts/{b['id']}", headers=h)).json()["currency"] == "USD"
 

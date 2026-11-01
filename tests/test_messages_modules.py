@@ -11,7 +11,7 @@ import pytest
 
 from celerp.modules import importer
 from celerp.modules.importer import ModuleImportError
-from ui.i18n import set_lang, t
+from ui.i18n import refusal_text, set_lang, t
 
 _LOCALES = Path(__file__).resolve().parents[1] / "ui" / "locales"
 
@@ -60,7 +60,7 @@ async def test_unknown_business_type_says_choose_another(client):
     r = await client.post("/companies/me/apply-preset", params={"vertical": "nope"},
                           headers=await _headers(client))
     assert r.status_code == 404
-    assert r.json()["detail"] == t("error.business_type_unavailable", "en", vertical="nope")
+    assert refusal_text(r.json()["detail"]) == t("error.business_type_unavailable", "en", vertical="nope")
 
 
 def test_unused_restart_key_is_gone():

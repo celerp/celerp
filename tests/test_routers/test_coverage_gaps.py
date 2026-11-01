@@ -13,6 +13,7 @@ import uuid
 import pytest
 
 from test_helpers import import_sent_po
+from ui.i18n import refusal_text
 
 
 # ---------------------------------------------------------------------------
@@ -213,7 +214,7 @@ async def test_docs_convert_expired_quotation(client):
 
     r_expired = await client.post(f"/docs/{q_id}/convert", headers=_h(tok))
     assert r_expired.status_code == 409
-    assert "expired" in r_expired.json()["detail"].lower()
+    assert "expired" in refusal_text(r_expired.json()["detail"]).lower()
 
 
 @pytest.mark.asyncio

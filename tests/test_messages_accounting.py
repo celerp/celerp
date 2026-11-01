@@ -32,7 +32,7 @@ async def test_one_line_entry_asks_for_a_second_line(client):
     r = await client.post("/accounting/journal-entries", headers=await _headers(client),
                           json=_je([{"account": "1110", "debit": 10, "credit": 0}]))
     assert r.status_code == 422
-    assert r.json()["detail"] == t("acct.err_je_two_lines", "en")
+    assert refusal_text(r.json()["detail"]) == t("acct.err_je_two_lines", "en")
 
 
 @pytest.mark.asyncio
@@ -41,7 +41,7 @@ async def test_bad_entry_date_names_the_field_and_the_format(client):
                           json=_je([{"account": "1110", "debit": 10, "credit": 0},
                                     {"account": "4100", "debit": 0, "credit": 10}], ts="15/01/2026"))
     assert r.status_code == 422
-    assert r.json()["detail"] == t("acct.err_date_invalid", "en",
+    assert refusal_text(r.json()["detail"]) == t("acct.err_date_invalid", "en",
                                    field=t("acct.field_entry_date", "en"))
 
 
@@ -50,7 +50,7 @@ async def test_backwards_report_range_says_which_date_to_move(client):
     r = await client.get("/accounting/trial-balance", headers=await _headers(client),
                          params={"date_from": "2026-02-01", "date_to": "2026-01-01"})
     assert r.status_code == 422
-    assert r.json()["detail"] == t("acct.err_date_range", "en",
+    assert refusal_text(r.json()["detail"]) == t("acct.err_date_range", "en",
                                    start="2026-02-01", end="2026-01-01")
 
 
@@ -65,7 +65,7 @@ async def test_missing_bank_account_says_refresh(client):
 async def test_missing_journal_entry_void_says_refresh(client):
     r = await client.post("/accounting/journal-entries/je:nope/void", headers=await _headers(client))
     assert r.status_code == 404
-    assert r.json()["detail"] == t("acct.err_je_not_found", "en")
+    assert refusal_text(r.json()["detail"]) == t("acct.err_je_not_found", "en")
 
 
 @pytest.mark.asyncio
@@ -73,7 +73,7 @@ async def test_empty_bulk_void_says_tick_entries(client):
     r = await client.post("/accounting/journal-entries/bulk-void", headers=await _headers(client),
                           json={"je_ids": []})
     assert r.status_code == 422
-    assert r.json()["detail"] == t("acct.err_void_none_selected", "en")
+    assert refusal_text(r.json()["detail"]) == t("acct.err_void_none_selected", "en")
 
 
 @pytest.mark.asyncio

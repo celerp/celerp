@@ -7,7 +7,7 @@ its reversals go up, and each side is told what the other did."""
 from __future__ import annotations
 
 import uuid
-from datetime import timedelta
+from datetime import date, timedelta
 
 import pytest
 from fasthtml.common import to_xml
@@ -19,7 +19,7 @@ from test_company_handoff_identity_restore import _link_verified  # noqa: F401
 from test_firm_view import _locked_invoice, _today
 from test_peer_sync_end_to_end import FIRM, _company_of, _paired, _route_to_app
 from ui.routes.settings_connectors import _attention_list
-from ui.i18n import refusal_text
+from ui.i18n import date_text, refusal_text, t
 
 pytestmark = pytest.mark.asyncio
 
@@ -323,7 +323,7 @@ async def test_firm_cannot_void_what_the_client_sent(real_client, real_engine, m
     arrived = next(eid for eid, s in (await _journals(real_engine, firm_company)).items()
                    if (s.get("peer_source") or {}).get("journal") == own_je)
     r = await real_client.post(f"/accounting/journal-entries/{arrived}/void", json={}, headers=auth(firm_tok))
-    assert r.status_code == 422 and "journal entry" in r.json()["detail"].lower(), r.text
+    assert r.status_code == 422 and "journal entry" in refusal_text(r.json()["detail"]).lower(), r.text
 
     invoice = await _locked_invoice(real_client, real_engine, tok, firm_tok, client_company, contacts)
     await _lock(real_client, firm_tok, None)
@@ -339,12 +339,24 @@ async def test_firm_cannot_void_what_the_client_sent(real_client, real_engine, m
     assert r.status_code == 422 and "journal entry" in refusal_text(r.json()["detail"]).lower(), r.text
 
 
+@pytest.mark.parametrize("lang", ["en", "th", "ja"])
+async def test_a_lock_refusal_is_known_in_the_language_the_firm_wrote_it_in(lang):
+    """A firm names its lock date as its reader reads it, in its own language, or as an ISO
+    day on an older Celerp: either way the client knows the same lock refused it."""
+    from celerp.services.peer_journals import refused_by_lock
+
+    written = t("error.period_locked", lang, date=date_text(date(2026, 3, 31), lang))
+    assert refused_by_lock(written, "2026-03-31")
+    assert refused_by_lock(t("error.period_locked", lang, date="2026-03-31"), "2026-03-31")
+    assert not refused_by_lock(written, "2026-04-30")
+
+
 async def test_lock_refusal_told_once_and_not_resent(real_client, real_engine, monkeypatch):
     """AC29: a document the firm's lock refused gives the client one notice naming the
     lock date and is not sent again until it changes; a change retries it once."""
     tok, firm_tok, client_company, credential, contacts = await _pair_journals(real_client, real_engine)
     invoice = await _locked_invoice(real_client, real_engine, tok, firm_tok, client_company, contacts)
-    today = (await _today(real_engine, client_company)).isoformat()
+    today = date_text(await _today(real_engine, client_company))
     sent: list = []
     _route_to_app(monkeypatch, sent)
     await _two_way(client_company, credential)

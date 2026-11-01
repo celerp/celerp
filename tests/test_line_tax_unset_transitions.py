@@ -189,7 +189,7 @@ async def test_a_type_that_is_never_sent_says_so_before_any_tax(client, session,
     doc = await _draft(client, auth, doc_type)
     before = await _footprint(session, auth)
     r = await _send(client, auth, doc, uuid.uuid4().hex)
-    assert r.status_code == 409 and r.json()["detail"] == t("documents.err_send_type"), r.text
+    assert r.status_code == 409 and refusal_text(r.json()["detail"]) == t("documents.err_send_type"), r.text
     assert await _footprint(session, auth) == before
 
 

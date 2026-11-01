@@ -203,7 +203,7 @@ def test_restore_failures_say_what_to_do(exc, key, kw):
 async def test_unknown_notification_says_refresh(client):
     r = await client.post(f"/notifications/{uuid.uuid4()}/read", headers=await _headers(client))
     assert r.status_code == 404
-    assert r.json()["detail"] == t("error.notification_not_found", "en")
+    assert refusal_text(r.json()["detail"]) == t("error.notification_not_found", "en")
 
 
 @pytest.mark.asyncio

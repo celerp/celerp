@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 _LOCALES = Path(__file__).resolve().parents[1] / "ui" / "locales"
 
@@ -73,7 +73,7 @@ async def test_unknown_connector_is_named_in_the_callers_language(client, monkey
     h = {"Authorization": f"Bearer {await register_admin(client)}", "Accept-Language": "th"}
     r = await getattr(client, method)(path, headers=h)
     assert r.status_code == 404
-    assert r.json()["detail"] == t("connectors.unknown_connector", "th", platform="nosuch")
+    assert refusal_text(r.json()["detail"]) == t("connectors.unknown_connector", "th", platform="nosuch")
 
 
 @pytest.mark.asyncio
@@ -84,4 +84,4 @@ async def test_unknown_connector_authorize_url_names_it_in_the_callers_language(
     h = {"Authorization": f"Bearer {await register_admin(client)}", "Accept-Language": "de"}
     r = await client.post("/settings/connectors/nosuch/authorize-url", headers=h)
     assert r.status_code == 404, r.text
-    assert r.json()["detail"] == t("connectors.unknown_connector", "de", platform="nosuch")
+    assert refusal_text(r.json()["detail"]) == t("connectors.unknown_connector", "de", platform="nosuch")

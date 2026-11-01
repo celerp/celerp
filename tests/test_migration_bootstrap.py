@@ -33,7 +33,7 @@ from migration_support import (
     staged_run,
     upload_parts,
 )
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 BOOTSTRAPPED = t("migration.err_bootstrapped", "en")
 EXPIRED = "This scan has expired. Upload the file again."
@@ -98,7 +98,7 @@ async def test_bootstrap_scan_and_start_require_bootstrap_authority(client, sess
 
     for headers in ({}, {"X-Setup-Code": "wrong"}):
         r = await scan_upload(client, fake_bytes(), headers=headers)
-        assert r.status_code == 403 and r.json()["detail"] == t("auth.setup_code_invalid", "en")
+        assert r.status_code == 403 and refusal_text(r.json()["detail"]) == t("auth.setup_code_invalid", "en")
 
     # One active bootstrap scan: a new scan replaces the previous token.
     first = (await scan_upload(client, fake_bytes(), headers=good)).json()["scan_token"]

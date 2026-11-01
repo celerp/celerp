@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from celerp.services import backup_import
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 pytestmark = pytest.mark.asyncio
 
@@ -57,7 +57,7 @@ async def test_readiness_and_other_routes_are_refused_before_they_run(client, un
         app.dependency_overrides.clear()
         app.dependency_overrides.update(saved)
     assert r.status_code == 503, (path, r.text)
-    assert r.json()["detail"] == t("error.recovery_incomplete", "en")
+    assert refusal_text(r.json()["detail"]) == t("error.recovery_incomplete", "en")
     assert calls == []
 
 
