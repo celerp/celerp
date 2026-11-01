@@ -301,3 +301,31 @@ async def test_an_account_the_source_coded_like_a_generated_one_is_offered_with_
     [offered] = [c for c in (await _readiness(context))["general_expense"]["candidates"]
                  if c["code"] == "Mdeadbeef"]
     assert account_label(offered) == "Mdeadbeef Bank charges"
+
+
+# Names as an Odoo chart has them: one exchange difference account, of the gain's type.
+_ODOO_NAMED = [
+    ("assets", "100", "Assets", "asset", None),
+    ("bank", "101000", "Bank", "asset", "bank"),
+    ("tax-paid", "131000", "Tax Paid", "asset", None),
+    ("sales", "400000", "Product Sales", "revenue", None),
+    ("cogs", "500000", "Cost of Goods Sold", "cogs", None),
+    ("fx", "441000", "Foreign Exchange Gain", "revenue", "exchange_difference"),
+    ("fx-loss", "641000", "Foreign Exchange Loss", "expense", None),
+]
+
+
+@pytest.mark.asyncio
+async def test_obvious_matches_are_proposed_and_a_loss_never_gets_the_gain_account(session):
+    context = await _staged_context(session)
+    await _import_chart(context, _ODOO_NAMED)
+    rows = await _readiness(context)
+    assert {r: rows[r]["suggested"] for r in (
+        "cash_and_equivalents", "default_deposit", "tax_input", "sales_revenue", "cogs", "fx_gain", "fx_loss",
+    )} == {"cash_and_equivalents": "101000", "default_deposit": "101000", "tax_input": "131000",
+           "sales_revenue": "400000", "cogs": "500000", "fx_gain": "441000", "fx_loss": "641000"}
+    # The source's exchange difference account is the gain's own: it is the gain's single
+    # control, and never preselected for the loss.
+    assert (rows["fx_gain"]["preselect"], rows["fx_loss"]["preselect"]) == ("441000", None)
+    # A proposal is only shown: finishing without choosing sets nothing by name.
+    assert rows["sales_revenue"]["preselect"] is None

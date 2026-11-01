@@ -1903,7 +1903,7 @@ def test_chart_taxes_contacts_and_products(tmp_path, version):
     bundle = _adapter().build_manifest(_file(tmp_path, _backup(version)), FULL).bundle
     accounts = {a.code: (a.account_type.value, a.control and a.control.value) for a in bundle.accounts}
     assert accounts == {
-        "101000": ("asset", "bank"), "101401": ("asset", "bank"), "101402": ("asset", "bank"),
+        "101000": ("asset", "bank"), "101401": ("asset", "clearing"), "101402": ("asset", "clearing"),
         "121000": ("asset", "receivable"), "211000": ("liability", "payable"), "251000": ("liability", "tax"),
         "131000": ("asset", "tax"), "400000": ("revenue", None), "600000": ("expense", None),
         "500000": ("cogs", None), "110100": ("asset", None), "110200": ("asset", None),

@@ -25,7 +25,7 @@ FIXTURES = Path(__file__).parent / "fixtures" / "manager_io"
 # What the first client's accountant answers: none is the first account offered or the
 # single source control, so a later preselection can only come from these answers.
 FIRST_CLIENT = {
-    "roles": {"cash_and_equivalents": "BANK-1", "default_deposit": "BANK-1", "inventory": "1010",
+    "roles": {"cash_and_equivalents": "1010-1", "default_deposit": "1010-1", "inventory": "1010",
               "inventory_opening": "1010", "sales_revenue": "4010", "stock_gain": "4000",
               "general_expense": "6100", "stock_shrinkage": "6100"},
     "add_accounts": [{"role": "tax_input", "code": "1150", "name": "Input tax", "account_type": "asset"},

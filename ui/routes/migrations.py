@@ -1883,14 +1883,16 @@ def _figure(row: dict, column: str) -> str:
 
 
 _ROLE_FIELD = "role."
+POSTING_SECTION = "posting-accounts"
 
 
 def _picked(row: dict, chosen: dict[str, str]) -> str:
     """What a role's picker shows chosen: the user's own choice, else the answer from the
-    previous client (an added account as the account to add), else the single control."""
+    previous client (an added account as the account to add), else the single control,
+    else the account proposed from the chart's names."""
     previous = row.get("previous")
     return (chosen.get(row["role"]) or (previous and (NEW_ACCOUNT if previous["add"] else previous["code"]))
-            or row["preselect"] or "")
+            or row["preselect"] or row.get("suggested") or "")
 
 
 def _posting_accounts(roles: list[dict], chosen: dict[str, str]) -> FT:
@@ -1914,6 +1916,7 @@ def _posting_accounts(roles: list[dict], chosen: dict[str, str]) -> FT:
             ]),
             cls="data-table posting-choices",
         ),
+        id=POSTING_SECTION,
         cls="mt-md",
     )
 
@@ -1942,6 +1945,8 @@ async def _verify_page(request: Request, run_id: str, error: str | None = None,
         _steps(6),
         auth_header(t("migration.verify_title"), t("migration.verify_subtitle")),
         flash(error) if error else "",
+        P(A(t("posting.go_to_section"), href=f"#{POSTING_SECTION}", cls="auth-link"))
+        if error and any(row["required"] and not row["current"] for row in roles) else "",
         wizard_table(
             Thead(Tr(Th(t("migration.col_check")), Th(t("migration.col_source"), cls="cell--number"),
                      Th(t("migration.col_celerp"), cls="cell--number"),
