@@ -19,6 +19,7 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from test_cost_restatement import _item, _state
 from test_helpers import company_auth, own_sessions_on
+from ui.i18n import refusal_text
 
 MESSAGE = "a cost cannot be negative"
 
@@ -243,7 +244,7 @@ async def test_merge_refuses_a_negative_resulting_cost(client, session):
         "source_entity_ids": [a, b], "target_sku_from": a, "resulting_cost_total": -5})
     # A merge keeps the sum of its parts' costs, so any other resulting cost is refused.
     assert r.status_code == 422, r.text
-    assert r.json()["detail"].startswith("A merge keeps the cost of the items it combines."), r.text
+    assert refusal_text(r.json()["detail"]).startswith("A merge keeps the cost of the items it combines."), r.text
     assert (await _state(session, auth, a))["status"] != "merged"
 
 

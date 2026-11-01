@@ -4368,7 +4368,7 @@ async def test_bootstrap_retry_after_success_returns_same_company(real_engine, r
     assert again.json()["company_id"] == first["company_id"] and again.json()["outcome"] == "opened_existing"
     assert again.json()["access_token"]
     other = await _r_brestore(real_client, upload_token, code_config, email="other@example.com")
-    assert (other.status_code, other.json()["detail"]) == (401, t("auth.invalid_credentials")), other.text
+    assert (other.status_code, refusal_text(other.json()["detail"])) == (401, t("auth.invalid_credentials")), other.text
     assert await count(real_engine, "users") == 1 and await count(real_engine, "companies") == 1
 
 

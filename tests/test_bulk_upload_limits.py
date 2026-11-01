@@ -71,7 +71,7 @@ async def _ok_app(scope, receive, send):
 async def _drive(mw, path: str, content_length: int) -> int:
     """Run the ASGI middleware for one request; return the response status."""
     statuses: list[int] = []
-    scope = {"type": "http", "path": path,
+    scope = {"type": "http", "method": "POST", "path": path,
              "headers": [(b"content-length", str(content_length).encode())]}
 
     async def receive():
@@ -127,7 +127,7 @@ async def _drive_chunked(limit: int, path: str, chunks: int, chunk_size: int) ->
             statuses.append(msg["status"])
 
     mw = MaxBodySizeMiddleware(reading_app, max_body_size_bytes=limit)
-    await mw({"type": "http", "path": path, "headers": []}, receive, send)
+    await mw({"type": "http", "method": "POST", "path": path, "headers": []}, receive, send)
     return statuses[0], seen["bytes"]
 
 

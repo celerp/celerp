@@ -292,7 +292,7 @@ async def test_recovery_reset_wrong_code_is_generic(client, session, relay, shor
 
     assert (await _reset(client, OWNER, handle)).status_code == 200
     used = await _reset(client, OWNER, handle, password="another-password1")
-    assert (used.status_code, used.json()["detail"]) == (400, generic)
+    assert (used.status_code, refusal_text(used.json()["detail"])) == (400, generic)
     assert (await _login(client, OWNER, NEW_PW)).status_code == 200
 
 
@@ -715,7 +715,7 @@ async def test_staff_reset_refusals(client, session):
         assert isinstance(refusal_text(r.json()["detail"]), str) and refusal_text(r.json()["detail"]), r.text
         assert (asked.status_code, asked.json()) == (r.status_code, r.json()), (target, asked.text)
     r = await _staff_reset(client, owner, ids[STAFF], "short")
-    assert r.status_code == 422 and "8" in r.json()["detail"], r.text
+    assert r.status_code == 422 and "8" in refusal_text(r.json()["detail"]), r.text
     assert {e: await _hash(session, e) for e in ids} == hashes
 
     # The installation owner owns every company the staff member is in.

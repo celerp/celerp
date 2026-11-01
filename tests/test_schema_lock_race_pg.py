@@ -22,7 +22,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 from company_backup_support import auth, confirm, download, manifest, members, read
 from test_helpers import as_another_client
@@ -230,7 +230,7 @@ async def test_running_export_refuses_module_data_purge(real_engine, real_client
         try:
             r = await real_client.post(f"/companies/me/modules/{name}/purge-data", headers=auth(tok))
             assert r.status_code == 409, r.text
-            assert "Nothing was deleted" in r.json()["detail"]
+            assert "Nothing was deleted" in refusal_text(r.json()["detail"])
         finally:
             paused.release.set()
         await asyncio.wait_for(task, 15)

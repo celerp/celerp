@@ -141,7 +141,7 @@ async def test_migration_scan_streams_and_bounds_upload(client, session, migrati
         return {"type": "http.request", "body": b"", "more_body": False}
 
     for path in ("/migrations/bootstrap/scan", "/migrations/scan", "/migrations/scan/decisions"):
-        scope = {"type": "http", "path": path, "headers": [(b"content-length", b"1000")]}
+        scope = {"type": "http", "method": "POST", "path": path, "headers": [(b"content-length", b"1000")]}
         await capped(scope, receive, send)
     assert reached == ["/migrations/bootstrap/scan", "/migrations/scan"]
     assert any(m.get("status") == 413 for m in sent)

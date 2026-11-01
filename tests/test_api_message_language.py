@@ -1,7 +1,8 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """Messages the API returns read in the user's language: the UI sends the language of
-the page that asked, and the API answers in it, falling back to English."""
+the page that asked, and the refusal carries its key, so it reads in that language,
+falling back to English."""
 
 from __future__ import annotations
 
@@ -20,10 +21,18 @@ async def test_api_answers_in_the_requested_language(client, session):
     h = {"Authorization": f"Bearer {second_token}"}
     r = await client.patch(url, json=body, headers={**h, "Accept-Language": "th"})
     assert r.status_code == 400, r.text
-    assert refusal_text(r.json()["detail"]) == t("error.install_owner_deactivate", "th")
-    assert r.json()["detail"] != t("error.install_owner_deactivate", "en")
+    set_lang("th")
+    try:
+        assert refusal_text(r.json()["detail"]) == t("error.install_owner_deactivate", "th")
+    finally:
+        set_lang("en")
+    assert t("error.install_owner_deactivate", "th") != t("error.install_owner_deactivate", "en")
     r = await client.patch(url, json=body, headers={**h, "Accept-Language": "xx"})
-    assert r.json()["detail"] == t("error.install_owner_deactivate", "en")
+    set_lang("xx")
+    try:
+        assert refusal_text(r.json()["detail"]) == t("error.install_owner_deactivate", "en")
+    finally:
+        set_lang("en")
 
 
 async def test_ui_client_sends_the_page_language():

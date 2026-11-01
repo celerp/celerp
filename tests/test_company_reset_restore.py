@@ -99,7 +99,7 @@ async def test_wrong_credentials_restore_nothing(real_client, real_engine, monke
     bad_restore = await real_client.post(RESTORE, json=_confirm(preview, password="wrong-password"))
 
     assert bad_read.status_code == 401 and refusal_text(bad_read.json()["detail"]) == t("auth.invalid_credentials", "en")
-    assert bad_restore.status_code == 401 and bad_restore.json()["detail"] == t("auth.invalid_credentials", "en")
+    assert bad_restore.status_code == 401 and refusal_text(bad_restore.json()["detail"]) == t("auth.invalid_credentials", "en")
     assert await count(real_engine, "companies") == 0
     assert {t: rows for t, rows in (await snapshot(real_engine)).items() if t not in ("user_auth_state",)} == \
         {t: rows for t, rows in before.items() if t not in ("user_auth_state",)}

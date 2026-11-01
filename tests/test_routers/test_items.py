@@ -922,7 +922,7 @@ async def test_merge_rejects_different_sell_units(client):
     r = await merge_items(client, json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)
     assert r.status_code == 422
     assert "unit" in refusal_text(r.json()["detail"]).lower()
-    assert "gram" in r.json()["detail"] and "carat" in r.json()["detail"]
+    assert "gram" in refusal_text(r.json()["detail"]) and "carat" in refusal_text(r.json()["detail"])
 
 
 @pytest.mark.asyncio

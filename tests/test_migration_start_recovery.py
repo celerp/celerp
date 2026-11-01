@@ -284,7 +284,7 @@ async def test_a_scan_claimed_by_another_user_cannot_start_a_run(real_client, re
     # Reassign the run's creator: the claim alone never hands a run to someone else.
     await _hand_run_to_another_user(real_engine, run_id)
     r = await _start(real_client, admin_token, scan_token)
-    assert r.status_code == 409 and r.json()["detail"] == t("migration.err_scan_already_started", "en")
+    assert r.status_code == 409 and refusal_text(r.json()["detail"]) == t("migration.err_scan_already_started", "en")
     assert await count(real_engine, "migration_runs") == 1
 
 
@@ -340,7 +340,7 @@ async def test_bootstrap_lost_response_recovers_through_login(real_client, real_
     r = await real_client.post("/migrations/bootstrap/start", json={
         "scan_token": scan_token, "company_name": "Moved Co", "timezone": "UTC", "name": "Owner",
         "email": OWNER_EMAIL, "password": OWNER_PASSWORD})
-    assert r.status_code == 409 and r.json()["detail"] == t("migration.err_bootstrapped", "en")
+    assert r.status_code == 409 and refusal_text(r.json()["detail"]) == t("migration.err_bootstrapped", "en")
 
     r = await real_client.post("/auth/login", json={"email": OWNER_EMAIL, "password": OWNER_PASSWORD})
     assert r.status_code == 200, r.text

@@ -12,7 +12,7 @@ cannot be reproduced exactly, the correction is refused and nothing changes.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import pytest
 from sqlalchemy import func, select, text
@@ -25,7 +25,7 @@ from celerp.services import auto_je
 from test_cost_restatement import (
     _cogs_adjustments, _doc_cogs, _fulfil, _invoice, _item, _merge, _set_cost, _state, sold_by_hand,
 )
-from ui.i18n import refusal_text, t
+from ui.i18n import date_text, refusal_text, t
 from stock_books import book_older_opening
 from test_consignment_in_sale import _consign
 from test_helpers import TZ, company_auth, invoices_booking_one_lot_twice
@@ -533,7 +533,7 @@ async def test_locked_current_period_refuses_and_writes_nothing(client, session)
     before = await _snapshot(session, auth)
     r = await _set_cost(client, auth, ctx["a"], 100.0)
     assert r.status_code == 422, r.text
-    assert refusal_text(r.json()["detail"]) == t("error.period_locked", date=lock_date)
+    assert refusal_text(r.json()["detail"]) == t("error.period_locked", date=date_text(date.fromisoformat(lock_date)))
     assert await _snapshot(session, auth) == before
 
 

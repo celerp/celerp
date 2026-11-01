@@ -292,7 +292,7 @@ async def test_a_locked_period_refuses_the_merge_and_changes_nothing(session, cl
     before = await _entries(session, auth)
     r = await _merge(client, auth, [a, b])
     assert r.status_code == 422, r.text
-    assert refusal_text(r.json()["detail"]) == t("error.period_locked", "en", date="2999-12-31")
+    assert refusal_text(r.json()["detail"]) == t("error.period_locked", "en", date="31 Dec 2999")
     assert await _entries(session, auth) == before
     for lot in (a, b):
         state = await _state(session, auth, lot)

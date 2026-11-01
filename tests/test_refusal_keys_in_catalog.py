@@ -170,8 +170,8 @@ def test_every_kind_of_maker_is_found():
     assert makers["celerp.accounting_roles"]["Refused"] == 0
     assert makers["celerp_fixed_assets.setup"]["refuse"] == 0 and makers["celerp_fixed_assets.setup"]["refused"] == 1
     assert "refuse" not in makers["celerp_manufacturing.movements"]  # it prefixes "mfg." to the key
-    sites = {site for site, _key, _kind in _refusal_calls()}
-    assert any(site.startswith("default_modules/celerp-inventory/celerp_inventory/services.py:188") for site in sites)
+    assert any(site.startswith("default_modules/celerp-inventory/celerp_inventory/services.py:")
+               and key == "inventory.err_restate_lineage_missing" for site, key, _kind in _refusal_calls())
 
 
 # A handful of call sites build their key from a variable, not a literal, so static

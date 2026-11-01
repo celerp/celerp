@@ -146,7 +146,7 @@ async def test_bulk_migration_refuses_what_is_not_one_company(real_client, real_
     assert r.status_code == 422 and refusal_text(r.json()["detail"]) == t("migration.choose_file"), r.text
     many = [(f"c{i}.manager", _manager("basic")[1]) for i in range(store.MAX_ARTIFACTS + 1)]
     r = await _upload(real_client, headers, *many)
-    assert r.status_code == 422 and r.json()["detail"] == t(
+    assert r.status_code == 422 and refusal_text(r.json()["detail"]) == t(
         "migration.several_too_many", count=store.MAX_ARTIFACTS), r.text
     assert len(await _rows(real_client, headers)) == 1
 

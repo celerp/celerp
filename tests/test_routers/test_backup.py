@@ -362,7 +362,7 @@ async def test_import_bootstrap_blocked_when_users_exist(auth_client):
     )
     assert r.status_code == 403
     assert "already set up" in refusal_text(r.json()["detail"]).lower()
-    assert "System Recovery" in r.json()["detail"]
+    assert "System Recovery" in refusal_text(r.json()["detail"])
 
 
 @pytest.mark.asyncio

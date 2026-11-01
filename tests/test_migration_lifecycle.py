@@ -241,10 +241,10 @@ async def test_migration_run_company_isolation(client, session, migration_env):
     # A non-owner cannot scan or start a migration.
     manager_token = await _member_token(session, admin_company_id, "admin", "manager@example.com")
     r = await scan_upload(client, fake_bytes(), token=manager_token)
-    assert r.status_code == 403 and r.json()["detail"] == OWNER_ONLY
+    assert r.status_code == 403 and refusal_text(r.json()["detail"]) == OWNER_ONLY
     r = await client.post("/migrations/start-from-scan", headers=auth(manager_token),
                           json={"scan_token": "x" * 43, "company_name": "Nope", "timezone": "UTC"})
-    assert r.status_code == 403 and r.json()["detail"] == OWNER_ONLY
+    assert r.status_code == 403 and refusal_text(r.json()["detail"]) == OWNER_ONLY
 
     # Once finished, a member of the moved company still has no view of the run; the creator keeps it.
     await session.refresh(run)  # the refused requests rolled back, which expires what the session held
@@ -276,7 +276,7 @@ async def test_migration_state_machine_rejects_illegal_transitions(real_client, 
     assert (await save_decisions(real_client, scan_token, token=admin_token)).status_code == 200
     r = await real_client.post("/migrations/start-from-scan", headers=auth(admin_token),
                                json={"scan_token": scan_token, "company_name": "Empty Co", "timezone": "UTC"})
-    assert r.status_code == 422 and r.json()["detail"] == t("migration.err_nothing_to_migrate", "en")
+    assert r.status_code == 422 and refusal_text(r.json()["detail"]) == t("migration.err_nothing_to_migrate", "en")
     assert await count(real_engine, "companies") == companies
     assert await count(real_engine, "migration_runs") == 0
 
@@ -284,9 +284,9 @@ async def test_migration_state_machine_rejects_illegal_transitions(real_client, 
     headers = auth(admin_token)
     assert (await load_run(real_engine, uuid.UUID(run_id))).status == "running"
     r = await real_client.post(f"/migrations/{run_id}/start", headers=headers)
-    assert r.status_code == 409 and r.json()["detail"] == t("migration.err_cannot_start", "en")
+    assert r.status_code == 409 and refusal_text(r.json()["detail"]) == t("migration.err_cannot_start", "en")
     r = await real_client.post(f"/migrations/{run_id}/finalize", headers=headers)
-    assert r.status_code == 409 and r.json()["detail"] == t("migration.err_cannot_finalize", "en")
+    assert r.status_code == 409 and refusal_text(r.json()["detail"]) == t("migration.err_cannot_finalize", "en")
 
     # Cancel is persisted at once; the runner stops between batches at cancelled.
     cancel_responses = []
@@ -305,7 +305,7 @@ async def test_migration_state_machine_rejects_illegal_transitions(real_client, 
     assert run.phase_state["company_settings"]["status"] == "done"
     assert run.phase_state.get("contacts_locations", {}).get("status") != "done"
     r = await real_client.post(f"/migrations/{run_id}/cancel", headers=headers)
-    assert r.status_code == 409 and r.json()["detail"] == t("migration.err_cannot_cancel", "en")
+    assert r.status_code == 409 and refusal_text(r.json()["detail"]) == t("migration.err_cannot_cancel", "en")
 
     # Resume: 202 after the intent is persisted, then the runner finishes.
     scheduled = len(migration_env["scheduled"])
@@ -322,7 +322,7 @@ async def test_migration_state_machine_rejects_illegal_transitions(real_client, 
     results = await asyncio.gather(*[real_client.post(f"/migrations/{run_id}/finalize", headers=headers, json=body)
                                      for _ in range(2)])
     assert sorted(r.status_code for r in results) == [200, 409]
-    assert [r.json()["detail"] for r in results if r.status_code == 409] == [
+    assert [refusal_text(r.json()["detail"]) for r in results if r.status_code == 409] == [
         t("migration.err_cannot_finalize", "en")]
     assert await count(real_engine, "companies", "id = :c AND is_active", c=run.company_id) == 1
 
@@ -334,7 +334,7 @@ async def test_migration_state_machine_rejects_illegal_transitions(real_client, 
                            ("finalize", t("migration.err_cannot_finalize", "en")),
                            ("discard", t("migration.err_no_unfinished", "en"))):
         r = await real_client.post(f"/migrations/{run_id}/{action}", headers=headers)
-        assert r.status_code == 409 and r.json()["detail"] == detail, (action, r.text)
+        assert r.status_code == 409 and refusal_text(r.json()["detail"]) == detail, (action, r.text)
     assert await count(real_engine, "companies", "id = :c", c=run.company_id) == 1
 
 
@@ -519,7 +519,7 @@ async def test_discard_staged_company_is_complete_or_noop(real_client, real_engi
                                                        {"k": migrations._lock_key(run_id)}))).scalar() is True
         await holder.commit()
         r = await discard(admin_token, run_id)
-        assert r.status_code == 409 and r.json()["detail"] == t("migration.err_already_running", "en")
+        assert r.status_code == 409 and refusal_text(r.json()["detail"]) == t("migration.err_already_running", "en")
         await intact()
         await holder.execute(text("SELECT pg_advisory_unlock(hashtext(:k))"), {"k": migrations._lock_key(run_id)})
         await holder.commit()
@@ -538,7 +538,7 @@ async def test_discard_staged_company_is_complete_or_noop(real_client, real_engi
     await _finalize(real_engine, rid)
     company_id = (await load_run(real_engine, rid)).company_id
     r = await discard(admin_token, run_id)
-    assert r.status_code == 409 and r.json()["detail"] == t("migration.err_no_unfinished", "en")
+    assert r.status_code == 409 and refusal_text(r.json()["detail"]) == t("migration.err_no_unfinished", "en")
     assert await count(real_engine, "companies", "id = :c AND is_active", c=company_id) == 1
 
     # A first-run bootstrap discard returns the install to setup with no owner left.
@@ -739,12 +739,12 @@ async def test_reconciliation_pack_matches_stored_verification(client, session, 
     token = admin_token
 
     r = await client.get(pack, headers=auth(token))
-    assert r.status_code == 409 and r.json()["detail"] == t("migration.err_not_verified", "en")
+    assert r.status_code == 409 and refusal_text(r.json()["detail"]) == t("migration.err_not_verified", "en")
     assert (await client.get("/migrations/nope/reconciliation/pack", headers=auth(token))).status_code == 422
     staged_company = (await session.get(MigrationRun, uuid.UUID(run_id))).company_id
     other_owner = await _member_token(session, staged_company, "owner", "other-owner@example.com")
     r = await client.get(pack, headers=auth(other_owner))
-    assert r.status_code == 404 and r.json()["detail"] == NOT_FOUND
+    assert r.status_code == 404 and refusal_text(r.json()["detail"]) == NOT_FOUND
 
     generated = "2026-04-01T10:00:00+00:00"
     rows = [

@@ -51,7 +51,7 @@ async def test_backwards_report_range_says_which_date_to_move(client):
                          params={"date_from": "2026-02-01", "date_to": "2026-01-01"})
     assert r.status_code == 422
     assert refusal_text(r.json()["detail"]) == t("acct.err_date_range", "en",
-                                   start="2026-02-01", end="2026-01-01")
+                                   start="1 Feb 2026", end="1 Jan 2026")
 
 
 @pytest.mark.asyncio

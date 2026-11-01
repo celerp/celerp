@@ -397,7 +397,7 @@ async def test_bulk_payment_rejects_mixed_document_currencies(client, session):
         "bank_account": "1111",
     })
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("documents.err_selected_currencies_differ", "en")
+    assert refusal_text(r.json()["detail"]) == t("documents.err_selected_currencies_differ", "en")
 
 
 @pytest.mark.asyncio
@@ -474,7 +474,7 @@ async def test_credit_application_rejects_mixed_document_currencies(client, sess
         json={"target_doc_id": ids["invoice"], "amount": 1.0},
     )
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("documents.err_apply_currency_mismatch", "en")
+    assert refusal_text(r.json()["detail"]) == t("documents.err_apply_currency_mismatch", "en")
 
 
 @pytest.mark.asyncio
@@ -496,7 +496,7 @@ async def test_kwd_credit_refund_rejects_sub_minor_unit_amount(client, session):
         json={"amount": 0.0004, "date": "2026-09-29", "bank_account": "1111"},
     )
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("documents.err_refund_amount_positive", "en")
+    assert refusal_text(r.json()["detail"]) == t("documents.err_refund_amount_positive", "en")
 
 
 async def _account_net(session, company_id, account: str) -> float:

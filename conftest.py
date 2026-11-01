@@ -564,13 +564,6 @@ def _pacing_only_through_pace():
         pytest.fail("pacing written outside execution._pace:\n" + "\n".join(found), pytrace=False)
 
 
-def pytest_sessionfinish(session, exitstatus):
-    path = mutation_observer.census_path()
-    if path:
-        _CENSUS.write(f"{path}.json")
-        mutation_observer.write_routes(f"{path}.routes.json", [app, _ui_app])
-
-
 @pytest.fixture(autouse=True)
 def _reset_hot_path_caches():
     """Bust the in-process drain cache and relay methods cache before each test.

@@ -1754,7 +1754,7 @@ async def test_report_date_filters_reject_an_inverted_range(client):
             "date_from": "2026-12-31", "date_to": "2026-01-01"})
         assert r.status_code == 422, f"{path} accepted an inverted range: {r.text}"
         detail = refusal_text(r.json()["detail"])
-        assert detail == t("acct.err_date_range", "en", start="2026-12-31", end="2026-01-01"), detail
+        assert detail == t("acct.err_date_range", "en", start="31 Dec 2026", end="1 Jan 2026"), detail
 
 
 async def test_report_date_filters_accept_valid_dates(client):

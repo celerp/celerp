@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from ui.i18n import t, refusal_text
+from ui.i18n import refusal_text, set_lang, t
 
 _LOCALES = Path(__file__).resolve().parents[1] / "ui" / "locales"
 _LANGS = ("en", "th", "de", "fr", "es", "it", "pt", "id", "vi", "ja", "ar", "am")
@@ -64,7 +64,7 @@ async def test_bad_unit_name_and_decimals_name_the_unit(client):
     r = await client.put("/companies/me/units", headers=h,
                          json={"units": [{"name": "box", "label": "Box", "decimals": 9}]})
     assert r.status_code == 422
-    assert r.json()["detail"] == t("company.err_unit_decimals", "en", name="box")
+    assert refusal_text(r.json()["detail"]) == t("company.err_unit_decimals", "en", name="box")
 
 
 @pytest.mark.asyncio
@@ -72,7 +72,11 @@ async def test_company_messages_follow_the_users_language(client):
     h = {**await _headers(client), "Accept-Language": "th"}
     r = await client.post("/companies/me/categories", headers=h, json={"name": "  "})
     assert r.status_code == 422
-    assert refusal_text(r.json()["detail"]) == t("settings.name_required", "th") == "ป้อนชื่อ"
+    set_lang("th")
+    try:
+        assert refusal_text(r.json()["detail"]) == t("settings.name_required", "th") == "ป้อนชื่อ"
+    finally:
+        set_lang("en")
 
 
 def test_missing_permission_names_it_as_the_role_editor_does():

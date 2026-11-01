@@ -18,6 +18,7 @@ import mutation_observer
 from company_backup_support import download, manifest, member, owner, read, token
 from migration_support import auth, real_client, real_engine  # noqa: F401
 from test_company_backup_lifecycle import _data_dir  # noqa: F401
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -432,7 +433,7 @@ async def test_an_item_edit_waiting_for_a_replace_writes_nothing_into_the_replac
     go.set()
     replaced, edited = await asyncio.wait_for(asyncio.gather(replace, edit), timeout=30)
     assert replaced.status_code == 200, replaced.text
-    assert edited.status_code == 403 and "nothing was saved" in edited.json()["detail"], edited.text
+    assert edited.status_code == 403 and "nothing was saved" in refusal_text(edited.json()["detail"]), edited.text
     [(new, _)] = await _companies(real_engine)
     assert new != cid
     assert await _item_name(real_engine, new, item) == name
@@ -516,5 +517,5 @@ async def test_turning_a_module_on_while_the_company_is_replaced_waits_for_the_r
     turned_on = await asyncio.wait_for(turning_on, 60)
     assert replaced.status_code == 200, replaced.text
     assert turned_on.status_code == 403, turned_on.text
-    assert "access to this company was changed" in turned_on.json()["detail"]
+    assert "access to this company was changed" in refusal_text(turned_on.json()["detail"])
     assert [n for _, n in await _companies(real_engine)] == [NAME]

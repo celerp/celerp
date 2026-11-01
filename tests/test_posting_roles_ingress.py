@@ -23,7 +23,7 @@ exactly their value off again, never the value of an import that replaces them.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import pytest
 from sqlalchemy import func, select
@@ -37,8 +37,7 @@ from test_money_stock_and_contact_invariants import _account_net
 from test_posting_roles_draft_stock import _inactive, _settings, _unmapped, _wrong_type
 from test_posting_roles_older_stock import _make_available, _without_accounting
 from test_posting_roles_rollout import _startup
-from ui.i18n import refusal_text
-from ui.i18n import t
+from ui.i18n import date_text, refusal_text, t
 
 pytestmark = pytest.mark.asyncio
 
@@ -173,7 +172,7 @@ async def test_an_item_created_available_on_a_locked_day_is_not_created(session,
     before = await _events(session, auth["company_id"])
     r = await _create(client, auth, cost_total=200.0, status="available", sku="LOCKED-1")
     assert r.status_code == 422, r.text
-    assert refusal_text(r.json()["detail"]) == t("error.period_locked", "en", date=today)
+    assert refusal_text(r.json()["detail"]) == t("error.period_locked", "en", date=date_text(date.fromisoformat(today), "en"))
     assert await _events(session, auth["company_id"]) == before
     assert await _items_by_sku(session, auth["company_id"], "LOCKED-1") == []
 

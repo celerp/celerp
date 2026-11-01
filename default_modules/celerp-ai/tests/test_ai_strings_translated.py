@@ -18,6 +18,7 @@ from celerp.accounting_roles import refusal as _refusal
 from celerp.ai import batch, jobs, llm, service
 from celerp_ai import routes, ui_routes
 from ui import i18n
+from ui.i18n import refusal_text
 
 _MARK = "QX:"
 _EN = json.loads((Path(i18n.__file__).parent / "locales" / "en.json").read_text(encoding="utf-8"))
@@ -329,7 +330,7 @@ class _Store:
     would hold it between a reply and a reload."""
 
     def __init__(self, record):
-        self.message = type("Message", (), {"tools_called": [record]})()
+        self.message = type("Message", (), {"tools_called": [record], "conversation_id": uuid.uuid4()})()
 
     async def get(self, model, message_id):
         return self.message
@@ -361,7 +362,11 @@ async def _confirmed(monkeypatch, result) -> tuple[dict, dict]:
     async def execute(*args, **kw):
         return result
 
+    async def unlocked(session, conversation_id):
+        pass  # one store, no other writer to wait on
+
     monkeypatch.setattr(routes, "_resolved_action_arguments", resolved)
+    monkeypatch.setattr(conversations, "_lock_conversation", unlocked)
     monkeypatch.setattr(conversations, "claim_tool_call", claim)
     monkeypatch.setattr(tools, "execute_agent_capability", execute)
     outcome = await routes._run_confirmed_action(
