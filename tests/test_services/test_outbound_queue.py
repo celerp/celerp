@@ -16,6 +16,7 @@ from celerp.models.connector_first_sync import ConnectorFirstSync
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from connector_test_support import connect, stand_in_connector
+from pacing_guard import seeding_pacing
 from test_helpers import remove_company
 
 
@@ -396,27 +397,28 @@ async def test_identity_backoff_applies_to_newer_rows(_db_engine, monkeypatch):
             ))
             await seed.flush()
             await connect(seed, company_id, "woocommerce", first_sync="completed")
-            seed.add_all([
-                OutboundQueue(
-                    company_id=str(company_id),
-                    connector="woocommerce",
-                    entity_type="inventory",
-                    entity_id="77",
-                    status="pending",
-                    retry_count=3,
-                    next_retry_at=deadline,
-                ),
-                OutboundQueue(
-                    company_id=str(company_id),
-                    connector="woocommerce",
-                    entity_type="inventory",
-                    entity_id="77",
-                    status="pending",
-                    retry_count=0,
-                    next_retry_at=None,
-                ),
-            ])
-            await seed.commit()
+            with seeding_pacing():
+                seed.add_all([
+                    OutboundQueue(
+                        company_id=str(company_id),
+                        connector="woocommerce",
+                        entity_type="inventory",
+                        entity_id="77",
+                        status="pending",
+                        retry_count=3,
+                        next_retry_at=deadline,
+                    ),
+                    OutboundQueue(
+                        company_id=str(company_id),
+                        connector="woocommerce",
+                        entity_type="inventory",
+                        entity_id="77",
+                        status="pending",
+                        retry_count=0,
+                        next_retry_at=None,
+                    ),
+                ])
+                await seed.commit()
 
         await process_outbound_queue_once()
 
@@ -466,10 +468,11 @@ async def test_a_busy_or_failing_identity_waits_under_its_company_lock(_db_engin
                     OutboundQueue.company_id == str(company_id), OutboundQueue.entity_id == "88"))
 
         async def due_again() -> None:
-            async with get_session_ctx() as reset:
-                await reset.execute(sa.update(OutboundQueue).where(
-                    OutboundQueue.company_id == str(company_id)).values(next_retry_at=None))
-                await reset.commit()
+            with seeding_pacing():
+                async with get_session_ctx() as reset:
+                    await reset.execute(sa.update(OutboundQueue).where(
+                        OutboundQueue.company_id == str(company_id)).values(next_retry_at=None))
+                    await reset.commit()
 
         with sys.modules["lock_rank"].writers_taken("celerp/connectors/outbound_queue.py") as seen:
             # Another task holds the identity's resource (the queue's own execution is a

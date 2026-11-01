@@ -16,6 +16,7 @@ import respx
 import sqlalchemy as sa
 from connector_test_support import connect
 from migration_support import real_client, real_engine  # noqa: F401
+from pacing_guard import seeding_pacing
 
 from celerp.connectors.base import ConnectorContext
 from celerp.connectors.outbound_queue import process_outbound_queue_once
@@ -248,13 +249,14 @@ async def test_lost_response_retains_row_and_queue_resends_same_key(relay, compa
         await _sync(company)
         # The background queue honours the backoff; move it to now.
         from celerp.db import get_session_ctx
-        async with get_session_ctx() as session:
-            await session.execute(
-                sa.update(OutboundQueue)
-                .where(OutboundQueue.company_id == str(company))
-                .values(next_retry_at=None)
-            )
-            await session.commit()
+        with seeding_pacing():
+            async with get_session_ctx() as session:
+                await session.execute(
+                    sa.update(OutboundQueue)
+                    .where(OutboundQueue.company_id == str(company))
+                    .values(next_retry_at=None)
+                )
+                await session.commit()
         assert await process_outbound_queue_once() >= 1
     keys = xero.put_keys()
     assert len(keys) == 2 and keys[0] == keys[1]
@@ -362,13 +364,14 @@ async def test_already_linked_invoice_clears_its_row_without_calling_xero(relay,
         await _sync(company)
         await _edit_doc(company, xero_invoice_id="xero-linked-elsewhere")
         from celerp.db import get_session_ctx
-        async with get_session_ctx() as session:
-            await session.execute(
-                sa.update(OutboundQueue)
-                .where(OutboundQueue.company_id == str(company))
-                .values(next_retry_at=None)
-            )
-            await session.commit()
+        with seeding_pacing():
+            async with get_session_ctx() as session:
+                await session.execute(
+                    sa.update(OutboundQueue)
+                    .where(OutboundQueue.company_id == str(company))
+                    .values(next_retry_at=None)
+                )
+                await session.commit()
         await process_outbound_queue_once()
     assert len(xero.puts) == 1 and xero.gets == []
     assert await _rows(company) == []
@@ -692,10 +695,11 @@ async def test_a_create_left_unresolved_when_invoices_are_turned_off_is_parked_w
 
     with _Xero(put=[LOST]):
         await _sync(company)
-    async with get_session_ctx() as session:
-        await session.execute(sa.update(OutboundQueue).where(
-            OutboundQueue.company_id == str(company)).values(next_retry_at=None))
-        await session.commit()
+    with seeding_pacing():
+        async with get_session_ctx() as session:
+            await session.execute(sa.update(OutboundQueue).where(
+                OutboundQueue.company_id == str(company)).values(next_retry_at=None))
+            await session.commit()
     monkeypatch.setattr(outbound_queue, "_pushes", lambda *_a: False)
     set_lang("th")
     try:

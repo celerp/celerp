@@ -217,8 +217,9 @@ async def retry_due(company_id) -> None:
 
     from celerp.connectors.execution import _internal
     from celerp.db import get_session_ctx
+    from pacing_guard import seeding_pacing
 
-    with _internal():
+    with _internal(), seeding_pacing():
         async with get_session_ctx() as session:
             await session.execute(sa.text(
                 "UPDATE connector_execution_heartbeats SET rerun_retry_at = now() "

@@ -3,83 +3,79 @@
 """One pacing authority: execution._pace is the only code that writes when deferred
 connector work is tried again, or how many times it was tried.
 
-Read from the source, not from a list of loops: every SQL statement, ORM write and
-attribute assignment in the connectors that sets an attempt or retry-time column (a
-column of execution.PACED) must be inside _pace, and every such column of a connector
-table is in PACED, so a new loop that schedules its own retries fails here."""
+Held at run time in every test (pacing_guard.py, from the root conftest): a statement that
+sets a column of execution.PACED outside _pace fails the test that sent it, whatever form
+wrote it. Here: the guard sees each form, and every such column of a connector table is in
+PACED, so a new loop that schedules its own retries fails."""
 from __future__ import annotations
 
-import ast
 import re
-from pathlib import Path
+import uuid
+
+import pytest
+import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from celerp.connectors.execution import PACED
-
-_ROOT = Path(__file__).resolve().parents[1]
-_SOURCES = [*(_ROOT / "celerp" / "connectors").rglob("*.py"),
-            *(_ROOT / "default_modules" / "celerp-connectors" / "celerp_connectors").rglob("*.py")]
-_COLUMNS = {column for paced in PACED.values() for column in (paced.attempts, paced.retry_at)}
-_SQL_WRITE = re.compile(r"\b(" + "|".join(sorted(_COLUMNS)) + r")\s*=(?!=)")
+from celerp.db import get_session_ctx
+from migration_support import real_engine  # noqa: F401 - fixture
 
 
-def _writes(tree: ast.AST) -> list[tuple[int, str, str]]:
-    """(line, enclosing function, what) of each write to a pacing column."""
-    found: list[tuple[int, str, str]] = []
+@pytest.mark.asyncio
+async def test_the_guard_sees_each_way_a_pacing_column_is_written(real_engine):
+    import pacing_guard
+    from celerp.connectors import execution
+    from celerp.models.connector_config import OutboundQueue
 
-    def visit(node: ast.AST, function: str) -> None:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            function = node.name
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            text = node.value
-            if _SQL_WRITE.search(text) or ("INSERT" in text.upper() and any(c in text for c in _COLUMNS)):
-                found.append((node.lineno, function, f"SQL {text.strip()[:60]!r}"))
-        elif isinstance(node, ast.JoinedStr):
-            for part in node.values:
-                if isinstance(part, ast.Constant) and _SQL_WRITE.search(str(part.value)):
-                    found.append((node.lineno, function, f"SQL {str(part.value).strip()[:60]!r}"))
-        elif isinstance(node, ast.Call):
-            for keyword in node.keywords:
-                if keyword.arg in _COLUMNS:
-                    found.append((node.lineno, function, f"{keyword.arg}="))
-            if getattr(node.func, "attr", None) == "values":
-                for arg in node.args:
-                    if isinstance(arg, ast.Dict):
-                        for key in arg.keys:
-                            name = getattr(key, "value", None) or getattr(key, "attr", None)
-                            if name in _COLUMNS:
-                                found.append((node.lineno, function, f"values {name}"))
-        elif isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            for target in targets:
-                for item in ast.walk(target):
-                    if isinstance(item, ast.Attribute) and item.attr in _COLUMNS:
-                        found.append((node.lineno, function, f".{item.attr} ="))
-        for child in ast.iter_child_nodes(node):
-            visit(child, function)
+    table, company = OutboundQueue.__table__, str(uuid.uuid4())
+    mine = table.c.company_id == company
+    row = {"company_id": company, "connector": "woocommerce", "entity_type": "item_stock"}
 
-    visit(tree, "")
-    return found
+    async with get_session_ctx() as s:
+        async def setattr_flush():
+            queued = (await s.execute(sa.select(OutboundQueue).where(
+                OutboundQueue.company_id == company, OutboundQueue.entity_id == "a"))).scalar_one()
+            setattr(queued, "retry_count", 3)
+            await s.flush()
 
+        async def many_rows():
+            s.add_all([OutboundQueue(**row, entity_id="e", payload_json="{}"),
+                       OutboundQueue(**row, entity_id="f", payload_json="{}", retry_count=2)])
+            await s.flush()
 
-def test_only_pace_writes_an_attempt_or_retry_time():
-    outside = [f"{path.relative_to(_ROOT)}:{line} in {function or 'module'}: {what}"
-               for path in _SOURCES for line, function, what in _writes(ast.parse(path.read_text()))
-               if not (path.name == "execution.py" and function == "_pace")]
-    assert not outside, "pacing written outside execution._pace:\n" + "\n".join(outside)
+        s.add(OutboundQueue(**row, entity_id="a", payload_json="{}"))
+        s.add_all([OutboundQueue(**row, entity_id=key, payload_json="{}") for key in ("x", "y")])
+        await s.flush()
+        await s.execute(sa.update(table).where(mine, table.c.retry_count == 0).values(status="pending"))
+        await s.execute(sa.select(table).where(mine, table.c.next_retry_at <= sa.func.now()))
+        await execution._pace(s, "outbound_queue", "retry", mine)
+        assert pacing_guard.FOUND == [], "default inserts, a read, a filter and _pace itself are not writes"
 
-
-def test_the_guard_sees_each_kind_of_write():
-    source = '''
-def schedule(row, s):
-    s.execute(sa.text("UPDATE outbound_queue SET next_retry_at = now()"))
-    s.execute(sa.update(T).values(retry_count=1))
-    s.execute(sa.update(T).values({T.next_retry_at: None}))
-    row.next_attempt_at = None
-    s.execute(sa.text(f"UPDATE {t} SET rerun_attempts = 0"))
-    s.execute(sa.text("INSERT INTO t (rerun_retry_at) VALUES (now())"))
-'''
-    assert len(_writes(ast.parse(source))) == 6
-    assert not _writes(ast.parse('s.execute(sa.text("SELECT 1 WHERE next_retry_at <= now()"))'))
+        writes = {
+            "values(**dict)": lambda: s.execute(sa.update(table).where(mine).values(**{"next_retry_at": sa.func.now()})),
+            "values({column: ...})": lambda: s.execute(
+                sa.update(table).where(mine).values({table.c.retry_count: table.c.retry_count + 1})),
+            "concatenated SQL": lambda: s.execute(sa.text(
+                "UPDATE outbound_queue SET " + "next_retry_at" + " = now() WHERE company_id = :c"), {"c": company}),
+            "insert with a value": lambda: s.execute(sa.insert(table).values(
+                **row, entity_id="b", next_retry_at=sa.func.now())),
+            "SQL insert": lambda: s.execute(sa.text(
+                "INSERT INTO outbound_queue (company_id, connector, entity_type, entity_id, retry_count) "
+                "VALUES (:c, 'woocommerce', 'item_stock', 'c', 2)"), {"c": company}),
+            "upsert": lambda: s.execute(pg_insert(table).values(**row, entity_id="d").on_conflict_do_update(
+                index_elements=["id"], set_={"retry_count": 2})),
+            "setattr": setattr_flush,
+            "many rows at once": many_rows,
+        }
+        missed = []
+        for form, write in writes.items():
+            before = len(pacing_guard.FOUND)
+            await write()
+            if len(pacing_guard.FOUND) != before + 1:
+                missed.append(form)
+        await s.rollback()
+    pacing_guard.FOUND.clear()
+    assert not missed, f"the guard missed: {missed}"
 
 
 def test_every_attempt_or_retry_column_of_a_connector_table_is_paced():

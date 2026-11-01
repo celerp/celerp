@@ -540,6 +540,18 @@ def _mutation_census(request):
 
 
 @pytest.fixture(autouse=True)
+def _pacing_only_through_pace():
+    """A pacing column of deferred connector work written outside execution._pace fails
+    the test that wrote it (pacing_guard.py)."""
+    import pacing_guard
+
+    with pacing_guard.guarded() as found:
+        yield
+    if found:
+        pytest.fail("pacing written outside execution._pace:\n" + "\n".join(found), pytrace=False)
+
+
+@pytest.fixture(autouse=True)
 def _reset_hot_path_caches():
     """Bust the in-process drain cache and relay methods cache before each test.
 

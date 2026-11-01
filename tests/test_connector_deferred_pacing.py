@@ -22,6 +22,7 @@ from celerp.connectors.execution import REFUSALS
 from celerp.db import get_session_ctx
 from connector_test_support import connect
 from migration_support import real_engine  # noqa: F401 - fixture
+from pacing_guard import seeding_pacing
 from test_first_sync_recovery import DIRECTIONS, _started, store  # noqa: F401 - fixture
 from test_services.test_outbound_queue import _purge_committed
 
@@ -68,12 +69,13 @@ async def _first_sync_pacing(cid) -> dict:
 async def _due_first_sync(cid, *, abandoned: bool = False) -> None:
     from celerp.connectors.execution import TTL
 
-    async with get_session_ctx() as s:
-        await s.execute(sa.text(
-            "UPDATE connector_first_syncs SET state = 'running', "
-            + ("updated_at = :at" if abandoned else "next_attempt_at = now() - interval '1 second'")
-            + " WHERE company_id = :c"), {"c": str(cid), "at": datetime.now(timezone.utc) - TTL * 2})
-        await s.commit()
+    with seeding_pacing():
+        async with get_session_ctx() as s:
+            await s.execute(sa.text(
+                "UPDATE connector_first_syncs SET state = 'running', "
+                + ("updated_at = :at" if abandoned else "next_attempt_at = now() - interval '1 second'")
+                + " WHERE company_id = :c"), {"c": str(cid), "at": datetime.now(timezone.utc) - TTL * 2})
+            await s.commit()
 
 
 @pytest.mark.parametrize("stop", sorted(_STOPS))
@@ -160,10 +162,11 @@ async def test_a_queued_outbound_identity_stopped_before_its_work_is_paced(_db_e
             assert row["parked"], row
             return
         assert 50 < row["wait"] <= 61, row
-        async with get_session_ctx() as s:
-            await s.execute(sa.update(OutboundQueue).where(OutboundQueue.company_id == str(company_id))
-                            .values(next_retry_at=datetime.now(timezone.utc) - timedelta(seconds=1)))
-            await s.commit()
+        with seeding_pacing():
+            async with get_session_ctx() as s:
+                await s.execute(sa.update(OutboundQueue).where(OutboundQueue.company_id == str(company_id))
+                                .values(next_retry_at=datetime.now(timezone.utc) - timedelta(seconds=1)))
+                await s.commit()
         await process_outbound_queue_once()
         row = await _queued(company_id)
         assert len(calls) == 2 and row["retry_count"] == 2 and 110 < row["wait"] <= 121, row
