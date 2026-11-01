@@ -191,14 +191,37 @@ def test_a_first_sync_waiting_to_be_tried_again_shows_why_and_offers_retry_now()
     from ui.routes.settings_connectors_first_sync import first_sync_summary_card
 
     summary = {"started_at": "2026-09-01T00:00:00+00:00", "state": "running", "batch": None, "links": [],
-               "invoices": [], "error": {"detail": "The store did not answer"},
+               "invoices": [], "error": {"detail": "ReadTimeout: timed out"},
                "next_attempt_at": "2026-09-01T00:05:00+00:00"}
     html = to_xml(first_sync_summary_card("woocommerce", summary, "en"))
-    assert t("connectors.first_sync_waiting", "en", reason="The store did not answer") in html
+    reason = t("connectors.fail_unreachable", "en", service="WooCommerce")
+    assert t("connectors.first_sync_waiting", "en", reason=reason) in html
+    assert "ReadTimeout" not in html
     assert 'hx-post="/settings/connectors/woocommerce/first-sync/retry"' in html
 
     running = to_xml(first_sync_summary_card("woocommerce", {**summary, "next_attempt_at": None, "error": None}, "en"))
     assert "first-sync/retry" not in running
+
+
+@pytest.mark.parametrize("code", sorted(__import__("celerp.connectors.execution", fromlist=["REFUSALS"]).REFUSALS))
+def test_every_refusal_reads_as_its_own_sentence_on_the_card_never_as_its_code(code):
+    """A first sync waiting or stopped, and changes waiting to be sent, each refused with
+    any reason of REFUSALS (stored as its bare code), show that reason's own sentence in the
+    person's language; the sync history reads it the same way."""
+    from fasthtml.common import to_xml
+
+    from ui.routes.settings_connectors import _REFUSAL_REASONS, sync_failure_reason
+    from ui.routes.settings_connectors_first_sync import first_sync_summary_card
+
+    sentence = t(_REFUSAL_REASONS[code], "th", service="WooCommerce")
+    assert sentence != _REFUSAL_REASONS[code] and sync_failure_reason(code, "WooCommerce", "th") == sentence
+    base = {"started_at": "2026-09-01T00:00:00+00:00", "batch": None, "links": [], "invoices": [],
+            "error": {"detail": code}}
+    for summary in ({**base, "state": "running", "next_attempt_at": "2026-09-01T00:05:00+00:00"},
+                    {**base, "state": "failed", "next_attempt_at": None},
+                    {"outbound": {"waiting": 1, "reason": code}}):
+        html = to_xml(first_sync_summary_card("woocommerce", summary, "th"))
+        assert sentence in html and code not in html, html
 
 
 def test_a_refused_undo_is_shown_even_when_there_is_no_first_sync_to_summarize():

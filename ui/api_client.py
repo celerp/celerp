@@ -4125,6 +4125,12 @@ async def retry_first_sync(token: str, platform: str) -> dict:
         return _raise(await c.post(f"/connectors/{platform}/first-sync/retry")).json()
 
 
+async def retry_outbound(token: str, platform: str) -> dict:
+    """Try the changes waiting to be sent to the store now."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/connectors/{platform}/outbound/retry")).json()
+
+
 async def undo_first_sync_links(token: str, platform: str) -> dict:
     """Undo the links the first sync made to items Celerp already had."""
     async with _api_client(token) as c:

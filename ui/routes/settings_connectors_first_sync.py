@@ -219,10 +219,15 @@ def first_sync_summary_card(platform: str, summary: dict, lang: str, error: str 
     brings back values it took from the store; each imported invoice is voided on its
     own, which keeps its audit trail (posted accounting is never deleted). A first sync
     that stopped shows the reason and a way to run it again; one waiting to be tried
-    again by itself shows the reason and a way to try it now."""
-    if not summary.get("started_at"):
-        return Span(error, cls="flash flash--warning") if error else Span()
+    again by itself shows the reason and a way to try it now, as do changes waiting to be
+    sent to the store."""
     service = get_connector(platform).display_name
+    outbound = _outbound_waiting(platform, summary.get("outbound") or {}, service, lang)
+    if not summary.get("started_at"):
+        if outbound:
+            return Div(outbound, Span(error, cls="flash flash--warning") if error else Span(),
+                       id=f"first-sync-summary-{platform}", cls="settings-card")
+        return Span(error, cls="flash flash--warning") if error else Span()
     batch = summary.get("batch")
     links = summary.get("links") or []
     undone = all(link.get("outcome") for link in links)
@@ -236,12 +241,13 @@ def first_sync_summary_card(platform: str, summary: dict, lang: str, error: str 
         P(t("connectors.first_sync_title", lang), cls="settings-section-title"),
         P(t("connectors.first_sync_started", lang, when=_when(summary["started_at"]))),
         Div(
-            P(t(stopped, lang, reason=_failure_reason(summary.get("error"), lang))),
+            P(t(stopped, lang, reason=_failure_reason(summary.get("error"), service, lang))),
             Button(t("connectors.first_sync_retry", lang), cls="btn btn--sm btn--primary",
                    hx_post=f"/settings/connectors/{platform}/first-sync/retry",
                    hx_target=f"#first-sync-summary-{platform}", hx_swap="outerHTML"),
             cls="flash flash--warning",
         ) if stopped else Span(),
+        outbound or Span(),
         P(t("connectors.first_sync_created", lang, n=batch["rows"]), " ",
           A(t("connectors.first_sync_import_history", lang), href="/settings/inventory?tab=import-history"))
         if batch else Span(),
@@ -271,6 +277,23 @@ def first_sync_summary_card(platform: str, summary: dict, lang: str, error: str 
         Span(error, cls="flash flash--warning") if error else Span(),
         id=f"first-sync-summary-{platform}",
         cls="settings-card",
+    )
+
+
+def _outbound_waiting(platform: str, outbound: dict, service: str, lang: str) -> FT | None:
+    """How many changes wait to be sent to the store and why, with Retry to try them now;
+    None when nothing waits."""
+    from ui.routes.settings_connectors import sync_failure_reason
+
+    if not outbound.get("waiting"):
+        return None
+    return Div(
+        P(t("connectors.outbound_waiting", lang, service=service, n=outbound["waiting"],
+            reason=sync_failure_reason(outbound.get("reason"), service, lang))),
+        Button(t("connectors.outbound_retry", lang), cls="btn btn--sm btn--primary",
+               hx_post=f"/settings/connectors/{platform}/outbound/retry",
+               hx_target=f"#first-sync-summary-{platform}", hx_swap="outerHTML"),
+        cls="flash flash--warning",
     )
 
 
@@ -306,10 +329,13 @@ def _kept_links(links: list[dict], service: str, lang: str) -> FT:
     return Div(P(t("connectors.first_sync_links_kept", lang)), Ul(*rows))
 
 
-def _failure_reason(error: dict | None, lang: str) -> str:
-    """A stopped first sync's reason: a locale key, or the store's own text."""
+def _failure_reason(error: dict | None, service: str, lang: str) -> str:
+    """A stopped first sync's reason: a locale key, or what it stored in plain words
+    (sync_failure_reason)."""
+    from ui.routes.settings_connectors import sync_failure_reason
+
     error = error or {}
-    return t(error["key"], lang) if error.get("key") else str(error.get("detail") or "--")
+    return t(error["key"], lang) if error.get("key") else sync_failure_reason(error.get("detail"), service, lang)
 
 
 def setup_first_sync_routes(app) -> None:
@@ -413,6 +439,22 @@ def setup_first_sync_routes(app) -> None:
         error = None
         try:
             await retry_first_sync(token, platform)
+        except APIError as exc:
+            error = refusal_text(exc.detail) or str(exc.detail)
+        return first_sync_summary_card(platform, await get_first_sync_summary(token, platform), lang, error)
+
+    @app.post("/settings/connectors/{platform}/outbound/retry")
+    async def outbound_retry(request: Request, platform: str):
+        """Try the changes waiting to be sent to the store now, then show the summary."""
+        token, refused = await _guard(request, platform)
+        if refused is not None:
+            return refused
+        from ui.api_client import APIError, get_first_sync_summary, retry_outbound
+
+        lang = get_lang(request)
+        error = None
+        try:
+            await retry_outbound(token, platform)
         except APIError as exc:
             error = refusal_text(exc.detail) or str(exc.detail)
         return first_sync_summary_card(platform, await get_first_sync_summary(token, platform), lang, error)

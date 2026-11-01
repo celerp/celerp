@@ -124,6 +124,19 @@ _FAILURE_REASONS: tuple[tuple[re.Pattern, str], ...] = tuple(
         (r"invalid stock quantity", "connectors.fail_stock"),
     )
 )
+# The words for each reason an execution is refused with (celerp.connectors.execution.REFUSALS,
+# the authority; a test holds every reason there to one here), stored as its bare code.
+_REFUSAL_REASONS = {
+    "direction_off": "connectors.fail_direction",
+    "first_sync_missing": "connectors.fail_first_sync_not_started",
+    "first_sync_not_started": "connectors.fail_first_sync_not_started",
+    "first_sync_not_finished": "connectors.fail_first_sync_not_finished",
+    "not_connected": "connectors.fail_not_connected",
+    "products_need_attention": "connectors.fail_products_need_attention",
+    "relay_unavailable": "connectors.fail_relay_unavailable",
+    "store_changed": "connectors.fail_store_changed",
+    "store_unchecked": "connectors.fail_store_unchecked",
+}
 # A record-level error starts with what it was about ("SKU ABC-1: ...", "WooCommerce
 # product 12: ..."); the record stays in front of the reason.
 _RECORD_PREFIX = re.compile(r"^((?:[A-Za-z]+ )?(?:SKU|Invoice|Customer|Contact|Item|Product)\b[^:]*): (.*)$", re.DOTALL)
@@ -137,7 +150,8 @@ def sync_failure_reason(raw: str, service: str, lang: str | None = None) -> str:
     text = str(raw or "")
     record = _RECORD_PREFIX.match(text)
     cause = record.group(2) if record else text
-    key = next((k for pattern, k in _FAILURE_REASONS if pattern.search(cause)), "connectors.fail_generic")
+    key = _REFUSAL_REASONS.get(cause.strip()) or next(
+        (k for pattern, k in _FAILURE_REASONS if pattern.search(cause)), "connectors.fail_generic")
     reason = t(key, lang, service=service)
     return f"{record.group(1)}: {reason}" if record else reason
 
@@ -786,9 +800,9 @@ def _connect_lapsed_notice(cid: str, config, lang: str) -> FT:
 
 
 async def _first_sync_summary(token: str, platform: str, config, lang: str) -> FT:
-    """What the connection's first sync did, once it started; the page still renders
-    when it cannot be read, saying so."""
-    if config is None or config.first_sync_state in (None, "pending"):
+    """What the connection's first sync did, once it started, and the changes waiting to
+    be sent to the store; the page still renders when it cannot be read, saying so."""
+    if config is None:
         return ""
     from ui.api_client import APIError, get_first_sync_summary
     from ui.routes.settings_connectors_first_sync import first_sync_summary_card

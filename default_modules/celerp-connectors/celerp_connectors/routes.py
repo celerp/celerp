@@ -951,6 +951,23 @@ async def first_sync_summary(
         "batch": batch,
         "links": [_link_summary(link, items.get(link["entity_id"])) for link in links],
         "invoices": invoices,
+        "outbound": await _outbound_waiting(session, company_id, connector_name),
+    }
+
+
+async def _outbound_waiting(session: AsyncSession, company_id, connector_name: str) -> dict:
+    """The changes waiting to be sent to the store (parked, or backing off after a failed
+    attempt) and the reason the latest of them gave."""
+    import sqlalchemy as sa
+
+    from celerp.models.connector_config import OutboundQueue
+
+    waiting = (OutboundQueue.company_id == str(company_id), OutboundQueue.connector == connector_name,
+               OutboundQueue.status == "pending", OutboundQueue.next_retry_at > sa.func.now())
+    return {
+        "waiting": await session.scalar(sa.select(sa.func.count()).where(*waiting)),
+        "reason": await session.scalar(sa.select(OutboundQueue.error_message).where(*waiting)
+                                       .order_by(OutboundQueue.id.desc()).limit(1)),
     }
 
 
@@ -1122,6 +1139,27 @@ async def retry_first_sync(
         raise HTTPException(status_code=409, detail=t("connectors.err_first_sync_not_failed")) from exc
     await session.commit()
     _spawn_first_sync(company_id, connector_name)
+    return {"ok": True}
+
+
+@router.post("/{connector_name}/outbound/retry")
+async def retry_outbound(
+    connector_name: str,
+    company_id: Annotated[str, Depends(get_current_company_id)],
+    _: None = require_permission("manage_integrations"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Try the changes waiting to be sent to the store now: every wait of the connection's
+    deferred work ends (execution.resume_reruns), and the queue sends them at its next pass."""
+    from celerp import connectors
+    from celerp.connectors import execution
+
+    try:
+        connector = connectors.get(connector_name)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=t("connectors.unknown_connector", platform=connector_name)) from exc
+    await _owned_config(session, company_id, connector)
+    await execution.resume_reruns(company_id, connector_name)
     return {"ok": True}
 
 
