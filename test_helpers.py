@@ -709,6 +709,11 @@ def invoices_booking_one_lot_twice():
 async def ui_get(headers: dict, path: str, *, lang: str | None = None):
     """GET a UI page as the user whose API ``headers`` are given, the UI talking to the real
     API in process (the ``client`` fixture's database and transaction), in ``lang`` when given."""
+    return await ui_request(headers, "GET", path, lang=lang)
+
+
+async def ui_request(headers: dict, method: str, path: str, *, lang: str | None = None, **kwargs):
+    """ui_get for any method; ``kwargs`` go to the request (data=, headers=)."""
     from unittest.mock import patch
 
     from httpx import ASGITransport, AsyncClient
@@ -725,7 +730,7 @@ async def ui_get(headers: dict, path: str, *, lang: str | None = None):
         cookies = {"celerp_token": token, **({"celerp_lang": lang} if lang else {})}
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui",
                                cookies=cookies) as ui:
-            return await ui.get(path)
+            return await ui.request(method, path, **kwargs)
 
 
 @contextmanager

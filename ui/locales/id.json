@@ -2355,7 +2355,7 @@
   "contacts.avg_days_to_pay": "Rata-rata Hari Pembayaran",
   "contacts.out_to_customer": "Dikirim ke pelanggan",
   "contacts.consignment": "Konsinyasi",
-  "contacts.held_from_supplier": "Ditahan dari pemasok",
+  "contacts.held_from_supplier": "Diterima dari pemasok",
   "contacts.file_source_item": "Item: {ref}",
   "contacts.file_source_doc": "Dokumen: {ref}",
   "contacts.doc_ref_fallback": "Dokumen",
@@ -7032,5 +7032,6 @@
   "perm.name.manage_integrations": "Manage integrations",
   "perm.name.manage_permissions": "Edit role permissions",
   "perm.name.manage_company_lifecycle": "Deactivate, reset & reseed company",
-  "perm.name.manage_billing": "Manage billing"
+  "perm.name.manage_billing": "Manage billing",
+  "contacts.new_both": "New Contact"
 }

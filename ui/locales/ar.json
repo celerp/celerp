@@ -2355,7 +2355,7 @@
   "contacts.avg_days_to_pay": "متوسط أيام السداد",
   "contacts.out_to_customer": "إلى العميل",
   "contacts.consignment": "شحنة",
-  "contacts.held_from_supplier": "محتجز من المورد",
+  "contacts.held_from_supplier": "مستلم من المورد",
   "contacts.file_source_item": "العنصر: {ref}",
   "contacts.file_source_doc": "المستند: {ref}",
   "contacts.doc_ref_fallback": "المستند",
@@ -7032,5 +7032,6 @@
   "perm.name.manage_integrations": "Manage integrations",
   "perm.name.manage_permissions": "Edit role permissions",
   "perm.name.manage_company_lifecycle": "Deactivate, reset & reseed company",
-  "perm.name.manage_billing": "Manage billing"
+  "perm.name.manage_billing": "Manage billing",
+  "contacts.new_both": "New Contact"
 }

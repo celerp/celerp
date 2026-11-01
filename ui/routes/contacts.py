@@ -57,6 +57,14 @@ _CONTACT_SCHEMA_BASE = [
     {"key": "tags",             "label": "page.tags",                      "type": "tags",  "editable": False, "show_in_table": True},
 ]
 
+# The name a new contact starts with until someone types its real one, in the reader's language.
+_PLACEHOLDER_KEYS = {"customer": "contacts.new_customer", "vendor": "contacts.new_vendor", "both": "contacts.new_both"}
+
+
+def _placeholder_name(contact_type: str) -> str:
+    return t(_PLACEHOLDER_KEYS[contact_type])
+
+
 def _contact_schema(contact_type: str) -> list[dict]:
     """Return contact schema with translated labels and show_in_table defaults
     appropriate for the contact_type. Runs at render time, so ``t()`` resolves each
@@ -862,7 +870,7 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
 
     autofocus_script = (
         Script("document.querySelector('.cell--clickable')?.click();")
-        if contact_name in ("New Customer", "New Vendor", "New Both", "New Contact") else ""
+        if contact_name in {_placeholder_name(kind) for kind in _PLACEHOLDER_KEYS} else ""
     )
 
     delete_btn = "" if (is_deleted or not show_delete) else Script(f"""
@@ -983,7 +991,7 @@ def setup_routes(app):
         total = resp.get("total", len(contacts))
         currency = company.get("currency")
         # Placeholder entries bubble to the top so users notice them
-        _placeholder = f"New Customer"
+        _placeholder = _placeholder_name("customer")
         contacts = sorted(contacts, key=lambda c: (0 if (c.get("name") or "").strip() == _placeholder else 1))
         return await _contacts_page_shell("customer", contacts, request, q, page, total, per_page, sort, sort_dir, currency, settings=company.get("settings") or {})
 
@@ -1022,7 +1030,7 @@ def setup_routes(app):
         total = resp.get("total", len(contacts))
         currency = company.get("currency")
         # Placeholder entries bubble to the top so users notice them
-        _placeholder = "New Vendor"
+        _placeholder = _placeholder_name("vendor")
         contacts = sorted(contacts, key=lambda c: (0 if (c.get("name") or "").strip() == _placeholder else 1))
         return await _contacts_page_shell("vendor", contacts, request, q, page, total, per_page, sort, sort_dir, currency, settings=company.get("settings") or {})
 
@@ -1150,7 +1158,7 @@ def setup_routes(app):
         contact_type = request.query_params.get("type", "customer")
         if contact_type not in ("customer", "vendor", "both"):
             contact_type = "customer"
-        default_name = f"New {contact_type.title()}"
+        default_name = _placeholder_name(contact_type)
         # Prevent duplicate placeholder entries
         try:
             existing_resp = await api.list_contacts(token, {"contact_type": contact_type, "limit": 500})

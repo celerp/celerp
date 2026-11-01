@@ -52,3 +52,8 @@ def test_the_period_lock_refusal_toast_links_to_the_lock_page():
     toast = json.loads(toast_header(period_locked_refusal("2026-10-31"), "error")["HX-Trigger"])["celerpToast"]
     assert toast["action"] == {"href": "/settings/accounting?tab=period-lock", "label": t("page.period_lock", "en")}
     assert refusal_fix({"message_key": "error.unexpected_error_body"}) is None
+
+
+def test_every_period_lock_refusal_links_to_the_lock_page():
+    for key in ("error.period_locked", "mfg.period_locked"):
+        assert refusal_fix({"message_key": key})["href"] == "/settings/accounting?tab=period-lock"

@@ -3052,6 +3052,24 @@ def flash(msg: str, kind: str = "error", raw: bool = False) -> FT:
     return Div(content, cls=f"flash flash--{kind}", id="flash")
 
 
+def no_access_text(error=None, *, permission: str | None = None) -> str:
+    """Why the reader's role may not do this: the API's keyed refusal on *error* (an APIError),
+    or *permission* when the page checks it itself, naming what is missing. An unkeyed 403
+    reads as the plain catalog line."""
+    from celerp.services.permissions import missing_permission_text
+    data = getattr(error, "data", None)
+    keyed = isinstance(data, dict) and data.get("message_key")
+    return ((error.detail if keyed else "")
+            or (missing_permission_text(permission) if permission else "") or t("acct.not_authorized"))
+
+
+def no_access_banner(error=None, *, permission: str | None = None) -> FT:
+    """A page the reader's role may not open: no_access_text and the way back to the dashboard."""
+    return Div(P(no_access_text(error, permission=permission)),
+               A(t("error.back_to_dashboard"), href="/dashboard", cls="btn btn--secondary btn--sm"),
+               cls="error-banner")
+
+
 def secret_input(name: str, value: str = "", lang: str = "en", cls: str = "form-input", **attrs) -> FT:
     """A pasted secret (a copy or pairing link): masked, kept on a refused check so the
     user can look at it, and shown only when they click Show."""
@@ -3066,6 +3084,7 @@ def secret_input(name: str, value: str = "", lang: str = "en", cls: str = "form-
 # A refusal the reader can resolve on one page: its key, that page and the catalog key naming it.
 _REFUSAL_FIXES = {
     "error.period_locked": (PERIOD_LOCK_PATH, "page.period_lock"),
+    "mfg.period_locked": (PERIOD_LOCK_PATH, "page.period_lock"),
 }
 
 

@@ -175,6 +175,10 @@
     "perm.name.manage_billing": {
       "en": "Manage billing",
       "params": []
+    },
+    "contacts.new_both": {
+      "en": "New Contact",
+      "params": []
     }
   }
 }

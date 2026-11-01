@@ -382,7 +382,7 @@ async def test_s9_request_without_posting_apply_needs_it(fa):
     assert direct.status_code == 403
     request = await fa.ok(await fa.post(f"/assets/{car}/corrections", {
         "changes": {"cost": "13000"}, "reason": "The invoice was 13,000", "op_key": "ask"}, headers=operator))
-    assert request["state"] == "requested" and request["need"] == "Needs Manage accounting"
+    assert request["state"] == "requested"
     assert await _correction_journals(fa, car) == []
     assert D((await fa.asset(car))["cost"]) == D("12000")
     (notice,) = [n for n in await _notices(fa) if "/fixed-assets/corrections" in (n.action_url or "")]

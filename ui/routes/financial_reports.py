@@ -20,7 +20,7 @@ from starlette.responses import HTMLResponse, RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import base_shell, page_header, page_title
+from ui.components.shell import base_shell, no_access_banner, page_header, page_title
 from ui.components.table import (
     display_enum, doc_status_badge, empty_mark, empty_state_cta, fmt_money, format_value, period_empty_note, searchable_select,
 )
@@ -178,7 +178,7 @@ async def _page(request: Request, *content, title: str) -> FT:
 
 def _error_content(e: APIError):
     if e.status == 403:
-        return Div(t("acct.not_authorized"), cls="error-banner")
+        return no_access_banner(e)
     return Div(e.detail or t("acct.error_loading_data"), cls="error-banner")
 
 

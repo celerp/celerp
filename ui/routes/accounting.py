@@ -22,7 +22,7 @@ from starlette.responses import HTMLResponse, RedirectResponse, PlainTextRespons
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.currency import currency_options
-from ui.components.shell import base_shell, page_header, page_title
+from ui.components.shell import base_shell, no_access_banner, no_access_text, page_header, page_title
 from celerp.services.currencies import CURRENCY_CODES
 from ui.components.report_kit import (
     action_bar, csv_response as _csv_response, date_params as _date_params,
@@ -150,7 +150,7 @@ def setup_routes(app):
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             if e.status == 403:
-                content = Div(t("acct.not_authorized"), cls="error-banner")
+                content = no_access_banner(e)
             else:
                 content = Div(e.detail or t("acct.error_loading_data"), cls="error-banner")
 
@@ -175,7 +175,7 @@ def setup_routes(app):
         if not role_has_permission(_settings, _get_role(request), "manage_accounting"):
             return await base_shell(
                 page_header(t("acct.new_journal_entry", get_lang(request))),
-                Div(t("acct.not_authorized"), cls="error-banner"),
+                no_access_banner(permission="manage_accounting"),
                 title=page_title("page.accounting"),
                 nav_active="accounting",
                 request=request,
@@ -196,7 +196,7 @@ def setup_routes(app):
                 return RedirectResponse("/login", status_code=302)
             accounts = []
             if error is None:
-                error = (t("acct.not_authorized") if e.status == 403
+                error = (no_access_text(e) if e.status == 403
                          else e.detail or t("acct.error_loading_data"))
         # Copied amounts arrive as numbers and show at the currency's precision;
         # typed amounts stay as they were typed.
@@ -334,7 +334,7 @@ def setup_routes(app):
                     # Same token, different payload: the original already posted.
                     # A fresh token lets a deliberately corrected resubmit succeed.
                     idem_token = str(uuid.uuid4())
-                error = t("acct.not_authorized") if e.status == 403 else api.error_message(e)
+                error = no_access_text(e) if e.status == 403 else api.error_message(e)
 
         # Validation failed: re-render the form with the message and the values intact.
         return await _render_journal_form(request, token, ts=ts, memo=memo, lines=lines,
@@ -404,7 +404,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _action_error(t("acct.not_authorized") if e.status == 403 else str(e.detail))
+            return _action_error(no_access_text(e) if e.status == 403 else str(e.detail))
         return await _journal_void_answer(request, token, result)
 
     # ── Print (PDF) routes ─────────────────────────────────────────────────

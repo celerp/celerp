@@ -23,6 +23,7 @@ from celerp.services.business_time import business_today
 from celerp.services.csv_export import csv_safe
 from celerp.services.money import round_money, to_decimal
 from ui.api_client import APIError
+from ui.components.shell import no_access_text
 from ui.components.table import fmt_money
 from ui.i18n import t
 
@@ -127,7 +128,7 @@ def plain_error_response(e: APIError):
     if e.status == 401:
         return RedirectResponse("/login", status_code=302)
     if e.status == 403:
-        return PlainTextResponse(t("acct.not_authorized"), status_code=403)
+        return PlainTextResponse(no_access_text(e), status_code=403)
     status = e.status if 400 <= e.status < 500 else 500
     return PlainTextResponse(str(e.detail), status_code=status)
 
