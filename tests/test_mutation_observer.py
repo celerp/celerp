@@ -597,6 +597,26 @@ async def test_a_connector_lease_is_written_by_the_execution_only(session, auth,
     assert _kinds() == ([] if writer == "the execution" else ["unprotected"])
 
 
+async def test_every_function_of_the_execution_that_writes_a_lease_row_is_a_lease_site():
+    """Each function of celerp/connectors/execution.py whose SQL inserts, updates or deletes
+    a lease table's rows is named in the lease sites, read from the source: a new writer
+    is not refused when a request reaches it."""
+    import ast
+    import re
+
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "celerp/connectors/execution.py"
+    tables = "|".join(mutation_observer.LEASE_STATE)
+    writers = set()
+    for node in ast.walk(ast.parse(path.read_text())):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            sql = " ".join(c.value for c in ast.walk(node) if isinstance(c, ast.Constant) and isinstance(c.value, str))
+            if re.search(rf"\b({tables})\b", sql) and re.search(r"\b(INSERT INTO|UPDATE|DELETE FROM)\b", sql):
+                writers.add(f"celerp/connectors/execution.py {node.name}")
+    assert writers and writers <= set(mutation_observer._LEASE_SITES), sorted(writers - set(mutation_observer._LEASE_SITES))
+
+
 @pytest.mark.parametrize("writer, columns", [("the heartbeat", ("lease_until",)), ("the heartbeat", ("status",)),
                                              ("elsewhere", ("lease_until",))])
 async def test_an_ai_jobs_lease_is_renewed_by_its_heartbeat_only(session, auth, monkeypatch, writer, columns):

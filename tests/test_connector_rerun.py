@@ -139,6 +139,36 @@ async def test_a_sync_request_runs_the_rerun_a_busy_delivery_left_before_it_rele
     assert await _reruns(cid, stub.name) == []
 
 
+async def test_a_sync_request_resumes_a_rerun_waiting_for_its_retry_time(
+        stub, real_engine, real_client, connector_modules_running, signed_in_to_cloud):
+    """A rerun backed off after attempts that did not complete does not wait out its retry
+    time once the user asks for a sync: the request clears its pacing and runs it."""
+    from celerp.connectors.execution import record_rerun
+
+    user = await owner(real_engine)
+    cid = str(await company(real_engine, user, "Resume Trading", "resume-marker"))
+    tok = await token(real_engine, user, cid)
+    await connected(cid, stub, stub.default_directions)
+    await record_rerun(cid, stub.name, "orders")
+    async with get_session_ctx() as s:
+        await s.execute(sa.text(
+            "UPDATE connector_execution_heartbeats SET rerun_attempts = 3, "
+            "rerun_retry_at = now() + interval '1 hour' WHERE company_id = :c AND resource = 'orders'"),
+            {"c": cid})
+        await s.commit()
+
+    r = await real_client.post(f"/connectors/{stub.name}/sync", json={"entity": "orders"},
+                               headers={"Authorization": f"Bearer {tok}"})
+    assert r.status_code == 200, r.text
+    assert stub.calls == [{"reconcile": False}, {"reconcile": True}]
+    assert await _reruns(cid, stub.name) == []
+    async with get_session_ctx() as s:
+        paced = (await s.execute(sa.text(
+            "SELECT rerun_attempts, rerun_retry_at FROM connector_execution_heartbeats "
+            "WHERE company_id = :c AND resource = 'orders'"), {"c": cid})).one()
+    assert tuple(paced) == (0, None)
+
+
 async def test_a_rerun_refused_while_modules_change_in_a_sync_request_is_recorded_again(
         stub, real_engine, real_client, connector_modules_running, signed_in_to_cloud):
     """The rerun a sync request runs before it releases is refused because a module is

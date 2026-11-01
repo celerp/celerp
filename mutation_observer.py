@@ -173,8 +173,8 @@ UNDER_ROW_LOCK: dict[tuple[str, str], RowLocked] = {
 # names the only functions that may write it; the same write from anywhere else is judged
 # as usual.
 _LEASE_SITES = tuple(f"celerp/connectors/execution.py {name}" for name in (
-    "_ensure_rows", "_acquire", "_renew_once", "_release", "_ack_rerun", "settle_rerun", "sweep_reruns",
-    "record_rerun"))
+    "_ensure_rows", "_acquire", "_renew_once", "_release", "_ack_rerun", "_pace", "settle_rerun", "settle_unrun",
+    "sweep_reruns", "resume_reruns", "record_rerun"))
 LEASE_STATE: dict[str, Judged] = {
     "connector_execution_leases": Judged(
         _LEASE_SITES, "a connector execution's fenced generation and holder, taken and given back"),
