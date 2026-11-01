@@ -139,7 +139,7 @@ async def test_inbound_image_pull_is_idempotent(connector_session):
 
     session = connector_session
     cid = await seed_company(session, "ImagePull")
-    await add_item(session, cid, "item:img", "IMG-1")
+    await add_item(session, cid, "item:img", "IMG-1", external_links={"woocommerce": {"product_id": "1"}})
     ctx = ConnectorContext(company_id=str(cid), access_token="k:s", store_handle="https://store.example.com")
     product = {"images": [
         {"id": 11, "src": "https://cdn.example.com/a.jpg", "name": "a"},
@@ -271,6 +271,10 @@ _PICTURED = {"woocommerce": ("https://store.example.com", "https://store.example
                          "https://pictured.myshopify.com/admin/api/2024-01/products.json")}
 
 
+# item:img linked to the store's product 7, as an earlier import left it.
+_LINKS = {"woocommerce": {"product_id": "7"}, "shopify": {"product_id": "7", "variant_id": "70"}}
+
+
 def _store_products(platform: str, images: list[dict] | None):
     """One store product with ``images`` (id, src, name), as the store answers it; with
     ``images`` None the store lists no product."""
@@ -334,7 +338,7 @@ _B = {"id": 12, "src": "https://cdn.example.com/b.jpg", "name": "b"}
 async def test_an_image_that_fails_to_download_waits_on_a_person_and_the_others_are_attached(
         connector_session, platform):
     cid = await seed_company(connector_session, f"Partial{platform}")
-    await add_item(connector_session, cid, "item:img", "IMG-1")
+    await add_item(connector_session, cid, "item:img", "IMG-1", external_links={platform: _LINKS[platform]})
 
     result = await _sync(platform, cid, images=[_A, _B], broken={_B["src"]})
 
@@ -350,7 +354,7 @@ async def test_an_image_that_fails_to_download_waits_on_a_person_and_the_others_
 @pytest.mark.asyncio
 async def test_images_that_cannot_be_stored_wait_on_a_person(connector_session):
     cid = await seed_company(connector_session, "StoreDown")
-    await add_item(connector_session, cid, "item:img", "IMG-1")
+    await add_item(connector_session, cid, "item:img", "IMG-1", external_links={"woocommerce": _LINKS["woocommerce"]})
 
     result = await _sync("woocommerce", cid, images=[_A, _B], store_fails=True)
 
@@ -366,7 +370,7 @@ async def test_an_image_that_failed_is_pulled_once_when_the_store_serves_it_agai
     """The next sync pulls the waiting image although the store no longer lists its product,
     and later syncs, with or without the product, attach nothing twice."""
     cid = await seed_company(connector_session, f"Retry{platform}")
-    await add_item(connector_session, cid, "item:img", "IMG-1")
+    await add_item(connector_session, cid, "item:img", "IMG-1", external_links={platform: _LINKS[platform]})
 
     first = await _sync(platform, cid, images=[_A, _B], broken={_B["src"]})
     assert _unpulled(first)

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import uuid
 
+import httpx
 import pytest
 import sqlalchemy as sa
 
@@ -170,6 +171,60 @@ async def test_undo_keeps_a_pulled_file_changed_since(real_engine, real_client, 
     assert [f["id"] for f in (await _item(cid, "item:match2")).get("files") or []] == ["pulled1"]
     kept = {k["entity_id"]: k for k in r.json()["kept"]}
     assert kept["item:match2"].get("files") == ["pulled1"], r.json()
+
+
+async def _image_waiting_after_first_sync(name: str, store) -> tuple[uuid.UUID, uuid.UUID]:
+    """A first sync that linked item:match2 to store product 2 and could not download its
+    image, which waits on a person; the store then serves the image again and lists no product."""
+    from celerp.connectors.sync_runner import attention_entries
+
+    store.image.mock(return_value=httpx.Response(503))
+    cid, uid = await _linked(name)
+    assert [e["entity_id"] for e in await attention_entries(str(cid), "woocommerce", "products")
+            if e.get("kind") == "files"] == ["item:match2"]
+    store.image.mock(return_value=httpx.Response(200, content=b"img", headers={"content-type": "image/jpeg"}))
+    store.products.mock(return_value=httpx.Response(200, json=[]))
+    return cid, uid
+
+
+async def _next_sync_leaves_no_file(cid, store) -> None:
+    from celerp import connectors
+    from celerp.connectors.sync_runner import attention_entries, run_connector_sync
+
+    for _ in range(2):  # the waiting work is gone after the first, so the second tries nothing
+        await run_connector_sync(connectors.get("woocommerce"), str(cid), purpose="manual_sync")
+    assert (await _item(cid, "item:match2")).get("files") in (None, [])
+    assert not [e for e in await attention_entries(str(cid), "woocommerce", "products") if e.get("kind") == "files"]
+    assert not store.image.called
+
+
+async def test_an_image_waiting_from_the_first_sync_is_not_pulled_onto_an_item_its_undo_detached(
+        real_engine, real_client, store):
+    cid, uid = await _image_waiting_after_first_sync("UndoThenImage", store)
+    r = await real_client.post(UNDO, headers=await _headers(real_engine, cid, uid))
+    assert r.status_code == 200, r.text
+    assert not _linked_to_store(await _item(cid, "item:match2"))
+    store.image.reset()
+    await _next_sync_leaves_no_file(cid, store)
+
+
+async def test_an_image_waiting_from_the_first_sync_is_not_pulled_onto_an_item_linked_to_another_product(
+        real_engine, real_client, store):
+    from celerp.db import get_session_ctx
+    from celerp.events.engine import emit_event
+
+    cid, _uid = await _image_waiting_after_first_sync("RelinkThenImage", store)
+    async with get_session_ctx() as session:
+        state = await item_state(session, cid, "item:match2")
+        links = {**state["external_links"], "woocommerce": {**state["external_links"]["woocommerce"], "product_id": 77}}
+        await emit_event(session, company_id=cid, entity_id="item:match2", entity_type="item",
+                         event_type="item.updated", data={"fields_changed": {"external_links": {
+                             "old": state["external_links"], "new": links}}},
+                         actor_id=None, location_id=None, source="connector", idempotency_key=f"relink:{cid}",
+                         metadata_={})
+        await session.commit()
+    store.image.reset()
+    await _next_sync_leaves_no_file(cid, store)
 
 
 async def test_an_interrupted_undo_changes_nothing_and_its_repeat_completes(real_engine, real_client, store, monkeypatch):

@@ -47,6 +47,17 @@ def external_link_for_state(state: dict, platform: str) -> dict:
     return _legacy_external_link(platform, str(state.get("idempotency_key") or ""))
 
 
+def linked_store_product(state: dict, platform: str) -> str | None:
+    """The key of the store product the item is linked to on *platform* (the product id,
+    or "product:variation"), as the platform's sync reads it (RemoteProduct.key); None
+    when the item holds no link there."""
+    link = external_link_for_state(state, platform)
+    if not link:
+        return None
+    variant = link.get("variant_id" if platform == "shopify" else "variation_id")
+    return f"{link['product_id']}:{variant}" if variant not in (None, "") else str(link["product_id"])
+
+
 async def woocommerce_order_anchor_ids(session: AsyncSession, company_id, doc) -> list[str]:
     """The catalog products one WooCommerce order touches, through the unit a
     line is bound to or, on an unbound line, the catalog product it names."""

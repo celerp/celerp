@@ -95,13 +95,15 @@ async def pull_store_files(ctx, connector, *, key: str, label: str, entity_id: s
     "remote_id"}. The files that could not be downloaded or stored wait on a person in one
     ``pending`` entry for the product (kind "files", listing them), and the next sync pulls
     them again (retry_unpulled_files) until each is attached. The files a first sync pulls
-    (``operation``) join its import or its link's undo record, also when a later sync pulls them."""
+    (``operation``) join its import or its link's undo record, also when a later sync pulls them.
+    Files of a product the item is no longer linked to (the link undone or moved to another
+    product since) are not pulled and no longer wait."""
     from ui.i18n import t
 
     entry_id = f"{key}{_FILES_ENTRY}"
     processed.add(entry_id)
     try:
-        failed = await _pull_item_files(ctx, connector.name, entity_id, files, operation)
+        failed = await _pull_item_files(ctx, connector.name, key, entity_id, files, operation)
     except Exception as exc:
         log.warning("connector: failed to pull the files of %s: %s", entity_id, exc)
         failed = files
@@ -126,17 +128,19 @@ async def retry_unpulled_files(ctx, connector, attention: list[dict] | None, pen
                 operation=entry.get("operation"))
 
 
-async def _pull_item_files(ctx, platform: str, entity_id: str, files: list[dict],
+async def _pull_item_files(ctx, platform: str, key: str, entity_id: str, files: list[dict],
                            operation: str | None) -> list[dict]:
-    """Pull ``files`` onto the item in one transaction and return those that failed."""
+    """Pull ``files`` of store product ``key`` onto the item in one transaction and return
+    those that failed; none when the item is gone or no longer linked to that product."""
     from celerp.connectors.base import ExternalImportRecord
+    from celerp.connectors.product_links import linked_store_product
     from celerp.db import get_session_ctx
     from celerp.models.projections import Projection
 
     failed = []
     async with get_session_ctx() as session:
         row = await session.get(Projection, {"company_id": ctx.company_id, "entity_id": entity_id})
-        if row is None or row.entity_type != "item":
+        if row is None or row.entity_type != "item" or linked_store_product(row.state or {}, platform) != key:
             return []
         for file in files:
             outcome = await download_and_emit_file(
