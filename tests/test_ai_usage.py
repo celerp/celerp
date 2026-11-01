@@ -140,7 +140,10 @@ def _counts(rows: list[dict]) -> list[tuple[int, int]]:
 
 
 async def _usage(client, token: str, **params):
-    return await client.get("/ai/usage-stats", headers={"Authorization": f"Bearer {token}"}, params=params)
+    """The usage report over all time unless a test names its period: a question placed
+    minutes ago falls in the previous month in the first minutes of a month."""
+    return await client.get("/ai/usage-stats", headers={"Authorization": f"Bearer {token}"},
+                            params={"period": "all", **params})
 
 
 @pytest.fixture
@@ -244,7 +247,7 @@ async def test_usage_period_all_counts_earlier_months(client, session, owner):
     await _question(session, company_id, user_id, credits=1)
     await session.commit()
 
-    month = (await _usage(client, token)).json()
+    month = (await client.get("/ai/usage-stats", headers={"Authorization": f"Bearer {token}"})).json()
     assert [r["query_count"] for r in month["users"]] == [1]
     assert month["period"]["kind"] == "month"
     tz = (await client.get("/companies/me", headers={"Authorization": f"Bearer {token}"})).json()["settings"].get("timezone")
