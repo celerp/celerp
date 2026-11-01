@@ -851,7 +851,7 @@ async def preview_first_sync(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """What starting the first sync in the connection's current directions would do,
-    importing orders from ``orders_from`` (today when not given). Reads both sides and
+    importing orders from ``orders_from`` (the company's today when not given). Reads both sides and
     writes to neither."""
     import dataclasses
 
@@ -867,22 +867,27 @@ async def preview_first_sync(
     row = await _first_sync_row(session, company_id, connector_name)
     if row is None or row.state != "pending":
         raise HTTPException(status_code=409, detail=t("connectors.err_first_sync_done"))
-    await session.commit()
-    preview = await _read_preview(connector, company_id, config.id, dict(config.entity_directions), orders_from)
+    preview = await _read_preview(session, connector, company_id, config.id, dict(config.entity_directions), orders_from)
     return jsonable_encoder(dataclasses.asdict(preview))
 
 
-async def _read_preview(connector, company_id, config_id: int, directions: dict, orders_from: date | None):
+async def _read_preview(session: AsyncSession, connector, company_id, config_id: int, directions: dict,
+                        orders_from: date | None):
     """The first sync's preview read from the store, outside any lock: what the preview
-    page shows and what Start compares the person's receipt with."""
-    from datetime import datetime, time, timezone
+    page shows and what Start compares the person's receipt with. Orders start at midnight
+    of ``orders_from`` (the company's today when not given) in the company's business time
+    zone. Ends the session's transaction before the store is read."""
+    from datetime import datetime, time
 
     from celerp.connectors.first_sync import build_preview
+    from celerp.services.business_time import company_timezone, company_today
 
+    zone = await company_timezone(session, company_id)
+    start = datetime.combine(orders_from or await company_today(session, company_id), time(), tzinfo=zone)
+    await session.commit()
     ctx = await _connector_context(str(company_id), connector.name)
     if ctx is None:
         raise HTTPException(status_code=409, detail=t("error.connector_not_connected", service=connector.display_name))
-    start = datetime.combine(orders_from or datetime.now(timezone.utc).date(), time(), tzinfo=timezone.utc)
     try:
         return await build_preview(connector, ctx, directions, start, config_id)
     except (httpx.HTTPError, ValueError) as exc:
@@ -998,7 +1003,8 @@ class FirstSyncRequest(BaseModel):
     """The choices a person made on the first sync's preview."""
     directions: dict[str, str]
     match: Literal["keep", "take"]
-    # The earliest order date to import; none starts at the start of today, as the preview reads it.
+    # The earliest order date to import, a day in the company's business time zone; none starts
+    # at the start of the company's today, as the preview reads it.
     orders_from: date | None = None
     # The version of the preview the person reviewed: Start refuses once it changed, and
     # without one (the preview never loaded) as if it had.
@@ -1044,8 +1050,7 @@ async def start_first_sync(
     if row is None or row.state != "pending":
         raise HTTPException(status_code=409, detail=t("connectors.err_first_sync_done"))
     config_id = previewed.id
-    await session.commit()
-    preview = await _read_preview(connector, company_id, config_id, directions, payload.orders_from)
+    preview = await _read_preview(session, connector, company_id, config_id, directions, payload.orders_from)
     if preview.version != payload.preview_version:
         raise HTTPException(status_code=409, detail=t("connectors.err_preview_changed", service=connector.display_name))
 

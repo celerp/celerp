@@ -216,3 +216,65 @@ async def test_a_stopped_first_sync_shows_why_and_its_retry_runs_it_to_the_end(
                                   headers={"HX-Request": "true"})
     assert "This first sync has not stopped, so there is nothing to retry." in r.text
     assert "first-sync/retry" not in r.text
+
+
+async def test_the_order_date_is_the_company_business_day_for_the_default_and_a_chosen_date(
+        store_owner, store_answers, real_engine, monkeypatch):
+    """The first sync's order date is a day in the company's business time zone. With no date
+    chosen it is the company's today: at 18:00 on 31 May in Los Angeles (01:00 on 1 June in
+    UTC), the preview names 31 May and shows an order placed at 09:00 that morning. A chosen
+    date starts at that day's midnight in Los Angeles, in the preview and in what Start saves."""
+    import datetime as dt_module
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    from celerp import connectors
+    from celerp.connectors.base import RemoteOrder
+    from celerp.models.connector_config import ConnectorConfig
+    from celerp.services import background, business_time
+
+    now = datetime(2026, 6, 1, 1, 0, tzinfo=timezone.utc)
+    placed = datetime(2026, 5, 31, 16, 0, tzinfo=timezone.utc)
+    los_angeles = ZoneInfo("America/Los_Angeles")
+
+    class _Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now.astimezone(tz) if tz is not None else now.replace(tzinfo=None)
+
+    async with maker(real_engine)() as s:
+        await s.execute(sa.text(
+            "UPDATE companies SET settings = (COALESCE(settings::jsonb, '{}'::jsonb) "
+            "|| '{\"timezone\": \"America/Los_Angeles\"}'::jsonb)::json WHERE id = :c"), {"c": store_owner.cid})
+        await s.commit()
+    directions = {"orders": "inbound"}
+    await connected(store_owner.cid, PLATFORM, directions, first_sync="pending")
+    order = RemoteOrder(id="7", number="1007", status="processing", created=placed, total=20.0,
+                        currency="USD", posts=False)
+
+    async def _preview_orders(self, ctx, orders_from):
+        return [order] if order.created >= orders_from else []
+
+    monkeypatch.setattr(type(connectors.get(PLATFORM)), "preview_orders", _preview_orders)
+    headers = {"Authorization": f"Bearer {store_owner.tok}"}
+    with monkeypatch.context() as clock:
+        clock.setattr(dt_module, "datetime", _Frozen)
+        clock.setattr(business_time, "datetime", _Frozen)
+        seen = (await store_owner.api.get(f"/connectors/{PLATFORM}/first-sync/preview", headers=headers)).json()
+    assert datetime.fromisoformat(seen["orders_from"]) == datetime(2026, 5, 31, tzinfo=los_angeles)
+    assert [o["id"] for o in seen["orders"]] == ["7"]
+
+    chosen = (await store_owner.api.get(f"/connectors/{PLATFORM}/first-sync/preview",
+                                        params={"orders_from": "2026-05-20"}, headers=headers)).json()
+    assert datetime.fromisoformat(chosen["orders_from"]) == datetime(2026, 5, 20, tzinfo=los_angeles)
+    before = set(background._BG_TASKS)
+    r = await store_owner.api.post(f"/connectors/{PLATFORM}/first-sync", headers=headers, json={
+        "directions": directions, "match": "keep", "orders_from": "2026-05-20",
+        "preview_version": chosen["version"]})
+    assert r.status_code == 200, r.text
+    await asyncio.wait_for(_settled(set(background._BG_TASKS) - before), 30)
+    async with maker(real_engine)() as s:
+        config = (await s.scalars(sa.select(ConnectorConfig).where(
+            ConnectorConfig.company_id == store_owner.cid,
+            ConnectorConfig.connector == PLATFORM))).one()
+    assert config.orders_from == datetime(2026, 5, 20, tzinfo=los_angeles)

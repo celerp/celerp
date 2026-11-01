@@ -682,13 +682,13 @@ def test_first_sync_requires_preview_inputs():
     assert FirstSyncRequest(directions=WOO_DEFAULTS, match="keep", preview_version="v" * 64).orders_from is None
 
 
-async def _reviewed(cid, config, directions: dict, orders_from=None) -> str:
+async def _reviewed(session, cid, config, directions: dict, orders_from=None) -> str:
     """The version of the preview the person reviewed before Start, read the way Start
     reads it again (a store with no products and no orders)."""
     from celerp import connectors
     from celerp_connectors.routes import _read_preview
 
-    return (await _read_preview(connectors.get("woocommerce"), str(cid), config.id, directions, orders_from)).version
+    return (await _read_preview(session, connectors.get("woocommerce"), str(cid), config.id, directions, orders_from)).version
 
 
 @pytest.fixture
@@ -723,7 +723,7 @@ async def test_first_sync_runs_once(connector_session, empty_store):
     with patch("celerp.connectors.relay_token.fetch_context", new=AsyncMock(return_value=ctx)), \
             patch("celerp.services.background.spawn_background", spawned.append):
         request = FirstSyncRequest(directions=directions, match="take", orders_from=date(2026, 9, 1),
-                                   preview_version=await _reviewed(cid, config, directions, date(2026, 9, 1)))
+                                   preview_version=await _reviewed(session, cid, config, directions, date(2026, 9, 1)))
         out = await start_first_sync("woocommerce", request, str(cid), user, None, session)
         assert out == {"ok": True}
         with pytest.raises(HTTPException) as again:
@@ -760,7 +760,7 @@ async def test_first_sync_without_products_in_records_no_batch(connector_session
     spawned = []
     with patch("celerp.connectors.relay_token.fetch_context", new=AsyncMock(return_value=ctx)), \
             patch("celerp.services.background.spawn_background", spawned.append):
-        version = await _reviewed(cid, config, WOO_DEFAULTS)
+        version = await _reviewed(session, cid, config, WOO_DEFAULTS)
         await start_first_sync("woocommerce", FirstSyncRequest(directions=WOO_DEFAULTS, match="keep",
                                                                preview_version=version),
                                str(cid), SimpleNamespace(id="user-1"), None, session)
