@@ -12,14 +12,14 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import RedirectResponse
+from starlette.responses import HTMLResponse, RedirectResponse
 
 import ui.api_client as api
 from ui.components.icons import import_icon
 from ui.components.module_off import can_open
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
-from ui.components.shell import base_shell, info_tip, page_header, page_title
+from ui.components.shell import base_shell, info_tip, page_header, page_title, toast_header
 from ui.components.table import search_bar, search_results, pagination, per_page_value, EMPTY, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, add_new_option, data_table, column_manager, display_enum, doc_status_badge
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import files_error, files_error_block, files_section as _shared_files_section, files_session_expired, linked_files, _DOCUMENT_TAGS
@@ -77,9 +77,8 @@ def _contact_schema(contact_type: str) -> list[dict]:
 
 
 
-# UX rule: all editable text fields use dblclick-to-edit, ESC to cancel, blur/Enter to save.
-# This is a system-wide rule — see USER.md for details.
-def _contact_display_cell(contact_id: str, field: str, value, trigger: str = "dblclick") -> FT:
+# A contact's fields open for editing on one click; Esc cancels, blur or Enter saves.
+def _contact_display_cell(contact_id: str, field: str, value) -> FT:
     if field == "credit_limit":
         display = format_value(value, "money")
     elif field == "contact_type":
@@ -88,12 +87,11 @@ def _contact_display_cell(contact_id: str, field: str, value, trigger: str = "db
         display = str(value) if value and str(value).strip() else t("contacts.company_default")
     else:
         display = str(value) if value and str(value).strip() else EMPTY
-    title = t("label.dblclick_to_edit")
     return Td(
         display,
-        title=title,
+        title=t("documents.click_to_edit"),
         hx_get=f"/contacts/{contact_id}/field/{field}/edit",
-        hx_target="this", hx_swap="outerHTML", hx_trigger=trigger,
+        hx_target="this", hx_swap="outerHTML", hx_trigger="click",
         cls="cell cell--clickable",
     )
 
@@ -712,7 +710,12 @@ def _contacts_content(
             edit_url_tpl="/contacts/{id}/field/{field}/edit",
         )
 
+    own = next((c for c in contacts if c.get("is_self")), None)
+    own_note = P(t("contacts.own_record_note", name=own.get("name") or EMPTY), " ",
+                 A(t("settings.company_details"), href="/finance/company-details"),
+                 cls="form-hint") if own else ""
     return Div(
+        own_note,
         table_content,
         pagination(page, total, per_page, base_url,
                    f"type={contact_type}&q={_quote_plus(q)}&sort={sort}&dir={sort_dir}".strip("&")),
@@ -906,8 +909,9 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
     )
 
     return await base_shell(
-        breadcrumbs([(t("nav.dashboard"), "/dashboard"), (back_label, back_href), (page_title, None)]),
-        page_header(page_title),
+        breadcrumbs([(t("nav.dashboard"), "/dashboard"), (back_label, back_href),
+                     (Span(page_title, id="contact-name-crumb"), None)]),
+        page_header(Span(page_title, id="contact-name-title")),
         autofocus_script,
         action_bar,
         delete_btn,
@@ -1235,6 +1239,8 @@ def setup_routes(app):
                 files_error_block(body, e.status),
                 title=page_title("nav.customers"), nav_active="customers", request=request,
             )
+        if contact.get("is_self"):
+            return RedirectResponse("/finance/company-details", status_code=302)
         company = await _get_company(token)
         docs_error = None
         try:
@@ -1332,6 +1338,7 @@ def setup_routes(app):
         return await base_shell(
             breadcrumbs([(t("nav.dashboard"), "/dashboard"), (t("settings.company_details"), None)]),
             page_header("🏢 " + t("settings.company_details")),
+            P(t("contacts.identity_on_documents"), cls="form-hint"),
             Div(
                 Div(_contact_info_card(
                     contact,
@@ -1919,8 +1926,8 @@ def setup_routes(app):
                 cancel_url=f"/contacts/{contact_id}/field/currency/display",
             )
         else:
-            # Guard: ignore blur within 350ms of mount to prevent dblclick's
-            # second mouseup from immediately closing the editor.
+            # Guard: ignore blur within 350ms of mount so the opening click's
+            # own mouseup cannot close the editor at once.
             input_el = Input(
                 type="number" if field == "credit_limit" else "text",
                 name="value", value=val,
@@ -1975,10 +1982,23 @@ def setup_routes(app):
         data = {field: float(value) if field == "credit_limit" and value else value}
         try:
             await api.patch_contact(token, contact_id, data)
+        except APIError as e:
+            refused = e
+        else:
+            refused = None
+        try:
             contact = await api.get_contact(token, contact_id)
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        return _contact_display_cell(contact_id, field, contact.get(field))
+        cell = _contact_display_cell(contact_id, field, contact.get(field))
+        if refused is not None:
+            # The stored value stays in the cell and the reason shows as a toast.
+            return HTMLResponse(to_xml(cell), headers=toast_header(str(refused.detail), "error"))
+        if field == "name":
+            # The page's heading and breadcrumb carry the name too (absent on Company Details).
+            name = contact.get("name") or ""
+            return cell, Span(name, id="contact-name-title", hx_swap_oob="true"), Span(name, id="contact-name-crumb", hx_swap_oob="true")
+        return cell
 
     @app.post("/contacts/{contact_id}/tags/add")
     async def contact_add_tag(request: Request, contact_id: str):
@@ -2026,7 +2046,7 @@ def setup_routes(app):
         try:
             contact = await api.get_contact(token, contact_id)
             current_tags = list(contact.get("tags") or [])
-            remaining = [t for item in current_tags if t != tag]
+            remaining = [item for item in current_tags if item != tag]
             await api.patch_contact(token, contact_id, {"tags": remaining})
             contact = await api.get_contact(token, contact_id)
         except APIError as e:

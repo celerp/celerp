@@ -183,6 +183,24 @@
     "table.confirm_delete_drafts_selected": {
       "en": "Delete selected drafts? A draft nothing else uses is erased and cannot be brought back. A draft another record still names moves to Deleted, where Restore brings it back.",
       "params": []
+    },
+    "error.email_invalid": {
+      "en": "Enter one email address, like name@example.com.",
+      "params": []
+    },
+    "contacts.err_own_contact_kept": {
+      "en": "This is your company's own record, shown as the sender on your documents, so it cannot be deleted or merged into another contact. Change its details in Company Details.",
+      "params": []
+    },
+    "contacts.own_record_note": {
+      "en": "Your company's own record, {name}, is listed here because your documents show it as the sender. Change it in",
+      "params": [
+        "name"
+      ]
+    },
+    "contacts.identity_on_documents": {
+      "en": "The details here are the sender on your documents: every new invoice, quote and memo shows them.",
+      "params": []
     }
   }
 }
