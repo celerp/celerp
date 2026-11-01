@@ -7589,6 +7589,10 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
     unit_hdr = t("inventory.pricing_unit_hdr", sym=cur_sym, sell_by=sell_by) if cur_sym else t("inventory.pricing_unit_hdr_nosym", sell_by=sell_by)
     total_hdr = t("inventory.pricing_total_hdr", qty=f"{qty:g}", sell_by=sell_by) if has_qty else t("inventory.pricing_total_hdr_nostock")
 
+    def price_headers() -> list[FT]:
+        """The price list, then its unit and total figures, each over its own right-aligned column."""
+        return [Th(t("th.price_list")), Th(unit_hdr, cls="cell--right"), Th(total_hdr, cls="cell--right")]
+
     def _cur(v):
         return Div(Span(cur_sym, cls="input-prefix") if cur_sym else "", v, cls="input-with-prefix")
 
@@ -7629,8 +7633,8 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
             unit_span, total_span = _readonly_price_cells(conventional_key, price_val, qty, has_qty, rdp)
             return (
                 Td(pl_name, cls="detail-label"),
-                Td(_cur(unit_span)),
-                Td(_cur(total_span) if has_qty else empty_mark()),
+                Td(_cur(unit_span), cls="cell--right"),
+                Td(_cur(total_span) if has_qty else empty_mark(), cls="cell--right"),
             ), actions
         unit_id, total_id = f"unit_{conventional_key}", f"total_{conventional_key}"
         # Enter commits by blurring (which fires `change` → the autosave below), matching the
@@ -7663,12 +7667,12 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
                             placeholder="--", cls="form-input", disabled=not has_qty,
                             oninput=f"syncPricingUnit('{unit_id}','{total_id}',{qty},{cdp},{rdp})",
                             onkeydown=enter_commits, **total_save)
-        return (Td(pl_name, cls="detail-label"), Td(_cur(unit_input)), Td(_cur(total_input), *carried)), actions
+        return (Td(pl_name, cls="detail-label"), Td(_cur(unit_input), cls="cell--right"), Td(_cur(total_input), *carried, cls="cell--right")), actions
 
     def _card(title: str, lists: list[dict], editable: bool, note: str | None = None) -> FT:
         rows = [_row(pl, editable) for pl in lists]
         with_actions = any(actions for _, actions in rows)
-        headers = [Th(t("th.price_list")), Th(unit_hdr), Th(total_hdr)]
+        headers = price_headers()
         if with_actions:
             headers.append(Th(t("th.actions")))
             body = [Tr(*cells, Td(*actions)) for cells, actions in rows]
@@ -7711,9 +7715,9 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
         unit_span, total_span = _readonly_price_cells("sold_price", sold_val, qty, has_qty, rdp)
         cards.append(Div(
             H3(t("inventory.card_sold_price"), cls="section-title"),
-            Table(Thead(Tr(Th(t("th.price_list")), Th(unit_hdr), Th(total_hdr))),
-                  Tbody(Tr(Td(t("chip.sold"), cls="detail-label"), Td(_cur(unit_span)),
-                           Td(_cur(total_span) if has_qty else empty_mark()))),
+            Table(Thead(Tr(*price_headers())),
+                  Tbody(Tr(Td(t("chip.sold"), cls="detail-label"), Td(_cur(unit_span), cls="cell--right"),
+                           Td(_cur(total_span) if has_qty else empty_mark(), cls="cell--right"))),
                   cls="detail-table"),
             cls="detail-card",
         ))

@@ -3,7 +3,7 @@
 """Playwright: on every main page at a desktop width, a column of figures reads as one.
 
 A header over figures sits right, over its own numbers, and a header over text does not; a number
-box typed into sits right like the figures it edits; and no header is cut short."""
+box typed into sits right like the figures it edits, and so do its cell and header; and no header is cut short."""
 from __future__ import annotations
 
 import pytest
@@ -19,6 +19,9 @@ pytestmark = pytest.mark.browser
 _ALIGNMENT_JS = """() => {
   const FIGURES = '.cell--money, .cell--rate, .cell--weight, .cell--number, .cell--paired:not(.cell--conversion)';
   const right = el => ['right', 'end'].includes(getComputedStyle(el).textAlign);
+  // A cell typed into as a number: a visible number box and no text box or select beside it.
+  const numberColumn = td => [...td.querySelectorAll('input[type=number]')].some(i => i.offsetParent)
+    && !td.querySelector('input:not([type=number]):not([type=hidden]):not([type=checkbox]), select, textarea');
   const out = [];
   for (const t of document.querySelectorAll('.main-content table')) {
     if (!t.offsetParent) continue;
@@ -33,7 +36,8 @@ _ALIGNMENT_JS = """() => {
       const td = row && row.children[i];
       if (!td) return;
       if (right(th) !== right(td)) out.push(`${label}: header ${getComputedStyle(th).textAlign}, cells ${getComputedStyle(td).textAlign}`);
-      else if (td.matches(FIGURES) && !right(td)) out.push(`${label}: figures sit ${getComputedStyle(td).textAlign}`);
+      else if ((td.matches(FIGURES) || numberColumn(td)) && !right(td))
+        out.push(`${label}: figures sit ${getComputedStyle(td).textAlign}`);
     });
     for (const inp of t.querySelectorAll('input[type=number]'))
       if (inp.offsetParent && !right(inp)) out.push(`number box ${inp.name || inp.id || inp.tagName} sits ${getComputedStyle(inp).textAlign}`);

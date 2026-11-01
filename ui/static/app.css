@@ -2156,7 +2156,7 @@ form:has(> #fa-preview:not(:empty)) ~ .empty-state-cta { display: none; }
    cell classes are listed here, and only here, so screen matches print.
    (!important beats base th{text-align:center}) */
 .data-table th.cell--number,
-.data-table th.cell--right { text-align: right !important; }
+th.cell--right { text-align: right !important; }
 /* The figures under that header, declared once for both cases. A bare `.cell--right`
    loses to `.data-table td { text-align: left }`, which left counts and percentages
    hugging the wrong edge on screen while print right-aligned them. */
