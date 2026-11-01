@@ -55,7 +55,7 @@ def _literal_or_prefix(node: ast.expr):
 # Functions that build a refusal from the key they are given, by the key's position:
 # their callers name the key, so a call to one is a refusal call site and the
 # refusal() inside the function itself is not.
-_KEY_ARGUMENT = {"refusal": 0, "keyed_error": 1, "_agent_error": 1, "_conflict": 1}
+_KEY_ARGUMENT = {"refusal": 0, "keyed_error": 1, "_agent_error": 1, "_conflict": 1, "Refused": 0}
 
 
 def _refusal_calls():
@@ -68,15 +68,18 @@ def _refusal_calls():
             if "/tests/" in text or path.name.startswith("test_"):
                 continue
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=text)
-            wrapped = {id(n) for f in ast.walk(tree) if isinstance(f, ast.FunctionDef)
+            wrapped = {id(n) for f in ast.walk(tree) if isinstance(f, (ast.FunctionDef, ast.ClassDef))
                        and f.name in _KEY_ARGUMENT for n in ast.walk(f)}
+            # Refused is the one in accounting_roles, not a module's own class of that name.
+            shared_refused = any(isinstance(n, ast.ImportFrom) and n.module == "celerp.accounting_roles"
+                                 and any(a.name == "Refused" for a in n.names) for n in ast.walk(tree))
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call) or id(node) in wrapped:
                     continue
                 fn = node.func
                 name = fn.id if isinstance(fn, ast.Name) else (
                     fn.attr if isinstance(fn, ast.Attribute) else None)
-                position = _KEY_ARGUMENT.get(name)
+                position = _KEY_ARGUMENT.get(name) if name != "Refused" or shared_refused else None
                 if position is None or len(node.args) <= position:
                     continue
                 key, kind = _literal_or_prefix(node.args[position])
@@ -111,8 +114,8 @@ _DYNAMIC_KEY_SITES = {
     ],
     # celerp/services/document_lines.py: key, text = _PROTECTED_MESSAGES[why]
     "celerp/services/document_lines.py": ["line.protected_held", "line.protected_received"],
-    # default_modules/celerp-inventory/celerp_inventory/services.py: CostRefused(key, message)
-    # wraps refusal(key, ...); each subclass passes its literal key to super().__init__
+    # default_modules/celerp-inventory/celerp_inventory/services.py: each CostRefused
+    # subclass passes its literal key to Refused through super().__init__
     "default_modules/celerp-inventory/celerp_inventory/services.py": [
         "inventory.cost_total_below_landed", "inventory.cost_text_invalid",
         "inventory.cost_unit_needs_quantity", "inventory.cost_version_stale",
@@ -240,7 +243,6 @@ _PRE_EXISTING_RAW_HTTPEXCEPTION = {
         "Company not found.",
     },
     "default_modules/celerp-docs/celerp_docs/routes.py": {
-        "idempotency_key is longer than  characters",
         "Cannot send a closed memo; reopen it first.",
         "Add at least one line item before sending this document.",
         "Add at least one line item before finalizing this document.",
@@ -258,7 +260,6 @@ _PRE_EXISTING_RAW_HTTPEXCEPTION = {
         "Select at least one document to ship",
         "offset must be zero or greater",
         "limit must be greater than zero",
-        " is not a . Choose a , or change the contact's type to  or both.",
         "target_type must be 'invoice' or 'memo'",
         "Finalize the quotation before converting it",
         "Finalize the count before adjusting stock",

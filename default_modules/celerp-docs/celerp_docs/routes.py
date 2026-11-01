@@ -41,7 +41,7 @@ from celerp_docs.doc_projections import RESTORE_POINT, UNISSUED_STATUSES, list_l
 from celerp_docs.taxes import TaxApplication
 from celerp.services.field_schema import reject_system_item_fields
 from celerp.services.locations import require_company_location, require_ship_from
-from celerp.accounting_roles import CONSIGNOR_FIELD, CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, VALUED_FROM_KEY, AccountRole, refusal
+from celerp.accounting_roles import CONSIGNOR_FIELD, CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, VALUED_FROM_KEY, AccountRole, Refused, refusal
 from celerp.services.account_roles import current_settings, is_consigned, lineage, lot_account, new_lot_account, role_map
 from celerp.services.background import spawn_background
 from celerp.services.company_lock import lock_company, lock_projections, locked_company
@@ -89,7 +89,7 @@ from celerp.services.list_behavior import (
 from celerp.services.shipping import (
     INCOTERMS_2020, ITEM_AT_ISSUE, REASONS_FOR_EXPORT, customs_backfill, issued_item, item_at_issue)
 from celerp.schemas.numbers import FiniteFloat
-from ui.i18n import doc_type_label, t
+from ui.i18n import doc_type_label, refusal_text, t
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -207,11 +207,8 @@ def _stored_conversion_rate(v: float | None) -> float | None:
 def _require_doc_rate_http(doc: dict, base_currency: str) -> Decimal:
     try:
         return require_doc_rate(doc, base_currency)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail=str(exc),
-        ) from exc
+    except Refused as exc:
+        raise HTTPException(status_code=422, detail=exc.detail) from exc
 
 
 def _reject_lifecycle_fields(data):
@@ -286,7 +283,9 @@ def _operation(kind: str, scope: str | None, payload: BaseModel) -> tuple[str, s
     """The key and request digest of one call of an operation on ``scope``."""
     key = payload.idempotency_key or str(uuid.uuid4())
     if len(key) > _OPERATION_KEY_MAX:
-        raise HTTPException(status_code=422, detail=f"idempotency_key is longer than {_OPERATION_KEY_MAX} characters")
+        raise HTTPException(status_code=422, detail=refusal(
+            "error.idempotency_key_too_long", f"idempotency_key is longer than {_OPERATION_KEY_MAX} characters",
+            max=_OPERATION_KEY_MAX))
     if len(key) > _OPERATION_KEY_KEPT:
         key = f"op:{hashlib.sha256(key.encode()).hexdigest()}"
     return key, _request_digest(kind, scope, None, payload.model_dump(mode="json", exclude={"idempotency_key"}))
@@ -5311,10 +5310,7 @@ async def _received_goods_cost(session: AsyncSession, company_id, doc: dict, it:
         return None
     company = await session.get(Company, company_id)
     base_currency = (company.settings or {}).get("currency", "USD") if company else "USD"
-    try:
-        rate = require_doc_rate(doc, base_currency)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    rate = _require_doc_rate_http(doc, base_currency)
     amount = unit * to_decimal(it.quantity_received)
     cost = to_base(amount, rate, base_currency)
     if it.cost_price is not None:
@@ -9291,11 +9287,12 @@ def _assert_contact_side(cstate: dict, kind: str, state: dict) -> None:
     vendor_side = kind == "doc" and state.get("doc_type") in SUPPLIER_DOC_TYPES
     role_name = "vendor" if vendor_side else "customer"
     if not contact_accepts(cstate, role_name):
-        raise HTTPException(
-            status_code=422,
-            detail=f"{cstate.get('name') or 'This contact'} is not a {role_name}. "
-                   f"Choose a {role_name}, or change the contact's type to {role_name} or both.",
-        )
+        name = cstate.get("name") or refusal("documents.this_contact", "This contact")
+        raise HTTPException(status_code=422, detail=refusal(
+            f"documents.err_contact_not_{role_name}",
+            f"{refusal_text(name)} is not a {role_name}. "
+            f"Choose a {role_name}, or change the contact's type to {role_name} or both.",
+            name=name))
 
 
 async def _lock_imported_contact(session: AsyncSession, company_id, kind: str, data: dict) -> None:

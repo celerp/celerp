@@ -325,6 +325,23 @@ def refusal(key: str, message: str, /, **params) -> dict:
     return {"message": message, "message_key": key, "params": params}
 
 
+class Refused(ValueError):
+    """A refusal raised where it is met: ``detail`` is the ``refusal`` a route answers
+    with, so it reads in each reader's language; its text is the refusal in the language
+    of the request that met it. ``message`` is the English, the en catalog's when not given."""
+
+    def __init__(self, key: str, message: str | None = None, /, **params):
+        from ui.i18n import refusal_text, t  # ui.i18n reads prices, whose cost rules raise this
+
+        self.detail = refusal(key, t(key, "en", **params) if message is None else message, **params)
+        super().__init__(refusal_text(self.detail))
+
+    @classmethod
+    def of(cls, detail: dict):
+        """The refusal ``detail`` (a ``refusal``) raised as this class."""
+        return cls(detail["message_key"], detail["message"], **detail["params"])
+
+
 def no_account_chosen() -> dict:
     """The refusal for setting a posting account with none chosen."""
     return refusal("posting.choose_account", "Choose an account.")

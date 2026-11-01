@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
+from celerp.accounting_roles import Refused, refusal
 from celerp.events.schemas import EVENT_SCHEMA_MAP
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
@@ -36,10 +37,12 @@ def apply_event(state: dict, event: LedgerEntry) -> dict:
     return ProjectionEngine._apply(state, event.event_type, event.data)
 
 
-STRIPE_OWNED_PAYMENT = (
-    "This payment was received through Stripe, so it can only be refunded or reversed in Stripe."
-)
-PAYMENT_NOT_NAMED = "A payment can be taken off a document only by naming it, and a deletion keeps its place."
+STRIPE_OWNED_PAYMENT = refusal(
+    "error.payment_stripe_owned",
+    "This payment was received through Stripe, so it can only be refunded or reversed in Stripe.")
+PAYMENT_NOT_NAMED = refusal(
+    "error.payment_not_named",
+    "A payment can be taken off a document only by naming it, and a deletion keeps its place.")
 # The list writes that carry the totals they give the list (emit_event).
 LIST_TOTALLED_EVENTS = frozenset({"list.created", "list.updated"})
 # Every event that takes a received payment back off a document.
@@ -185,8 +188,8 @@ async def _check_period_lock(session, company_id, data: dict) -> None:
     event_date_str = data.get("reversed_on") or data.get("ts") or data.get("issue_date") or data.get("date")
     try:
         event_date = date.fromisoformat(business_date_of(event_date_str, (company.settings or {}).get("timezone")))
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Refused as exc:
+        raise HTTPException(status_code=422, detail=exc.detail) from exc
     if event_date <= lock_date:
         raise HTTPException(
             status_code=422,

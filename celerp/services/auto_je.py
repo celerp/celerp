@@ -24,6 +24,7 @@ from celerp.accounting_roles import (
     LOT_ACCOUNT_FIELD,
     ROLE_TYPES,
     AccountRole,
+    Refused,
     refusal,
 )
 from celerp.events.engine import emit_event
@@ -225,8 +226,8 @@ async def entry_day(session, company_id, recorded: object = None) -> str:
 
     try:
         return business_date_of(recorded, (await current_settings(session, company_id)).get("timezone"))
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Refused as exc:
+        raise HTTPException(status_code=422, detail=exc.detail) from exc
 
 
 async def _emit_auto_posted_je(
@@ -1077,7 +1078,7 @@ async def party_origin(session, company_id, doc_id: str, role, settings: dict | 
             found = {e["account"] for e in entries if e.get("contact") and e.get("account_roles") is None}
         codes |= found
     if len(codes) > 1:
-        raise AmbiguousOriginError(str(role), f"Document {doc_id}", codes)
+        raise AmbiguousOriginError(str(role), doc_id, codes)
     if not codes and role == R.PAYABLE:
         note = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
         state = (note.state if note is not None else None) or {}
@@ -3580,7 +3581,7 @@ async def _recognized_by_account(
     for lot in books.shipments.out.get(doc_id, []):
         idx = _line(lot)
         if idx is None:
-            raise ValueError(t("error.cogs_line_unknown"))
+            raise Refused("error.cogs_line_unknown")
         cost = lot_cost_of_sale(lot.state or {})
         if cost:
             _add(shipped, {await _sold_key(session, company_id, lot.entity_id, lot.state or {}, books): cost})
@@ -3588,7 +3589,7 @@ async def _recognized_by_account(
     for lot, qty in books.shipments.back.get(doc_id, []):
         idx = _line(lot)
         if idx is None:
-            raise ValueError(t("error.cogs_line_unknown"))
+            raise Refused("error.cogs_line_unknown")
         back_qty[idx] = back_qty.get(idx, 0.0) + qty
     repriced = books.repriced.get((doc_id, recognized.cycle), {})
     for idx, alloc in recognized.allocations.items():
@@ -4097,16 +4098,15 @@ async def create_for_cost_moves(session, *, company_id, user_id, doc_id: str, do
     return notice
 
 
-class CogsShareUnknown(ValueError):
+class CogsShareUnknown(Refused):
     """An older invoice's cost of goods sold cannot be split by lot from what it posted,
     so goods it takes back cannot give their share back. ``detail`` is the refusal."""
 
     def __init__(self) -> None:
-        self.detail = refusal(
+        super().__init__(
             "documents.cogs_share_unknown",
             "The cost of goods sold this invoice posted does not match the cost of its goods, "
             "so the share of the goods taken back cannot be worked out. Nothing was changed.")
-        super().__init__(self.detail["message"])
 
 
 async def reconcile_doc_cogs(

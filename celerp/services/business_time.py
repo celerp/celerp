@@ -7,22 +7,22 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-from ui.i18n import t
+from celerp.accounting_roles import Refused
 
 
-class InvalidTimezoneError(ValueError):
+class InvalidTimezoneError(Refused):
     """A stored business timezone the app cannot resolve. The message is for the user."""
 
 
 def business_timezone(timezone_name: str | None) -> ZoneInfo:
     """Resolve an IANA business timezone, defaulting an unset value to UTC."""
     if timezone_name is not None and not isinstance(timezone_name, str):
-        raise InvalidTimezoneError(t("error.timezone_not_text"))
+        raise InvalidTimezoneError("error.timezone_not_text")
     name = (timezone_name or "UTC").strip() or "UTC"
     try:
         return ZoneInfo(name)
     except (ZoneInfoNotFoundError, ValueError) as exc:
-        raise InvalidTimezoneError(t("error.invalid_timezone", value=name)) from exc
+        raise InvalidTimezoneError("error.invalid_timezone", value=name) from exc
 
 
 def business_date_at(instant: datetime, timezone_name: str | None) -> str:
@@ -59,7 +59,7 @@ def business_date_of(recorded: object, timezone_name: str | None) -> str:
     A recorded calendar date is that day; a recorded timestamp with an offset is its day in
     the business timezone; one without an offset is the day it names. With nothing recorded
     the operation is happening now, so it is today in the business timezone. Raises
-    ValueError, with a message for the user, for an unusable timezone or an unreadable date.
+    Refused for an unusable timezone or an unreadable date.
     """
     if not recorded:
         return business_today(timezone_name).isoformat()
@@ -68,7 +68,7 @@ def business_date_of(recorded: object, timezone_name: str | None) -> str:
         instant = datetime.fromisoformat(raw.replace("Z", "+00:00")) if "T" in raw else None
         day = date.fromisoformat(raw[:10])
     except ValueError:
-        raise ValueError(t("error.business_date_invalid", value=str(recorded))) from None
+        raise Refused("error.business_date_invalid", value=str(recorded)) from None
     if instant is not None and instant.utcoffset() is not None:
         return business_date_at(instant, timezone_name)
     return day.isoformat()

@@ -4,7 +4,8 @@ The AI calls the app's own routes (those marked ``x-celerp-agent``) and keeps wh
 refusing route answered, to show the person who confirmed the action, then and after a
 reload. So a refusal those routes raise, or any function they call raises, is keyed
 where it is raised (celerp.accounting_roles.refusal, or keyed_error) or translated there
-(``t``). This walks the routes and their callees and fails on any other detail."""
+(``t``), or raised as ``Refused`` with its catalog key. This walks the routes and their
+callees and fails on any other detail."""
 from __future__ import annotations
 
 import ast
@@ -18,7 +19,7 @@ from pathlib import Path
 
 from fastapi import HTTPException
 
-from celerp.accounting_roles import refusal
+from celerp.accounting_roles import Refused, refusal
 from celerp.ai.tools import _api_routes, keyed_error
 from ui import i18n
 from ui.i18n import t
@@ -78,6 +79,14 @@ def _argument(cls, call, name):
                 call.args[params.index(name)] if len(call.args) > params.index(name) else None)
 
 
+def _held_keyed(value, every: bool = False) -> bool:
+    """Whether a refusal built ahead of time is keyed: a ``refusal`` whose key is in the
+    catalog or, with ``every``, a mapping of them."""
+    if isinstance(value, dict) and "message_key" in value:
+        return value["message_key"] in _EN
+    return every and isinstance(value, dict) and bool(value) and all(_held_keyed(v) for v in value.values())
+
+
 class _Walk:
     """Every function an agent route runs, followed through every first-party name its
     body refers to (calls, callbacks, exception classes and their methods). A route's
@@ -119,7 +128,15 @@ class _Walk:
                     yield obj, None
             if isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call):
                 cls = _resolve(node.exc.func, scope)
-                if isinstance(cls, type) and issubclass(cls, Exception) and _first_party(cls) \
+                if isinstance(getattr(cls, "__self__", None), type) and issubclass(cls.__self__, Refused):
+                    # Refused.of(detail): the refusal it raises is the detail it is given.
+                    if not (node.exc.args and self._keyed(node.exc.args[0], fn, scope, tree)):
+                        self.unkeyed.append(f"{self._where(fn, node)} raise {ast.unparse(node.exc)}")
+                elif isinstance(cls, type) and issubclass(cls, Refused):
+                    key = node.exc.args[0] if node.exc.args else None
+                    if isinstance(key, ast.Constant) and key.value not in _EN:
+                        self.unkeyed.append(f"{self._where(fn, node)} raise {ast.unparse(node.exc)} (key not in en.json)")
+                elif isinstance(cls, type) and issubclass(cls, Exception) and _first_party(cls) \
                         and not issubclass(cls, HTTPException):
                     text = node.exc.args[0] if node.exc.args else None
                     self.raised.append((cls, text is not None and self._keyed(text, fn, scope, tree),
@@ -162,13 +179,23 @@ class _Walk:
             fields = dict((getattr(k, "value", None), v) for k, v in zip(node.keys, node.values) if k is not None)
             if "message_key" in fields or ("message" in fields and keyed(fields["message"])):
                 return True
-            if "errors" in fields and isinstance(fields["errors"], ast.Name):
-                return self._list_keyed(fields["errors"].id, fn, scope, tree)
-            return any(k is None and keyed(v) for k, v in zip(node.keys, node.values))
+            if any(k is None and keyed(v) for k, v in zip(node.keys, node.values)):
+                return True
+            return "errors" in fields and isinstance(fields["errors"], ast.Name) \
+                and self._list_keyed(fields["errors"].id, fn, scope, tree)
         if isinstance(node, ast.Name):
-            values = [n.value for n in ast.walk(tree) if isinstance(n, ast.Assign)
-                      and any(isinstance(target, ast.Name) and target.id == node.id for target in n.targets)]
+            values = [n.value for n in ast.walk(tree) if isinstance(n, (ast.Assign, ast.AnnAssign)) and n.value
+                      and any(isinstance(target, ast.Name) and target.id == node.id
+                              for target in getattr(n, "targets", [getattr(n, "target", None)]))]
+            if not values and node.id in scope:
+                return _held_keyed(scope[node.id])  # a refusal the module builds once
             return bool(values) and all(keyed(v) for v in values)
+        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id in scope:
+            return _held_keyed(scope[node.value.id], every=True)  # one of a module's refusals
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get" \
+                and isinstance(node.func.value, ast.Name) and node.func.value.id in scope:
+            held = scope[node.func.value.id]
+            return _held_keyed(held, every=True) and all(keyed(a) for a in node.args[1:])
         if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.attr == "detail":
             # A caught exception's detail: keyed when its class keys it.
             classes = self._caught(node.value, tree, scope)

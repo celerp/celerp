@@ -198,8 +198,8 @@ def require_doc_rate(doc: dict, base_currency: str) -> Decimal:
     if rate is None:
         currency = str(doc.get("currency") or "").upper()
         base = str(base_currency or "").upper()
-        from ui.i18n import t  # ui.i18n imports pricing, which imports this module
-        raise ValueError(t("error.rate_required", currency=currency, base=base))
+        from celerp.accounting_roles import Refused  # ui.i18n imports pricing, which imports this module
+        raise Refused("error.rate_required", currency=currency, base=base)
     return rate
 
 

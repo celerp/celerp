@@ -3822,7 +3822,7 @@ async def import_recon_file(
     try:
         content, meta = load_file(payload.file_id, company_id, user.id)
     except (FileNotFoundError, PermissionError):
-        raise HTTPException(status_code=422, detail=f"Uploaded file {payload.file_id} was not found.")
+        raise HTTPException(status_code=422, detail=refusal("error.file_not_found", t("error.file_not_found", "en")))
     filename = str(meta.get("filename") or "statement.csv")
     content = _statement_csv_bytes(content, filename, meta.get("content_type"))
     return await _import_statement_lines(db, recon, company_id, content, filename, payload.column_map)
@@ -3983,7 +3983,8 @@ async def match_stmt_line(
             return _stmt_line_to_dict(sl)
         raise HTTPException(
             status_code=409,
-            detail="This line already created a journal entry. Unmatch it first so that entry is reversed.",
+            detail=refusal("acct.err_recon_line_created",
+                           "This line already created a journal entry. Unmatch it first so that entry is reversed."),
         )
     bank = await db.get(BankAccount, recon.bank_account_id)
     _refuse_ineligible(await _eligible_entries(db, company_id, bank, recon, [payload.je_id], line_id=sl.id))
@@ -4057,7 +4058,8 @@ async def create_je_from_line(
     if sl.status == "matched":
         raise HTTPException(
             status_code=409,
-            detail="This line is already matched. Unmatch it before creating a journal entry.",
+            detail=refusal("acct.err_recon_line_matched",
+                           "This line is already matched. Unmatch it before creating a journal entry."),
         )
     bank = (await db.execute(select(BankAccount).where(BankAccount.id == recon.bank_account_id))).scalar_one_or_none()
     if not bank:

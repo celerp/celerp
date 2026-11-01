@@ -1130,7 +1130,7 @@ async def test_a_stripe_payment_cannot_be_refunded_voided_or_deleted_here(client
     r = await _remove_payment(client, tok, eid, action)
 
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == STRIPE_OWNED
+    assert r.json()["detail"]["message"] == STRIPE_OWNED
     assert await _doc_state(client, tok, eid) == before
     assert await _ledger(session, cid, eid) == events
 

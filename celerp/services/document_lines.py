@@ -370,11 +370,10 @@ async def linked_items(session, company_id, line_items, *, known: Counter | None
         if isinstance(line, dict) and line.get("item_id") and line.get("entity_id") \
                 and line["item_id"] != line["entity_id"]:
             raise HTTPException(status_code=422, detail={
-                "code": "conflicting_reference",
-                "message": f"Line {n} names two different items ({line['item_id']} and {line['entity_id']}). "
-                           "Keep one item per line.",
-                "line": n,
-            })
+                "code": "conflicting_reference", "line": n, **refusal(
+                    "documents.err_line_two_items",
+                    f"Line {n} names two different items ({line['item_id']} and {line['entity_id']}). "
+                    "Keep one item per line.", line=n, item=line["item_id"], other=line["entity_id"])})
     linked = [(n, line, line_item_id(line)) for n, line in enumerate(line_items or [], 1)
               if isinstance(line, dict) and line_item_id(line)]
     counts = Counter(ident for _, _, ident in linked)

@@ -789,8 +789,8 @@ def _grid(header: list[str], lines: list[list[str]]) -> tuple[list[str], list[di
         if name:
             if name in seen:
                 raise TabularError(
-                    f"Columns {_column_letter(seen[name])} and {_column_letter(i)} have the same "
-                    f"header {name!r}; give each column its own header.",
+                    t("import.err_header_duplicate", first=_column_letter(seen[name]),
+                      column=_column_letter(i), header=repr(name)),
                     column=_column_letter(i), code="duplicate_header",
                 )
             seen[name] = i
@@ -883,7 +883,7 @@ def _xlsx_lines(data: bytes, *, sheet: str | None, limits: Limits | None = None)
             if not non_empty:
                 raise TabularError(t("import.err_workbook_empty"), code="empty")
             if len(non_empty) > 1:
-                raise TabularError("Choose a sheet.", sheets=non_empty)
+                raise TabularError(t("import.err_sheet_required"), sheets=non_empty)
             worksheet = workbook[non_empty[0]]
 
         # The stored sheet dimension is written by whatever produced the file;
@@ -981,7 +981,7 @@ def read_table_at_header(
         header_row = detect_header_row(lines[:HEADER_SEARCH_LINES], known)
         if header_row is None:
             raise TabularError(
-                "Choose the row that holds the column names.", code="header_row",
+                t("import.err_choose_header_row"), code="header_row",
                 header_lines=lines[:HEADER_SEARCH_LINES],
             )
     return (*_table(lines, header_row), header_row)

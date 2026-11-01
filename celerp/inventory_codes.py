@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ui.i18n import t
+from celerp.accounting_roles import Refused
 
 MAX_BARCODE_LEN = 64
 MAX_SKU_LEN = 255
@@ -46,7 +46,7 @@ RFID_EPC_CONFLICT_MESSAGE = "RFID / EPC '{code}' already exists"
 def reject_comma_sku(sku: Any) -> Any:
     """Reject a comma-bearing SKU. Returns the sku for chaining."""
     if sku is not None and "," in str(sku):
-        raise ValueError(t("inventory.err_sku_comma"))
+        raise Refused("inventory.err_sku_comma")
     return sku
 
 
@@ -54,7 +54,7 @@ def validate_sku(sku: Any) -> Any:
     """Reject a comma-bearing or over-long SKU. Returns the sku for chaining."""
     reject_comma_sku(sku)
     if sku is not None and len(str(sku)) > MAX_SKU_LEN:
-        raise ValueError(t("inventory.err_sku_too_long", max=MAX_SKU_LEN))
+        raise Refused("inventory.err_sku_too_long", max=MAX_SKU_LEN)
     return sku
 
 
@@ -66,9 +66,9 @@ def validate_barcode(barcode: Any) -> Any:
     if s == "":
         return barcode
     if not s.isdigit():
-        raise ValueError(t("inventory.err_barcode_digits"))
+        raise Refused("inventory.err_barcode_digits")
     if len(s) > MAX_BARCODE_LEN:
-        raise ValueError(t("inventory.err_barcode_too_long", max=MAX_BARCODE_LEN))
+        raise Refused("inventory.err_barcode_too_long", max=MAX_BARCODE_LEN)
     return barcode
 
 
@@ -85,9 +85,9 @@ def validate_gtin(gtin: Any) -> Any:
     if s == "":
         return gtin
     if not s.isdigit():
-        raise ValueError(t("inventory.err_gtin_digits"))
+        raise Refused("inventory.err_gtin_digits")
     if len(s) not in GTIN_LENGTHS:
-        raise ValueError(t("inventory.err_gtin_length"))
+        raise Refused("inventory.err_gtin_length")
     return gtin
 
 
@@ -118,9 +118,9 @@ def validate_rfid_epc(code: Any) -> Any:
     if s == "":
         return s
     if not s.isalnum():
-        raise ValueError(t("inventory.err_rfid_chars"))
+        raise Refused("inventory.err_rfid_chars")
     if len(s) > MAX_RFID_EPC_LEN:
-        raise ValueError(t("inventory.err_rfid_too_long", max=MAX_RFID_EPC_LEN))
+        raise Refused("inventory.err_rfid_too_long", max=MAX_RFID_EPC_LEN)
     return s
 
 
