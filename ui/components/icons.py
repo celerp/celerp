@@ -88,10 +88,11 @@ def icon(name: str, size: float | str = 1, *, hidden: bool = True) -> NotStr:
     except KeyError:
         raise ValueError(f"Unknown icon {name!r}; the icons are: {', '.join(_ICONS)}") from None
     length = f"{size}em" if isinstance(size, (int, float)) else size
+    aria = ' aria-hidden="true"' if hidden else ""
     return NotStr(
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{length}" height="{length}" viewBox="0 0 24 24" fill="none" '
         'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"'
-        f'{' aria-hidden="true"' if hidden else ""}>{shapes}</svg>'
+        f'{aria}>{shapes}</svg>'
     )
 
 

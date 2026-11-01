@@ -146,6 +146,9 @@
   "GET /accounting/journal-entries/{entity_id}/prefill": {
     "path:entity_id": "Identifier of the journal entry from which to prefill a new entry."
   },
+  "GET /accounting/journal/by-doc/{doc_id}": {
+    "path:doc_id": "Identifier of the document whose journal entries to return."
+  },
   "GET /accounting/ledger/{account_code}": {
     "path:account_code": "Chart of accounts code identifying the ledger account.",
     "query:contact_id": "Identifier of the customer, supplier, or other CRM contact.",

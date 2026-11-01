@@ -335,3 +335,37 @@ async def test_the_page_is_for_the_owner(ui_client):
     assert "Only the owner can change the side menu." in page and 'id="menu-editor"' not in page
     assert "Only the owner can change the side menu." in posted
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_the_page_saves_through_the_api(client, session):
+    """The page's hide, move and reset reach the company's settings, not only the API client."""
+    from celerp.main import app as api_app
+    from celerp.models.company import Company
+    from ui.app import app as ui_app
+
+    tok = await register_admin(client)
+    h = {"Authorization": f"Bearer {tok}"}
+    cid = (await client.get("/companies/me", headers=h)).json()["id"]
+    gid, ids = _a_group_of_three()
+
+    def _bridged(t, timeout=10.0):
+        return AsyncClient(transport=ASGITransport(app=api_app), base_url="http://test",
+                           headers={"Authorization": f"Bearer {t}"}, follow_redirects=True)
+
+    company = await session.get(Company, uuid.UUID(cid))
+    with patch("ui.api_client._client", _bridged):
+        async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui",
+                               follow_redirects=False, cookies={"celerp_token": tok}) as ui:
+            hidden = await ui.post("/settings/menu/hide", data={"kind": "entry", "id": ids[1], "hidden": "1"})
+            moved = await ui.post("/settings/menu/move", data={"kind": "group", "id": gid, "direction": "down"})
+            assert hidden.status_code == 200 and moved.status_code == 200, (hidden.text, moved.text)
+            await session.refresh(company)
+            assert company.settings[KEY]["hidden_entries"] == [ids[1]]
+            assert gid in company.settings[KEY]["group_order"]
+
+            reset = await ui.post("/settings/menu/reset")
+
+    assert reset.status_code == 200, reset.text
+    await session.refresh(company)
+    assert KEY not in company.settings

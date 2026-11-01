@@ -95,6 +95,7 @@ BOOKS_CURRENCY_READERS = {
     ("routes.py", "_bank_amounts"): "the bank-currency reading itself",
     ("routes.py", "_build_balances"): "trial balance and balance sheet, books currency, every account",
     ("routes.py", "_journal_payload"): "the journal, books currency with each line's own currency beside it",
+    ("routes.py", "journal_by_doc"): "one document's entries cut from the journal payload; reads which lines it kept, not how much",
     ("routes.py", "create_manual_journal_entry"): "a writer validating the lines it is given",
     ("routes.py", "account_ledger"): "one account's ledger in books currency, with foreign amounts beside them",
     ("routes.py", "trial_balance"): "books currency, every account",
