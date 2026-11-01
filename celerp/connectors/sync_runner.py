@@ -24,6 +24,7 @@ from celerp.connectors.base import (
     entity_allowed,
     waits_message,
 )
+from celerp.connectors.first_sync import orders_start
 from celerp.connectors.relay_token import ConnectorUpgradeRequired, ConnectRequired
 from celerp.modules.boundary import ModuleBusy, ModuleRefused
 from celerp.models.sync_run import SyncRun
@@ -622,7 +623,7 @@ async def run_sync(
                 config = await session.scalar(sa.select(ConnectorConfig).where(
                     ConnectorConfig.company_id == company_id, ConnectorConfig.connector == connector.name))
                 directions = dict(config.entity_directions or {})
-                orders_from = config.orders_from
+                orders_from = config.orders_from and await orders_start(session, company_id, config.orders_from)
             if not (entity_allowed(connector, entity, directions)
                     or _links_products(connector, entity, directions, first_sync)):
                 try:

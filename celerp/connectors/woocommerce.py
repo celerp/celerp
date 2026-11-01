@@ -12,7 +12,7 @@ API: WooCommerce REST API v3 (/wp-json/wc/v3/)
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -86,10 +86,13 @@ def _woo_reason(body) -> str | None:
     return None
 
 
+def _gmt_param(instant: datetime) -> str:
+    """An instant as a WooCommerce date filter reads it with ``dates_are_gmt``: in UTC."""
+    return instant.astimezone(timezone.utc).isoformat()
+
+
 def _gmt(value) -> datetime | None:
     """A WooCommerce *_gmt timestamp (no zone, in UTC) as an aware datetime."""
-    from datetime import timezone
-
     if not value:
         return None
     try:
@@ -464,7 +467,7 @@ class WooCommerceConnector(ConnectorBase):
         from celerp_docs.doc_service import WOOCOMMERCE_ISSUED_STATUSES
 
         orders = await self._paginate(ctx, "/orders", params={
-            "after": orders_from.isoformat(), "dates_are_gmt": "true",
+            "after": _gmt_param(orders_from), "dates_are_gmt": "true",
             "_fields": "id,number,status,date_created_gmt,total,currency",
         })
         return [RemoteOrder(
@@ -852,9 +855,9 @@ class WooCommerceConnector(ConnectorBase):
         if since:
             params["modified_after"] = since.isoformat()
         if orders_from:
-            params["after"] = orders_from.isoformat()
+            params["after"] = _gmt_param(orders_from)
         if params:
-            params["dates_are_gmt"] = "true"  # our dates are UTC; make Woo interpret them as UTC
+            params["dates_are_gmt"] = "true"
 
         try:
             orders = await self._paginate(ctx, "/orders", params=params or None)

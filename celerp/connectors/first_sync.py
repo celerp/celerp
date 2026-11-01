@@ -13,7 +13,7 @@ does to the books.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
-from datetime import datetime
+from datetime import date, datetime, time
 
 from celerp.connectors.base import (
     ConnectorBase,
@@ -97,6 +97,21 @@ def _status_key(connector: ConnectorBase, status: str) -> str | None:
     connector does not name (a store's own custom status)."""
     label = connector.order_statuses.get(status)
     return f"connectors.order_status_{label}" if label else None
+
+
+async def orders_start(session, company_id, orders_from: date | datetime | None) -> datetime:
+    """The earliest order date a connector reads, the same for the preview and the import:
+    midnight in the company's business time zone starting ``orders_from`` (a day), or the day
+    a saved start falls on in that zone, or the company's today when none is given. The day
+    is never taken from a stored instant read in UTC."""
+    from celerp.services.business_time import company_timezone, company_today
+
+    zone = await company_timezone(session, company_id)
+    if isinstance(orders_from, datetime):
+        day = orders_from.astimezone(zone).date()
+    else:
+        day = orders_from or await company_today(session, company_id)
+    return datetime.combine(day, time(), tzinfo=zone)
 
 
 async def build_preview(

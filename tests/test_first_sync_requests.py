@@ -278,3 +278,82 @@ async def test_the_order_date_is_the_company_business_day_for_the_default_and_a_
             ConnectorConfig.company_id == store_owner.cid,
             ConnectorConfig.connector == PLATFORM))).one()
     assert config.orders_from == datetime(2026, 5, 20, tzinfo=los_angeles)
+
+
+# How each connector's order-date filter reads in what it asks its platform: the fetch it
+# goes through for both the preview and the import, and the filter taken from that call.
+_ORDER_DATE_FILTERS = {
+    "woocommerce": ("celerp.connectors.woocommerce.WooCommerceConnector._paginate",
+                    lambda sql, kw: (kw["params"]["after"], kw["params"]["dates_are_gmt"])),
+    "shopify": ("celerp.connectors.shopify.ShopifyConnector._paginate",
+                lambda sql, kw: kw["params"]["created_at_min"]),
+    "xero": ("celerp.connectors.xero.XeroConnector._paginate", lambda sql, kw: kw["where"]),
+    "quickbooks": ("celerp.connectors.quickbooks._query",
+                   lambda sql, kw: re.search(r"TxnDate >= '[^']*'", sql).group()),
+}
+
+
+@pytest.mark.parametrize("zone", ["Asia/Bangkok", "America/Los_Angeles", "UTC"])
+async def test_every_connector_filters_the_import_from_the_day_its_preview_showed(
+        store_owner, store_answers, real_engine, monkeypatch, zone):
+    """The person picks 1 June in the company's time zone (UTC+7, UTC-7 or UTC). Each connector
+    that previews orders asks its platform for the same orders, with the same filter, in the
+    preview and in the import that follows Start."""
+    import inspect
+    from datetime import datetime
+
+    from celerp import connectors
+    from celerp.connectors.base import ConnectorBase, ConnectorContext, SyncEntity, SyncResult
+    from celerp.services import background
+
+    async with maker(real_engine)() as s:
+        await s.execute(sa.text(
+            "UPDATE companies SET settings = (COALESCE(settings::jsonb, '{}'::jsonb) "
+            "|| jsonb_build_object('timezone', CAST(:z AS text)))::json WHERE id = :c"),
+            {"c": store_owner.cid, "z": zone})
+        await s.commit()
+    directions = {"orders": "inbound"}
+    await connected(store_owner.cid, PLATFORM, directions, first_sync="pending")
+    handed: dict[str, datetime] = {}
+
+    async def _preview_orders(self, ctx, orders_from):
+        handed["preview"] = orders_from
+        return []
+
+    async def _sync_orders(self, ctx, since=None, orders_from=None, **_kw):
+        handed["import"] = orders_from
+        return SyncResult(entity=SyncEntity.ORDERS)
+
+    woo = type(connectors.get(PLATFORM))
+    with monkeypatch.context() as m:
+        m.setattr(woo, "preview_orders", _preview_orders)
+        m.setattr(woo, "sync_orders", _sync_orders)
+        headers = {"Authorization": f"Bearer {store_owner.tok}"}
+        chosen = (await store_owner.api.get(f"/connectors/{PLATFORM}/first-sync/preview",
+                                            params={"orders_from": "2026-06-01"}, headers=headers)).json()
+        before = set(background._BG_TASKS)
+        r = await store_owner.api.post(f"/connectors/{PLATFORM}/first-sync", headers=headers, json={
+            "directions": directions, "match": "keep", "orders_from": "2026-06-01",
+            "preview_version": chosen["version"]})
+        assert r.status_code == 200, r.text
+        await asyncio.wait_for(_settled(set(background._BG_TASKS) - before), 30)
+    assert set(handed) == {"preview", "import"}, handed
+
+    previewing = {c.name for c in connectors.all_connectors()
+                  if type(c).preview_orders is not ConnectorBase.preview_orders
+                  and "orders_from" in inspect.signature(c.sync_orders).parameters}
+    assert previewing == set(_ORDER_DATE_FILTERS)
+    ctx = ConnectorContext(company_id=store_owner.cid, access_token="t", store_handle="https://store.example.com")
+    for name, (fetch, read) in _ORDER_DATE_FILTERS.items():
+        connector, sent = connectors.get(name), []
+
+        async def _fetch(*args, **kw):
+            sent.append(read(next((a for a in args if isinstance(a, str) and "SELECT" in a), ""), kw))
+            return []
+
+        with monkeypatch.context() as m:
+            m.setattr(fetch, _fetch)
+            await connector.preview_orders(ctx, handed["preview"])
+            await connector.sync_orders(ctx, since=None, orders_from=handed["import"])
+        assert len(sent) == 2 and sent[0] == sent[1], (name, zone, sent)
+    assert handed["import"].astimezone(handed["preview"].tzinfo).date().isoformat() == "2026-06-01"

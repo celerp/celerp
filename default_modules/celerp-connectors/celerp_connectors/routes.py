@@ -874,16 +874,12 @@ async def preview_first_sync(
 async def _read_preview(session: AsyncSession, connector, company_id, config_id: int, directions: dict,
                         orders_from: date | None):
     """The first sync's preview read from the store, outside any lock: what the preview
-    page shows and what Start compares the person's receipt with. Orders start at midnight
-    of ``orders_from`` (the company's today when not given) in the company's business time
-    zone. Ends the session's transaction before the store is read."""
-    from datetime import datetime, time
+    page shows and what Start compares the person's receipt with. Orders start where the
+    import starts them (first_sync.orders_start). Ends the session's transaction before the
+    store is read."""
+    from celerp.connectors.first_sync import build_preview, orders_start
 
-    from celerp.connectors.first_sync import build_preview
-    from celerp.services.business_time import company_timezone, company_today
-
-    zone = await company_timezone(session, company_id)
-    start = datetime.combine(orders_from or await company_today(session, company_id), time(), tzinfo=zone)
+    start = await orders_start(session, company_id, orders_from)
     await session.commit()
     ctx = await _connector_context(str(company_id), connector.name)
     if ctx is None:
