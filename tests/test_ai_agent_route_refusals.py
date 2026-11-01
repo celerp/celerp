@@ -20,9 +20,11 @@ import typing
 from pathlib import Path
 
 from fastapi import HTTPException
+from starlette.responses import Response
 
 from celerp.accounting_roles import Refused, catalog_refusal, refusal
 from celerp.ai.tools import _api_routes, keyed_error
+from celerp.error_body import error_response
 from ui import i18n
 
 
@@ -104,6 +106,14 @@ def _argument(callee, call, name):
         return False
     return next((k.value for k in call.keywords if k.arg == name),
                 call.args[params.index(name)] if len(call.args) > params.index(name) else None)
+
+
+def _success(call) -> bool:
+    """Whether a Response built by ``call`` answers a success: its status a literal below
+    400, or left at the class's own (200, or 204 for an empty Response)."""
+    status = next((k.value for k in call.keywords if k.arg == "status_code"),
+                  call.args[1] if len(call.args) > 1 else None)
+    return status is None or (isinstance(status, ast.Constant) and isinstance(status.value, int) and status.value < 400)
 
 
 def _given(fn, tree, detail) -> bool:
@@ -218,6 +228,11 @@ class _Walk:
                 detail = _argument(callee, node, given)
                 if detail is not None and not self._keyed(detail, fn, scope, tree):
                     self.unkeyed.append(f"{self._where(fn, node)} {ast.unparse(node)}")
+                continue
+            if isinstance(callee, type) and issubclass(callee, Response) and fn is not error_response \
+                    and not _success(node):
+                # A body built here skips the one builder, which keys a t() text (error_body).
+                self.unkeyed.append(f"{self._where(fn, node)} {ast.unparse(node)} (answer through error_response)")
                 continue
             if not (isinstance(callee, type) and issubclass(callee, HTTPException)):
                 continue

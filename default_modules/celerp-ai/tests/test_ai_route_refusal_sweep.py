@@ -147,26 +147,23 @@ async def _cases(client, h) -> list[tuple[str, str, str, dict]]:
     ]
 
 
-@pytest.mark.asyncio
-async def test_every_agent_route_refuses_in_the_reader_language_live_and_after_a_reload(client):
-    from test_helpers import register_admin
-    h = {"Authorization": f"Bearer {await register_admin(client)}"}
-    app = client._transport.app
-    by_route = _capabilities(app)
-    cases = await _cases(client, h)
-    assert {(m, p) for _n, m, p, _a in cases} == set(by_route), set(by_route) ^ {(m, p) for _n, m, p, _a in cases}
+async def _misread(app, h, by_route, cases, before_each=lambda: None) -> tuple[list, dict]:
+    """Each case's refusal as the person reads it, in Thai and in the stand-in language:
+    what reads wrongly, and the key each route was refused with in the stand-in language."""
     i18n.register_catalog("qx", {k: _MARK + v for k, v in _EN.items()})
-    wrong = []
+    wrong, keys = [], {}
     for lang in ("th", "qx"):
         i18n.set_lang(lang)
         for name, method, path, args in cases:
             capability = by_route[(method, path)]
+            before_each()
             result = await tools.execute_agent_capability(app, h["Authorization"], capability, args,
                                                           f"call-{uuid.uuid4().hex}")
             if result.get("ok"):
                 wrong.append((name, lang, "not refused", result.get("status")))
                 continue
             error = routes._action_error(result)
+            keys.setdefault((method, path), set()).add(error.get("message_key"))
             live = ui_routes._outcome_text({"ok": False, "error": error}, lang)[1]
             stored = {"id": "call", "name": capability["name"], "status": "failed", "error": error}
             reloaded = [to_xml(ui_routes._action_card("c", "m", stored, lang)),
@@ -175,4 +172,49 @@ async def test_every_agent_route_refuses_in_the_reader_language_live_and_after_a
                 wrong.append((name, lang, "reload differs", live))
             if lang == "qx" and not live.startswith(_MARK):
                 wrong.append((name, lang, "English source", live))
+    return wrong, keys
+
+
+@pytest.mark.asyncio
+async def test_every_agent_route_refuses_in_the_reader_language_live_and_after_a_reload(client):
+    from test_helpers import register_admin
+    h = {"Authorization": f"Bearer {await register_admin(client)}"}
+    app = client._transport.app
+    by_route = _capabilities(app)
+    cases = await _cases(client, h)
+    assert {(m, p) for _n, m, p, _a in cases} == set(by_route), set(by_route) ^ {(m, p) for _n, m, p, _a in cases}
+    wrong, _keys = await _misread(app, h, by_route, cases)
     assert not wrong, "\n".join(map(repr, wrong))
+
+
+@pytest.mark.asyncio
+async def test_every_agent_write_refuses_in_the_reader_language_when_the_role_changed_while_it_waited(
+        client, session, monkeypatch):
+    """A write the AI makes waits for the company lock, which judges the caller again
+    (company_lock._judge_authority_again). A role changed in the meantime refuses it in
+    the reader's language, live and after a reload, on every route that asks the person
+    to confirm."""
+    from celerp.services import company_lock, permissions
+    from test_helpers import register_admin
+    h = {"Authorization": f"Bearer {await register_admin(client)}"}
+    app = client._transport.app
+    by_route = _capabilities(app)
+    writes = {route for route, capability in by_route.items() if capability["requires_confirmation"]}
+    cases = [case for case in await _cases(client, h) if (case[1], case[2]) in writes]
+    real = permissions.read_authority
+
+    async def changed(session, company_id, user_id):
+        _role, settings = await real(session, company_id, user_id)
+        return "viewer", settings
+
+    def as_a_new_request():
+        """Each request is its own transaction in the app; here they share the test's one,
+        so each starts as a request does: not yet judged under the lock, nothing refused."""
+        session.sync_session.info.pop(company_lock._PROOFS, None)
+        session.sync_session.info.pop(company_lock._REFUSED, None)
+
+    monkeypatch.setattr(permissions, "read_authority", changed)
+    wrong, keys = await _misread(app, h, by_route, cases, as_a_new_request)
+    as_a_new_request()
+    assert not wrong, "\n".join(map(repr, wrong))
+    assert {route for route, seen in keys.items() if "error.access_changed" in seen} == writes, keys
