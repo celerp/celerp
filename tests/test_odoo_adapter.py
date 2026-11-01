@@ -2521,10 +2521,11 @@ def test_each_lot_and_location_is_stock_of_its_product(tmp_path, version):
 
 @pytest.mark.parametrize("version", VERSIONS)
 def test_a_lot_with_nothing_left_comes_in_archived_not_available(tmp_path, version):
-    # LOT-0002 was received and sold in full: it is history, not stock on hand.
+    # LOT-0002 was received and sold in full: it is history, not stock on hand. The widget's own
+    # record holds none of its stock (all of it sits in lots), so it is the product, not a 0-unit row.
     bundle = _adapter().build_manifest(_file(tmp_path, _backup(version)), FULL).bundle
     assert {i.source_external_id: i.status for i in bundle.items} == {
-        "SRV": "available", "WID-1": "available", LOT_1: "available", SHELF: "available", LOT_2: "archived"}
+        "SRV": "available", "WID-1": "archived", LOT_1: "available", SHELF: "available", LOT_2: "archived"}
 
 
 def _receipt(version: int, lot_quantities: tuple[str, str], ordered: str = "10", ordered_in_units: str = "10",

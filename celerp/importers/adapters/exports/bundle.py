@@ -76,18 +76,31 @@ def _contacts(book: Book, src: Source) -> list[CIFContact]:
 
 def _items(book: Book, src: Source) -> list[CIFItem]:
     """Each item at the first location, then each holding as stock of its item. A holding the
-    source says has nothing left (a lot sold in full) comes in archived: history, not stock."""
+    source says has nothing left (a lot sold in full) comes in archived: history, not stock. So
+    does an item whose stock all sits in its holdings: it is the product they are stock of, not
+    a row of nothing on hand at the first location."""
     home = book.locations[0] if book.locations else None
+    in_holdings: defaultdict = defaultdict(lambda: ZERO)
+    for h in book.holdings.values():
+        in_holdings[h.item] += book.stock.get(h.key, (ZERO,))[0]
+
+    def spent(key: str) -> bool:
+        return key in book.stock and book.stock[key][0] == 0
+
+    def product_only(code: str) -> bool:
+        """The item's count is its whole stock; what its holdings do not carry is its own."""
+        return code in in_holdings and book.stock.get(code, (ZERO,))[0] == in_holdings[code]
+
     items = [CIFItem(**src("Item", i.code, i.code), sku=i.code, name=i.name, description=i.description,
-                     retail_price=i.price, sell_by="piece", status="available" if i.active else "archived",
+                     retail_price=i.price, sell_by="piece",
+                     status="available" if i.active and not product_only(i.code) else "archived",
                      location_name=home)
              for i in sorted(book.items.values(), key=lambda i: i.code)]
     for h in sorted(book.holdings.values(), key=lambda h: h.key):
         item = book.items[h.item]
-        spent = h.key in book.stock and book.stock[h.key][0] == 0
         items.append(CIFItem(**src("Item", h.key, h.key), sku=item.code, name=item.name, description=item.description,
                              retail_price=item.price, sell_by="piece",
-                             status="available" if item.active and not spent else "archived",
+                             status="available" if item.active and not spent(h.key) else "archived",
                              product_external_id=item.code, batch_no=h.lot, location_name=h.location))
     return items
 
