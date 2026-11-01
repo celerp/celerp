@@ -6,6 +6,8 @@ connected company sent that were not applied, and reverses to the older shape.""
 
 from __future__ import annotations
 
+from alembic_support import alembic_run
+
 from .conftest import schema_of, throwaway_db, upgrade_to
 
 REVISION = "z4r5s6t7u8v9"
@@ -24,9 +26,6 @@ def test_firm_view_revision_up_and_down():
         assert "last_used_at" in _columns(sync_url, "company_peer_grants")
         assert {"company_id", "source_company_id", "kind", "entity_type", "source_entity_id",
                 "label", "reason", "created_at"} <= _columns(sync_url, "company_peer_attention")
-        from alembic import command
-
-        from celerp.alembic_config import build_alembic_config
-        command.downgrade(build_alembic_config(), "y3q4r5s6t7u8")
+        alembic_run(sync_url, "downgrade", "y3q4r5s6t7u8")
         assert "last_used_at" not in _columns(sync_url, "company_peer_grants")
         assert not _columns(sync_url, "company_peer_attention")

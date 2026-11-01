@@ -44,12 +44,13 @@ class ImportBatch(Base):
     entity_ids: Mapped[list] = mapped_column(sa.JSON, nullable=False)
     idempotency_keys: Mapped[list] = mapped_column(sa.JSON, nullable=False)
     operation_key: Mapped[str | None] = mapped_column(Text, nullable=True)
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active", server_default="active")
     reversible: Mapped[bool] = mapped_column(sa.Boolean, nullable=False, default=False, server_default=sa.false())
     imported_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
         nullable=False,
+        server_default=sa.func.now(),
     )
     undone_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     undone_by: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid(as_uuid=True), ForeignKey("users.id"), nullable=True)

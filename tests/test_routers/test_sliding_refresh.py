@@ -160,7 +160,7 @@ async def test_revoked_nonce_never_refreshed(client, session):
     import uuid
     from jose import jwt as _jwt
     from celerp.config import settings
-    from celerp.services.session_tracker import clear as _clear_tracker
+    from test_helpers import clear_sessions as _clear_tracker
 
     reg = await client.post(
         "/auth/register",
@@ -204,7 +204,7 @@ async def test_refreshed_token_uses_current_db_role(client, session):
     from sqlalchemy import select
     from celerp.config import settings
     from celerp.models.accounting import UserCompany
-    from celerp.services.session_tracker import clear as _clear_tracker
+    from test_helpers import clear_sessions as _clear_tracker
 
     owner_reg = await client.post(
         "/auth/register",

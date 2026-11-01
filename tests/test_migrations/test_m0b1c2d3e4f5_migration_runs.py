@@ -63,8 +63,8 @@ def test_migration_runs_schema_upgrade_integrity(base_db):
 
     company_id, user_id = uuid.uuid4(), uuid.uuid4()
     with base_db.begin() as conn:
-        conn.execute(text("INSERT INTO companies (id, name) VALUES (:id, 'Staged')"), {"id": company_id})
         conn.execute(text("INSERT INTO users (id, email) VALUES (:id, 'owner@example.com')"), {"id": user_id})
+        conn.execute(text("INSERT INTO companies (id, name) VALUES (:id, 'Staged')"), {"id": company_id})
         run_id = _insert_run(conn, company_id, user_id, claim="c" * 64)
         _insert_map(conn, run_id, "c-1")
 

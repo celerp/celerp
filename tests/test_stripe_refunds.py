@@ -781,10 +781,10 @@ async def _rewrite_payment(engine, entity_id, change) -> None:
         state = await s.scalar(text("SELECT state FROM projections WHERE entity_id = :e"), {"e": entity_id})
         change(data)
         change(state["payments"][0])
-        await s.execute(text("UPDATE ledger SET data = CAST(:d AS json) WHERE id = :i"),
-                        {"d": json.dumps(data), "i": event_id})
         await s.execute(text("UPDATE projections SET state = CAST(:s AS json) WHERE entity_id = :e"),
                         {"s": json.dumps(state), "e": entity_id})
+        await s.execute(text("UPDATE ledger SET data = CAST(:d AS json) WHERE id = :i"),
+                        {"d": json.dumps(data), "i": event_id})
         await s.commit()
 
 
@@ -1081,7 +1081,9 @@ async def _deleted_before_upgrade(engine, company_id, entity_id, index: int) -> 
     the payment leaves the list and every later payment moves up one place."""
     from celerp.models.ledger import LedgerEntry
     from celerp.projections.engine import ProjectionEngine
+    from celerp.services.company_lock import lock_company
     async with maker(engine)() as s:
+        await lock_company(s, company_id)
         entry = LedgerEntry(company_id=company_id, entity_id=entity_id, entity_type="doc",
                             event_type="doc.payment.deleted", data={"payment_index": index},
                             actor_id=None, location_id=None, source="api",

@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.models.company import Company
 from celerp.models.ledger import LedgerEntry
-from test_helpers import mark_running
+from test_helpers import as_another_client, mark_running
 
 pytestmark = pytest.mark.asyncio
 
@@ -373,7 +373,7 @@ async def _held_elsewhere(factory, lock, *args):
     """Another process holding *lock* (a registry lock) until the block ends, as a
     company restore holds the module-state boundary."""
     async with factory() as s:
-        await lock(s, *args)
+        await as_another_client(lock(s, *args))
         try:
             yield
         finally:

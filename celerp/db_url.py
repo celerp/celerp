@@ -7,6 +7,8 @@ installed SQLAlchemy defaults to, which is not necessarily one the app ships.
 """
 from __future__ import annotations
 
+import sqlalchemy as sa
+
 
 def sync_url(db_url: str) -> str:
     """The configured Postgres URL with its driver set to psycopg2."""
@@ -14,3 +16,10 @@ def sync_url(db_url: str) -> str:
     if not sep or scheme.split("+", 1)[0] != "postgresql":
         return db_url
     return f"postgresql+psycopg2://{rest}"
+
+
+def same_database(a: str | sa.engine.URL, b: str | sa.engine.URL) -> bool:
+    """Whether two URLs name one database, whatever driver each names."""
+    a, b = sa.engine.make_url(a), sa.engine.make_url(b)
+    return ((a.host, a.port, a.database, dict(a.query))
+            == (b.host, b.port, b.database, dict(b.query)))

@@ -32,6 +32,7 @@ from alembic import op
 
 # In-Python edits avoid json->jsonb casts that fail on SQL_ASCII clusters (issue #189).
 from celerp.migrations._json_compat import update_ledger_data, update_projection_state
+from celerp.migrations._locks import lock_tables
 
 revision = "e4f5a6b7c8d9"
 down_revision = "c2d3e4f5a6b7"
@@ -80,6 +81,7 @@ def _contact_key(data: dict, _row) -> bool:
 
 def upgrade() -> None:
     conn = op.get_bind()
+    lock_tables(conn, "ledger", "projections")
 
     # Backfill the stable key on the projection AND its ledger event (rebuild-safe).
     update_projection_state(conn, _doc_key, where="entity_type = 'doc'")

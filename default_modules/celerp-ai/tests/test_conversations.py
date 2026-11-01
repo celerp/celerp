@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -122,12 +123,17 @@ async def test_create_conversation_sets_title_from_query(session, company, user)
 
 @pytest.mark.asyncio
 async def test_conversation_limit_per_user(session, company, user):
+    """Pruning deletes the user's oldest conversations as rows of the company whose lock it
+    holds: the lock checker's census finds no conversation taken outside that lock."""
+    recorder = sys.modules["lock_rank"].RECORDER
+    before = recorder.ungated_sites(("row:ai_conversations",), "celerp/ai/conversations.py")
     for i in range(MAX_CONVERSATIONS_PER_USER + 5):
         await create_conversation(session, company.id, user.id, title=f"Conv {i}")
-    await session.commit()
+        await session.commit()
 
     convs = await list_conversations(session, company.id, user.id, limit=200)
     assert len(convs) <= MAX_CONVERSATIONS_PER_USER
+    assert recorder.ungated_sites(("row:ai_conversations",), "celerp/ai/conversations.py") - before == set()
 
 
 @pytest.mark.asyncio
@@ -142,7 +148,7 @@ async def test_conversation_pruning_preserves_unresolved_action(session, company
 
     for i in range(MAX_CONVERSATIONS_PER_USER):
         await create_conversation(session, company.id, user.id, title=f"New {i}")
-    await session.commit()
+        await session.commit()
 
     assert await get_conversation(session, protected_id, company.id, user.id) is not None
     convs = await list_conversations(session, company.id, user.id, limit=MAX_CONVERSATIONS_PER_USER + 10)
@@ -158,7 +164,7 @@ async def test_pruning_is_scoped_per_user(session, company, user, user_b):
 
     for i in range(MAX_CONVERSATIONS_PER_USER + 5):
         await create_conversation(session, company.id, user.id, title=f"A {i}")
-    await session.commit()
+        await session.commit()
 
     # User A pruned to the cap; user B's single conversation is untouched.
     a_convs = await list_conversations(session, company.id, user.id, limit=500)
@@ -223,9 +229,10 @@ async def test_delete_conversation_cascades_messages(session, company, user):
     await session.commit()
     assert deleted is True
 
-    # Conversation gone
+    # Conversation and its messages gone
     result = await get_conversation(session, conv.id, company.id, user.id)
     assert result is None
+    assert await get_messages(session, conv.id) == []
 
 
 @pytest.mark.asyncio
@@ -338,6 +345,7 @@ async def test_history_excludes_file_content(session, company, user):
 @pytest.mark.asyncio
 async def test_isolation_between_companies(session, company, company_b, user, user_b_co):
     c1 = await create_conversation(session, company.id, user.id, title="CoA")
+    await session.commit()      # each company's conversation is its own request
     c2 = await create_conversation(session, company_b.id, user_b_co.id, title="CoB")
     await session.commit()
 

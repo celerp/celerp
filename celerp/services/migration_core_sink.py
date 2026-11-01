@@ -16,8 +16,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 
-from sqlalchemy import delete, select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.events.engine import find_event_by_idempotency
@@ -39,7 +38,6 @@ from celerp.importers.sinks import (
     SinkEntityMapping,
     SinkError,
 )
-from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, Location, User
 from celerp.models.migration import MigrationCleanupTask, MigrationEntityMap
 from celerp.models.projections import Projection
@@ -219,21 +217,18 @@ def attachment_file_id(run_id: uuid.UUID, source_external_id: str, sha256: str) 
     return str(uuid.uuid5(run_id, f"attachment:{source_external_id}:{sha256}"))
 
 
-def attachment_cleanup_task_id(run_id: uuid.UUID, file_id: str) -> uuid.UUID:
-    return uuid.uuid5(run_id, f"cleanup:{file_id}")
-
-
 async def stage_file_cleanup(session: AsyncSession, company_id: uuid.UUID, run_id: uuid.UUID,
                              file_id: str, mime: str, key: str) -> uuid.UUID:
     """Record a migrated file for deletion, committed on its own before the file is written,
     so a file whose transaction never commits is always found and removed. The transaction
-    that links the file deletes the returned task."""
-    task_id = attachment_cleanup_task_id(run_id, file_id)
+    that links the file deletes the returned task. Each call records a new task, so its
+    insert waits on no other transaction while the caller's holds its locks; a task left by
+    a retried batch deletes the file only while no committed record links it."""
+    task = MigrationCleanupTask(id=uuid.uuid4(), company_id=company_id, run_ids=[str(run_id)],
+                                attachment={"file_id": file_id, "mime": mime, "idempotency_key": key})
+    task_id = task.id
     async with AsyncSession(bind=session.bind) as s:
-        await s.execute(pg_insert(MigrationCleanupTask.__table__).values(
-            id=task_id, company_id=company_id, run_ids=[str(run_id)],
-            attachment={"file_id": file_id, "mime": mime, "idempotency_key": key},
-        ).on_conflict_do_nothing(index_elements=["id"]))
+        s.add(task)
         await s.commit()
     return task_id
 
@@ -245,8 +240,8 @@ async def _import_attachment(context: SinkContext, record: CIFAttachment) -> tup
     The adapter sends only files for records that can hold them, so a file for any other
     record is a defect in the adapter: it fails the batch rather than being skipped. The
     file is stored under an id derived from its identity and content, after a cleanup task
-    naming it is committed; the batch that links it deletes the task, so a file whose
-    batch rolls back is removed by the runner or the startup sweep."""
+    naming it is committed; the batch that links it deletes the task (the runner does, after
+    its checkpoint), so a file whose batch rolls back is removed by the runner or the startup sweep."""
     key = context.idempotency_key(record, "attached")
     replay = await find_event_by_idempotency(context.session, context.company_id, key)
     if replay is not None:
@@ -286,7 +281,7 @@ async def _import_attachment(context: SinkContext, record: CIFAttachment) -> tup
         is_hero, document_tag = item_file_role(row.state.get("files", []), mime, as_hero=record.item_image)
     await attach_file(context.session, context.company_id, entity_type, entity_id, meta, context.user_id,
                       source="migration", idempotency_key=key, document_tag=document_tag, is_hero=is_hero)
-    await context.session.execute(delete(MigrationCleanupTask).where(MigrationCleanupTask.id == task_id))
+    context.linked_cleanup_tasks.append(task_id)
     return meta["id"], None
 
 

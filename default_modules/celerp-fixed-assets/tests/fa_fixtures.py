@@ -163,6 +163,7 @@ class FA:
         from celerp.models.company import User
         from test_helpers import make_authed_token
 
+        await self.session.commit()  # the member joins in a transaction of its own, as an invitation does
         uid = uuid.uuid4()
         self.session.add(User(id=uid, email=f"{role}-{uid.hex[:8]}@test.co", name=role.title(), auth_hash="x",
                               is_active=True))

@@ -1494,6 +1494,24 @@ def _refresh_expired_proposals(records: list, now: datetime) -> list:
     return copied
 
 
+async def _proposals_locked(session: AsyncSession, job, seen_id: str | None):
+    """Take the company's lock, which every writer of a job's results holds, and read the job
+    again under it, before proposals are recorded on it. Returns the proposal message another
+    request recorded since this one read the job (its proposals stand), else None."""
+    from celerp.ai import jobs
+    from celerp.ai.conversations import get_message
+    await jobs.lock_for_ai(session, job.company_id)
+    await session.refresh(job)
+    current = (job.results or {}).get("proposal_message_id")
+    if current is None or current == seen_id:
+        return None
+    return await get_message(session, uuid.UUID(current), job.conversation_id)
+
+
+def _proposals_out(msg) -> dict:
+    return {"message_id": str(msg.id), "answer": msg.content, "pending_actions": _message_out(msg).pending_actions}
+
+
 @router.post("/conversations/{conversation_id}/jobs/{job_id}/proposals")
 @_limiter.limit("20/minute")
 async def propose_from_job(
@@ -1536,22 +1554,18 @@ async def propose_from_job(
         if msg is not None:
             open_actions = pending_actions(msg.tools_called)
             if open_actions:
-                return {
-                    "message_id": str(msg.id), "answer": msg.content,
-                    "pending_actions": _message_out(msg).pending_actions,
-                }
+                return _proposals_out(msg)
             now = datetime.now(timezone.utc)
             refreshed = _refresh_expired_proposals(msg.tools_called or [], now)
             if refreshed:
+                if (other := await _proposals_locked(session, job, existing_id)) is not None:
+                    return _proposals_out(other)
                 refreshed_msg = await add_message(
                     session, conversation_id, "assistant", msg.content, tools_called=refreshed,
                 )
                 job.results = {**(job.results or {}), "proposal_message_id": str(refreshed_msg.id)}
                 await session.commit()
-                return {
-                    "message_id": str(refreshed_msg.id), "answer": refreshed_msg.content,
-                    "pending_actions": _message_out(refreshed_msg).pending_actions,
-                }
+                return _proposals_out(refreshed_msg)
             return {
                 "message_id": str(msg.id), "answer": msg.content,
                 "pending_actions": [],
@@ -1580,13 +1594,12 @@ async def propose_from_job(
             records.extend(new_records)
             lines.append(summary)
 
+    if (other := await _proposals_locked(session, job, existing_id)) is not None:
+        return _proposals_out(other)
     msg = await add_message(session, conversation_id, "assistant", "\n".join(lines), tools_called=records)
     job.results = {**(job.results or {}), "proposal_message_id": str(msg.id)}
     await session.commit()
-    return {
-        "message_id": str(msg.id), "answer": msg.content,
-        "pending_actions": _message_out(msg).pending_actions,
-    }
+    return _proposals_out(msg)
 
 
 @settings_router.get("/usage-stats")

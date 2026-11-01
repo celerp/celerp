@@ -334,14 +334,15 @@ async def test_return_line_sharing_a_lot_it_cannot_tell_apart_is_refused(client,
     lot, po, ids = await _two_lines_into_one_lot(client, session, auth)
     session.expire_all()
     legacy = ("lot_quantity_added", "lot_cost_added")
+    row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": po})
+    row.state = {**row.state, "received_items": [
+        {k: v for k, v in x.items() if k not in legacy} for x in row.state["received_items"]]}
+    await session.flush()
     for entry in (await session.execute(select(LedgerEntry).where(
             LedgerEntry.company_id == auth["company_id"], LedgerEntry.entity_id == po,
             LedgerEntry.event_type == "doc.received"))).scalars():
         entry.data = {**entry.data, "received_items": [
             {k: v for k, v in x.items() if k not in legacy} for x in entry.data["received_items"]]}
-    row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": po})
-    row.state = {**row.state, "received_items": [
-        {k: v for k, v in x.items() if k not in legacy} for x in row.state["received_items"]]}
     await session.commit()
     r = await _return_lines(client, auth, po, {"line_id": ids[0], "quantity_returned": 1})
     assert r.status_code == 409, r.text

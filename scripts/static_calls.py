@@ -192,6 +192,19 @@ def _last(node) -> str:
 
 
 
+def _detached(root) -> set[int]:
+    """The calls under *root* made as arguments to the run() of a new contextvars.Context
+    (context.run(loop.create_task, work())): the work runs in a context of its own, carrying
+    none of the caller's state, so the caller does not reach it."""
+    contexts = {target.id for node in ast.walk(root) if isinstance(node, ast.Assign)
+                and isinstance(node.value, ast.Call) and _last(node.value) == "Context"
+                for target in node.targets if isinstance(target, ast.Name)}
+    return {id(arg) for node in ast.walk(root) if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute) and node.func.attr == "run"
+            and isinstance(node.func.value, ast.Name) and node.func.value.id in contexts
+            for arg in node.args if isinstance(arg, ast.Call)}
+
+
 def _own(root):
     """The nodes under *root* that run in its own frame: not those of a function, class or
     lambda defined inside it."""
@@ -434,6 +447,7 @@ class Graph:
             if isinstance(node, (ast.Import, ast.ImportFrom)) and id(node) not in nested:
                 self._imports(node, local, self._modules[fn.module]["package"])
         called = {id(n.func) for n in ast.walk(fn.node) if isinstance(n, ast.Call)}
+        detached = _detached(fn.node)
         for node in ast.walk(fn.node):
             if id(node) in nested:
                 continue
@@ -445,7 +459,7 @@ class Graph:
             if what := self.effect(node, fn):
                 fn.effects.append((node.lineno, what))
             key = self._callee(node, local, fn)
-            if key is not None:
+            if key is not None and id(node) not in detached:
                 fn.calls.append((node.lineno, key))
 
     def _callee(self, node: ast.Call, scope: dict, fn: Function) -> str | None:

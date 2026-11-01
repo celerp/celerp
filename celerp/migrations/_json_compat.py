@@ -14,6 +14,8 @@ from typing import Callable
 
 import sqlalchemy as sa
 
+from celerp.migrations._locks import lock_tables
+
 
 def decode_json_value(value):
     """Decode a JSON column value returned either parsed or as raw text."""
@@ -80,6 +82,7 @@ def update_projection_state(
     SELECT expressions exposed to ``mutate`` via the row mapping. Returns the
     number of rows updated.
     """
+    lock_tables(conn, "projections")
     return _update_json_column(conn, "projections", "state", mutate, where, params, extra_cols)
 
 
@@ -92,6 +95,7 @@ def update_ledger_data(
     extra_cols: tuple[str, ...] = (),
 ) -> int:
     """Like :func:`update_projection_state`, for ``ledger.data``."""
+    lock_tables(conn, "ledger")
     return _update_json_column(conn, "ledger", "data", mutate, where, params, extra_cols)
 
 

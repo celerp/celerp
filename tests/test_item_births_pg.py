@@ -67,13 +67,9 @@ def _attach(client, tok: str, lot: str):
                                files={"file": ("photo.png", _PNG, "image/png")})
 
 
-def _sync(client, tok: str, lot: str):
-    return lambda: client.post("/items/bulk/shopify-sync", headers=auth(tok), json={"entity_ids": [lot]})
-
-
 @UPLOAD_DELETE_RACE_WARNINGS
-@pytest.mark.parametrize("second", [_rename, _upload, _attach, _sync],
-                         ids=["patch", "file-upload", "attachment-upload", "shop-sync"])
+@pytest.mark.parametrize("second", [_rename, _upload, _attach],
+                         ids=["patch", "file-upload", "attachment-upload"])
 async def test_an_item_event_waiting_on_a_delete_is_refused(committed_engine, race, tmp_path, monkeypatch, second):
     monkeypatch.setattr("celerp.config.settings.data_dir", tmp_path)
     client, hold = race
@@ -88,8 +84,8 @@ async def test_an_item_event_waiting_on_a_delete_is_refused(committed_engine, ra
     assert _stored_files(cid) == []
 
 
-@pytest.mark.parametrize("request_", [_rename, _upload, _attach, _sync],
-                         ids=["patch", "file-upload", "attachment-upload", "shop-sync"])
+@pytest.mark.parametrize("request_", [_rename, _upload, _attach],
+                         ids=["patch", "file-upload", "attachment-upload"])
 async def test_an_item_event_for_an_item_that_never_existed_is_refused(committed_engine, race, tmp_path, monkeypatch, request_):
     monkeypatch.setattr("celerp.config.settings.data_dir", tmp_path)
     client, _ = race
@@ -200,8 +196,9 @@ async def test_a_shop_image_pulled_while_the_item_is_deleted_leaves_no_file(comm
     async def _pull():
         async with maker(committed_engine)() as s:
             try:
-                return await download_and_emit_file(s, str(cid), lot, None, "https://shop.example/a.png",
-                                                    "a.png", "product_images", True)
+                return await download_and_emit_file(s, str(cid), lot, "https://shop.example/a.png",
+                                                    "a.png", "product_images", True,
+                                                    platform="woocommerce", store="https://shop.example")
             except HTTPException as exc:
                 return exc
 

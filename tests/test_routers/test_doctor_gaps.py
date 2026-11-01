@@ -305,6 +305,12 @@ async def test_doctor_zero_amount_jes_fix(client: "AsyncClient", session: AsyncS
 
     zero_id = f"je:{uuid.uuid4()}"
 
+    # Insert the projection with zero entries
+    session.add(_proj(company_id, zero_id, "journal_entry", {
+        "status": "posted", "memo": "Zero JE", "entries": [],
+    }))
+    await session.flush()
+
     # Insert the ledger event (needed by the fix path to void)
     le = LedgerEntry(
         company_id=company_id,
@@ -318,11 +324,6 @@ async def test_doctor_zero_amount_jes_fix(client: "AsyncClient", session: AsyncS
         idempotency_key=str(uuid.uuid4()),
     )
     session.add(le)
-
-    # Insert the projection with zero entries
-    session.add(_proj(company_id, zero_id, "journal_entry", {
-        "status": "posted", "memo": "Zero JE", "entries": [],
-    }))
     await session.commit()
 
     # Dry-run: detect

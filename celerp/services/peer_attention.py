@@ -12,6 +12,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.company_peer import CompanyPeerAttention
+from celerp.services.company_lock import lock_company
 
 REFUSED = "refused"
 # A journal of the receiving company's that the connected company declined to apply, and
@@ -27,7 +28,9 @@ async def record(session: AsyncSession, *, company_id: uuid.UUID, source_company
                  entity_type: str, source_entity_id: str, label: str, reason: str,
                  kind: str = REFUSED, fix: dict | None = None) -> None:
     """Open the record's item, or replace its label, reason and fix when it is already
-    open. ``fix`` is what a held record needs to post (peer_accounts.AccountHold)."""
+    open. ``fix`` is what a held record needs to post (peer_accounts.AccountHold). Every
+    writer of an item takes the company's lock before it."""
+    await lock_company(session, company_id)
     values = dict(company_id=company_id, source_company_id=source_company_id, kind=kind,
                   entity_type=entity_type, source_entity_id=source_entity_id,
                   label=label, reason=reason, fix=fix, created_at=datetime.now(timezone.utc))
@@ -41,6 +44,7 @@ async def record(session: AsyncSession, *, company_id: uuid.UUID, source_company
 async def clear(session: AsyncSession, *, company_id: uuid.UUID, source_company_id: uuid.UUID,
                 entity_type: str, source_entity_id: str, kind: str = REFUSED) -> None:
     """The record was applied: its item closes."""
+    await lock_company(session, company_id)
     await session.execute(delete(CompanyPeerAttention).where(
         CompanyPeerAttention.company_id == company_id,
         CompanyPeerAttention.source_company_id == source_company_id,

@@ -37,7 +37,7 @@ from celerp.main import app
 @pytest_asyncio.fixture
 async def auth_client(session: AsyncSession):
     """Authenticated async client with session token pre-set."""
-    from celerp.services.session_tracker import clear as _clear_tracker
+    from test_helpers import clear_sessions as _clear_tracker
     await _clear_tracker(session)
     app.dependency_overrides[get_session] = lambda: session
     token = secrets.token_hex(32)

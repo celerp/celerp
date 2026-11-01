@@ -262,7 +262,8 @@ async def test_a_value_under_attributes_scans_as_unset(client):
 
 async def test_race_for_the_last_parcel_lands_once(_db_engine):
     from test_doc_scan_concurrency import _race, _seed_draft_doc, _seed_unique_item
-    from test_list_outcome_concurrency import _barcode, _cleanup, _factory, _seed_company, _state
+    from test_helpers import remove_company
+    from test_list_outcome_concurrency import _barcode, _factory, _seed_company, _state
 
     factory = _factory(_db_engine)
     company_id, user_id, user = await _seed_company(factory)
@@ -279,7 +280,7 @@ async def test_race_for_the_last_parcel_lands_once(_db_engine):
         assert [line.get("item_id") for line in state["line_items"]] == [item]
         assert [float(line["quantity"]) for line in state["line_items"]] == [0.6]
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 @pytest.mark.parametrize("stored", ["abc", 0, -2, True, float("nan"), None])

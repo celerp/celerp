@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """End-to-end manufacturing journey — every phase exercised together in one browser flow.
 
-Mirrors context/2026-0611-manufacturing-user-journey.md. This is the ship-gate.
+Walks the manufacturing user journey end to end. This is the ship-gate.
 """
 from __future__ import annotations
 

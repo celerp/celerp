@@ -23,6 +23,7 @@ Changes:
 from __future__ import annotations
 
 from alembic import op
+from celerp.migrations._locks import lock_tables
 import sqlalchemy as sa
 
 
@@ -37,6 +38,7 @@ def upgrade() -> None:
         "projections",
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=True),
     )
+    lock_tables(op.get_bind(), "projections")
     # Backfill from the minimum ledger_entry timestamp per entity
     op.execute(
         """

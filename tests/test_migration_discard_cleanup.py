@@ -9,6 +9,7 @@ startup sweep, while the user carries on as if the discard were complete."""
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 import pytest
@@ -353,13 +354,14 @@ async def test_bootstrap_discard_is_refused_while_a_table_changed_outside_celerp
 
 
 @pytest.mark.asyncio
-async def test_bootstrap_discard_is_refused_when_a_table_inherits_from_users_after_the_check(
+async def test_bootstrap_discard_holds_a_table_from_inheriting_users_until_it_commits(
         real_client, real_engine, migration_env, monkeypatch):
-    """Another connection makes a table holding a row naming the owner inherit from users
-    after the discard has checked for tables changed outside Celerp, so deleting the owner
-    would delete that row too. The discard is refused naming that table, and the owner,
-    the company and that row are all kept."""
+    """Another connection tries to make a table holding a row naming the owner inherit from
+    users after the discard has checked for tables changed outside Celerp, so deleting the
+    owner would delete that row too. The discard holds every table it can read, so the change
+    waits for it: the owner and company go, and that row is kept."""
     from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
 
     from celerp import db_catalog
 
@@ -374,29 +376,61 @@ async def test_bootstrap_discard_is_refused_when_a_table_inherits_from_users_aft
         await conn.execute(text("CREATE TABLE ext_user_copy (LIKE users INCLUDING CONSTRAINTS)"))
         await conn.execute(text("INSERT INTO ext_user_copy SELECT * FROM users WHERE email = :e"), {"e": OWNER_EMAIL})
     changed_outside = db_catalog.changed_outside
+    inherit: list[str] = []
 
     async def then_inherit(session, reached):
         found = await changed_outside(session, reached)
         monkeypatch.setattr(db_catalog, "changed_outside", changed_outside)
-        async with real_engine.begin() as conn:
-            await conn.execute(text("SET LOCAL lock_timeout = '1s'"))
-            await conn.execute(text("ALTER TABLE ext_user_copy INHERIT users"))
+        try:
+            async with real_engine.begin() as conn:
+                await conn.execute(text("SET LOCAL lock_timeout = '1s'"))
+                await conn.execute(text("ALTER TABLE ext_user_copy INHERIT users"))
+            inherit.append("changed")
+        except DBAPIError:
+            inherit.append("waited")
         return found
 
     monkeypatch.setattr(db_catalog, "changed_outside", then_inherit)
     try:
         r = await real_client.post(f"/migrations/{run_id}/discard", headers=auth(token))
 
-        assert r.status_code == 409, r.text
-        detail = r.json()["detail"]
-        assert (detail["message_key"], detail["params"]) == ("migration.discard_partition_key",
-                                                             {"table": "ext_user_copy"})
-        assert await count(real_engine, "ONLY users", "email = :e", e=OWNER_EMAIL) == 1
-        assert await count(real_engine, "companies", "name = 'Moved Co'") == 1
+        assert r.status_code == 200 and r.json() == {"redirect": "/setup"}, r.text
+        assert inherit == ["waited"]
+        assert await count(real_engine, "ONLY users", "email = :e", e=OWNER_EMAIL) == 0
+        assert await count(real_engine, "companies", "name = 'Moved Co'") == 0
         assert await count(real_engine, "ext_user_copy", "email = :e", e=OWNER_EMAIL) == 1
     finally:
         async with real_engine.begin() as conn:
             await conn.execute(text("DROP TABLE IF EXISTS ext_user_copy"))
+
+
+@pytest.mark.asyncio
+async def test_discard_refuses_as_busy_while_another_transaction_holds_a_row_of_the_company(
+        real_client, real_engine, migration_env):
+    """Another transaction holds the staged company's membership, as a write referring to
+    it does, and may go on to share the company's key. Discard takes the reset's table
+    locks without waiting: it refuses as busy, in the user's language, and deletes nothing,
+    instead of waiting on that row while holding the company."""
+    from sqlalchemy import text
+
+    token, run_id, company_id = await _staged(real_client, real_engine, migration_env)
+    async with real_engine.connect() as holder:
+        held = await holder.scalar(text("SELECT user_id FROM user_companies WHERE company_id = :c FOR KEY SHARE"),
+                                   {"c": company_id})
+        assert held is not None
+        discard = asyncio.ensure_future(real_client.post(f"/migrations/{run_id}/discard", headers=auth(token)))
+        done, _ = await asyncio.wait({discard}, timeout=10)
+        await holder.rollback()
+    r = await discard
+    assert done, "discard waited on the held row"
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "migration.discard_busy"
+    assert in_language("de", detail) != detail["message"]
+    assert await count(real_engine, "companies", "id = :c", c=company_id) == 1
+    assert await count(real_engine, "user_companies", "company_id = :c", c=company_id) == 1
+    assert _source(migration_env, run_id).is_dir()
+    assert await _tasks(real_engine) == []
 
 
 @pytest.mark.asyncio

@@ -23,9 +23,9 @@ class SyncRun(Base):
     direction: Mapped[str] = mapped_column(sa.String(16), nullable=False, default="inbound")
     started_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), nullable=False)
     finished_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
-    created_count: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0)
-    updated_count: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0)
-    skipped_count: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0)
+    created_count: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0, server_default="0")
+    updated_count: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0, server_default="0")
+    skipped_count: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0, server_default="0")
     errors_json: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
     attention_json: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
     status: Mapped[str] = mapped_column(sa.String(16), nullable=False)  # success | partial | failed

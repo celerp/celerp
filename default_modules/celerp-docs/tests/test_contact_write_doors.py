@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from test_contact_reference_lifecycle import _NoCommit
 from test_contact_selection import _contact, _doc, _get, _item, _line, _list, _owner, _seed, _select
+from test_helpers import remove_company
 
 
 def _fields(**values) -> dict:
@@ -321,24 +322,11 @@ async def _company(factory):
     from celerp.models.company import Company, User
     company_id, user_id = uuid.uuid4(), uuid.uuid4()
     async with factory() as s:
-        s.add(Company(id=company_id, name="DoorCo", slug=f"door-{company_id.hex[:8]}"))
         s.add(User(id=user_id, email=f"door-{user_id.hex[:8]}@example.test", name="Editor"))
+        await s.flush()
+        s.add(Company(id=company_id, name="DoorCo", slug=f"door-{company_id.hex[:8]}"))
         await s.commit()
     return company_id, user_id
-
-
-async def _cleanup(factory, company_id, user_id):
-    from sqlalchemy import delete
-
-    from celerp.models.company import Company, User
-    from celerp.models.ledger import LedgerEntry
-    from celerp.models.projections import Projection
-    async with factory() as s:
-        await s.execute(delete(Projection).where(Projection.company_id == company_id))
-        await s.execute(delete(LedgerEntry).where(LedgerEntry.company_id == company_id))
-        await s.execute(delete(Company).where(Company.id == company_id))
-        await s.execute(delete(User).where(User.id == user_id))
-        await s.commit()
 
 
 async def _references(factory, company_id, contact_id) -> list[str]:
@@ -431,7 +419,7 @@ async def test_customer_id_waits_for_a_merge_or_delete(_db_engine, retire, door)
         assert status == 422
         assert await _references(factory, company_id, "contact:A") == []
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 @pytest.mark.asyncio
@@ -478,7 +466,7 @@ async def test_a_copy_racing_a_merge_never_names_the_merged_contact(_db_engine, 
         assert second_status in (200, 409)
         assert await _references(factory, company_id, "contact:A") == []
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 def _patcher(resource, entity_id, company_id, user_id, **payload):
@@ -521,7 +509,7 @@ async def test_a_different_body_sent_at_the_same_moment_with_one_key_is_refused(
         )
         assert (waited, first, second) == (True, 200, 409)
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)
 
 
 @pytest.mark.asyncio
@@ -544,4 +532,4 @@ async def test_an_identical_versioned_edit_sent_at_the_same_moment_is_saved_once
         )
         assert (waited, first, second) == (True, 200, 200)
     finally:
-        await _cleanup(factory, company_id, user_id)
+        await remove_company(factory, company_id, user_id)

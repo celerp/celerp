@@ -66,6 +66,7 @@ async def _forget_origin(session, auth, item_id: str) -> None:
     row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": item_id},
                             populate_existing=True)
     row.state = {k: v for k, v in row.state.items() if k != _FIELD}
+    await session.flush()
     await session.execute(delete(LedgerEntry).where(
         LedgerEntry.company_id == auth["company_id"], LedgerEntry.entity_id == item_id,
         LedgerEntry.event_type == "item.inventory_account.recorded"))

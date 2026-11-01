@@ -41,7 +41,9 @@ def _claims(token: str) -> tuple[uuid.UUID, uuid.UUID]:
 
 
 async def _question(session, company_id, user_id, *, credits: int, when: datetime | None = None) -> AIMessage:
-    """A conversation question charged ``credits``, stored as the app stores it."""
+    """A conversation question charged ``credits``, stored as the app stores it: under the
+    company's lock, taken before any of its AI rows."""
+    await jobs.lock_for_ai(session, company_id)
     conversation = AIConversation(company_id=company_id, user_id=user_id)
     session.add(conversation)
     await session.flush()
@@ -138,7 +140,10 @@ def _counts(rows: list[dict]) -> list[tuple[int, int]]:
 
 
 async def _usage(client, token: str, **params):
-    return await client.get("/ai/usage-stats", headers={"Authorization": f"Bearer {token}"}, params=params)
+    """The usage report over all time unless a test names its period: a question placed
+    minutes ago falls in the previous month in the first minutes of a month."""
+    return await client.get("/ai/usage-stats", headers={"Authorization": f"Bearer {token}"},
+                            params={"period": "all", **params})
 
 
 @pytest.fixture
@@ -242,7 +247,7 @@ async def test_usage_period_all_counts_earlier_months(client, session, owner):
     await _question(session, company_id, user_id, credits=1)
     await session.commit()
 
-    month = (await _usage(client, token)).json()
+    month = (await client.get("/ai/usage-stats", headers={"Authorization": f"Bearer {token}"})).json()
     assert [r["query_count"] for r in month["users"]] == [1]
     assert month["period"]["kind"] == "month"
     tz = (await client.get("/companies/me", headers={"Authorization": f"Bearer {token}"})).json()["settings"].get("timezone")
@@ -451,7 +456,9 @@ async def test_question_sent_twice_at_once_is_refused_once(client, session, owne
     real_add = conversations.add_message
 
     async def _add_after_the_other_send(sess, conversation_id, role, content, **kw):
-        # The other send stores the question between this send's check and its save.
+        # The other send stores the question between this send's check and its save, under
+        # the conversation's lock, as every writer of its messages does.
+        await conversations._lock_conversation(sess, conversation_id)
         await sess.execute(AIMessage.__table__.insert().values(
             id=question, conversation_id=uuid.UUID(conv), role="user", content="supplier?",
             credits_used=0, created_at=datetime.now(timezone.utc)))

@@ -16,14 +16,13 @@ import functools
 import uuid
 
 import pytest
-from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.events.engine import connector_upsert, emit_event
 from celerp.inventory_codes import BarcodeConflictError, RfidEpcConflictError
 from celerp.models.company import Company
-from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from test_helpers import remove_company
 
 
 def _item_kwargs(company_id, entity_id, sku, barcode=None):
@@ -42,15 +41,6 @@ def _item_kwargs(company_id, entity_id, sku, barcode=None):
         idempotency_key=str(uuid.uuid4()),
         metadata_={},
     )
-
-
-async def _cleanup(factory, company_ids):
-    async with factory() as s:
-        for cid in company_ids:
-            await s.execute(delete(Projection).where(Projection.company_id == cid))
-            await s.execute(delete(LedgerEntry).where(LedgerEntry.company_id == cid))
-            await s.execute(delete(Company).where(Company.id == cid))
-        await s.commit()
 
 
 @pytest.mark.asyncio
@@ -73,7 +63,7 @@ async def test_duplicate_barcode_in_company_raises_conflict(_db_engine):
             # The conflicting projection was never created.
             assert await s.get(Projection, {"company_id": company_id, "entity_id": "item:2"}) is None
     finally:
-        await _cleanup(factory, [company_id])
+        await remove_company(factory, [company_id])
 
 
 def _update_kwargs(company_id, entity_id, barcode=None, *, field="barcode", value=None):
@@ -115,7 +105,7 @@ async def test_update_to_taken_barcode_raises_conflict(_db_engine):
             # item:2 kept its original barcode; the conflicting update never landed.
             assert (await s.get(Projection, {"company_id": company_id, "entity_id": "item:2"})).state["barcode"] == "67890"
     finally:
-        await _cleanup(factory, [company_id])
+        await remove_company(factory, [company_id])
 
 
 @pytest.mark.asyncio
@@ -135,7 +125,7 @@ async def test_same_barcode_across_companies_is_allowed(_db_engine):
             assert (await s.get(Projection, {"company_id": c1, "entity_id": "item:1"})).state["barcode"] == "12345"
             assert (await s.get(Projection, {"company_id": c2, "entity_id": "item:1"})).state["barcode"] == "12345"
     finally:
-        await _cleanup(factory, [c1, c2])
+        await remove_company(factory, [c1, c2])
 
 
 @pytest.mark.asyncio
@@ -155,7 +145,7 @@ async def test_empty_and_absent_barcodes_do_not_collide(_db_engine):
             for eid in ("item:1", "item:2", "item:3"):
                 assert await s.get(Projection, {"company_id": company_id, "entity_id": eid}) is not None
     finally:
-        await _cleanup(factory, [company_id])
+        await remove_company(factory, [company_id])
 
 
 async def _company(factory, name):
@@ -197,7 +187,7 @@ async def test_barcode_and_rfid_share_one_namespace(_db_engine):
                 await emit_event(s, **kwargs)
             await s.rollback()
     finally:
-        await _cleanup(factory, [company_id])
+        await remove_company(factory, [company_id])
 
 
 @pytest.mark.asyncio
@@ -234,7 +224,7 @@ async def test_existing_duplicate_is_grandfathered_and_can_be_resolved(_db_engin
         assert (await _resolve(factory, company_id, "7508")).one.entity_id == "item:b"
         assert (await _resolve(factory, company_id, "7510")).one.entity_id == "item:a"
     finally:
-        await _cleanup(factory, [company_id])
+        await remove_company(factory, [company_id])
 
 
 @pytest.mark.asyncio
@@ -267,7 +257,7 @@ async def test_connector_records_duplicate_barcodes_and_update_heals_lookup(_db_
         assert (await _resolve(factory, company_id, "7508")).one.entity_id == "item:p2"
         assert (await _resolve(factory, company_id, "7510")).one.entity_id == "item:p1"
     finally:
-        await _cleanup(factory, [company_id])
+        await remove_company(factory, [company_id])
 
 
 def _status_kwargs(company_id, entity_id, new_status):
@@ -324,7 +314,7 @@ async def test_reactivating_merged_item_checks_its_codes(_db_engine):
             await s.commit()
         assert (await _resolve(factory, company_id, "7508")).one.entity_id == "item:b"
     finally:
-        await _cleanup(factory, [company_id])
+        await remove_company(factory, [company_id])
 
 
 @pytest.mark.asyncio
@@ -350,7 +340,7 @@ async def test_boundary_rereads_item_changed_after_it_was_loaded(_db_engine):
             await stale.rollback()
         assert (await _resolve(factory, company_id, "100")).one.entity_id == "item:c"
     finally:
-        await _cleanup(factory, [company_id])
+        await remove_company(factory, [company_id])
 
 
 def test_status_change_on_live_item_does_not_take_code_namespace():

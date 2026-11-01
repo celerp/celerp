@@ -22,6 +22,7 @@ Create Date: 2026-10-06
 """
 
 from alembic import op
+from celerp.migrations._locks import lock_tables
 import sqlalchemy as sa
 
 revision = "w1n2o3p4q5r6"
@@ -53,6 +54,7 @@ def upgrade() -> None:
             sa.Column("read_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         )
     if _has_read_flag(conn):
+        lock_tables(conn, "notification_reads", "notifications")
         op.execute(
             "INSERT INTO notification_reads (notification_id, user_id) "
             "SELECT id, user_id FROM notifications WHERE read AND user_id IS NOT NULL "
@@ -73,6 +75,7 @@ def downgrade() -> None:
     if not _exists(conn, "notification_reads"):
         return
     op.add_column("notifications", sa.Column("read", sa.Boolean(), server_default=sa.false(), nullable=False))
+    lock_tables(conn, "notifications")
     op.execute(
         "UPDATE notifications SET read = true WHERE EXISTS "
         "(SELECT 1 FROM notification_reads r WHERE r.notification_id = notifications.id "

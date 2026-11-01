@@ -35,12 +35,12 @@ class LabelTemplate(Base):
     id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     company_id: Mapped[uuid.UUID] = mapped_column(sa.ForeignKey("companies.id"), nullable=False)
     name: Mapped[str] = mapped_column(sa.String(200), nullable=False)
-    format: Mapped[str] = mapped_column(sa.String(50), nullable=False, default="40x30mm")
-    orientation: Mapped[str] = mapped_column(sa.String(20), nullable=False, default="portrait")
+    format: Mapped[str] = mapped_column(sa.String(50), nullable=False, default="40x30mm", server_default="40x30mm")
+    orientation: Mapped[str] = mapped_column(sa.String(20), nullable=False, default="portrait", server_default="portrait")
     width_mm: Mapped[float | None] = mapped_column(sa.Float, nullable=True)
     height_mm: Mapped[float | None] = mapped_column(sa.Float, nullable=True)
     fields: Mapped[list] = mapped_column(sa.JSON, nullable=False, default=list)
-    copies: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=1)
+    copies: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=1, server_default="1")
     notes: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True),

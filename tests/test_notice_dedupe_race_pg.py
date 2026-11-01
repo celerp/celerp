@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: BUSL-1.1
 
 """A notice told once (notify_once) or kept standing (notify_standing) is deduped on what
-the company already has, a read-check-write. Two writers that check at the same time would
-each find nothing and each add the notice, so the writers hold the company lock: the
-second waits for the first to commit and then finds its notice.
+the company already has, a read-check-write run when the session commits. Two commits that
+check at the same time would each find nothing and each add the notice, so each takes the
+company's notice key first: the second waits for the first to commit and then finds its
+notice.
 
 Each case runs on real PostgreSQL across two connections."""
 
@@ -45,41 +46,24 @@ async def _standing(s, cid, body):
     return await notification_service.notify_standing(s, cid, "system", "Standing", body)
 
 
+ROUNDS = 25
+
+
 @pytest.mark.parametrize("notify", [_once, _standing], ids=["once", "standing"])
 async def test_two_writers_at_once_leave_one_notice(factory, notify):
-    cid = await _company(factory)
-    async with factory() as first:
-        assert await notify(first, cid, "Same")
+    async def write(cid, start: asyncio.Event) -> None:
+        async with factory() as s:
+            await notify(s, cid, "Same")
+            await start.wait()
+            await s.commit()
 
-        async def second() -> bool:
-            async with factory() as s:
-                created = await notify(s, cid, "Same")
-                await s.commit()
-                return created
-
-        task = asyncio.create_task(second())
-        await asyncio.sleep(0.5)
-        assert not task.done(), "the second writer checked without waiting for the first"
-        await first.commit()
-    assert await asyncio.wait_for(task, 10) is False
-    async with factory() as s:
-        assert (await s.execute(select(func.count()).select_from(Notification)
-                                .where(Notification.company_id == cid))).scalar_one() == 1
-
-
-async def test_clearing_waits_for_a_writer_that_holds_the_company(factory):
-    cid = await _company(factory)
-    async with factory() as first:
-        assert await _standing(first, cid, "Holds")
-
-        async def clear() -> int:
-            async with factory() as s:
-                removed = await notification_service.clear_standing(s, cid, "system", "Standing")
-                await s.commit()
-                return removed
-
-        task = asyncio.create_task(clear())
-        await asyncio.sleep(0.5)
-        assert not task.done(), "clearing did not wait for the writer holding the company"
-        await first.commit()
-    assert await asyncio.wait_for(task, 10) == 1
+    for _ in range(ROUNDS):
+        cid = await _company(factory)
+        start = asyncio.Event()
+        writers = [asyncio.create_task(write(cid, start)) for _ in range(2)]
+        await asyncio.sleep(0)
+        start.set()
+        await asyncio.wait_for(asyncio.gather(*writers), 10)
+        async with factory() as s:
+            assert (await s.execute(select(func.count()).select_from(Notification)
+                                    .where(Notification.company_id == cid))).scalar_one() == 1

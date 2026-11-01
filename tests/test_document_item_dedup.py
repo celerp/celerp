@@ -18,6 +18,7 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
 
+from test_helpers import lock_every_company
 from celerp.events.engine import emit_event
 from celerp.models.company import Company
 from celerp.models.ledger import LedgerEntry
@@ -281,9 +282,10 @@ async def test_rebuild_replays_historical_duplicate_unchanged(client, session):
         metadata_={},
     )
     session.add(entry)
-    await session.flush()
+    await session.commit()
 
     # Rebuild must replay the historical event without raising.
+    await lock_every_company(session)
     await ProjectionEngine.rebuild(session)
 
     proj = (await session.execute(

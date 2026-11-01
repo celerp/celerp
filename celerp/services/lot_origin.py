@@ -522,15 +522,14 @@ async def books_from_elsewhere(session: AsyncSession, company_id, settings: dict
 
 
 async def _locked(session: AsyncSession, company_id, roles: list[str]) -> tuple[dict, dict[str, str] | None]:
-    """Lock the company, its chart, the accounts of ``roles`` and its lots, in that order.
+    """Lock the company (and with it its chart), the accounts of ``roles`` and its lots, in that order.
     Returns the settings and each role's account, or None for the accounts when one of
     them cannot take an entry (unmapped, inactive, the wrong type) or two share an account."""
-    from celerp.services.company_lock import lock_chart, locked_company
+    from celerp.services.company_lock import locked_company
     from celerp.services.journal_accounts import lock_accounts
 
     company = await locked_company(session, company_id)
     settings = dict(company.settings or {})
-    await lock_chart(session, company_id)
     current = role_map(settings)
     accounts = await lock_accounts(session, company_id, {current[r] for r in roles if current.get(r)})
     await session.execute(select(Projection.entity_id).where(
@@ -1753,7 +1752,7 @@ async def _move_lots(session: AsyncSession, company_id, lots, request: str, code
     not inventory or cannot take entries (_check_target), a lot not placed automatically
     or no longer in stock, a lot an unshipped invoice holds, or a locked period. Returns
     {"moved", "value", "code", "move_id"}."""
-    from celerp.services.company_lock import lock_chart, locked_company
+    from celerp.services.company_lock import locked_company
     from celerp.services.journal_accounts import lock_accounts
 
     key = (key or "").strip()
@@ -1772,7 +1771,6 @@ async def _move_lots(session: AsyncSession, company_id, lots, request: str, code
                            "Select Try again.")
         return {"moved": len(done), "value": _debits(await _je_state(session, company_id, _move_je(move_id))),
                 "code": done[0].data[LOT_ACCOUNT_FIELD], "move_id": move_id}
-    await lock_chart(session, company_id)
     rows = await _locked_lots(session, company_id, await lots())
     if await lock_accounts(session, company_id, {code}) is None:
         raise HTTPException(status_code=409, detail=needs_accounting())
@@ -1798,7 +1796,7 @@ async def undo_lot_move(session: AsyncSession, company_id, move_id: str, actor_i
     with them, in one entry dated today (move ``<move_id>:undo``). Once only, and only
     while every lot is still where the move put it, free of unshipped invoices, and the
     period is open; otherwise refused, writing nothing."""
-    from celerp.services.company_lock import lock_chart, locked_company
+    from celerp.services.company_lock import locked_company
 
     await locked_company(session, company_id)
     events = await _move_events(session, company_id, move_id)
@@ -1807,7 +1805,6 @@ async def undo_lot_move(session: AsyncSession, company_id, move_id: str, actor_i
     undo_id = f"{move_id}:undo"
     if await _move_events(session, company_id, undo_id):
         raise _refused(409, "older_stock.undo.done", "This move was already undone.")
-    await lock_chart(session, company_id)
     rows = {r.entity_id: r for r in await _locked_lots(session, company_id, [e.entity_id for e in events])}
     for e in events:
         row = rows[e.entity_id]

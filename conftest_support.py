@@ -9,6 +9,7 @@ without importing the root conftest, which spins up Postgres at import time.
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 import uuid
 from collections.abc import MutableMapping
@@ -127,3 +128,28 @@ def skip_relay_check_in(set_attr=setattr) -> None:
 
     for name in ("_try_auto_activate", "_try_sync_existing_entitlement"):
         set_attr(main_mod, name, _skipped)
+
+
+_SESSION_BINDINGS = ("SessionLocal", "LifecycleSessionLocal", "get_session_ctx", "get_lifecycle_session_ctx")
+
+
+def restore_session_bindings() -> list[str]:
+    """Point every app module's own copy of a celerp.db session factory back at celerp.db's.
+
+    A module that does ``from celerp.db import get_session_ctx`` binds whatever celerp.db
+    holds when it is first imported. Imported first inside a test that monkeypatched
+    celerp.db (to a scratch database or the test session), it keeps the patched factory
+    after monkeypatch restores celerp.db, and every later test on the worker uses it.
+    Returns the bindings it repaired."""
+    import celerp.db as db
+
+    repaired = []
+    for name, module in list(sys.modules.items()):
+        if module is None or module is db or not name.startswith(("celerp", "ui")):
+            continue
+        for attr in _SESSION_BINDINGS:
+            held = module.__dict__.get(attr)
+            if held is not None and held is not getattr(db, attr):
+                setattr(module, attr, getattr(db, attr))
+                repaired.append(f"{name}.{attr}")
+    return repaired

@@ -15,6 +15,7 @@ Revises: h4c5d6e7f8a9
 """
 import sqlalchemy as sa
 from alembic import op
+from celerp.migrations._locks import lock_tables
 
 revision = "i3b4c5d6e7f8"
 down_revision = "h4c5d6e7f8a9"
@@ -24,6 +25,7 @@ depends_on = None
 
 def upgrade() -> None:
     op.add_column("ai_usage", sa.Column("reconcile_at", sa.DateTime(timezone=True), nullable=True))
+    lock_tables(op.get_bind(), "ai_usage")
     op.execute("UPDATE ai_usage SET reconcile_at = created_at")
     op.alter_column("ai_usage", "reconcile_at", nullable=False)
     op.add_column("ai_usage", sa.Column("unresolved", sa.Boolean(), nullable=False,

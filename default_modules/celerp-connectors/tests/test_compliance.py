@@ -32,10 +32,16 @@ def test_has_category(connector):
     assert isinstance(connector.category, ConnectorCategory)
 
 
-def test_has_supported_entities(connector):
-    assert len(connector.supported_entities) > 0
-    for e in connector.supported_entities:
-        assert isinstance(e, SyncEntity)
+def test_has_entity_flows(connector):
+    """Each kind of record names syncs the connector implements, and a new connection
+    starts with a direction each record can take."""
+    from celerp.connectors.sync_runner import implements
+
+    assert connector.entity_flows
+    for key, flow in connector.entity_flows.items():
+        for entity in (*flow.inbound, *flow.outbound):
+            assert implements(connector, entity), (connector.name, key, entity)
+        assert connector.default_directions[key] in {d.value for d in flow.allowed()}
 
 
 def test_has_conflict_strategy(connector):
@@ -43,10 +49,11 @@ def test_has_conflict_strategy(connector):
 
 
 def test_conflict_strategy_covers_entities(connector):
-    """Every supported entity must have a conflict strategy."""
-    for entity in connector.supported_entities:
-        assert entity.value in connector.conflict_strategy or entity in connector.conflict_strategy, \
-            f"{connector.name} missing conflict_strategy for {entity}"
+    """Every entity pulled in must have a conflict strategy."""
+    for flow in connector.entity_flows.values():
+        for entity in flow.inbound:
+            assert entity in connector.conflict_strategy or SyncEntity(entity) in connector.conflict_strategy, \
+                f"{connector.name} missing conflict_strategy for {entity}"
 
 
 def test_sync_methods_exist(connector):

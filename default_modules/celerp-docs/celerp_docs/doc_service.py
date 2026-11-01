@@ -42,7 +42,12 @@ def _source_rate(value, *, invert: bool = False):
     return to_stored_float(rate)
 
 
-async def upsert_order_from_shopify(company_id: str, order: dict) -> str:
+# WooCommerce order statuses whose import issues the invoice, posting revenue and
+# drawing stock.
+WOOCOMMERCE_ISSUED_STATUSES = frozenset({"processing", "completed"})
+
+
+async def upsert_order_from_shopify(company_id: str, order: dict, operation: str | None = None) -> str:
     """
     Create/update a doc (invoice) from a Shopify order dict.
     Returns "created", "updated", or "noop".
@@ -88,13 +93,14 @@ async def upsert_order_from_shopify(company_id: str, order: dict) -> str:
             "currency": currency,
             "shopify_order_id": str(order["id"]),
         }
-        return await _emit_doc(session, company_id, data, idem_key)
+        return await _emit_doc(session, company_id, data, idem_key, operation=operation)
 
 
-_IMPORTED_INVOICE_MARKERS = (
-    "shopify_order_id", "woocommerce_order_id",
-    "quickbooks_invoice_id", "xero_invoice_id",
-)
+def _imported_invoice_markers() -> tuple[str, ...]:
+    """The state keys naming the platform record an imported invoice came from."""
+    from celerp.connectors import all_connectors
+
+    return tuple(c.imported_doc_marker for c in all_connectors() if c.imported_doc_marker)
 
 
 def _invoice_for_push(entity_id: str, state: dict) -> dict:
@@ -131,10 +137,11 @@ async def list_unsynced_invoices(company_id: str, platform: str) -> list[dict]:
                 Projection.state["doc_type"].as_string() == "invoice",
             )
         )).scalars().all()
+    markers = _imported_invoice_markers()
     return [
         _invoice_for_push(r.entity_id, st)
         for r in rows
-        if not any((st := r.state or {}).get(m) for m in _IMPORTED_INVOICE_MARKERS)
+        if not any((st := r.state or {}).get(m) for m in markers)
         and not st.get(f"{platform}_invoice_id")
         and not (platform in {"quickbooks", "xero", "celerp"} and st.get("accounting_sync_excluded"))
     ]
@@ -160,7 +167,7 @@ async def invoice_for_push(company_id: str, entity_id: str, platform: str) -> di
     return {
         **_invoice_for_push(row.entity_id, state),
         "pushed_id": state.get(f"{platform}_invoice_id"),
-        "imported": any(state.get(m) for m in _IMPORTED_INVOICE_MARKERS),
+        "imported": any(state.get(m) for m in _imported_invoice_markers()),
     }
 
 
@@ -187,17 +194,19 @@ async def mark_doc_pushed(
 
 async def _emit_doc(
     session, company_id: str, data: dict, idem_key: str,
-    external_identity: tuple[str, str] | None = None,
+    external_identity: tuple[str, str] | None = None, operation: str | None = None,
 ) -> str:
+    # ``operation``: the first sync importing the document, recorded on its creation only.
     # connector_upsert keys the projection on idem_key (the unique platform id), NOT the
     # human ref_id/DocNumber — two source invoices can share a DocNumber (QB allows it)
     # and would otherwise collapse into one doc. A changed re-import updates the same doc.
     # Returns "created", "updated", or "noop".
+    from celerp.connectors.base import first_sync_metadata
     from celerp.events.engine import connector_upsert
     outcome = await connector_upsert(
         session, company_id=company_id, entity_type="doc",
         event_type="doc.created", idem_key=idem_key, data=data,
-        external_identity=external_identity,
+        external_identity=external_identity, metadata_=first_sync_metadata(operation),
     )
     await session.commit()
     return outcome
@@ -271,13 +280,22 @@ class WooCommerceReconciliationChanged(ValueError):
 
 
 async def _lock_woocommerce_order(session, cid, order_id: str) -> None:
-    """Serialize every change to one external order (webhook, sync, a person)."""
+    """Serialize every change to one external order (webhook, sync, a person).
+
+    Lock order: the company, then this order, then the WooCommerce link namespace, all
+    before any doc or item row, because holding or posting the order may change the
+    links of the products it touches."""
     from sqlalchemy import text
 
+    from celerp.services.company_lock import lock_company
+    from celerp_inventory.services import lock_external_identity_namespace
+
+    await lock_company(session, cid)
     await session.execute(
         text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
         {"k": f"woocommerce-order:{cid}:{order_id}"},
     )
+    await lock_external_identity_namespace(session, cid, "woocommerce")
 
 
 # The source state of an imported order WooCommerce no longer returns (deleted,
@@ -497,7 +515,7 @@ async def _notify_goods_taken(session, company_id, moved: list[dict]) -> None:
             i18n={"title": title, "body": "documents.cost_moved_with_goods", "params": params})
 
 
-async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
+async def upsert_order_from_woocommerce(company_id: str, order: dict, operation: str | None = None) -> str:
     """Reconcile one WooCommerce order through Celerp's canonical sales lifecycle.
 
     Draft source data may be refreshed until issuance. Once finalized, commercial
@@ -509,6 +527,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
     from sqlalchemy import select
 
     from celerp.db import SessionLocal
+    from celerp.connectors.base import first_sync_metadata
     from celerp.events.engine import connector_upsert, emit_event, find_event_by_idempotency
     from celerp.models.accounting import UserCompany
     from celerp.models.company import Company
@@ -530,12 +549,8 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
 
     from fastapi import HTTPException
 
-    from celerp_docs.routes_payments import (
-        WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY,
-        deposit_account,
-        require_online_deposit_account,
-    )
-    from celerp.services.company_lock import lock_company
+    from celerp.services.payments import WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY
+    from celerp_docs.routes_payments import deposit_account, require_online_deposit_account
     from celerp_docs.routes import (
         finalize_document,
         _fulfill_lines_impl,
@@ -590,9 +605,6 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
         # One external order may arrive simultaneously by webhook, manual sync, and
         # scheduled reconciliation. Serialize its full materialize/post transition.
         await _lock_woocommerce_order(session, cid, order_id)
-        # The company before any doc row: posting the order finalizes it, which
-        # draws the next invoice number.
-        await lock_company(session, cid)
 
         existing = await session.get(
             Projection, {"company_id": cid, "entity_id": entity_id}, with_for_update=True
@@ -956,6 +968,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
             outcome = await connector_upsert(
                 session, company_id=cid, entity_type="doc",
                 event_type="doc.created", idem_key=idem_key, data=data,
+                metadata_=first_sync_metadata(operation),
             )
             existing = await session.get(
                 Projection,
@@ -991,7 +1004,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
                 "manual financial/inventory reconciliation is required"
             )
 
-        if wc_status in {"processing", "completed"} and not doc.state.get("finalized"):
+        if wc_status in WOOCOMMERCE_ISSUED_STATUSES and not doc.state.get("finalized"):
             await finalize_document(entity_id, cid, actor, session, commit=False)
             changed = True
             doc = await _get_doc(session, cid, entity_id, for_update=True)
@@ -1105,7 +1118,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
 
         doc = await _get_doc(session, cid, entity_id, for_update=True)
         if (
-            wc_status in {"processing", "completed"}
+            wc_status in WOOCOMMERCE_ISSUED_STATUSES
             and order.get("date_paid")
             and float(outstanding_balance(doc.state) or 0) > 0
         ):
@@ -1170,7 +1183,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict) -> str:
         return "updated" if changed else "noop"
 
 
-async def upsert_invoice_from_quickbooks(company_id: str, invoice: dict) -> str:
+async def upsert_invoice_from_quickbooks(company_id: str, invoice: dict, operation: str | None = None) -> str:
     """
     Create/update a doc (invoice) from a QuickBooks Invoice dict.
     Returns "created", "updated", or "noop".
@@ -1224,11 +1237,11 @@ async def upsert_invoice_from_quickbooks(company_id: str, invoice: dict) -> str:
         # An invoice Celerp pushed carries this id already; the import leaves it as is.
         return await _emit_doc(
             session, company_id, data, idem_key,
-            external_identity=("quickbooks_invoice_id", str(invoice["Id"])),
+            external_identity=("quickbooks_invoice_id", str(invoice["Id"])), operation=operation,
         )
 
 
-async def upsert_invoice_from_xero(company_id: str, invoice: dict) -> str:
+async def upsert_invoice_from_xero(company_id: str, invoice: dict, operation: str | None = None) -> str:
     """
     Create/update a doc (invoice) from a Xero Invoice dict (ACCREC).
     Returns "created", "updated", or "noop".
@@ -1279,5 +1292,5 @@ async def upsert_invoice_from_xero(company_id: str, invoice: dict) -> str:
         # An invoice Celerp pushed carries this id already; the import leaves it as is.
         return await _emit_doc(
             session, company_id, data, idem_key,
-            external_identity=("xero_invoice_id", str(invoice["InvoiceID"])),
+            external_identity=("xero_invoice_id", str(invoice["InvoiceID"])), operation=operation,
         )

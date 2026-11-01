@@ -17,7 +17,6 @@ async def test_accounting_import_batch_idempotency(client, session):
     company_id = uuid.uuid4()
     user_id = uuid.uuid4()
 
-    session.add(Company(id=company_id, name="TestCo", slug="testco"))
     session.add(User(
         id=user_id,
         email="admin@test.co",
@@ -25,6 +24,8 @@ async def test_accounting_import_batch_idempotency(client, session):
         auth_hash="x",
         is_active=True,
     ))
+    await session.flush()
+    session.add(Company(id=company_id, name="TestCo", slug="testco"))
     # Persist the parent rows before the FK-dependent user_companies row — the
     # unit-of-work doesn't reliably order the User insert ahead of UserCompany.
     await session.flush()

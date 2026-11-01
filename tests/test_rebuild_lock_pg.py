@@ -38,8 +38,9 @@ def factory(committed_engine):
 async def _company(factory) -> tuple[uuid.UUID, uuid.UUID]:
     cid, uid = uuid.uuid4(), uuid.uuid4()
     async with factory() as s:
-        s.add(Company(id=cid, name="Rebuild Co", slug=f"rb-{cid.hex[:8]}", settings={}))
         s.add(User(id=uid, email=f"rb-{uid.hex[:8]}@test.co", name="Owner", auth_hash="x", is_active=True))
+        await s.flush()     # the owner's login before the company, the order every create takes them in
+        s.add(Company(id=cid, name="Rebuild Co", slug=f"rb-{cid.hex[:8]}", settings={}))
         await s.flush()
         s.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=cid, role="owner", is_active=True))
         await _write(s, cid)

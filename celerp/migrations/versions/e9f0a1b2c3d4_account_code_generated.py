@@ -28,6 +28,7 @@ import uuid
 
 import sqlalchemy as sa
 from alembic import op
+from celerp.migrations._locks import lock_tables
 from sqlalchemy import inspect
 
 revision = "e9f0a1b2c3d4"
@@ -56,6 +57,7 @@ def upgrade() -> None:
     if not (_columns("migration_entity_maps") and _columns("migration_runs")):
         return
     bind = op.get_bind()
+    lock_tables(bind, "accounts")
     mapped = bind.execute(sa.text(
         "SELECT r.company_id, m.migration_run_id, m.source_external_id, m.target_entity_id"
         " FROM migration_entity_maps m JOIN migration_runs r ON r.id = m.migration_run_id"

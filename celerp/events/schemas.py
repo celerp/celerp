@@ -151,6 +151,9 @@ class ItemUpdated(BaseModel):
 class ItemPricingSet(BaseModel):
     price_type: str
     new_price: float
+    # The value this change replaced, in the unit of new_price; None when the item had none.
+    # Absent on changes recorded before it was kept.
+    old_price: float | None = None
     # As ItemUpdated.goods_cost_unknown, for a goods-cost price_type.
     goods_cost_unknown: bool | None = None
 
@@ -1439,6 +1442,8 @@ class EntityFileAttached(BaseModel):
     size: int
     document_tag: str | None = None
     description: str | None = None
+    # The platform file it was pulled from: {platform: {"id", "src", "store"}}.
+    remote: dict | None = None
 
 
 class EntityFileTagged(BaseModel):

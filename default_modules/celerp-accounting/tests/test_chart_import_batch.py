@@ -491,9 +491,10 @@ async def _seed_manager(factory) -> tuple[uuid.UUID, uuid.UUID]:
 
     company_id, user_id = uuid.uuid4(), uuid.uuid4()
     async with factory() as s:
-        s.add(Company(id=company_id, name="ChartRace", slug=f"chart-{company_id.hex[:8]}", settings={}))
         s.add(User(id=user_id, email=f"m-{user_id.hex[:8]}@example.test", name="Manager",
                    auth_hash="x", is_active=True))
+        await s.flush()
+        s.add(Company(id=company_id, name="ChartRace", slug=f"chart-{company_id.hex[:8]}", settings={}))
         await s.flush()
         s.add(UserCompany(user_id=user_id, company_id=company_id, role="manager", is_active=True))
         await s.commit()

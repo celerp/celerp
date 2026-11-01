@@ -32,7 +32,7 @@ from celerp.models.projections import Projection
 from celerp.schemas.numbers import FiniteFloat
 from celerp.services import journal_reversals, peer_access, peer_accounts, peer_attention
 from celerp.services.business_time import business_date_of
-from celerp.services.company_lock import locked_company
+from celerp.services.company_lock import lock_company, locked_company
 from celerp.services.je_keys import je_void_data
 from celerp.services.posting_readiness import account_names
 from ui.i18n import t
@@ -110,7 +110,8 @@ async def delivery_marks(session: AsyncSession, company_id: uuid.UUID, grant_id:
 async def mark(session: AsyncSession, *, company_id: uuid.UUID, grant_id: uuid.UUID, entity: str,
                entity_id: str, revision: int, refused: str | None) -> None:
     """Note the revision of a record that was sent or fetched, and why it was refused or
-    declined, if it was; the caller commits."""
+    declined, if it was, under the company's lock as every mark writer; the caller commits."""
+    await lock_company(session, company_id)
     now = datetime.now(timezone.utc)
     await session.execute(pg_insert(CompanyPeerDelivery).values(
         id=uuid.uuid4(), company_id=company_id, grant_id=grant_id, entity=entity,

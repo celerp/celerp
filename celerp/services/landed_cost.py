@@ -3,8 +3,6 @@
 """Landed-cost allocation (P3): spread a bill's capitalisable charges (freight/insurance/duty +
 non-recoverable import VAT) across its stocked goods lines by value, returning a per-unit landed cost
 per (line, kind). Per-unit results scale naturally as quantity is received. Pure and deterministic.
-
-See context/2026-0614-freight-tracking-plan.md sections 3 and 6.
 """
 from __future__ import annotations
 

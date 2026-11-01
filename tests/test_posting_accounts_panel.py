@@ -78,6 +78,7 @@ async def test_a_missing_inactive_or_wrong_type_account_is_shown_as_such(session
     await _account(client, auth, "4990", "revenue", "4000")
     await session.execute(update(Account).where(Account.company_id == cid, Account.code == "4990")
                           .values(is_active=False))
+    await session.commit()
     roles = await _roles(session, cid)
     roles.pop("general_expense")
     await _set_settings(session, cid, **{ROLES_KEY: {**roles, "sales_revenue": "4990", "cogs": "1120",

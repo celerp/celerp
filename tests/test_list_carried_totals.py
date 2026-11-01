@@ -42,13 +42,14 @@ async def _as_saved_by_earlier_version(session, company_id, lid) -> dict:
     """Make the list's history and record what an earlier version wrote: its events carry no
     totals, and its record holds the totals that version's rule gave (tax 10.00 on the line
     before the 10.00 discount, total 100.00)."""
+    proj = await session.get(Projection, (company_id, lid))
+    proj.state = {**proj.state, "subtotal": 100.0, "discount_amount": 10.0, "tax_amount": 10.0, "total": 100.0}
+    await session.flush()
     rows = (await session.execute(select(LedgerEntry).where(
         LedgerEntry.company_id == company_id, LedgerEntry.entity_id == lid))).scalars().all()
     for row in rows:
         if "totals" in (row.data or {}):
             row.data = {k: v for k, v in row.data.items() if k != "totals"}
-    proj = await session.get(Projection, (company_id, lid))
-    proj.state = {**proj.state, "subtotal": 100.0, "discount_amount": 10.0, "tax_amount": 10.0, "total": 100.0}
     await session.commit()
     return proj.state
 

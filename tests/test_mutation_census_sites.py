@@ -40,6 +40,11 @@ def outer(session):
         session.add(row)
         session.flush()
     return inner
+
+
+def later(session, defer, row):
+    defer(lambda: session.add(
+        row))
 '''
 
 
@@ -75,6 +80,15 @@ def test_a_function_of_the_same_name_is_told_apart_by_its_first_line(tmp_path, m
 def test_a_nested_functions_write_counts_for_its_own_sites(tmp_path, monkeypatch):
     sites = _sites(tmp_path, monkeypatch)
     assert _passed(sites, (17, "inner", 16)) == {(17, "add")}
+
+
+def test_a_write_made_in_a_lambda_counts_for_the_function_it_is_written_in(tmp_path, monkeypatch):
+    """A lambda runs in its own frame, named <lambda> and starting on its own line; its
+    write is still the enclosing function's site, and only that function's."""
+    sites = _sites(tmp_path, monkeypatch)
+    assert _passed(sites, (23, "<lambda>", 23)) == {(23, "add")}
+    assert _passed(sites, (23, "<lambda>", 2)) == set()
+    assert _passed(sites, (23, "<lambda>", 19)) == set()
 
 
 def test_a_driven_add_site_of_the_bundled_source_counts_on_its_own_line(tmp_path):
@@ -149,9 +163,7 @@ def _route(tmp_path, monkeypatch, branch: str):
     (folder / "census-1-gw0.json").write_text(json.dumps({
         "routes": {"api POST /new": {"requests": 1, "protected": 1}},
         "sites": {f"celerp/routers/x.py:{ADDED} create@{FIRST}": 1}, "findings": []}))
-    (tmp_path / "b.json").write_text("[]")
-    status = mutation_census.main([str(folder), "--out", str(tmp_path / "c.md"), "--enforce", "--baseline",
-                                   str(tmp_path / "b.json"), "--gaps", committed_gaps(tmp_path / "g.json"), "--base", "HEAD"])
+    status = mutation_census.main([str(folder), "--out", str(tmp_path / "c.md"), "--enforce", "--gaps", committed_gaps(tmp_path / "g.json"), "--base", "HEAD"])
     return status, (tmp_path / "c.md").read_text()
 
 

@@ -15,12 +15,13 @@ import uuid
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.models.company import Company
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from test_helpers import remove_company
 
 
 def _bundle(revision: int, price: str) -> tuple[dict, dict]:
@@ -81,11 +82,7 @@ async def test_same_revision_with_different_content_at_once_records_only_one(_db
     finally:
         await s1.close()
         await s2.close()
-        async with factory() as s:
-            await s.execute(delete(Projection).where(Projection.company_id == company_id))
-            await s.execute(delete(LedgerEntry).where(LedgerEntry.company_id == company_id))
-            await s.execute(delete(Company).where(Company.id == company_id))
-            await s.commit()
+        await remove_company(factory, company_id)
 
 
 @pytest.mark.asyncio
@@ -122,11 +119,7 @@ async def test_booking_while_a_new_revision_is_recorded_books_that_revision(_db_
         assert (await asyncio.wait_for(task, timeout=10))["revision_seq"] == 2
     finally:
         await s1.close()
-        async with factory() as s:
-            await s.execute(delete(Projection).where(Projection.company_id == company_id))
-            await s.execute(delete(LedgerEntry).where(LedgerEntry.company_id == company_id))
-            await s.execute(delete(Company).where(Company.id == company_id))
-            await s.commit()
+        await remove_company(factory, company_id)
 
 
 async def _drafts(factory, company_id) -> list[dict]:
@@ -171,11 +164,7 @@ async def test_a_booking_whose_marker_fails_leaves_no_draft(_db_engine, monkeypa
             await received.book(s, company_id, rid, role="owner", settings={}, user=user)
         assert len(await _drafts(factory, company_id)) == 1
     finally:
-        async with factory() as s:
-            await s.execute(delete(Projection).where(Projection.company_id == company_id))
-            await s.execute(delete(LedgerEntry).where(LedgerEntry.company_id == company_id))
-            await s.execute(delete(Company).where(Company.id == company_id))
-            await s.commit()
+        await remove_company(factory, company_id)
 
 
 @pytest.mark.asyncio
@@ -215,11 +204,7 @@ async def test_a_draft_update_whose_marker_fails_leaves_the_draft_as_it_was(_db_
                 await received.update_draft(s, company_id, rid, role="owner", settings={}, user=user)
         assert await _drafts(factory, company_id) == before, "the draft changed without the version it follows"
     finally:
-        async with factory() as s:
-            await s.execute(delete(Projection).where(Projection.company_id == company_id))
-            await s.execute(delete(LedgerEntry).where(LedgerEntry.company_id == company_id))
-            await s.execute(delete(Company).where(Company.id == company_id))
-            await s.commit()
+        await remove_company(factory, company_id)
 
 
 async def _edit_notes(factory, company_id, target: str, user) -> None:
@@ -296,8 +281,4 @@ async def test_a_local_edit_and_a_draft_update_at_once_keep_the_local_edit(_db_e
             assert received.revision_state(source.state, draft) == (
                 received.NEEDS_RECONCILIATION if edit_first else received.BOOKED)
     finally:
-        async with factory() as s:
-            await s.execute(delete(Projection).where(Projection.company_id == company_id))
-            await s.execute(delete(LedgerEntry).where(LedgerEntry.company_id == company_id))
-            await s.execute(delete(Company).where(Company.id == company_id))
-            await s.commit()
+        await remove_company(factory, company_id)

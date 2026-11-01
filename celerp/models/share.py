@@ -29,6 +29,7 @@ class DocShareToken(Base):
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
         nullable=False,
+        server_default=sa.func.now(),
     )
     # Auto-revoke: the link stops resolving after this instant. NULL = no expiry.
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

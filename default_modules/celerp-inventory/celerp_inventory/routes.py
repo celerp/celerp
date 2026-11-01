@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import json
 import re
 import uuid
@@ -59,6 +60,7 @@ from .services import (
     item_price_mutex_groups,
     normalize_sku,
     build_import_plan,
+    replaced_price,
     source_header_semantics,
 )
 from celerp.accounting_roles import LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD, refusal
@@ -93,6 +95,7 @@ from celerp.services.pricing import (
     get_price_config,
     inject_derived_prices,
     is_cost_list_name,
+    is_cost_price_type,
     is_derived,
     is_price_item_key,
     price_key,
@@ -1309,11 +1312,8 @@ async def query_items(
     # visible_to_roles floor and are safe to filter here; category/inventory_type/
     # location_id ARE schema fields a role may be denied, so their filters run after
     # apply_field_visibility (below) to avoid a membership oracle.
-    from celerp.connectors import ownership
-    try:
-        _connected = await ownership.connected_connector_platforms(session, company_id)
-    except ownership.ConnectorOwnershipError:
-        _connected = set()
+    from celerp_inventory.services import connected_catalog_platforms
+    _connected = await connected_catalog_platforms(session, company_id)
     if f.source:
         from celerp.connectors.product_links import external_link_for_state
         _platform = f.source.strip().lower()
@@ -2236,6 +2236,12 @@ async def get_item(entity_id: str, company_id=Depends(get_current_company_id), r
                 [(row.entity_id, row.state)], [(sold_doc.entity_id, sold_doc.state)],
                 settings.get("currency") or "USD",
             ).get(row.entity_id)
+    from celerp_inventory.search import load_item_rows
+    from celerp_inventory.services import build_channel_states, connected_catalog_platforms
+    connected = await connected_catalog_platforms(session, company_id)
+    result["_channel_state"] = build_channel_states(
+        await load_item_rows(session, company_id), connected_platforms=connected,
+    ).get(entity_id, {}) if connected else {}
     return result
 
 
@@ -2542,16 +2548,6 @@ def draft_cost_carveout(is_draft: bool, role: str, settings: dict) -> bool:
     the set_inventory_prices gate re-arms at commit. Shared by the three cost surfaces
     (post_item at creation, patch_item, set_item_price) so they cannot drift out of sync."""
     return is_draft and role_has_permission(settings, role, "edit_inventory")
-
-
-def is_cost_price_type(price_type: str) -> bool:
-    """True when a set_item_price price_type addresses the cost list, in either the
-    primitive-key form (cost_price/cost_total) or a list-name-derived key (e.g.
-    landed_price for a 'Landed' cost list)."""
-    if price_type in COST_ITEM_KEYS:
-        return True
-    name = price_type[:-len("_price")] if price_type.endswith("_price") else price_type
-    return is_cost_list_name(name)
 
 
 @router.patch("/{entity_id}", openapi_extra={
@@ -2943,43 +2939,6 @@ async def _lock_selected_items(session: AsyncSession, company_id, entity_ids: li
 
 def _row_is_draft(row: Projection) -> bool:
     return str((row.state or {}).get("status") or "").lower() == "draft"
-
-
-class BulkShopifySyncBody(BaseModel):
-    entity_ids: list[str]
-    enable: bool = True
-
-
-@router.post("/bulk/shopify-sync")
-async def bulk_shopify_sync(payload: BulkShopifySyncBody, company_id=Depends(get_current_company_id), _: None = require_permission("adjust_inventory"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    """Opt the selected items into (or out of) outbound Shopify sync by emitting
-    shop.sync.enabled/disabled, which sets is_sync_to_shopify on each item's projection."""
-    if not payload.entity_ids:
-        raise HTTPException(status_code=422, detail=t("inventory.err_none_selected"))
-    from celerp.connectors.ownership import lock_connector_key
-
-    # Hold Shopify steady (connect and disconnect wait) before the company and item locks.
-    await lock_connector_key(session, "shopify")
-    await _lock_selected_items(session, company_id, payload.entity_ids)
-    event_type = "shop.sync.enabled" if payload.enable else "shop.sync.disabled"
-    event_ids = []
-    for entity_id in payload.entity_ids:
-        entry = await emit_event(
-            session,
-            company_id=company_id,
-            entity_id=entity_id,
-            entity_type="item",
-            event_type=event_type,
-            data={},
-            actor_id=user.id,
-            location_id=None,
-            source="api",
-            idempotency_key=str(uuid.uuid4()),
-            metadata_={},
-        )
-        event_ids.append(entry.id)
-    await session.commit()
-    return {"updated": len(event_ids), "enabled": payload.enable}
 
 
 async def _build_transfer_data(session, company_id, entity_id: str, to_location_id, loc_map: dict | None = None) -> dict:
@@ -5024,7 +4983,8 @@ async def set_item_price(entity_id: str, payload: PriceBody, company_id=Depends(
     event = dict(
         entity_id=entity_id,
         event_type="item.pricing.set",
-        data=payload.model_dump(exclude_none=True),
+        data={**payload.model_dump(exclude_none=True),
+              "old_price": replaced_price(_proj.state or {}, payload.price_type)},
         actor_id=user.id,
         source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
@@ -5209,6 +5169,27 @@ async def list_import_batches(
     ]}
 
 
+async def _undoable_batch(session: AsyncSession, company_id, batch_uuid: uuid.UUID, *, lock: bool):
+    """The company's import batch, refused when it is missing, already undone or not reversible.
+    Only a batch of the company is read, so another company's batch is never locked."""
+    from celerp_inventory.models_import_batch import ImportBatch
+
+    query = select(ImportBatch).where(ImportBatch.id == batch_uuid, ImportBatch.company_id == company_id)
+    if lock:
+        query = query.with_for_update()
+    batch = (await session.execute(query.execution_options(populate_existing=True))).scalar_one_or_none()
+    if batch is None:
+        raise HTTPException(status_code=404, detail=t("inventory.err_import_not_found"))
+    if batch.status == "undone":
+        raise HTTPException(status_code=409, detail=t("inventory.err_import_already_undone"))
+    if not batch.reversible:
+        raise HTTPException(status_code=409, detail={
+            "code": "import_not_reversible",
+            "message": t("inventory.err_import_not_reversible"),
+        })
+    return batch
+
+
 @router.post("/import/batches/{batch_id}/undo")
 async def undo_import_batch(
     batch_id: str,
@@ -5225,7 +5206,6 @@ async def undo_import_batch(
     voided (a locked period)."""
     from datetime import datetime, timezone as _tz
 
-    from celerp_inventory.models_import_batch import ImportBatch
     from celerp.models.ledger import LedgerEntry
     from celerp.services.auto_je import _void_je_if_posted
 
@@ -5233,26 +5213,25 @@ async def undo_import_batch(
         batch_uuid = uuid.UUID(batch_id)
     except ValueError:
         raise HTTPException(status_code=404, detail=t("inventory.err_import_not_found"))
-    # The company lock serialises this with any chunk still adding to the batch.
+    # The company lock serialises this with any chunk still adding to the batch. The batch
+    # is read first without a lock: its items are locked before it, in rank order, and the
+    # locked batch must still list exactly those items.
     await lock_company(session, company_id)
-    batch = (await session.execute(
-        select(ImportBatch).where(ImportBatch.id == batch_uuid).with_for_update()
-        .execution_options(populate_existing=True))).scalar_one_or_none()
-    if batch is None or batch.company_id != company_id:
-        raise HTTPException(status_code=404, detail=t("inventory.err_import_not_found"))
-    if batch.status == "undone":
-        raise HTTPException(status_code=409, detail=t("inventory.err_import_already_undone"))
-    if not batch.reversible:
-        raise HTTPException(status_code=409, detail={
-            "code": "import_not_reversible",
-            "message": t("inventory.err_import_not_reversible"),
-        })
-
-    entity_ids = batch.entity_ids or []
-    rows = await lock_projections(session, company_id, entity_ids)
-    entries = (await session.execute(select(Projection).where(
+    batch = await _undoable_batch(session, company_id, batch_uuid, lock=False)
+    entity_ids = list(batch.entity_ids or [])
+    entry_ids = list((await session.execute(select(Projection.entity_id).where(
         Projection.company_id == company_id,
-        Projection.entity_id.startswith(f"je:auto:opening-stock:{batch.id}:", autoescape=True)))).scalars().all()
+        Projection.entity_id.startswith(f"je:auto:opening-stock:{batch.id}:", autoescape=True)))).scalars())
+    # The import's entries before its items, as every writer of documents and items does.
+    entries = list((await lock_projections(session, company_id, entry_ids)).values())
+    rows = await lock_projections(session, company_id, entity_ids)
+    batch = await _undoable_batch(session, company_id, batch_uuid, lock=True)
+    if list(batch.entity_ids or []) != entity_ids:
+        raise HTTPException(status_code=409, detail={
+            "code": "import_items_modified",
+            "message": t("inventory.err_import_items_changed"),
+            "entity_ids": sorted(set(entity_ids) ^ set(batch.entity_ids or [])),
+        })
     unexpected = sorted(e.entity_id for e in entries if (e.state or {}).get("status") != "posted")
     if unexpected:
         raise HTTPException(status_code=409, detail={
@@ -5261,15 +5240,21 @@ async def undo_import_batch(
             "entity_ids": unexpected,
         })
 
-    # Only what the import itself wrote may be on the items: their creation, and the
-    # inventory account the import's own entry booked them into.
+    # Only what the import itself wrote may be on the items: their creation (with the
+    # files a store's first sync pulled onto them), and the inventory account the
+    # import's own entry booked them into.
     created_by_import = set(batch.idempotency_keys or [])
     booked_by_import: set[str] = set()
+    # Files the import attached itself go with their items: {entity id: {file id: mime}}.
+    own_files: dict[str, dict[str, str]] = {}
     modified = {eid for eid, row in rows.items() if row.entity_type != "item"}
-    for eid, event_type, key, meta in (await session.execute(
-        select(LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.idempotency_key, LedgerEntry.metadata_)
+    for eid, event_type, key, meta, data in (await session.execute(
+        select(LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.idempotency_key, LedgerEntry.metadata_,
+               LedgerEntry.data)
         .where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id.in_(entity_ids)))).all():
-        if event_type == "item.created" and key in created_by_import:
+        if key in created_by_import:
+            if event_type == "item.file.attached":
+                own_files.setdefault(eid, {})[(data or {}).get("file_id")] = (data or {}).get("mime", "")
             continue
         if event_type == RECORDED and (meta or {}).get("recorded_by") == "opening stock":
             booked_by_import.add(eid)
@@ -5278,7 +5263,8 @@ async def undo_import_batch(
     modified |= {eid for eid, row in rows.items()
                  if (row.state or {}).get(LOT_ACCOUNT_FIELD) and eid not in booked_by_import}
     modified |= await depended_on(session, company_id, {e: [e] for e in entity_ids},
-                                  besides=[e.entity_id for e in entries])
+                                  besides=[e.entity_id for e in entries],
+                                  own_files={e: set(files) for e, files in own_files.items()})
     if modified:
         raise HTTPException(
             status_code=409,
@@ -5301,6 +5287,14 @@ async def undo_import_batch(
     batch.undone_at = datetime.now(_tz.utc)
     batch.undone_by = user.id
     await session.commit()
+    from celerp.services.attachments import delete_stored_file
+    for files in own_files.values():
+        for file_id, mime in files.items():
+            try:
+                await delete_stored_file(str(company_id), file_id, mime)
+            except Exception:
+                logging.getLogger(__name__).warning(
+                    "could not delete stored file %s of an undone import", file_id)
 
     return {
         "ok": True,

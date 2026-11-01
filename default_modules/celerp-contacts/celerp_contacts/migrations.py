@@ -170,8 +170,9 @@ async def migrate_self_contacts(session: AsyncSession, company_id, actor_id=None
 async def migrate_all_self_contacts(session: AsyncSession, actor_id=None) -> list[dict]:
     """Run migrate_self_contacts for every company, each in its own savepoint so one failure does not
     abort the batch; the caller commits. Idempotent and cheap on re-run: companies whose self_contact_id is already cached (new
-    seed or previously migrated) are skipped without touching the ledger. Returns per-company summaries."""
-    companies = (await session.execute(select(Company.id, Company.settings))).all()
+    seed or previously migrated) are skipped without touching the ledger. Companies are locked in id
+    order, the order lock_company takes a set in. Returns per-company summaries."""
+    companies = (await session.execute(select(Company.id, Company.settings).order_by(Company.id))).all()
     results: list[dict] = []
     for company_id, settings in companies:
         if (settings or {}).get("self_contact_id"):
@@ -193,7 +194,7 @@ async def backfill_self_contacts_hook(*, session: AsyncSession) -> None:
     upgrade): (1) collapse any legacy two-self-contact company into one both+is_self record, and (2) copy
     each company's default-Location address onto its self-contact if missing. Idempotent throughout."""
     await migrate_all_self_contacts(session)
-    for cid in (await session.execute(select(Company.id))).scalars().all():
+    for cid in (await session.execute(select(Company.id).order_by(Company.id))).scalars().all():
         if await migrations.is_company_migration_staged(session, cid):
             continue
         try:

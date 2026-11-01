@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from alembic import op
 import sqlalchemy as sa
+from celerp.migrations._locks import lock_tables
 
 revision = "t5u6v7w8x9y0"
 down_revision = "s4t5u6v7w8x9"
@@ -43,6 +44,7 @@ def upgrade() -> None:
     ).fetchone()
     if not table_exists:
         return  # Nothing to backfill on fresh install
+    lock_tables(conn, "accounts")
 
     # Get all company IDs that have a 1130 account but not yet the sub-accounts
     companies = conn.execute(
@@ -69,5 +71,6 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     conn = op.get_bind()
+    lock_tables(conn, "accounts")
     for code, _, _, _ in _NEW_ACCOUNTS:
         conn.execute(sa.text("DELETE FROM accounts WHERE code = :code"), {"code": code})

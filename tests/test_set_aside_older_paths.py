@@ -64,14 +64,15 @@ async def _strip_snapshot(session, auth, doc: str) -> None:
 async def _unrecorded(session, auth, lot: str) -> None:
     """A lot created before lots recorded their inventory account: no record of one, in
     its state or its history."""
-    await session.execute(delete(LedgerEntry).where(
-        LedgerEntry.company_id == auth["company_id"], LedgerEntry.entity_id == lot,
-        LedgerEntry.event_type == RECORDED))
     row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": lot})
     st = dict(row.state)
     st.pop("inventory_account_code", None)
     row.state = st
     flag_modified(row, "state")
+    await session.flush()
+    await session.execute(delete(LedgerEntry).where(
+        LedgerEntry.company_id == auth["company_id"], LedgerEntry.entity_id == lot,
+        LedgerEntry.event_type == RECORDED))
     await session.commit()
 
 
@@ -367,8 +368,8 @@ async def test_every_change_to_an_existing_item_takes_the_company_lock(client, s
 # next rebuild, so it becomes an event instead.
 _WRITERS = {
     ("celerp/projections/engine.py", "Projection("): "the apply core every event goes through",
-    ("celerp/projections/engine.py", "await session.execute(delete(Projection) if company_id is None else "
-     "delete(Projection).where(Projection.company_id == company_id))"): "rebuild from the ledger, whose events were each judged when written",
+    ("celerp/projections/engine.py", "await session.execute(delete(Projection).where(Projection.company_id == company))"):
+        "rebuild from the ledger, whose events were each judged when written",
     ("celerp/events/engine.py", "transition = await ProjectionEngine.apply_event(session, entry)"): "emit_event, the hold check itself",
     ("celerp/routers/ledger.py", "await ProjectionEngine.rebuild(session, company_id=company_id)"): "rebuild from the judged ledger",
     ("celerp/services/company_backup.py", "await ProjectionEngine.rebuild(session, company_id)"): "whole-company restore",
@@ -377,6 +378,13 @@ _WRITERS = {
     ("default_modules/celerp-admin/celerp_admin/routes.py", "proj.state = replayed"): "stale projection replayed from the judged ledger",
     ("celerp/connectors/outbound_queue.py", "self.state = state"): "an outbound delivery's own state, not a projection",
     ("ui/handoff_opening.py", "opening.state = READY"): "a company copy opening's own progress, not a projection",
+    ("celerp/connectors/sync_runner.py", 'row.state = "running"'): "a first sync's own progress, not a projection",
+    ("celerp/connectors/sync_runner.py", 'row.state = "completed" if done else "failed"'):
+        "a first sync's own progress, not a projection",
+    ("celerp/connectors/sync_runner.py", 'row.state = "starting"'): "a first sync's own progress, not a projection",
+    ("celerp/connectors/sync_runner.py", 'row.state = "failed"'): "a first sync's own progress, not a projection",
+    ("default_modules/celerp-connectors/celerp_connectors/routes.py", 'first_sync.state = "starting"'):
+        "a first sync's own progress, not a projection",
     ("celerp/services/status_doc_backfill.py", "proj.state = new_state"): "writes only status_doc_id and status_doc_number",
     ("default_modules/celerp-docs/celerp_docs/legacy_receipts.py", "row.state = state"): "bill receipt fields; bills hold nothing",
     ("default_modules/celerp-docs/celerp_docs/received_legacy.py", "await ProjectionEngine.apply_event(session, entry)"): "imported received documents, not items",
