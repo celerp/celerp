@@ -3560,7 +3560,7 @@ async def _recognized_by_account(
     """What an invoice recognizes today, per inventory account, in two parts: the actual
     cost of the lots it shipped, and, per line, its allocation's share (with every cost
     correction since) for the goods it has not shipped, with the quantity not shipped.
-    Raises ValueError when a shipped or returned lot cannot be matched to one of the
+    Raises Refused when a shipped or returned lot cannot be matched to one of the
     invoice's lines."""
     recognized = books.recognized[doc_id]
     shipped: dict[str, float] = {}
@@ -4132,7 +4132,7 @@ async def reconcile_doc_cogs(
     An invoice void or back in draft recognizes nothing: once its own entries are
     reversed, any cost it still carries through moves is settled on a cost-settle entry,
     which no void or restore touches. An invoice with no recognized allocation on record
-    posts nothing. Raises ValueError when a shipped lot cannot be matched to one of the
+    posts nothing. Raises Refused when a shipped lot cannot be matched to one of the
     invoice's lines, and CogsShareUnknown when an older invoice's share of goods taken
     back cannot be worked out.
     """

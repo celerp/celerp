@@ -677,10 +677,9 @@ async def _sale_of_lot(session: AsyncSession, company_id, entity_id: str, state:
     recognized = await auto_je.recognized_cogs(session, company_id, doc_id)
     if recognized is not None:
         return _Sale(doc_id=doc_id, cycle=recognized.cycle, line=line_index, doc_number=doc_number)
-    reason = await legacy_cogs_refusal(session, company_id, doc_id, doc_state)
+    reason = await legacy_cogs_refusal(session, company_id, doc_id, doc_state, lot=label, doc=doc_number)
     if reason:
-        raise CostRestatementConflict("inventory.err_restate_sold_on", f"{label} was sold on {doc_number}, "
-                                      f"{reason['message']}", lot=label, doc=doc_number, reason=reason)
+        raise CostRestatementConflict.of(reason)
     return _Sale(doc_id=doc_id, doc_number=doc_number)
 
 
@@ -2876,8 +2875,8 @@ VALID_INVENTORY_TYPES: frozenset[str] = frozenset({"stocked", "component", "non_
 
 def inventory_type_refused() -> dict:
     """The refusal for an inventory type that is not one of VALID_INVENTORY_TYPES."""
-    allowed = ", ".join(sorted(VALID_INVENTORY_TYPES))
-    return refusal("inventory.err_inventory_type", f"inventory_type must be one of {allowed}", allowed=allowed)
+    return refusal("inventory.err_inventory_type", "Choose what kind of item this is: stocked inventory, "
+                   "non-stocked inventory, component, service or freight.")
 
 
 def _unsupported_item_field_errors(spec: CsvImportSpec, row: dict) -> list[dict]:

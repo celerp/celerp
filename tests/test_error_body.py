@@ -22,8 +22,8 @@ from celerp.main import app
 def _request(agent: bool) -> Request:
     route = next(r for _p, _m, r in _api_routes(app)
                  if ((r.openapi_extra or {}).get("x-celerp-agent") is True) == agent)
-    return Request({"type": "http", "method": "POST", "path": route.path, "headers": [], "query_string": b"",
-                    "route": route})
+    return Request({"type": "http", "method": sorted(route.methods)[0], "path": route.path, "headers": [],
+                    "query_string": b"", "route": route})
 
 
 @pytest.fixture

@@ -408,8 +408,8 @@ class PriceBody(BaseModel):
 
 def _landed_cost_kind_refused() -> dict:
     """The refusal for a landed cost kind that is not one of LANDED_COST_KINDS."""
-    allowed = ", ".join(sorted(LANDED_COST_KINDS))
-    return refusal("inventory.err_landed_cost_kind", f"landed_cost_kind must be one of {allowed}", allowed=allowed)
+    return refusal("inventory.err_landed_cost_kind",
+                   "Choose what this landed cost is for: freight, insurance, duty or import VAT.")
 
 
 def status_value(value) -> str:

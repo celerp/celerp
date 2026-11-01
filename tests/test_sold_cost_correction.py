@@ -532,7 +532,7 @@ async def test_locked_current_period_refuses_and_writes_nothing(client, session)
     before = await _snapshot(session, auth)
     r = await _set_cost(client, auth, ctx["a"], 100.0)
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("error.period_locked", date=lock_date)
+    assert refusal_text(r.json()["detail"]) == t("error.period_locked", date=lock_date)
     assert await _snapshot(session, auth) == before
 
 

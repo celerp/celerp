@@ -406,8 +406,6 @@ _PRE_EXISTING_RAW_HTTPEXCEPTION = {
         "not a direct status edit.",
         "Field '' not available for suggestions",
         "An item is created as draft or available, not .",
-        "inventory_type must be one of ",
-        "landed_cost_kind must be one of ",
         "Nothing was deleted. Only a draft that never became stock can be deleted, and "
         "these cannot: . Use Revert to Draft for stock made available by mistake, "
         "Archive to retire a product, or Write Off Stock for goods that left the company.",
