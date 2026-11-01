@@ -29,6 +29,7 @@ from collections.abc import AsyncIterator
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from typing import NamedTuple
 
 import sqlalchemy as sa
 from sqlalchemy import event
@@ -58,17 +59,27 @@ _RERUN_ROUNDS = 3
 _RERUN_BACKOFF_MAX = timedelta(hours=1)
 # Queued work whose resource another execution holds is tried again this much later; no attempt is counted.
 _BUSY_WAIT = timedelta(seconds=30)
-# The deferred connector work Celerp tries again by itself, by table: its attempt count and
-# the time it is tried again. _pace is the only writer of these columns.
+class Paced(NamedTuple):
+    """One table of deferred connector work: its attempt count and the time it is tried
+    again (_pace is the only writer of both), and whether its rows are written under the
+    company's lock, taken first (the heartbeats are lease rows, ranked before that lock)."""
+    attempts: str
+    retry_at: str
+    company_lock: bool
+
+
+# The deferred connector work Celerp tries again by itself, by table. resume_reruns ends
+# every wait of every table here, so a table added here is resumed with the rest.
 PACED = {
-    "connector_execution_heartbeats": ("rerun_attempts", "rerun_retry_at"),
-    "connector_first_syncs": ("retry_count", "next_attempt_at"),
-    "outbound_queue": ("retry_count", "next_retry_at"),
+    "connector_execution_heartbeats": Paced("rerun_attempts", "rerun_retry_at", company_lock=False),
+    "connector_first_syncs": Paced("retry_count", "next_attempt_at", company_lock=True),
+    "outbound_queue": Paced("retry_count", "next_retry_at", company_lock=True),
 }
 # The pacing of deferred work refused for each reason an execution is refused with: "drop" when
-# the directions no longer call for the work, "park" when only the person can clear the cause
-# (it waits for their own work or a new store binding, recorded where they see it), "retry"
-# when the cause can clear on its own (it waits its backoff).
+# the directions no longer call for the work (the person is told where they see the work),
+# "park" when only the person can clear the cause (it waits for their own work, a new store
+# binding or their try now, recorded where they see it), "retry" when the cause can clear on
+# its own (it waits its backoff).
 REFUSALS = {
     "direction_off": "drop",
     "first_sync_missing": "park",
@@ -83,8 +94,8 @@ REFUSALS = {
 # The refusals the store check gives: the store is not the one the records came from, or
 # it could not be asked.
 STORE_REFUSALS = ("store_changed", "store_unchecked")
-# Work a person starts that reaches the store: once it has proved the store, any rerun of
-# the connection waiting for a retry time or parked is tried at the next sweeper tick.
+# Work a person starts that reaches the store: once it has proved the store, the connection's
+# deferred work waiting for a retry time or parked is due (resume_reruns).
 PERSON_PURPOSES = ("first_sync", "manual_sync", "item_publish")
 # A lifecycle transaction never waits longer than this for a lock or a statement.
 _INTERNAL_LOCK_TIMEOUT_MS = 5000
@@ -705,14 +716,15 @@ async def _pace(s, table: str, pacing: str, *where, carry: dict | None = None) -
     """The one place deferred connector work (a table of PACED) is given its next try, on the
     rows of ``table`` that ``where`` selects, in the caller's transaction. "retry": one more
     attempt, tried again SWEEP_EVERY * 2^attempts later, at most _RERUN_BACKOFF_MAX; "park":
-    one more attempt, not tried again until the person's own work or a new store binding
-    resumes it; "busy": not tried (another execution held it), tried again _BUSY_WAIT later;
-    "clear": due now, no attempt counted; "carry": the rows take the most attempts and the
-    latest retry time of the rows whose columns match ``carry`` (a value, or a list of them)."""
+    one more attempt, not tried again until resume_reruns resumes it; "busy": not tried
+    (another execution held it), tried again _BUSY_WAIT later; "clear": not waiting, no
+    attempt counted; "resume": due now, no attempt counted; "carry": the rows take the most
+    attempts and the latest retry time of the rows whose columns match ``carry`` (a value,
+    or a list of them)."""
     from celerp.models.base import Base
 
     rows = Base.metadata.tables[table]
-    attempts, retry_at = PACED[table]
+    attempts, retry_at, _ = PACED[table]
     base, cap = float(SWEEP_EVERY), _RERUN_BACKOFF_MAX.total_seconds()
     later = sa.literal_column(f"now() + LEAST({base} * power(2, {attempts}), {cap}) * interval '1 second'")
     if pacing == "carry":
@@ -726,6 +738,7 @@ async def _pace(s, table: str, pacing: str, *where, carry: dict | None = None) -
         "park": (rows.c[attempts] + 1, sa.literal_column("CAST('infinity' AS TIMESTAMPTZ)")),
         "busy": (rows.c[attempts], sa.func.now() + _BUSY_WAIT),
         "clear": (0, None),
+        "resume": (0, sa.func.now()),
         "carry": tuple(furthest) if pacing == "carry" else None,
     }[pacing]
     await s.execute(sa.update(rows).where(*where).values({attempts: values[0], retry_at: values[1]}))
@@ -763,7 +776,7 @@ def _pacing(exc: Exception) -> str | None:
 
 async def settle_unrun(company_id, connector: str, resource: str, exc: Exception) -> None:
     """After an attempt at a pending rerun (a delivery's own, or the sweeper's) that ``exc``
-    stopped before its work: drop it, park it, recording the refusal on the entity's sync
+    stopped before its work: drop it or park it, recording the refusal on the entity's sync
     history in its own words so the person sees why, or set its backoff (_pacing)."""
     from celerp.connectors.sync_runner import record_refused_run
     from celerp.models.base import Base
@@ -784,17 +797,29 @@ async def settle_unrun(company_id, connector: str, resource: str, exc: Exception
             else:
                 await _pace_rerun(s, company_id, connector, resource, pacing)
             await s.commit()
-    if pacing == "park" and resource != WEBHOOKS:
+    if pacing in ("park", "drop") and resource != WEBHOOKS:
         await record_refused_run(company_id, connector, resource, exc)
 
 
-async def resume_reruns(session, company_id, connector: str) -> None:
-    """Try each of the connection's reruns waiting for a retry time, or parked, at the next
-    sweeper tick: the person's own work proved the store, or the connection was bound to
-    a store. In the caller's transaction, which holds no other row (the heartbeat's lock rank)."""
-    await _pace(session, _HEARTBEATS, "clear", sa.text(
-        "company_id = :c AND connector = :k AND rerun_retry_at IS NOT NULL").bindparams(
-        c=str(company_id), k=connector))
+async def resume_reruns(company_id, connector: str) -> None:
+    """End every wait of the connection's deferred work, in every table of PACED: work
+    waiting for a retry time, or parked, is due now, with no attempt counted, and is sent
+    as its row then stands, with any change folded into it while it waited. The person's
+    own work proved the store, the connection was bound to a store, or the person asked to
+    try it now. Each table in a transaction of its own that takes first only what that
+    table's writers take first (Paced.company_lock)."""
+    from celerp.services.company_lock import lock_company
+
+    for table, paced in PACED.items():
+        with _internal():
+            async with _sessions()() as s:
+                await _bound(s)
+                if paced.company_lock and not await lock_company(s, uuid.UUID(str(company_id))):
+                    return
+                await _pace(s, table, "resume", sa.text(
+                    f"company_id = :c AND connector = :k AND {paced.retry_at} IS NOT NULL").bindparams(
+                    c=str(company_id), k=connector))
+                await s.commit()
 
 
 async def _run_reruns(ex: Execution, connector) -> None:
@@ -1027,14 +1052,6 @@ async def _prove_store(ex: Execution, connector) -> bool:
         raise ExecutionRefused("store_changed", str(exc)) from exc
 
 
-async def _resume(ex: Execution) -> None:
-    with _internal():
-        async with _sessions()() as s:
-            await _bound(s)
-            await resume_reruns(s, ex.company_id, ex.connector)
-            await s.commit()
-
-
 @contextlib.asynccontextmanager
 async def connector_execution(
     company_id, connector, purpose: str, resources: list[str], *,
@@ -1080,10 +1097,9 @@ async def connector_execution(
             token = _CURRENT.set(ex)
             try:
                 if ex.ctx is not None:
-                    # A new binding or the person's own work resumes the waiting reruns, in a
-                    # transaction of its own (the heartbeat row is taken holding nothing else).
+                    # A new binding or the person's own work resumes the connection's waiting work.
                     if await _prove_store(ex, connector) or purpose in PERSON_PURPOSES:
-                        await _resume(ex)
+                        await resume_reruns(ex.company_id, ex.connector)
                 yield ex
                 await _run_reruns(ex, connector)
             finally:

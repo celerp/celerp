@@ -381,8 +381,11 @@ async def process_outbound_identity(
     execution stopped before the work is paced by REFUSALS (execution._pacing): a
     busy resource or no free slot leaves the rows pending a short while; work no
     longer called for (a direction turned off, a released or ended connection) is
-    released with the reason; the rest wait with the reason, for their backoff, or,
-    when only the person can clear the cause, for the person's own sync.
+    released with every row of its push, the refusal recorded once on the push's
+    sync history; the rest wait
+    with the reason, for their backoff, or, when only the person can clear the cause,
+    until execution.resume_reruns resumes them (the person's own work, a new store
+    binding, or their try now on the connection's page, which counts them).
     """
     from celerp.connectors.execution import (
         ExecutionRefused,
@@ -409,11 +412,16 @@ async def process_outbound_identity(
     except Exception as exc:
         pacing = _pacing(exc)
         pending = (*identity_rows, OutboundQueue.status == "pending")
+        released = False
         async with get_session_ctx() as session:
             if await _hold_company(session, company_id):
                 if pacing == "drop":
+                    # Every cause of a drop is the connection's, so the push's queued work
+                    # goes at once, and its sync history says why once.
+                    pushed = (*identity_rows[:3], OutboundQueue.status == "pending")
+                    released = bool(await session.scalar(sa.select(sa.func.count()).where(*pushed)))
                     off = isinstance(exc, ExecutionRefused) and exc.reason == "direction_off"
-                    await _release_rows(session, company_id, *pending,
+                    await _release_rows(session, company_id, *pushed,
                                         message=_unresolved(gone=False) if off else None)
                 else:
                     if pacing is not None:
@@ -421,6 +429,10 @@ async def process_outbound_identity(
                             *identity_rows, OutboundQueue.status == "pending").values(error_message=str(exc)[:2000]))
                     await _pace(session, OutboundQueue.__tablename__, pacing or "busy", *pending)
                 await session.commit()
+        if released:
+            from celerp.connectors.sync_runner import record_refused_run
+
+            await record_refused_run(company_id, connector_name, _QUEUED_SYNC[entity_type], exc)
         return OutboundOutcome() if pacing is None else OutboundOutcome(error=str(exc))
 
 

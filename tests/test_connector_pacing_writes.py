@@ -18,7 +18,7 @@ from celerp.connectors.execution import PACED
 _ROOT = Path(__file__).resolve().parents[1]
 _SOURCES = [*(_ROOT / "celerp" / "connectors").rglob("*.py"),
             *(_ROOT / "default_modules" / "celerp-connectors" / "celerp_connectors").rglob("*.py")]
-_COLUMNS = {column for columns in PACED.values() for column in columns}
+_COLUMNS = {column for paced in PACED.values() for column in (paced.attempts, paced.retry_at)}
 _SQL_WRITE = re.compile(r"\b(" + "|".join(sorted(_COLUMNS)) + r")\s*=(?!=)")
 
 
@@ -89,7 +89,7 @@ def test_every_attempt_or_retry_column_of_a_connector_table_is_paced():
     unpaced = sorted(f"{table.name}.{column.name}" for table in Base.metadata.tables.values()
                      if table.name.startswith("connector_") or table.name == "outbound_queue"
                      for column in table.columns
-                     if re.search(r"retry|attempt", column.name) and column.name not in PACED.get(table.name, ()))
+                     if re.search(r"retry|attempt", column.name) and column.name not in PACED.get(table.name, ())[:2])
     assert not unpaced, f"connector pacing columns missing from execution.PACED: {unpaced}"
-    for table, columns in PACED.items():
-        assert set(columns) <= set(Base.metadata.tables[table].columns.keys()), table
+    for table, paced in PACED.items():
+        assert {paced.attempts, paced.retry_at} <= set(Base.metadata.tables[table].columns.keys()), table
