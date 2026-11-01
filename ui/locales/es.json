@@ -3571,6 +3571,7 @@
   "error.period_locked": "Sus libros están bloqueados hasta el {date}, así que no se puede usar esta fecha. Use una fecha posterior o pida a alguien con el permiso \"Manage accounting\" que mueva la fecha de bloqueo en Finance, Bloqueo de período.",
   "error.backup_running": "Hay un respaldo en curso, así que los cambios están en pausa. Inténtelo de nuevo en un minuto, cuando termine el respaldo.",
   "error.permission_missing": "Su rol no tiene el permiso \"{label}\". Pida al dueño de la empresa que lo active para su rol en Configuración global, Usuarios.",
+  "error.refusal_as_written": "{text}",
   "error.access_changed": "Su acceso a esta empresa cambió mientras guardaba, así que no se guardó nada. Seleccione Reintentar; si ya no puede hacerlo, pregunte al dueño de la empresa.",
   "error.reactivate_owner_only": "Solo un dueño de esta empresa puede reactivarla. Pregunte al dueño de la empresa.",
   "error.cannot_divide_by_zero_qty": "No se puede calcular el precio unitario porque la cantidad de este artículo es cero. Indique primero la cantidad o escriba el precio unitario.",

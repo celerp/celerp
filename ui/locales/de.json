@@ -3572,6 +3572,7 @@
   "error.period_locked": "Ihre Bücher sind bis {date} gesperrt, daher kann dieses Datum nicht verwendet werden. Verwenden Sie ein späteres Datum oder bitten Sie jemanden mit der Berechtigung \"Manage accounting\", das Sperrdatum unter Finance, Periodensperre zu verschieben.",
   "error.backup_running": "Gerade läuft eine Sicherung, daher sind Änderungen pausiert. Versuchen Sie es in einer Minute erneut, sobald die Sicherung fertig ist.",
   "error.permission_missing": "Ihre Rolle hat nicht die Berechtigung \"{label}\". Bitten Sie den Unternehmensinhaber, sie für Ihre Rolle unter Globale Konfiguration, Benutzer einzuschalten.",
+  "error.refusal_as_written": "{text}",
   "error.access_changed": "Ihr Zugriff auf dieses Unternehmen wurde während des Speicherns geändert, daher wurde nichts gespeichert. Wählen Sie „Erneut versuchen“; wenn Sie dies nicht mehr tun können, fragen Sie den Unternehmensinhaber.",
   "error.reactivate_owner_only": "Nur ein Inhaber dieses Unternehmens kann es reaktivieren. Fragen Sie den Unternehmensinhaber.",
   "error.cannot_divide_by_zero_qty": "Der Stückpreis kann nicht berechnet werden, weil die Menge dieses Artikels null ist. Legen Sie zuerst die Menge fest oder geben Sie stattdessen den Stückpreis ein.",

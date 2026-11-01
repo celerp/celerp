@@ -3572,6 +3572,7 @@
   "error.period_locked": "I tuoi conti sono bloccati fino al {date}, quindi questa data non può essere usata. Usa una data successiva, oppure chiedi a qualcuno con il permesso \"Manage accounting\" di spostare la data di blocco in Finance, Blocco periodo.",
   "error.backup_running": "È in corso un backup, quindi le modifiche sono in pausa. Riprova tra un minuto, quando il backup sarà terminato.",
   "error.permission_missing": "Il tuo ruolo non ha il permesso \"{label}\". Chiedi al proprietario dell'azienda di attivarlo per il tuo ruolo in Configurazione globale, Utenti.",
+  "error.refusal_as_written": "{text}",
   "error.access_changed": "Il tuo accesso a questa azienda è cambiato mentre salvavi, quindi non è stato salvato nulla. Seleziona Riprova; se non puoi più farlo, chiedi al proprietario dell'azienda.",
   "error.reactivate_owner_only": "Solo un proprietario di questa azienda può riattivarla. Chiedi al proprietario dell'azienda.",
   "error.cannot_divide_by_zero_qty": "Il prezzo unitario non si può calcolare perché la quantità di questo articolo è zero. Imposta prima la quantità oppure inserisci il prezzo unitario.",

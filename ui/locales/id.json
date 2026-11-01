@@ -3571,6 +3571,7 @@
   "error.period_locked": "Pembukuan Anda dikunci hingga {date}, jadi tanggal ini tidak dapat digunakan. Gunakan tanggal yang lebih baru, atau minta seseorang dengan izin \"Manage accounting\" untuk memindahkan tanggal kunci di Finance, Kunci Periode.",
   "error.backup_running": "Pencadangan sedang berjalan, jadi perubahan dijeda. Coba lagi dalam satu menit, setelah pencadangan selesai.",
   "error.permission_missing": "Peran Anda tidak memiliki izin \"{label}\". Minta pemilik perusahaan mengaktifkannya untuk peran Anda di Konfigurasi Global, Pengguna.",
+  "error.refusal_as_written": "{text}",
   "error.access_changed": "Akses Anda ke perusahaan ini berubah saat Anda menyimpan, jadi tidak ada yang tersimpan. Pilih Coba lagi; jika Anda tidak lagi bisa melakukan ini, tanyakan kepada pemilik perusahaan.",
   "error.reactivate_owner_only": "Hanya pemilik perusahaan ini yang dapat mengaktifkannya kembali. Tanyakan kepada pemilik perusahaan.",
   "error.cannot_divide_by_zero_qty": "Harga satuan tidak bisa dihitung karena jumlah barang ini nol. Atur jumlahnya dulu, atau masukkan harga satuan.",

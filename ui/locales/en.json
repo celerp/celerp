@@ -2642,6 +2642,7 @@
   "error.period_locked": "Your books are locked up to {date}, so this date can't be used. Use a later date, or ask someone with the \"Manage accounting\" permission to move the lock date in Finance, Period Lock.",
   "error.backup_running": "A backup is running right now, so changes are paused. Try again in a minute, once the backup finishes.",
   "error.permission_missing": "Your role doesn't have the \"{label}\" permission. Ask the company owner to turn it on for your role in Global Config, Users.",
+  "error.refusal_as_written": "{text}",
   "error.access_changed": "Your access to this company was changed while you were saving, so nothing was saved. Select Try again; if you can no longer do this, ask the company owner.",
   "error.reactivate_owner_only": "Only an owner of this company can reactivate it. Ask the company owner.",
   "error.cannot_divide_by_zero_qty": "The unit price can't be worked out because this item's quantity is zero. Set the quantity first, or enter the unit price instead.",

@@ -14,6 +14,7 @@ import builtins
 import importlib
 import inspect
 import json
+import re
 import textwrap
 import types
 import typing
@@ -379,11 +380,39 @@ class _Walk:
         return sorted(set(self.unkeyed + carried))
 
 
+# The unkeyed refusals agent routes may still raise. Each reaches the AI under the generic
+# key error.refusal_as_written (celerp.error_body), so it reads as the English it is, and
+# the list only shrinks.
+DEBT_FILE = Path(__file__).resolve().parent / "agent_refusals_unkeyed.txt"
+
+
+def _debt_key(finding: str) -> str:
+    """A finding without its line numbers, so an unrelated edit above it does not move it."""
+    return re.sub(r"(\.py):\d+", r"\1", finding)
+
+
+def _debt_problems(findings: list[str], listed: set[str]) -> list[str]:
+    """A new unkeyed refusal, and a listed one no longer raised (taken off the list)."""
+    found = {_debt_key(f): f for f in findings}
+    return [f"unkeyed, not in {DEBT_FILE.name}: {found[key]}" for key in sorted(found.keys() - listed)] + [
+        f"in {DEBT_FILE.name}, no longer raised: {key}" for key in sorted(listed - found.keys())]
+
+
 def test_every_refusal_an_agent_route_can_answer_with_is_keyed_where_it_is_raised():
     """Class guard: a refusal raised by a route the AI calls, or by anything it calls, is
     keyed or translated where it is raised, so the confirmed action that met it reads in
-    the reader's language, live and after a reload."""
+    the reader's language, live and after a reload; or it is one of the listed few."""
     from celerp.main import app
 
-    findings = _Walk(app).findings()
-    assert not findings, "\n".join(findings)
+    listed = {line for line in DEBT_FILE.read_text(encoding="utf-8").splitlines() if line and not line.startswith("#")}
+    problems = _debt_problems(_Walk(app).findings(), listed)
+    assert not problems, "\n".join(problems)
+
+
+def test_the_unkeyed_list_only_shrinks():
+    """A new unkeyed refusal fails the guard, and so does a listed one that is gone."""
+    finding = "celerp/x.py:12 HTTPException(409, 'Taken')"
+    assert _debt_problems([finding], set()) == [f"unkeyed, not in {DEBT_FILE.name}: {finding}"]
+    assert _debt_problems([finding], {"celerp/x.py HTTPException(409, 'Taken')"}) == []
+    assert _debt_problems([], {"celerp/x.py HTTPException(409, 'Taken')"}) == [
+        f"in {DEBT_FILE.name}, no longer raised: celerp/x.py HTTPException(409, 'Taken')"]

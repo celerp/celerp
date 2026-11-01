@@ -124,10 +124,43 @@ async def test_a_connected_companys_key_is_not_the_ai(recorded):
     assert recorded == []
 
 
-async def test_outside_tests_the_body_is_sent_as_built(monkeypatch):
-    monkeypatch.setattr(error_body, "unkeyed", None)
+@pytest.mark.parametrize("detail, text", [
+    ("Barcode '1001' already exists", "Barcode '1001' already exists"),
+    (["That name is taken", "Try another"], "That name is taken Try another"),
+    ({"code": "x", "message": "No key."}, "No key."),
+])
+async def test_an_unkeyed_agent_route_refusal_is_answered_keyed_with_its_own_text(recorded, detail, text):
+    """Class closure: a refusal no guard saw reaches the AI keyed all the same, under one
+    generic key carrying the English the person reads today, so nothing is invented and
+    the AI's record still reads after a reload. Other fields of the detail are kept."""
+    from ui.i18n import refusal_text, set_lang
+
     handler = app.exception_handlers[StarletteHTTPException]
-    response = await handler(_request(agent=True), HTTPException(409, "Plain text", headers={"X-A": "1"}))
+    response = await handler(_request(agent=True), HTTPException(409, detail, headers={"X-A": "1"}))
+    body = json.loads(response.body)["detail"]
+    assert response.status_code == 409 and response.headers["X-A"] == "1"
+    assert error_body.keyed(body) and body["message_key"] == "error.refusal_as_written"
+    assert body["message"] == text and body["params"] == {"text": text}
+    if isinstance(detail, dict):
+        assert body["code"] == detail["code"]
+    set_lang("th")
+    try:
+        assert refusal_text(body) == text
+    finally:
+        set_lang("en")
+    assert len(recorded) == 1
+
+
+async def test_a_keyed_agent_route_refusal_is_answered_as_given(recorded):
+    given = catalog_refusal("error.permission_missing", label="Sales")
+    handler = app.exception_handlers[StarletteHTTPException]
+    response = await handler(_request(agent=True), HTTPException(403, given))
+    assert json.loads(response.body)["detail"] == given and recorded == []
+
+
+async def test_a_route_the_ai_does_not_call_answers_as_built(recorded):
+    handler = app.exception_handlers[StarletteHTTPException]
+    response = await handler(_request(agent=False), HTTPException(409, "Plain text", headers={"X-A": "1"}))
     assert response.body == b'{"detail":"Plain text"}' and response.headers["X-A"] == "1"
 
 

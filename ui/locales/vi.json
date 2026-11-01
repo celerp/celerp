@@ -3571,6 +3571,7 @@
   "error.period_locked": "Sổ sách của bạn đã bị khóa đến {date}, nên không thể dùng ngày này. Hãy dùng ngày muộn hơn, hoặc nhờ người có quyền \"Manage accounting\" dời ngày khóa trong Finance, Khóa kỳ kế toán.",
   "error.backup_running": "Đang có một bản sao lưu chạy, nên các thay đổi tạm dừng. Hãy thử lại sau một phút, khi sao lưu xong.",
   "error.permission_missing": "Vai trò của bạn không có quyền \"{label}\". Hãy nhờ chủ sở hữu công ty bật quyền này cho vai trò của bạn trong Cấu hình chung, Người dùng.",
+  "error.refusal_as_written": "{text}",
   "error.access_changed": "Quyền truy cập của bạn vào công ty này đã thay đổi trong lúc bạn lưu, nên không có gì được lưu. Hãy chọn Thử lại; nếu bạn không còn thực hiện được việc này, hãy hỏi chủ sở hữu công ty.",
   "error.reactivate_owner_only": "Chỉ chủ sở hữu của công ty này mới có thể kích hoạt lại. Hãy hỏi chủ sở hữu công ty.",
   "error.cannot_divide_by_zero_qty": "Không thể tính đơn giá vì số lượng của mặt hàng này bằng 0. Hãy đặt số lượng trước, hoặc nhập đơn giá.",

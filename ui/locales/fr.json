@@ -3572,6 +3572,7 @@
   "error.period_locked": "Vos comptes sont verrouillés jusqu'au {date}, cette date ne peut donc pas être utilisée. Utilisez une date ultérieure, ou demandez à une personne ayant l'autorisation \"Manage accounting\" de déplacer la date de verrouillage dans Finance, Période de verrouillage.",
   "error.backup_running": "Une sauvegarde est en cours, les modifications sont donc suspendues. Réessayez dans une minute, une fois la sauvegarde terminée.",
   "error.permission_missing": "Votre rôle n'a pas l'autorisation \"{label}\". Demandez au propriétaire de l'entreprise de l'activer pour votre rôle dans Configuration globale, Utilisateurs.",
+  "error.refusal_as_written": "{text}",
   "error.access_changed": "Votre accès à cette entreprise a été modifié pendant l'enregistrement, rien n'a donc été enregistré. Sélectionnez « Réessayer » ; si vous ne pouvez plus faire cela, demandez au propriétaire de la société.",
   "error.reactivate_owner_only": "Seul un propriétaire de cette entreprise peut la réactiver. Demandez au propriétaire de l'entreprise.",
   "error.cannot_divide_by_zero_qty": "Le prix unitaire ne peut pas être calculé, car la quantité de cet article est nulle. Saisissez d'abord la quantité, ou indiquez plutôt le prix unitaire.",
