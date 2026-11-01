@@ -666,3 +666,11 @@ async def test_a_stored_map_that_sends_a_record_without_one_it_needs_is_refused_
         refused = [r for r in results if r.final and r.errors]
         assert any(r.errors == [dependency_message(connector, entity, off)] for r in refused
                    for off in connector.outbound_dependencies[entity]), [r.errors for r in results]
+    # The person is told on the entity's sync history, once per run, in the same words.
+    from celerp.models.sync_run import SyncRun
+
+    async with get_session_ctx() as s:
+        shown = (await s.execute(sa.select(SyncRun.status, SyncRun.errors_json).where(
+            SyncRun.company_id == cid, SyncRun.connector == connector.name, SyncRun.entity == entity))).all()
+    assert len(shown) == 2 and all(status == "failed" and dependency_message(
+        connector, entity, needed) in (errors or "") for status, errors in shown), shown

@@ -120,9 +120,12 @@ async def run_connector_sync(
                 completed[entity] = False
                 if off := [dep for dep in waits_for if dep not in full]:
                     # Only the person can end this, by sending the dependency or turning
-                    # the entity off: a refusal, not work a retry can deliver.
-                    results.append(SyncResult(entity=entity, direction=entity_direction(entity),
-                                              errors=[dependency_message(connector, entity, off[0])], final=True))
+                    # the entity off: a refusal, not work a retry can deliver, recorded on
+                    # the entity's sync history so they see why it does not sync.
+                    refused = SyncResult(entity=entity, direction=entity_direction(entity),
+                                         errors=[dependency_message(connector, entity, off[0])], final=True)
+                    await _record_refusal(company_id, connector.name, refused)
+                    results.append(refused)
                 elif outside.intersection(waits_for):
                     # Nothing in this run answers for that dependency: the skip itself is
                     # incomplete work, so a rerun stays pending until the dependency completes.
@@ -177,8 +180,9 @@ async def run_first_sync(connector: ConnectorBase, ctx: ConnectorContext) -> lis
     resources that did not complete. The record becomes ``completed`` only when every
     resource completed (an import batch then still empty is removed), else ``failed``
     with the reason."""
-    from celerp.connectors.execution import ExecutionRefused, plan_resources
+    from celerp.connectors.execution import ExecutionRefused, _pace, plan_resources
     from celerp.db import get_session_ctx
+    from celerp.models.connector_first_sync import ConnectorFirstSync
 
     key = (str(ctx.company_id), connector.name)
     async with get_session_ctx() as session:
@@ -186,6 +190,9 @@ async def run_first_sync(connector: ConnectorBase, ctx: ConnectorContext) -> lis
         if row is None or row.state not in ("starting", "running"):
             raise ExecutionRefused("first_sync_not_started")
         row.state = "running"
+        row.error = None
+        await session.flush()
+        await _pace(session, ConnectorFirstSync.__tablename__, "clear", *_first_sync_key(*key))
         directions = dict(row.directions or {})
         resources = plan_resources(connector, directions)
         progress = dict(row.progress or {})
@@ -236,13 +243,11 @@ async def execute_first_sync(company_id, connector_name: str, *, admission_wait:
     when it started. The start and retry requests run it, and the execution sweeper runs a
     first sync no process holds. A failure the first sync did not record leaves it needing
     attention with the reason, as does a store that is not the one the company's records
-    came from; any other busy or refused execution leaves it as it was."""
+    came from. An execution stopped before the work is paced by REFUSALS (_pace_first_sync)."""
     import sqlalchemy as sa
 
     from celerp import connectors
-    from celerp.connectors.execution import (
-        STORE_REFUSALS, WEBHOOKS, ExecutionRefused, connector_execution, plan_resources,
-    )
+    from celerp.connectors.execution import WEBHOOKS, connector_execution, plan_resources
     from celerp.connectors.webhook_reconcile import reconcile_webhooks
     from celerp.db import get_session_ctx
     from celerp.models.connector_first_sync import ConnectorFirstSync
@@ -252,31 +257,68 @@ async def execute_first_sync(company_id, connector_name: str, *, admission_wait:
         directions = await session.scalar(sa.select(ConnectorFirstSync.directions).where(
             ConnectorFirstSync.company_id == str(company_id), ConnectorFirstSync.connector == connector_name))
     resources = [*plan_resources(connector, directions or {}), WEBHOOKS]
+    started = False
     try:
         async with connector_execution(company_id, connector, "first_sync", resources,
                                        admission_wait=admission_wait) as ex:
+            started = True
             try:
                 await reconcile_webhooks(ex)
                 await run_first_sync(connector, ex.ctx)
             except Exception as exc:
                 await fail_first_sync(company_id, connector_name, exc)
                 raise
-    except ExecutionRefused as exc:
-        # A store that is not the one the records came from: only the company can clear it.
-        if exc.reason in STORE_REFUSALS:
-            await fail_first_sync(company_id, connector_name, exc)
+    except Exception as exc:
+        if not started:
+            await _pace_first_sync(company_id, connector_name, exc)
         raise
 
 
+async def _pace_first_sync(company_id, connector_name: str, exc: Exception) -> None:
+    """A started first sync that ``exc`` stopped before its work, paced by REFUSALS
+    (execution._pacing): one only the person can clear, or no longer called for, needs
+    attention with the reason; one whose cause can clear on its own waits its backoff with
+    the reason shown, and the sweeper tries it again; a busy one is left as it was."""
+    from celerp.connectors.execution import _pace, _pacing
+    from celerp.db import get_session_ctx
+    from celerp.models.connector_first_sync import ConnectorFirstSync
+
+    pacing = _pacing(exc)
+    if pacing is None:
+        return
+    if pacing != "retry":
+        await fail_first_sync(company_id, connector_name, exc)
+        return
+    async with get_session_ctx() as session:
+        row = await _locked_first_sync(session, str(company_id), connector_name)
+        if row is not None and row.state in ("starting", "running"):
+            row.error = {"detail": str(exc)}
+            await session.flush()
+            await _pace(session, ConnectorFirstSync.__tablename__, "retry", *_first_sync_key(company_id, connector_name))
+        await session.commit()
+
+
+def _first_sync_key(company_id, connector_name: str) -> tuple:
+    from celerp.models.connector_first_sync import ConnectorFirstSync
+
+    return ConnectorFirstSync.company_id == str(company_id), ConnectorFirstSync.connector == connector_name
+
+
 async def retry_first_sync(session, company_id, connector_name: str) -> None:
-    """Start a failed first sync again, in the caller's transaction: it goes back to
-    starting with its reason cleared, keeping its import batch, choices, order cutoff,
-    the resources it completed and what it recorded. ValueError when it has not failed."""
+    """Start a failed first sync, or one waiting to be tried again, now, in the caller's
+    transaction: it goes back to starting with its reason and wait cleared, keeping its
+    import batch, choices, order cutoff, the resources it completed and what it recorded.
+    ValueError when it has neither failed nor is waiting."""
+    from celerp.connectors.execution import _pace
+    from celerp.models.connector_first_sync import ConnectorFirstSync
+
     row = await _locked_first_sync(session, str(company_id), connector_name)
-    if row is None or row.state != "failed":
+    if row is None or not (row.state == "failed" or row.next_attempt_at is not None):
         raise ValueError(f"The first sync of {connector_name} has not failed")
     row.state = "starting"
     row.error = None
+    await session.flush()
+    await _pace(session, ConnectorFirstSync.__tablename__, "clear", *_first_sync_key(company_id, connector_name))
 
 
 async def _first_sync_batch(session, row):
@@ -313,6 +355,9 @@ async def fail_first_sync(company_id, connector_name: str, exc: BaseException) -
 
     from celerp.db import get_session_ctx
 
+    from celerp.connectors.execution import _pace
+    from celerp.models.connector_first_sync import ConnectorFirstSync
+
     status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
     reason = {"key": "connectors.err_read_only_key"} if status in (401, 403) else {"detail": str(exc)}
     async with get_session_ctx() as session:
@@ -320,6 +365,8 @@ async def fail_first_sync(company_id, connector_name: str, exc: BaseException) -
         if row is not None and row.state in ("starting", "running"):
             row.state = "failed"
             row.error = reason
+            await session.flush()
+            await _pace(session, ConnectorFirstSync.__tablename__, "clear", *_first_sync_key(company_id, connector_name))
         await session.commit()
 
 
@@ -506,12 +553,16 @@ async def _finish_run(run_id, company_id, connector, entity, result, started_at,
 async def record_refused_run(company_id, connector_name: str, entity: str, exc: Exception) -> None:
     """Record on the store's sync history a run of *entity* that *exc* refused before
     anything was fetched or changed, in the refusal's own words."""
-    direction = entity_direction(entity)
+    await _record_refusal(company_id, connector_name, SyncResult(
+        entity=entity, direction=entity_direction(entity), errors=[str(exc)], busy=isinstance(exc, ModuleBusy),
+        final=not isinstance(exc, ModuleBusy)))
+
+
+async def _record_refusal(company_id, connector_name: str, result: SyncResult) -> None:
+    """Record a refused run (``result``, with its reason) on the entity's sync history."""
     started_at = datetime.now(timezone.utc)
-    run_id = await _begin_run(str(company_id), connector_name, entity, direction.value, started_at)
-    result = SyncResult(entity=entity, direction=direction, errors=[str(exc)], busy=isinstance(exc, ModuleBusy),
-                        final=not isinstance(exc, ModuleBusy))
-    await _finish_run(run_id, str(company_id), connector_name, entity, result, started_at,
+    run_id = await _begin_run(str(company_id), connector_name, result.entity, result.direction.value, started_at)
+    await _finish_run(run_id, str(company_id), connector_name, result.entity, result, started_at,
                       datetime.now(timezone.utc), "failed")
 
 

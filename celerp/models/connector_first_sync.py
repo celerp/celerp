@@ -39,6 +39,9 @@ class ConnectorFirstSync(Base):
     undo: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
     error: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
     cancel_requested: Mapped[bool] = mapped_column(sa.Boolean, nullable=False, default=False, server_default=sa.false())
+    # A start refused before its work for a cause that can clear on its own: how many times,
+    # and when the sweeper tries it again (execution._pace).
+    retry_count: Mapped[int] = mapped_column(sa.Integer, nullable=False, default=0, server_default="0")
     next_attempt_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now(), onupdate=sa.func.now()

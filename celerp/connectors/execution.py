@@ -54,11 +54,20 @@ EXECUTION_SLOTS = max(1, REQUEST_DB_MAX_OVERFLOW - 1)
 SWEEP_EVERY = 60.0
 # Reruns a holder runs before it releases; more recorded meanwhile go to the sweeper.
 _RERUN_ROUNDS = 3
-# A rerun that did not complete waits SWEEP_EVERY * 2^attempts before it is tried again, at most this.
+# Deferred work that did not complete waits SWEEP_EVERY * 2^attempts before it is tried again, at most this.
 _RERUN_BACKOFF_MAX = timedelta(hours=1)
-# The pacing of a rerun refused for each reason an execution is refused with: "drop" when the
-# directions no longer call for the work, "park" when only the person can clear the cause
-# (it waits for their own sync or a new store binding, recorded where they see it), "retry"
+# Queued work whose resource another execution holds is tried again this much later; no attempt is counted.
+_BUSY_WAIT = timedelta(seconds=30)
+# The deferred connector work Celerp tries again by itself, by table: its attempt count and
+# the time it is tried again. _pace is the only writer of these columns.
+PACED = {
+    "connector_execution_heartbeats": ("rerun_attempts", "rerun_retry_at"),
+    "connector_first_syncs": ("retry_count", "next_attempt_at"),
+    "outbound_queue": ("retry_count", "next_retry_at"),
+}
+# The pacing of deferred work refused for each reason an execution is refused with: "drop" when
+# the directions no longer call for the work, "park" when only the person can clear the cause
+# (it waits for their own work or a new store binding, recorded where they see it), "retry"
 # when the cause can clear on its own (it waits its backoff).
 REFUSALS = {
     "direction_off": "drop",
@@ -665,12 +674,14 @@ async def _ack_rerun(s, ex: Execution, resource: str, generation: int, *, alone:
     newer request keeps it pending. With ``alone``, only when no older request is pending:
     a delivery's own sync acknowledges its own request, never an older one that asked for
     the reconciliation pass, which the holder or the sweeper still runs."""
-    await s.execute(sa.text(
-        "UPDATE connector_execution_heartbeats SET rerun_done = GREATEST(rerun_done, :g), "
-        "rerun_attempts = 0, rerun_retry_at = NULL "
+    key = {"c": str(ex.company_id), "k": ex.connector, "res": resource, "h": ex.holder}
+    done = await s.execute(sa.text(
+        "UPDATE connector_execution_heartbeats SET rerun_done = GREATEST(rerun_done, :g) "
         "WHERE company_id = :c AND connector = :k AND resource = :res AND holder = :h"
-        + (" AND rerun_done >= :g - 1" if alone else "")),
-        {"c": ex.company_id, "k": ex.connector, "res": resource, "h": ex.holder, "g": generation})
+        + (" AND rerun_done >= :g - 1" if alone else "")), {**key, "g": generation})
+    if done.rowcount:
+        await _pace(s, _HEARTBEATS, "clear", sa.text(
+            "company_id = :c AND connector = :k AND resource = :res AND holder = :h").bindparams(**key))
 
 
 async def settle_rerun(ex: Execution, resource: str, generation: int, failed: bool, *,
@@ -683,26 +694,54 @@ async def settle_rerun(ex: Execution, resource: str, generation: int, failed: bo
             if not failed:
                 await _ack_rerun(s, ex, resource, generation, alone=alone)
             else:
-                await _pace(s, ex.company_id, ex.connector, resource, holder=ex.holder)
+                await _pace_rerun(s, ex.company_id, ex.connector, resource, "retry", holder=ex.holder)
             await s.commit()
 
 
-async def _pace(s, company_id, connector: str, resource: str, *, park: bool = False, holder=None) -> None:
-    """The one place a rerun's next try is set when an attempt neither completed nor was
-    dropped: SWEEP_EVERY * 2^attempts later, at most _RERUN_BACKOFF_MAX, or, parked, not
-    until resume_reruns. Only the row ``holder`` holds, or without one a row no live
+_HEARTBEATS = "connector_execution_heartbeats"
+
+
+async def _pace(s, table: str, pacing: str, *where, carry: dict | None = None) -> None:
+    """The one place deferred connector work (a table of PACED) is given its next try, on the
+    rows of ``table`` that ``where`` selects, in the caller's transaction. "retry": one more
+    attempt, tried again SWEEP_EVERY * 2^attempts later, at most _RERUN_BACKOFF_MAX; "park":
+    one more attempt, not tried again until the person's own work or a new store binding
+    resumes it; "busy": not tried (another execution held it), tried again _BUSY_WAIT later;
+    "clear": due now, no attempt counted; "carry": the rows take the most attempts and the
+    latest retry time of the rows whose columns match ``carry`` (a value, or a list of them)."""
+    from celerp.models.base import Base
+
+    rows = Base.metadata.tables[table]
+    attempts, retry_at = PACED[table]
+    base, cap = float(SWEEP_EVERY), _RERUN_BACKOFF_MAX.total_seconds()
+    later = sa.literal_column(f"now() + LEAST({base} * power(2, {attempts}), {cap}) * interval '1 second'")
+    if pacing == "carry":
+        among = rows.alias()
+        furthest = [sa.select(sa.func.max(among.c[column])).where(
+            *(among.c[name].in_(value) if isinstance(value, list) else among.c[name] == value
+              for name, value in carry.items())).scalar_subquery()
+            for column in (attempts, retry_at)]
+    values = {
+        "retry": (rows.c[attempts] + 1, later),
+        "park": (rows.c[attempts] + 1, sa.literal_column("CAST('infinity' AS TIMESTAMPTZ)")),
+        "busy": (rows.c[attempts], sa.func.now() + _BUSY_WAIT),
+        "clear": (0, None),
+        "carry": tuple(furthest) if pacing == "carry" else None,
+    }[pacing]
+    await s.execute(sa.update(rows).where(*where).values({attempts: values[0], retry_at: values[1]}))
+
+
+async def _pace_rerun(s, company_id, connector: str, resource: str, pacing: str, *, holder=None) -> None:
+    """Pace a rerun row (_pace): only the row ``holder`` holds, or without one a row no live
     execution holds; a connection with no row yet (webhooks marked dirty) gets one."""
-    t = "connector_execution_heartbeats"
-    held = f"{t}.holder = :h" if holder is not None else f"({t}.holder IS NULL OR {t}.expires_at <= now())"
-    retry = ("CASE WHEN :park THEN CAST('infinity' AS TIMESTAMPTZ) "
-             "ELSE now() + LEAST(:base * power(2, {n}), :cap) * interval '1 second' END")
+    key = {"c": str(company_id), "k": connector, "res": resource}
     await s.execute(sa.text(
-        f"INSERT INTO {t} (company_id, connector, resource, rerun_attempts, rerun_retry_at) "
-        f"VALUES (:c, :k, :res, 1, {retry.format(n=0)}) ON CONFLICT (company_id, connector, resource) "
-        f"DO UPDATE SET rerun_attempts = {t}.rerun_attempts + 1, "
-        f"rerun_retry_at = {retry.format(n=f'{t}.rerun_attempts')} WHERE {held}"),
-        {"c": str(company_id), "k": connector, "res": resource, "h": holder, "park": park,
-         "base": SWEEP_EVERY, "cap": _RERUN_BACKOFF_MAX.total_seconds()})
+        f"INSERT INTO {_HEARTBEATS} (company_id, connector, resource) VALUES (:c, :k, :res) "
+        "ON CONFLICT (company_id, connector, resource) DO NOTHING"), key)
+    held = "holder = :h" if holder is not None else "(holder IS NULL OR expires_at <= now())"
+    await _pace(s, _HEARTBEATS, pacing, sa.text(
+        f"company_id = :c AND connector = :k AND resource = :res AND {held}").bindparams(
+        **key, **({"h": holder} if holder is not None else {})))
 
 
 def _pacing(exc: Exception) -> str | None:
@@ -727,6 +766,7 @@ async def settle_unrun(company_id, connector: str, resource: str, exc: Exception
     stopped before its work: drop it, park it, recording the refusal on the entity's sync
     history in its own words so the person sees why, or set its backoff (_pacing)."""
     from celerp.connectors.sync_runner import record_refused_run
+    from celerp.models.base import Base
 
     pacing = _pacing(exc)
     if pacing is None:
@@ -735,14 +775,14 @@ async def settle_unrun(company_id, connector: str, resource: str, exc: Exception
         async with _sessions()() as s:
             await _bound(s)
             if pacing == "drop":
-                await s.execute(sa.text(
-                    "UPDATE connector_execution_heartbeats SET rerun_done = rerun_requested, "
-                    "rerun_attempts = 0, rerun_retry_at = NULL "
-                    "WHERE company_id = :c AND connector = :k AND resource = :res "
-                    "AND (holder IS NULL OR expires_at <= now())"),
-                    {"c": str(company_id), "k": connector, "res": resource})
+                unheld = sa.text("company_id = :c AND connector = :k AND resource = :res "
+                                 "AND (holder IS NULL OR expires_at <= now())").bindparams(
+                    c=str(company_id), k=connector, res=resource)
+                await s.execute(sa.update(Base.metadata.tables[_HEARTBEATS]).where(unheld).values(
+                    rerun_done=sa.literal_column("rerun_requested")))
+                await _pace(s, _HEARTBEATS, "clear", unheld)
             else:
-                await _pace(s, company_id, connector, resource, park=pacing == "park")
+                await _pace_rerun(s, company_id, connector, resource, pacing)
             await s.commit()
     if pacing == "park" and resource != WEBHOOKS:
         await record_refused_run(company_id, connector, resource, exc)
@@ -752,10 +792,9 @@ async def resume_reruns(session, company_id, connector: str) -> None:
     """Try each of the connection's reruns waiting for a retry time, or parked, at the next
     sweeper tick: the person's own work proved the store, or the connection was bound to
     a store. In the caller's transaction, which holds no other row (the heartbeat's lock rank)."""
-    await session.execute(sa.text(
-        "UPDATE connector_execution_heartbeats SET rerun_attempts = 0, rerun_retry_at = NULL "
-        "WHERE company_id = :c AND connector = :k AND rerun_retry_at IS NOT NULL"),
-        {"c": str(company_id), "k": connector})
+    await _pace(session, _HEARTBEATS, "clear", sa.text(
+        "company_id = :c AND connector = :k AND rerun_retry_at IS NOT NULL").bindparams(
+        c=str(company_id), k=connector))
 
 
 async def _run_reruns(ex: Execution, connector) -> None:
@@ -815,7 +854,8 @@ async def sweep_reruns() -> None:
     attempt set; the execution runs it as it releases. A busy one waits for the next
     tick; a refused or failed one is paced by settle_unrun. A first sync left starting or running, unchanged for longer than a lease
     lasts and with no live execution on its connection, was abandoned by a stopped
-    process: it is run again with the choices saved when it started. Runs in a task of
+    process: it is run again with the choices saved when it started, and so is one past
+    the retry time its last refused attempt set (execute_first_sync paces it). Runs in a task of
     its own, outside any execution."""
     from celerp.connectors.sync_runner import execute_first_sync
 
@@ -824,7 +864,8 @@ async def sweep_reruns() -> None:
             abandoned = (await s.execute(sa.text(
                 "SELECT f.company_id, f.connector FROM connector_first_syncs f "
                 "WHERE f.state IN ('starting', 'running') "
-                "AND f.updated_at <= now() - make_interval(secs => :ttl) "
+                "AND (f.next_attempt_at <= now() OR f.next_attempt_at IS NULL "
+                "AND f.updated_at <= now() - make_interval(secs => :ttl)) "
                 "AND NOT EXISTS (SELECT 1 FROM connector_execution_heartbeats h "
                 "WHERE h.company_id = f.company_id AND h.connector = f.connector "
                 "AND h.holder IS NOT NULL AND h.expires_at > now()) "
@@ -891,15 +932,15 @@ async def record_rerun(company_id, connector: str, resource: str) -> int:
     statement = sa.text(
         "INSERT INTO connector_execution_heartbeats (company_id, connector, resource, rerun_requested) "
         "VALUES (:c, :k, :res, 1) ON CONFLICT (company_id, connector, resource) "
-        "DO UPDATE SET rerun_requested = connector_execution_heartbeats.rerun_requested + 1, "
-        "rerun_attempts = CASE WHEN connector_execution_heartbeats.rerun_retry_at = 'infinity' "
-        "THEN connector_execution_heartbeats.rerun_attempts ELSE 0 END, "
-        "rerun_retry_at = CASE WHEN connector_execution_heartbeats.rerun_retry_at = 'infinity' "
-        "THEN connector_execution_heartbeats.rerun_retry_at END RETURNING rerun_requested")
+        "DO UPDATE SET rerun_requested = connector_execution_heartbeats.rerun_requested + 1 "
+        "RETURNING rerun_requested")
     with _internal():
         async with _sessions()() as s:
             await _bound(s)
             generation = int(await s.scalar(statement, key))
+            await _pace(s, _HEARTBEATS, "clear", sa.text(
+                "company_id = :c AND connector = :k AND resource = :res "
+                "AND rerun_retry_at IS DISTINCT FROM CAST('infinity' AS TIMESTAMPTZ)").bindparams(**key))
             await s.commit()
     return generation
 

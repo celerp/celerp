@@ -8,7 +8,7 @@ import json
 import logging
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import sqlalchemy as sa
 
@@ -207,7 +207,6 @@ async def enqueue_item_change(session, entry, *, previous_state: dict | None = N
             entity_type="inventory",
             entity_id=identity,
             status="pending",
-            retry_count=0,
         ))
     return bool(identities)
 
@@ -274,12 +273,15 @@ async def _release_rows(session, company_id, *where, message: str | None = None)
     """Drop the company's queued work matching `where`, except a Xero invoice create
     that may have reached Xero: that row is its only record, so it is kept and parked
     until a manual sync settles it."""
+    from celerp.connectors.execution import _pace
+
     where = (OutboundQueue.company_id == str(company_id), *where)
     await session.execute(
         sa.update(OutboundQueue)
         .where(*where, *_UNRESOLVED_CREATE)
-        .values(status="blocked", next_retry_at=None, error_message=message or _unresolved(gone=True))
+        .values(status="blocked", error_message=message or _unresolved(gone=True))
     )
+    await _pace(session, OutboundQueue.__tablename__, "clear", *where, *_UNRESOLVED_CREATE)
     await session.execute(
         sa.delete(OutboundQueue).where(*where, sa.not_(sa.and_(*_UNRESOLVED_CREATE)))
     )
@@ -333,7 +335,6 @@ async def enqueue_outbound(
                 entity_type=entity_type,
                 entity_id=entity_id,
                 status="pending",
-                retry_count=0,
             ))
             await session.commit()
 
@@ -376,22 +377,20 @@ async def process_outbound_identity(
     every API worker by the identity's lock.
 
     Called by a sync run, it joins that run's execution and rechecks parked rows
-    too. Called by the background queue, it opens its own execution: a busy
-    resource or no free slot leaves the rows pending for 30 s, a first sync not
-    yet completed for 5 min, a direction turned off or a released connection
-    parks them with the reason.
+    too. Called by the background queue, it opens its own execution, and an
+    execution stopped before the work is paced by REFUSALS (execution._pacing): a
+    busy resource or no free slot leaves the rows pending a short while; work no
+    longer called for (a direction turned off, a released or ended connection) is
+    released with the reason; the rest wait with the reason, for their backoff, or,
+    when only the person can clear the cause, for the person's own sync.
     """
     from celerp.connectors.execution import (
-        AdmissionBusy,
-        ExecutionBusy,
         ExecutionRefused,
+        _pace,
+        _pacing,
         connector_execution,
         current,
         execution_resource,
-    )
-    from celerp.connectors.ownership import (
-        ConnectorOwnershipAmbiguousError,
-        ConnectorOwnershipError,
     )
 
     identity_rows = (
@@ -403,53 +402,26 @@ async def process_outbound_identity(
     if current() is not None:
         return await _deliver(company_id, connector_name, entity_type, identity, identity_rows, parked=True)
 
-    async def defer(delay: timedelta, message: str | None = None) -> None:
-        async with get_session_ctx() as session:
-            if not await _hold_company(session, company_id):
-                return
-            await session.execute(sa.update(OutboundQueue).where(
-                *identity_rows, OutboundQueue.status == "pending",
-            ).values(next_retry_at=datetime.now(timezone.utc) + delay,
-                     **({"error_message": message[:2000]} if message else {})))
-            await session.commit()
-
     try:
         async with connector_execution(company_id, connector_name, "outbound_queue",
                                        [execution_resource("outbound", entity_type)], admission_wait=0):
             return await _deliver(company_id, connector_name, entity_type, identity, identity_rows, parked=False)
-    except (ExecutionBusy, AdmissionBusy):
-        await defer(timedelta(seconds=30))
-        return OutboundOutcome()
-    except ConnectorOwnershipAmbiguousError as exc:
-        await defer(timedelta(minutes=1), str(exc))
-        return OutboundOutcome(error=str(exc))
-    except ConnectorOwnershipError as exc:
+    except Exception as exc:
+        pacing = _pacing(exc)
+        pending = (*identity_rows, OutboundQueue.status == "pending")
         async with get_session_ctx() as session:
             if await _hold_company(session, company_id):
-                await _release_rows(session, company_id, *identity_rows, OutboundQueue.status == "pending")
+                if pacing == "drop":
+                    off = isinstance(exc, ExecutionRefused) and exc.reason == "direction_off"
+                    await _release_rows(session, company_id, *pending,
+                                        message=_unresolved(gone=False) if off else None)
+                else:
+                    if pacing is not None:
+                        await session.execute(sa.update(OutboundQueue).where(
+                            *identity_rows, OutboundQueue.status == "pending").values(error_message=str(exc)[:2000]))
+                    await _pace(session, OutboundQueue.__tablename__, pacing or "busy", *pending)
                 await session.commit()
-        return OutboundOutcome(error=str(exc))
-    except ExecutionRefused as exc:
-        if exc.reason != "direction_off":
-            await defer(timedelta(minutes=5))
-            return OutboundOutcome()
-        async with get_session_ctx() as session:
-            if await _hold_company(session, company_id):
-                await _release_rows(
-                    session, company_id, *identity_rows, OutboundQueue.status == "pending",
-                    message=_unresolved(gone=False),
-                )
-                await session.commit()
-        return OutboundOutcome(error=exc.reason)
-    except Exception as exc:  # credentials: the rows retry with backoff
-        retry_at = datetime.now(timezone.utc) + timedelta(minutes=1)
-        async with get_session_ctx() as session:
-            if await _hold_company(session, company_id):
-                await session.execute(sa.update(OutboundQueue).where(
-                    *identity_rows, OutboundQueue.status == "pending",
-                ).values(next_retry_at=retry_at, error_message=str(exc)[:2000]))
-                await session.commit()
-        return OutboundOutcome(error=str(exc))
+        return OutboundOutcome() if pacing is None else OutboundOutcome(error=str(exc))
 
 
 async def _deliver(company_id, connector_name, entity_type, identity, identity_rows, *, parked: bool) -> OutboundOutcome:
@@ -458,7 +430,7 @@ async def _deliver(company_id, connector_name, entity_type, identity, identity_r
     queue row inserted meanwhile is not touched by this snapshot and runs
     afterward, so an older write cannot complete after a newer one for the same
     remote record."""
-    from celerp.connectors.execution import current, identity_lock
+    from celerp.connectors.execution import _pace, current, identity_lock
     from celerp.connectors.registry import get as get_connector
 
     ex = current()
@@ -493,13 +465,20 @@ async def _deliver(company_id, connector_name, entity_type, identity, identity_r
         stale_ids = [row.id for row in locked_rows if row is not keeper]
         ids = [row.id for row in locked_rows]
 
-        async def retain(**changes) -> None:
+        async def retain(pacing: str, **changes) -> None:
+            # The operation's row carries the identity's pacing (_pace) before the later
+            # requests are removed, then takes ``pacing``.
             async with get_session_ctx() as session:
                 if not await _hold_company(session, company_id):
                     return
+                kept = (*identity_rows, OutboundQueue.id == keeper.id)
+                await _pace(session, OutboundQueue.__tablename__, "carry", *kept, carry={"id": ids})
                 if stale_ids:
                     await session.execute(sa.delete(OutboundQueue).where(*identity_rows, OutboundQueue.id.in_(stale_ids)))
-                await session.execute(sa.update(OutboundQueue).where(*identity_rows, OutboundQueue.id == keeper.id).values(**changes))
+                await session.execute(sa.update(OutboundQueue).where(
+                    *identity_rows, OutboundQueue.id == keeper.id).values(**changes))
+                if pacing != "carry":
+                    await _pace(session, OutboundQueue.__tablename__, pacing, *kept)
                 await session.commit()
 
         async def clear() -> None:
@@ -521,8 +500,7 @@ async def _deliver(company_id, connector_name, entity_type, identity, identity_r
             )
             if blocked_until is not None:
                 await retain(
-                    retry_count=max(row.retry_count for row in locked_rows),
-                    next_retry_at=blocked_until,
+                    "carry",
                     error_message=next(
                         (row.error_message for row in reversed(locked_rows) if row.error_message),
                         None,
@@ -549,21 +527,14 @@ async def _deliver(company_id, connector_name, entity_type, identity, identity_r
             await clear()
             return OutboundOutcome(rows=len(ids), error=str(exc))
         except OutboundNeedsReconciliation as exc:
-            await retain(status="blocked", next_retry_at=None, error_message=str(exc)[:2000])
+            await retain("clear", status="blocked", error_message=str(exc)[:2000])
             return OutboundOutcome(rows=len(ids), error=str(exc))
         except Exception as exc:
             from celerp.connectors.execution import ExecutionError
 
             if isinstance(exc, ExecutionError):
                 raise
-            retry_count = max((row.retry_count for row in locked_rows), default=0) + 1
-            delay = min(3600, 5 * (2 ** min(retry_count, 9)))
-            await retain(
-                retry_count=retry_count,
-                next_retry_at=datetime.now(timezone.utc) + timedelta(seconds=delay),
-                error_message=str(exc)[:2000],
-                status="pending",
-            )
+            await retain("retry", error_message=str(exc)[:2000], status="pending")
             return OutboundOutcome(rows=len(ids), error=str(exc))
         await clear()
         return OutboundOutcome(rows=len(ids), result=result)

@@ -961,7 +961,7 @@ async def test_preview_counts_orders_and_accounting_effect(woo, connector_sessio
 
     order_call = next(c for c in respx.calls if c.request.url.path.endswith("/orders"))
     assert order_call.request.url.params["after"] == start.isoformat()
-    assert preview.orders_by_status == {"processing": 1, "completed": 1, "pending": 1, "cancelled": 1}
+    assert sorted(o["status"] for o in preview.orders) == ["cancelled", "completed", "pending", "processing"]
     assert preview.posting_orders == 2
     assert preview.order_effect == t("connectors.preview_orders_post", n=2, service="WooCommerce")
     # Newest first.

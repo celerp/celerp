@@ -503,8 +503,7 @@ async def test_a_busy_or_failing_identity_waits_under_its_company_lock(_db_engin
             failed = await row()
             assert failed.status == "pending" and failed.error_message == "store credentials unavailable"
             assert before + timedelta(seconds=55) <= failed.next_retry_at <= before + timedelta(seconds=70)
-        assert {"celerp/connectors/outbound_queue.py defer",
-                "celerp/connectors/outbound_queue.py process_outbound_identity"} <= seen
+        assert "celerp/connectors/outbound_queue.py process_outbound_identity" in seen
     finally:
         await _purge_committed(company_id)
 

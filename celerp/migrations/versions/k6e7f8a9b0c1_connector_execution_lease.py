@@ -71,6 +71,7 @@ def upgrade() -> None:
             sa.Column("undo", sa.JSON(), nullable=True),
             sa.Column("error", sa.JSON(), nullable=True),
             sa.Column("cancel_requested", sa.Boolean(), nullable=False, server_default=sa.false()),
+            sa.Column("retry_count", sa.Integer(), nullable=False, server_default="0"),
             sa.Column("next_attempt_at", sa.DateTime(timezone=True), nullable=True),
             sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
             sa.CheckConstraint(

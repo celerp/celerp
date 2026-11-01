@@ -1491,12 +1491,6 @@
   "reason": "No route handler reaches this function in the static call graph: a connector's outbound product sync issues one media token per image it sends to the store, outside any request. Driven by default_modules/celerp-connectors/tests/test_media_tokens.py::test_a_token_names_one_company_image_and_expires."
  },
  {
-  "site": "celerp/connectors/outbound_queue.py defer execute",
-  "count": 1,
-  "class": "not reached from a route",
-  "reason": "Runs only from process_outbound_queue_once, the background outbound queue worker; a sync request delivers parked work without reaching it. Driven by tests/test_services/test_outbound_queue.py::test_a_busy_or_failing_identity_waits_under_its_company_lock."
- },
- {
   "site": "celerp/connectors/outbound_queue.py process_outbound_identity execute",
   "count": 1,
   "class": "not reached from a route",

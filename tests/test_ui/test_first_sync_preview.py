@@ -28,7 +28,7 @@ PREVIEW = {
                 "currency": "USD", "posts": False},
                {"id": "10", "number": "1010", "status": "processing", "created": None, "total": 40.0,
                 "currency": "USD", "posts": True}],
-    "orders_by_status": {"pending": 1, "processing": 1}, "posting_orders": 1,
+    "posting_orders": 1,
     "order_effect": t("connectors.preview_orders_post_one", n=1, service="WooCommerce"),
 }
 

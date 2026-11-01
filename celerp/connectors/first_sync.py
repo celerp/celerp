@@ -12,7 +12,6 @@ does to the books.
 """
 from __future__ import annotations
 
-from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -39,7 +38,6 @@ class FirstSyncPreview:
     problems: list[dict] = field(default_factory=list)    # store products that cannot link
     to_publish: list[dict] = field(default_factory=list)  # Celerp products the store lacks
     orders: list[dict] = field(default_factory=list)
-    orders_by_status: dict[str, int] = field(default_factory=dict)
     posting_orders: int = 0
     order_effect: str = ""
     stock_changes: int = 0  # matches whose store stock becomes Celerp's
@@ -120,7 +118,6 @@ async def build_preview(
              "status_key": _status_key(connector, o.status),
              "total": o.total, "currency": o.currency, "posts": o.posts} for o in orders
         ], key="created")
-        preview.orders_by_status = dict(Counter(o.status for o in orders))
         preview.posting_orders = sum(1 for o in orders if o.posts)
         preview.order_effect = order_effect(preview.posting_orders, len(orders), connector.display_name)
     preview.version = _version(connector, ctx, config_id, preview)
