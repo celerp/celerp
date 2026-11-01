@@ -151,13 +151,12 @@ async def test_a_sync_request_resumes_a_rerun_waiting_for_its_retry_time(
     tok = await token(real_engine, user, cid)
     await connected(cid, stub, stub.default_directions)
     await record_rerun(cid, stub.name, "orders")
-    with seeding_pacing():
-        async with get_session_ctx() as s:
-            await s.execute(sa.text(
-                "UPDATE connector_execution_heartbeats SET rerun_attempts = 3, "
-                "rerun_retry_at = now() + interval '1 hour' WHERE company_id = :c AND resource = 'orders'"),
-                {"c": cid})
-            await s.commit()
+    async with get_session_ctx() as s, seeding_pacing(s):
+        await s.execute(sa.text(
+            "UPDATE connector_execution_heartbeats SET rerun_attempts = 3, "
+            "rerun_retry_at = now() + interval '1 hour' WHERE company_id = :c AND resource = 'orders'"),
+            {"c": cid})
+        await s.commit()
 
     r = await real_client.post(f"/connectors/{stub.name}/sync", json={"entity": "orders"},
                                headers={"Authorization": f"Bearer {tok}"})
@@ -440,7 +439,7 @@ async def _cleared(s, cid) -> None:
     await s.execute(sa.text("SELECT resource FROM connector_execution_leases WHERE company_id = :c "
                             "ORDER BY resource FOR UPDATE"), key)
     await s.execute(sa.text("UPDATE connector_execution_leases SET holder = NULL WHERE company_id = :c"), key)
-    with seeding_pacing():
+    async with seeding_pacing(s):
         await s.execute(sa.text(
             "UPDATE connector_execution_heartbeats SET holder = NULL, expires_at = NULL, "
             "rerun_done = rerun_requested, rerun_attempts = 0, rerun_retry_at = NULL WHERE company_id = :c"), key)

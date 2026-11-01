@@ -199,11 +199,10 @@ async def test_the_backoff_is_bounded(stub, monkeypatch):
     connector, cid = stub
     _remote_refusing(monkeypatch, "relay_unavailable")
     await record_rerun(cid, connector.name, "orders")
-    with seeding_pacing():
-        async with get_session_ctx() as s:
-            await s.execute(sa.text("UPDATE connector_execution_heartbeats SET rerun_attempts = 40 "
-                                    "WHERE company_id = :c"), {"c": cid})
-            await s.commit()
+    async with get_session_ctx() as s, seeding_pacing(s):
+        await s.execute(sa.text("UPDATE connector_execution_heartbeats SET rerun_attempts = 40 "
+                                "WHERE company_id = :c"), {"c": cid})
+        await s.commit()
     await _outside(sweep_reruns())
     async with get_session_ctx() as s:
         wait = await s.scalar(sa.text(

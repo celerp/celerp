@@ -397,7 +397,7 @@ async def test_identity_backoff_applies_to_newer_rows(_db_engine, monkeypatch):
             ))
             await seed.flush()
             await connect(seed, company_id, "woocommerce", first_sync="completed")
-            with seeding_pacing():
+            async with seeding_pacing(seed):
                 seed.add_all([
                     OutboundQueue(
                         company_id=str(company_id),
@@ -468,11 +468,10 @@ async def test_a_busy_or_failing_identity_waits_under_its_company_lock(_db_engin
                     OutboundQueue.company_id == str(company_id), OutboundQueue.entity_id == "88"))
 
         async def due_again() -> None:
-            with seeding_pacing():
-                async with get_session_ctx() as reset:
-                    await reset.execute(sa.update(OutboundQueue).where(
-                        OutboundQueue.company_id == str(company_id)).values(next_retry_at=None))
-                    await reset.commit()
+            async with get_session_ctx() as reset, seeding_pacing(reset):
+                await reset.execute(sa.update(OutboundQueue).where(
+                    OutboundQueue.company_id == str(company_id)).values(next_retry_at=None))
+                await reset.commit()
 
         with sys.modules["lock_rank"].writers_taken("celerp/connectors/outbound_queue.py") as seen:
             # Another task holds the identity's resource (the queue's own execution is a

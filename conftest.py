@@ -541,11 +541,11 @@ def _mutation_census(request):
 
 @pytest.fixture(autouse=True)
 def _pacing_only_through_pace():
-    """A pacing column of deferred connector work written outside execution._pace fails
-    the test that wrote it (pacing_guard.py)."""
+    """A pacing column of deferred connector work written outside execution._pace is
+    refused by the test database and fails the test that wrote it (pacing_guard.py)."""
     import pacing_guard
 
-    with pacing_guard.guarded() as found:
+    with pacing_guard.guarded(DATABASE_URL) as found:
         yield
     if found:
         pytest.fail("pacing written outside execution._pace:\n" + "\n".join(found), pytrace=False)
@@ -852,8 +852,11 @@ async def _db_engine():
     engine = create_async_engine(
         DATABASE_URL, poolclass=NullPool,
         connect_args={"server_settings": {"lock_timeout": "10000"}})
+    import pacing_guard
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(pacing_guard.install)
     yield engine
     await engine.dispose()
 

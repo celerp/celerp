@@ -1,179 +1,132 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
-"""One pacing authority, held at run time: in every test, a statement that sets an attempt
-or retry-time column of deferred connector work (a column of execution.PACED) is recorded
-unless execution._pace sent it, and the test fails.
+"""One pacing authority, held by the test database: a trigger on every table of
+execution.PACED refuses a change to its attempt or retry-time column (an UPDATE, or an
+INSERT giving one a value other than its default of 0 attempts and no retry time) unless
+the transaction carries the ``celerp.pacing`` setting. Only execution._pace (wrapped here
+for the test) and ``seeding_pacing()``, for a test that seeds paced rows in a given state,
+set it, and only for their own statements. The database judges the row the write leaves,
+so no spelling of the write gets past it.
 
-It reads the SQL each statement sends, whatever wrote it (Core, the ORM's flush of an
-assigned attribute, text built by concatenation, an upsert): an UPDATE or ON CONFLICT SET
-of a pacing column, or an INSERT giving one a value other than its default (0 attempts,
-no retry time). A test that seeds paced rows writes them inside ``seeding_pacing()``."""
+A refusal fails the statement, and is also recorded so the test fails even when the code
+under test catches the error. The guard is in each test worker's own database only, never
+in the scratch databases tests build to stand for an installation, and steps out of it for
+a test that backs the database up (``guarded``)."""
 from __future__ import annotations
 
 import contextlib
-import re
-from contextvars import ContextVar
 
+import sqlalchemy as sa
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
 
-_IN_PACE: ContextVar[bool] = ContextVar("in_pace", default=False)
 FOUND: list[str] = []
-_COLUMNS: dict[str, set[str]] | None = None
-_PLACEHOLDER = re.compile(r"\$(\d+)|%\((\w+)\)s|%s|\?|:(\w+)")
-_SET = re.compile(r"\bSET\b", re.IGNORECASE)
-_UPDATE = re.compile(r"\bUPDATE\s+\"?(\w+)\"?(?:\s+(?:AS\s+)?\"?\w+\"?)?\s*$", re.IGNORECASE)
-_INSERT = re.compile(r"\bINSERT\s+INTO\s+\"?(\w+)\"?\s*(?:AS\s+\w+\s*)?\(", re.IGNORECASE)
-_CLAUSE_END = re.compile(r"\b(WHERE|RETURNING|FROM)\b", re.IGNORECASE)
+_SETTING = "celerp.pacing"
+_REFUSED = "pacing written outside execution._pace"
+_FUNCTION = f"""
+CREATE OR REPLACE FUNCTION celerp_pacing_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+    attempts text := TG_ARGV[0];
+    retry_at text := TG_ARGV[1];
+    after jsonb := to_jsonb(NEW);
+BEGIN
+    IF current_setting('{_SETTING}', true) = 'on' THEN
+        RETURN NEW;
+    END IF;
+    IF TG_OP = 'INSERT' THEN
+        IF COALESCE((after ->> attempts)::int, 0) = 0 AND after ->> retry_at IS NULL THEN
+            RETURN NEW;
+        END IF;
+    ELSIF after -> attempts IS NOT DISTINCT FROM to_jsonb(OLD) -> attempts
+            AND after -> retry_at IS NOT DISTINCT FROM to_jsonb(OLD) -> retry_at THEN
+        RETURN NEW;
+    END IF;
+    RAISE EXCEPTION '{_REFUSED}: %.% or %', TG_TABLE_NAME, attempts, retry_at;
+END $$
+"""
 
 
-def _columns() -> dict[str, set[str]]:
-    global _COLUMNS
-    if _COLUMNS is None:
-        from celerp.connectors.execution import PACED
+def install(conn) -> None:
+    """Put the guard on every table of PACED the database ``conn`` (a sync connection, as
+    run_sync gives) has. Idempotent."""
+    from celerp.connectors.execution import PACED
 
-        _COLUMNS = {table: {paced.attempts, paced.retry_at} for table, paced in PACED.items()}
-    return _COLUMNS
-
-
-def _masked(sql: str) -> str:
-    """``sql`` with the inside of every string literal blanked, so its words and
-    brackets never read as SQL."""
-    return re.sub(r"'(?:[^']|'')*'", lambda m: "'" + " " * (len(m.group()) - 2) + "'", sql)
-
-
-def _group(sql: str, start: int) -> tuple[list[tuple[int, str]], int]:
-    """The depth-0 comma-separated parts (offset, text) from ``start`` up to the bracket
-    that closes the enclosing group, or the end; and where that is."""
-    parts, depth, begin = [], 0, start
-    for i in range(start, len(sql)):
-        c = sql[i]
-        if c == "(":
-            depth += 1
-        elif c == ")":
-            if depth == 0:
-                parts.append((begin, sql[begin:i]))
-                return parts, i
-            depth -= 1
-        elif c == "," and depth == 0:
-            parts.append((begin, sql[begin:i]))
-            begin = i + 1
-    parts.append((begin, sql[begin:]))
-    return parts, len(sql)
-
-
-def _name(text: str) -> str:
-    return text.strip().split(".")[-1].strip('"').lower()
-
-
-def _value(sql: str, offset: int, text: str, parameters):
-    """The value an INSERT gives a column: its literal, or the parameter it is bound to."""
-    text = re.sub(r"::[\w\s\[\]]+$", "", text.strip())  # the driver's cast of a bound value
-    match = _PLACEHOLDER.fullmatch(text)
-    if match is None:
-        return {"NULL": None, "0": 0, "DEFAULT": None}.get(text.upper(), text)
-    if match.group(1):
-        return parameters[int(match.group(1)) - 1]
-    if match.group(2) or match.group(3):
-        return parameters[match.group(2) or match.group(3)]
-    return parameters[len(_PLACEHOLDER.findall(sql[:offset]))]
-
-
-def paced_writes(statement: str, parameters) -> list[str]:
-    """Each pacing column ``statement`` sets with ``parameters`` (one set of them)."""
-    columns = _columns()
-    sql = _masked(statement)
-    found = []
-    for match in _SET.finditer(sql):
-        before = sql[:match.start()]
-        update = _UPDATE.search(before)
-        table = update.group(1) if update else None
-        if table is None and re.search(r"\bDO\s+UPDATE\s*$", before, re.IGNORECASE):
-            insert = None
-            for insert in _INSERT.finditer(before):
-                pass
-            table = insert.group(1) if insert else None
-        if table not in columns:
+    conn.execute(sa.text(_FUNCTION))
+    for table, paced in PACED.items():
+        if not sa.inspect(conn).has_table(table):
             continue
-        rest = sql[match.end():]
-        end = _CLAUSE_END.search(rest)
-        parts, _ = _group(rest[:end.start()] if end else rest, 0)
-        found += [f"{table}.{_name(part.split('=')[0])} set" for _, part in parts
-                  if "=" in part and _name(part.split("=")[0]) in columns[table]]
-    for match in _INSERT.finditer(sql):
-        table = match.group(1)
-        if table not in columns:
-            continue
-        names, close = _group(sql, match.end())
-        paced = [i for i, (_, n) in enumerate(names) if _name(n) in columns[table]]
-        values = re.match(r"\s*VALUES\s*\(", sql[close + 1:], re.IGNORECASE)
-        # Many rows at once: INSERT (cols) SELECT p0, ... FROM (VALUES (...), ...) AS t(p0, ...).
-        batch = re.match(r"\s*SELECT\b(.*?)\bFROM\s*\(\s*VALUES\s*\(", sql[close + 1:], re.IGNORECASE | re.DOTALL)
-        if values is not None:
-            start, picks = close + 1 + values.end(), {i: i for i in paced}
-        elif batch is not None:
-            selected = [_name(re.sub(r"::.*$", "", text.strip())) for _, text in _group(batch.group(1), 0)[0]]
-            start = close + 1 + batch.end()
-            alias = re.search(r"\)\s*AS\s+\w+\s*\(([^)]*)\)", sql[start:], re.IGNORECASE)
-            fields = [_name(f) for f in alias.group(1).split(",")] if alias else []
-            picks = {i: fields.index(selected[i]) for i in paced if i < len(selected) and selected[i] in fields}
-            if len(picks) != len(paced):
-                picks = None
-        else:
-            picks = None
-        if picks is None:
-            found += [f"{table}.{_name(names[i][1])} inserted from a query" for i in paced]
-            continue
-        while True:
-            row, end = _group(sql, start)
-            for i, at in picks.items():
-                if _value(sql, row[at][0], row[at][1], parameters) not in (None, 0):
-                    found.append(f"{table}.{_name(names[i][1])} inserted")
-            more = re.match(r"\s*,\s*\(", sql[end + 1:])
-            if more is None:
-                break
-            start = end + 1 + more.end()
-    return found
+        conn.execute(sa.text(f"DROP TRIGGER IF EXISTS celerp_pacing_guard ON {table}"))
+        conn.execute(sa.text(
+            f"CREATE TRIGGER celerp_pacing_guard BEFORE INSERT OR UPDATE ON {table} FOR EACH ROW "
+            f"EXECUTE FUNCTION celerp_pacing_guard('{paced.attempts}', '{paced.retry_at}')"))
 
 
-@event.listens_for(Engine, "before_cursor_execute")
-def _observe(conn, cursor, statement, parameters, context, executemany):
-    if _IN_PACE.get() or not re.search(r"\b(UPDATE|INSERT)\b", statement, re.IGNORECASE):
-        return
-    # An executemany sends many sets of parameters, except SQLAlchemy's batched INSERT,
-    # which sends one flat set for its many rows.
-    many = executemany and isinstance(parameters, (list, tuple)) and isinstance(next(iter(parameters), None), (tuple, list, dict))
-    for one in (parameters if many else [parameters]):
-        if found := paced_writes(statement, one if one is not None else ()):
-            FOUND.append(f"{', '.join(found)} outside execution._pace: {' '.join(statement.split())[:200]}")
+def _remove(conn) -> None:
+    from celerp.connectors.execution import PACED
+
+    for table in PACED:
+        if sa.inspect(conn).has_table(table):
+            conn.execute(sa.text(f"DROP TRIGGER IF EXISTS celerp_pacing_guard ON {table}"))
+    conn.execute(sa.text("DROP FUNCTION IF EXISTS celerp_pacing_guard()"))
+
+
+@event.listens_for(Engine, "handle_error")
+def _refused(context) -> None:
+    if _REFUSED in str(context.original_exception):
+        FOUND.append(f"{context.original_exception}: {' '.join(str(context.statement).split())[:200]}")
+
+
+async def _mark(s, value: str) -> None:
+    await s.execute(sa.select(sa.func.set_config(_SETTING, value, True)))
+
+
+@contextlib.asynccontextmanager
+async def seeding_pacing(s):
+    """Statements a test sends on the session ``s``, in this block, to seed paced rows in
+    a given state. The mark ends with the block, or with a commit inside it."""
+    await _mark(s, "on")
+    yield
+    await s.flush()
+    await _mark(s, "")
 
 
 @contextlib.contextmanager
-def seeding_pacing():
-    """Statements a test sends to seed paced rows in a given state."""
-    token = _IN_PACE.set(True)
-    try:
-        yield
-    finally:
-        _IN_PACE.reset(token)
-
-
-@contextlib.contextmanager
-def guarded():
+def guarded(database_url: str):
     """Run one test with execution._pace marking its own statements; yields what the
-    test wrote outside it. It patches by itself rather than through pytest's monkeypatch,
-    so it never moves that fixture's undo after the test's own fixtures' teardown."""
+    database refused. From the first PostgreSQL tool the test looks up (a backup, restore or
+    recovery: a Celerp backup refuses a database holding objects that are not Celerp's,
+    as the guard is), the guard is out of the test database; it is back on every table
+    of PACED afterwards, also when the test restored them. It patches by itself rather
+    than through pytest's monkeypatch, so it never moves that fixture's undo after the
+    test's own fixtures' teardown."""
+    from sqlalchemy.pool import NullPool
+
     from celerp.connectors import execution
+    from celerp.services import backup
 
-    real = execution._pace
+    real_pace, real_tool = execution._pace, backup._find_pg_tool
+    engine = sa.create_engine(database_url.replace("+asyncpg", "+psycopg2"), poolclass=NullPool)
+    removed = False
 
-    async def _pace(*args, **kwargs):
-        with seeding_pacing():
-            return await real(*args, **kwargs)
+    async def _pace(s, *args, **kwargs):
+        async with seeding_pacing(s):
+            return await real_pace(s, *args, **kwargs)
 
-    execution._pace = _pace
+    def _find_pg_tool(*args, **kwargs):
+        nonlocal removed
+        if not removed:
+            with engine.begin() as conn:
+                _remove(conn)
+            removed = True
+        return real_tool(*args, **kwargs)
+
+    execution._pace, backup._find_pg_tool = _pace, _find_pg_tool
     FOUND.clear()
     try:
         yield FOUND
     finally:
-        execution._pace = real
+        execution._pace, backup._find_pg_tool = real_pace, real_tool
+        if removed:
+            with engine.begin() as conn:
+                install(conn)
+        engine.dispose()

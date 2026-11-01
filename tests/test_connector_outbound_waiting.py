@@ -23,12 +23,11 @@ pytestmark = pytest.mark.asyncio
 async def _queue(company_id, entity_id: str, retry_at: str | None, error: str | None) -> None:
     from celerp.models.connector_config import OutboundQueue
 
-    with seeding_pacing():
-        async with get_session_ctx() as s:
-            s.add(OutboundQueue(company_id=company_id, connector=PLATFORM, entity_type="item_stock",
-                                entity_id=entity_id, payload_json="{}", error_message=error,
-                                next_retry_at=sa.literal_column(retry_at) if retry_at else None))
-            await s.commit()
+    async with get_session_ctx() as s, seeding_pacing(s):
+        s.add(OutboundQueue(company_id=company_id, connector=PLATFORM, entity_type="item_stock",
+                            entity_id=entity_id, payload_json="{}", error_message=error,
+                            next_retry_at=sa.literal_column(retry_at) if retry_at else None))
+        await s.commit()
 
 
 async def test_changes_waiting_to_be_sent_show_on_the_card_and_retry_sends_them_now(store_owner, store_answers):
