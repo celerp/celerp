@@ -137,3 +137,57 @@ async def test_a_patched_session_method_reaches_the_shared_session(session, monk
     monkeypatch.setattr(AsyncSession, "commit", refused)
     with pytest.raises(RuntimeError, match="refused the commit"):
         await session.commit()
+
+
+async def _block_held_open_by_another_task():
+    """A lifecycle block another task holds open, with its savepoint on the shared
+    connection, and the event that ends it."""
+    import asyncio
+
+    from celerp import db
+
+    opened, done = asyncio.Event(), asyncio.Event()
+
+    async def _hold():
+        async with db.LifecycleSessionLocal() as own:
+            await own.execute(text("SELECT 1"))
+            opened.set()
+            await done.wait()
+
+    task = asyncio.create_task(_hold())
+    await opened.wait()
+    return task, done
+
+
+async def test_the_shared_session_never_begins_its_savepoint_inside_another_tasks_block(client, session):
+    """Two requests in flight together (a page's two calls) each reach a block: the second
+    one's block uses the shared session while the first one's block is open. Its savepoint
+    begins once that block has ended, so the block's release never takes it along."""
+    import asyncio
+
+    await session.commit()
+    holder, done = await _block_held_open_by_another_task()
+    reading = asyncio.create_task(session.scalar(text("SELECT 1")))
+    await asyncio.sleep(0.05)
+    done.set()
+    await holder
+    assert await reading == 1
+
+    await session.commit()
+
+
+async def test_the_shared_session_never_ends_its_savepoint_around_another_tasks_block(client, session):
+    """A request commits the shared session while a block another task opened inside its
+    savepoint is still open: the commit waits for that block, so it never releases the
+    block's savepoint along with its own."""
+    import asyncio
+
+    await session.scalar(text("SELECT 1"))
+    holder, done = await _block_held_open_by_another_task()
+    committing = asyncio.create_task(session.commit())
+    await asyncio.sleep(0.05)
+    done.set()
+    await holder
+    await committing
+
+    assert await session.scalar(text("SELECT 1")) == 1

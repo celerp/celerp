@@ -202,7 +202,7 @@ _httpx.AsyncClient.send = _observed_send
 import sys as _sys, os as _os
 from pathlib import Path
 
-from test_helpers import REPO_ROOT, DATABASE_URL, make_test_token, authed_cookies, _crm_available, company_auth, settle_background, BLOCK_END, block_sessions  # noqa: F401
+from test_helpers import REPO_ROOT, DATABASE_URL, make_test_token, authed_cookies, _crm_available, company_auth, settle_background, BLOCK_END, block_sessions, other_tasks_block  # noqa: F401
 
 # Register inventory module routes onto the test app.
 _inv_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-inventory")
@@ -953,7 +953,10 @@ class _SharedSession(AsyncSession):
     with asyncio.gather, a request that waits on another) take turns per operation: an
     AsyncSession allows no concurrent use, and a turn per request would leave a request
     that waits on another waiting forever. A task already holding the turn keeps it
-    (scalar runs execute)."""
+    (scalar runs execute). An operation that begins or ends the session's savepoint waits
+    until no other task has a block session open (test_helpers.block_sessions): begun
+    inside that block, the savepoint would end with the block's release, and ended around
+    it, it would release the block's."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -970,13 +973,30 @@ def _one_turn(name: str):
         task = asyncio.current_task()
         if self._turn_holder is task:
             return await method(self, *args, **kwargs)
-        async with self._turn:
-            self._turn_holder = task
-            try:
-                return await method(self, *args, **kwargs)
-            finally:
-                self._turn_holder = None
+
+        def _inside_another_block():
+            return (name in _SAVEPOINT_ENDS or not self.in_transaction()) and other_tasks_block(self.bind)
+
+        async with asyncio.timeout(30):
+            while True:
+                while _inside_another_block():
+                    await asyncio.sleep(0.005)
+                await self._turn.acquire()
+                if not _inside_another_block():
+                    break
+                self._turn.release()
+        self._turn_holder = task
+        try:
+            return await method(self, *args, **kwargs)
+        finally:
+            self._turn_holder = None
+            self._turn.release()
     return call
+
+
+# The shared session's operations that end its savepoint; any operation begins one when the
+# session holds no transaction.
+_SAVEPOINT_ENDS = {"commit", "rollback", "close", "reset", "invalidate"}
 
 
 for _name, _method in inspect.getmembers(AsyncSession, inspect.iscoroutinefunction):

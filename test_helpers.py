@@ -272,19 +272,20 @@ def block_sessions(factory, shared):
     Savepoints on one connection are one stack, so a block gets one only while every open block
     on the connection is its own task's (they nest LIFO there). A block opened while another
     task's is open uses ``shared`` (the test session's context) instead: its savepoint would
-    nest inside the other block's and end with it."""
+    nest inside the other block's and end with it. The test session, in turn, begins and ends
+    its own savepoint only while no other task's block is open (conftest._SharedSession)."""
     import sys
 
     recorder = sys.modules["lock_rank"].RECORDER
-    open_blocks = _OPEN_BLOCKS.setdefault(id(factory.kw["bind"]), [])
+    open_blocks = _OPEN_BLOCKS.setdefault(id(factory.kw["bind"].sync_connection), [])
 
     @asynccontextmanager
     async def block():
-        task = asyncio.current_task()
-        if any(owner is not task for owner in open_blocks):
+        if other_tasks_block(factory.kw["bind"]):
             async with shared() as own:
                 yield own
             return
+        task = asyncio.current_task()
         open_blocks.append(task)
         try:
             with recorder.block():
@@ -300,6 +301,12 @@ def block_sessions(factory, shared):
 
 # The tasks with a block session open (block_sessions), per test connection.
 _OPEN_BLOCKS: dict[int, list] = {}
+
+
+def other_tasks_block(bind) -> bool:
+    """Whether a task other than this one has a block session open on ``bind``'s connection."""
+    task = asyncio.current_task()
+    return any(owner is not task for owner in _OPEN_BLOCKS.get(id(bind.sync_connection), ()))
 
 
 async def own_sessions_on(session):
