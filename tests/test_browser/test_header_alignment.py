@@ -40,8 +40,9 @@ _ALIGNMENT_JS = """() => {
 }"""
 
 
-# The money pages beyond the main ones: a journal entry being written, the books and a bank's matching.
-_MONEY_PAGES = ("/docs/{issued}", "/accounting/journal/new", "/accounting/chart", "/accounting/trial-balance",
+# The money pages beyond the main ones: a paid document, the payments, a journal entry being written, the
+# books and a bank's matching.
+_MONEY_PAGES = ("/docs/{issued}", "/payments", "/accounting/journal/new", "/accounting/chart", "/accounting/trial-balance",
                 "/accounting/general-ledger", "/accounting/bank-accounts", "/accounting/reconcile/start")
 
 
@@ -52,6 +53,9 @@ def test_every_header_sits_over_its_figures(page, ui_server, fresh_company):
     issued = api.post("/docs", json={"doc_type": "invoice", "contact_id": ids["contact"], "line_items": [
         {"description": "Polished stock lot", "quantity": 2, "unit_price": 100.0, "line_total": 200.0}]}).json()["id"]
     assert api.post(f"/docs/{issued}/finalize").status_code == 200
+    # A payment, so the document's payments and the payments page show their amounts.
+    assert api.post(f"/docs/{issued}/payment", json={
+        "amount": 50.0, "method": "transfer", "payment_date": "2026-04-26", "bank_account": "1111"}).status_code == 200
     page.set_viewport_size({"width": 1440, "height": 900})
     wrong = [f"{url}: {m}" for url in sweep_main_pages(page, ui_server, {**ids, "issued": issued},
                                                        _MAIN_PAGES + _MONEY_PAGES)

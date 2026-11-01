@@ -4132,7 +4132,7 @@ celerpUpdateBulkAlloc();
             )
 
         payment_table = Div(Table(
-            Thead(Tr(Th(t("th.date")), Th(t("th.document")), Th(t("page.contact_detail")), Th(t("label.method")), Th(t("label.reference")), Th(t("label.amount")), Th(t("th.status")))),
+            Thead(Tr(Th(t("th.date")), Th(t("th.document")), Th(t("page.contact_detail")), Th(t("label.method")), Th(t("label.reference")), Th(t("label.amount"), cls="cell--number"), Th(t("th.status")))),
             Tbody(*[_pay_row(p) for p in payments_list]) if payments_list else Tbody(Tr(Td(t("doc.no_payments_found"), colspan="7", cls="empty-state-msg"))),
             cls="data-table sticky-head", id="payments-table",
         ), cls="table-scroll-wrap")
@@ -6157,7 +6157,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
     if history_rows:
         _hist_header = t("documents.applied_to") if is_credit_note else t("documents.bank")
         history_table = Table(
-            Thead(Tr(Th(t("th.date")), Th(t("label.method")), Th(_hist_header), Th(t("label.reference")), Th(t("label.amount")), Th(""))),
+            Thead(Tr(Th(t("th.date")), Th(t("label.method")), Th(_hist_header), Th(t("label.reference")), Th(t("label.amount"), cls="cell--number"), Th(""))),
             Tbody(*history_rows),
             cls="data-table data-table--compact",
         )
@@ -11381,7 +11381,7 @@ def _list_table(lists: list[dict], lang: str = "en", period: tuple[str, str, str
     return Table(
         Thead(Tr(
             Th(t("th.ref")), Th(t("th.doc_type")), Th(t("th.customer")),
-            Th(t("label.issue_date")), Th(t("th.items")), Th(t("th.weight")), Th(t("label.amount")),
+            Th(t("label.issue_date")), Th(t("th.items"), cls="cell--number"), Th(t("th.weight"), cls="cell--number"), Th(t("label.amount"), cls="cell--number"),
             Th(t("th.status")),
         )),
         Tbody(*[_row(d) for d in lists]),
