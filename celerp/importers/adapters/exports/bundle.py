@@ -75,7 +75,8 @@ def _contacts(book: Book, src: Source) -> list[CIFContact]:
 
 
 def _items(book: Book, src: Source) -> list[CIFItem]:
-    """Each item at the first location, then each holding as stock of its item."""
+    """Each item at the first location, then each holding as stock of its item. A holding the
+    source says has nothing left (a lot sold in full) comes in archived: history, not stock."""
     home = book.locations[0] if book.locations else None
     items = [CIFItem(**src("Item", i.code, i.code), sku=i.code, name=i.name, description=i.description,
                      retail_price=i.price, sell_by="piece", status="available" if i.active else "archived",
@@ -83,8 +84,10 @@ def _items(book: Book, src: Source) -> list[CIFItem]:
              for i in sorted(book.items.values(), key=lambda i: i.code)]
     for h in sorted(book.holdings.values(), key=lambda h: h.key):
         item = book.items[h.item]
+        spent = h.key in book.stock and book.stock[h.key][0] == 0
         items.append(CIFItem(**src("Item", h.key, h.key), sku=item.code, name=item.name, description=item.description,
-                             retail_price=item.price, sell_by="piece", status="available" if item.active else "archived",
+                             retail_price=item.price, sell_by="piece",
+                             status="available" if item.active and not spent else "archived",
                              product_external_id=item.code, batch_no=h.lot, location_name=h.location))
     return items
 

@@ -20,7 +20,7 @@ from ui.components.module_off import can_open
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, info_tip, page_header, page_title
-from ui.components.table import search_bar, search_results, pagination, per_page_value, EMPTY, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, add_new_option, data_table, column_manager, display_enum
+from ui.components.table import search_bar, search_results, pagination, per_page_value, EMPTY, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, add_new_option, data_table, column_manager, display_enum, doc_status_badge
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import files_error, files_error_block, files_section as _shared_files_section, files_session_expired, linked_files, _DOCUMENT_TAGS
 from celerp.services.doc_balance import doc_value, settled_on
@@ -516,7 +516,7 @@ def _documents_tab(docs: list[dict], contact: dict | None = None, contact_id: st
                 Td(format_value(d.get("doc_type"), "badge", domain="doc_type")),
                 Td(format_value(str(d.get("issue_date") or "")[:10] or None)),
                 Td(format_value(d.get("total"), "money", d.get("currency")), cls="cell--number"),
-                Td(format_value(d.get("status"), "badge", domain="doc_status")),
+                Td(doc_status_badge(d.get("doc_type"), d.get("status"))),
                 cls="data-row",
             ))
         docs_section = Table(

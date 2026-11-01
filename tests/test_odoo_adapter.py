@@ -1927,7 +1927,8 @@ def test_chart_taxes_contacts_and_products(tmp_path, version):
     assert lakeshore.address == "1 Quay Road, PO1 1AA Portsmouth"
     assert next(c for c in bundle.contacts if c.name == "Northwind Wholesale").tax_id == "GB123456789"
     assert {(i.sku, i.name, i.retail_price, i.status) for i in bundle.items} == {
-        ("WID-1", "Widget", D(50), "available"), ("SRV", "Consulting", D(100), "available")}
+        ("WID-1", "Widget", D(50), "available"), ("SRV", "Consulting", D(100), "available"),
+        ("WID-1", "Widget", D(50), "archived")}  # LOT-0002, sold in full
 
 
 # ── Documents, payments and journals ─────────────────────────────────────────
@@ -2516,6 +2517,14 @@ def test_each_lot_and_location_is_stock_of_its_product(tmp_path, version):
         ("SRV", "SRV", None, None, "WH/Stock"), ("WID-1", "WID-1", None, None, "WH/Stock"),
         (LOT_1, "WID-1", "WID-1", "LOT-0001", "WH/Stock"), (SHELF, "WID-1", "WID-1", "LOT-0001", "WH/Stock/Shelf 2"),
         (LOT_2, "WID-1", "WID-1", "LOT-0002", "WH/Stock")]
+
+
+@pytest.mark.parametrize("version", VERSIONS)
+def test_a_lot_with_nothing_left_comes_in_archived_not_available(tmp_path, version):
+    # LOT-0002 was received and sold in full: it is history, not stock on hand.
+    bundle = _adapter().build_manifest(_file(tmp_path, _backup(version)), FULL).bundle
+    assert {i.source_external_id: i.status for i in bundle.items} == {
+        "SRV": "available", "WID-1": "available", LOT_1: "available", SHELF: "available", LOT_2: "archived"}
 
 
 def _receipt(version: int, lot_quantities: tuple[str, str], ordered: str = "10", ordered_in_units: str = "10",

@@ -29,7 +29,7 @@ from celerp.services.units import (
 from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
 from ui.components.shell import base_shell, page_header, toast_header, page_title
 from ui.security import not_permitted_redirect
-from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, period_all_time_link, period_empty_text, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum, display_unit, doc_href
+from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, period_all_time_link, period_empty_text, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum, display_unit, doc_href, doc_status_badge, doc_status_shown
 from celerp.services.background import spawn_background
 from celerp.services.business_time import business_today
 from celerp.services.doc_balance import MEMO_DRAW_STATUSES, doc_tax, doc_value, is_awaiting_payment, is_owed, outstanding_balance
@@ -476,7 +476,7 @@ def _doc_status_label(doc_type: str, status: str) -> str:
     """A document's status in the user's language. A draft invoice is a pro forma."""
     if doc_type == "invoice" and status == "draft":
         return t("status.pro_forma")
-    return display_enum(status, "doc_status")
+    return display_enum(doc_status_shown(doc_type, status), "doc_status")
 # Selectable list types come straight from the behaviour registry (one source — adding a type
 # there surfaces it here automatically).
 _LIST_TYPES = list(_REG_LIST_TYPES)
@@ -1538,7 +1538,7 @@ def _send_to_option_list(items: list[dict], kind: str) -> FT:
                 Input(type="radio", name="target_id", value=eid, cls="send-to-radio"),
                 Span(label, cls="send-to-ref"),
                 Span(contact, cls="send-to-contact") if contact else None,
-                format_value(status, "badge", domain="doc_status") if status else None,
+                doc_status_badge(d.get("doc_type"), status) if status else None,
                 cls="send-to-option",
             )
         )
@@ -5565,7 +5565,7 @@ def _doc_table(
             Td(format_value(issue_date, "date")),
             *([Td(format_value(d.get("_updated_at"), "date"))] if is_drafts_view else [Td(format_value(due_date, "date"))]),
             *money_tds,
-            Td(format_value(d.get("status"), "badge", domain="doc_status")),
+            Td(doc_status_badge(d.get("doc_type"), d.get("status"))),
             Td(t("documents.accounting_sync_excluded") if d.get("accounting_sync_excluded")
                else t("documents.accounting_sync_included")),
             id=f"doc-{eid}",
@@ -5883,7 +5883,7 @@ def _doc_display_cell(entity_id: str, field: str, value, doc_type: str = "") -> 
     # Status is a state-machine field; transitions happen via lifecycle buttons only.
     if field == "status":
         return Div(
-            format_value(value, "badge", domain="doc_status"),
+            doc_status_badge(doc_type, value),
             cls="editable-cell",
         )
     return Div(

@@ -404,8 +404,11 @@ async def _source_page(request: Request, mode: WizardMode, *, selected: str = ""
     # One file per source unless a source reads several together, as an export set does.
     several = any(len(s.get("artifacts", [])) > 1 or s.get("checklist") for s in sources)
     accepted = ", ".join(f"{a['label']} ({', '.join(a.get('extensions', []))})" for a in artifacts)
-    guidance = [P(t(_EXPORT_HELP[s["key"]]), cls="form-hint") for s in sources if s["key"] in _EXPORT_HELP]
-    guidance += [P(s["accepts"], cls="form-hint") for s in sources if s.get("accepts")]
+    # How to export from each system; once a system is chosen only its own steps show.
+    guidance = [P(text, cls="form-hint", data_export_help=s["key"], hidden=bool(selected) and s["key"] != selected)
+                for s in sources
+                for text in ([t(_EXPORT_HELP[s["key"]])] if s["key"] in _EXPORT_HELP else []) + (
+                    [s["accepts"]] if s.get("accepts") else [])]
     options = [("", t("migration.detect_source"))] + [(s["key"], s["display_name"]) for s in sources]
     radios = [
         Label(
@@ -418,7 +421,9 @@ async def _source_page(request: Request, mode: WizardMode, *, selected: str = ""
         for key, label in options
     ]
     upload = Form(
-        Fieldset(Legend(t("migration.source_label"), cls="form-label"), *radios, cls="form-group"),
+        Fieldset(Legend(t("migration.source_label"), cls="form-label"), *radios, cls="form-group",
+                 onchange="document.querySelectorAll('[data-export-help]').forEach(p => "
+                          "p.hidden = !!event.target.value && p.dataset.exportHelp !== event.target.value)"),
         Div(
             Label(t("migration.files_label"), For="files", cls="form-label"),
             # An export set's files are checked against its checklist as soon as they are
@@ -1061,7 +1066,9 @@ async def _several(request: Request, mode: WizardMode, *, error: str | None = No
                     cls="migration-source")
               for key, label in [("", t("migration.detect_source"))] + [(s["key"], s["display_name"]) for s in single]]
     upload = Form(
-        Fieldset(Legend(t("migration.source_label"), cls="form-label"), *radios, cls="form-group"),
+        Fieldset(Legend(t("migration.source_label"), cls="form-label"), *radios, cls="form-group",
+                 onchange="document.querySelectorAll('[data-export-help]').forEach(p => "
+                          "p.hidden = !!event.target.value && p.dataset.exportHelp !== event.target.value)"),
         Div(Label(t("migration.files_label"), For="files", cls="form-label"),
             Input(type="file", id="files", name="files", multiple=True,
                   accept=",".join(extensions) if extensions else None, cls="form-input"),
@@ -1296,6 +1303,8 @@ def _mapping_page(request: Request, mode: WizardMode, entry: dict, errors: dict 
     # file, so it stands above the table of where items go in Celerp.
     company = next((q for q in questions if q["key"] == COMPANY_QUESTION), None)
     rows = [q for q in questions if q is not company]
+    # One question reads as a field of the form; a table pays off only when there are several.
+    single = [q for q in (company, *(rows if len(rows) == 1 else ())) if q]
 
     def control(q: dict) -> FT:
         return _mapping_control(q, current.get(q["key"], q.get("suggested") or ""))
@@ -1309,8 +1318,8 @@ def _mapping_page(request: Request, mode: WizardMode, entry: dict, errors: dict 
         flash(error) if error else "",
         Form(
             Input(type="hidden", name="step", value="mapping"),
-            Div(Label(company.get("label", ""), cls="form-label"), control(company),
-                field_error(errors, company["key"]), cls="form-group") if company else "",
+            *(Div(Label(q.get("label", ""), cls="form-label"), control(q), field_error(errors, q["key"]),
+                  cls="form-group") for q in single),
             wizard_table(
                 Thead(Tr(Th(t("migration.source_item")), Th(t("migration.celerp_item")))),
                 Tbody(*[
@@ -1320,7 +1329,7 @@ def _mapping_page(request: Request, mode: WizardMode, entry: dict, errors: dict 
                     )
                     for q in rows
                 ]),
-            ) if rows else "",
+            ) if len(rows) > 1 else "",
             field_error(errors, "mappings"),
             Button(t("btn.continue"), type="submit", cls="btn btn--primary btn--full mt-md"),
             method="post", action=f"{mode.base}/decisions", cls="auth-form",

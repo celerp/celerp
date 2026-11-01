@@ -85,6 +85,21 @@ _DEFAULT_COL_WIDTHS: dict[str, str] = {
 }
 
 
+# An issued invoice nobody has paid is stored as "final"; a bill in the same state is stored
+# as "awaiting_payment". Both read as Awaiting Payment so one state carries one label.
+_DOC_STATUS_SHOWN_AS = {("invoice", "final"): "awaiting_payment"}
+
+
+def doc_status_shown(doc_type: str | None, status: str | None) -> str:
+    """The status a document reads as on screen (badge label and colour)."""
+    return _DOC_STATUS_SHOWN_AS.get((doc_type or "", status or ""), status or "")
+
+
+def doc_status_badge(doc_type: str | None, status: str | None) -> str | FT:
+    """A document's status badge, in the user's language."""
+    return format_value(doc_status_shown(doc_type, status), "badge", domain="doc_status")
+
+
 def format_value(v, fmt: str = "text", currency: str | None = None, domain: str | None = None) -> str | FT:
     """Universal display formatter for table cells and detail pages.
 

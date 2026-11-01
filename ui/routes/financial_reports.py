@@ -22,7 +22,7 @@ import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header, page_title
 from ui.components.table import (
-    display_enum, empty_mark, empty_state_cta, fmt_money, format_value, period_empty_note, searchable_select,
+    display_enum, doc_status_badge, empty_mark, empty_state_cta, fmt_money, format_value, period_empty_note, searchable_select,
 )
 from ui.components.journal import (
     journal_bulk_toolbar, journal_csv_rows, journal_export_name, journal_filter_bar,
@@ -421,7 +421,7 @@ def _tie_out_view(data: dict, currency: str | None = None) -> FT:
                     Td(d.get("date") or empty_mark()),
                     Td(A(d.get("number") or d["doc_id"], href=f"/docs/{d['doc_id']}", cls="drilldown-link")),
                     Td(display_enum(d.get("doc_type"), "doc_type")),
-                    Td(format_value(d.get("status"), "badge", domain="doc_status")),
+                    Td(doc_status_badge(d.get("doc_type"), d.get("status"))),
                     Td(d.get("currency") or empty_mark()),
                     Td(empty_mark() if d.get("amount") is None else fmt_money(d["amount"], d.get("currency")),
                        cls=num),
