@@ -894,8 +894,23 @@ async def merge_contacts_service(
     """Merge source contacts into the target: union people/addresses/tags onto the winner, tombstone the
     sources (deleted + merged_into), and re-point every Document, List and deal referencing a source to
     the winner. Every contact involved is locked first, in sorted id order, then the referencing records.
-    Emits events only (the caller commits), so it is replay-safe and reusable by both the merge route
-    and the self-contact migration - one merge implementation (DRY)."""
+    The company's own contact is never merged away, and merging into it takes the permission that
+    guards the company's settings, both checked on the locked records. Emits events only (the caller
+    commits), so it is replay-safe."""
+    return await _merge_contacts(session, company_id, actor_id, target_contact_id, source_contact_ids)
+
+
+async def merge_legacy_self_vendor(session: AsyncSession, company_id, actor_id, winner_id: str,
+                                   vendor_id: str) -> dict:
+    """The self-contact migration's merge: the company's registration vendor record folds into
+    its registration customer record, which is the company's own contact. The migration names
+    both by their registration keys, so it alone may merge a record carrying the company's
+    identity."""
+    return await _merge_contacts(session, company_id, actor_id, winner_id, [vendor_id], legacy_self=True)
+
+
+async def _merge_contacts(session: AsyncSession, company_id, actor_id, target_contact_id: str,
+                          source_contact_ids: list[str], *, legacy_self: bool = False) -> dict:
     from types import SimpleNamespace
     payload = SimpleNamespace(target_contact_id=target_contact_id, source_contact_ids=source_contact_ids)
     user = SimpleNamespace(id=actor_id)
@@ -906,6 +921,10 @@ async def merge_contacts_service(
         raise HTTPException(status_code=422, detail=t("contacts.err_merge_into_itself"))
 
     locked = await lock_contacts(session, company_id, [payload.target_contact_id, *payload.source_contact_ids])
+    if not legacy_self:
+        _refuse_own_contact([locked[sid] for sid in payload.source_contact_ids if sid in locked])
+        if payload.target_contact_id in locked and (locked[payload.target_contact_id].state or {}).get("is_self"):
+            await _require_identity_authority(session, company_id, user)
 
     # 2. Validate target
     target_row = locked.get(payload.target_contact_id)
@@ -1110,12 +1129,6 @@ async def merge_contacts(
     _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    rows = {cid: await session.get(Projection, {"company_id": company_id, "entity_id": cid})
-            for cid in (payload.target_contact_id, *payload.source_contact_ids)}
-    _refuse_own_contact([rows[cid] for cid in payload.source_contact_ids if rows[cid] is not None])
-    target = rows[payload.target_contact_id]
-    if target is not None and (target.state or {}).get("is_self"):
-        await _require_identity_authority(session, company_id, user)
     result = await merge_contacts_service(
         session, company_id, actor_id=user.id,
         target_contact_id=payload.target_contact_id,

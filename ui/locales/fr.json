@@ -7034,6 +7034,7 @@
   "table.confirm_delete_drafts_selected": "Supprimer les brouillons sélectionnés ? Un brouillon auquel aucun autre enregistrement ne fait référence est définitivement supprimé et ne peut pas être récupéré. Un brouillon encore référencé par un autre enregistrement passe dans « Supprimés », d'où vous pouvez le restaurer avec « Restaurer ».",
   "error.email_invalid": "Saisissez une seule adresse e-mail, par exemple name@example.com.",
   "contacts.err_own_contact_kept": "Il s'agit de la fiche de votre propre entreprise, affichée comme expéditeur sur vos documents. Elle ne peut être ni supprimée ni fusionnée avec un autre contact. Modifiez ses informations dans « Coordonnées de l'entreprise ».",
+  "contacts.err_import_own_contact": "Il s'agit de la fiche de votre propre entreprise, affichée comme expéditeur sur vos documents. Une importation ne peut pas la modifier ; modifiez ses informations dans « Coordonnées de l'entreprise ».",
   "contacts.own_record_note": "La fiche de votre propre entreprise, {name}, figure ici, car vos documents l'affichent comme expéditeur. Modifiez-la dans",
   "contacts.identity_on_documents": "Les informations affichées ici identifient l'expéditeur de vos documents : elles figurent sur chaque nouvelle facture, chaque devis et chaque mémo.",
   "docs.draw_line_not_shipped": "{name} n'a pas été expédié au titre du mémo {memo} ; rien ne peut donc être facturé. S'il n'a pas encore été expédié, sélectionnez la ligne et utilisez d'abord « Marquer comme expédié ».",

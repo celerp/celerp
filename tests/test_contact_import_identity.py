@@ -173,3 +173,57 @@ async def test_a_merged_away_contact_is_not_matched(client):
     assert r.status_code == 200, r.text
     result = await _batch(client, h, _row({"name": "Gone Again", "email": "gone@t.test"}))
     assert result["created"] == 1, result
+
+
+async def _me(client, h) -> dict:
+    return next(c for c in (await client.get("/crm/contacts", headers=h)).json()["items"] if c.get("is_self"))
+
+
+async def test_no_import_path_writes_the_company_own_contact(client, session):
+    """The company's identity is changed only in Company details: an import row naming the
+    company's contact by its id, sent again under the key that created it, or claiming to be
+    the company's own is refused, through the batch and the single record import alike, and
+    nothing is written."""
+    h = await _reg(client)
+    me = await _me(client, h)
+    created_key = (await session.execute(select(LedgerEntry.idempotency_key).where(
+        LedgerEntry.entity_id == me["id"], LedgerEntry.event_type == "crm.contact.created"))).scalar_one()
+    before = await _contact_events(session)
+    rows = [_row({"name": "Taken Over"}, entity_id=me["id"]),
+            _row({"name": "Taken Over"}, key=created_key),
+            _row({"name": "Second Me", "is_self": True})]
+    result = await _batch(client, h, *rows)
+    assert result["created"] == result["updated"] == 0, result
+    assert all(t("contacts.err_import_own_contact") in e for e in result["errors"]), result
+    assert len(result["errors"]) == 3, result
+    for row in rows:
+        single = await client.post("/crm/contacts/import", headers=h, json=row)
+        assert single.status_code == 409, single.text
+    assert await _contact_events(session) == before
+    assert (await client.get(f"/crm/contacts/{me['id']}", headers=h)).json()["name"] == me["name"]
+    assert [c["id"] for c in (await client.get("/crm/contacts", headers=h, params={"limit": 500})).json()["items"]
+            if c.get("is_self")] == [me["id"]]
+
+
+async def test_the_merge_service_never_merges_the_company_own_contact_away(client, session):
+    """The merge service itself, whichever endpoint calls it, refuses the company's own contact
+    as a source on the locked record."""
+    from fastapi import HTTPException
+
+    from celerp.models.company import Company
+    from celerp_contacts.routes import merge_contacts_service
+
+    h = await _reg(client)
+    me = await _me(client, h)
+    other = (await client.post("/crm/contacts", headers=h, json={"name": "Other", "email": "o@t.test"})).json()["id"]
+    company_id = (await session.execute(select(Projection.company_id).where(
+        Projection.entity_id == me["id"]))).scalar_one()
+    owner = (await session.execute(select(LedgerEntry.actor_id).where(
+        LedgerEntry.entity_id == me["id"]))).scalars().first()
+    before = await _contact_events(session)
+    with pytest.raises(HTTPException) as exc:
+        await merge_contacts_service(session, company_id, owner, target_contact_id=other, source_contact_ids=[me["id"]])
+    assert exc.value.status_code == 422
+    await session.rollback()
+    assert await _contact_events(session) == before
+    assert await session.get(Company, company_id) is not None

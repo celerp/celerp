@@ -7034,6 +7034,7 @@
   "table.confirm_delete_drafts_selected": "¿Eliminar los borradores seleccionados? Un borrador que no utiliza ningún otro registro se elimina de forma permanente y no se puede recuperar. Si otro registro todavía hace referencia al borrador, este pasa a Eliminados, desde donde puede recuperarlo con Restaurar.",
   "error.email_invalid": "Introduzca una sola dirección de correo electrónico, por ejemplo, name@example.com.",
   "contacts.err_own_contact_kept": "Este es el registro de su propia empresa, que figura como remitente en sus documentos. No se puede eliminar ni fusionar con otro contacto. Modifique sus datos en Datos de la empresa.",
+  "contacts.err_import_own_contact": "Este es el registro propio de su empresa, que aparece como remitente en sus documentos. Una importación no puede cambiarlo; modifique sus datos en Datos de la empresa.",
   "contacts.own_record_note": "El registro de su propia empresa, {name}, aparece aquí porque sus documentos lo muestran como remitente. Modifíquelo en",
   "contacts.identity_on_documents": "Los datos que aparecen aquí identifican al remitente de sus documentos: se muestran en cada nueva factura, presupuesto y memo.",
   "docs.draw_line_not_shipped": "{name} no se ha enviado al cliente mediante el memo {memo}, por lo que no hay nada que facturar. Si aún no se ha enviado, seleccione la línea y use primero Marcar como enviado.",

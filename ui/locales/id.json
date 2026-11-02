@@ -7034,6 +7034,7 @@
   "table.confirm_delete_drafts_selected": "Hapus draf yang dipilih? Draf yang tidak dirujuk oleh catatan lain akan dihapus secara permanen dan tidak dapat dipulihkan. Draf yang masih dirujuk oleh catatan lain akan dipindahkan ke Dihapus, tempat Anda dapat memulihkannya melalui Pulihkan.",
   "error.email_invalid": "Masukkan satu alamat email, misalnya name@example.com.",
   "contacts.err_own_contact_kept": "Ini adalah catatan perusahaan Anda sendiri yang ditampilkan sebagai pengirim pada dokumen Anda. Catatan ini tidak dapat dihapus atau digabungkan ke kontak lain. Ubah rinciannya di Detail Perusahaan.",
+  "contacts.err_import_own_contact": "Ini adalah catatan milik perusahaan Anda sendiri, yang tampil sebagai pengirim di dokumen Anda. Impor tidak dapat mengubahnya; ubah detailnya di Detail Perusahaan.",
   "contacts.own_record_note": "Catatan perusahaan Anda sendiri, {name}, tercantum di sini karena dokumen Anda menampilkannya sebagai pengirim. Ubah di",
   "contacts.identity_on_documents": "Rincian di sini menjadi identitas pengirim pada dokumen Anda: rincian tersebut muncul pada setiap faktur, penawaran harga, dan memo baru.",
   "docs.draw_line_not_shipped": "{name} belum dikirim melalui memo {memo}, sehingga belum ada yang dapat ditagihkan. Jika barang belum dikirim, pilih barisnya lalu gunakan Tandai sebagai dikirim terlebih dahulu.",

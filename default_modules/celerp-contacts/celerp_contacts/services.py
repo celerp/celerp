@@ -13,6 +13,7 @@ from celerp.importers.results import ImportOutcome, failure_reason
 from celerp.models.projections import Projection
 from celerp.services.currencies import require_currency_code
 from celerp.services.peer_import import SourceRevision
+from ui.i18n import t
 
 CONTACT_CREATED = "crm.contact.created"
 _NULLABLE_CONTACT_FIELDS = frozenset({
@@ -69,12 +70,17 @@ async def import_contact_records(
     match_identity=False: its source keeps two same-named records apart and so does the
     import. One such contact takes the row's values (blank values leave a field
     as it is); a row with nothing new is skipped, so replaying a file writes nothing.
-    More than one refuses the row with nothing written. The caller runs one import per
-    company at a time and commits."""
-    rows = (await session.execute(
-        select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "contact")
+    More than one refuses the row with nothing written. The company's own contact is its
+    identity on every document and is changed only in Company details: a row that would
+    write it, by any match or by carrying ``is_self``, is refused. Every contact is locked
+    before matching, so a contact that becomes the company's own meanwhile is seen as such.
+    The caller commits."""
+    from celerp_contacts.references import lock_contacts
+
+    ids = (await session.execute(
+        select(Projection.entity_id).where(Projection.company_id == company_id, Projection.entity_type == "contact")
     )).scalars().all()
-    states = {r.entity_id: dict(r.state or {}) for r in rows}
+    states = {cid: dict(r.state or {}) for cid, r in (await lock_contacts(session, company_id, ids)).items()}
     outcome = ImportOutcome()
     for rec in records:
         label = str(rec.data.get("name") or rec.entity_id)
@@ -86,9 +92,12 @@ async def import_contact_records(
         except HTTPException as exc:
             outcome.add(rec.entity_id, "rejected", f"{label}: {failure_reason(exc)}")
             continue
+        if "is_self" in rec.data:
+            outcome.add(rec.entity_id, "rejected", f"{label}: {t('contacts.err_import_own_contact')}")
+            continue
         identity = contact_import_identity(rec.data)
         keyed = await find_event_by_idempotency(session, company_id, rec.idempotency_key)
-        # The company's own contact is kept in company settings, never matched by an import.
+        # A row sharing the identity of the company's own contact is another contact.
         candidates = {cid for cid, state in states.items() if match_identity and identity and _live(state)
                       and not state.get("is_self")
                       and contact_import_identity(state) == identity}
@@ -97,6 +106,9 @@ async def import_contact_records(
                 candidates.add(cid)
         if rec.entity_id in states and not _live(states[rec.entity_id]):
             outcome.add(rec.entity_id, "rejected", f"{label}: contact {rec.entity_id} was merged or deleted")
+            continue
+        if any(states[cid].get("is_self") for cid in candidates):
+            outcome.add(rec.entity_id, "rejected", f"{label}: {t('contacts.err_import_own_contact')}")
             continue
         if len(candidates) > 1:
             outcome.add(rec.entity_id, "rejected",

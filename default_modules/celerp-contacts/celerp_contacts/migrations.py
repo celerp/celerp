@@ -150,11 +150,8 @@ async def migrate_self_contacts(session: AsyncSession, company_id, actor_id=None
     # 2. Merge the vendor record into the winner (re-points docs/deals + tombstones the vendor).
     docs_repointed = 0
     if source is not None:
-        from celerp_contacts.routes import merge_contacts_service
-        result = await merge_contacts_service(
-            session, company_id, actor_id,
-            target_contact_id=winner.entity_id, source_contact_ids=[source.entity_id],
-        )
+        from celerp_contacts.routes import merge_legacy_self_vendor
+        result = await merge_legacy_self_vendor(session, company_id, actor_id, winner.entity_id, source.entity_id)
         docs_repointed = result.get("docs_updated", 0)
 
     # 3. Cache the canonical self-contact id for the Company Details page's direct lookup.

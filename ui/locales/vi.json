@@ -7034,6 +7034,7 @@
   "table.confirm_delete_drafts_selected": "Xóa các bản nháp đã chọn? Bản nháp không được bản ghi nào khác sử dụng sẽ bị xóa vĩnh viễn và không thể khôi phục. Bản nháp vẫn được bản ghi khác tham chiếu sẽ chuyển vào mục Đã xóa, nơi có thể khôi phục bằng chức năng Khôi phục.",
   "error.email_invalid": "Nhập một địa chỉ email, ví dụ name@example.com.",
   "contacts.err_own_contact_kept": "Đây là hồ sơ của chính công ty bạn, được hiển thị là người gửi trên các chứng từ. Không thể xóa hồ sơ này hoặc gộp vào liên hệ khác. Hãy sửa thông tin trong mục Thông tin công ty.",
+  "contacts.err_import_own_contact": "Đây là hồ sơ của chính công ty bạn, được hiển thị là người gửi trên chứng từ. Việc nhập dữ liệu không thể thay đổi hồ sơ này; hãy thay đổi thông tin trong Thông tin công ty.",
   "contacts.own_record_note": "Hồ sơ công ty của bạn, {name}, có trong danh sách này vì được hiển thị là người gửi trên chứng từ. Hãy chỉnh sửa tại",
   "contacts.identity_on_documents": "Thông tin tại đây là thông tin người gửi trên chứng từ của bạn: mọi hóa đơn, báo giá và phiếu ghi nhớ mới đều hiển thị thông tin này.",
   "docs.draw_line_not_shipped": "{name} chưa được xuất giao theo phiếu ghi nhớ {memo}, nên chưa có gì để lập hóa đơn. Nếu chưa gửi hàng, hãy chọn dòng và sử dụng Đánh dấu đã gửi trước.",

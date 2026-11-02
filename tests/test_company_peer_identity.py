@@ -110,7 +110,7 @@ async def test_peer_contact_clears_optional_value_without_changing_regular_impor
         def scalars(self):
             return self
         def all(self):
-            return [contact]
+            return [contact.entity_id]
     class Session:
         async def execute(self, query):
             return Rows()
@@ -122,6 +122,11 @@ async def test_peer_contact_clears_optional_value_without_changing_regular_impor
         changes.append(kwargs["data"]["fields_changed"])
         return SimpleNamespace()
 
+    async def locked(session, company_id, ids):
+        return {contact.entity_id: contact} if contact.entity_id in ids else {}
+
+    import celerp_contacts.references as references
+    monkeypatch.setattr(references, "lock_contacts", locked)
     monkeypatch.setattr(contacts, "find_event_by_idempotency", no_prior_event)
     monkeypatch.setattr(contacts, "emit_event", record_change)
     record = contacts.CRMImportRecord(
