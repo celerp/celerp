@@ -9,6 +9,8 @@ from __future__ import annotations
 import pytest
 from playwright.sync_api import Page
 
+from .conftest import settled_boxes
+
 pytestmark = pytest.mark.browser
 
 _CONTROLS = {
@@ -35,6 +37,13 @@ _TEXT_FIT_JS = """(el) => {
 }"""
 
 
+def _boxes(page: Page) -> dict:
+    """Every shown control's box, all read in one settled layout (settled_boxes)."""
+    names = list(_CONTROLS)
+    return {name: box for name, box in zip(names, settled_boxes(page, *_CONTROLS.values()))
+            if box["width"] > 0 and box["height"] > 0}
+
+
 def _overlap(a: dict, b: dict) -> bool:
     return (a["x"] < b["x"] + b["width"] - 0.5 and b["x"] < a["x"] + a["width"] - 0.5
             and a["y"] < b["y"] + b["height"] - 0.5 and b["y"] < a["y"] + a["height"] - 0.5)
@@ -50,11 +59,7 @@ def test_topbar_controls_fit_without_overlap(page: Page, fresh_company, ui_serve
     page.wait_for_selector(_CONTROLS["company"], state="visible")
     page.wait_for_load_state("load")
 
-    boxes = {}
-    for name, sel in _CONTROLS.items():
-        loc = page.locator(sel).first
-        if loc.is_visible():
-            boxes[name] = loc.bounding_box()
+    boxes = _boxes(page)
     assert {"search", "company", "language", "bell", "user"} <= boxes.keys(), boxes.keys()
     if width <= 768:
         assert "menu" in boxes
@@ -107,8 +112,7 @@ def test_phone_search_keeps_its_row_whatever_the_company_name(page: Page, fresh_
     page.wait_for_load_state("load")
     page.locator(_CONTROLS["company"]).evaluate(
         "(el, name) => { el.options[el.selectedIndex].text = name; }", "Company " + "x" * chars)
-    boxes = {name: page.locator(sel).first.bounding_box() for name, sel in _CONTROLS.items()
-             if page.locator(sel).first.is_visible()}
+    boxes = _boxes(page)
     for name, b in boxes.items():
         assert b["x"] >= 0 and b["x"] + b["width"] <= width + 0.5, f"{name} off screen: {b}"
     _assert_search_has_its_own_row(boxes, width)

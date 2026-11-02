@@ -325,7 +325,9 @@ function showGlobalUiError(message) {
 /* A click-to-edit cell is kept as it was shown just before its editor replaces it, so
    Escape can put it back in any editor, including those with no restore route of their
    own. The editor that consumed Escape itself (preventDefault) keeps its own restore.
-   The editor is removed, so its pending blur save never fires. */
+   The editor is removed, so its pending blur save never fires. The cell to restore is
+   recorded as soon as the editor is swapped in, not when it settles, so an Escape pressed
+   the moment the editor appears still puts the cell back. */
 var _cellBeforeEdit = null;
 document.addEventListener('htmx:beforeSwap', function(e) {
   /* A refusal the server marks as an answer (a cost changed since its editor opened) is
@@ -338,7 +340,7 @@ document.addEventListener('htmx:beforeSwap', function(e) {
   var t = e.detail.target;
   _cellBeforeEdit = (t && t.matches && t.matches('td.cell:not(.cell--editing)')) ? t.outerHTML : null;
 });
-document.addEventListener('htmx:afterSettle', function() {
+document.addEventListener('htmx:afterSwap', function() {
   if (_cellBeforeEdit === null) return;
   document.querySelectorAll('.cell--editing').forEach(function(c) {
     if (c._restoreHtml === undefined) c._restoreHtml = _cellBeforeEdit;

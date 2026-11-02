@@ -50,3 +50,13 @@ def test_escape_leaves_a_price_list_cell_unchanged(page, fresh_company):
     page.goto("/settings/contacts?tab=price-lists")
     _escape_leaves_cell(page, '[hx-get="/settings/price-lists/0/name/edit"]', "Abandoned edit")
     assert _price_list(fresh_company)["name"] == pl["name"]
+
+
+def test_escape_the_moment_the_editor_opens_leaves_the_cell(page, fresh_company):
+    """Escape pressed as soon as the editor shows, before the page has settled it, still puts
+    the cell back: the cell is held from the moment the editor is swapped in."""
+    pl = _price_list(fresh_company)
+    page.goto("/settings/contacts?tab=price-lists")
+    page.evaluate("htmx.config.defaultSettleDelay = 5000")
+    _escape_leaves_cell(page, '[hx-get="/settings/price-lists/0/name/edit"]', "Abandoned edit")
+    assert _price_list(fresh_company)["name"] == pl["name"]
