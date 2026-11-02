@@ -890,27 +890,15 @@ async def merge_contacts_service(
     actor_id,
     target_contact_id: str,
     source_contact_ids: list[str],
+    *,
+    legacy_self: bool = False,
 ) -> dict:
     """Merge source contacts into the target: union people/addresses/tags onto the winner, tombstone the
     sources (deleted + merged_into), and re-point every Document, List and deal referencing a source to
     the winner. Every contact involved is locked first, in sorted id order, then the referencing records.
     The company's own contact is never merged away, and merging into it takes the permission that
-    guards the company's settings, both checked on the locked records. Emits events only (the caller
-    commits), so it is replay-safe."""
-    return await _merge_contacts(session, company_id, actor_id, target_contact_id, source_contact_ids)
-
-
-async def merge_legacy_self_vendor(session: AsyncSession, company_id, actor_id, winner_id: str,
-                                   vendor_id: str) -> dict:
-    """The self-contact migration's merge: the company's registration vendor record folds into
-    its registration customer record, which is the company's own contact. The migration names
-    both by their registration keys, so it alone may merge a record carrying the company's
-    identity."""
-    return await _merge_contacts(session, company_id, actor_id, winner_id, [vendor_id], legacy_self=True)
-
-
-async def _merge_contacts(session: AsyncSession, company_id, actor_id, target_contact_id: str,
-                          source_contact_ids: list[str], *, legacy_self: bool = False) -> dict:
+    guards the company's settings, both checked on the locked records; only merge_legacy_self_vendor
+    passes ``legacy_self``. Emits events only (the caller commits), so it is replay-safe."""
     from types import SimpleNamespace
     payload = SimpleNamespace(target_contact_id=target_contact_id, source_contact_ids=source_contact_ids)
     user = SimpleNamespace(id=actor_id)
@@ -1119,6 +1107,15 @@ async def _merge_contacts(session: AsyncSession, company_id, actor_id, target_co
         "docs_updated": docs_updated,
         "warnings": warnings,
     }
+
+
+async def merge_legacy_self_vendor(session: AsyncSession, company_id, actor_id, winner_id: str,
+                                   vendor_id: str) -> dict:
+    """The self-contact migration's merge: the company's registration vendor record folds into
+    its registration customer record, which is the company's own contact. The migration names
+    both by their registration keys, so it alone may merge a record carrying the company's
+    identity."""
+    return await merge_contacts_service(session, company_id, actor_id, winner_id, [vendor_id], legacy_self=True)
 
 
 @router.post("/contacts/merge")
