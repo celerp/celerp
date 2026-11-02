@@ -2110,9 +2110,14 @@ _STICKY_HEADER_JS = """
     box.classList.toggle('scroll-more-left', max > 1 && box.scrollLeft > 1);
     box.style.setProperty('--scroll-x', box.scrollLeft + 'px');
   }
-  // The box changes width with the window; the table changes width with its rows.
+  // The box changes width with the window; the table changes width with its rows. A swap that
+  // takes either out of the page ends the watch on it.
   var sizes = new ResizeObserver(function(entries){
-    entries.forEach(function(e){ update(e.target.matches('table') ? e.target.parentElement : e.target); });
+    entries.forEach(function(e){
+      var box = e.target.matches('table') ? e.target.parentElement : e.target;
+      if(!e.target.isConnected || !box){ sizes.unobserve(e.target); return; }
+      update(box);
+    });
   });
   function cue(box, inner){
     if(!box || box.dataset.scrollCue) return;

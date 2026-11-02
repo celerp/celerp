@@ -1412,7 +1412,7 @@ def _doc_summary(states: list[dict], today: str, base_currency: str) -> dict:
     """The counts and totals of ``get_doc_summary`` over the documents ``states``."""
     totals = dict.fromkeys((
         "ar_gross", "ar_paid", "ar_outstanding", "awaiting_payment", "overdue", "paid", "sent",
-        "draft", "void", "memo", "unfulfilled", "open_credit",
+        "draft", "void", "unfulfilled", "open_credit",
     ), Decimal(0))
     count_by_status: dict[str, int] = {}
     total_by_status: dict[str, Decimal] = {}
@@ -1460,8 +1460,6 @@ def _doc_summary(states: list[dict], today: str, base_currency: str) -> dict:
             if st == "sent":
                 add("sent", amounts, "amount_outstanding")
         elif st not in ("void", "draft"):
-            if dt == "memo":
-                add("memo", amounts, "total")
             if open_credit:
                 add("open_credit", amounts, "amount_outstanding")
     money = {k: to_stored_float(round_money(v, base_currency)) for k, v in totals.items()}
@@ -1489,7 +1487,6 @@ def _doc_summary(states: list[dict], today: str, base_currency: str) -> dict:
         "unfulfilled_total": money["unfulfilled"],
         "unvalued_count": unvalued_count,
         "invoice_unvalued_count": invoice_unvalued_count,
-        "memo_all_total": money["memo"],
         "open_credit_total": money["open_credit"],
         "count_by_status": count_by_status,
         "total_by_status": {k: to_stored_float(round_money(v, base_currency)) for k, v in total_by_status.items()},

@@ -14,6 +14,7 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.lot_origin import RETIRED, held_value
 from celerp.services.business_time import business_today
+from celerp.services.holdings import memo_holdings
 from celerp.services.doc_balance import is_awaiting_payment, is_overdue_document, outstanding_balance
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role
 from celerp.services.permissions import get_current_company_settings
@@ -65,6 +66,12 @@ async def get_kpis(company_id=Depends(get_current_company_id), role: str = Depen
     # Stock on hand in the catalog, for the per-item KPI sub-fields.
     active_items = [i for i, v in held if v is not None and str(i.state.get("status") or "").lower() not in RETIRED]
 
+    # Out on memo: the items whose status says so, valued at what their issued memos' lines charge
+    # (holdings.memo_holdings, the same figure the inventory list totals for one customer).
+    issued_memos = [(d.entity_id, d.state) for d in docs
+                    if d.state.get("doc_type") == "memo" and str(d.state.get("status") or "").lower() not in ("draft", "void")]
+    on_memo = memo_holdings([(i.entity_id, i.state) for i in items], issued_memos, settings.get("currency") or "USD")
+
     # Revenue: filter to current month / year using issue_date or finalized_at
     def _doc_month(d: "Projection") -> str:
         ts = d.state.get("issue_date") or d.state.get("finalized_at") or ""
@@ -97,7 +104,8 @@ async def get_kpis(company_id=Depends(get_current_company_id), role: str = Depen
             "total_value_cost": total_value_cost,
             "total_value_retail": total_value_retail,
             "items_expiring_30d": 0,
-            "items_on_memo": sum(1 for i in active_items if i.state.get("is_on_memo")),
+            "items_on_memo": sum(1 for i in items if str(i.state.get("status") or "").lower() == "memo_out"),
+            "memo_out_value": round(float(sum(v for v in on_memo.values() if v is not None)), 2),
             "items_reserved": sum(1 for i in active_items if float(i.state.get("reserved_quantity", 0) or 0) > 0),
             "items_in_production": sum(1 for i in active_items if i.state.get("is_in_production")),
             "low_stock_items": sum(1 for i in active_items if is_below_reorder(i.state)),
