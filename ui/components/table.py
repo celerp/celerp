@@ -1485,6 +1485,7 @@ def data_row(
         )
     ]
     status_val = str(row.get("status", "") or "").lower()
+    row_read_only = bool(row.get("_row_read_only"))
     # autocomplete off: the stored selection decides the tick, never the browser
     # restoring a form on Back or Forward.
     checkbox_td = [Td(Input(type="checkbox", cls="row-select", name="selected", value=entity_id,
@@ -1497,6 +1498,7 @@ def data_row(
                  data_weight_unit=row.get("weight_unit", ""),
                  data_sell_by=row.get("sell_by", ""),
                  data_status=status_val,
+                 disabled=row_read_only,
            ), cls="col-checkbox")] if show_checkboxes else []
     row_cls = "data-row data-row--inactive" if status_val in INACTIVE_ITEM_STATUSES else "data-row"
     if str(row.get("inventory_type") or "") == "component":
@@ -1525,7 +1527,7 @@ def data_row(
                 value=row.get(f["key"], ""),
                 cell_type=f.get("type", "text"),
                 options=f.get("options"),
-                editable=f.get("editable", True) or f["key"] in row_editable,
+                editable=(f.get("editable", True) or f["key"] in row_editable) and not row_read_only,
                 currency=currency,
                 link_href=(link_fn[f["key"]].format(id=entity_id) if link_fn and f["key"] in link_fn else None),
                 edit_url=(edit_url_tpl.format(id=entity_id, field=f["key"]) if edit_url_tpl else None),

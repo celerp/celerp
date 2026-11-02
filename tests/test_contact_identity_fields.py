@@ -169,3 +169,18 @@ async def test_company_contact_is_displayed_without_edit_actions_for_an_operator
     cid = await _customer(client, owner)
     editable = (await ui_request(operator, "GET", f"/contacts/{cid}")).text
     assert f'hx-get="/contacts/{cid}/field/email/edit"' in editable
+
+async def test_company_contact_list_row_is_view_only(client):
+    h = {"Authorization": f"Bearer {await register_admin(client)}"}
+    sid = await _self_contact_id(client, h)
+    cid = await _customer(client, h)
+    marker = f'id="row-{sid.replace(":", "-")}"'
+    for route in ("/contacts/customers", "/contacts/vendors"):
+        listing = (await ui_request(h, "GET", route)).text
+        assert marker in listing
+        row = listing.split(marker, 1)[1].split("</tr>", 1)[0]
+        assert "disabled" in row
+        assert f'hx-get="/contacts/{sid}/field/' not in row
+    listing = (await ui_request(h, "GET", "/contacts/customers")).text
+    other = listing.split(f'id="row-{cid.replace(":", "-")}"', 1)[1].split("</tr>", 1)[0]
+    assert f'hx-get="/contacts/{cid}/field/' in other

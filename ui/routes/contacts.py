@@ -705,7 +705,7 @@ def _contacts_content(
     else:
         table_content = data_table(
             schema,
-            contacts,
+            [{**c, "_row_read_only": True} if c.get("is_self") else c for c in contacts],
             entity_type=f"{contact_type}s",
             sort_key=sort,
             sort_dir=sort_dir,
