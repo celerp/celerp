@@ -240,6 +240,108 @@
     "recon.no_suggestions_to_confirm": {
       "en": "No lines have a suggested match yet. Press Auto-Match All to look for matches, or match lines one at a time.",
       "params": []
+    },
+    "recon.difference": {
+      "en": "Difference: {amount}",
+      "params": [
+        "amount"
+      ]
+    },
+    "btn.write_off_diff": {
+      "en": "Write Off Difference",
+      "params": []
+    },
+    "country.TH": {
+      "en": "Thailand",
+      "params": []
+    },
+    "country.SG": {
+      "en": "Singapore",
+      "params": []
+    },
+    "country.MY": {
+      "en": "Malaysia",
+      "params": []
+    },
+    "country.PH": {
+      "en": "Philippines",
+      "params": []
+    },
+    "country.ID": {
+      "en": "Indonesia",
+      "params": []
+    },
+    "country.VN": {
+      "en": "Vietnam",
+      "params": []
+    },
+    "country.AU": {
+      "en": "Australia",
+      "params": []
+    },
+    "country.NZ": {
+      "en": "New Zealand",
+      "params": []
+    },
+    "country.GB": {
+      "en": "United Kingdom",
+      "params": []
+    },
+    "country.DE": {
+      "en": "Germany",
+      "params": []
+    },
+    "country.FR": {
+      "en": "France",
+      "params": []
+    },
+    "country.US": {
+      "en": "United States",
+      "params": []
+    },
+    "country.CA": {
+      "en": "Canada",
+      "params": []
+    },
+    "country.IN": {
+      "en": "India",
+      "params": []
+    },
+    "country.JP": {
+      "en": "Japan",
+      "params": []
+    },
+    "country.ET": {
+      "en": "Ethiopia",
+      "params": []
+    },
+    "setup.country_hint": {
+      "en": "Your taxes start with the rates in force there. Not listed? Choose Other country and set your rates in Settings > Taxes.",
+      "params": []
+    },
+    "setup.country_other": {
+      "en": "Other country",
+      "params": []
+    },
+    "setup.invalid_country": {
+      "en": "Celerp has no tax rates for {value}. Choose a listed country or Other country.",
+      "params": [
+        "value"
+      ]
+    },
+    "settings.location_country_hint": {
+      "en": "The default location's country gives the company the tax rates in force there, until the company changes its taxes or posts its first entry.",
+      "params": []
+    },
+    "settings.taxes_set_from_country": {
+      "en": "Taxes now start with the rates in force in {country}. Check them before your first invoice.",
+      "params": [
+        "country"
+      ]
+    },
+    "settings.review_taxes": {
+      "en": "Review taxes",
+      "params": []
     }
   }
 }

@@ -2759,7 +2759,7 @@ class TestSettingsInlineEditValidation:
         _loc = {"id": "loc1", "name": "HQ", "type": "address", "address": {"text": "Phuket"}, "is_default": False}
         ui_client.cookies.update(_authed())
         with (
-            patch("ui.api_client.patch_location", new=AsyncMock()) as mock_patch,
+            patch("ui.api_client.patch_location", new=AsyncMock(return_value=_loc)) as mock_patch,
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [_loc]})),
         ):
             r = await ui_client.patch(
@@ -2791,7 +2791,7 @@ class TestSettingsInlineEditValidation:
         _loc = {"id": "loc1", "name": "HQ", "type": "warehouse", "address": {"text": "Chiang Mai"}, "is_default": False}
         ui_client.cookies.update(_authed())
         with (
-            patch("ui.api_client.patch_location", new=AsyncMock()) as mock_patch,
+            patch("ui.api_client.patch_location", new=AsyncMock(return_value=_loc)) as mock_patch,
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [_loc]})),
         ):
             r = await ui_client.patch(

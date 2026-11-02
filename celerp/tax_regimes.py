@@ -242,6 +242,26 @@ TAX_REGIMES: dict[str, _T] = {
 }
 
 
+# The countries a company can name to start with the tax rates in force there.
+TAX_COUNTRIES: tuple[str, ...] = tuple(code for code in TAX_REGIMES if code != "_default")
+
+
+def tax_country(value: str | None) -> str:
+    """The country code ``value`` names when Celerp has its tax rates, else ""."""
+    code = str(value or "").strip().upper()
+    return code if code in TAX_COUNTRIES else ""
+
+
+def country_name(value: str) -> str:
+    """A country as people read it: the catalog name of a tax country code, else the
+    value as written (an address may spell its country out)."""
+    code = tax_country(value)
+    if not code:
+        return value
+    from ui.i18n import t
+    return t(f"country.{code}")
+
+
 def get_regime(country_code: str | None) -> dict:
     """Return the tax regime for a country code (case-insensitive). Falls back to _default."""
     if not country_code:

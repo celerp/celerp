@@ -46,7 +46,7 @@ from celerp.services.permissions import (
     role_has_permission,
 )
 from celerp.schemas.numbers import FiniteFloat
-from celerp.tax_regimes import TAX_REGIMES, configured, get_regime, purchasing_taxes, sales_taxes
+from celerp.tax_regimes import TAX_REGIMES, configured, get_regime, purchasing_taxes, sales_taxes, tax_country
 from celerp.services import company_lifecycle
 from celerp.services.currencies import require_phone
 from celerp.services.provisioning import provision_additional_company
@@ -62,29 +62,30 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 
 logger = logging.getLogger(__name__)
 
-async def _maybe_apply_regime(session: AsyncSession, company_id, address: dict | None) -> None:
+async def _maybe_apply_regime(session: AsyncSession, company_id, address: dict | None) -> str | None:
     """Seed the tax regime of the country in ``address`` into a company that has not
-    set anything up yet.
+    set anything up yet, and return the country whose taxes it set (None when it set none).
 
-    Taxes are replaced only while they are unset or exactly the generic list, and the
-    currency only while none was ever saved. A company that has posted entries of its
+    Taxes are replaced only while they are unset or exactly a list Celerp starts a
+    company with (the generic one or a country's), so naming another country before
+    any change replaces them. The currency is set only while none was ever saved. A company that has posted entries of its
     own keeps both: changing them would silently restate its books, so it changes
     them explicitly in settings. Safe to call repeatedly."""
     if not address:
-        return
+        return None
     country = str(address.get("country") or "").strip()
     if not country:
-        return
+        return None
 
     company = await locked_company(session, company_id)
     if company is None:
-        return
+        return None
     taxes = company.settings.get("taxes")
-    if taxes is not None and taxes != TAX_REGIMES["_default"]["taxes"]:
-        return
+    if taxes is not None and not any(taxes == regime["taxes"] for regime in TAX_REGIMES.values()):
+        return None
     from celerp.services.demo import has_own_books
     if await has_own_books(session, company_id):
-        return
+        return None
 
     regime = get_regime(country)
     settings = dict(company.settings)
@@ -95,6 +96,7 @@ async def _maybe_apply_regime(session: AsyncSession, company_id, address: dict |
     company.settings = settings
     if seeds_currency:
         await _books_currency_set(session, company_id)
+    return tax_country(country) or None
 
 
 async def _books_currency_set(session: AsyncSession, company_id) -> None:
@@ -697,10 +699,10 @@ async def patch_location(
     # Re-seed regime if this is (or is becoming) the default location with a country
     effective_default = payload.is_default if payload.is_default is not None else loc.is_default
     effective_address = payload.address if payload.address is not None else loc.address
-    if effective_default:
-        await _maybe_apply_regime(session, company_id, effective_address)
+    taxes_from = await _maybe_apply_regime(session, company_id, effective_address) if effective_default else None
     await session.commit()
-    return {"id": str(loc.id), "name": loc.name, "type": loc.type, "address": loc.address, "is_default": loc.is_default}
+    return {"id": str(loc.id), "name": loc.name, "type": loc.type, "address": loc.address,
+            "is_default": loc.is_default, "taxes_from": taxes_from}
 
 
 @router.delete("/me/locations/{location_id}")

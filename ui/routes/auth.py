@@ -4,7 +4,7 @@
 """Sign-in and first-run setup routes.
 
 State machine:
-    bootstrapped=false  -> /setup           (one form: first admin, company, business type, currency)
+    bootstrapped=false  -> /setup           (one form: first admin, company, business type, currency, tax country)
     bootstrapped=true   -> /login           (normal login)
     logged in           -> /dashboard
 
@@ -336,7 +336,7 @@ def setup_routes(app):
             return await _fail(t("auth.setup_code_required"), "setup_code")
         # The browser only suggests; the server checks every choice before anything
         # is created.
-        if invalid := company_setup_error(values["currency"], values["vertical"]):
+        if invalid := company_setup_error(values["currency"], values["vertical"], values["country"]):
             return await _fail(invalid[1], invalid[0])
         try:
             access_token, refresh_token = await api_register(values["company_name"], values["email"],
@@ -349,7 +349,7 @@ def setup_routes(app):
         # The account exists from here on, so every outcome signs the user in.
         try:
             nxt = await apply_company_setup(access_token, values["currency"], str(form.get("timezone", "")),
-                                            values["vertical"])
+                                            values["vertical"], values["country"])
         except Exception:
             # The retry page shows a fixed message; the reason stays in the server log.
             logger.exception("First-run setup could not apply the business type")
@@ -697,7 +697,7 @@ def _import_page(request: Request, **form) -> FT:
 
 
 # What a failed submit renders back: everything the user typed except the passwords.
-_SETUP_KEPT_FIELDS = ("company_name", "name", "email", "setup_code", "vertical", "currency")
+_SETUP_KEPT_FIELDS = ("company_name", "name", "email", "setup_code", "vertical", "currency", "country")
 
 
 async def _setup_page(request: Request, values: dict, *, code_required: bool,
@@ -837,7 +837,7 @@ def _setup_form(
             flash(error) if error and not at_field else "",
             *texts,
             code_field,
-            *company_choice_fields(v["currency"], v["vertical"]),
+            *company_choice_fields(v["currency"], v["vertical"], v["country"]),
             Button(t("btn.create_workspace"), type="submit", cls="btn btn--primary btn--full"),
             method="post", action="/setup", id="setup-form", cls="auth-form",
             data_focus=error_field if error else "",

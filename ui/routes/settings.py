@@ -16,7 +16,8 @@ from ui.components.icons import import_icon
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, page_header, flash, toast_header, page_title
-from ui.components.table import EMPTY, unwrap_address
+from ui.components.table import EMPTY, searchable_select, unwrap_address
+from celerp.tax_regimes import country_name, tax_country
 from celerp.services.currencies import KNOWN_CURRENCY_CODES
 from celerp.services.field_schema import SYSTEM_ITEM_KEYS
 from ui.components.currency import currency_combobox_td, currency_label
@@ -1685,7 +1686,19 @@ def setup_routes(app):
         except APIError as e:
             return P(e.detail, cls="cell-error")
         loc = next((l for l in locations if l.get("id") == location_id), {})
-        val = str(loc.get(field, "") or "")
+        if field == "country":
+            from ui.routes.setup import tax_country_options
+            return Td(
+                searchable_select(
+                    "value", tax_country_options(), value=_location_country(loc.get("address")),
+                    aria_label=t("label.country"), autofocus=True,
+                    hx_patch=f"/settings/locations/{location_id}/{field}",
+                    hx_target="closest td", hx_swap="outerHTML", hx_trigger="change",
+                ),
+                cls="cell cell--editing",
+            )
+        val = (_location_address_text(loc.get("address")) if field == "address"
+               else str(loc.get(field, "") or ""))
 
         if field == "type":
             return Td(
@@ -1724,8 +1737,17 @@ def setup_routes(app):
         patch_val: str | bool | dict = value
         if field == "is_default":
             patch_val = value.strip().lower() in {"true", "1", "yes"}
-        elif field == "address":
-            patch_val = {"text": value} if value.strip() else {}
+        elif field in ("address", "country"):
+            if field == "country" and value and not tax_country(value):
+                return P(t("setup.invalid_country", value=repr(value)), cls="cell-error")
+            try:
+                current = next((l for l in (await api.get_locations(token)).get("items", [])
+                                if l.get("id") == location_id), {})
+            except APIError as e:
+                return P(str(e.detail), cls="cell-error")
+            # Address and country live in one address record: each keeps the other.
+            changes = {"text": value} if field == "address" else {"country": tax_country(value)}
+            patch_val = location_address(current.get("address"), **changes)
         if field == "is_default":
             # The default badge moves between rows, so the whole list is drawn again.
             from starlette.responses import Response as _R
@@ -1734,13 +1756,19 @@ def setup_routes(app):
             except APIError as e:
                 return api.refusal_response(e)
             return _R("", status_code=204, headers={"HX-Redirect": "/settings/inventory?tab=locations"})
+        stored = "address" if field == "country" else field
         try:
-            await api.patch_location(token, location_id, {field: patch_val})
-            locations = (await api.get_locations(token)).get("items", [])
+            saved = await api.patch_location(token, location_id, {stored: patch_val})
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        loc = next((l for l in locations if l.get("id") == location_id), {})
-        return _location_display_cell(location_id, field, loc.get(field))
+        cell = _location_display_cell(location_id, field, saved.get(stored))
+        if not saved.get("taxes_from"):
+            return cell
+        # Naming the country replaced the company's starting taxes: say so, with the way to them.
+        from starlette.responses import HTMLResponse as _HR
+        return _HR(to_xml(cell), headers=toast_header(
+            t("settings.taxes_set_from_country", country=country_name(saved["taxes_from"])), persist=True,
+            action={"href": "/settings/sales?tab=taxes", "label": t("settings.review_taxes")}))
 
     @app.delete("/settings/locations/{location_id}")
     async def delete_location(request: Request, location_id: str):
@@ -3067,9 +3095,28 @@ _LOC_TYPE_VALUES: frozenset[str] = frozenset(v for v, _ in _LOC_TYPES)
 _LOC_TYPE_LABELS: dict[str, str] = {v: lbl for v, lbl in _LOC_TYPES}
 
 
+def location_address(address, **changes) -> dict:
+    """A location's address record with ``changes`` applied; an empty value removes its key."""
+    record = dict(address) if isinstance(address, dict) else ({"text": str(address)} if address else {})
+    record.update(changes)
+    return {k: v for k, v in record.items() if v}
+
+
+def _location_country(address) -> str:
+    return tax_country(address.get("country")) if isinstance(address, dict) else ""
+
+
+def _location_address_text(address) -> str:
+    """The address as typed, without the country, which has its own column."""
+    return unwrap_address(location_address(address, country=""))
+
+
 def _location_display_cell(location_id: str, field: str, value) -> FT:
     if field == "address":
-        display = unwrap_address(value)
+        display = _location_address_text(value)
+    elif field == "country":
+        code = _location_country(value)
+        display = country_name(code) if code else t("setup.country_other")
     elif field == "type":
         if value:
             _lk = _LOC_TYPE_LABELS.get(str(value))
@@ -3913,6 +3960,7 @@ def _locations_tab(locations: list[dict], lang: str = "en") -> FT:
             _location_display_cell(lid, "name", loc.get("name")),
             _location_display_cell(lid, "type", loc.get("type")),
             _location_display_cell(lid, "address", loc.get("address")),
+            _location_display_cell(lid, "country", loc.get("address")),
             Td(
                 Button(
                     t("settings.is_default_badge") if is_default else t("settings.set_default"),
@@ -3942,10 +3990,12 @@ def _locations_tab(locations: list[dict], lang: str = "en") -> FT:
             cls="page-actions mb-md",
         ),
         Table(
-            Thead(Tr(Th(t("th.name")), Th(t("th.doc_type")), Th(t("th.address")), Th(t("th.default")), Th(""))),
-            Tbody(*[_row(l) for l in locations]) if locations else Tbody(Tr(Td(t("settings.no_locations_yet"), colspan="5", cls="empty-state-msg"))),
+            Thead(Tr(Th(t("th.name")), Th(t("th.doc_type")), Th(t("th.address")), Th(t("label.country")),
+                     Th(t("th.default")), Th(""))),
+            Tbody(*[_row(l) for l in locations]) if locations else Tbody(Tr(Td(t("settings.no_locations_yet"), colspan="6", cls="empty-state-msg"))),
             cls="data-table sticky-head",
         ),
+        P(t("settings.location_country_hint"), cls="form-hint mt-sm"),
         cls="settings-card",
     )
 

@@ -128,7 +128,8 @@ async def test_setup_get_renders_workspace_form_directly(ui_client):
 
 @pytest.mark.asyncio
 async def test_setup_form_inputs_are_exactly_the_budget(ui_client):
-    budget = {"company_name", "name", "email", "password", "confirm_password", "vertical", "currency"}
+    budget = {"company_name", "name", "email", "password", "confirm_password", "vertical", "currency",
+              "country"}
     with _Stubs():
         r = await ui_client.get("/setup")
     assert _visible_input_names(_form_html(r.text)) == budget
@@ -238,7 +239,7 @@ async def test_setup_apply_failure_lands_on_retry_page(ui_client):
     html = page.text
     assert "could not be finished" in html
     form = re.search(r'<form[^>]*action="/setup/company"[^>]*>.*?</form>', html, re.S).group(0)
-    assert _visible_input_names(form) == {"vertical", "currency"}
+    assert _visible_input_names(form) == {"vertical", "currency", "country"}
 
 
 @pytest.mark.asyncio
