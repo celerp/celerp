@@ -23,7 +23,7 @@ from celerp.services.money import EXCHANGE_RATE_DP, to_decimal
 from ui.components.report_kit import (
     fname_date, fx_line_amounts, href, je_source_label, period_subtitle,
 )
-from ui.components.shell import toast_header
+from ui.components.shell import refusal_fix, toast_header
 from ui.components.table import EMPTY, bulk_toolbar, fmt_money, period_empty_note
 from ui.i18n import refusal_text, t
 
@@ -304,7 +304,9 @@ def journal_void_toast(result: dict) -> dict:
             refusal_text(r.get("detail")).strip() for r in refused if r.get("detail")))
         key = "acct.bulk_void_refused_one" if len(refused) == 1 else "acct.bulk_void_refused"
         message = f"{message} {t(key, n=len(refused), reasons=reasons)}"
-    return toast_header(message.strip(), "error" if refused else "success")
+    links = [fix for fix in (refusal_fix(r.get("detail")) for r in refused) if fix]
+    return toast_header(message.strip(), "error" if refused else "success",
+                        action=[dict(f) for f in dict.fromkeys(tuple(f.items()) for f in links)] or None)
 
 
 def _entry_cells(row: dict, has_fx: bool) -> list:

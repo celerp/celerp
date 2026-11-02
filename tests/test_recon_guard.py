@@ -624,3 +624,21 @@ async def test_guard_judges_the_entry_as_committed_under_the_lock(real_engine, r
             await s.commit()
     r = await voiding
     assert r.status_code == 200, r.text
+
+
+async def test_a_held_entry_refusal_links_to_the_reconciliation_that_holds_it(client, session):
+    """The void toast leads to the reconciliation to unmatch the entry in, not just its name."""
+    from ui.components.journal import journal_void_toast
+    from ui.components.shell import refusal_fix
+    from ui.i18n import t
+    _, h = await admin(client)
+    b = await bank(client, h)
+    je = await deposit(client, h, b, "2026-09-10", 50.0)
+    sid = (await start(client, h, b["id"], "2026-09-30", OPENING + 50.0)).json()["id"]
+    assert (await match(client, h, sid, [je])).status_code == 200
+    detail = (await void(client, h, je, "2026-10-15")).json()["detail"]
+    link = {"href": f"/accounting/reconcile/{sid}", "label": t("recon.view_completed")}
+    assert refusal_fix(detail) == link
+    toast = __import__("json").loads(journal_void_toast(
+        {"results": [{"status": "refused", "detail": detail}]})["HX-Trigger"])["celerpToast"]
+    assert toast["action"] == [link]

@@ -236,6 +236,10 @@
     "inventory.err_split_not_in_stock": {
       "en": "This item is no longer in stock, so it can't be split.",
       "params": []
+    },
+    "recon.no_suggestions_to_confirm": {
+      "en": "No lines have a suggested match yet. Press Auto-Match All to look for matches, or match lines one at a time.",
+      "params": []
     }
   }
 }

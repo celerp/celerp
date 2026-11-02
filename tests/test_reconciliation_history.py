@@ -10,6 +10,7 @@ holds is flagged for review, never corrected."""
 from __future__ import annotations
 
 import asyncio
+import html
 import re
 import uuid
 from datetime import datetime, timezone
@@ -162,8 +163,9 @@ async def test_history_needs_manage_accounting(client, session):
     assert r.status_code == 403, r.text
     async with _ui_as(viewer) as ui:
         r = await ui.get(f"/accounting/reconcile/history/{b['id']}")
-    assert r.status_code in (302, 303), r.text
-    assert "/settings/accounting" in r.headers["location"] and "msg=" in r.headers["location"]
+    assert r.status_code == 200, r.text
+    from celerp.services.permissions import missing_permission_text
+    assert missing_permission_text("manage_accounting") in html.unescape(r.text)
 
 
 async def test_history_of_an_account_with_no_reconciliations_says_so(client, session):

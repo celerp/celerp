@@ -3120,16 +3120,19 @@ def secret_input(name: str, value: str = "", lang: str = "en", cls: str = "form-
 
 
 # A refusal the reader can resolve on one page: its key, that page and the catalog key naming it.
+# A refusal's key -> (href, label key); the href is formatted with the refusal's params.
 _REFUSAL_FIXES = {
     "error.period_locked": (PERIOD_LOCK_PATH, "page.period_lock"),
     "mfg.period_locked": (PERIOD_LOCK_PATH, "page.period_lock"),
+    "error.recon_entry_held": ("/accounting/reconcile/{recon_id}", "recon.view_completed"),
+    "error.recon_period_changed": ("/accounting/reconcile/{recon_id}", "recon.view_completed"),
 }
 
 
 def refusal_fix(detail) -> dict | None:
     """The {href, label} link to the page that resolves a keyed refusal, when there is one."""
     fix = _REFUSAL_FIXES.get(detail.get("message_key")) if isinstance(detail, dict) else None
-    return {"href": fix[0], "label": t(fix[1])} if fix else None
+    return {"href": fix[0].format(**(detail.get("params") or {})), "label": t(fix[1])} if fix else None
 
 
 def toast_header(message: str | dict, kind: str = "success", *, persist: bool = False,
