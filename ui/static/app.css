@@ -1005,10 +1005,13 @@ input[type="number"] { text-align: right; }
 .doc-lines td.cell-badges { white-space: normal; overflow: visible; text-overflow: clip; }
 .cell-badges .badge, .cell-badges .drawn-from { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 .cell-badges .badge + .badge { margin-top: 2px; }
-/* Audit columns. Without explicit widths these (under table-layout:fixed) soaked up all the space
-   freed by the hidden money columns, dwarfing qty and breaking proportional resize. */
+/* Audit and write-off columns. Every line column has an explicit width: under table-layout:fixed
+   a column without one gets only the space the others leave, which is none once their widths
+   reach the table's, and its cells collapse out of reach. */
 .doc-lines th.col-onhand,      .doc-lines td.col-onhand      { width: 92px;  text-align: right; }
 .doc-lines th.col-counted,     .doc-lines td.col-counted     { width: 92px;  text-align: right; }
+.doc-lines th.col-qtyout,      .doc-lines td.col-qtyout      { width: 92px;  text-align: right; }
+.doc-lines th.col-comment,     .doc-lines td.col-comment     { width: 180px; }
 /* No-money lists (audit/transfer/production) hide price/disc/tax/total; let the description absorb
    the freed width so the item name dominates rather than stretching the number columns. */
 .doc-lines--no-money th.col-desc, .doc-lines--no-money td.col-desc { width: 380px; }
