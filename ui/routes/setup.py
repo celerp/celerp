@@ -182,7 +182,8 @@ def browser_timezone_field() -> FT:
 def company_choice_script() -> FT:
     """Fills the hidden timezone from the browser and suggests a currency and a tax
     country from where the browser is, before the dropdowns initialise so the
-    suggestion is the shown choice. A choice already made is never replaced. Without
+    suggestion is the shown choice. A choice already made is never replaced, and a
+    suggested currency follows the country the owner then chooses. Without
     JavaScript the server default timezone applies, the currency is simply required
     and the country stays Other country."""
     return (
@@ -204,8 +205,24 @@ def company_choice_script() -> FT:
     wrap.querySelector('.combobox-input').value = opt.textContent;
   }
   if (!window.celerpGuessCountry) return;
+  var currency = document.querySelector('input[type="hidden"][name="currency"]');
+  var country = document.querySelector('input[type="hidden"][name="country"]');
+  // A currency the form came back with was chosen; only a suggestion may move.
+  var suggested = currency && currency.value ? null : '';
   suggest('currency', window.celerpGuessCurrency(tz, langs));
   suggest('country', window.celerpGuessCountry(tz, langs));
+  // A suggested currency follows the country the owner chooses; one the owner chose stays.
+  if (!currency || !country) return;
+  if (suggested !== null) suggested = currency.value;
+  currency.addEventListener('change', function () { suggested = null; });
+  country.addEventListener('change', function () {
+    if (suggested === null || currency.value !== suggested) return;
+    var code = window.celerpCountryCurrency(country.value);
+    if (!code) return;
+    currency.value = '';
+    suggest('currency', code);
+    suggested = currency.value;
+  });
 })();
 """),
     )

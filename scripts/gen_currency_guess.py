@@ -107,6 +107,9 @@ def main() -> None:
         "  window.celerpGuessCurrency = function (timeZone, languages) {\n"
         "    return COUNTRY_CURRENCY[window.celerpGuessCountry(timeZone, languages)] || '';\n"
         "  };\n"
+        "  window.celerpCountryCurrency = function (country) {\n"
+        "    return COUNTRY_CURRENCY[country || ''] || '';\n"
+        "  };\n"
         "})();\n"
     )
     OUT.write_text(body)

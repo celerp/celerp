@@ -34,6 +34,7 @@ from ui.i18n import t, get_lang
 from celerp.services import backup_import
 from celerp.services.app_paths import is_app_local_path
 from celerp.services.auth import MIN_PASSWORD_LENGTH, NO_COMPANY
+from celerp.services.currencies import is_email
 
 
 logger = logging.getLogger(__name__)
@@ -322,30 +323,35 @@ def setup_routes(app):
         from ui.api_client import setup_code_required as _code_req
         code_required = await _code_req()
 
-        async def _fail(msg: str, field: str):
-            return await _setup_page(request, values, code_required=code_required, error=msg, error_field=field)
+        async def _fail(errors: dict[str, str]):
+            return await _setup_page(request, values, code_required=code_required, errors=errors)
 
-        missing = next((f for f in ("company_name", "name", "email") if not values[f]), None)
-        if missing or not password:
-            return await _fail(t("settings.all_fields_required"), missing or "password")
-        if password != confirm:
-            return await _fail(t("settings.passwords_do_not_match"), "confirm_password")
-        if len(password) < MIN_PASSWORD_LENGTH:
-            return await _fail(t("settings.password_min_length"), "password")
+        # Every field's problem is named at once, under that field.
+        errors = {f: t("settings.all_fields_required") for f in ("company_name", "name", "email") if not values[f]}
+        if values["email"] and not is_email(values["email"]):
+            errors["email"] = t("error.email_invalid")
+        if not password:
+            errors["password"] = t("settings.all_fields_required")
+        elif len(password) < MIN_PASSWORD_LENGTH:
+            errors["password"] = t("settings.password_min_length")
+        if password and password != confirm:
+            errors["confirm_password"] = t("settings.passwords_do_not_match")
         if code_required and not values["setup_code"]:
-            return await _fail(t("auth.setup_code_required"), "setup_code")
+            errors["setup_code"] = t("auth.setup_code_required")
         # The browser only suggests; the server checks every choice before anything
         # is created.
         if invalid := company_setup_error(values["currency"], values["vertical"], values["country"]):
-            return await _fail(invalid[1], invalid[0])
+            errors[invalid[0]] = invalid[1]
+        if errors:
+            return await _fail(errors)
         try:
             access_token, refresh_token = await api_register(values["company_name"], values["email"],
                                                              values["name"], password,
                                                              setup_code=values["setup_code"] or None)
         except APIError as e:
-            return await _fail(e.detail, "password")
+            return await _fail({"password": e.detail})
         except Exception as e:
-            return await _fail(t("auth.server_error", e=e), "password")
+            return await _fail({"password": t("auth.server_error", e=e)})
         # The account exists from here on, so every outcome signs the user in.
         try:
             nxt = await apply_company_setup(access_token, values["currency"], str(form.get("timezone", "")),
@@ -698,14 +704,16 @@ def _import_page(request: Request, **form) -> FT:
 
 # What a failed submit renders back: everything the user typed except the passwords.
 _SETUP_KEPT_FIELDS = ("company_name", "name", "email", "setup_code", "vertical", "currency", "country")
+# The setup fields that show their own error under them, in form order.
+_SETUP_TEXT_FIELDS = ("company_name", "name", "email", "password", "confirm_password")
 
 
 async def _setup_page(request: Request, values: dict, *, code_required: bool,
-                      error: str | None = None, error_field: str = "") -> FT:
+                      errors: dict[str, str] | None = None) -> FT:
     from ui.components.start_options import supported_sources
     return auth_shell(
         *client_scripts(get_lang(request), request),
-        _setup_form(values, error=error, error_field=error_field, setup_code_required=code_required,
+        _setup_form(values, errors=errors or {}, setup_code_required=code_required,
                     sources=await supported_sources()),
         title=t("page.setup"),
     )
@@ -783,7 +791,7 @@ _SETUP_FORM_JS = """
 
 
 def _setup_form(
-    values: dict, error: str | None = None, error_field: str = "",
+    values: dict, errors: dict[str, str] | None = None,
     setup_code_required: bool = False, sources: list[str] | None = None,
 ) -> FT:
     from ui.components.start_options import start_options
@@ -792,13 +800,11 @@ def _setup_form(
     from ui.routes.setup import company_choice_fields, company_choice_script
     v = {k: values.get(k, "") for k in _SETUP_KEPT_FIELDS}
 
-    # Text fields whose error is shown under the field rather than at the top.
-    at_field: list[str] = []
+    errors = errors or {}
 
     def _text(label_key: str, name: str, *, type: str = "text", autocomplete: str, hint: str = "") -> FT:
-        bad = bool(error) and error_field == name
-        if bad:
-            at_field.append(name)
+        error = errors.get(name, "")
+        bad = bool(error)
         return Div(
             Label(t(label_key), For=name, cls="form-label"),
             Input(type=type, id=name, name=name, value=v.get(name, "") if type != "password" else "",
@@ -806,9 +812,9 @@ def _setup_form(
                   aria_invalid="true" if bad else None, aria_describedby=f"{name}-error" if bad else None,
                   # The first field takes focus on a fresh page; after an error the
                   # script focuses the field the error is about.
-                  autofocus=(name == "company_name" and not error)),
+                  autofocus=(name == "company_name" and not errors)),
             P(hint, cls="form-hint") if hint else "",
-            P(error if bad else "", id=f"{name}-error", cls="form-field-error", hidden=not bad),
+            P(error, id=f"{name}-error", cls="form-field-error", hidden=not bad),
             cls="form-group",
         )
 
@@ -834,13 +840,15 @@ def _setup_form(
     return Div(
         auth_header(t("page.set_up_your_workspace"), t("msg.you_are_first_admin")),
         Form(
-            flash(error) if error and not at_field else "",
+            # A problem with a field that has no place of its own (a choice, the setup
+            # code, the server) shows at the top.
+            *[flash(msg) for name, msg in errors.items() if name not in _SETUP_TEXT_FIELDS],
             *texts,
             code_field,
             *company_choice_fields(v["currency"], v["vertical"], v["country"]),
             Button(t("btn.create_workspace"), type="submit", cls="btn btn--primary btn--full"),
             method="post", action="/setup", id="setup-form", cls="auth-form",
-            data_focus=error_field if error else "",
+            data_focus=next(iter(errors), ""),
             data_mismatch=t("settings.passwords_do_not_match"),
         ),
         Script(_SETUP_FORM_JS),

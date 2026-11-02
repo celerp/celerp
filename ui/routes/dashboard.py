@@ -1299,7 +1299,7 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict | None,
           data: {{ labels: {cat_labels}, datasets: [{{ label: {json.dumps(t('th.items'))}, data: {cat_data}, backgroundColor: colors[0] }}] }},
           options: {{
             indexAxis: 'y', responsive: true,
-            scales: {{ x: {{ ticks: {{ color: textColor }}, grid: {{ color: gridColor }} }}, y: {{ ticks: {{ color: textColor }}, grid: {{ display: false }} }} }},
+            scales: {{ x: {{ beginAtZero: true, ticks: {{ color: textColor, precision: 0 }}, grid: {{ color: gridColor }} }}, y: {{ ticks: {{ color: textColor }}, grid: {{ display: false }} }} }},
             plugins: {{ legend: {{ display: false }} }}
           }}
         }});

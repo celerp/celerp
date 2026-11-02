@@ -29,4 +29,7 @@
   window.celerpGuessCurrency = function (timeZone, languages) {
     return COUNTRY_CURRENCY[window.celerpGuessCountry(timeZone, languages)] || '';
   };
+  window.celerpCountryCurrency = function (country) {
+    return COUNTRY_CURRENCY[country || ''] || '';
+  };
 })();

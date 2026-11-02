@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from test_helpers import make_test_token
+from ui.i18n import t
 
 _LOCALES = Path(__file__).resolve().parents[1] / "ui" / "locales"
 
@@ -381,3 +382,23 @@ def test_business_type_catch_all_label():
     options = business_type_options()
     assert options[-1][0] == "blank"
     assert options[-1][1] == "Other / general"
+
+
+@pytest.mark.asyncio
+async def test_setup_post_reports_every_field_error_at_once(ui_client):
+    """A bad email, a short password and a mismatched confirmation are each named under
+    their own field in one answer, not one per submit."""
+    with _Stubs() as s:
+        r = await ui_client.post("/setup", data={**_VALID, "email": "not-an-email",
+                                                 "password": "abcde", "confirm_password": "abcdx"})
+    assert r.status_code == 200
+    errors = dict(re.findall(r'<p\b[^>]*id="(\w+)-error"[^>]*>([^<]+)</p>', r.text))
+    assert errors == {
+        "email": "Enter one email address, like name@example.com.",
+        "password": t("settings.password_min_length"),
+        "confirm_password": t("settings.passwords_do_not_match"),
+    }
+    for name in ("email", "password", "confirm_password"):
+        assert re.search(rf'<input\b[^>]*name="{name}"[^>]*aria-invalid="true"', r.text), name
+    assert 'data-focus="email"' in r.text
+    s.register.assert_not_awaited()

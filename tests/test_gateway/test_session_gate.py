@@ -55,8 +55,8 @@ def test_no_header_no_session_returns_401():
     resp = _client.get("/gated")
     assert resp.status_code == 401
     detail = resp.json()["detail"]
-    assert "No active Celerp Connect session" in detail
-    assert "Settings > Web Access" in detail
+    assert detail["message_key"] == "error.connect_account_first"
+    assert "Open Web Access" in detail["message"] and "Settings >" not in detail["message"]
     assert _SUBSCRIBE_BASE not in detail
 
 
@@ -74,8 +74,7 @@ def test_header_present_but_instance_not_connected():
     resp = _client.get("/gated", headers={"X-Session-Token": "some-token"})
     assert resp.status_code == 401
     detail = resp.json()["detail"]
-    assert "not connected" in detail.lower()
-    assert "settings > web access" in detail.lower()
+    assert detail["message_key"] == "error.connect_account_first"
 
 
 def test_header_mismatch_returns_expired_error():
@@ -84,8 +83,8 @@ def test_header_mismatch_returns_expired_error():
     resp = _client.get("/gated", headers={"X-Session-Token": "wrong-token-xyz"})
     assert resp.status_code == 401
     detail = resp.json()["detail"]
-    assert "no longer valid" in detail.lower()
-    assert "settings > web access" in detail.lower()
+    assert detail["message_key"] == "error.relay_signed_out"
+    assert "Web Access" in detail["message"]
 
 
 def test_valid_header_passes():
@@ -130,7 +129,7 @@ def test_session_gate_401_is_commercially_neutral(_partner_mode):
     detail = resp.json()["detail"]
     assert "celerp.com/subscribe" not in detail
     assert "partner.example.com" not in detail
-    assert "Settings > Web Access" in detail
+    assert detail["message_key"] == "error.connect_account_first" and "Settings >" not in detail["message"]
 
 
 def test_same_origin_request_recovers_session_from_durable_entitlement():
@@ -186,7 +185,7 @@ def test_same_origin_recovery_local_apply_failure_degrades_to_401(monkeypatch):
         resp = _client.get("/gated")
 
     assert resp.status_code == 401
-    assert "No active Celerp Connect session" in resp.json()["detail"]
+    assert resp.json()["detail"]["message_key"] == "error.connect_account_first"
     relay_auth.assert_awaited_once()
     apply_state.assert_awaited_once()
 
@@ -244,7 +243,7 @@ def test_ai_access_refuses_without_key(monkeypatch):
     _stored_key(monkeypatch, "")
     resp = _ai_client().get("/ai-gated")
     assert resp.status_code == 401
-    assert "Web Access" in resp.json()["detail"]
+    assert "Web Access" in resp.json()["detail"]["message"]
 
 
 def test_ai_access_makes_no_relay_call(monkeypatch):

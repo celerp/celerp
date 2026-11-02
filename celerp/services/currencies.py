@@ -53,9 +53,15 @@ def require_phone(phone: str | None) -> None:
 _EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 
 
+def is_email(value: str) -> bool:
+    """One address (name@domain.tld, no spaces) of at most 320 characters, not counting
+    surrounding spaces."""
+    value = value.strip()
+    return len(value) <= 320 and bool(_EMAIL.fullmatch(value))
+
+
 def require_email(email: str | None) -> None:
-    """Refuse an email that is not one address (name@domain.tld, no spaces) or is over 320
-    characters, not counting surrounding spaces, at a write boundary. Empty means no email."""
+    """Refuse an email that is not one address at a write boundary. Empty means no email."""
     value = str(email or "").strip()
-    if value and (len(value) > 320 or not _EMAIL.fullmatch(value)):
+    if value and not is_email(value):
         raise HTTPException(status_code=422, detail=catalog_refusal("error.email_invalid"))

@@ -165,3 +165,14 @@ async def test_inventory_by_category_chart_uses_the_inventory_tab_labels(owner_u
     assert not set(names) & set(labels), labels
     de = await owner_ui.get("/dashboard", headers={"Accept-Language": "de"})
     assert 'datasets: [{ label: "Artikel", data:' in de.text, "the bar tooltip label is translated"
+
+
+def test_inventory_by_category_counts_whole_items():
+    # A few items per category must not draw 0.2, 0.4 ... on the count axis.
+    xml = to_xml(_charts_section(
+        {"charts": ["inventory_cat"]}, {"category_counts": {"Rings": 1}}, {},
+        revenue_trend=[], currency="USD",
+    ))
+    js = xml[xml.index("getElementById('chart-inventory-cat')"):]
+    count_axis = js[js.index("x: {"):js.index("y: {")]
+    assert "precision: 0" in count_axis and "beginAtZero: true" in count_axis
