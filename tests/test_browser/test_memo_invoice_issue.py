@@ -6,7 +6,6 @@ the edits the page saves (a price, a discount, a tax, an added line deleted agai
 its stones are sold to the customer and the memo keeps the rest of the parcel."""
 from __future__ import annotations
 
-import datetime
 import uuid
 
 import pytest
@@ -161,22 +160,26 @@ def test_the_memo_page_explains_its_lines_and_totals(page, ui_server, fresh_comp
 
 
 def test_a_refused_issue_leaves_the_invoice_draft_and_says_why(page, ui_server, fresh_company):
-    """Issuing into a locked period is refused: the invoice stays a draft, its stones stay on
-    the memo, and the page shows the refusal instead of moving on."""
+    """Issuing is refused when the right to issue was taken away after the page opened: the
+    invoice stays a draft, its stone stays where the draw put it, and the page shows the refusal."""
     api = fresh_company
     _seed_demo_items(api, "gemstones")
     stone = _demo_gem(api, "piece")
     customer = api.post("/crm/contacts", json={"name": "Showroom Customer", "contact_type": "customer"}).json()["id"]
     memo, (stone_line,) = _issued_memo(api, customer, [stone])
     invoice = _draw(api, memo, {stone_line: float(stone["quantity"])})
-    locked = api.post("/accounting/period-lock", json={"lock_date": datetime.date.today().isoformat()})
-    assert locked.status_code == 200, locked.text
 
     page.set_viewport_size({"width": 1440, "height": 900})
     page.goto(f"{ui_server}/docs/{invoice}", wait_until="domcontentloaded")
     _assert_no_crash(page, "drawn invoice")
+    for role in ("viewer", "operator", "manager", "admin", "owner"):
+        revoked = api.patch("/companies/me/role-permissions",
+                            json={"perm_key": "finalize_documents", "role_key": role, "granted": False})
+        assert revoked.status_code == 200, revoked.text
+    lot = api.get(f"/items/{stone['id']}").json()
     refused = _issue(page)
     assert refused.headers.get("hx-reswap") == "none" and "hx-redirect" not in refused.headers, refused.headers
     expect(page.locator(".toast-container .toast").first).to_be_visible(timeout=10000)
     assert api.get(f"/docs/{invoice}").json()["status"] == "draft"
-    assert api.get(f"/items/{stone['id']}").json().get("status_doc_id") == memo
+    after = api.get(f"/items/{stone['id']}").json()
+    assert (after["status"], after.get("status_doc_id")) == (lot["status"], lot.get("status_doc_id"))

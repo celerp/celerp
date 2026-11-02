@@ -316,10 +316,11 @@ a:hover { text-decoration: underline; }
 }
 
 /* ─── Buttons ─────────────────────────────────────────────────────────── */
+/* A button, a link and a summary styled as one read in the page font, so a row of them lines up. */
 .btn {
   display: inline-flex; align-items: center; justify-content: center;
   padding: 6px 14px; border-radius: var(--radius); border: 1px solid transparent;
-  font-size: 12px; font-weight: 500; line-height: normal; cursor: pointer; white-space: nowrap;
+  font-family: inherit; font-size: 12px; font-weight: 500; line-height: normal; cursor: pointer; white-space: nowrap;
   transition: background 0.1s, color 0.1s;
   text-decoration: none;
 }
