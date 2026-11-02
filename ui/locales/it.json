@@ -7035,6 +7035,7 @@
   "error.email_invalid": "Inserisci un solo indirizzo email, ad esempio name@example.com.",
   "contacts.err_own_contact_kept": "Questo è il contatto della tua azienda, indicato come mittente sui tuoi documenti. Non può essere eliminato né unito a un altro contatto. Modifica i suoi dati in Dati aziendali.",
   "contacts.err_import_own_contact": "Questo è il record della tua azienda, mostrato come mittente sui tuoi documenti. Un'importazione non può modificarlo; modificane i dati in Dati aziendali.",
+  "contacts.own_contact_read_only": "Questo è il record della tua azienda, mostrato come mittente sui tuoi documenti. Solo chi gestisce le impostazioni aziendali può modificarlo, in Dettagli azienda.",
   "contacts.own_record_note": "Il contatto della tua azienda, {name}, compare qui perché i tuoi documenti lo indicano come mittente. Modificalo in",
   "contacts.identity_on_documents": "Questi dati identificano il mittente dei tuoi documenti: compaiono su ogni nuova fattura, preventivo e memo.",
   "docs.draw_line_not_shipped": "{name} non è ancora uscito con il memo {memo}, quindi non c'è nulla da fatturare. Se non è stato ancora spedito, seleziona la riga e usa prima Segna come spedito.",

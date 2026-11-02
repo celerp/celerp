@@ -7035,6 +7035,7 @@
   "error.email_invalid": "Informe um único endereço de e-mail, como name@example.com.",
   "contacts.err_own_contact_kept": "Este é o cadastro da sua própria empresa, exibido como remetente nos seus documentos. Ele não pode ser excluído nem mesclado com outro contato. Altere os dados em Dados da empresa.",
   "contacts.err_import_own_contact": "Este é o registro da sua própria empresa, exibido como remetente nos seus documentos. Uma importação não pode alterá-lo; altere os dados em Dados da empresa.",
+  "contacts.own_contact_read_only": "Este é o registro da sua própria empresa, exibido como remetente nos seus documentos. Somente quem gerencia as configurações da empresa pode alterá-lo, em Dados da empresa.",
   "contacts.own_record_note": "O cadastro da sua própria empresa, {name}, aparece aqui porque seus documentos o exibem como remetente. Altere-o em",
   "contacts.identity_on_documents": "Os dados exibidos aqui identificam o remetente dos seus documentos: eles aparecem em cada nova fatura, cotação e memorando.",
   "docs.draw_line_not_shipped": "{name} não foi enviado pelo memorando {memo}, portanto não há nada a faturar. Se ainda não foi enviado, selecione a linha e use primeiro Marcar como enviado.",

@@ -91,7 +91,7 @@ async def test_company_own_contact_is_marked_and_opens_company_details(client):
     h = {"Authorization": f"Bearer {await register_admin(client)}"}
     sid = await _self_contact_id(client, h)
     listing = (await ui_request(h, "GET", "/contacts/customers")).text
-    assert "Your company" in listing and 'href="/finance/company-details"' in listing
+    assert "Your company" in listing and f'href="/contacts/{sid}"' in listing
     r = await ui_request(h, "GET", f"/contacts/{sid}", follow_redirects=False)
     assert r.status_code == 302 and r.headers["location"] == "/finance/company-details"
     details = (await ui_request(h, "GET", "/finance/company-details")).text

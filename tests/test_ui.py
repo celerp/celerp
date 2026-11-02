@@ -21740,3 +21740,43 @@ class TestCompanySettingsUnavailable:
             r = await ui_client.get("/reports/sales")
         assert r.status_code == 302
         assert r.headers["location"].startswith("/login")
+
+
+class TestOwnContactNavigation:
+    """The company's own contact opens for everyone who can see contacts: someone who manages the
+    company's settings lands on Company Details to edit it, anyone else reads it on its contact
+    page, never sent to a page they cannot open."""
+
+    _SELF = {"id": "contact:self", "entity_id": "contact:self", "name": "My Co", "contact_type": "both",
+             "is_self": True, "email": "me@myco.test"}
+
+    def _patches(self):
+        from contextlib import ExitStack
+        stack = ExitStack()
+        stack.enter_context(patch("ui.api_client.get_company", new=AsyncMock(side_effect=_company_stub(
+            {"settings": {"self_contact_id": "contact:self"}, "name": "My Co", "currency": "USD"}))))
+        for name, val in (("get_contact", self._SELF), ("list_contacts", {"items": [self._SELF], "total": 1}),
+                          ("list_contact_docs", {"items": []}), ("list_items", {"items": []}),
+                          ("list_docs", {"items": []}), ("get_contact_tags_vocabulary", [])):
+            stack.enter_context(patch(f"ui.api_client.{name}", new=AsyncMock(return_value=val)))
+        return stack
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("listing", ["/contacts/customers", "/contacts/vendors"])
+    async def test_an_operator_reads_the_company_contact_from_either_list(self, ui_client, listing):
+        ui_client.cookies.update(_authed(role="operator"))
+        with self._patches():
+            page = await ui_client.get(listing)
+            assert page.status_code == 200, page.text
+            assert 'href="/contacts/contact:self"' in page.text and 'href="/finance/company-details"' not in page.text
+            r = await ui_client.get("/contacts/contact:self", follow_redirects=False)
+        assert r.status_code == 200, r.headers
+        assert html.escape(t("contacts.own_contact_read_only"), quote=False) in r.text
+        assert 'id="contact-delete-btn"' not in r.text
+
+    @pytest.mark.asyncio
+    async def test_an_admin_is_taken_to_company_details(self, ui_client):
+        ui_client.cookies.update(_authed(role="admin"))
+        with self._patches():
+            r = await ui_client.get("/contacts/contact:self", follow_redirects=False)
+        assert r.status_code == 302 and r.headers["location"] == "/finance/company-details"

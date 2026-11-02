@@ -712,7 +712,7 @@ def _contacts_content(
 
     own = next((c for c in contacts if c.get("is_self")), None)
     own_note = P(t("contacts.own_record_note", name=own.get("name") or EMPTY), " ",
-                 A(t("settings.company_details"), href="/finance/company-details"), ".",
+                 A(t("settings.company_details"), href=f"/contacts/{own.get('id') or own.get('entity_id')}"), ".",
                  cls="form-hint") if own else ""
     return Div(
         own_note,
@@ -1239,9 +1239,12 @@ def setup_routes(app):
                 files_error_block(body, e.status),
                 title=page_title("nav.customers"), nav_active="customers", request=request,
             )
-        if contact.get("is_self"):
-            return RedirectResponse("/finance/company-details", status_code=302)
         company = await _get_company(token)
+        own = bool(contact.get("is_self"))
+        # The company's own contact is edited in Company Details, which only those who manage the
+        # company's settings open; everyone else reads it here, and the API refuses their edits.
+        if own and role_has_permission(company.get("settings") or {}, _get_role(request), "manage_company_settings"):
+            return RedirectResponse("/finance/company-details", status_code=302)
         docs_error = None
         try:
             docs = await _contact_docs(token, contact_id, company)
@@ -1278,7 +1281,10 @@ def setup_routes(app):
 
         return await build_contact_detail(contact, docs, vocab, company, request, contact_id=contact_id,
                                           on_memo_total=on_memo_total, consigned_total=consigned_total,
-                                          invoice_totals=invoice_totals, docs_error=docs_error)
+                                          invoice_totals=invoice_totals, docs_error=docs_error,
+                                          show_financials=not own, show_delete=not own,
+                                          extra_sections=[P(t("contacts.own_contact_read_only"),
+                                                            cls="form-hint own-contact-note")] if own else None)
 
     # ── Company Details (Finance) ─────────────────────────────────────────
     # The company is its own customer+vendor self-contact, so this page is the same contact-detail

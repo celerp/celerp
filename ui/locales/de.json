@@ -7035,6 +7035,7 @@
   "error.email_invalid": "Geben Sie eine einzelne E-Mail-Adresse ein, z. B. name@example.com.",
   "contacts.err_own_contact_kept": "Dies ist der eigene Unternehmenskontakt, der auf Ihren Dokumenten als Absender erscheint. Er kann weder gelöscht noch mit einem anderen Kontakt zusammengeführt werden. Ändern Sie seine Angaben unter „Unternehmensdaten“.",
   "contacts.err_import_own_contact": "Dies ist der eigene Datensatz Ihres Unternehmens, der auf Ihren Dokumenten als Absender erscheint. Ein Import kann ihn nicht ändern; ändern Sie seine Angaben unter „Unternehmensdaten“.",
+  "contacts.own_contact_read_only": "Dies ist der eigene Datensatz Ihres Unternehmens, der auf Ihren Dokumenten als Absender erscheint. Nur wer die Unternehmenseinstellungen verwaltet, kann ihn unter „Unternehmensdetails“ ändern.",
   "contacts.own_record_note": "Der eigene Unternehmenskontakt {name} wird hier aufgeführt, weil er auf Ihren Dokumenten als Absender erscheint. Ändern Sie ihn unter",
   "contacts.identity_on_documents": "Diese Angaben erscheinen als Absender auf Ihren Dokumenten: auf jeder neuen Rechnung, jedem Angebot und jedem Memo.",
   "docs.draw_line_not_shipped": "{name} wurde auf Memo {memo} noch nicht ausgegeben und kann daher nicht in Rechnung gestellt werden. Falls der Artikel noch nicht versendet wurde, wählen Sie die Position aus und verwenden Sie zuerst „Als versendet markieren“.",
