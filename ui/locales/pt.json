@@ -5658,6 +5658,7 @@
   "posting.col_role": "Usada para",
   "posting.col_account": "Conta",
   "posting.choose": "Escolha uma conta",
+  "posting.suggested": "Sugerida: {account}. Escolha-a para usá-la.",
   "posting.add_account": "Adicionar a conta {code} {name} ({type})",
   "posting.tab": "Contas de lançamento",
   "posting.panel_hint": "Os novos lançamentos usam estas contas. Uma alteração vale para novos documentos ou novos saldos. Contas a receber, contas a pagar, lotes de estoque e estornos existentes continuam nas contas em que foram lançados originalmente.",

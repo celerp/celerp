@@ -15716,6 +15716,7 @@
     "tests/test_posting_roles_finalize.py::test_an_account_the_source_coded_like_a_generated_one_is_offered_with_its_code": 0.086,
     "tests/test_posting_roles_finalize.py::test_an_account_the_source_gave_no_code_is_offered_by_its_name": 0.072,
     "tests/test_posting_roles_finalize.py::test_an_unsuitable_choice_is_refused_with_the_reason": 0.073,
+    "tests/test_posting_roles_finalize.py::test_an_untouched_form_shows_proposals_but_submits_only_authoritative_choices": 0.3,
     "tests/test_posting_roles_finalize.py::test_every_source_control_joins_its_roles_history": 0.119,
     "tests/test_posting_roles_finalize.py::test_finishing_again_adds_nothing_and_keeps_the_choices": 0.113,
     "tests/test_posting_roles_finalize.py::test_finishing_is_refused_until_every_needed_account_is_set": 0.101,

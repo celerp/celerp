@@ -5658,6 +5658,7 @@
   "posting.col_role": "Utilisé pour",
   "posting.col_account": "Compte",
   "posting.choose": "Choisir un compte",
+  "posting.suggested": "Suggéré : {account}. Choisissez-le pour l'utiliser.",
   "posting.add_account": "Ajouter le compte {code} {name} ({type})",
   "posting.tab": "Comptes d'imputation",
   "posting.panel_hint": "Les nouvelles écritures utilisent ces comptes. Un changement s'applique aux nouveaux documents ou aux nouveaux soldes. Les créances, dettes, lots de stock et contrepassations existants restent sur les comptes où ils ont été comptabilisés à l'origine.",

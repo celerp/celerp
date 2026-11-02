@@ -5658,6 +5658,7 @@
   "posting.col_role": "Dùng cho",
   "posting.col_account": "Tài khoản",
   "posting.choose": "Chọn tài khoản",
+  "posting.suggested": "Gợi ý: {account}. Chọn để sử dụng.",
   "posting.add_account": "Thêm tài khoản {code} {name} ({type})",
   "posting.tab": "Tài khoản hạch toán",
   "posting.panel_hint": "Các bút toán mới dùng những tài khoản này. Thay đổi áp dụng cho chứng từ mới hoặc số dư mới. Các khoản phải thu, phải trả, lô hàng tồn kho và bút toán đảo hiện có vẫn nằm ở tài khoản đã hạch toán ban đầu.",

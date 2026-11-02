@@ -1911,11 +1911,21 @@ POSTING_SECTION = "posting-accounts"
 
 def _picked(row: dict, chosen: dict[str, str]) -> str:
     """What a role's picker shows chosen: the user's own choice, else the answer from the
-    previous client (an added account as the account to add), else the single control,
-    else the account proposed from the chart's names."""
+    previous client (an added account as the account to add), else the source's single
+    control. An account proposed from the chart's names is never chosen for the user: a name
+    cannot authorize where entries post, so it is shown beside the picker instead."""
     previous = row.get("previous")
     return (chosen.get(row["role"]) or (previous and (NEW_ACCOUNT if previous["add"] else previous["code"]))
-            or row["preselect"] or row.get("suggested") or "")
+            or row["preselect"] or "")
+
+
+def _suggestion(row: dict, chosen: dict[str, str]) -> FT | str:
+    """The account the chart's names propose for a role whose picker starts empty."""
+    code = row.get("suggested")
+    account = next((c for c in row["candidates"] if c["code"] == code), None) if code else None
+    if account is None or _picked(row, chosen):
+        return ""
+    return P(t("posting.suggested", account=account_label(account)), cls="form-hint")
 
 
 def _posting_accounts(roles: list[dict], chosen: dict[str, str]) -> FT:
@@ -1934,6 +1944,7 @@ def _posting_accounts(roles: list[dict], chosen: dict[str, str]) -> FT:
                    Td((account_label(row["current_account"]) or row["current"]) if row["current"] else (
                        account_picker(f"{_ROLE_FIELD}{row['role']}", row["candidates"], value=_picked(row, chosen),
                                       proposal=row["proposal"], aria_label=role_label(row["role"], row["label"])),
+                       _suggestion(row, chosen),
                        P(t("sync_accounts.from_previous"), cls="form-hint") if row.get("previous") else "")))
                 for row in rows
             ]),

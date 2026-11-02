@@ -5656,6 +5656,7 @@
   "posting.col_role": "用途",
   "posting.col_account": "勘定",
   "posting.choose": "勘定を選択",
+  "posting.suggested": "候補: {account}。使用するには選択してください。",
   "posting.add_account": "勘定 {code} {name}（{type}）を追加",
   "posting.tab": "転記勘定",
   "posting.panel_hint": "新しい転記はこれらの勘定を使用します。変更は新しい書類または新しい残高に適用されます。既存の売掛金、買掛金、在庫ロット、取消は、最初に転記された勘定に残ります。",
