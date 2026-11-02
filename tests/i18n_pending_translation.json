@@ -306,7 +306,7 @@
       "params": []
     },
     "setup.country_hint": {
-      "en": "Your taxes start with the rates in force there. Not listed? Choose Other country and set your rates in Settings > Taxes.",
+      "en": "Sets the tax rates you start with.",
       "params": []
     },
     "setup.country_other": {

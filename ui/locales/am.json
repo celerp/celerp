@@ -7060,7 +7060,7 @@
   "country.IN": "India",
   "country.JP": "Japan",
   "country.ET": "Ethiopia",
-  "setup.country_hint": "Your taxes start with the rates in force there. Not listed? Choose Other country and set your rates in Settings > Taxes.",
+  "setup.country_hint": "Sets the tax rates you start with.",
   "setup.country_other": "Other country",
   "setup.invalid_country": "Celerp has no tax rates for {value}. Choose a listed country or Other country.",
   "settings.location_country_hint": "The default location's country gives the company the tax rates in force there, until the company changes its taxes or posts its first entry.",
