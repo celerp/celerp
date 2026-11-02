@@ -535,6 +535,7 @@ def test_line_item_false_friends_absent():
 _FULFILL_EXPECTED = {
     "am": {
         "doc.fulfilled": "ተፈጽሟል",
+        "perm.name.fulfill_documents": "በሰነዶች መሠረት ዕቃዎችን ያስረክቡ እና ይቀበሉ",
         "doc.partially_fulfilled": "በከፊል ተፈጽሟል",
         "status.unfulfilled": "ያልተፈጸመ",
         "event.item.fulfilled": "ተሽጧል",
@@ -552,6 +553,7 @@ _FULFILL_EXPECTED = {
     },
     "ar": {
         "doc.fulfilled": "تم تنفيذه",
+        "perm.name.fulfill_documents": "تنفيذ التسليم واستلام البضائع المرتبطة بالمستندات",
         "doc.partially_fulfilled": "تم تنفيذه جزئيًا",
         "status.unfulfilled": "لم يُنفَّذ",
         "event.item.fulfilled": "مباع",
@@ -569,6 +571,7 @@ _FULFILL_EXPECTED = {
     },
     "es": {
         "doc.fulfilled": "Procesado",
+        "perm.name.fulfill_documents": "Despachar y recibir mercancías de documentos",
         "doc.partially_fulfilled": "Procesado parcialmente",
         "status.unfulfilled": "Sin procesar",
         "event.item.fulfilled": "Vendido",
@@ -586,6 +589,7 @@ _FULFILL_EXPECTED = {
     },
     "id": {
         "doc.fulfilled": "Diproses",
+        "perm.name.fulfill_documents": "Penuhi pesanan dan terima barang pada dokumen",
         "doc.partially_fulfilled": "Diproses sebagian",
         "status.unfulfilled": "Belum diproses",
         "event.item.fulfilled": "Terjual",
@@ -603,6 +607,7 @@ _FULFILL_EXPECTED = {
     },
     "pt": {
         "doc.fulfilled": "Processado",
+        "perm.name.fulfill_documents": "Expedir e receber mercadorias de documentos",
         "doc.partially_fulfilled": "Processado parcialmente",
         "status.unfulfilled": "Não processado",
         "event.item.fulfilled": "Vendido",
