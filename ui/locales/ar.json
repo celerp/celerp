@@ -1596,7 +1596,7 @@
   "status.final": "نهائي",
   "status.issued": "صادر",
   "status.overdue": "متأخر",
-  "status.pro_forma": "فاتورة أولية",
+  "enum.doc_status.pro_forma": "فاتورة أولية",
   "status.unfulfilled": "لم يُنفَّذ",
   "th._of_revenue": "% من الإيرادات",
   "th.account": "حساب",

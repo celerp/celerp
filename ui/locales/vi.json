@@ -1596,7 +1596,7 @@
   "status.final": "Cuối Cùng",
   "status.issued": "Đã Phát Hành",
   "status.overdue": "Quá hạn",
-  "status.pro_forma": "Hóa đơn tạm tính",
+  "enum.doc_status.pro_forma": "Hóa đơn tạm tính",
   "status.unfulfilled": "Chưa xuất hàng",
   "th._of_revenue": "% doanh thu",
   "th.account": "Tài khoản",

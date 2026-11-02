@@ -4940,7 +4940,8 @@ class TestSprint4Polish:
         ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):
             r = await ui_client.get("/docs/doc:INV-2026-0001")
-        assert b"badge--draft" in r.content
+        # A draft invoice's badge reads Pro Forma, drawn as the draft pill.
+        assert b"badge--pro-forma" in r.content
 
     @pytest.mark.asyncio
     async def test_doc_detail_shows_doc_type(self, ui_client):

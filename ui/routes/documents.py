@@ -24,7 +24,7 @@ from ui.api_client import APIError, error_message
 from celerp.accounting_roles import account_label
 from celerp.downloads import content_disposition
 from celerp.services.units import (
-    DEFAULT_UNITS, RECEIVE_KINDS, build_unit_map, default_receive_as, format_qty, line_receive_kind, quantity_step,
+    DEFAULT_UNITS, RECEIVE_KINDS, build_unit_map, default_receive_as, format_qty, line_receive_kind, plain_number, quantity_step,
 )
 from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
 from ui.components.shell import base_shell, page_header, toast_header, page_title
@@ -478,9 +478,7 @@ def _list_status_label(state: dict) -> str:
 
 
 def _doc_status_label(doc_type: str, status: str) -> str:
-    """A document's status in the user's language. A draft invoice is a pro forma."""
-    if doc_type == "invoice" and status == "draft":
-        return t("status.pro_forma")
+    """A document's status in the user's language, as its badge reads."""
     return display_enum(doc_status_shown(doc_type, status), "doc_status")
 # Selectable list types come straight from the behaviour registry (one source — adding a type
 # there surfaces it here automatically).
@@ -6914,7 +6912,7 @@ async def doc_detail_connectors(company: dict) -> set[str]:
 def _tax_label(tax: dict) -> str:
     """A tax as the line's tax choice names it: its code (a company tax's name), rate in brackets."""
     name = tax.get("code") or tax.get("name") or tax.get("label") or t("documents.tax")
-    return f"{name} ({float(tax.get('rate', 0) or 0)}%)"
+    return f"{name} ({plain_number(float(tax.get('rate', 0) or 0))}%)"
 
 
 def _held_taxes(value) -> list:
@@ -11193,7 +11191,7 @@ _DOC_CARD_KINDS: dict[str, _DocCard] = {
     # The list with no status filter: every document but the drafts.
     "all": _DocCard("doc.all", "blue", (), count="total_count"),
     "draft": _DocCard("status.draft", "gray", (("status", "draft"),)),
-    "pro_forma": _DocCard("status.pro_forma", "gray", (("status", "draft"),)),
+    "pro_forma": _DocCard("enum.doc_status.pro_forma", "gray", (("status", "draft"),)),
     "all_issued": _DocCard("status.all_issued", "blue", (("all_issued", "1"),), "all_issued_count", "all_issued_total"),
     "awaiting_payment": _DocCard("status.awaiting_payment", "yellow", (("awaiting_only", "1"),),
                                  "awaiting_payment_count", "awaiting_payment_total"),

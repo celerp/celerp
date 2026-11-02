@@ -1596,7 +1596,7 @@
   "status.final": "สุดท้าย",
   "status.issued": "ออกแล้ว",
   "status.overdue": "เกินกำหนด",
-  "status.pro_forma": "ใบแจ้งหนี้เบื้องต้น",
+  "enum.doc_status.pro_forma": "ใบแจ้งหนี้เบื้องต้น",
   "status.unfulfilled": "ยังไม่จัดส่ง",
   "th._of_revenue": "% ของรายได้",
   "th.account": "บัญชี",

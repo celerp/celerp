@@ -1596,7 +1596,7 @@
   "status.final": "Final",
   "status.issued": "Diterbitkan",
   "status.overdue": "Jatuh Tempo",
-  "status.pro_forma": "Pro Forma",
+  "enum.doc_status.pro_forma": "Pro Forma",
   "status.unfulfilled": "Belum diproses",
   "th._of_revenue": "% Pendapatan",
   "th.account": "Akun",

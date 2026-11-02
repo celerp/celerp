@@ -16,9 +16,10 @@ from ui.components.icons import import_icon
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, page_header, flash, toast_header, page_title
-from ui.components.table import EMPTY, searchable_select, unwrap_address
+from ui.components.table import EMPTY, editable_cell, searchable_select, unwrap_address
 from celerp.tax_regimes import country_name, tax_country
 from celerp.services.currencies import KNOWN_CURRENCY_CODES
+from celerp.services.units import plain_number
 from celerp.services.field_schema import SYSTEM_ITEM_KEYS
 from ui.components.currency import currency_combobox_td, currency_label
 from ui.components.phone import phone_input_td as _phone_input_td
@@ -278,21 +279,14 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
                     ),
                     cls="cell cell--editing",
                 )
-            val = str(tax.get(field, "") or "")
-            input_type = "number" if field == "rate" else "text"
-            return Td(
-                Input(
-                    type=input_type, name="value", value=val,
-                    hx_patch=f"/settings/{pfx}/{idx}/{field}",
-                    hx_target="closest td", hx_swap="outerHTML", hx_include="this",
-                    hx_trigger="blur delay:200ms",
-                    cls="cell-input" + (" cell-input--number" if input_type == "number" else ""),
-                    autofocus=True,
-                    onkeydown=esc_js,
-                    **({"step": "0.01"} if field == "rate" else {}),
-                ),
-                cls="cell cell--editing",
-            )
+            # Typed fields use the shared cell editor: Enter saves, Escape restores, and an
+            # untouched editor puts the shown cell back without a write.
+            val = tax.get(field)
+            if field == "rate" and val not in (None, ""):
+                val = plain_number(float(val))
+            return editable_cell(str(idx), field, val, cell_type="rate" if field == "rate" else "text",
+                                 patch_url=f"/settings/{pfx}/{idx}/{field}", restore_url=restore_url,
+                                 cls_extra="cell--number" if field == "rate" else "")
         return tax_field_edit
 
     def _make_display(pfx, gname):
@@ -2930,7 +2924,7 @@ def _user_display_cell(user_id: str, field: str, value) -> FT:
 def _tax_display_cell(idx: int, field: str, tax: dict, prefix: str = "taxes") -> FT:
     val = tax.get(field, "")
     if field == "rate":
-        display = f"{val}%" if val else EMPTY
+        display = f"{plain_number(float(val))}%" if val not in (None, "") else EMPTY
     elif field in _TAX_BOOL_FIELDS:
         display = t("settings.yes") if val else t("settings.no")
     else:
@@ -3561,8 +3555,10 @@ def _taxes_tab(taxes: list[dict], lang: str = "en", prefix: str = "taxes", impor
         )
 
     actions = [
+        # Sent a moment after the click, behind the save an editor fires as it blurs (the card
+        # queues its requests), so a rate typed just before the click is kept.
         Button(t("btn.new_tax"), cls="btn btn--primary",
-               hx_post=f"/settings/{prefix}/new", hx_swap="none"),
+               hx_post=f"/settings/{prefix}/new", hx_swap="none", hx_trigger="click delay:250ms"),
     ]
     if import_path:
         actions.append(A(import_icon(), t("btn.import_taxes_csv"), href=import_path, cls="btn btn--secondary ml-sm"))
@@ -3574,7 +3570,7 @@ def _taxes_tab(taxes: list[dict], lang: str = "en", prefix: str = "taxes", impor
             Tbody(*[_row(i, tax) for i, tax in enumerate(taxes)]),
             cls="data-table",
         ),
-        cls="settings-card",
+        cls="settings-card", hx_sync="this:queue all",
     )
 
 

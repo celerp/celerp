@@ -1596,7 +1596,7 @@
   "status.final": "Final",
   "status.issued": "Émis",
   "status.overdue": "En retard",
-  "status.pro_forma": "Pro forma",
+  "enum.doc_status.pro_forma": "Pro forma",
   "status.unfulfilled": "Non livré",
   "th._of_revenue": "% du CA",
   "th.account": "Compte",

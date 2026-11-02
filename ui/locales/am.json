@@ -1706,7 +1706,7 @@
   "status.final": "የመጨረሻ",
   "status.issued": "የወጣ",
   "status.overdue": "ጊዜው ያለፈበት",
-  "status.pro_forma": "ፕሮፎርማ",
+  "enum.doc_status.pro_forma": "ፕሮፎርማ",
   "status.unfulfilled": "ያልተፈጸመ",
   "th._of_revenue": "% ከገቢ",
   "th.account": "ሒሳብ",

@@ -87,7 +87,8 @@ _DEFAULT_COL_WIDTHS: dict[str, str] = {
 
 # An issued invoice nobody has paid is stored as "final"; a bill in the same state is stored
 # as "awaiting_payment". Both read as Awaiting Payment so one state carries one label.
-_DOC_STATUS_SHOWN_AS = {("invoice", "final"): "awaiting_payment"}
+# A draft invoice is a pro forma (it carries a PF number until it is issued).
+_DOC_STATUS_SHOWN_AS = {("invoice", "final"): "awaiting_payment", ("invoice", "draft"): "pro_forma"}
 
 
 def doc_status_shown(doc_type: str | None, status: str | None) -> str:

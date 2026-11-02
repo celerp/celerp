@@ -942,7 +942,7 @@
     "setup.country_other",
     "setup.invalid_country",
     "status.final",
-    "status.pro_forma",
+    "enum.doc_status.pro_forma",
     "table.confirm_delete_drafts_selected",
     "th.label",
     "th.memo",

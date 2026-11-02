@@ -1596,7 +1596,7 @@
   "status.final": "確定",
   "status.issued": "発行済",
   "status.overdue": "期限超過",
-  "status.pro_forma": "仮請求書",
+  "enum.doc_status.pro_forma": "仮請求書",
   "status.unfulfilled": "未出荷",
   "th._of_revenue": "売上の %",
   "th.account": "アカウント",

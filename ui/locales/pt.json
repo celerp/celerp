@@ -1596,7 +1596,7 @@
   "status.final": "Final",
   "status.issued": "Emitido",
   "status.overdue": "Vencido",
-  "status.pro_forma": "Pro forma",
+  "enum.doc_status.pro_forma": "Pro forma",
   "status.unfulfilled": "Não processado",
   "th._of_revenue": "% da receita",
   "th.account": "Conta",

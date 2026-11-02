@@ -1596,7 +1596,7 @@
   "status.final": "Endgültig",
   "status.issued": "Ausgestellt",
   "status.overdue": "Überfällig",
-  "status.pro_forma": "Proforma",
+  "enum.doc_status.pro_forma": "Proforma",
   "status.unfulfilled": "Nicht ausgeliefert",
   "th._of_revenue": "% des Umsatzes",
   "th.account": "Konto",

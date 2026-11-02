@@ -1896,7 +1896,7 @@
   "status.final": "Final",
   "status.issued": "Issued",
   "status.overdue": "Overdue",
-  "status.pro_forma": "Pro Forma",
+  "enum.doc_status.pro_forma": "Pro Forma",
   "status.unfulfilled": "Unfulfilled",
   "th._of_revenue": "% of Revenue",
   "th.account": "Account",

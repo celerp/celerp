@@ -309,7 +309,7 @@ async def test_the_editor_shows_a_tax_it_cannot_read_and_sends_it_back_as_it_is(
     assert json.loads(soup.select_one("#doc-taxes-state")["value"]) == [_VAT_7, _LEVY]
     assert [json.loads(x["value"]) for x in soup.select('[data-name="taxes_json"]')] == [[_VAT_7, _LEVY]]
     chosen = [o for o in soup.select('[data-name="tax_select"] option[selected]') if o["value"] != "|0"]
-    assert [(o["value"], o.text) for o in chosen] == [("|stored", "VAT (7.0%) + Levy 5%")]
+    assert [(o["value"], o.text) for o in chosen] == [("|stored", "VAT (7%) + Levy 5%")]
     assert [row.select_one(".total-label").text for row in soup.select("#doc-stored-tax-rows [data-doc-tax-index]")] \
         == ["VAT:", "Levy 5%:"]
 
