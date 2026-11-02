@@ -440,11 +440,6 @@
   "reason": "No test requests this route; its source reaches api PATCH, api POST."
  },
  {
-  "route": "ui POST /contacts/{contact_id}/tags/remove",
-  "class": "never requested",
-  "reason": "No test requests this route; its source reaches api PATCH."
- },
- {
   "route": "ui POST /crm/contacts/bulk/delete",
   "class": "never requested",
   "reason": "No test requests this route; its source reaches api POST."
