@@ -1517,7 +1517,6 @@
   "settings.tab_categories": "Categorie",
   "settings.tab_cloud_relay": "Celerp Connect",
   "settings.tab_company": "Azienda",
-  "settings.tab_connectors": "Connettori",
   "settings.tab_import_history": "Cronologia importazioni",
   "settings.tab_locations": "Posizioni",
   "settings.tab_schema": "Schema articolo",
@@ -7066,5 +7065,13 @@
   "settings.location_country_hint": "The default location's country gives the company the tax rates in force there, until the company changes its taxes or posts its first entry.",
   "settings.taxes_set_from_country": "Taxes now start with the rates in force in {country}. Check them before your first invoice.",
   "settings.review_taxes": "Review taxes",
-  "help.pages_in_english": "These pages are in English."
+  "help.pages_in_english": "These pages are in English.",
+  "company.err_price_list_name_empty": "Every price list needs a name.",
+  "company.err_price_list_name_taken": "Each price list needs its own name. {name} is used more than once.",
+  "company.err_price_list_factor": "The factor for {name} must be a number greater than 0 and no more than {max}.",
+  "company.err_price_list_cost_derived": "{name} can't be worked out from another price list. Cost comes from purchases and recipes.",
+  "company.err_price_list_base_factor": "{name} is the base price list, so it can't have a factor.",
+  "company.err_price_list_rounding_needs_factor": "Rounding on {name} needs a factor. Add a factor or clear the rounding.",
+  "company.err_price_list_rounding": "The rounding for {name} must be a number greater than 0 and no more than {max}.",
+  "company.err_price_list_cost_name": "{name} is a name Celerp keeps for cost. Every company already has the Cost list, which shows each item's cost, so give this list another name."
 }

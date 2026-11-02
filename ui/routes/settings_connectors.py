@@ -2082,8 +2082,13 @@ def setup_routes(app):
         deposit = await _deposit_context(token) if platform == "woocommerce" else None
         icon = _CONNECTOR_ICONS.get(platform, "🔌")
         name = c.get("name", platform.title())
+        # Never connected here: the card says so and offers Connect; the detail body's
+        # Sync now, Disconnect and directions would only refuse.
+        body = (_connector_card(c, None, RELAY_URL, company_id, None, lang) if config is None
+                else _connector_detail_body(c, runs, config, lang, deposit=deposit,
+                                            attention=await _attention(company_id, platform)))
         return await base_shell(
-            breadcrumbs([(t("settings.tab_connectors", lang), f"/settings/cloud?tab={c.get('category', 'website')}"), (name, None)]),
+            breadcrumbs([(t("settings_cloud.web_access", lang), f"/settings/cloud?tab={c.get('category', 'website')}"), (name, None)]),
             page_header(
                 f"{icon} {name}",
                 A(t("connectors.back_to_connectors", lang), href=f"/settings/cloud?tab={c.get('category', 'website')}",
@@ -2091,8 +2096,7 @@ def setup_routes(app):
             ),
             _pairing_card(company_id, str(getattr(request.state, "auth_company", {}).get("name") or ""), lang)
             if platform == "celerp" else "",
-            _connector_detail_body(c, runs, config, lang, deposit=deposit,
-                                   attention=await _attention(company_id, platform)),
+            body,
             await _first_sync_summary(token, platform, config, lang),
             await _from_accountant_section(token, lang) if platform == "celerp" else "",
             _sync_accounts_card(lang) if platform == "celerp" else "",

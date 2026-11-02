@@ -16,6 +16,7 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.accounting_roles import catalog_refusal
 from celerp.services.cost_visibility import COST_DERIVED_ITEM_KEYS, COST_ITEM_KEYS
 from celerp.services.list_behavior import SUPPLIER_DOC_TYPES
 from celerp.services.money import round_rate
@@ -206,8 +207,8 @@ def inject_derived_prices(flat: dict, price_lists: list[dict], base_name: str, c
     return flat
 
 
-def validate_price_lists(price_lists: list[dict], base_name: str, base_explicit: bool = True) -> str | None:
-    """First human-readable rule violation in a price-lists config, else None.
+def validate_price_lists(price_lists: list[dict], base_name: str, base_explicit: bool = True) -> dict | None:
+    """First rule violation in a price-lists config as a catalog refusal, else None.
 
     ``base_explicit`` is False when the base name is only the unconfigured fallback; the
     base-must-exist rule then binds only once a list actually derives from it, so a company
@@ -222,32 +223,32 @@ def validate_price_lists(price_lists: list[dict], base_name: str, base_explicit:
 
     names = [str(pl.get("name", "")).strip() for pl in price_lists]
     if any(not n for n in names):
-        return "Price list names cannot be empty"
+        return catalog_refusal("company.err_price_list_name_empty")
     lowered = [n.lower() for n in names]
     duplicates = sorted({n for n in lowered if lowered.count(n) > 1})
     if duplicates:
-        return f"Price list names must be unique ('{duplicates[0]}' appears more than once)"
+        return catalog_refusal("company.err_price_list_name_taken", name=duplicates[0])
     for pl, name in zip(price_lists, names):
         multiplier = pl.get("multiplier")
         rounding = pl.get("rounding")
         if multiplier is not None:
             if not _valid_factor(multiplier):
-                return f"Factor for '{name}' must be a number greater than 0 and at most {MAX_FACTOR:,.0f}"
+                return catalog_refusal("company.err_price_list_factor", name=name, max=f"{MAX_FACTOR:,.0f}")
             if is_cost_list_name(name):
-                return f"'{name}' cannot be derived; cost comes from purchases and recipes"
+                return catalog_refusal("company.err_price_list_cost_derived", name=name)
             if name == base_name:
-                return f"'{name}' is the base price list; a base list cannot have a factor"
+                return catalog_refusal("company.err_price_list_base_factor", name=name)
         if rounding is not None:
             if multiplier is None:
-                return f"Rounding on '{name}' requires a factor"
+                return catalog_refusal("company.err_price_list_rounding_needs_factor", name=name)
             if not _valid_factor(rounding):
-                return f"Rounding for '{name}' must be a number greater than 0 and at most {MAX_FACTOR:,.0f}"
+                return catalog_refusal("company.err_price_list_rounding", name=name, max=f"{MAX_FACTOR:,.0f}")
     if base_name not in names and (base_explicit or any(is_derived(pl) for pl in price_lists)):
-        return f"Base price list '{base_name}' does not exist"
+        return catalog_refusal("company.err_price_list_missing", name=base_name)
     return None
 
 
-def new_cost_name_error(price_lists: list[dict], stored_price_lists: list[dict]) -> str | None:
+def new_cost_name_error(price_lists: list[dict], stored_price_lists: list[dict]) -> dict | None:
     """Reject cost-family names that were not already present in the stored config.
 
     Renaming a sell list to e.g. "landed cost" would silently convert it into a
@@ -262,13 +263,12 @@ def new_cost_name_error(price_lists: list[dict], stored_price_lists: list[dict])
     for pl in price_lists:
         name = str(pl.get("name", "")).strip()
         if is_cost_list_name(name) and name.lower() not in stored_cost:
-            return (f"'{name}' is a name Celerp keeps for cost. Every company already has the Cost list, "
-                    "which shows each item's cost, so give this list another name.")
+            return catalog_refusal("company.err_price_list_cost_name", name=name)
     return None
 
 
 def price_config_error(price_lists: list[dict], explicit_base: str | None,
-                       stored_price_lists: list[dict]) -> str | None:
+                       stored_price_lists: list[dict]) -> dict | None:
     """The full write gate for a price-lists config: structural validation plus the
     reserved-cost-name rule. Every door that stores price config must call this, so the
     two checks can never drift apart between endpoints."""

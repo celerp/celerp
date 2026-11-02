@@ -336,6 +336,54 @@
     "help.pages_in_english": {
       "en": "These pages are in English.",
       "params": []
+    },
+    "company.err_price_list_name_empty": {
+      "en": "Every price list needs a name.",
+      "params": []
+    },
+    "company.err_price_list_name_taken": {
+      "en": "Each price list needs its own name. {name} is used more than once.",
+      "params": [
+        "name"
+      ]
+    },
+    "company.err_price_list_factor": {
+      "en": "The factor for {name} must be a number greater than 0 and no more than {max}.",
+      "params": [
+        "max",
+        "name"
+      ]
+    },
+    "company.err_price_list_cost_derived": {
+      "en": "{name} can't be worked out from another price list. Cost comes from purchases and recipes.",
+      "params": [
+        "name"
+      ]
+    },
+    "company.err_price_list_base_factor": {
+      "en": "{name} is the base price list, so it can't have a factor.",
+      "params": [
+        "name"
+      ]
+    },
+    "company.err_price_list_rounding_needs_factor": {
+      "en": "Rounding on {name} needs a factor. Add a factor or clear the rounding.",
+      "params": [
+        "name"
+      ]
+    },
+    "company.err_price_list_rounding": {
+      "en": "The rounding for {name} must be a number greater than 0 and no more than {max}.",
+      "params": [
+        "max",
+        "name"
+      ]
+    },
+    "company.err_price_list_cost_name": {
+      "en": "{name} is a name Celerp keeps for cost. Every company already has the Cost list, which shows each item's cost, so give this list another name.",
+      "params": [
+        "name"
+      ]
     }
   }
 }

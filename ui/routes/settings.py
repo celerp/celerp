@@ -34,9 +34,14 @@ from ui.routes.documents import _action_error
 from ui.routes.setup import business_type_label, business_type_options
 
 
+def _refusal_message(e: APIError) -> str:
+    """An API refusal as its message in the user's language."""
+    return refusal_text(e.data or e.detail) or str(e.detail)
+
+
 def _refusal(e: APIError) -> FT:
     """An API refusal as its message in the user's language, shown where the action was taken."""
-    return P(refusal_text(e.data or e.detail) or str(e.detail), cls="cell-error")
+    return P(_refusal_message(e), cls="cell-error")
 
 
 async def _check_permission(
@@ -591,7 +596,7 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
                     pl = price_lists[idx] if idx < len(price_lists) else {}
                 except APIError:
                     pl = {}
-                return _pl_cell_error(idx, field, pl, pfx, str(e.detail))
+                return _pl_cell_error(idx, field, pl, pfx, _refusal_message(e))
             pl = price_lists[idx] if idx < len(price_lists) else {}
             cell = _price_list_display_cell(idx, field, pl, prefix=pfx)
             if field == "name":
@@ -631,7 +636,7 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
                 price_lists.append({"name": name, "description": ""})
                 await getattr(api, pname)(token, price_lists)
             except APIError as e:
-                return _action_error(str(e.detail))
+                return _action_error(_refusal_message(e))
             return _R("", status_code=204, headers={"HX-Redirect": redir})
         return create_price_list
 
@@ -658,7 +663,7 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
                     price_lists.pop(idx)
                     await getattr(api, pname)(token, price_lists)
             except APIError as e:
-                return _action_error(str(e.detail))
+                return _action_error(_refusal_message(e))
             return _R("", status_code=204, headers={"HX-Redirect": redir})
         return delete_price_list
 
@@ -1360,7 +1365,7 @@ def setup_routes(app):
         try:
             await api.patch_default_price_list(token, name)
         except APIError as e:
-            return _status_error("default-price-list-status", str(e.detail))
+            return _status_error("default-price-list-status", _refusal_message(e))
         return Span(t("settings._saved"), id="default-price-list-status", cls="flash flash--success")
 
     @app.post("/settings/base-price-list")
@@ -1386,7 +1391,7 @@ def setup_routes(app):
                                  [pl.get("name", "") for pl in price_lists], base_name, oob=True)
             except APIError:
                 pass
-            return _status_error("base-price-list-status", str(e.detail), oob)
+            return _status_error("base-price-list-status", _refusal_message(e), oob)
         return Span(t("settings._saved"), id="base-price-list-status", cls="flash flash--success")
 
     # ── Terms & Conditions CRUD endpoints ────────────────────────────

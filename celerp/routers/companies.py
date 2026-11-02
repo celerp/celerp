@@ -17,6 +17,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.accounting_roles import catalog_refusal
 from celerp.db import get_session, sqlstate
 from celerp.events.engine import emit_event
 from celerp.importers.results import failure_reason
@@ -2746,11 +2747,11 @@ async def patch_base_price_list(
     price_lists = price_lists_in(settings)
     target = next((pl for pl in price_lists if pl.get("name") == payload.name), None)
     if target is None:
-        raise HTTPException(status_code=422, detail=t("company.err_price_list_missing", name=payload.name))
+        raise HTTPException(status_code=422, detail=catalog_refusal("company.err_price_list_missing", name=payload.name))
     if is_derived(target):
         raise HTTPException(
             status_code=422,
-            detail=t("company.err_price_list_derived", name=payload.name),
+            detail=catalog_refusal("company.err_price_list_derived", name=payload.name),
         )
     settings["base_price_list"] = payload.name
     company.settings = settings
