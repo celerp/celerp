@@ -13,6 +13,8 @@ import uuid
 
 import pytest
 
+from .conftest import answer_confirms
+
 pytestmark = pytest.mark.browser
 
 _BLOCKED = "Save blocked for this test"
@@ -103,7 +105,7 @@ def test_reserve_does_not_run_after_a_failed_save(page, ui_server, api):
     list_id = r.json().get("entity_id") or r.json().get("id")
     _fail_line_saves(page)
     reserves = _posts(page, "/reserve-lines")
-    page.on("dialog", lambda d: d.accept())
+    answer_confirms(page)
     page.goto(f"{ui_server}/lists/{list_id}", wait_until="domcontentloaded")
     page.locator("#line-body tr .li-select").first.check()
     page.evaluate("liBulkReserveConfirmed()")

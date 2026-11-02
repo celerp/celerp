@@ -29,6 +29,7 @@ from celerp.services.list_behavior import SUPPLIER_DOC_TYPES
 from celerp.services.money import document_line_amount, to_decimal
 from celerp.services.shipping import REASON_EXPORT_LABELS, SHIPPING_LIST_TYPE
 from celerp.services.units import DEFAULT_UNITS, build_unit_map
+from celerp.tax_regimes import country_name
 
 EMPTY = "--"
 
@@ -156,6 +157,8 @@ def unwrap_address(raw) -> str:
         text = raw.get("text") or raw.get("line1") or ""
         for k in ("line2", "city", "state", "postal_code", "country"):
             v = raw.get(k) or ""
+            if k == "country" and v:
+                v = country_name(v)
             if v:
                 text = text + ("\n" if text else "") + v
         return text

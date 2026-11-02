@@ -1357,18 +1357,19 @@ def files_unchecked(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def docs_running(monkeypatch):
-    """Record Documents as loaded: the harness mounts its routes, as a running installation does.
-    A test of a process where it has not started asks for ``docs_not_started``."""
+def mounted_modules_running(monkeypatch):
+    """Record the modules whose routes the harness mounts as loaded, as a running installation
+    does. A test of a process where Documents has not started asks for ``docs_not_started``."""
     from test_helpers import mark_running
-    mark_running(monkeypatch, "celerp-docs")
+    mark_running(monkeypatch, "celerp-inventory", "celerp-contacts", "celerp-manufacturing", "celerp-docs",
+                 "celerp-accounting")
 
 
 @pytest.fixture
-def docs_not_started(monkeypatch, docs_running):
+def docs_not_started(monkeypatch, mounted_modules_running):
     """This process has not started Documents: the loader lists it as not running."""
-    from celerp.modules import loader
-    monkeypatch.setattr(loader, "_loaded", [m for m in loader._loaded if m["name"] != "celerp-docs"])
+    from test_helpers import mark_not_running
+    mark_not_running(monkeypatch, "celerp-docs")
 
 
 @pytest.fixture

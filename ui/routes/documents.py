@@ -24,12 +24,12 @@ from ui.api_client import APIError, error_message
 from celerp.accounting_roles import account_label
 from celerp.downloads import content_disposition
 from celerp.services.units import (
-    DEFAULT_UNITS, RECEIVE_KINDS, build_unit_map, default_receive_as, format_qty, line_receive_kind, quantity_step,
+    DEFAULT_UNITS, RECEIVE_KINDS, build_unit_map, default_receive_as, format_qty, line_receive_kind, plain_number, quantity_step,
 )
 from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
 from ui.components.shell import base_shell, page_header, toast_header, page_title
 from ui.security import not_permitted_redirect
-from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum, display_unit, doc_href
+from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, period_all_time_link, period_empty_text, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum, display_unit, doc_href, doc_status_badge, doc_status_shown
 from celerp.services.background import spawn_background
 from celerp.services.business_time import business_today
 from celerp.services.doc_balance import MEMO_DRAW_STATUSES, doc_tax, doc_value, is_awaiting_payment, is_owed, outstanding_balance
@@ -285,12 +285,17 @@ def _status_doc(item: dict) -> tuple[str, str] | None:
     return (doc_id, doc_number) if doc_id and doc_number else None
 
 
-def _line_status_doc(li: dict, eid: str, item_status_doc_map: dict | None) -> tuple[str, str] | None:
+def _line_status_doc(li: dict, eid: str, item_status_doc_map: dict | None, status: str = "",
+                     memo: tuple[str, str] | None = None) -> tuple[str, str] | None:
     """The document a line's status badge names: for a line invoiced from a memo, the memo its
-    goods are out on (the invoice holding them is the page itself); otherwise the item's own."""
+    goods are out on (the invoice holding them is the page itself); on a memo page (``memo``),
+    a lot still out names that memo even once a draw has restamped it onto its invoice (the
+    Shipped column names the invoice); otherwise the item's own."""
     drawn = li.get("drawn_from") or {}
     if drawn.get("memo_id"):
         return drawn["memo_id"], drawn.get("memo_number") or drawn["memo_id"]
+    if memo and status == "memo_out":
+        return memo
     return (item_status_doc_map or {}).get(eid)
 
 
@@ -473,10 +478,8 @@ def _list_status_label(state: dict) -> str:
 
 
 def _doc_status_label(doc_type: str, status: str) -> str:
-    """A document's status in the user's language. A draft invoice is a pro forma."""
-    if doc_type == "invoice" and status == "draft":
-        return t("status.pro_forma")
-    return display_enum(status, "doc_status")
+    """A document's status in the user's language, as its badge reads."""
+    return display_enum(doc_status_shown(doc_type, status), "doc_status")
 # Selectable list types come straight from the behaviour registry (one source — adding a type
 # there surfaces it here automatically).
 _LIST_TYPES = list(_REG_LIST_TYPES)
@@ -548,6 +551,14 @@ def _doc_list_state(request: Request) -> dict[str, str]:
 
 def _state_query(state: dict[str, str], *, without: tuple[str, ...] = ()) -> str:
     return urlencode({k: v for k, v in state.items() if k not in without})
+
+
+def _list_period(base: str, state: dict[str, str], date_from: str, date_to: str) -> tuple[str, str, str]:
+    """The (from, to, All time url) window a /docs or /lists state shows, for its empty state;
+    the All time link keeps the rest of the state (type, status, search, sort)."""
+    return date_from, date_to, f"/{base}?" + urlencode({**{k: v for k, v in state.items()
+                                                          if k not in _DATE_KEYS and k != "page"},
+                                                       "preset": "all"})
 
 
 def _doc_api_params(state: dict[str, str], date_from: str, date_to: str, *, limit: int | None, offset: int = 0) -> dict:
@@ -711,7 +722,8 @@ def _accounting_sync_filter(state: dict[str, str]) -> FT:
 
 
 def _docs_content(state: dict[str, str], docs: list[dict], total_count: int, summary: dict,
-                  chips: dict, page: int, per_page: int, currency: str | None, lang: str) -> FT:
+                  chips: dict, page: int, per_page: int, currency: str | None, lang: str,
+                  date_from: str = "", date_to: str = "") -> FT:
     """Summary, status cards, table and pager for a document list state: the page embeds it
     and the live search replaces it, so all four always describe the same result set."""
     doc_type = state.get("type", "")
@@ -737,6 +749,7 @@ def _docs_content(state: dict[str, str], docs: list[dict], total_count: int, sum
             lang=lang,
             currency=currency,
             is_drafts_view=state.get("view") == "drafts" or state.get("status") == "draft",
+            period=_list_period("docs", state, date_from, date_to),
         ),
         pagination(page, total_count, per_page, "/docs", _state_query(state, without=("per_page",))),
         id="doc-content",
@@ -767,7 +780,7 @@ async def _list_results(token: str, state: dict[str, str], date_from: str, date_
 
 
 def _lists_content(state: dict[str, str], lists: list[dict], total_count: int, summary: dict,
-                   page: int, per_page: int, lang: str) -> FT:
+                   page: int, per_page: int, lang: str, date_from: str = "", date_to: str = "") -> FT:
     """Status cards, table and pager for a lists page state: the page embeds it and the live
     search replaces it, so all three always describe the same result set."""
     all_issued = _list_api_params(state, "", "", limit=None).get("all_issued") == "1"
@@ -776,7 +789,7 @@ def _lists_content(state: dict[str, str], lists: list[dict], total_count: int, s
                            converted_to_type=state.get("converted_to_type", ""),
                            base_url="/lists?" + _state_query(state, without=_LIST_STATUS_KEYS),
                            dates_chosen=any(state.get(k) for k in _DATE_KEYS)),
-        _list_table(lists, lang=lang),
+        _list_table(lists, lang=lang, period=_list_period("lists", state, date_from, date_to)),
         pagination(page, total_count, per_page, "/lists", _state_query(state, without=("per_page",))),
         id="list-content",
     )
@@ -930,12 +943,13 @@ def _item_status_badge_cell(status_val: str, eid: str, status_doc: tuple[str, st
     return Td(Span("-", cls="muted"), cls="col-item-status")
 
 
-def _vendor_line_badge(li: dict, doc_status: str) -> FT:
+def _vendor_line_badge(li: dict, doc_status: str, receipt_unknown: bool = False) -> FT:
     """What a purchase document did for one of its stock lines, from the document's own receipts
     and returns, never the catalog item's status (other documents move the same item): Returned
     or Part returned once the line sent goods back, else Received, Received n of m, or Not
     Received. A document shared in as received carries no receipts of its own and reads
-    Received."""
+    Received; an imported bill whose source never recorded its receipt (``receipt_unknown``)
+    reads Receipt unknown."""
     returned = li.get("return_status")
     if returned == "returned":
         return Span(t("documents.line_label_returned"), cls="badge badge--inactive")
@@ -949,6 +963,9 @@ def _vendor_line_badge(li: dict, doc_status: str) -> FT:
     if received > 1e-9:
         return Span(t("documents.status_received_part", received=f"{received:g}", qty=f"{qty:g}"),
                     cls="badge badge--pending")
+    if receipt_unknown:
+        return Span(t("documents.status_receipt_unknown"), cls="badge badge--pending",
+                    title=t("documents.status_receipt_unknown_tip"))
     return Span(t("documents.status_not_received"), cls="badge badge--not_received")
 
 
@@ -1129,11 +1146,15 @@ def _reopened_toast(answer) -> dict:
                         action={"href": doc_href(memos[0].get("id")), "label": memos[0].get("doc_number") or ""})
 
 
-def _action_error(msg: str | dict, *, persist: bool = False, action: dict | list[dict] | None = None, **triggers):
+def _action_error(msg: str | dict | APIError, *, persist: bool = False, action: dict | list[dict] | None = None,
+                  **triggers):
     """Fire a toast popup for action errors and restore any open editable cell to display mode.
+    An APIError shows as its refusal, so a refusal resolved on another page links to it.
     ``persist`` and ``action`` are toast_header's; ``triggers`` are further client events fired
     with it."""
     from starlette.responses import HTMLResponse as _HR
+    if isinstance(msg, APIError):
+        msg = msg.data if isinstance(msg.data, dict) and msg.data.get("message_key") else error_message(msg)
     return _HR(
         "",
         status_code=200,
@@ -1525,7 +1546,7 @@ def _send_to_option_list(items: list[dict], kind: str) -> FT:
                 Input(type="radio", name="target_id", value=eid, cls="send-to-radio"),
                 Span(label, cls="send-to-ref"),
                 Span(contact, cls="send-to-contact") if contact else None,
-                format_value(status, "badge", domain="doc_status") if status else None,
+                doc_status_badge(d.get("doc_type"), status) if status else None,
                 cls="send-to-option",
             )
         )
@@ -1720,7 +1741,8 @@ def setup_routes(app):
             ),
             _doc_type_intro(doc_type),
             date_bar,
-            _docs_content(state, docs, total_count, summary, chips, page, per_page, currency, lang),
+            _docs_content(state, docs, total_count, summary, chips, page, per_page, currency, lang,
+                          date_from, date_to),
             title=page_title(section_label_key),
             nav_active=_doc_nav_key(doc_type),
             lang=lang,
@@ -1746,7 +1768,8 @@ def setup_routes(app):
         lang = get_lang(request)
         can_export = role_has_permission(company.get("settings") or {}, _get_role(request), "import_export_data")
         return search_results(
-            _docs_content(state, docs, total_count, summary, chips, page, per_page, company.get("currency") or None, lang),
+            _docs_content(state, docs, total_count, summary, chips, page, per_page, company.get("currency") or None, lang,
+                          date_from, date_to),
             "/docs?" + _state_query(state),
             *_search_controls("docs", state, date_from, date_to, preset, can_export, lang, oob=True),
         )
@@ -2438,8 +2461,14 @@ celerpUpdateBulkAlloc();
             if isinstance(e, APIError) and e.status == 401:
                 raise
             if isinstance(e, APIError) and e.status == 404:
-                from starlette.responses import HTMLResponse as _HR
-                return _HR(f"<h2>{t('documents.document_not_found')}</h2><p><a href='/docs'>{t('documents.back_to_documents')}</a></p>", status_code=404)
+                # A missing document is final: the app's own page says so and leads back to the list.
+                from ui.components.files import files_error_block
+                return await base_shell(
+                    breadcrumbs([(t("nav.dashboard"), "/dashboard")]),
+                    files_error_block((t("documents.document_not_found"), " ",
+                                       A(t("documents.back_to_documents"), href="/docs")), 404),
+                    title=page_title("nav.invoices"), nav_active=_doc_nav_key("invoice"), request=request,
+                )
             doc = {}
 
         # Inject company fields so "My company info" box is populated
@@ -2454,10 +2483,7 @@ celerpUpdateBulkAlloc();
             try:
                 _resolved_contact = await api.get_contact(token, cid)
                 doc = prepare_document_output(doc, contact=_resolved_contact)
-                contact_shipping_addresses = [
-                    a for a in (_resolved_contact.get("addresses") or [])
-                    if isinstance(a, dict) and a.get("address_type") == "shipping"
-                ]
+                contact_shipping_addresses = _shipping_addresses(_resolved_contact)
             except Exception:
                 pass
 
@@ -2490,6 +2516,13 @@ celerpUpdateBulkAlloc();
             except Exception:
                 chart_accounts = []
             company_locations = []
+        elif doc.get("payments"):
+            # The payments table names each payment's account (a bank, or the account a
+            # withholding or starting balance settled from) by code and name.
+            try:
+                chart_accounts = (await api.get_chart(token)).get("items", [])
+            except Exception:
+                chart_accounts = []
 
         # History loaded lazily via HTMX GET /docs/{entity_id}/history
         ledger: list[dict] = []
@@ -2812,6 +2845,22 @@ celerpUpdateBulkAlloc();
             if isinstance(_all_locs, list) and any(unwrap_address(l.get("address")) for l in _all_locs):
                 return _company_address_picker(entity_id, value, _all_locs)
             # else: no usable location addresses -> fall through to the plain text input below.
+        if field == "contact_shipping_address":
+            # Once issued, Ship To shows as a click-to-edit value; editing it opens the same picker
+            # a draft shows (company locations on purchasing documents, the contact's addresses
+            # on sales documents).
+            try:
+                if doc.get("doc_type") in ("purchase_order", "consignment_in", "bill"):
+                    _loc_resp = await api.get_locations(token)
+                    _locs = _loc_resp.get("items") or _loc_resp.get("locations") or (_loc_resp if isinstance(_loc_resp, list) else [])
+                    if isinstance(_locs, list) and _locs:
+                        return _ship_to_picker(entity_id, value, _locs)
+                elif doc.get("contact_id"):
+                    return _contact_ship_to_picker(
+                        entity_id, value, _shipping_addresses(await api.get_contact(token, doc["contact_id"])),
+                        doc["contact_id"])
+            except APIError:
+                pass
         if field == "status":
             # Status is a state-machine field; transitions happen via lifecycle buttons only.
             # Return a non-editable display to block direct manipulation via URL.
@@ -3022,7 +3071,7 @@ celerpUpdateBulkAlloc();
                 await api.reprice_doc(token, entity_id, new_pl, int(version))
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            return _action_error(error_message(e))
+            return _action_error(e)
         # Contact, price_list, terms_template, or currency changes affect multiple sections - full page refresh
         if field in ("contact_id", "price_list", "terms_template"):
             from starlette.responses import Response as _R
@@ -3134,7 +3183,7 @@ celerpUpdateBulkAlloc();
             line_items[idx] = {**line_items[idx], field: value}
             await api.patch_doc(token, entity_id, {"line_items": line_items}, expected_version=doc.get("version"))
         except APIError as e:
-            return _action_error(error_message(e))
+            return _action_error(e)
         display_value = value
         if field == "account_code" and value:
             try:
@@ -3217,7 +3266,7 @@ celerpUpdateBulkAlloc();
             try:
                 await api.update_doc_note(token, entity_id, note_id, note)
             except APIError as e:
-                return _action_error(error_message(e))
+                return _action_error(e)
         return await _doc_notes_section_response(token, entity_id, is_list=False)
 
     @app.delete("/docs/{entity_id}/notes/{note_id}")
@@ -3287,7 +3336,7 @@ celerpUpdateBulkAlloc();
             try:
                 await api.update_list_note(token, entity_id, note_id, note)
             except APIError as e:
-                return _action_error(error_message(e))
+                return _action_error(e)
         return await _doc_notes_section_response(token, entity_id, is_list=True)
 
     @app.delete("/lists/{entity_id}/notes/{note_id}")
@@ -3514,7 +3563,7 @@ celerpUpdateBulkAlloc();
                     {"href": f"/inventory/{x['params']['id']}", "label": x["params"]["sku"]}
                     for x in refused["params"]["lots"]])
             # Return error inline
-            return _action_error(error_message(e))
+            return _action_error(e)
         return _R("", status_code=204, headers={**notice, "HX-Redirect": f"/docs/{entity_id}"})
 
     # T4: Record payment
@@ -3549,7 +3598,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 raise
-            return _action_error(error_message(e))
+            return _action_error(e)
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     # T1: Convert quotation to invoice
@@ -3565,22 +3614,25 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 raise
-            return _action_error(error_message(e))
+            return _action_error(e)
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{target_id}"})
 
     def _draw_picks(form) -> dict:
         """The Invoice selected panel as a draw request: the units of each selected line by its
         line id and the draft invoice chosen (None for a new one)."""
         quantities = {}
+        # A selected line with nothing out sends no quantity; the server says why it cannot be invoiced.
+        picked = [str(form.get(k)) for k in sorted((k for k in form.keys() if re.fullmatch(r"pick_\d+", k)),
+                                                    key=lambda k: int(k[5:])) if form.get(k)]
         for idx, qty in _selected_line_quantities(form):
             line_id = str(form.get(f"line_id_{idx}") or "")
             if qty is None:
                 raise ValueError(t("documents.select_lines_to_invoice"))
             if line_id:
                 quantities[line_id] = qty
-        if not quantities:
+        if not quantities and not picked:
             raise ValueError(t("documents.select_lines_to_invoice"))
-        return {"line_ids": list(quantities), "quantities": quantities,
+        return {"line_ids": [*quantities, *picked], "quantities": quantities,
                 "target_doc_id": str(form.get("target_doc_id") or "").strip() or None}
 
     # Invoice selected: chosen units of a memo onto a new or a draft invoice of its customer.
@@ -3654,7 +3706,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 raise
-            return _action_error(error_message(e))
+            return _action_error(e)
         summary = _receive_summary(result.get("line_counts"))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}",
                                                 **(toast_header(summary, "info") if summary else {})})
@@ -3702,7 +3754,7 @@ celerpUpdateBulkAlloc();
             line = (data.get("params") or {}).get("line")
             if data.get("message_key") in _RETURN_BY_LOT_KEYS and isinstance(line, int):
                 return _action_error(error_message(e), celerpOpenReturnLots={"line": line})
-            return _action_error(error_message(e))
+            return _action_error(e)
         count = len({idx for idx, _, _ in picked_lots}) or len(lines)
         done = t(f"documents.return_done_{'one' if count == 1 else 'many'}", n=count)
         # Goods already paid for come back as a supplier credit note: say so until it is read.
@@ -3723,7 +3775,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 raise
-            return _action_error(error_message(e))
+            return _action_error(e)
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}",
                                                 **toast_header(t("documents.receipt_undone"), "info")})
 
@@ -3755,7 +3807,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 raise
-            return _action_error(error_message(e))
+            return _action_error(e)
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     # ---- Payment management routes ----
@@ -3774,7 +3826,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 raise
-            return _action_error(error_message(e))
+            return _action_error(e)
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     @app.post("/docs/{entity_id}/delete-payment")
@@ -3790,7 +3842,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 raise
-            return _action_error(error_message(e))
+            return _action_error(e)
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     async def _apply_note(request: Request, entity_id: str, apply):
@@ -3807,7 +3859,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 raise
-            return _action_error(error_message(e))
+            return _action_error(e)
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     @app.post("/docs/{entity_id}/apply-credit")
@@ -3836,7 +3888,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 raise
-            return _action_error(error_message(e))
+            return _action_error(e)
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     @app.delete("/docs/bulk-draft")
@@ -3855,7 +3907,7 @@ celerpUpdateBulkAlloc();
         try:
             await api.delete_bulk_drafts(token, doc_ids)
         except APIError as e:
-            return _action_error(error_message(e))
+            return _action_error(e)
         # Reload once the docs are actually gone (htmx triggers a full refresh).
         return _R("", status_code=204, headers={"HX-Refresh": "true"})
 
@@ -3875,7 +3927,7 @@ celerpUpdateBulkAlloc();
         try:
             result = await api.create_shipment_from_docs(token, doc_ids)
         except APIError as e:
-            return _action_error(error_message(e))
+            return _action_error(e)
         ship_id = result.get("entity_id") or result.get("id", "")
         return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{ship_id}"})
 
@@ -3925,7 +3977,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 raise
-            return _action_error(error_message(e))
+            return _action_error(e)
         # A doc concurrently closed, already paid, or shrunk under its row lock is skipped
         # by the API, not paid. Report every skipped doc by name and reason so the user is
         # never told a partial run fully succeeded; only a clean run refreshes the list.
@@ -4079,7 +4131,7 @@ celerpUpdateBulkAlloc();
             )
 
         payment_table = Div(Table(
-            Thead(Tr(Th(t("th.date")), Th(t("th.document")), Th(t("page.contact_detail")), Th(t("label.method")), Th(t("label.reference")), Th(t("label.amount")), Th(t("th.status")))),
+            Thead(Tr(Th(t("th.date")), Th(t("th.document")), Th(t("page.contact_detail")), Th(t("label.method")), Th(t("label.reference")), Th(t("label.amount"), cls="cell--number"), Th(t("th.status")))),
             Tbody(*[_pay_row(p) for p in payments_list]) if payments_list else Tbody(Tr(Td(t("doc.no_payments_found"), colspan="7", cls="empty-state-msg"))),
             cls="data-table sticky-head", id="payments-table",
         ), cls="table-scroll-wrap")
@@ -4179,7 +4231,7 @@ celerpUpdateBulkAlloc();
         try:
             return _share_panel(entity_id, await api.get_share_status(token, entity_id), await _company_today(token))
         except APIError as e:
-            return _action_error(error_message(e))
+            return _action_error(e)
 
     @app.post("/docs/{entity_id}/share")
     async def create_share_link_route(request: Request, entity_id: str):
@@ -4192,7 +4244,7 @@ celerpUpdateBulkAlloc();
         try:
             return _share_panel(entity_id, await api.create_share_link(token, entity_id, expires_at), await _company_today(token))
         except APIError as e:
-            return _action_error(error_message(e))
+            return _action_error(e)
 
     @app.delete("/docs/{entity_id}/share")
     async def revoke_share_link_route(request: Request, entity_id: str):
@@ -4203,7 +4255,7 @@ celerpUpdateBulkAlloc();
         try:
             return _share_panel(entity_id, await api.revoke_share_link(token, entity_id), await _company_today(token))
         except APIError as e:
-            return _action_error(error_message(e))
+            return _action_error(e)
 
     # -----------------------------------------------------------------------
     # Fulfillment toggle routes
@@ -4234,7 +4286,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 raise
-            return _action_error(error_message(e))
+            return _action_error(e)
         # Goods another invoice named: say whose, and that it can no longer ship them, in a
         # notice that stays until it is closed.
         moved = (answer.get("taken_from") or []) if isinstance(answer, dict) else []
@@ -4334,7 +4386,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 raise
-            return _action_error(error_message(e))
+            return _action_error(e)
         try:
             doc = await api.get_doc(token, entity_id)
         except Exception:
@@ -4353,7 +4405,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 raise
-            return _action_error(error_message(e))
+            return _action_error(e)
         try:
             doc = await api.get_doc(token, entity_id)
         except Exception:
@@ -4507,7 +4559,7 @@ celerpUpdateBulkAlloc();
         try:
             r = await api.download_doc_file(token, entity_id, file_id)
         except APIError as e:
-            return _action_error(error_message(e))
+            return _action_error(e)
         return _R(content=r.content, status_code=r.status_code, headers=dict(r.headers))
 
     @app.get("/lists")
@@ -4560,7 +4612,7 @@ celerpUpdateBulkAlloc();
             _list_type_tabs(list_type, state),
             # Self-explanatory page: the shipping tab says what these are and what to do next.
             (P(t("lists.shipping_intro", lang), cls="section-hint") if list_type == "shipping_doc" else ""),
-            _lists_content(state, lists, filtered_total, summary, page, per_page, lang),
+            _lists_content(state, lists, filtered_total, summary, page, per_page, lang, date_from, date_to),
             title=page_title("page.lists"),
             nav_active="lists",
             request=request,
@@ -4591,7 +4643,7 @@ celerpUpdateBulkAlloc();
         lang = get_lang(request)
         can_export = role_has_permission(company.get("settings") or {}, _get_role(request), "import_export_data")
         return search_results(
-            _lists_content(state, lists, filtered_total, summary, page, per_page, lang),
+            _lists_content(state, lists, filtered_total, summary, page, per_page, lang, date_from, date_to),
             "/lists?" + _state_query(state),
             *_search_controls("lists", state, date_from, date_to, preset, can_export, lang, oob=True),
         )
@@ -4987,7 +5039,7 @@ celerpUpdateBulkAlloc();
             try:
                 await api.change_list_type(token, entity_id, value)
             except APIError as e:
-                return _action_error(error_message(e))
+                return _action_error(e)
             return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"})
         if field == "contact_id":
             if value == "__new__":
@@ -4996,14 +5048,14 @@ celerpUpdateBulkAlloc();
                 # The backend copies the customer's details, currency and prices in the same save.
                 await api.patch_list(token, entity_id, {"contact_id": value}, expected_version=_form_version(form))
             except APIError as e:
-                return _action_error(error_message(e))
+                return _action_error(e)
             # Customer details and repriced lines change together - re-render the page.
             return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"})
         try:
             result = await api.patch_list(token, entity_id, {field: value})
             lst = await api.get_list(token, entity_id)
         except APIError as e:
-            return _action_error(error_message(e))
+            return _action_error(e)
         cell = _doc_display_cell(entity_id, field, lst.get(field), "list")
         return _R(
             to_xml(cell),
@@ -5115,7 +5167,7 @@ celerpUpdateBulkAlloc();
             if isinstance(e.data, dict) and e.data.get("code") == "list_old_rule_total":
                 return _action_error(error_message(e), action={
                     "href": "#list-old-rule-notice", "label": t("documents.btn_recalculate_total")})
-            return _action_error(error_message(e))
+            return _action_error(e)
         return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"})
 
     async def _audit_line_tbody(token: str, entity_id: str, offset: int, limit: int) -> FT:
@@ -5298,7 +5350,7 @@ celerpUpdateBulkAlloc();
         try:
             await api.set_audit_count(token, entity_id, item_id, cq)
         except APIError as e:
-            return _action_error(error_message(e))
+            return _action_error(e)
         display_val = f"{float(cq):g}" if cq is not None else _EMPTY
         edit_url = f"/lists/{entity_id}/line/{item_id}/counted/edit"
         return Div(
@@ -5465,7 +5517,9 @@ def _doc_table(
     lang: str = "en",
     currency: str | None = None,
     is_drafts_view: bool = False,
+    period: tuple[str, str, str] | None = None,
 ) -> FT:
+    """``period`` is the (from, to, All time url) window the list shows, for its empty state."""
     # Per-doc-type empty-state labels: (no_docs_key, create_btn_key)
     _EMPTY_STATE_KEYS: dict[str, tuple[str, str]] = {
         "invoice": ("label.no_documents_yet", "btn.new_invoice"),
@@ -5482,8 +5536,11 @@ def _doc_table(
     if not docs:
         dt_slug = doc_type if doc_type else "invoice"
         empty_keys = _EMPTY_STATE_KEYS.get(dt_slug, ("label.no_documents_yet", "btn.new_document"))
+        windowed = period_empty_text(period, lang)
         return Div(
-            empty_state_cta(t(empty_keys[0], lang), t(empty_keys[1], lang), f"/docs/create-blank?type={dt_slug}", hx_post=True),
+            empty_state_cta(windowed or t(empty_keys[0], lang), t(empty_keys[1], lang),
+                            f"/docs/create-blank?type={dt_slug}", hx_post=True,
+                            more=(period_all_time_link(period, lang, "btn btn--secondary"),) if windowed else ()),
             id="doc-table",
         )
 
@@ -5538,7 +5595,7 @@ def _doc_table(
             Td(format_value(issue_date, "date")),
             *([Td(format_value(d.get("_updated_at"), "date"))] if is_drafts_view else [Td(format_value(due_date, "date"))]),
             *money_tds,
-            Td(format_value(d.get("status"), "badge", domain="doc_status")),
+            Td(doc_status_badge(d.get("doc_type"), d.get("status"))),
             Td(t("documents.accounting_sync_excluded") if d.get("accounting_sync_excluded")
                else t("documents.accounting_sync_included")),
             id=f"doc-{eid}",
@@ -5668,7 +5725,7 @@ def _doc_table(
             }}));
             if (keys.size <= 1) return;
             e.preventDefault();
-            if (window.confirm({_json.dumps(t("shipment.mixed_confirm"))})) e.detail.issueRequest(true);
+            celerpConfirm({_json.dumps(t("shipment.mixed_confirm"))}).then(function(yes) {{ if (yes) e.detail.issueRequest(true); }});
         }});
     }}
     // Bulk delete now runs via htmx on the button (hx-delete + HX-Refresh); the
@@ -5856,7 +5913,7 @@ def _doc_display_cell(entity_id: str, field: str, value, doc_type: str = "") -> 
     # Status is a state-machine field; transitions happen via lifecycle buttons only.
     if field == "status":
         return Div(
-            format_value(value, "badge", domain="doc_status"),
+            doc_status_badge(doc_type, value),
             cls="editable-cell",
         )
     return Div(
@@ -5958,11 +6015,14 @@ def _note_target_options(doc: dict, candidates: list[dict]) -> list[tuple[str, s
 
 
 def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_operator: bool = True,
-                     targets: list[dict] | None = None, tz: str | None = None) -> FT:
+                     targets: list[dict] | None = None, tz: str | None = None,
+                     chart_accounts: list[dict] | None = None) -> FT:
     """Shared payment/credit section for invoices, bills, and customer and supplier credit notes.
 
     DRY: one function, different labels based on doc_type. ``targets`` holds the contact's
     documents a credit note may be applied to; the picker shows only those still open.
+    Each payment's account reads by code and name from ``chart_accounts`` (``account_label``),
+    the bare code only for an account the chart no longer holds.
     Hidden for drafts, void docs, and non-payable doc types.
     """
     from celerp_docs.doc_constants import CREDIT_APPLICATION_METHODS
@@ -6001,6 +6061,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
     today = business_today(tz).isoformat()
 
     # --- Payment history table ---
+    account_names = {a.get("code"): account_label(a) for a in chart_accounts or [] if a.get("code")}
     history_rows = []
     for p in payments:
         voided = p.get("status") == "voided"
@@ -6019,7 +6080,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
             _prefix = "CN" if p_method == "credit_note" else "SCN"
             link_col = Td(A(f"{_prefix} {p_source.split(':')[-1][:12]}", href=f"/docs/{p_source}", cls="table-link"))
         else:
-            link_col = Td(p_bank or EMPTY)
+            link_col = Td(account_names.get(p_bank, p_bank) or EMPTY)
 
         row_cls = "data-row" + (" payment-voided" if voided else "")
         void_cell = Td("")
@@ -6074,6 +6135,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
                     ),
                     cls="void-inline",
                 ),
+                cls="payment-actions",
             )
         else:
             void_cell = Td()
@@ -6094,7 +6156,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
     if history_rows:
         _hist_header = t("documents.applied_to") if is_credit_note else t("documents.bank")
         history_table = Table(
-            Thead(Tr(Th(t("th.date")), Th(t("label.method")), Th(_hist_header), Th(t("label.reference")), Th(t("label.amount")), Th(""))),
+            Thead(Tr(Th(t("th.date")), Th(t("label.method")), Th(_hist_header), Th(t("label.reference")), Th(t("label.amount"), cls="cell--number"), Th(""))),
             Tbody(*history_rows),
             cls="data-table data-table--compact",
         )
@@ -6342,6 +6404,12 @@ def _ship_to_picker(doc_id: str, current_address: str, locations: list, is_list:
     ) if locations else _doc_display_cell(doc_id, "contact_shipping_address", current_address or "--")
 
 
+def _shipping_addresses(contact: dict) -> list[dict]:
+    """A contact's shipping addresses, the choices of a sales document's Ship To."""
+    return [a for a in (contact.get("addresses") or [])
+            if isinstance(a, dict) and a.get("address_type") == "shipping"]
+
+
 def _contact_ship_to_picker(doc_id: str, current_address: str, contact_shipping_addresses: list, contact_id: str = "") -> FT:
     """Sales-doc Ship To: dropdown of contact's shipping addresses; GDR Add new → contact detail."""
     def _addr_text(a: dict) -> str:
@@ -6498,14 +6566,16 @@ _RETURN_BY_LOT_KEYS = ("docs.return_line_by_lot", "docs.return_line_measure_lots
 
 
 def _line_action_rows(line_items: list, available, unit, none_left: str, unit_map: dict, note=None,
-                      extra=None) -> list:
+                      extra=None, refusable: bool = False) -> list:
     """One row per document line for a form acting on the selected lines, a fieldset the page
     script shows and enables only while its line is selected. A line with something to act on
     offers all of it, ``available(line)`` in ``unit(line)``, stepping by what that unit allows in
     ``unit_map``; any other line says ``none_left``
     and submits nothing. ``note(line, has_some)``, when given, may return a plain reason shown
     in place of ``none_left`` or beside the field. ``extra(line, index)``, when given, returns
-    further fields shown after the quantity of a line that has something to act on."""
+    further fields shown after the quantity of a line that has something to act on. With
+    ``refusable``, a selected line with nothing to act on still names itself (``pick_<i>``), so
+    the server can say why it cannot be acted on rather than the form going quiet."""
     rows = []
     for i, li in enumerate(line_items):
         qty = available(li)
@@ -6513,6 +6583,8 @@ def _line_action_rows(line_items: list, available, unit, none_left: str, unit_ma
         why = note(li, qty > 1e-9) if note else ""
         if qty <= 1e-9:
             body = [label, Span(why or none_left, cls="text-muted")]
+            if refusable and li.get("line_id"):
+                body.append(Input(type="hidden", name=f"pick_{i}", value=li["line_id"]))
         else:
             body = [label, _line_qty_input(f"qty_{i}", qty, unit(li), qty, step=quantity_step(unit(li), unit_map)),
                     *(extra(li, i) if extra else [])]
@@ -6841,7 +6913,7 @@ async def doc_detail_connectors(company: dict) -> set[str]:
 def _tax_label(tax: dict) -> str:
     """A tax as the line's tax choice names it: its code (a company tax's name), rate in brackets."""
     name = tax.get("code") or tax.get("name") or tax.get("label") or t("documents.tax")
-    return f"{name} ({float(tax.get('rate', 0) or 0)}%)"
+    return f"{name} ({plain_number(float(tax.get('rate', 0) or 0))}%)"
 
 
 def _held_taxes(value) -> list:
@@ -7000,7 +7072,9 @@ def _memo_take_rows(doc: dict, currency: str) -> list:
         # None on a memo no draw can come from (draft, closed, void): nothing is still on it to bill.
         still = ([Div(Span(t("documents.memo_still_on_memo"), cls="total-label"),
                       Span(fmt_money(float(fixed["still_on_memo"]), currency), id="doc-still-on-memo",
-                           cls="total-value"), cls="total-row")]
+                           cls="total-value"), cls="total-row"),
+                  P(t("documents.memo_nothing_out_hint" if _nothing_out(doc) else "documents.memo_still_on_memo_hint"),
+                    cls="form-hint total-hint")]
                  if fixed.get("still_on_memo") is not None else [])
         return [*taken, *still]
     return [Div(A(t("documents.invoice_amount_from_memo", amounts=_fixed_amounts_text(tk, currency),
@@ -7009,13 +7083,38 @@ def _memo_take_rows(doc: dict, currency: str) -> list:
             for tk in doc.get("memo_fixed_taken") or [] if _fixed_amounts_text(tk, currency)]
 
 
+def _nothing_out(doc: dict) -> bool:
+    """True when no line of a memo has been shipped to the customer yet."""
+    lines = [li for li in doc.get("line_items") or [] if li.get("shipped_label")]
+    return bool(lines) and all(li["shipped_label"] == "Not shipped" for li in lines)
+
+
+# A memo line's shipped state as get_doc derives it (shipped_label) -> its catalog key.
+SHIPPED_LABEL_KEYS = {
+    "Returned": "documents.line_label_returned",
+    "Not shipped": "documents.line_label_not_shipped",
+    "On Memo": "inventory.status_on_memo",
+    "Sold": "enum.item_status.sold",
+}
+
+
+def _shipped_label(li: dict) -> str:
+    """A memo line's shipped state in the user's language, or "" when it was not derived."""
+    key = SHIPPED_LABEL_KEYS.get(li.get("shipped_label") or "")
+    return t(key) if key else ""
+
+
 def _draw_panel(entity_id: str, doc: dict, targets: list | None, unit_map: dict) -> FT:
     """Invoice selected on a memo: the units of each selected line to invoice (all it has out
     unless changed), the draft invoice of the same customer to add them to or a new one, and
     the server's preview of what that invoice bills and what stays on the memo."""
     lines = doc.get("line_items") or []
+    # A line with nothing out says where its goods are and still asks the preview, which says
+    # what to do (set it as shipped first) rather than leaving nothing to confirm.
     rows = _line_action_rows(lines, lambda li: float(li.get("out_quantity") or 0),
-                             lambda li: li.get("unit") or "", t("documents.line_label_not_shipped"), unit_map)
+                             lambda li: li.get("unit") or "", t("documents.line_label_not_shipped"), unit_map,
+                             note=lambda li, has_some: "" if has_some else _shipped_label(li),
+                             refusable=True)
     options = [("", t("documents.invoice_target_new")), *((tid, ref) for tid, ref in targets or [])]
     return Form(
         *rows,
@@ -7167,6 +7266,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
 
     _is_vendor_doc = doc_type in ("bill", "purchase_order", "consignment_in")
     ref = _pick("ref_id", "doc_number", "ref", "external_id") or entity_id
+    _memo_self = (entity_id, ref) if doc_type == "memo" else None
 
     def _cell(field: str, value) -> FT:
         """Editable display cell, routing to the correct /docs/ or /lists/ URL."""
@@ -7794,7 +7894,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     else:
         _pl_bar = Div(
             Span(t("doc.price_list"), cls="meta-label"),
-            Span(_current_pl or "-", cls="meta-value"),
+            Span(_current_pl or EMPTY, cls="meta-value"),
             cls="price-list-bar",
             style="display:flex;align-items:center;gap:0.5rem;justify-content:flex-end;max-width:250px;margin-left:auto;margin-bottom:0.5rem;padding-right:8px;",
         ) if _current_pl else ""
@@ -8035,6 +8135,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 # only the secondary measure (the one qty is NOT) — same skip rule as the
                 # print/finalized view; locks + values come from the shared helper.
                 _locks = measure_locks(_meta, allow_split=_allow_split)
+                if li.get("drawn_from"):
+                    # A line invoiced from a memo keeps the measures of the lot it was drawn with.
+                    _locks = {**_locks, "pcs_locked": True, "weight_locked": True}
                 _qty_disabled = _locks["qty_locked"]
                 _qty_measure = "weight" if _meta.get("qty_is_weight") else ("pieces" if _meta.get("qty_is_pieces") else "")
                 _pcs_val, _weight_val, _wu, _qip, _qiw = resolve_line_measures(li, item_meta=_meta)
@@ -8066,7 +8169,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             if _draft_show_item_status:
                 cells.insert(1, _item_status_badge_cell(
                     (item_status_map or {}).get(li_entity_id, ""), li_entity_id,
-                    status_doc=_line_status_doc(li, li_entity_id, item_status_doc_map),
+                    status_doc=_line_status_doc(li, li_entity_id, item_status_doc_map,
+                                               (item_status_map or {}).get(li_entity_id, ""), _memo_self),
                     held=_line_held(li, (item_status_doc_map or {}).get(li_entity_id))))
             if category_cell:
                 cells.append(category_cell)
@@ -8175,7 +8279,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             audited = pol["audit"] and li.get("audited_at") is not None
             adjusted = pol["audit"] and bool(li.get("adjusted"))
             _row_cls = "data-row--adjusted" if adjusted else ("data-row--audited" if audited else "")
-            return Tr(*cells, cls=_row_cls) if _row_cls else Tr(*cells)
+            _row_attrs = {"cls": _row_cls} if _row_cls else {}
+            if li.get("drawn_from"):
+                _row_attrs["data_drawn"] = "1"
+            return Tr(*cells, **_row_attrs)
 
         def _li_empty_row(target: dict | None) -> FT:
             """An empty line row starting with the taxes default_line_taxes gives a new line on
@@ -9546,7 +9653,7 @@ function celerpOpenDiscount() {{
     celerpDiscType((_hasExisting && tEl && tEl.value) ? tEl.value : 'percentage');
     // Nothing to remove yet -> the secondary button just cancels.
     const rmBtn = document.getElementById('disc-remove-btn');
-    if (rmBtn) rmBtn.textContent = _hasExisting ? 'Remove' : 'Cancel';
+    if (rmBtn) rmBtn.textContent = _hasExisting ? {_json.dumps(t("btn.remove"))} : {_json.dumps(t("btn.cancel"))};
     const willOpen = !pop.classList.contains('disc-popover--open');
     pop.classList.toggle('disc-popover--open', willOpen);
     if (willOpen && input) {{ input.focus(); input.select(); }}
@@ -9646,11 +9753,13 @@ function _celerpCollectLines() {{
         const accountCode = row.querySelector('[data-name="account_code"]')?.value || null;
         const allowSplitting = row.querySelector('[data-name="allow_splitting"]')?.value === '1';
         const barcode = row.querySelector('[data-name="barcode"]')?.value || null;
-        const piecesEl = row.querySelector('[data-name="pieces"]');
+        // A row drawn from a memo shows its lot's measures but never sends them: the draw owns them.
+        const drawn = row.dataset.drawn === '1';
+        const piecesEl = drawn ? null : row.querySelector('[data-name="pieces"]');
         const pieces = piecesEl && piecesEl.value !== '' ? parseFloat(piecesEl.value) : null;
         const carried = {{}};
         for (const el of row.querySelectorAll('input[data-carry]')) carried[el.dataset.carry] = el.value === 'true' ? true : el.value;
-        const weightEl = row.querySelector('[data-name="weight"]');
+        const weightEl = drawn ? null : row.querySelector('[data-name="weight"]');
         const weight = weightEl && weightEl.value !== '' ? parseFloat(weightEl.value) : null;
         if (_celerpRowHasContent(row)) {{
             // A meaningful row with no usable quantity fails the whole save closed:
@@ -10234,7 +10343,7 @@ async function celerpCsvImport(input, entityId) {{
       return;
     }}
     var _confirm=(target==='reserved'?_L.confirm_set_reserved:_L.confirm_set_available);
-    if(!window.confirm(celerpCount(_confirm, rows.length))) return;
+    if(!(await celerpConfirm(celerpCount(_confirm, rows.length)))) return;
     // Persist pending edits first so the server sees every selected line, then act. A failed
     // save has already shown its reason; acting on top of it would use stale lines.
     if(!(await _celerpPersist())) return;
@@ -10279,10 +10388,10 @@ async function celerpCsvImport(input, entityId) {{
     if(sel) sel.value='';
     _hideBtns(); _update();
   }};
-  window.liBulkDeleteConfirmed=function(){{
+  window.liBulkDeleteConfirmed=async function(){{
     var rows=table?Array.prototype.slice.call(table.querySelectorAll('tbody .li-select:checked')):[];
     if(!rows.length) return;
-    if(!window.confirm(celerpCount(_L.confirm_delete_lines, rows.length))) return;
+    if(!(await celerpConfirm(celerpCount(_L.confirm_delete_lines, rows.length)))) return;
     rows.forEach(function(cb){{cb.closest('tr').remove();}});
     celerpUpdateTotals(); celerpAutoSave();
     if(sel) sel.value='';
@@ -10358,12 +10467,6 @@ async function celerpCsvImport(input, entityId) {{
         # Absent the derivation (a ledger-read fault degraded it away), the column
         # simply shows nothing.
         _show_shipped_label = doc_type == "memo" and bool(line_items)
-        _SHIPPED_LABEL_KEYS = {
-            "Returned": "documents.line_label_returned",
-            "Not shipped": "documents.line_label_not_shipped",
-            "On Memo": "inventory.status_on_memo",
-            "Sold": "enum.item_status.sold",
-        }
 
         # Account code -> its label (account_label), for finalized line display
         _acct_map: dict[str, str] = {
@@ -10395,16 +10498,17 @@ async function celerpCsvImport(input, entityId) {{
                 if _is_vendor_doc and line_receive_kind(li) != "stock":
                     cells.append(Td("", cls="col-item-status"))
                 elif _is_vendor_doc:
-                    cells.append(_badge_cell(_vendor_line_badge(li, status), cls="col-item-status"))
+                    cells.append(_badge_cell(_vendor_line_badge(li, status, bool(doc.get("receipt_unknown"))),
+                                            cls="col-item-status"))
                 else:
                     status_val = item_status_map.get(li_eid, "") if item_status_map else ""
                     cells.append(_item_status_badge_cell(
                         status_val, li_eid,
-                        status_doc=_line_status_doc(li, li_eid, item_status_doc_map),
+                        status_doc=_line_status_doc(li, li_eid, item_status_doc_map, status_val, _memo_self),
                         held=_line_held(li, (item_status_doc_map or {}).get(li_eid))))
             if _show_shipped_label:
                 _lbl = li.get("shipped_label")
-                _key = _SHIPPED_LABEL_KEYS.get(_lbl) if _lbl else None
+                _key = SHIPPED_LABEL_KEYS.get(_lbl) if _lbl else None
                 _text = t(_key) if _key else None
                 # Part taken back: say how much of the line is still out.
                 _still_out = float(li.get("out_quantity") or 0)
@@ -10473,7 +10577,7 @@ async function celerpCsvImport(input, entityId) {{
                 acct_code = li.get("account_code") or ""
                 acct_display = _acct_map.get(acct_code) or acct_code or ""
                 cells.append(Td(_li_field_display_cell(entity_id, str(idx), "account_code", acct_display), title=acct_display, cls="col-account"))
-            cells.append(Td(format_value(line_total, "money"), cls="cell--number col-total"))
+            cells.append(Td(format_value(line_total, "money", currency), cls="cell--number col-total"))
             if pol["show_onhand"]:
                 _item_key = li.get("item_id") or li.get("entity_id") or ""
                 _onhand = li.get("on_hand")  # frozen at Finalize; else the live qty
@@ -10655,7 +10759,7 @@ async function celerpCsvImport(input, entityId) {{
     if(sold){{
       msg=_L.sold_reserve_warn.replace('{{n}}', sold);
     }}
-    if(!window.confirm(msg)) return;
+    if(!(await celerpConfirm(msg))) return;
     if(!(await celerpLineAction(_liBase+_liEid+'/reserve-lines', rows, [['new_status','reserved']], _liKey(), _L.could_not_set_reserved)))
       return false;
     window.location.reload();
@@ -10692,7 +10796,7 @@ async function celerpCsvImport(input, entityId) {{
       // The whole line coming back needs no quantity: everything still out returns.
       if(qty!==max) fields.push([inp.name,String(qty)]);
     }}
-    if(!window.confirm(celerpCount(_L.confirm_set_available, acting.length))) return;
+    if(!(await celerpConfirm(celerpCount(_L.confirm_set_available, acting.length)))) return;
     if(!(await celerpLineAction(_liBase+_liEid+'/set-available', acting, fields, _liKey(), _L.could_not_set_available)))
       return false;
     window.location.reload();
@@ -10846,7 +10950,8 @@ async function celerpCsvImport(input, entityId) {{
             _rate_display = str(_rate_val) if _rate_val else "--"
             _contact_rows.append(Div(Div(t("label.conversion_rate"), cls="form-label"), _cell("conversion_rate", _rate_display), cls="form-group"))
         if not is_list and outstanding_value is not None:
-            _contact_rows.append(Div(Div(t("doc.outstanding"), cls="form-label"), Span(fmt_money(float(outstanding_value or 0), currency), id="doc-outstanding", cls="meta-value", **DOC_MONEY_ATTRS), cls="form-group"))
+            _outstanding_hint = P(t("doc.memo_outstanding_hint"), cls="form-hint") if doc_type == "memo" else ""
+            _contact_rows.append(Div(Div(t("doc.outstanding"), cls="form-label"), Span(fmt_money(float(outstanding_value or 0), currency), id="doc-outstanding", cls="meta-value", **DOC_MONEY_ATTRS), _outstanding_hint, cls="form-group"))
 
     _is_sub_template = doc_type in ("subscription_invoice", "subscription_po")
 
@@ -10923,6 +11028,8 @@ async function celerpCsvImport(input, entityId) {{
                 Div(
                     Div(Span("🚚", cls="section-icon"), H3(t("page.ship_to"), cls="section-title"), cls="section-header"),
                     Div(Div(t("doc.address"), cls="form-label"),
+                        _cell("contact_shipping_address", doc.get("contact_shipping_address") or "--")
+                        if not is_draft and not is_list else
                         _ship_to_picker(entity_id, doc.get("contact_shipping_address") or "", locations or [], is_list)
                         if _is_vendor_doc else
                         (_contact_ship_to_picker(entity_id, doc.get("contact_shipping_address") or "", contact_shipping_addresses or [], doc.get("contact_id") or "")
@@ -10968,7 +11075,8 @@ async function celerpCsvImport(input, entityId) {{
             cls="doc-section doc-section--totals",
         ),
         # Payment section (invoices, bills, credit notes - not drafts/voids)
-        _payment_section(doc, bank_accounts=bank_accounts, is_operator=_can_pay, targets=note_targets, tz=tz),
+        _payment_section(doc, bank_accounts=bank_accounts, is_operator=_can_pay, targets=note_targets, tz=tz,
+                         chart_accounts=chart_accounts),
         # Terms & Conditions + Note to customer (2 columns). Both are customer-facing, so an
         # internal money-less doc (production order) hides them - it uses the Internal Notes
         # section below instead.
@@ -10996,7 +11104,7 @@ async function celerpCsvImport(input, entityId) {{
                              placeholder=t("documents.customer_note_placeholder"), cls="form-input",
                              hx_post=f"{_base}/field/customer_note",
                              hx_trigger="blur", hx_swap="none") if is_draft
-                    else Div(doc.get("customer_note") or "-", cls="meta-value"),
+                    else Div(doc.get("customer_note") or EMPTY, cls="meta-value"),
                     cls="form-group",
                 ),
                 cls="doc-section doc-section--half",
@@ -11084,7 +11192,7 @@ _DOC_CARD_KINDS: dict[str, _DocCard] = {
     # The list with no status filter: every document but the drafts.
     "all": _DocCard("doc.all", "blue", (), count="total_count"),
     "draft": _DocCard("status.draft", "gray", (("status", "draft"),)),
-    "pro_forma": _DocCard("status.pro_forma", "gray", (("status", "draft"),)),
+    "pro_forma": _DocCard("enum.doc_status.pro_forma", "gray", (("status", "draft"),)),
     "all_issued": _DocCard("status.all_issued", "blue", (("all_issued", "1"),), "all_issued_count", "all_issued_total"),
     "awaiting_payment": _DocCard("status.awaiting_payment", "yellow", (("awaiting_only", "1"),),
                                  "awaiting_payment_count", "awaiting_payment_total"),
@@ -11237,11 +11345,13 @@ def _summary_bar(summary: dict, doc_type: str = "", currency: str | None = None,
 # List listing-page helpers (kept for /lists table view)
 # ---------------------------------------------------------------------------
 
-def _list_table(lists: list[dict], lang: str = "en") -> FT:
+def _list_table(lists: list[dict], lang: str = "en", period: tuple[str, str, str] | None = None) -> FT:
     if not lists:
+        windowed = period_empty_text(period, lang)
         return Div(
-            empty_state_cta(t("label.no_lists_yet", lang), t("btn.new_list", lang), "/lists/create-blank", hx_post=True,
-                            hint=t("lists.empty_hint", lang)),
+            empty_state_cta(windowed or t("label.no_lists_yet", lang), t("btn.new_list", lang), "/lists/create-blank",
+                            hx_post=True, hint=t("lists.empty_hint", lang),
+                            more=(period_all_time_link(period, lang, "btn btn--secondary"),) if windowed else ()),
             id="list-table",
         )
 
@@ -11270,7 +11380,7 @@ def _list_table(lists: list[dict], lang: str = "en") -> FT:
     return Table(
         Thead(Tr(
             Th(t("th.ref")), Th(t("th.doc_type")), Th(t("th.customer")),
-            Th(t("label.issue_date")), Th(t("th.items")), Th(t("th.weight")), Th(t("label.amount")),
+            Th(t("label.issue_date")), Th(t("th.items"), cls="cell--number"), Th(t("th.weight"), cls="cell--number"), Th(t("label.amount"), cls="cell--number"),
             Th(t("th.status")),
         )),
         Tbody(*[_row(d) for d in lists]),

@@ -159,34 +159,35 @@ class TestValidatePriceLists:
     def test_factor_must_be_positive_number(self):
         for bad in (0, -1, "abc"):
             err = validate_price_lists([{"name": "Trade", "multiplier": bad}, {"name": "Retail"}], "Retail")
-            assert "greater than 0" in err
+            assert err["message_key"] == "company.err_price_list_factor"
 
     def test_rounding_requires_factor(self):
         err = validate_price_lists([{"name": "Trade", "rounding": 5}, {"name": "Retail"}], "Retail")
-        assert "requires a factor" in err
+        assert err["message_key"] == "company.err_price_list_rounding_needs_factor"
 
     def test_rounding_must_be_positive_number(self):
         err = validate_price_lists([{"name": "Trade", "multiplier": 0.7, "rounding": 0}, {"name": "Retail"}], "Retail")
-        assert "greater than 0" in err
+        assert err["message_key"] == "company.err_price_list_rounding"
 
     def test_base_cannot_be_derived(self):
         err = validate_price_lists([{"name": "Retail", "multiplier": 0.9}], "Retail")
-        assert "base price list" in err
+        assert err["message_key"] == "company.err_price_list_base_factor"
 
     def test_cost_cannot_be_derived(self):
         err = validate_price_lists([{"name": "Cost", "multiplier": 0.5}, {"name": "Retail"}], "Retail")
-        assert "cannot be derived" in err
+        assert err["message_key"] == "company.err_price_list_cost_derived"
 
     def test_base_must_exist(self):
         err = validate_price_lists([{"name": "Retail"}], "Standard")
-        assert "does not exist" in err
+        assert err["message_key"] == "company.err_price_list_missing"
+        assert err["message"] == t("company.err_price_list_missing", "en", name="Standard")
 
     def test_unconfigured_base_binds_only_once_something_derives(self):
         assert validate_price_lists([{"name": "Standard"}], "Retail", base_explicit=False) is None
         err = validate_price_lists(
             [{"name": "Standard"}, {"name": "Trade", "multiplier": 0.7}], "Retail", base_explicit=False
         )
-        assert "does not exist" in err
+        assert err["message_key"] == "company.err_price_list_missing"
 
 
 class TestSmallHelpers:
@@ -264,7 +265,7 @@ async def test_reading_the_price_lists_shows_the_defaults_and_saves_nothing(clie
     await session.commit()
     r = await client.get("/companies/me/price-lists", headers=h)
     assert r.status_code == 200
-    assert [pl["name"] for pl in r.json()] == ["Retail", "Wholesale"]
+    assert [pl["name"] for pl in r.json()] == ["Retail", "Wholesale", "Cost"]
     await session.refresh(company)
     assert "price_lists" not in company.settings
     r = await client.patch("/companies/me/base-price-list", json={"name": "Wholesale"}, headers=h)
@@ -287,6 +288,7 @@ async def test_patch_base_price_list_rejects_missing_and_derived(client):
     assert (await _set_config(client, h)).status_code == 200
     r = await client.patch("/companies/me/base-price-list", json={"name": "Nope"}, headers=h)
     assert r.status_code == 422
+    assert r.json()["detail"]["message_key"] == "company.err_price_list_missing"
     r = await client.patch("/companies/me/base-price-list", json={"name": "Trade"}, headers=h)
     assert r.status_code == 422
     assert refusal_text(r.json()["detail"]) == t("company.err_price_list_derived", name="Trade")
@@ -304,7 +306,7 @@ async def test_patch_price_lists_validates(client):
     # A derived list requires the base to exist
     r = await _set_config(client, h, price_lists=[{"name": "Standard"}, {"name": "Trade", "multiplier": 0.7}])
     assert r.status_code == 422
-    assert "does not exist" in r.json()["detail"]
+    assert r.json()["detail"]["message_key"] == "company.err_price_list_missing"
 
 
 @pytest.mark.asyncio
@@ -318,7 +320,7 @@ async def test_unconfigured_base_frees_renames_until_something_derives(client):
     assert r.status_code == 200
     r = await _set_config(client, h, price_lists=[{"name": "Standard"}, {"name": "Wholesale"}])
     assert r.status_code == 422
-    assert "does not exist" in r.json()["detail"]
+    assert r.json()["detail"]["message_key"] == "company.err_price_list_missing"
 
 
 @pytest.mark.asyncio
@@ -555,28 +557,28 @@ class TestValidationGateHardening:
     def test_rejects_non_finite_factors(self):
         for bad in (float("inf"), "inf", "Infinity", 1e309, float("nan"), "nan"):
             err = validate_price_lists([{"name": "Retail"}, {"name": "Trade", "multiplier": bad}], "Retail")
-            assert err and "Factor" in err, bad
+            assert err and err["message_key"] == "company.err_price_list_factor", bad
 
     def test_rejects_boolean_factor_and_rounding(self):
         err = validate_price_lists([{"name": "Retail"}, {"name": "Trade", "multiplier": True}], "Retail")
-        assert err and "Factor" in err
+        assert err and err["message_key"] == "company.err_price_list_factor"
         err = validate_price_lists(
             [{"name": "Retail"}, {"name": "Trade", "multiplier": 0.7, "rounding": True}], "Retail"
         )
-        assert err and "Rounding" in err
+        assert err and err["message_key"] == "company.err_price_list_rounding"
 
     def test_rejects_oversized_factor_and_rounding(self):
         err = validate_price_lists([{"name": "Retail"}, {"name": "Trade", "multiplier": 2_000_000}], "Retail")
-        assert err and "at most" in err
+        assert err and err["message_key"] == "company.err_price_list_factor"
         err = validate_price_lists(
             [{"name": "Retail"}, {"name": "Trade", "multiplier": 0.7, "rounding": 2_000_000}], "Retail"
         )
-        assert err and "at most" in err
+        assert err and err["message_key"] == "company.err_price_list_rounding"
 
     def test_rejects_empty_and_duplicate_names(self):
-        assert "empty" in validate_price_lists([{"name": "  "}, {"name": "Retail"}], "Retail")
+        assert validate_price_lists([{"name": "  "}, {"name": "Retail"}], "Retail")["message_key"] == "company.err_price_list_name_empty"
         err = validate_price_lists([{"name": "Retail"}, {"name": "retail"}], "Retail")
-        assert err and "unique" in err
+        assert err and err["message_key"] == "company.err_price_list_name_taken"
 
     def test_new_cost_name_rejected_existing_grandfathered(self):
         from celerp.services.pricing import new_cost_name_error
@@ -584,7 +586,7 @@ class TestValidationGateHardening:
         stored = [{"name": "Cost"}, {"name": "Retail"}]
         assert new_cost_name_error([{"name": "Cost"}, {"name": "Retail"}], stored) is None
         err = new_cost_name_error([{"name": "Landed Cost"}, {"name": "Retail"}], stored)
-        assert err and "reserved" in err
+        assert err and err["message_key"] == "company.err_price_list_cost_name"
 
     def test_normalized_price_lists_coerces_to_float(self):
         from celerp.services.pricing import normalized_price_lists
@@ -684,10 +686,11 @@ async def test_patch_price_lists_rejects_exotic_factors_and_new_cost_names(clien
     assert r.status_code == 422
     r = await _set_config(client, h, price_lists=[{"name": "Retail"}, {"name": "Landed Cost"}])
     assert r.status_code == 422
-    assert "reserved" in r.json()["detail"]
+    assert r.json()["detail"]["message_key"] == "company.err_price_list_cost_name"
+    assert refusal_text(r.json()["detail"]) == t("company.err_price_list_cost_name", "en", name="Landed Cost")
     r = await _set_config(client, h, price_lists=[{"name": "Retail"}, {"name": "retail"}])
     assert r.status_code == 422
-    assert "unique" in r.json()["detail"]
+    assert r.json()["detail"]["message_key"] == "company.err_price_list_name_taken"
 
 
 @pytest.mark.asyncio
@@ -767,3 +770,44 @@ def test_settings_status_error_resets_span_and_toasts():
     assert "flash--error" not in body
     trigger = resp.headers["HX-Trigger"]
     assert "celerpToast" in trigger and "cannot be the base" in trigger
+
+
+@pytest.mark.asyncio
+async def test_a_company_without_a_cost_list_reads_and_saves_the_system_one(client, session):
+    """A company whose stored price lists hold no cost list (an older copy, an import) still
+    has the system's Cost list: it reads it, its items carry the cost columns, and saving
+    the lists as read stores it."""
+    from sqlalchemy import update
+
+    from celerp.models.company import Company
+    from celerp.services.auth import decode_access_token
+    token = await _register(client)
+    h = _auth(token)
+    company = await session.get(Company, uuid.UUID(decode_access_token(token)["company_id"]))
+    await session.execute(update(Company).where(Company.id == company.id).values(
+        settings={**company.settings, "price_lists": [{"name": "Retail"}, {"name": "Wholesale"}]}))
+    await session.commit()
+    lists = (await client.get("/companies/me/price-lists", headers=h)).json()
+    assert [pl["name"] for pl in lists] == ["Retail", "Wholesale", "Cost"]
+    schema = (await client.get("/companies/me/item-schema", headers=h)).json()
+    assert {"cost_price", "cost_price_total"} <= {f["key"] for f in schema}
+    r = await _set_config(client, h, price_lists=[*lists, {"name": "Trade", "multiplier": 0.7}])
+    assert r.status_code == 200, r.text
+    await session.refresh(company)
+    assert [pl["name"] for pl in company.settings["price_lists"]] == ["Retail", "Wholesale", "Cost", "Trade"]
+
+
+def test_every_default_lists_retail_then_wholesale_then_cost():
+    """One default set of price lists, in one order, wherever a company has none stored."""
+    from celerp.services.field_schema import effective_field_schema
+    from celerp.services.pricing import price_lists_in
+    assert [pl["name"] for pl in price_lists_in({})] == ["Retail", "Wholesale", "Cost"]
+    keys = [f["key"] for f in effective_field_schema({}) if f["key"].endswith("_price")]
+    assert keys == ["retail_price", "wholesale_price", "cost_price"]
+
+
+def test_a_new_cost_name_is_refused_with_what_to_do():
+    from celerp.services.pricing import new_cost_name_error
+    err = new_cost_name_error([{"name": "Retail"}, {"name": "Landed Cost"}], [{"name": "Retail"}])
+    assert err["params"] == {"name": "Landed Cost"}
+    assert "another name" in err["message"]

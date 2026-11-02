@@ -11,10 +11,24 @@ from sqlalchemy import select
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.importers.results import ImportOutcome, failure_reason
 from celerp.models.projections import Projection
-from celerp.services.currencies import require_currency_code
+from celerp.accounting_roles import catalog_refusal
+from celerp.services.currencies import require_currency_code, require_email, require_phone
 from celerp.services.peer_import import SourceRevision
+from ui.i18n import t
 
 CONTACT_CREATED = "crm.contact.created"
+CONTACT_WRITE_FIELDS = frozenset({
+    "name", "company_name", "website", "email", "phone", "currency",
+    "billing_address", "shipping_address", "tax_id", "contact_type",
+    "price_list", "payment_terms", "credit_limit", "attributes", "tags",
+})
+
+
+def require_contact_write_fields(values: dict) -> None:
+    if set(values) - CONTACT_WRITE_FIELDS:
+        raise HTTPException(status_code=422, detail=catalog_refusal("label.not_editable"))
+
+
 _NULLABLE_CONTACT_FIELDS = frozenset({
     "company_name", "email", "phone", "billing_address", "shipping_address", "currency",
 })
@@ -28,6 +42,20 @@ class CRMImportRecord(BaseModel):
     idempotency_key: str
     source_ts: str | None = None
     source_revision: SourceRevision = None  # a connected company's records only
+
+
+def require_contact_fields(values: dict, current: dict | None = None) -> None:
+    """Refuse (422) a contact write breaking the rules every contact keeps, whichever door
+    it comes through: a name that is not blank, a supported currency, a phone with enough
+    digits and one email address. ``values`` are the fields the write sets; ``current`` is
+    the contact as it stands, None for a new one. A currency the contact already holds is
+    kept even where ISO 4217 has since withdrawn it."""
+    if (current is None or "name" in values) and not str(values.get("name") or "").strip():
+        raise HTTPException(status_code=422, detail=catalog_refusal("contacts.err_name_required"))
+    if values.get("currency") != (current or {}).get("currency"):
+        require_currency_code(values.get("currency"))
+    require_phone(values.get("phone"))
+    require_email(values.get("email"))
 
 
 def contact_import_identity(data: dict) -> str:
@@ -69,26 +97,34 @@ async def import_contact_records(
     match_identity=False: its source keeps two same-named records apart and so does the
     import. One such contact takes the row's values (blank values leave a field
     as it is); a row with nothing new is skipped, so replaying a file writes nothing.
-    More than one refuses the row with nothing written. The caller runs one import per
-    company at a time and commits."""
-    rows = (await session.execute(
-        select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "contact")
+    More than one refuses the row with nothing written. The company's own contact is its
+    identity on every document and is changed only in Company details: a row that would
+    write it, by any match or by carrying ``is_self``, is refused. Every contact is locked
+    before matching, so a contact that becomes the company's own meanwhile is seen as such.
+    The caller commits."""
+    from celerp_contacts.references import lock_contacts
+
+    ids = (await session.execute(
+        select(Projection.entity_id).where(Projection.company_id == company_id, Projection.entity_type == "contact")
     )).scalars().all()
-    states = {r.entity_id: dict(r.state or {}) for r in rows}
+    states = {cid: dict(r.state or {}) for cid, r in (await lock_contacts(session, company_id, ids)).items()}
     outcome = ImportOutcome()
     for rec in records:
         label = str(rec.data.get("name") or rec.entity_id)
         if rec.event_type != CONTACT_CREATED:
             outcome.add(rec.entity_id, "rejected", f"{rec.entity_id}: event type {rec.event_type!r} is not import-safe")
             continue
+        if "is_self" in rec.data:
+            outcome.add(rec.entity_id, "rejected", f"{label}: {t('contacts.err_import_own_contact')}")
+            continue
         try:
-            require_currency_code(rec.data.get("currency"))
+            require_contact_write_fields(rec.data)
         except HTTPException as exc:
             outcome.add(rec.entity_id, "rejected", f"{label}: {failure_reason(exc)}")
             continue
         identity = contact_import_identity(rec.data)
         keyed = await find_event_by_idempotency(session, company_id, rec.idempotency_key)
-        # The company's own contact is kept in company settings, never matched by an import.
+        # A row sharing the identity of the company's own contact is another contact.
         candidates = {cid for cid, state in states.items() if match_identity and identity and _live(state)
                       and not state.get("is_self")
                       and contact_import_identity(state) == identity}
@@ -98,17 +134,25 @@ async def import_contact_records(
         if rec.entity_id in states and not _live(states[rec.entity_id]):
             outcome.add(rec.entity_id, "rejected", f"{label}: contact {rec.entity_id} was merged or deleted")
             continue
+        if any(states[cid].get("is_self") for cid in candidates):
+            outcome.add(rec.entity_id, "rejected", f"{label}: {t('contacts.err_import_own_contact')}")
+            continue
         if len(candidates) > 1:
             outcome.add(rec.entity_id, "rejected",
                         f"{label}: matches {len(candidates)} existing contacts ({', '.join(sorted(candidates))}); "
                         "merge them or give the row a unique email, phone or name")
             continue
+        contact_id = next(iter(candidates), None)
+        state = states[contact_id] if contact_id else None
+        incoming = {k: v for k, v in rec.data.items()
+                    if v is not None or (contact_id and allow_null_updates and k in _NULLABLE_CONTACT_FIELDS)}
         try:
-            if candidates:
-                contact_id = candidates.pop()
-                state = states[contact_id]
-                incoming = {k: v for k, v in rec.data.items()
-                            if v is not None or (allow_null_updates and k in _NULLABLE_CONTACT_FIELDS)}
+            require_contact_fields(incoming, state)
+        except HTTPException as exc:
+            outcome.add(rec.entity_id, "rejected", f"{label}: {failure_reason(exc)}")
+            continue
+        try:
+            if contact_id:
                 if "contact_type" in incoming:
                     incoming["contact_type"] = _imported_type(state.get("contact_type"), incoming["contact_type"])
                 changes = {k: {"old": state.get(k), "new": v} for k, v in incoming.items() if state.get(k) != v}
@@ -125,7 +169,7 @@ async def import_contact_records(
                 state.update({k: c["new"] for k, c in changes.items()})
                 outcome.add(contact_id, "updated")
                 continue
-            data = {"contact_type": "customer", **{k: v for k, v in rec.data.items() if v is not None}}
+            data = {"contact_type": "customer", **incoming}
             entry = await emit_event(
                 session, company_id=company_id, entity_id=rec.entity_id, entity_type="contact",
                 event_type=rec.event_type, data=data, actor_id=actor_id, location_id=None,
@@ -192,6 +236,11 @@ async def _emit_contact(company_id: str, idem_key: str, data: dict) -> str:
     from celerp.events.engine import connector_upsert
 
     data = {k: v for k, v in data.items() if v is not None}
+    try:
+        require_contact_write_fields(data)
+        require_contact_fields(data)
+    except HTTPException as exc:
+        raise ValueError(failure_reason(exc)) from None
     async with SessionLocal() as session:
         outcome = await connector_upsert(
             session, company_id=company_id, entity_type="contact",

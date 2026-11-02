@@ -90,7 +90,7 @@ def _connected_panel(deposit_account: str, bank_accounts: list[dict], saved: boo
         Form(Button(t("btn.disconnect"), type="submit", cls="btn btn--danger"),
              method="post", action="/settings/payments/disconnect",
              data_confirm=t("pay.disconnect_confirm"),
-             onsubmit="return confirm(this.dataset.confirm)",
+             onsubmit="event.preventDefault();var form=this;celerpConfirm(form.dataset.confirm).then(function(yes){if(yes)form.submit();})",
              style="margin-top:24px;"),
     )
 

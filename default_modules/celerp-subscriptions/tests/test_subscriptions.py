@@ -7,6 +7,8 @@ Lifecycle actions (pause/resume/cancel/generate) are at /subscriptions/<id>/<act
 """
 from __future__ import annotations
 
+from celerp.accounting_roles import period_locked_refusal
+
 import uuid
 
 import pytest
@@ -549,7 +551,7 @@ async def test_generate_in_a_locked_period_is_refused_and_writes_nothing(client,
 
     r = await client.post(f"/subscriptions/{eid}/generate", headers=h)
     assert r.status_code == 422, r.text
-    assert refusal_text(r.json()["detail"]) == t("error.period_locked", "en", date=date_text(date.today(), "en"))
+    assert refusal_text(r.json()["detail"]) == refusal_text(period_locked_refusal(date_text(date.today(), "en")))
     assert (await client.get("/docs?doc_type=invoice", headers=h)).json()["items"] == before
     assert await _generated(client, h, eid) == []
 
@@ -629,6 +631,6 @@ async def test_doctor_refuses_to_post_into_a_locked_period(client, session, auth
     missing = r.json()["results"][0]
     assert missing["fixed"] == 0
     assert [(d["doc_id"], d["doc_number"], d["blocked_reason"]) for d in missing["details"]] == [
-        (doc_id, "INV-OLD-4", t("error.period_locked", "en", date="31 Dec 2099"))]
+        (doc_id, "INV-OLD-4", refusal_text(period_locked_refusal("31 Dec 2099")))]
     await session.rollback()
     assert await _journal_entries(session, client, auth["headers"], doc_id) == []

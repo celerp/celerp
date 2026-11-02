@@ -132,6 +132,24 @@ def test_currency_guess_uses_timezone_country_first(playwright, fresh, locale, t
         browser.close()
 
 
+def test_choosing_a_country_moves_a_suggested_currency_never_a_chosen_one(playwright, fresh):
+    """Set up from a Bangkok browser for an Indian company: the baht was only a guess, so
+    choosing India brings the rupee. A currency the owner chose stays when the country changes."""
+    browser, ctx = _context(playwright, timezone_id="Asia/Bangkok")
+    try:
+        page = ctx.new_page()
+        page.goto(f"{fresh.ui}/setup", wait_until="networkidle")
+        assert _hidden(page, "currency") == "THB"
+        _choose(page, "country", "IN")
+        assert _hidden(page, "currency") == "INR"
+        assert "INR" in page.locator('.combobox-wrap:has(input[name="currency"]) .combobox-input').input_value()
+        _choose(page, "currency", "USD")
+        _choose(page, "country", "TH")
+        assert _hidden(page, "currency") == "USD"
+    finally:
+        browser.close()
+
+
 def test_timezone_hidden_field_filled_from_browser(playwright, fresh):
     """A1: the browser's timezone is stored with the company, by its current name even
     though Chrome reports this one by its old name, America/Buenos_Aires."""

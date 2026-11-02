@@ -20,7 +20,7 @@ from __future__ import annotations
 import pytest
 from fasthtml.common import to_xml
 
-from .conftest import release_held_routes
+from .conftest import answer_confirms, release_held_routes
 
 pytestmark = pytest.mark.browser
 
@@ -60,7 +60,7 @@ def test_submit_button_single_flights(page, ui_server, name, render, post_path, 
     # The Save forms carry hx-confirm on the submit button; auto-accept so the
     # request proceeds. The claim form has no confirm, so this is a harmless no-op
     # there.
-    page.on("dialog", lambda d: d.accept())
+    answer_confirms(page)
     # Hold the POST open so the in-flight (button-disabled) state persists across
     # the second click; released before teardown.
     held: list = []

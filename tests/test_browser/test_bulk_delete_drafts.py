@@ -8,6 +8,8 @@ import uuid
 
 import pytest
 
+from .conftest import answer_confirms
+
 pytestmark = pytest.mark.browser
 
 
@@ -30,7 +32,7 @@ def test_delete_is_offered_only_for_drafts(page, ui_server, api):
                                         "quantity": 1}).json()["id"]
     assert api.post("/items/bulk/make-available", json={"entity_ids": [stock_id]}).status_code == 200
 
-    page.on("dialog", lambda d: d.accept())
+    answer_confirms(page)
     page.goto(f"{ui_server}/inventory?q={tag}", wait_until="domcontentloaded")
     page.evaluate("window.CelerpSelection && window.CelerpSelection.clear()")
 
@@ -55,7 +57,7 @@ def test_the_row_menu_offers_delete_only_for_a_draft_and_a_refusal_keeps_the_row
                                         "quantity": 1}).json()["id"]
     assert api.post("/items/bulk/make-available", json={"entity_ids": [stock_id]}).status_code == 200
 
-    page.on("dialog", lambda d: d.accept())
+    answer_confirms(page)
     page.goto(f"{ui_server}/inventory?q={tag}", wait_until="domcontentloaded")
     draft_row, stock_row = (f"#row-{i.replace(':', '-')}" for i in (draft_id, stock_id))
     page.locator(draft_row).wait_for(timeout=8000)
@@ -116,7 +118,7 @@ def test_a_referenced_draft_moves_to_deleted_says_so_and_restore_brings_it_back(
     api.post("/items", json={"sku": f"DTV-{tag}", "name": "Variant", "sell_by": "piece", "quantity": 1,
                              "parent_item_id": parent_id})
 
-    page.on("dialog", lambda d: d.accept())
+    answer_confirms(page)
     page.goto(f"{ui_server}/inventory?q=DTP-{tag}", wait_until="domcontentloaded")
     page.evaluate("window.CelerpSelection && window.CelerpSelection.clear()")
     _select(page, parent_id)

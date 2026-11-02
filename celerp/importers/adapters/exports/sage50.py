@@ -594,11 +594,15 @@ class _Reader:
                         continue
                     net = -sign * ln.amount
                     quantity = abs(amount(tb.value(row, "quantity"), where))
+                    price = abs(amount(tb.value(row, "unit price"), where))
+                    if not quantity and not price:
+                        # A charge Sage keeps as an amount alone (rent, power) is one of its amount.
+                        quantity, price = Decimal(1), abs(net)
                     item = tb.value(row, "item id") or None
                     if item and item not in self.book.items:
                         self.book.items[item] = Item(item, ln.description or item)
                     lines.append(DocLine(item, ln.description, quantity if net >= 0 else -quantity,
-                                         abs(amount(tb.value(row, "unit price"), where)), None, net, [], ln.account))
+                                         price, None, net, [], ln.account))
                     charged.append(kind)
                 self._spread_taxes(lines, charged, taxes)
                 due = tb.value(first, "date due")

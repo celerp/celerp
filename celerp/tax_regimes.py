@@ -242,11 +242,48 @@ TAX_REGIMES: dict[str, _T] = {
 }
 
 
+# The countries a company can name to start with the tax rates in force there.
+TAX_COUNTRIES: tuple[str, ...] = tuple(code for code in TAX_REGIMES if code != "_default")
+
+
+def tax_country(value: str | None) -> str:
+    """The country code ``value`` names when Celerp has its tax rates, else ""."""
+    code = str(value or "").strip().upper()
+    return code if code in TAX_COUNTRIES else ""
+
+
+def country_name(value: str) -> str:
+    """A country as people read it: the catalog name of a tax country code, else the
+    value as written (an address may spell its country out)."""
+    code = tax_country(value)
+    if not code:
+        return value
+    from ui.i18n import t
+    return t(f"country.{code}")
+
+
 def get_regime(country_code: str | None) -> dict:
     """Return the tax regime for a country code (case-insensitive). Falls back to _default."""
     if not country_code:
         return TAX_REGIMES["_default"]
     return TAX_REGIMES.get(country_code.strip().upper(), TAX_REGIMES["_default"])
+
+
+# Which catalog Celerp set the company's sales taxes from: a tax country's code, or "" for the
+# generic list. Present only while those taxes are untouched; any other write of them drops it.
+TAXES_SEEDED_FOR = "taxes_seeded_for"
+
+
+def with_taxes(settings: dict, taxes: list[dict], seeded_for: str | None = None) -> dict:
+    """``settings`` with the company's sales taxes set to ``taxes``. ``seeded_for`` is the
+    catalog Celerp set them from; a write by anyone else passes none, so the list is the
+    company's own from then on and is never replaced automatically."""
+    out = {**settings, "taxes": taxes}
+    if seeded_for is None:
+        out.pop(TAXES_SEEDED_FOR, None)
+    else:
+        out[TAXES_SEEDED_FOR] = seeded_for
+    return out
 
 
 def generic_taxes() -> list[dict]:

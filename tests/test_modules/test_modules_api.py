@@ -26,6 +26,13 @@ pytestmark = pytest.mark.xdist_group("modules_api")
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+@pytest.fixture
+def manufacturing_not_started(monkeypatch):
+    """This process has not started Manufacturing, the module these tests turn off or delete."""
+    from test_helpers import mark_not_running
+    mark_not_running(monkeypatch, "celerp-manufacturing")
+
+
 async def _register(client, role: str = "admin") -> str:
     email = f"mod-test-{uuid.uuid4().hex[:8]}@test.test"
     r = await client.post(
@@ -211,7 +218,7 @@ class TestModulesAPIEndpoints:
         assert "version" in gem
 
     @pytest.mark.asyncio
-    async def test_list_modules_disabled_module_has_metadata(self, client, tmp_path):
+    async def test_list_modules_disabled_module_has_metadata(self, client, tmp_path, manufacturing_not_started):
         """A disabled (not running) module must still return description, author, version."""
         import shutil
         import os
@@ -500,7 +507,7 @@ class TestModuleProvenanceAndDelete:
 
     @pytest.mark.asyncio
     async def test_delete_allows_demoted_module_previously_refused_as_default(
-            self, client, tmp_path):
+            self, client, tmp_path, manufacturing_not_started):
         # The impostor (real default name, junk content) is deletable now, where
         # the old name-based guard refused it as a default.
         token = await _register(client)

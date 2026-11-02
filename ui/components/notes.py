@@ -45,6 +45,7 @@ def notes_tab(
     note_field: str = "note",   # key in note dict holding the text
     author_field: str = "author_name",
     tz: str = "UTC",
+    read_only: bool = False,
 ) -> FT:
     """Render a full-CRUD notes tab: add form + timeline with edit/delete.
 
@@ -92,7 +93,7 @@ def notes_tab(
     )
 
     if not notes:
-        return Div(note_form, P(t("label.no_notes_yet"), cls="empty-state-msg"))
+        return Div(*([] if read_only else [note_form]), P(t("label.no_notes_yet"), cls="empty-state-msg"))
 
     timeline = []
     for n in notes:
@@ -117,7 +118,7 @@ def notes_tab(
                 cls="note-header",
             ),
             P(text, cls="note-text"),
-            Div(
+            (Div(
                 Button(
                     t("btn.edit"),
                     hx_get=edit_url.format(note_id=note_id),
@@ -134,12 +135,12 @@ def notes_tab(
                     cls="btn btn--ghost btn--xs btn--danger",
                 ),
                 cls="note-actions",
-            ),
+            ) if not read_only else ""),
             cls="note-item",
             id=f"note-{safe_note_id}",
         ))
 
-    return Div(note_form, *timeline)
+    return Div(*([] if read_only else [note_form]), *timeline)
 
 
 def note_edit_form(

@@ -10,6 +10,8 @@ before the date exactly as a lock set in Settings does."""
 
 from __future__ import annotations
 
+from celerp.accounting_roles import period_locked_refusal
+
 import re
 import shutil
 import uuid
@@ -423,7 +425,7 @@ async def test_post_finalize_posting_on_or_before_lock_refused(real_client, real
     for day in (LOCKED_THROUGH.isoformat(), "2026-02-01"):
         r = await _post(real_client, headers, real_engine, run.company_id, day)
         assert r.status_code == 422, r.text
-        assert refusal_text(r.json()["detail"]) == t("error.period_locked", date=date_text(LOCKED_THROUGH))
+        assert refusal_text(r.json()["detail"]) == refusal_text(period_locked_refusal(date_text(LOCKED_THROUGH)))
 
 
 async def test_post_finalize_posting_after_lock_allowed(real_client, real_engine, monkeypatch, tmp_path):

@@ -2793,3 +2793,17 @@ async def test_set_item_status_rejects_disposed(client):
     assert "write" in detail
     # No status event emitted: the item is untouched.
     assert (await client.get(f"/items/{iid}", headers=h)).json()["status"] == "available"
+
+
+@pytest.mark.asyncio
+async def test_split_preview_of_an_item_out_of_stock_says_it_cannot_split(client):
+    """The item page asks for a split preview with no pick to retry, so an item that has left
+    stock is refused with a reason about splitting, not the picker's Try again advice."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={"status": "available", "sku": "GONE-SKU", "name": "Y", "quantity": 4, "sell_by": "piece", "allow_splitting": True}, headers=h)
+    item_id = r.json()["id"]
+    await client.post(f"/items/{item_id}/status", json={"new_status": "archived"}, headers=h)
+    prev = await client.get(f"/items/{item_id}/split-preview", headers=h)
+    assert prev.status_code == 404
+    assert prev.json()["detail"]["message_key"] == "inventory.err_split_not_in_stock"

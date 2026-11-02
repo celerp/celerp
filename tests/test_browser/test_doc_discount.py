@@ -131,6 +131,8 @@ def test_discount_value_and_type_can_be_changed(page, ui_server, api):
     _total_has(page, "90")
     _apply_disc(page, 20, "percentage")          # total 80
     _total_has(page, "80")
+    assert _poll(api, doc_id, lambda d: d.get("discount_type") == "percentage"
+                 and abs(float(d.get("total") or 0) - 80) < 0.01), "percentage discount not persisted"
     _apply_disc(page, 25, "flat")                # switch to flat 25 -> total 75
     _total_has(page, "75")
     assert _poll(api, doc_id, lambda d: d.get("discount_type") == "flat"

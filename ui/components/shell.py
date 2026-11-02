@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 from fasthtml.common import *
 
+from celerp.accounting_roles import PERIOD_LOCK_PATH
 from celerp.services.update import CARD_REASONS, PIP_BLOCKERS, REASON_CODES, reason_key
 from ui.config import COOKIE_NAME, get_role
 from ui.i18n import t, get_lang, available_langs, lang_label, refusal_text, try_again_pattern
@@ -203,6 +204,38 @@ function _celerpTryAgainWithin(root) {
 }
 document.addEventListener('htmx:load', function(e) { _celerpTryAgainWithin(e.detail.elt); });
 document.addEventListener('htmx:afterSwap', function(e) { _celerpTryAgainWithin(e.detail.target); });
+// The app's own confirmation dialog, never the browser's plain box: resolves true on Confirm, false on
+// Cancel or Esc. Every hx-confirm question opens it, so a control that asks first asks the same way
+// everywhere.
+function celerpConfirm(question) {
+  return new Promise(function(resolve) {
+    var dialog = document.createElement('dialog');
+    dialog.className = 'modal-dialog confirm-dialog';
+    var form = document.createElement('form');
+    form.method = 'dialog';
+    var text = document.createElement('p');
+    text.className = 'confirm-dialog__question';
+    text.textContent = question;
+    var actions = document.createElement('div');
+    actions.className = 'modal-dialog__actions';
+    [['', 'btn btn--ghost', window.__shellI18n.cancel], ['ok', 'btn btn--primary', window.__shellI18n.confirm]].forEach(function(b) {
+      var button = document.createElement('button');
+      button.value = b[0]; button.className = b[1]; button.textContent = b[2];
+      actions.append(button);
+    });
+    form.append(text, actions);
+    dialog.append(form);
+    dialog.addEventListener('close', function() { dialog.remove(); resolve(dialog.returnValue === 'ok'); });
+    document.body.append(dialog);
+    dialog.showModal();
+    actions.lastChild.focus();
+  });
+}
+document.addEventListener('htmx:confirm', function(e) {
+  if (!e.detail.question || e.defaultPrevented) return;
+  e.preventDefault();
+  celerpConfirm(e.detail.question).then(function(yes) { if (yes) e.detail.issueRequest(true); });
+});
 function celerpToast(message, type, persist, action) {
   var container = document.getElementById('toast-container');
   if (!container) { alert(message); return; }
@@ -292,7 +325,9 @@ function showGlobalUiError(message) {
 /* A click-to-edit cell is kept as it was shown just before its editor replaces it, so
    Escape can put it back in any editor, including those with no restore route of their
    own. The editor that consumed Escape itself (preventDefault) keeps its own restore.
-   The editor is removed, so its pending blur save never fires. */
+   The editor is removed, so its pending blur save never fires. The cell to restore is
+   recorded as soon as the editor is swapped in, not when it settles, so an Escape pressed
+   the moment the editor appears still puts the cell back. */
 var _cellBeforeEdit = null;
 document.addEventListener('htmx:beforeSwap', function(e) {
   /* A refusal the server marks as an answer (a cost changed since its editor opened) is
@@ -305,7 +340,7 @@ document.addEventListener('htmx:beforeSwap', function(e) {
   var t = e.detail.target;
   _cellBeforeEdit = (t && t.matches && t.matches('td.cell:not(.cell--editing)')) ? t.outerHTML : null;
 });
-document.addEventListener('htmx:afterSettle', function() {
+document.addEventListener('htmx:afterSwap', function() {
   if (_cellBeforeEdit === null) return;
   document.querySelectorAll('.cell--editing').forEach(function(c) {
     if (c._restoreHtml === undefined) c._restoreHtml = _cellBeforeEdit;
@@ -1581,7 +1616,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
       if (restartBtn) {
         restartBtn.addEventListener('click', function() {
-          if (!confirm(restartBtn.dataset.confirm)) return;
+          celerpConfirm(restartBtn.dataset.confirm).then(function(yes) {
+          if (!yes) return;
           var before = lastStatus && lastStatus.last_result ? lastStatus.last_result.at : null;
           restartBtn.disabled = true;
           fetch('/system/update', { method: 'POST' }).then(function(r) {
@@ -1599,6 +1635,7 @@ document.addEventListener('DOMContentLoaded', function() {
           }).catch(function() {
             restartBtn.disabled = false;
             setState(i18n.updateCheckFailed, false);
+          });
           });
         });
       }
@@ -2066,27 +2103,34 @@ _STICKY_HEADER_JS = """
 })();
 
 (function(){
-  // Scroll cue: a data table's box that scrolls sideways shades the edge it can still scroll
-  // toward (a box that does not scroll is never shaded) (app.css .scroll-more-left/right), so hidden columns read as there.
+  // Scroll cue: a data table's box or a tab strip that scrolls sideways shades the edge it can still
+  // scroll toward (a box that does not scroll is never shaded) (app.css .scroll-more-left/right), so
+  // hidden columns and tabs read as there.
   function update(box){
     var max = /auto|scroll/.test(getComputedStyle(box).overflowX) ? box.scrollWidth - box.clientWidth : 0;
     box.classList.toggle('scroll-more-right', max > 1 && box.scrollLeft < max - 1);
     box.classList.toggle('scroll-more-left', max > 1 && box.scrollLeft > 1);
     box.style.setProperty('--scroll-x', box.scrollLeft + 'px');
   }
-  // The box changes width with the window; the table changes width with its rows.
+  // The box changes width with the window; the table changes width with its rows. A swap that
+  // takes either out of the page ends the watch on it.
   var sizes = new ResizeObserver(function(entries){
-    entries.forEach(function(e){ update(e.target.matches('table') ? e.target.parentElement : e.target); });
-  });
-  function watch(){
-    document.querySelectorAll('table.data-table').forEach(function(t){
-      var box = t.parentElement;
-      if(!box || box.dataset.scrollCue) return;
-      box.dataset.scrollCue = '1';
-      box.addEventListener('scroll', function(){ update(box); }, {passive: true});
-      sizes.observe(box); sizes.observe(t);
+    entries.forEach(function(e){
+      var box = e.target.matches('table') ? e.target.parentElement : e.target;
+      if(!e.target.isConnected || !box){ sizes.unobserve(e.target); return; }
       update(box);
     });
+  });
+  function cue(box, inner){
+    if(!box || box.dataset.scrollCue) return;
+    box.dataset.scrollCue = '1';
+    box.addEventListener('scroll', function(){ update(box); }, {passive: true});
+    sizes.observe(box); if(inner) sizes.observe(inner);
+    update(box);
+  }
+  function watch(){
+    document.querySelectorAll('table.data-table').forEach(function(t){ cue(t.parentElement, t); });
+    document.querySelectorAll('.category-tabs').forEach(function(strip){ cue(strip); });
   }
   document.addEventListener('DOMContentLoaded', watch);
   document.addEventListener('htmx:afterSwap', watch);
@@ -2110,6 +2154,8 @@ def _shell_js_i18n(lang: str = "en") -> dict:
         "copied": t("shell.copied", lang),
         "comboPickOrAdd": t("shell.combo_pick_or_add", lang),
         "copyLabel": t("btn.copy", lang),
+        "cancel": t("btn.cancel", lang),
+        "confirm": t("btn.confirm", lang),
         "requestFailed": t("shell.request_failed", lang),
         "networkError": t("shell.network_error", lang),
         "markAsRead": t("shell.mark_as_read", lang),
@@ -3051,6 +3097,24 @@ def flash(msg: str, kind: str = "error", raw: bool = False) -> FT:
     return Div(content, cls=f"flash flash--{kind}", id="flash")
 
 
+def no_access_text(error=None, *, permission: str | None = None) -> str:
+    """Why the reader's role may not do this: the API's keyed refusal on *error* (an APIError),
+    or *permission* when the page checks it itself, naming what is missing. An unkeyed 403
+    reads as the plain catalog line."""
+    from celerp.services.permissions import missing_permission_text
+    data = getattr(error, "data", None)
+    keyed = isinstance(data, dict) and data.get("message_key")
+    return ((error.detail if keyed else "")
+            or (missing_permission_text(permission) if permission else "") or t("acct.not_authorized"))
+
+
+def no_access_banner(error=None, *, permission: str | None = None) -> FT:
+    """A page the reader's role may not open: no_access_text and the way back to the dashboard."""
+    return Div(P(no_access_text(error, permission=permission)),
+               A(t("error.back_to_dashboard"), href="/dashboard", cls="btn btn--secondary btn--sm"),
+               cls="error-banner")
+
+
 def secret_input(name: str, value: str = "", lang: str = "en", cls: str = "form-input", **attrs) -> FT:
     """A pasted secret (a copy or pairing link): masked, kept on a refused check so the
     user can look at it, and shown only when they click Show."""
@@ -3062,13 +3126,31 @@ def secret_input(name: str, value: str = "", lang: str = "en", cls: str = "form-
     )
 
 
+# A refusal the reader can resolve on one page: its key, that page and the catalog key naming it.
+# A refusal's key -> (href, label key); the href is formatted with the refusal's params.
+_REFUSAL_FIXES = {
+    "error.period_locked": (PERIOD_LOCK_PATH, "page.period_lock"),
+    "mfg.period_locked": (PERIOD_LOCK_PATH, "page.period_lock"),
+    "error.recon_entry_held": ("/accounting/reconcile/{recon_id}", "recon.view_completed"),
+    "error.recon_period_changed": ("/accounting/reconcile/{recon_id}", "recon.view_completed"),
+}
+
+
+def refusal_fix(detail) -> dict | None:
+    """The {href, label} link to the page that resolves a keyed refusal, when there is one."""
+    fix = _REFUSAL_FIXES.get(detail.get("message_key")) if isinstance(detail, dict) else None
+    return {"href": fix[0].format(**(detail.get("params") or {})), "label": t(fix[1])} if fix else None
+
+
 def toast_header(message: str | dict, kind: str = "success", *, persist: bool = False,
                  action: dict | list[dict] | None = None, **extra_triggers) -> dict:
     """HX-Trigger header for the shell's celerpToast listener. A keyed refusal *message* is shown
-    in the reader's language (refusal_text). ``action`` ({href, label},
+    in the reader's language (refusal_text), with a link to the page that resolves it when
+    there is one (refusal_fix). ``action`` ({href, label},
     or a list of them) adds a link to the toast for each. Extra keyword arguments become sibling client events fired
     from the same header."""
     toast: dict = {"message": message if isinstance(message, str) else refusal_text(message), "type": kind}
+    action = action or refusal_fix(message)
     if persist:
         toast["persist"] = True
     if action:

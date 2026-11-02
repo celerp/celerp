@@ -22,6 +22,7 @@ from sqlalchemy import select
 
 from celerp.models.projections import Projection
 from celerp.services.account_roles import AccountRole, resolve
+from celerp.services.lot_origin import place_company_stock
 from company_backup_support import download
 from migration_support import maker, real_client, real_engine  # noqa: F401
 from stock_books import assert_settled
@@ -272,6 +273,9 @@ async def test_unknown_cost_through_each_operation(real_engine, real_client, tmp
     _user, cid, tok = await _bk_setup(real_engine)
     async with maker(real_engine)() as s:
         await provision_company_books(s, cid)
+        # The company runs Accounting, so its stock from before the books is placed, as a running
+        # installation does on the first request; a copy restored elsewhere places it the same way.
+        await place_company_stock(s, cid)
         await s.commit()
         auth = {"headers": {"Authorization": f"Bearer {tok}"}, "company_id": cid}
         c = real_client

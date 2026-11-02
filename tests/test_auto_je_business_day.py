@@ -12,6 +12,8 @@ the books never re-dates it.
 """
 from __future__ import annotations
 
+from celerp.accounting_roles import period_locked_refusal
+
 from datetime import datetime, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -169,7 +171,7 @@ async def test_a_lock_through_the_business_day_refuses_the_entry(session, client
     with pytest.raises(HTTPException) as refused:
         await post(session, client, auth, instant)
     assert refused.value.status_code == 422
-    assert refusal_text(refused.value.detail) == t("error.period_locked", "en", date="1 Oct 2026")
+    assert refusal_text(refused.value.detail) == refusal_text(period_locked_refusal("1 Oct 2026"))
 
 
 @pytest.mark.parametrize("post", _PATHS, ids=_IDS)

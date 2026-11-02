@@ -624,7 +624,7 @@ async def test_read_refusal_names_the_chosen_file(ui, real_engine):
     r = await ui.post("/settings/restore-backup/read",
                       files={"file": ("ledger-notes.txt", b"plain text, not a backup", "text/plain")})
     assert r.status_code >= 400
-    assert "ledger-notes.txt: " in _page(r)
+    assert "(ledger-notes.txt)" in _page(r)
 
 
 # ── Modules the backup needs ─────────────────────────────────────────────────

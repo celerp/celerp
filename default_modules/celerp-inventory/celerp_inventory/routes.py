@@ -3178,7 +3178,7 @@ async def split_preview(
 ) -> dict:
     parent = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if parent is None or not is_item_available(parent.state):
-        raise HTTPException(status_code=404, detail=t("inventory.err_item_unavailable"))
+        raise HTTPException(status_code=404, detail=t("inventory.err_split_not_in_stock"))
 
     parent_qty = float(parent.state.get("quantity") or 0)
     if parent_qty <= 0:

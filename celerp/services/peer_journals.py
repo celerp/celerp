@@ -23,7 +23,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import PERIOD_LOCK_PATH
+from celerp.accounting_roles import PERIOD_LOCK_PATH, period_locked_refusal
 from celerp.events.engine import emit_event, write_period_lock
 from celerp.importers.results import failure_reason
 from celerp.models.company import Company
@@ -746,7 +746,7 @@ async def reverse(session: AsyncSession, company_id: uuid.UUID, actor_id, je_id:
     company = await locked_company(session, company_id)
     day, lock = reverse_day(company.settings or {}, state.get("ts"))
     if day is None:
-        raise HTTPException(422, t("error.period_locked", date=lock))
+        raise HTTPException(422, period_locked_refusal(lock))
     memo = state.get("memo") or ""
     await emit_event(session, company_id=company_id, entity_id=rid, entity_type="journal_entry",
                      event_type="acc.journal_entry.created", data={

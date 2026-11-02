@@ -12,11 +12,6 @@ contextBridge.exposeInMainWorld("celerp", {
   // Renderer can call this to open a URL in the system browser
   openExternal: (url) => ipcRenderer.invoke("open-external", url),
 
-  // Renderer calls this for hx-confirm dialogs; returns true if user clicked OK.
-  // Synchronous round-trip via ipcRenderer.sendSync so the htmx confirm handler
-  // can return a plain boolean without needing async/await.
-  showConfirm: (message) => ipcRenderer.sendSync("show-confirm", message),
-
   // Returns the current app version string.
   getVersion: () => ipcRenderer.invoke("get-version"),
 

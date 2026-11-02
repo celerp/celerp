@@ -200,7 +200,8 @@ async def _refusal(session: AsyncSession, company_id: uuid.UUID,
         role, settings = await read_authority(session, company_id, authority.user_id)
         manages = role_has_permission(settings, role, "manage_accounting")
     suffix = "" if manages else "_ask"
-    params = {"account": list_text(accounts), "dates": list_text(dates)}
+    # The first reconciliation hit, for the link to it beside the refusal.
+    params = {"account": list_text(accounts), "dates": list_text(dates), "recon_id": str(hits[0][1].id)}
     if held:
         return catalog_refusal(f"error.recon_entry_held{suffix}", **params)
     return catalog_refusal(f"error.recon_period_changed{suffix}", last_date=max(d for d in dates if iso_day(d)), **params)

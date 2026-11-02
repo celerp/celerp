@@ -10,7 +10,7 @@ import uuid
 import httpx
 import pytest
 
-from .conftest import clear_session_registry
+from .conftest import answer_in_app, clear_session_registry
 
 pytestmark = pytest.mark.browser
 
@@ -38,15 +38,13 @@ def test_installation_owner_hands_over_on_the_users_page(page, api, api_server, 
         button.wait_for(timeout=_WAIT_MS)
         assert page.locator(f'[hx-post="/settings/users/{my_id}/installation-owner"]').count() == 0
 
-        dialogs: list[str] = []
-        page.once("dialog", lambda d: (dialogs.append(d.message), d.dismiss()))
         button.click()
+        assert "Heir User" in answer_in_app(page, accept=False)
         page.wait_for_timeout(500)
-        assert dialogs and "Heir User" in dialogs[0]
         assert api.get("/system/installation-owner").json()["installation_owner"] is True
 
-        page.once("dialog", lambda d: d.accept())
         button.click()
+        answer_in_app(page)
         page.wait_for_selector('#users-card .flash--success:has-text("Heir User is now the installation owner")',
                                timeout=_WAIT_MS)
         assert page.evaluate("window.__notReloaded") is True

@@ -370,11 +370,6 @@
   "reason": "No test requests this route; its source reaches api POST."
  },
  {
-  "route": "ui DELETE /contacts/{contact_id}/addresses/{address_id}",
-  "class": "never requested",
-  "reason": "No test requests this route; its source reaches api DELETE."
- },
- {
   "route": "ui PATCH /contacts/{contact_id}/addresses/{address_id}",
   "class": "never requested",
   "reason": "No test requests this route; its source reaches api PATCH."
@@ -440,11 +435,6 @@
   "reason": "No test requests this route; its source reaches api PATCH, api POST."
  },
  {
-  "route": "ui POST /contacts/{contact_id}/tags/remove",
-  "class": "never requested",
-  "reason": "No test requests this route; its source reaches api PATCH."
- },
- {
   "route": "ui POST /crm/contacts/bulk/delete",
   "class": "never requested",
   "reason": "No test requests this route; its source reaches api POST."
@@ -478,11 +468,6 @@
   "route": "ui POST /docs/bulk-payment",
   "class": "never requested",
   "reason": "No test requests this route; its source reaches api POST."
- },
- {
-  "route": "ui POST /docs/create-blank",
-  "class": "requested, no durable write",
-  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
  },
  {
   "route": "ui POST /docs/import/confirm",

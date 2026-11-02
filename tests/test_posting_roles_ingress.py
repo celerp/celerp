@@ -22,6 +22,8 @@ exactly their value off again, never the value of an import that replaces them.
 """
 from __future__ import annotations
 
+from celerp.accounting_roles import period_locked_refusal
+
 import uuid
 from datetime import date, datetime, timezone
 
@@ -172,7 +174,7 @@ async def test_an_item_created_available_on_a_locked_day_is_not_created(session,
     before = await _events(session, auth["company_id"])
     r = await _create(client, auth, cost_total=200.0, status="available", sku="LOCKED-1")
     assert r.status_code == 422, r.text
-    assert refusal_text(r.json()["detail"]) == t("error.period_locked", "en", date=date_text(date.fromisoformat(today), "en"))
+    assert refusal_text(r.json()["detail"]) == refusal_text(period_locked_refusal(date_text(date.fromisoformat(today), "en")))
     assert await _events(session, auth["company_id"]) == before
     assert await _items_by_sku(session, auth["company_id"], "LOCKED-1") == []
 

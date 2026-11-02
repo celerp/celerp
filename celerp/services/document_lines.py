@@ -73,7 +73,11 @@ class MemoReturn:
 # and description stay editable, and the customer and currency stay while it is there.
 # ---------------------------------------------------------------------------
 
-_DRAWN_LINE_MEASURES = ("quantity", "weight", "pieces")
+# What the draw owns on a drawn line beyond its link: the lot it carries and that lot's measures.
+# No write edits them, so a write takes the stored values, whatever it sends or leaves out (an
+# editor re-deriving a weight from the quantity changes nothing). The item is still compared
+# first, so naming another product is refused rather than overwritten.
+_DRAWN_LINE_OWNED = ("item_id", "entity_id", "weight", "pieces")
 _DRAWN_HEADER_FIELDS = ("contact_id", "currency")
 
 
@@ -136,9 +140,10 @@ async def assert_drawn_lines_authorized(session, company_id, entity_id: str, sto
     customer or currency of an invoice holding drawn lines (409).
 
     ``incoming`` holds the write's line set under ``line_items`` (after normalize_line_ids)
-    and any header field it sets. A kept drawn line that omits ``drawn_from`` gets the stored
-    one, in place. A ``MemoDraw`` may add exactly its lines, each stamped by that draw; a
-    ``MemoReturn`` may remove exactly its lines and change nothing else. A grant that does
+    and any header field it sets. A kept drawn line that omits ``drawn_from``, its quantity or
+    its item gets the stored one, and always the stored ``_DRAWN_LINE_OWNED`` fields, in place.
+    A ``MemoDraw`` may add exactly its lines, each stamped by that draw; a ``MemoReturn`` may
+    remove exactly its lines and change nothing else. A grant that does
     not fit the write is a programming error (AssertionError)."""
     drawn = _stored_drawn_lines(stored)
     if drawn:
@@ -178,9 +183,16 @@ async def assert_drawn_lines_authorized(session, company_id, entity_id: str, sto
         line.setdefault("drawn_from", old["drawn_from"])
         if line["drawn_from"] != old["drawn_from"] or (returning and line != old):
             raise _drawn_refusal("docs.memo_provenance_forged", old)
-        if line_item_id(line) != line_item_id(old) or any(
-                _measure(line, k) != _measure(old, k) for k in _DRAWN_LINE_MEASURES):
+        line.setdefault("quantity", old.get("quantity"))
+        names_item = "item_id" in line or "entity_id" in line
+        if ((names_item and line_item_id(line) != line_item_id(old))
+                or _measure(line, "quantity") != _measure(old, "quantity")):
             raise _drawn_refusal("docs.drawn_line_locked", old)
+        for key in _DRAWN_LINE_OWNED:
+            if key in old:
+                line[key] = old[key]
+            else:
+                line.pop(key, None)
 
 
 def refuse_drawn_line_action(state: dict, indices) -> None:
@@ -675,6 +687,28 @@ def normalize_line_ids(line_set, stored_lines) -> None:
             stored_keys[key] -= 1
         else:
             line["line_id"] = new_line_id()
+
+
+# The value an editor writes for a line field the user left empty, which reads the same as the
+# field being absent: no SKU or unit of its own, no line discount, no line rate, splittable.
+_NEUTRAL_LINE_VALUES = {"sku": "", "unit": "", "discount_pct": 0, "tax_rate": 0, "allow_splitting": True}
+
+
+def drop_neutral_line_values(line_set, stored_lines) -> None:
+    """Remove, in place, each field of an incoming line that carries only its neutral value
+    where the stored line with the same line id never had that field, so a save that writes
+    the editor's empty columns back is not mistaken for an edit of the line."""
+    stored = {line["line_id"]: line for line in stored_lines or []
+              if isinstance(line, dict) and line.get("line_id")}
+    for line in line_set or []:
+        before = stored.get(line["line_id"]) if isinstance(line, dict) and isinstance(line.get("line_id"), str) else None
+        if before is None:
+            continue
+        for key, neutral in _NEUTRAL_LINE_VALUES.items():
+            # True == 1 in Python, so a boolean only stands for a boolean neutral and a number for a number.
+            if (key in line and key not in before and line[key] == neutral
+                    and isinstance(line[key], bool) == isinstance(neutral, bool)):
+                del line[key]
 
 
 def strip_line_ids(line_items) -> list[dict]:

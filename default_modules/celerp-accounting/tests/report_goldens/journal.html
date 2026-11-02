@@ -53,7 +53,8 @@
     for(var i=0;i<acts.length;i++){if(acts[i].value===val)return acts[i];}return null;}
   function runAction(bar,a){
     var t=table(bar);if(!t||!a)return;var ids=checkedIds(t);if(!ids.length)return;
-    if(a.confirm&&!confirm(a.confirm.replace('{n}',ids.length)))return;
+    if(a.confirm){var q=a.confirm.replace('{n}',ids.length);a=Object.assign({},a,{confirm:null});
+      celerpConfirm(q).then(function(yes){if(yes)runAction(bar,a);});return;}
     if(a.method==='open'){window.open(a.url+(a.url.indexOf('?')>=0?'&':'?')+'ids='+encodeURIComponent(ids.join(',')),'_blank');return;}
     var form=document.createElement('form');
     ids.forEach(function(id){var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;form.appendChild(inp);});

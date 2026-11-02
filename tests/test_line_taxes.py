@@ -52,13 +52,13 @@ def _selected_tax(html: str) -> str:
 def test_the_tax_select_names_a_configured_tax_the_line_carries():
     html = _render("draft", {"taxes": [{"code": "VAT 10%", "rate": 10, "amount": 17.4}]},
                    [{"name": "VAT 10%", "rate": 10}])
-    assert _selected_tax(html) == "VAT 10% (10.0%)"
+    assert _selected_tax(html) == "VAT 10% (10%)"
 
 
 def test_the_tax_select_names_a_line_tax_the_company_has_not_configured():
     html = _render("draft", {"taxes": [{"code": "VAT", "rate": 10, "amount": 17.4}]},
                    [{"name": "Standard Tax", "rate": 0}])
-    assert _selected_tax(html) == "VAT (10.0%)"
+    assert _selected_tax(html) == "VAT (10%)"
 
 
 @pytest.mark.parametrize("li, shown", [

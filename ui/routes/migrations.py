@@ -157,8 +157,18 @@ async def _read_scan(request: Request, mode: WizardMode, token: str) -> dict:
 # Shared page pieces
 # ---------------------------------------------------------------------------
 
+def _wizard_help(request: Request) -> list:
+    """The way to the imports help page. Help pages need a signed-in company, so a login
+    that has no company yet is not offered a page it cannot open."""
+    if not get_token(request):
+        return []
+    return [A(t("help.title"), href="/help/core.imports", target="_blank",
+              cls="btn btn--secondary btn--sm migration-wizard__help")]
+
+
 def wizard_page(request: Request, *content, status_code: int = 200, title: str = "migration.title"):
-    page = auth_shell(*client_scripts(get_lang(request), request), Div(*content, cls="auth-card migration-wizard"),
+    page = auth_shell(*client_scripts(get_lang(request), request),
+                      Div(*_wizard_help(request), *content, cls="auth-card migration-wizard"),
                       title=page_title(title))
     if status_code == 200:
         return page
@@ -404,8 +414,11 @@ async def _source_page(request: Request, mode: WizardMode, *, selected: str = ""
     # One file per source unless a source reads several together, as an export set does.
     several = any(len(s.get("artifacts", [])) > 1 or s.get("checklist") for s in sources)
     accepted = ", ".join(f"{a['label']} ({', '.join(a.get('extensions', []))})" for a in artifacts)
-    guidance = [P(t(_EXPORT_HELP[s["key"]]), cls="form-hint") for s in sources if s["key"] in _EXPORT_HELP]
-    guidance += [P(s["accepts"], cls="form-hint") for s in sources if s.get("accepts")]
+    # How to export from each system; once a system is chosen only its own steps show.
+    guidance = [P(text, cls="form-hint", data_export_help=s["key"], hidden=bool(selected) and s["key"] != selected)
+                for s in sources
+                for text in ([t(_EXPORT_HELP[s["key"]])] if s["key"] in _EXPORT_HELP else []) + (
+                    [s["accepts"]] if s.get("accepts") else [])]
     options = [("", t("migration.detect_source"))] + [(s["key"], s["display_name"]) for s in sources]
     radios = [
         Label(
@@ -418,7 +431,9 @@ async def _source_page(request: Request, mode: WizardMode, *, selected: str = ""
         for key, label in options
     ]
     upload = Form(
-        Fieldset(Legend(t("migration.source_label"), cls="form-label"), *radios, cls="form-group"),
+        Fieldset(Legend(t("migration.source_label"), cls="form-label"), *radios, cls="form-group",
+                 onchange="document.querySelectorAll('[data-export-help]').forEach(p => "
+                          "p.hidden = !!event.target.value && p.dataset.exportHelp !== event.target.value)"),
         Div(
             Label(t("migration.files_label"), For="files", cls="form-label"),
             # An export set's files are checked against its checklist as soon as they are
@@ -1061,7 +1076,9 @@ async def _several(request: Request, mode: WizardMode, *, error: str | None = No
                     cls="migration-source")
               for key, label in [("", t("migration.detect_source"))] + [(s["key"], s["display_name"]) for s in single]]
     upload = Form(
-        Fieldset(Legend(t("migration.source_label"), cls="form-label"), *radios, cls="form-group"),
+        Fieldset(Legend(t("migration.source_label"), cls="form-label"), *radios, cls="form-group",
+                 onchange="document.querySelectorAll('[data-export-help]').forEach(p => "
+                          "p.hidden = !!event.target.value && p.dataset.exportHelp !== event.target.value)"),
         Div(Label(t("migration.files_label"), For="files", cls="form-label"),
             Input(type="file", id="files", name="files", multiple=True,
                   accept=",".join(extensions) if extensions else None, cls="form-input"),
@@ -1296,6 +1313,8 @@ def _mapping_page(request: Request, mode: WizardMode, entry: dict, errors: dict 
     # file, so it stands above the table of where items go in Celerp.
     company = next((q for q in questions if q["key"] == COMPANY_QUESTION), None)
     rows = [q for q in questions if q is not company]
+    # One question reads as a field of the form; a table pays off only when there are several.
+    single = [q for q in (company, *(rows if len(rows) == 1 else ())) if q]
 
     def control(q: dict) -> FT:
         return _mapping_control(q, current.get(q["key"], q.get("suggested") or ""))
@@ -1309,8 +1328,8 @@ def _mapping_page(request: Request, mode: WizardMode, entry: dict, errors: dict 
         flash(error) if error else "",
         Form(
             Input(type="hidden", name="step", value="mapping"),
-            Div(Label(company.get("label", ""), cls="form-label"), control(company),
-                field_error(errors, company["key"]), cls="form-group") if company else "",
+            *(Div(Label(q.get("label", ""), cls="form-label"), control(q), field_error(errors, q["key"]),
+                  cls="form-group") for q in single),
             wizard_table(
                 Thead(Tr(Th(t("migration.source_item")), Th(t("migration.celerp_item")))),
                 Tbody(*[
@@ -1320,7 +1339,7 @@ def _mapping_page(request: Request, mode: WizardMode, entry: dict, errors: dict 
                     )
                     for q in rows
                 ]),
-            ) if rows else "",
+            ) if len(rows) > 1 else "",
             field_error(errors, "mappings"),
             Button(t("btn.continue"), type="submit", cls="btn btn--primary btn--full mt-md"),
             method="post", action=f"{mode.base}/decisions", cls="auth-form",
@@ -1381,13 +1400,16 @@ async def _save_decisions(request: Request, mode: WizardMode):
 # Step 4: review and start
 # ---------------------------------------------------------------------------
 
+# The first owner's account fields: form name, label key, input type.
+_ACCOUNT_FIELDS = (
+    ("name", "label.your_name", "text"),
+    ("email", "label.email", "email"),
+    ("password", "label.password", "password"),
+    ("confirm_password", "label.confirm_password", "password"),
+)
+
+
 def account_fields(values: dict) -> list:
-    fields = [
-        ("name", "label.your_name", "text"),
-        ("email", "label.email", "email"),
-        ("password", "label.password", "password"),
-        ("confirm_password", "label.confirm_password", "password"),
-    ]
     return [
         Div(
             Label(t(label), For=name, cls="form-label"),
@@ -1395,7 +1417,7 @@ def account_fields(values: dict) -> list:
                   value=values.get(name, "") if kind != "password" else None),
             cls="form-group",
         )
-        for name, label, kind in fields
+        for name, label, kind in _ACCOUNT_FIELDS
     ]
 
 
@@ -1459,8 +1481,9 @@ async def _review(request: Request, mode: WizardMode):
 def account_error(values: dict) -> str | None:
     """The first owner's account fields, checked before the API is called."""
     from celerp.services.auth import MIN_PASSWORD_LENGTH
-    if not all(values.get(k) for k in ("name", "email", "password")):
-        return t("settings.all_fields_required")
+    missing = next((label for name, label, _ in _ACCOUNT_FIELDS if not values.get(name)), None)
+    if missing is not None:
+        return t("settings.field_required", field=t(missing))
     if values["password"] != values.get("confirm_password"):
         return t("settings.passwords_do_not_match")
     if len(values["password"]) < MIN_PASSWORD_LENGTH:
@@ -1490,7 +1513,7 @@ async def _start(request: Request, mode: WizardMode):
         return await _review_page(request, mode, entry, values=values, **feedback)
 
     if not values["company_name"]:
-        return await review(error=t("settings.all_fields_required"))
+        return await review(error=t("settings.field_required", field=t("label.company_name")))
     try:
         if mode.bootstrap:
             if (problem := account_error(values)) is not None:
@@ -1883,14 +1906,26 @@ def _figure(row: dict, column: str) -> str:
 
 
 _ROLE_FIELD = "role."
+POSTING_SECTION = "posting-accounts"
 
 
 def _picked(row: dict, chosen: dict[str, str]) -> str:
     """What a role's picker shows chosen: the user's own choice, else the answer from the
-    previous client (an added account as the account to add), else the single control."""
+    previous client (an added account as the account to add), else the source's single
+    control. An account proposed from the chart's names is never chosen for the user: a name
+    cannot authorize where entries post, so it is shown beside the picker instead."""
     previous = row.get("previous")
     return (chosen.get(row["role"]) or (previous and (NEW_ACCOUNT if previous["add"] else previous["code"]))
             or row["preselect"] or "")
+
+
+def _suggestion(row: dict, chosen: dict[str, str]) -> FT | str:
+    """The account the chart's names propose for a role whose picker starts empty."""
+    code = row.get("suggested")
+    account = next((c for c in row["candidates"] if c["code"] == code), None) if code else None
+    if account is None or _picked(row, chosen):
+        return ""
+    return P(t("posting.suggested", account=account_label(account)), cls="form-hint")
 
 
 def _posting_accounts(roles: list[dict], chosen: dict[str, str]) -> FT:
@@ -1909,11 +1944,13 @@ def _posting_accounts(roles: list[dict], chosen: dict[str, str]) -> FT:
                    Td((account_label(row["current_account"]) or row["current"]) if row["current"] else (
                        account_picker(f"{_ROLE_FIELD}{row['role']}", row["candidates"], value=_picked(row, chosen),
                                       proposal=row["proposal"], aria_label=role_label(row["role"], row["label"])),
+                       _suggestion(row, chosen),
                        P(t("sync_accounts.from_previous"), cls="form-hint") if row.get("previous") else "")))
                 for row in rows
             ]),
             cls="data-table posting-choices",
         ),
+        id=POSTING_SECTION,
         cls="mt-md",
     )
 
@@ -1942,6 +1979,8 @@ async def _verify_page(request: Request, run_id: str, error: str | None = None,
         _steps(6),
         auth_header(t("migration.verify_title"), t("migration.verify_subtitle")),
         flash(error) if error else "",
+        P(A(t("posting.go_to_section"), href=f"#{POSTING_SECTION}", cls="auth-link"))
+        if error and any(row["required"] and not row["current"] for row in roles) else "",
         wizard_table(
             Thead(Tr(Th(t("migration.col_check")), Th(t("migration.col_source"), cls="cell--number"),
                      Th(t("migration.col_celerp"), cls="cell--number"),

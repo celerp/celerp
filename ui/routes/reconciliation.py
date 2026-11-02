@@ -21,7 +21,7 @@ import ui.api_client as api
 from ui.components.icons import import_icon
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
-from ui.components.shell import base_shell, flash, page_header, page_title
+from ui.components.shell import base_shell, flash, no_access_banner, page_header, page_title
 from ui.components.table import (
     EMPTY, PARTY_PRELOAD, PARTY_SEARCH_URL, add_new_option, display_enum, fmt_money,
     party_options, searchable_select, status_cards,
@@ -414,7 +414,6 @@ def _workspace_view(
             hx_target="#recon-workspace",
             hx_swap="outerHTML",
             cls="btn btn--secondary btn--sm",
-            disabled="" if suggested == 0 else None,
         ),
         *(
             [Button(t("btn.complete"),
@@ -623,6 +622,13 @@ def _page_flashes(request: Request) -> tuple:
     return (flash(msg) if msg else None, flash(done, "success") if done else None)
 
 
+async def _no_access_page(request: Request, error: APIError, title_key: str):
+    """A reconciliation page the reader's role may not open: the missing permission and the
+    way back, never a form it cannot submit."""
+    return await base_shell(page_header(t(title_key)), no_access_banner(error),
+                            title=page_title(title_key), nav_active="accounting", request=request)
+
+
 def _workspace_redirect(session_id: str, msg: str = "") -> Response:
     """204 + HX-Redirect back to the workspace so htmx navigates the browser
     instead of swapping a full page into #recon-workspace. The message is
@@ -706,6 +712,8 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
+            if e.status == 403:
+                return await _no_access_page(request, e, "btn.start_reconciliation")
             banks = []
 
         chosen = request.query_params.get("bank_id", "")
@@ -813,6 +821,8 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
+            if e.status == 403:
+                return await _no_access_page(request, e, "recon.history")
             return RedirectResponse(
                 "/settings/accounting?tab=bank-accounts&msg=" + quote(str(e.detail), safe=""),
                 status_code=302,
@@ -881,6 +891,8 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
+            if e.status == 403:
+                return await _no_access_page(request, e, "recon.workspace_title")
             return RedirectResponse(
                 "/settings/accounting?tab=bank-accounts&msg=" + quote(str(e.detail), safe=""),
                 status_code=302,
@@ -1157,6 +1169,9 @@ def setup_routes(app):
                 return Response("", status_code=401, headers={"HX-Redirect": "/login"})
             return await _fresh_workspace(token, session_id, notice=str(e.detail))
         skipped = {s["line_id"]: s["reason"] for s in result.get("skipped", [])}
+        if not skipped and not result.get("confirmed"):
+            return await _fresh_workspace(token, session_id, notice=t("recon.no_suggestions_to_confirm"),
+                                          notice_kind="warning")
         if not skipped:
             return await _fresh_workspace(token, session_id)
         key = "recon.bulk_confirm_skipped_one" if len(skipped) == 1 else "recon.bulk_confirm_skipped"
@@ -1179,10 +1194,11 @@ def setup_routes(app):
             Div(
                 P(t("recon.completed_for", date=result.get("statement_date", "--")),
                   cls="success-banner"),
-                A(t("btn._back_to_accounting"), href="/settings/accounting?tab=bank-accounts",
-                  cls="btn btn--primary"),
-                A(t("recon.view_completed"), href=f"/accounting/reconcile/{session_id}",
-                  cls="btn btn--secondary"),
+                Div(A(t("btn._back_to_accounting"), href="/settings/accounting?tab=bank-accounts",
+                      cls="btn btn--primary"),
+                    A(t("recon.view_completed"), href=f"/accounting/reconcile/{session_id}",
+                      cls="btn btn--secondary"),
+                    cls="form-actions"),
                 cls="settings-card",
             ),
             title=page_title("recon.complete_title"),

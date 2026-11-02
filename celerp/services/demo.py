@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.events.engine import emit_event
 from celerp.services.payment_terms import DEFAULT_PAYMENT_TERMS
+from celerp.services.pricing import price_lists_in
 from celerp.services.terms import DEFAULT_TERMS_CONDITIONS as _DEFAULT_TERMS_CONDITIONS, normalize_terms_templates
 
 
@@ -1799,11 +1800,7 @@ async def seed_demo_items(
     if company is not None:
         settings = dict(company.settings or {})
         if "price_lists" not in settings:
-            settings["price_lists"] = [
-                {"name": "Retail", "description": "Standard retail price"},
-                {"name": "Wholesale", "description": "Wholesale / trade price"},
-                {"name": "Cost", "description": "Cost / landed price"},
-            ]
+            settings["price_lists"] = price_lists_in({})
         if "default_price_list" not in settings:
             settings["default_price_list"] = "Retail"
         # Seed payment terms and T&C templates if not already set

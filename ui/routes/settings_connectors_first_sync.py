@@ -388,7 +388,7 @@ def setup_first_sync_routes(app) -> None:
         service = get_connector(platform).display_name
         tab = get_connector(platform).category.value
         return await base_shell(
-            breadcrumbs([(t("settings.tab_connectors", lang), f"/settings/cloud?tab={tab}"),
+            breadcrumbs([(t("settings_cloud.web_access", lang), f"/settings/cloud?tab={tab}"),
                          (service, f"/settings/connectors/{platform}"),
                          (t("connectors.review_first_sync", lang), None)]),
             page_header(t("connectors.preview_title", lang, service=service),

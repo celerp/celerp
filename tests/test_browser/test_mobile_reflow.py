@@ -179,19 +179,9 @@ _MAIN_PAGES = ("/dashboard", "/inventory", "{item}", "/crm", "/contacts/{contact
 _TABS = "a.category-tab[href*='tab='], .settings-tabs a[href]"
 
 
-# Every table whose rows stop short of its own box: [width of the table, of its first row].
-_SHORT_ROWS_JS = """() => [...document.querySelectorAll('.main-content .data-table')]
-  .filter(t => t.offsetParent && t.querySelector('tr'))
-  .map(t => [Math.round(t.getBoundingClientRect().width), Math.round(t.querySelector('tr').getBoundingClientRect().width)])
-  .filter(([table, row]) => row < table - 2)"""
-
-
-@pytest.mark.timeout(300)
-@pytest.mark.parametrize("width", [320, 390, 820, 1280])
-def test_every_main_page_fits_a_narrow_screen(page, ui_server, fresh_company, width):
-    """No main page or tab is wider than a phone, tablet or laptop screen, and every table's rows
-    span the table, as they do on a desktop."""
-    api = fresh_company
+def seed_main_pages(api) -> dict[str, str]:
+    """An item, a contact, an invoice, a list and a production order, so every main page has rows.
+    Returns the ids the _MAIN_PAGES templates take."""
     tag = uuid.uuid4().hex[:6].upper()
 
     def made(r) -> str:
@@ -210,11 +200,13 @@ def test_every_main_page_fits_a_narrow_screen(page, ui_server, fresh_company, wi
     order = made(api.post("/manufacturing", json={
         "description": "Ring run", "order_type": "assembly", "inputs": [{"item_id": part, "quantity": 1}],
         "output_item_id": item, "quantity": 1}))
-    ids = {"item": f"/inventory/{item}", "contact": contact, "doc": doc, "list": lst, "order": order}
+    return {"item": f"/inventory/{item}", "contact": contact, "doc": doc, "list": lst, "order": order}
 
-    page.set_viewport_size({"width": width, "height": 740})
-    urls = [u.format(**ids) for u in _MAIN_PAGES]
-    seen, wide = set(), []
+
+def sweep_main_pages(page, ui_server, ids: dict[str, str], pages: tuple[str, ...] = _MAIN_PAGES):
+    """Open every page and each of its tabs in turn, yielding the url once the page is shown."""
+    urls = [u.format(**ids) for u in pages]
+    seen = set()
     while urls:
         url = urls.pop(0)
         if url in seen:
@@ -222,6 +214,30 @@ def test_every_main_page_fits_a_narrow_screen(page, ui_server, fresh_company, wi
         seen.add(url)
         page.goto(f"{ui_server}{url}", wait_until="load")
         page.wait_for_timeout(600)
+        yield url
+        if url.startswith(("/inventory/", "/settings/", "/contacts/")):
+            for href in page.eval_on_selector_all(_TABS, "els => els.map(e => e.getAttribute('href'))"):
+                if href and href.startswith("/") and href not in seen:
+                    urls.append(href)
+
+
+# Every table whose rows stop short of its own box: [width of the table, of its first row].
+_SHORT_ROWS_JS = """() => [...document.querySelectorAll('.main-content .data-table')]
+  .filter(t => t.offsetParent && t.querySelector('tr'))
+  .map(t => [Math.round(t.getBoundingClientRect().width), Math.round(t.querySelector('tr').getBoundingClientRect().width)])
+  .filter(([table, row]) => row < table - 2)"""
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("width", [320, 390, 820, 1280])
+def test_every_main_page_fits_a_narrow_screen(page, ui_server, fresh_company, width):
+    """No main page or tab is wider than a phone, tablet or laptop screen, and every table's rows
+    span the table, as they do on a desktop."""
+    ids = seed_main_pages(fresh_company)
+    page.set_viewport_size({"width": width, "height": 740})
+    seen, wide = [], []
+    for url in sweep_main_pages(page, ui_server, ids):
+        seen.append(url)
         doc_w, client_w = page.evaluate(
             "[document.documentElement.scrollWidth, document.documentElement.clientWidth]")
         if doc_w != client_w:
@@ -229,10 +245,6 @@ def test_every_main_page_fits_a_narrow_screen(page, ui_server, fresh_company, wi
         short = page.evaluate(_SHORT_ROWS_JS)
         if short:
             wide.append(f"{url}: table rows short of the table {short}")
-        if url.startswith(("/inventory/", "/settings/")):
-            for href in page.eval_on_selector_all(_TABS, "els => els.map(e => e.getAttribute('href'))"):
-                if href and href.startswith("/") and href not in seen:
-                    urls.append(href)
     assert not wide, f"at {width}px: {wide}"
     assert len(seen) > len(_MAIN_PAGES), "no tab was swept"
 

@@ -10,6 +10,8 @@ import json
 
 import pytest
 
+from .conftest import answer_in_app
+
 pytestmark = pytest.mark.browser
 
 _REFUSAL = "Line 1 (W-1) holds reserved stock. Set it as available before removing it or changing its item."
@@ -116,22 +118,13 @@ def test_delete_selected_asks_first(page, ui_server, api, draft):
     rows.first.locator(".li-select").check()
     page.select_option("#li-bulk-select", "li-delete")
 
-    asked: list[str] = []
-
-    def answer(accept):
-        def handler(dialog):
-            asked.append(dialog.message)
-            dialog.accept() if accept else dialog.dismiss()
-        return handler
-
-    page.once("dialog", answer(False))
     page.click("#li-bulk-delete-btn")
-    assert asked == ["Delete 1 line?"]
+    assert answer_in_app(page, accept=False) == "Delete 1 line?"
     assert rows.count() == 2
 
-    page.once("dialog", answer(True))
     with page.expect_response(lambda r: r.url.endswith("/lines") and r.request.method == "POST"):
         page.click("#li-bulk-delete-btn")
+        answer_in_app(page)
     assert rows.count() == 1
 
 
@@ -144,9 +137,9 @@ def test_any_refused_save_restores_the_stored_lines(page, ui_server, api, draft)
         status=400, content_type="application/json", body=json.dumps({"error": reason})))
     rows.first.locator(".li-select").check()
     page.select_option("#li-bulk-select", "li-delete")
-    page.once("dialog", lambda d: d.accept())
     with page.expect_response(lambda r: r.url.endswith("/lines") and r.request.method == "POST"):
         page.click("#li-bulk-delete-btn")
+        answer_in_app(page)
 
     page.locator(".toast__msg", has_text=reason).wait_for(timeout=8000)
     page.wait_for_function("document.querySelectorAll('#line-body tr').length === 2", timeout=8000)

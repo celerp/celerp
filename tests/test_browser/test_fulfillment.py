@@ -23,7 +23,7 @@ import uuid
 import pytest
 from playwright.sync_api import expect
 
-from .conftest import css_class, release_held_routes
+from .conftest import answer_confirms, css_class, release_held_routes
 
 pytestmark = pytest.mark.browser
 
@@ -413,7 +413,7 @@ def test_set_as_available_mixed_selection_routes_both(page, ui_server, api):
     assert api.get(f"/items/{item_r}").json()["status"] == "reserved"
     assert api.get(f"/items/{item_s}").json()["status"] == "sold"
 
-    page.on("dialog", lambda d: d.accept())
+    answer_confirms(page)
     page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
     _assert_no_crash(page, "mixed-selection doc detail")
 
@@ -472,7 +472,7 @@ def _open_return(page, ui_server, doc_id):
 def test_memo_part_return_uses_the_line_quantity_field(page, ui_server, api):
     """Part of a memo line comes back through its own quantity field, in one request."""
     doc_id, item = _shipped_memo(api, f"MPR-{uuid.uuid4().hex[:6]}", 5)
-    page.on("dialog", lambda d: d.accept())
+    answer_confirms(page)
     field = _open_return(page, ui_server, doc_id)
     field.fill("2")
     page.locator("#li-bulk-revert-btn").click()
@@ -488,7 +488,7 @@ def test_a_memo_line_taken_back_in_part_says_how_much_is_still_out(page, ui_serv
     """Straight after a part take-back, the line's shipped tag counts what is still out
     against the line's quantity."""
     doc_id, item = _shipped_memo(api, f"MPO-{uuid.uuid4().hex[:6]}", 3)
-    page.on("dialog", lambda d: d.accept())
+    answer_confirms(page)
     field = _open_return(page, ui_server, doc_id)
     field.fill("1")
     with page.expect_navigation(wait_until="domcontentloaded"):
@@ -502,7 +502,7 @@ def test_a_refused_take_back_quantity_names_the_lowest_it_accepts(page, ui_serve
     """The take-back field refuses 0, so its message starts at the unit's smallest step: 1 piece."""
     doc_id, item = _shipped_memo(api, f"MPZ-{uuid.uuid4().hex[:6]}", 8)
     dialogs = []
-    page.on("dialog", lambda d: (dialogs.append(d.message), d.dismiss()))
+    answer_confirms(page, lambda question: dialogs.append(question) or False)
     field = _open_return(page, ui_server, doc_id)
     assert field.get_attribute("min") == "1" and field.get_attribute("step") == "1"
     field.fill("0")
@@ -517,7 +517,7 @@ def test_a_refused_take_back_quantity_names_the_lowest_it_accepts(page, ui_serve
 
 def test_cancelling_the_return_sends_nothing(page, ui_server, api):
     doc_id, item = _shipped_memo(api, f"MPC-{uuid.uuid4().hex[:6]}", 2)
-    page.on("dialog", lambda d: d.dismiss())
+    answer_confirms(page, lambda question: False)
     _open_return(page, ui_server, doc_id)
     page.locator("#li-bulk-revert-btn").click()
     page.wait_for_timeout(1000)
@@ -540,7 +540,7 @@ def test_draft_quotation_bulk_reserve(page, ui_server, api):
     assert r.status_code in {200, 201}, f"create list failed: {r.text}"
     list_id = r.json()["id"]
 
-    page.on("dialog", lambda d: d.accept())
+    answer_confirms(page)
     page.goto(f"{ui_server}/lists/{list_id}", wait_until="domcontentloaded")
     _assert_no_crash(page, "draft quotation detail")
 
@@ -586,7 +586,7 @@ def test_shipping_goods_another_invoice_set_aside_shows_a_lasting_notice(page, u
     first, second = docs
     first_number = api.get(f"/docs/{first}").json().get("doc_number")
 
-    page.on("dialog", lambda d: d.accept())
+    answer_confirms(page)
     page.goto(f"{ui_server}/docs/{second}", wait_until="domcontentloaded")
     _assert_no_crash(page, "second invoice")
     page.locator(".li-select").first.check()

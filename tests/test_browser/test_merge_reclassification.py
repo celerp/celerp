@@ -9,6 +9,8 @@ import uuid
 
 import pytest
 
+from .conftest import answer_in_app
+
 pytestmark = pytest.mark.browser
 
 
@@ -58,8 +60,8 @@ def test_merge_across_inventory_accounts_is_disclosed_and_can_be_undone(page, ui
     [merged] = [i["id"] for i in items if i["id"] not in {a, b}]
 
     page.goto(f"{ui_server}/inventory/{merged}?tab=activity", wait_until="domcontentloaded")
-    page.once("dialog", lambda d: d.accept())
     page.click("#merge-undo button:has-text('Undo merge')")
+    answer_in_app(page)
     page.wait_for_selector("#merge-undo .flash--success", timeout=8000)
 
     assert {api.get(f"/items/{i}").json()["status"] for i in (a, b)} == {"available"}

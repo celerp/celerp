@@ -854,7 +854,7 @@ async def test_no_table_in_both_groups():
     """No table is both portable and excluded, and neither list claims a module-prefix table."""
     from celerp.modules.importer import valid_table_prefixes
     cb = _bk_cb()
-    assert isinstance(cb.PORTABLE_TABLES, frozenset) and isinstance(cb.EXCLUDED_TABLES, dict)
+    assert isinstance(cb.PORTABLE_TABLES, dict) and isinstance(cb.EXCLUDED_TABLES, dict)
     assert not set(cb.PORTABLE_TABLES) & set(cb.EXCLUDED_TABLES)
     prefixes = tuple(valid_table_prefixes().values())
     if prefixes:
@@ -862,6 +862,18 @@ async def test_no_table_in_both_groups():
     assert set(cb.PORTABLE_TABLES) == {"locations", "work_centers", "ledger", "projections", "accounts",
                                        "bank_accounts", "reconciliation_sessions", "reconciliation_rules",
                                        "bank_statement_lines", "label_templates"}
+
+
+def test_each_portable_table_names_the_module_that_creates_it():
+    """A copy holding rows in a module's portable table asks for that module, so each portable
+    table names the package whose model creates it (None: Celerp's own)."""
+    import celerp_accounting.models  # noqa: F401
+    import celerp_labels.models  # noqa: F401
+    from celerp.models.base import Base
+    made_by = {m.local_table.name: m.class_.__module__.split(".")[0] for m in Base.registry.mappers}
+    for table, module in _bk_cb().PORTABLE_TABLES.items():
+        package = made_by[table]
+        assert module == (None if package == "celerp" else package.replace("_", "-")), (table, package)
 
 
 async def test_export_refuses_unclassified_table(real_engine, real_client, tmp_path, monkeypatch):
@@ -4574,7 +4586,7 @@ async def test_restored_company_uses_only_the_checked_module_list(real_engine, r
     the backup's copy of its settings."""
     from celerp.modules.registry import get_enabled
     _bk_local(monkeypatch, tmp_path)
-    _, _, tok = await _bk_setup(real_engine, settings={"enabled_modules": ["celerp-labels"]})
+    _, _, tok = await _bk_setup(real_engine, settings={"enabled_modules": ["celerp-inventory", "celerp-labels"]})
 
     def change(m):
         m["company"]["settings"]["enabled_modules"] = copied
@@ -5438,3 +5450,66 @@ async def test_a_restore_never_waits_for_its_landing_mark(real_engine, tmp_path,
         await holder.rollback()
     assert cb.attachments.landing_companies() == [str(company_id)]
     cb.attachments.clear_landing(str(company_id))
+
+
+def _bk_with_ledger_events(data: bytes, *event_types: str) -> bytes:
+    """The backup with its ledger also holding one event of each type, as a company that once
+    ran a module would, its manifest counting and hashing the ledger as written."""
+    parts = members(data)
+    rows = [json.loads(line) for line in parts["tables/ledger.jsonl"].splitlines() if line.strip()]
+    template = rows[-1]
+    for n, event_type in enumerate(event_types):
+        rows.append({**template, "event_type": event_type, "entity_id": f"zz:{n}", "entity_type": "zz_widget",
+                     "idempotency_key": f"zz-history-{n}"})
+    body = b"".join(json.dumps(r).encode() + b"\n" for r in rows)
+    parts["tables/ledger.jsonl"] = body
+    m = json.loads(parts["manifest.json"])
+    m["tables"]["ledger"].update(rows=len(rows), sha256=hashlib.sha256(body).hexdigest())
+    parts["manifest.json"] = json.dumps(m).encode()
+    return rezip(parts)
+
+
+async def test_events_no_installed_module_owns_refuse_the_restore(real_engine, real_client, tmp_path, monkeypatch):
+    """A company that once ran a module now installed nowhere here holds that module's events.
+    Which module they need cannot be known, so the copy is refused, naming them, before any
+    write; core's own events never are."""
+    _bk_local(monkeypatch, tmp_path)
+    user, _, tok = await _bk_setup(real_engine)
+    data = _bk_with_ledger_events(await download(real_client, tok), "zz.widget.added")
+    await _bk_refused(real_engine, real_client, tok, user, tmp_path, data, "zz.widget.added",
+                      "no module installed here can read")
+
+
+def test_core_events_and_owned_events_are_identified(tmp_path, monkeypatch):
+    from celerp.modules.loader import modules_holding_events, unidentified_events
+
+    root = tmp_path / "owners"
+    _bk_owner_module(root, "zz-owner", "zz.")
+    monkeypatch.setenv("MODULE_DIR", str(root))
+    assert unidentified_events({"sys.company.created", "payment_batch.recorded", "zz.widget.added"}) == []
+    assert unidentified_events({"qq.thing.made"}) == ["qq.thing.made"]
+    # Disabled or not, an installed module owning historical events is the module they need.
+    assert modules_holding_events({"zz.widget.added"}) == {"zz-owner"}
+
+
+def _bk_owner_module(root: Path, name: str, prefix: str) -> None:
+    pkg = root / name
+    pkg.mkdir(parents=True, exist_ok=True)
+    (pkg / "__init__.py").write_text(
+        "PLUGIN_MANIFEST = {\n"
+        f'    "name": "{name}", "version": "1.0.0", "display_name": "{name}",\n'
+        f'    "slots": {{"projection_handler": [{{"prefix": "{prefix}", "handler": "x:y"}}]}},\n'
+        "}\n")
+
+
+@pytest.mark.parametrize("order", [("a", "b"), ("b", "a")])
+def test_overlapping_prefixes_have_one_owner_whatever_the_search_order(tmp_path, monkeypatch, order):
+    """Two installed modules claiming overlapping prefixes: the owner is the one the loader
+    admits (first party first, then by name), never whichever folder is searched first."""
+    from celerp.modules.loader import modules_holding_events
+
+    roots = {"a": tmp_path / "a", "b": tmp_path / "b"}
+    _bk_owner_module(roots["a"], "aa-widgets", "zz.")
+    _bk_owner_module(roots["b"], "bb-widgets", "zz.widget.")
+    monkeypatch.setenv("MODULE_DIR", ",".join(str(roots[k]) for k in order))
+    assert modules_holding_events({"zz.widget.added", "zz.other"}) == {"aa-widgets"}

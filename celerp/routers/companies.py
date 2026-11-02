@@ -17,6 +17,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.accounting_roles import catalog_refusal
 from celerp.db import get_session, sqlstate
 from celerp.events.engine import emit_event
 from celerp.importers.results import failure_reason
@@ -46,7 +47,7 @@ from celerp.services.permissions import (
     role_has_permission,
 )
 from celerp.schemas.numbers import FiniteFloat
-from celerp.tax_regimes import TAX_REGIMES, configured, get_regime, purchasing_taxes, sales_taxes
+from celerp.tax_regimes import TAXES_SEEDED_FOR, configured, get_regime, purchasing_taxes, sales_taxes, tax_country, with_taxes
 from celerp.services import company_lifecycle
 from celerp.services.currencies import require_phone
 from celerp.services.provisioning import provision_additional_company
@@ -62,39 +63,42 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 
 logger = logging.getLogger(__name__)
 
-async def _maybe_apply_regime(session: AsyncSession, company_id, address: dict | None) -> None:
+async def _maybe_apply_regime(session: AsyncSession, company_id, address: dict | None) -> str | None:
     """Seed the tax regime of the country in ``address`` into a company that has not
-    set anything up yet.
+    set anything up yet, and return the country whose taxes it set (None when it set none).
 
-    Taxes are replaced only while they are unset or exactly the generic list, and the
-    currency only while none was ever saved. A company that has posted entries of its
-    own keeps both: changing them would silently restate its books, so it changes
-    them explicitly in settings. Safe to call repeatedly."""
+    Taxes are replaced only while they are unset or still the list Celerp itself seeded
+    (TAXES_SEEDED_FOR), and only when the country differs from the one they were seeded
+    for. Taxes someone saved or imported, even at the very same rates, and taxes stored
+    before Celerp recorded where its lists came from, are kept. The currency is set only
+    while none was ever saved. A company that has posted entries of its own keeps both:
+    changing them would silently restate its books, so it changes them explicitly in
+    settings. Safe to call repeatedly."""
     if not address:
-        return
+        return None
     country = str(address.get("country") or "").strip()
     if not country:
-        return
+        return None
 
     company = await locked_company(session, company_id)
     if company is None:
-        return
-    taxes = company.settings.get("taxes")
-    if taxes is not None and taxes != TAX_REGIMES["_default"]["taxes"]:
-        return
+        return None
+    seeded_for, code = company.settings.get(TAXES_SEEDED_FOR), tax_country(country)
+    if company.settings.get("taxes") is not None and (seeded_for is None or seeded_for == code):
+        return None
     from celerp.services.demo import has_own_books
     if await has_own_books(session, company_id):
-        return
+        return None
 
     regime = get_regime(country)
-    settings = dict(company.settings)
-    settings["taxes"] = copy.deepcopy(regime["taxes"])
+    settings = with_taxes(dict(company.settings), copy.deepcopy(regime["taxes"]), code)
     seeds_currency = "currency" not in settings
     if seeds_currency:
         settings["currency"] = regime["currency"]
     company.settings = settings
     if seeds_currency:
         await _books_currency_set(session, company_id)
+    return code or None
 
 
 async def _books_currency_set(session: AsyncSession, company_id) -> None:
@@ -697,10 +701,10 @@ async def patch_location(
     # Re-seed regime if this is (or is becoming) the default location with a country
     effective_default = payload.is_default if payload.is_default is not None else loc.is_default
     effective_address = payload.address if payload.address is not None else loc.address
-    if effective_default:
-        await _maybe_apply_regime(session, company_id, effective_address)
+    taxes_from = await _maybe_apply_regime(session, company_id, effective_address) if effective_default else None
     await session.commit()
-    return {"id": str(loc.id), "name": loc.name, "type": loc.type, "address": loc.address, "is_default": loc.is_default}
+    return {"id": str(loc.id), "name": loc.name, "type": loc.type, "address": loc.address,
+            "is_default": loc.is_default, "taxes_from": taxes_from}
 
 
 @router.delete("/me/locations/{location_id}")
@@ -1351,8 +1355,7 @@ async def patch_taxes(
     company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
-    settings = dict(company.settings)
-    settings["taxes"] = [t.model_dump() for t in payload.taxes]
+    settings = with_taxes(dict(company.settings), [t.model_dump() for t in payload.taxes])
     company.settings = settings
     await reconcile_tax_seed_notices(session, company_id, settings)
     await session.commit()
@@ -1424,7 +1427,7 @@ async def import_taxes_batch(
         existing_names.add(key)
         res.created += 1
 
-    settings["taxes"] = taxes
+    settings = with_taxes(settings, taxes)
     company.settings = settings
     await reconcile_tax_seed_notices(session, company_id, settings)
     await session.commit()
@@ -2660,19 +2663,8 @@ from celerp.services.pricing import (
     is_derived,
     normalized_price_lists,
     price_config_error,
+    price_lists_in,
 )
-
-DEFAULT_PRICE_LISTS: list[dict] = [
-    {"name": "Retail", "description": "Standard retail price"},
-    {"name": "Wholesale", "description": "Wholesale / trade price"},
-]
-
-
-def _stored_price_lists(settings: dict) -> list[dict]:
-    """The company's price lists; the defaults until it saves its own."""
-    existing = settings.get("price_lists")
-    return copy.deepcopy(DEFAULT_PRICE_LISTS) if existing is None else existing
-
 
 class PriceListsPatch(BaseModel):
     price_lists: list[dict]
@@ -2693,7 +2685,7 @@ async def get_price_lists(
     company = await session.get(Company, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
-    price_lists = _stored_price_lists(company.settings)
+    price_lists = price_lists_in(company.settings)
     if not role_has_permission(company.settings, role, "view_inventory_costs"):
         # Without view_inventory_costs: no cost lists, and names/descriptions only. A
         # derived list's factor stays gated because price ÷ factor would reveal a
@@ -2719,7 +2711,7 @@ async def patch_price_lists(
     settings = dict(company.settings)
     error = price_config_error(payload.price_lists,
                                payload.base_price_list or settings.get("base_price_list"),
-                               _stored_price_lists(settings))
+                               price_lists_in(settings))
     if error:
         raise HTTPException(status_code=422, detail=error)
     settings["price_lists"] = normalized_price_lists(payload.price_lists)
@@ -2752,14 +2744,14 @@ async def patch_base_price_list(
     if company is None:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     settings = dict(company.settings)
-    price_lists = _stored_price_lists(settings)
+    price_lists = price_lists_in(settings)
     target = next((pl for pl in price_lists if pl.get("name") == payload.name), None)
     if target is None:
-        raise HTTPException(status_code=422, detail=t("company.err_price_list_missing", name=payload.name))
+        raise HTTPException(status_code=422, detail=catalog_refusal("company.err_price_list_missing", name=payload.name))
     if is_derived(target):
         raise HTTPException(
             status_code=422,
-            detail=t("company.err_price_list_derived", name=payload.name),
+            detail=catalog_refusal("company.err_price_list_derived", name=payload.name),
         )
     settings["base_price_list"] = payload.name
     company.settings = settings

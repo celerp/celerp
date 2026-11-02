@@ -85,6 +85,22 @@ _DEFAULT_COL_WIDTHS: dict[str, str] = {
 }
 
 
+# An issued invoice nobody has paid is stored as "final"; a bill in the same state is stored
+# as "awaiting_payment". Both read as Awaiting Payment so one state carries one label.
+# A draft invoice is a pro forma (it carries a PF number until it is issued).
+_DOC_STATUS_SHOWN_AS = {("invoice", "final"): "awaiting_payment", ("invoice", "draft"): "pro_forma"}
+
+
+def doc_status_shown(doc_type: str | None, status: str | None) -> str:
+    """The status a document reads as on screen (badge label and colour)."""
+    return _DOC_STATUS_SHOWN_AS.get((doc_type or "", status or ""), status or "")
+
+
+def doc_status_badge(doc_type: str | None, status: str | None) -> str | FT:
+    """A document's status badge, in the user's language."""
+    return format_value(doc_status_shown(doc_type, status), "badge", domain="doc_status")
+
+
 def format_value(v, fmt: str = "text", currency: str | None = None, domain: str | None = None) -> str | FT:
     """Universal display formatter for table cells and detail pages.
 
@@ -205,7 +221,8 @@ BULK_TOOLBAR_JS = """
     for(var i=0;i<acts.length;i++){if(acts[i].value===val)return acts[i];}return null;}
   function runAction(bar,a){
     var t=table(bar);if(!t||!a)return;var ids=checkedIds(t);if(!ids.length)return;
-    if(a.confirm&&!confirm(a.confirm.replace('{n}',ids.length)))return;
+    if(a.confirm){var q=a.confirm.replace('{n}',ids.length);a=Object.assign({},a,{confirm:null});
+      celerpConfirm(q).then(function(yes){if(yes)runAction(bar,a);});return;}
     if(a.method==='open'){window.open(a.url+(a.url.indexOf('?')>=0?'&':'?')+'ids='+encodeURIComponent(ids.join(',')),'_blank');return;}
     var form=document.createElement('form');
     ids.forEach(function(id){var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;form.appendChild(inp);});
@@ -680,6 +697,28 @@ def empty_state_cta(
     return Div(*inner, cls="empty-state-cta")
 
 
+def period_empty_text(period: tuple[str, str, str] | None, lang: str | None = None) -> str:
+    """What an empty dated list or report says when it shows a date window, or "" when it
+    does not. ``period`` is (date_from, date_to, all_time_url); None or no dates means the
+    view is not windowed, so the caller's own first-run message stands."""
+    if not period or not (period[0] or period[1]):
+        return ""
+    return t("filter.empty_period", lang, date_from=period[0] or EMPTY, date_to=period[1] or EMPTY)
+
+
+def period_all_time_link(period: tuple[str, str, str], lang: str | None = None, cls: str | None = None) -> FT:
+    return A(t("filter.all_time", lang), href=period[2], cls=cls)
+
+
+def period_empty_note(period: tuple[str, str, str] | None, lang: str | None = None) -> FT | str:
+    """A report's empty state for a date window: the window and a link to All time, so
+    records dated outside it never read as missing."""
+    text = period_empty_text(period, lang)
+    if not text:
+        return ""
+    return P(text, " ", period_all_time_link(period, lang), cls="empty-state")
+
+
 # A journal line's party picker: every contact, and no add-new. The forms that
 # post to a control account by hand share one search URL and one option shape, so
 # a party chosen on the reconciliation screen is the same party the manual entry
@@ -928,16 +967,18 @@ def purchase_display_cell(
     pu_disp = display_unit(pu_val) if pu_val not in (None, "") else EMPTY
     cf_disp = str(cf_val) if cf_val not in (None, "") else EMPTY
     sb_disp = display_unit(sb_val) if sb_val not in (None, "") else EMPTY
-    return Td(
-        Span(
-            pu_disp,
-            cls="paired-primary",
-            title=t("label.dblclick_to_edit"),
-            hx_get=pu_edit,
-            hx_target="closest td",
-            hx_swap="outerHTML",
-            hx_trigger="dblclick",
-        ),
+    pu_span = Span(
+        pu_disp,
+        cls="paired-primary",
+        title=t("label.dblclick_to_edit"),
+        hx_get=pu_edit,
+        hx_target="closest td",
+        hx_swap="outerHTML",
+        hx_trigger="dblclick",
+    )
+    # No purchase unit: nothing converts yet, so one mark that opens the unit editor, not "-- → 1 --".
+    parts = (pu_span,) if pu_val in (None, "") else (
+        pu_span,
         Span(" → ", cls="paired-sep", title=t("table.purchase_unit_conversion_hint")),
         Span(
             cf_disp,
@@ -950,7 +991,10 @@ def purchase_display_cell(
         ),
         Span(" ", cls="paired-sep"),
         Span(sb_disp, cls="paired-tertiary cell-readonly"),
-        cls="cell cell--paired",
+    )
+    return Td(
+        *parts,
+        cls="cell cell--paired cell--conversion",
         data_col="purchase_unit",
     )
 
@@ -1434,13 +1478,14 @@ def data_row(
             # Only a draft, or one already Deleted, can be deleted (the bulk bar's
             # rule); stock is written off.
             *([Button(t("btn.delete"), cls="row-menu-item row-menu-item--danger",
-                      onclick=f"if(!confirm({_confirm_delete_row}))return;"
+                      onclick=f"celerpConfirm({_confirm_delete_row}).then(function(yes){{if(yes)"
                               f"htmx.ajax('DELETE','{_delete_url}',"
-                              f"{{target:'#row-{safe_id}',swap:'outerHTML'}})")]
+                              f"{{target:'#row-{safe_id}',swap:'outerHTML'}});}})")]
               if str(row.get("status", "") or "").lower() in ("draft", "deleted") else []),
         )
     ]
     status_val = str(row.get("status", "") or "").lower()
+    row_read_only = bool(row.get("_row_read_only"))
     # autocomplete off: the stored selection decides the tick, never the browser
     # restoring a form on Back or Forward.
     checkbox_td = [Td(Input(type="checkbox", cls="row-select", name="selected", value=entity_id,
@@ -1453,6 +1498,7 @@ def data_row(
                  data_weight_unit=row.get("weight_unit", ""),
                  data_sell_by=row.get("sell_by", ""),
                  data_status=status_val,
+                 disabled=row_read_only,
            ), cls="col-checkbox")] if show_checkboxes else []
     row_cls = "data-row data-row--inactive" if status_val in INACTIVE_ITEM_STATUSES else "data-row"
     if str(row.get("inventory_type") or "") == "component":
@@ -1481,7 +1527,7 @@ def data_row(
                 value=row.get(f["key"], ""),
                 cell_type=f.get("type", "text"),
                 options=f.get("options"),
-                editable=f.get("editable", True) or f["key"] in row_editable,
+                editable=(f.get("editable", True) or f["key"] in row_editable) and not row_read_only,
                 currency=currency,
                 link_href=(link_fn[f["key"]].format(id=entity_id) if link_fn and f["key"] in link_fn else None),
                 edit_url=(edit_url_tpl.format(id=entity_id, field=f["key"]) if edit_url_tpl else None),
@@ -1493,6 +1539,10 @@ def data_row(
         id=f"row-{safe_id}",
         cls=row_cls,
     )
+
+
+# Cell types that hold figures: their cells and headers sit right, so a header stays over its numbers.
+NUMERIC_CELL_TYPES = frozenset({"number", "money", "rate", "weight"})
 
 
 def data_table(
@@ -1561,7 +1611,8 @@ def data_table(
         spec = (column_filters or {}).get(key)
         funnel = _filter_funnel_btn(spec["param"], spec["options"], spec.get("selected"),
                                     field_label(f)) if spec else ""
-        th_cls = f"col-{key}" + (" colfilter-th" if spec else "")
+        th_cls = (f"col-{key}" + (" colfilter-th" if spec else "")
+                  + (" cell--number" if f.get("type") in NUMERIC_CELL_TYPES else ""))
         if sort_url and f.get("sortable", True):
             params = {**(extra_params or {}), "sort": key}
             new_dir = "asc" if (sort_key == key and sort_dir == "desc") else "desc"
@@ -1941,12 +1992,10 @@ function bulkActionChanged(action){
     // Archiving retires the product but leaves any remaining stock on the books. When stock is
     // still held the user must choose (keep on books vs write off) - never a silent ledger move.
     if(_selectedStockedIds().length){_stockGuardChoice(function(){_bulkImmediate('/api/items/bulk/status','bulk_status','archived');});return;}
-    if(!confirm('Archive selected items? They will be hidden from the default view.')) return;
-    _bulkImmediate('/api/items/bulk/status','bulk_status','archived');return;
+    celerpConfirm('Archive selected items? They will be hidden from the default view.').then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/status','bulk_status','archived');});return;
   }
   if(action==='restore'){
-    if(!confirm('Restore selected items to the catalog? They will become available again.')) return;
-    _bulkImmediate('/api/items/bulk/status','bulk_status','available');return;
+    celerpConfirm('Restore selected items to the catalog? They will become available again.').then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/status','bulk_status','available');});return;
   }
   if(action==='expire'){
     // Same guard as archive: an expired item that still holds stock needs the keep/write-off choice.
@@ -1957,25 +2006,21 @@ function bulkActionChanged(action){
     _bulkWriteOff();return;
   }
   if(action==='make_available'){
-    if(!confirm('Make selected draft items available? They will count as real stock.')) return;
-    _bulkImmediate('/api/items/bulk/make-available',null,null);return;
+    celerpConfirm('Make selected draft items available? They will count as real stock.').then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/make-available',null,null);});return;
   }
   if(action==='revert_to_draft'){
-    if(!confirm('Revert selected items to draft? Only items with no circulation history can revert.')) return;
-    _bulkImmediate('/api/items/bulk/revert-to-draft',null,null);return;
+    celerpConfirm('Revert selected items to draft? Only items with no circulation history can revert.').then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/revert-to-draft',null,null);});return;
   }
   if(action==='delete'){
     // The demo items list removes untouched samples outright; elsewhere Delete takes drafts.
     var samples=document.querySelector('#bulk-action-select option[value="delete"][data-samples]');
-    if(!confirm(samples?'Delete selected items? This cannot be undone.':'Delete selected drafts? A draft nothing else uses is erased and cannot be brought back. A draft another record still names moves to Deleted, where Restore brings it back.')) return;
-    _bulkImmediate('/api/items/bulk/delete',null,null);return;
+    celerpConfirm(samples?'Delete selected items? This cannot be undone.':'Delete selected drafts? A draft nothing else uses is erased and cannot be brought back. A draft another record still names moves to Deleted, where Restore brings it back.').then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/delete',null,null);});return;
   }
   if(action==='restore_deleted'){
     _bulkImmediate('/api/items/bulk/restore-deleted',null,null);return;
   }
   if(action==='duplicate'){
-    if(!confirm('Duplicate selected items? A copy of each will be created.')) return;
-    _bulkImmediate('/api/items/bulk/duplicate',null,null);return;
+    celerpConfirm('Duplicate selected items? A copy of each will be created.').then(function(yes){if(yes)_bulkImmediate('/api/items/bulk/duplicate',null,null);});return;
   }
   // Context-driven actions - clone template (includes module actions via mod: prefix)
   // mod: actions use tpl-mod-{action_id} where action_id strips the mod: prefix.
@@ -2407,6 +2452,9 @@ function sendToTypeChanged(docType, docLabel){
                      _json.dumps(t("table.confirm_make_available_selected")))
             .replace("'Revert selected items to draft? Only items with no circulation history can revert.'",
                      _json.dumps(t("table.confirm_revert_to_draft_selected")))
+            .replace("'Delete selected drafts? A draft nothing else uses is erased and cannot be brought back. "
+                     "A draft another record still names moves to Deleted, where Restore brings it back.'",
+                     _json.dumps(t("table.confirm_delete_drafts_selected")))
             .replace("'Delete selected items? This cannot be undone.'",
                      _json.dumps(t("table.confirm_delete_selected")))
             .replace("'Duplicate selected items? A copy of each will be created.'",

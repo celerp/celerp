@@ -1319,22 +1319,7 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, "assets", "loading.html"));
   mainWindow.once("ready-to-show", () => mainWindow.show());
 
-  // In Electron (contextIsolation=true), window.confirm() is silently stubbed
-  // to false in the renderer. Override it once per page load so ALL confirm()
-  // calls — both onclick handlers and htmx hx-confirm attributes — show a real
-  // native dialog via the contextBridge IPC.
-  mainWindow.webContents.on("did-finish-load", () => {
-    showPendingHandoff();
-    mainWindow.webContents.executeJavaScript(`
-      (function () {
-        if (window.__ceConfirmPatched) return;
-        window.__ceConfirmPatched = true;
-        window.confirm = function (message) {
-          return !!(window.celerp && window.celerp.showConfirm(message));
-        };
-      })();
-    `).catch(() => {}); // ignore if page is being navigated away
-  });
+  mainWindow.webContents.on("did-finish-load", () => showPendingHandoff());
 
   // Open external links in the default browser, not in the app. Validate the scheme
   // first so a hostile link can never hand file:/javascript: to the OS via openExternal.
@@ -1402,20 +1387,6 @@ ipcMain.handle("open-modules-folder", () => shell.openPath(MODULE_DIR));
 ipcMain.handle("pick-module-folder", async () => {
   const r = await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory"] });
   return (r.canceled || !r.filePaths.length) ? null : r.filePaths[0];
-});
-
-// show-confirm: renderer calls window.celerp.showConfirm(message) for hx-confirm
-// dialogs. window.confirm() is silently stubbed to false in Electron's renderer,
-// so htmx hx-confirm never fires without this native dialog bridge.
-ipcMain.on("show-confirm", (event, message) => {
-  const result = dialog.showMessageBoxSync(mainWindow, {
-    type: "question",
-    buttons: ["Cancel", "OK"],
-    defaultId: 1,
-    cancelId: 0,
-    message: String(message),
-  });
-  event.returnValue = result === 1; // true = OK, false = Cancel
 });
 
 // ── Uninstall IPC handlers ───────────────────────────────────────────────────

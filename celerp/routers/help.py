@@ -131,10 +131,14 @@ def _route_pattern(route: str) -> re.Pattern:
 
 def _covers(route: str, path: str, query: set[tuple[str, str]]) -> bool:
     """Whether a help page route covers the screen at ``path`` with ``query``: the paths
-    match and every query pair the route names (a tab, say) is on the screen's address."""
+    match, every query pair the route names (a tab, say) is on the screen's address, and
+    both name the same ``type``. A list path such as ``/docs`` serves a different screen
+    per type, so a route without a type covers only the untyped list."""
     route_path, _, route_query = route.partition("?")
+    route_pairs = set(parse_qsl(route_query))
     return (_route_pattern(route_path).match(path) is not None
-            and set(parse_qsl(route_query)) <= query)
+            and route_pairs <= query
+            and dict(route_pairs).get("type") == dict(query).get("type"))
 
 
 def _short_path(address: str) -> str:

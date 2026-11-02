@@ -10,7 +10,7 @@ from fastapi import HTTPException
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
-from celerp.accounting_roles import Refused, catalog_refusal, refusal
+from celerp.accounting_roles import Refused, catalog_refusal, period_locked_refusal, refusal
 from celerp.events.schemas import EVENT_SCHEMA_MAP
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
@@ -192,7 +192,7 @@ async def _check_period_lock(session, company_id, data: dict) -> None:
     if event_date <= lock_date:
         raise HTTPException(
             status_code=422,
-            detail=catalog_refusal("error.period_locked", date=lock_date_str),
+            detail=period_locked_refusal(lock_date_str),
         )
 
 

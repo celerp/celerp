@@ -229,7 +229,7 @@ class TestSecondBootGuards:
 
 
 class TestElectronConfirmDialog:
-    """Verify the native confirm dialog bridge is correctly wired in main.js and preload.js."""
+    """The desktop app relies on the UI's own confirmation dialog."""
 
     @pytest.fixture(autouse=True)
     def _src(self):
@@ -241,51 +241,9 @@ class TestElectronConfirmDialog:
         with open(p2) as f:
             self.preload_src = f.read()
 
-    def test_ipcmain_imported(self):
-        """ipcMain must be destructured from 'electron' require."""
-        assert "ipcMain" in self.main_src
-
-    def test_show_confirm_handler_registered(self):
-        """main.js must register an ipcMain.on('show-confirm', ...) handler."""
-        assert 'ipcMain.on("show-confirm"' in self.main_src
-
-    def test_show_confirm_uses_showmessageboxsync(self):
-        """show-confirm handler must use showMessageBoxSync (synchronous) not showMessageBox."""
-        assert "showMessageBoxSync" in self.main_src
-
-    def test_show_confirm_sets_event_returnvalue(self):
-        """show-confirm handler must set event.returnValue for ipcRenderer.sendSync."""
-        assert "event.returnValue" in self.main_src
-
-    def test_preload_exposes_showconfirm(self):
-        """preload.js must expose showConfirm on the contextBridge."""
-        assert "showConfirm" in self.preload_src
-
-    def test_preload_uses_sendsync(self):
-        """showConfirm must use ipcRenderer.sendSync (not invoke) to return synchronously."""
-        assert "sendSync" in self.preload_src
-        assert '"show-confirm"' in self.preload_src
-
-    def test_window_confirm_overridden(self):
-        """main.js must override window.confirm via did-finish-load injection.
-
-        window.confirm() is silently stubbed to false in Electron's renderer
-        (contextIsolation=true). Overriding it makes ALL confirm() calls work:
-        - onclick confirm() in row-menu and bulk delete buttons
-        - htmx's internal confirm(a) call for hx-confirm attributes
-        """
-        assert "window.confirm = function" in self.main_src
-
-    def test_confirm_patch_attached_on_did_finish_load(self):
-        """window.confirm override must be injected on did-finish-load (survives htmx navigation)."""
-        assert "did-finish-load" in self.main_src
-
-    def test_confirm_patch_is_idempotent(self):
-        """Patch must guard against double-registration (__ceConfirmPatched sentinel)."""
-        assert "__ceConfirmPatched" in self.main_src
-
-    def test_no_htmx_confirm_interceptor(self):
-        """htmx:confirm event listener must NOT be present - window.confirm override is sufficient.
-        The interceptor was a redundant second mechanism; removing it keeps the code DRY."""
-        assert "htmx:confirm" not in self.main_src
-        assert "issueRequest" not in self.main_src
+    def test_no_native_confirm_bridge(self):
+        """The UI asks in its own dialog (celerpConfirm in ui/components/shell.py), which works in
+        Electron as in any browser, so the app carries no bridge for the browser's plain box."""
+        for src in (self.main_src, self.preload_src):
+            assert "show-confirm" not in src and "showConfirm" not in src
+        assert "window.confirm" not in self.main_src

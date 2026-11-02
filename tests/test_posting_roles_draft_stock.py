@@ -13,6 +13,8 @@ started, even when the clock passes midnight part way through it.
 """
 from __future__ import annotations
 
+from celerp.accounting_roles import period_locked_refusal
+
 import uuid
 from datetime import datetime, timezone
 
@@ -34,7 +36,7 @@ pytestmark = pytest.mark.asyncio
 
 _FIELD = "inventory_account_code"
 _REPAIR = "Settings > Accounting > Posting accounts"
-_LOCKED = t("error.period_locked", "en", date="{date}").split("{date}")[0]
+_LOCKED = refusal_text(period_locked_refusal("{date}")).split("{date}")[0]
 
 
 async def _move(client, auth, path: str, lot: str):

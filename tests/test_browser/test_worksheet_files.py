@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from .conftest import answer_confirms
+
 pytestmark = pytest.mark.browser
 
 SHOTS = Path("context/reviews/worksheet")
@@ -36,7 +38,7 @@ def test_manufacturing_tab_has_files_section_and_uploads(page, ui_server, api):
     page.screenshot(path=str(SHOTS / "files.png"), full_page=True)
 
     # Remove it via the row delete button (accept the confirm dialog).
-    page.on("dialog", lambda d: d.accept())
+    answer_confirms(page)
     page.locator(f"#files-section-{sid} button[title='Delete File']").first.click()
     page.wait_for_selector("a.file-link:has-text('spec.png')", state="detached", timeout=10000)
     assert (api.get(f"/items/{item}").json().get("files") or []) == []

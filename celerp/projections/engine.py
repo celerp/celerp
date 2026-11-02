@@ -96,6 +96,15 @@ def _merge(state: dict, _event_type: str, data: dict) -> dict:
     return {**state, **data}
 
 
+def core_event(event_type: str) -> bool:
+    """Whether core applies ``event_type`` whichever modules are installed: a retired
+    event, one merged onto its record, or one under a prefix core handles itself."""
+    from celerp.modules.slots import KERNEL_PROJECTION_PREFIXES
+
+    return (event_type in RETIRED or event_type in MERGE_EVENTS
+            or any(event_type.startswith(p) for p in KERNEL_PROJECTION_PREFIXES))
+
+
 def _replay_handler(event_type: str):
     """The one answer to "can this build apply this event as it is meant to": the retired
     handler, the registered projection handler that owns its prefix, or the plain merge for

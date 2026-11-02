@@ -301,3 +301,74 @@ async def test_an_account_the_source_coded_like_a_generated_one_is_offered_with_
     [offered] = [c for c in (await _readiness(context))["general_expense"]["candidates"]
                  if c["code"] == "Mdeadbeef"]
     assert account_label(offered) == "Mdeadbeef Bank charges"
+
+
+# Names as an Odoo chart has them: one exchange difference account, of the gain's type.
+_ODOO_NAMED = [
+    ("assets", "100", "Assets", "asset", None),
+    ("bank", "101000", "Bank", "asset", "bank"),
+    ("tax-paid", "131000", "Tax Paid", "asset", None),
+    ("withholding", "215000", "Withholding Tax Payable", "liability", "tax"),
+    ("tax-received", "251000", "Tax Received", "liability", "tax"),
+    ("sales", "400000", "Product Sales", "revenue", None),
+    ("cogs", "500000", "Cost of Goods Sold", "cogs", None),
+    ("fx", "441000", "Foreign Exchange Gain", "revenue", "exchange_difference"),
+    ("fx-loss", "641000", "Foreign Exchange Loss", "expense", None),
+]
+
+
+@pytest.mark.asyncio
+async def test_obvious_matches_are_proposed_and_a_loss_never_gets_the_gain_account(session):
+    context = await _staged_context(session)
+    await _import_chart(context, _ODOO_NAMED)
+    rows = await _readiness(context)
+    assert {r: rows[r]["suggested"] for r in (
+        "cash_and_equivalents", "default_deposit", "tax_input", "tax_output", "sales_revenue", "cogs", "fx_gain", "fx_loss",
+    )} == {"cash_and_equivalents": "101000", "default_deposit": "101000", "tax_input": "131000", "tax_output": "251000",
+           "sales_revenue": "400000", "cogs": "500000", "fx_gain": "441000", "fx_loss": "641000"}
+    # The source's exchange difference account is the gain's own: it is the gain's single
+    # control, and never preselected for the loss.
+    assert (rows["fx_gain"]["preselect"], rows["fx_loss"]["preselect"]) == ("441000", None)
+    # A proposal is only shown: finishing without choosing sets nothing by name.
+    assert rows["sales_revenue"]["preselect"] is None
+
+
+async def test_an_untouched_form_shows_proposals_but_submits_only_authoritative_choices(session, monkeypatch):
+    """The finish step shows the account each name match proposes, but its pickers start
+    empty: only the source's single control of the role's own kind starts chosen. Finishing
+    an untouched form therefore sets nothing by name, so a withholding tax, an account of the
+    wrong type or the other side of an exchange pair is never posted to unasked."""
+    import re
+
+    from fasthtml.common import to_xml
+
+    from celerp.services.migrations import MigrationError
+    from celerp.services.posting_readiness import readiness
+    from ui.routes.migrations import _posting_accounts
+
+    context = await _staged_context(session)
+    await _import_chart(context, _ODOO_NAMED)
+    roles = await readiness(context.session, context.company_id)
+    shown = {r["role"]: r for r in roles if r["required"] or r["current"]}
+    html = to_xml(_posting_accounts(roles, {}))
+    submitted = {}
+    for role in shown:
+        tag = re.search(r'<input[^>]*name="role\.' + role + r'"[^>]*>', html)
+        assert tag, role
+        value = re.search(r'value="([^"]*)"', tag.group(0))
+        submitted[role] = value.group(1) if value else ""
+
+    for role, row in shown.items():
+        assert submitted[role] == (row["preselect"] or ""), (role, submitted[role], row)
+        if row["suggested"] and not row["preselect"]:
+            label = next(c for c in row["candidates"] if c["code"] == row["suggested"])
+            assert f'{label["code"]}' in html.split(f'name="role.{role}"', 1)[1].split("</tr>", 1)[0], role
+    assert "215000" not in {submitted.get("tax_output"), submitted.get("tax_input")}
+    if "fx_loss" in submitted:
+        assert submitted["fx_loss"] != "441000"
+
+    await _ready_run(context, monkeypatch)
+    with pytest.raises(MigrationError) as exc:
+        await _finalize(context, monkeypatch, {"roles": {r: c for r, c in submitted.items() if c}})
+    assert exc.value.status_code == 409
+    assert (await _company(context)).is_migration_staged

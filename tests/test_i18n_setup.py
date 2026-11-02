@@ -45,7 +45,7 @@ def _xx_lang():
 
 def test_company_choice_placeholders_translate():
     """The currency-search placeholder resolves through t() at render."""
-    html = to_xml(company_choice_fields("", ""))
+    html = to_xml(company_choice_fields("", "", ""))
     assert "XX_CUR_SEARCH" in html
 
 

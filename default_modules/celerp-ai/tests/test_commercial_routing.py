@@ -186,7 +186,7 @@ async def test_ai_api_401_is_transport_neutral_in_partner_mode(monkeypatch, sess
     detail = str(exc.value.detail)
     assert "celerp.com/subscribe" not in detail
     assert "partner.example.com" not in detail
-    assert "Settings > Web Access" in detail
+    assert "Web Access" in detail and "Settings >" not in detail
 
 
 @pytest.mark.asyncio
@@ -201,4 +201,4 @@ async def test_ai_api_401_is_transport_neutral_in_direct_mode(monkeypatch, sessi
     assert exc.value.status_code == 401
     detail = str(exc.value.detail)
     assert "celerp.com/subscribe" not in detail
-    assert "Settings > Web Access" in detail
+    assert "Web Access" in detail and "Settings >" not in detail

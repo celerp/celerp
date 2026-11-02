@@ -281,6 +281,15 @@ PUBLISHED = {
 
 
 @cache
+def test_a_charge_with_no_quantity_reads_as_one_at_its_amount():
+    """A purchase line Sage keeps as an amount alone (a power bill) reads 1 x its amount, never 0 x 0.00
+    beside a total."""
+    docs = [d for d in _manifest().bundle.documents if (d.ref or "").startswith("EEU-")]
+    assert docs
+    for line in (ln for d in docs for ln in d.line_items):
+        assert line.total_price and line.quantity * line.unit_price == line.total_price, line
+
+
 def _published():
     import tempfile
     from pathlib import Path

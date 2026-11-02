@@ -144,3 +144,41 @@ async def test_taxes_tab_rate_column_is_right_aligned(prefix):
     assert header and "cell--number" in header.group(0), html
     assert 'class="cell cell--clickable cell--number"' in to_xml(_tax_display_cell(0, "rate", _taxes()[0], prefix=prefix))
     assert "cell--number" not in to_xml(_tax_display_cell(0, "name", _taxes()[0], prefix=prefix))
+
+
+@pytest.mark.parametrize("rate, shown", [(0, "0%"), (0.0, "0%"), (7.0, "7%"), (7.25, "7.25%"), (None, "--"), ("", "--")])
+async def test_a_zero_rate_reads_as_a_rate_not_an_empty_cell(rate, shown):
+    from fasthtml.common import to_xml
+    from ui.routes.settings import _tax_display_cell
+    assert f">{shown}</span>" in to_xml(_tax_display_cell(0, "rate", {"rate": rate}))
+
+
+@pytest.mark.parametrize("tax, label", [({"name": "Exempt", "rate": 0.0}, "Exempt (0%)"),
+                                        ({"code": "GST", "rate": 18.0}, "GST (18%)"),
+                                        ({"name": "VAT", "rate": 7.5}, "VAT (7.5%)")])
+async def test_the_line_tax_choice_names_the_rate_without_a_trailing_zero(tax, label):
+    from ui.routes.documents import _tax_label
+    assert _tax_label(tax) == label
+
+
+@pytest.mark.parametrize("prefix, gname, pname", _PREFIXES)
+@pytest.mark.parametrize("field", ["name", "rate", "description"])
+async def test_a_typed_tax_cell_saves_on_enter_and_leaves_untouched_without_a_write(ui_client, prefix, gname, pname, field):
+    ui_client.cookies.update(_authed())
+    with patch(f"ui.api_client.{gname}", new=AsyncMock(side_effect=lambda *_: _taxes())):
+        r = await ui_client.get(f"/settings/{prefix}/0/{field}/edit")
+    assert "event.key==='Enter'" in r.text, field
+    # Blur saves only a changed value; an untouched editor restores the shown cell.
+    assert "this.value!==this._v" in r.text, field
+
+
+@pytest.mark.parametrize("prefix", ["taxes", "purchasing-taxes"])
+async def test_new_tax_waits_for_a_pending_cell_save(prefix):
+    # The tab's requests run one after another, and New Tax is sent only after a blurred
+    # editor's save has been sent, so a rate typed just before the click is not overwritten.
+    from fasthtml.common import to_xml
+    from ui.routes.settings import _taxes_tab
+    html = to_xml(_taxes_tab(_taxes(), prefix=prefix))
+    assert re.search(r'class="settings-card"[^>]*hx-sync="this:queue all"|hx-sync="this:queue all"[^>]*class="settings-card"', html), html
+    button = re.search(r'<button[^>]*hx-post="/settings/' + prefix + r'/new"[^>]*>', html).group(0)
+    assert 'hx-trigger="click delay:' in button, button

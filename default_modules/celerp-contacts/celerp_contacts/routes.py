@@ -27,8 +27,8 @@ from celerp.services.attachments import attach_file, local_attachment_url_path, 
 from celerp.services.auth import AuthContext, get_auth_context, get_current_company_id, get_current_user
 from celerp.services.peer_import import peer_batch
 from celerp.services.company_lock import lock_company, lock_projections
-from celerp.services.currencies import require_currency_code, require_phone
-from celerp.services.permissions import locked_authority, require_permission
+from celerp.services.currencies import require_email, require_phone
+from celerp.services.permissions import assert_role_permission, locked_authority, read_authority, require_permission
 from ui.i18n import t
 
 from celerp.importers.sinks import register_sink
@@ -148,10 +148,8 @@ async def create_contact(payload: ContactCreate, company_id: str = Depends(get_c
             if replay.event_type != "crm.contact.created":
                 raise HTTPException(status_code=409, detail=catalog_refusal("contacts.err_resubmitted"))
             return {"event_id": replay.id, "id": replay.entity_id}
-    if not payload.name or not payload.name.strip():
-        raise HTTPException(status_code=422, detail=catalog_refusal("contacts.err_name_required"))
-    require_currency_code(payload.currency)
-    require_phone(payload.phone)
+    services.require_contact_fields(
+        {"name": payload.name, "currency": payload.currency, "phone": payload.phone, "email": payload.email})
     entity_id = f"contact:{uuid.uuid4()}"
     entry = await emit_event(
         session,
@@ -194,20 +192,19 @@ async def get_contact(contact_id: str, company_id: str = Depends(get_current_com
     return row.state | {"id": row.entity_id}
 
 
-@router.patch("/contacts/{contact_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True})
+@router.patch("/contacts/{contact_id}", openapi_extra={"x-celerp-agent": True, "x-celerp-agent-idempotent": True,
+                                                    "x-celerp-agent-result-permissions": ["edit_contacts", "manage_company_settings"]})
 async def update_contact(contact_id: str, payload: ContactUpdate, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), _: None = require_permission("edit_contacts"), session: AsyncSession = Depends(get_session)) -> dict:
-    row = await _locked_contact(session, company_id, contact_id)
+    row = await _locked_identity_contact(session, company_id, user, contact_id)
+    services.require_contact_write_fields(payload.fields_changed)
     if payload.idempotency_key:
         replay = await find_event_by_idempotency(session, company_id, payload.idempotency_key)
         if replay is not None:
             if replay.event_type != "crm.contact.updated" or replay.entity_id != contact_id:
                 raise HTTPException(status_code=409, detail=catalog_refusal("contacts.err_resubmitted"))
             return {"event_id": replay.id}
-    currency = (payload.fields_changed.get("currency") or {}).get("new")
-    # A contact kept in a currency ISO 4217 has since withdrawn keeps it; none is moved to one.
-    if currency != row.state.get("currency"):
-        require_currency_code(currency)
-    require_phone((payload.fields_changed.get("phone") or {}).get("new"))
+    services.require_contact_fields({k: (c or {}).get("new") for k, c in payload.fields_changed.items()},
+                                    row.state or {})
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -256,6 +253,27 @@ async def _locked_contact(session: AsyncSession, company_id, contact_id: str) ->
     if row is None or row.entity_type != "contact":
         raise HTTPException(status_code=404, detail=catalog_refusal("error.record_not_found"))
     return row
+
+
+async def _locked_identity_contact(session: AsyncSession, company_id, user, contact_id: str) -> Projection:
+    """_locked_contact for a change to a contact's name, details, people or addresses. The
+    company's own contact is its identity on every document, so changing it also takes the
+    permission that guards the company's settings."""
+    row = await _locked_contact(session, company_id, contact_id)
+    if (row.state or {}).get("is_self"):
+        await _require_identity_authority(session, company_id, user)
+    return row
+
+
+async def _require_identity_authority(session: AsyncSession, company_id, user) -> None:
+    role, settings = await read_authority(session, company_id, user.id)
+    assert_role_permission(settings, role, "manage_company_settings")
+
+
+def _refuse_own_contact(rows) -> None:
+    """The company's own contact is never deleted or merged away: documents name it as the sender."""
+    if any((row.state or {}).get("is_self") for row in rows):
+        raise HTTPException(status_code=422, detail=catalog_refusal("contacts.err_own_contact_kept"))
 
 
 def _get_contact_file(files: list[dict], file_id: str) -> dict:
@@ -557,8 +575,9 @@ async def add_contact_person(
     _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _locked_contact(session, company_id, contact_id)
+    row = await _locked_identity_contact(session, company_id, user, contact_id)
     require_phone(payload.phone)
+    require_email(payload.email)
     person_id = f"person:{uuid.uuid4()}"
     entry = await emit_event(
         session,
@@ -587,10 +606,12 @@ async def update_contact_person(
     _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _locked_contact(session, company_id, contact_id)
+    row = await _locked_identity_contact(session, company_id, user, contact_id)
     person = next((p for p in row.state.get("people") or [] if p.get("person_id") == person_id), {})
     if payload.phone != person.get("phone"):
         require_phone(payload.phone)
+    if payload.email != person.get("email"):
+        require_email(payload.email)
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -617,7 +638,7 @@ async def remove_contact_person(
     _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _locked_contact(session, company_id, contact_id)
+    row = await _locked_identity_contact(session, company_id, user, contact_id)
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -646,7 +667,7 @@ async def add_contact_address(
     _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _locked_contact(session, company_id, contact_id)
+    row = await _locked_identity_contact(session, company_id, user, contact_id)
     address_id = f"address:{uuid.uuid4()}"
     entry = await emit_event(
         session,
@@ -675,7 +696,7 @@ async def update_contact_address(
     _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _locked_contact(session, company_id, contact_id)
+    row = await _locked_identity_contact(session, company_id, user, contact_id)
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -702,7 +723,7 @@ async def remove_contact_address(
     _: None = require_permission("edit_contacts"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _locked_contact(session, company_id, contact_id)
+    row = await _locked_identity_contact(session, company_id, user, contact_id)
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -811,6 +832,7 @@ async def bulk_delete_contacts(
         if row is None or row.state.get("deleted"):
             raise HTTPException(status_code=404, detail=t("contacts.err_selected_not_found"))
         contact_rows.append(row)
+    _refuse_own_contact(contact_rows)
 
     # Block deletion if any Document, List or Deal (regardless of status) names the contact.
     # Provide a detailed breakdown by type so the user knows exactly what's linked.
@@ -860,12 +882,15 @@ async def merge_contacts_service(
     actor_id,
     target_contact_id: str,
     source_contact_ids: list[str],
+    *,
+    legacy_self: bool = False,
 ) -> dict:
     """Merge source contacts into the target: union people/addresses/tags onto the winner, tombstone the
     sources (deleted + merged_into), and re-point every Document, List and deal referencing a source to
     the winner. Every contact involved is locked first, in sorted id order, then the referencing records.
-    Emits events only (the caller commits), so it is replay-safe and reusable by both the merge route
-    and the self-contact migration - one merge implementation (DRY)."""
+    The company's own contact is never merged away, and merging into it takes the permission that
+    guards the company's settings, both checked on the locked records; only merge_legacy_self_vendor
+    passes ``legacy_self``. Emits events only (the caller commits), so it is replay-safe."""
     from types import SimpleNamespace
     payload = SimpleNamespace(target_contact_id=target_contact_id, source_contact_ids=source_contact_ids)
     user = SimpleNamespace(id=actor_id)
@@ -876,6 +901,10 @@ async def merge_contacts_service(
         raise HTTPException(status_code=422, detail=t("contacts.err_merge_into_itself"))
 
     locked = await lock_contacts(session, company_id, [payload.target_contact_id, *payload.source_contact_ids])
+    if not legacy_self:
+        _refuse_own_contact([locked[sid] for sid in payload.source_contact_ids if sid in locked])
+        if payload.target_contact_id in locked and (locked[payload.target_contact_id].state or {}).get("is_self"):
+            await _require_identity_authority(session, company_id, user)
 
     # 2. Validate target
     target_row = locked.get(payload.target_contact_id)
@@ -1070,6 +1099,15 @@ async def merge_contacts_service(
         "docs_updated": docs_updated,
         "warnings": warnings,
     }
+
+
+async def merge_legacy_self_vendor(session: AsyncSession, company_id, actor_id, winner_id: str,
+                                   vendor_id: str) -> dict:
+    """The self-contact migration's merge: the company's registration vendor record folds into
+    its registration customer record, which is the company's own contact. The migration names
+    both by their registration keys, so it alone may merge a record carrying the company's
+    identity."""
+    return await merge_contacts_service(session, company_id, actor_id, winner_id, [vendor_id], legacy_self=True)
 
 
 @router.post("/contacts/merge")

@@ -3,6 +3,8 @@
 """Supported currencies: the one list every screen and route validates against."""
 from __future__ import annotations
 
+import re
+
 from fastapi import HTTPException
 
 from celerp.accounting_roles import catalog_refusal
@@ -46,3 +48,20 @@ def require_phone(phone: str | None) -> None:
         raise HTTPException(status_code=422, detail=catalog_refusal("error.phone_too_short"))
     if phone and len(str(phone).strip()) > 40:
         raise HTTPException(status_code=422, detail=catalog_refusal("error.phone_too_long"))
+
+
+_EMAIL = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+
+
+def is_email(value: str) -> bool:
+    """One address (name@domain.tld, no spaces) of at most 320 characters, not counting
+    surrounding spaces."""
+    value = value.strip()
+    return len(value) <= 320 and bool(_EMAIL.fullmatch(value))
+
+
+def require_email(email: str | None) -> None:
+    """Refuse an email that is not one address at a write boundary. Empty means no email."""
+    value = str(email or "").strip()
+    if value and not is_email(value):
+        raise HTTPException(status_code=422, detail=catalog_refusal("error.email_invalid"))
