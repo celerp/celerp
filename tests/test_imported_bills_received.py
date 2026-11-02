@@ -1,8 +1,9 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
-"""Bills that bring in no stock, and bills whose goods arrived before the books were imported,
-are not open receipts: the list does not count them as stock to receive and their lines do not
-read Not Received."""
+"""Bills that bring in no stock are not open receipts. An imported bill whose source never
+recorded its goods coming in is not claimed received either: issuing a bill is no evidence of
+receipt. Its lines read Receipt unknown, and the list does not ask for them to be received,
+since the imported opening stock may already hold them."""
 
 from __future__ import annotations
 
@@ -33,8 +34,8 @@ def test_a_stock_bill_with_nothing_received_is_stock_to_receive():
     assert not _not_stocked(stock | {"status": "draft"})
 
 
-def test_a_bill_received_before_import_is_not_stock_to_receive():
-    bill = {"doc_type": "bill", "status": "awaiting_payment", "received_before_import": True,
+def test_a_bill_whose_receipt_is_unknown_is_not_asked_to_be_received():
+    bill = {"doc_type": "bill", "status": "awaiting_payment", "receipt_unknown": True,
             "line_items": [{"item_id": "item:1", "sku": "W-1", "quantity": 3}]}
     assert not _not_stocked(bill)
 
@@ -56,21 +57,25 @@ def _record(status: str = "awaiting_payment", item: str | None = "item-1", metad
     return out.data
 
 
-def test_an_issued_stock_bill_with_no_source_receipts_was_received_before_import():
-    assert _record()["received_before_import"] is True
+def test_an_issued_stock_bill_with_no_source_receipts_has_an_unknown_receipt():
+    data = _record()
+    assert data["receipt_unknown"] is True
+    assert "received_items" not in data and "received_before_import" not in data
 
 
-def test_only_issued_stock_bills_without_receipts_are_marked_received_before_import():
-    assert "received_before_import" not in _record(status="draft")
-    assert "received_before_import" not in _record(status="void")
-    assert "received_before_import" not in _record(item=None)
+def test_only_issued_stock_bills_without_receipts_have_an_unknown_receipt():
+    assert "receipt_unknown" not in _record(status="draft")
+    assert "receipt_unknown" not in _record(status="void")
+    assert "receipt_unknown" not in _record(item=None)
     receipts = [{"source": "r-1", "date": "2024-03-05", "lines": []}]
-    assert "received_before_import" not in _record(metadata={"receipts": receipts})
+    assert "receipt_unknown" not in _record(metadata={"receipts": receipts})
 
 
-def test_a_line_received_before_import_reads_so():
+def test_a_line_whose_receipt_is_unknown_reads_so_and_never_received():
     from ui.routes.documents import _vendor_line_badge
 
     line = {"item_id": "item:1", "quantity": 3}
-    assert str(t("documents.status_received_before_import")) in str(_vendor_line_badge(line, "awaiting_payment", before_import=True))
+    unknown = str(_vendor_line_badge(line, "awaiting_payment", receipt_unknown=True))
+    assert str(t("documents.status_receipt_unknown")) in unknown
+    assert str(t("documents.status_received")) not in unknown
     assert str(t("documents.status_not_received")) in str(_vendor_line_badge(line, "awaiting_payment"))

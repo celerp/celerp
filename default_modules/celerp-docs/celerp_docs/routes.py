@@ -1169,7 +1169,7 @@ def _doc_row(r: Projection, contact_name: str | None) -> dict:
 
 # The state keys the row-by-row filters of ``_doc_filter`` read, before display fallbacks.
 _DOC_FILTER_KEYS = ("doc_type", "status", "due_date", "amount_outstanding", "total", "fulfillment_status", "return_received_items", "received_items",
-                    "line_items", "received_before_import")
+                    "line_items", "receipt_unknown")
 
 
 def _doc_flag_rules(today: str) -> dict[str, Callable[[dict], bool]]:
@@ -1191,10 +1191,10 @@ def _doc_flag_rules(today: str) -> dict[str, Callable[[dict], bool]]:
 
 def awaits_stock(doc: dict) -> bool:
     """True when a purchase document has stock lines and nothing of them came in: no receipt of
-    its own, and not a bill whose goods arrived before its books were imported. A bill of
-    expenses only (rent, power) brings in no stock to receive."""
+    its own, and not an imported bill whose receipt its source never recorded (it reads Receipt
+    unknown instead). A bill of expenses only (rent, power) brings in no stock to receive."""
     return (any(line_receive_kind(li) == "stock" for li in doc.get("line_items") or [])
-            and not (doc.get("received_items") or []) and not doc.get("received_before_import"))
+            and not (doc.get("received_items") or []) and not doc.get("receipt_unknown"))
 
 
 # Each flag filter's summary figures: the count key, and the receivable total (key, field) its

@@ -943,13 +943,13 @@ def _item_status_badge_cell(status_val: str, eid: str, status_doc: tuple[str, st
     return Td(Span("-", cls="muted"), cls="col-item-status")
 
 
-def _vendor_line_badge(li: dict, doc_status: str, before_import: bool = False) -> FT:
+def _vendor_line_badge(li: dict, doc_status: str, receipt_unknown: bool = False) -> FT:
     """What a purchase document did for one of its stock lines, from the document's own receipts
     and returns, never the catalog item's status (other documents move the same item): Returned
     or Part returned once the line sent goods back, else Received, Received n of m, or Not
     Received. A document shared in as received carries no receipts of its own and reads
-    Received; an imported bill whose goods came in with the imported stock (``before_import``)
-    reads Received before import."""
+    Received; an imported bill whose source never recorded its receipt (``receipt_unknown``)
+    reads Receipt unknown."""
     returned = li.get("return_status")
     if returned == "returned":
         return Span(t("documents.line_label_returned"), cls="badge badge--inactive")
@@ -963,8 +963,9 @@ def _vendor_line_badge(li: dict, doc_status: str, before_import: bool = False) -
     if received > 1e-9:
         return Span(t("documents.status_received_part", received=f"{received:g}", qty=f"{qty:g}"),
                     cls="badge badge--pending")
-    if before_import:
-        return Span(t("documents.status_received_before_import"), cls="badge badge--received")
+    if receipt_unknown:
+        return Span(t("documents.status_receipt_unknown"), cls="badge badge--pending",
+                    title=t("documents.status_receipt_unknown_tip"))
     return Span(t("documents.status_not_received"), cls="badge badge--not_received")
 
 
@@ -10497,7 +10498,7 @@ async function celerpCsvImport(input, entityId) {{
                 if _is_vendor_doc and line_receive_kind(li) != "stock":
                     cells.append(Td("", cls="col-item-status"))
                 elif _is_vendor_doc:
-                    cells.append(_badge_cell(_vendor_line_badge(li, status, bool(doc.get("received_before_import"))),
+                    cells.append(_badge_cell(_vendor_line_badge(li, status, bool(doc.get("receipt_unknown"))),
                                             cls="col-item-status"))
                 else:
                     status_val = item_status_map.get(li_eid, "") if item_status_map else ""

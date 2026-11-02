@@ -302,9 +302,10 @@ def _doc_record(
         "subtotal": _money(record.total - tax, currency),
         "tax": _money(tax, currency),
         "total": _money(record.total, currency),
-        # An issued bill with stock lines and no receipts in the source: its goods came in with
-        # the imported stock, so it is not an open receipt.
-        "received_before_import": True if (
+        # An issued bill with stock lines whose source keeps no record of their receipt: whether
+        # the goods came in is not known. Issuing a bill is no evidence they did, and asking to
+        # receive them could count stock the imported opening balances already hold.
+        "receipt_unknown": True if (
             record.doc_type == DocumentType.BILL and status not in ("draft", "void")
             and not record.metadata.get("receipts") and any(li.get("item_id") for li in lines)) else None,
     }

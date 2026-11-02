@@ -76,3 +76,5 @@ async def test_migrated_bill_cannot_be_received_twice(real_engine, real_client, 
     # Because the bill shows the goods the migration stocked as received, on every line.
     assert [li["quantity_received"] for li in bill["line_items"]] == [li["quantity"] for li in bill["line_items"]]
     assert bill.get("received_item_ids") == []
+    # The source recorded the receipt, so the bill is received, never of unknown receipt.
+    assert "receipt_unknown" not in bill
