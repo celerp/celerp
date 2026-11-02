@@ -6829,6 +6829,7 @@
   "help.no_results": "No help page matches. Search in English, or ask Celerp AI in your language.",
   "help.ask_ai": "Ask Celerp AI",
   "help.answers_in_your_language": "These pages are in English. Celerp AI answers your questions in your language.",
+  "help.pages_in_english": "These pages are in English.",
   "help.for_this_page": "Help for this page",
   "help.none_for_this_page": "No help page covers this screen yet.",
   "help.browse": "Browse by module",

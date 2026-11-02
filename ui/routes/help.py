@@ -56,8 +56,10 @@ def _ask_ai(lang: str, ai_on: bool) -> list[FT]:
 
 def _in_english_notice(lang: str, ai_on: bool) -> list[FT]:
     """Help pages are written in English; a reader of another language is told so, with the
-    way to an answer in their language."""
-    return [P(t("help.answers_in_your_language", lang), cls="flash")] if lang != "en" and ai_on else []
+    way to an answer in their language where Celerp AI is theirs to open."""
+    if lang == "en":
+        return []
+    return [P(t("help.answers_in_your_language" if ai_on else "help.pages_in_english", lang), cls="flash")]
 
 
 def _search_form(q: str, module: str, lang: str) -> FT:

@@ -13,7 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # The help viewer's own interface strings; help page prose never lives in a catalog.
 _HELP_CHROME_KEYS = {
     "help.title", "help.search_placeholder", "help.no_results", "help.ask_ai",
-    "help.answers_in_your_language", "help.for_this_page", "help.none_for_this_page",
+    "help.answers_in_your_language", "help.pages_in_english", "help.for_this_page", "help.none_for_this_page",
     "help.browse", "help.third_party", "help.related", "help.load_failed", "help.empty_query",
     "help.no_module", "help.core_section",
 }

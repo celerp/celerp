@@ -7065,5 +7065,6 @@
   "setup.invalid_country": "Celerp has no tax rates for {value}. Choose a listed country or Other country.",
   "settings.location_country_hint": "The default location's country gives the company the tax rates in force there, until the company changes its taxes or posts its first entry.",
   "settings.taxes_set_from_country": "Taxes now start with the rates in force in {country}. Check them before your first invoice.",
-  "settings.review_taxes": "Review taxes"
+  "settings.review_taxes": "Review taxes",
+  "help.pages_in_english": "These pages are in English."
 }

@@ -332,6 +332,10 @@
     "settings.review_taxes": {
       "en": "Review taxes",
       "params": []
+    },
+    "help.pages_in_english": {
+      "en": "These pages are in English.",
+      "params": []
     }
   }
 }
