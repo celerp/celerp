@@ -4443,6 +4443,7 @@
   "company_backup.err_stale_preview": "Ada yang berubah sejak pratinjau ini. Tidak ada yang dipulihkan. Periksa pratinjau yang diperbarui sebelum melanjutkan.",
   "company_backup.err_attachment_missing": "Salah satu file lampiran tidak ada dalam salinan perusahaan ini. Tidak ada yang dipulihkan. Buat salinan perusahaan baru di perusahaan asalnya, lalu coba lagi.",
   "company_backup.err_modules_required": "Salinan perusahaan ini memerlukan modul yang belum siap di sini: {labels}. Tidak ada yang dipulihkan. Aktifkan modul tersebut di halaman Modul, lalu coba lagi.",
+  "company_backup.err_unidentified_events": "Salinan perusahaan ini berisi catatan ({events}) yang tidak dapat dibaca modul mana pun yang terpasang di sini, sehingga modul yang dibutuhkan tidak diketahui. Tidak ada yang dipulihkan. Pasang modul yang membuatnya, lalu coba lagi.",
   "company_backup.err_name_taken": "Anda sudah memiliki perusahaan dengan nama ini. Tidak ada yang dipulihkan. Pilih nama lain.",
   "company_backup.err_run_not_found": "Celerp tidak dapat menemukan unggahan ini. Mungkin sudah kedaluwarsa. Unggah lagi file salinan perusahaan di Konfigurasi Global, Cadangan.",
   "company_backup.err_run_not_ready": "Impor ini belum selesai, jadi perusahaannya belum dapat disalin. Tunggu hingga impor selesai, lalu coba lagi.",

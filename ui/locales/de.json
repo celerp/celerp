@@ -4443,6 +4443,7 @@
   "company_backup.err_stale_preview": "Seit dieser Vorschau hat sich etwas geändert. Es wurde nichts wiederhergestellt. Prüfen Sie die aktualisierte Vorschau, bevor Sie fortfahren.",
   "company_backup.err_attachment_missing": "In dieser Unternehmenskopie fehlt eine der angehängten Dateien. Es wurde nichts wiederhergestellt. Erstellen Sie im ursprünglichen Unternehmen eine neue Unternehmenskopie und versuchen Sie es erneut.",
   "company_backup.err_modules_required": "Diese Unternehmenskopie braucht Module, die hier nicht bereit sind: {labels}. Es wurde nichts wiederhergestellt. Schalten Sie sie auf der Seite Module ein und versuchen Sie es erneut.",
+  "company_backup.err_unidentified_events": "Diese Unternehmenskopie enthält Datensätze ({events}), die kein hier installiertes Modul lesen kann, daher ist unbekannt, welches Modul sie brauchen. Es wurde nichts wiederhergestellt. Installieren Sie das Modul, das sie erstellt hat, und versuchen Sie es erneut.",
   "company_backup.err_name_taken": "Sie haben bereits ein Unternehmen mit diesem Namen. Es wurde nichts wiederhergestellt. Wählen Sie einen anderen Namen.",
   "company_backup.err_run_not_found": "Celerp konnte diesen Upload nicht finden. Er ist möglicherweise abgelaufen. Laden Sie die Datei der Unternehmenskopie unter Globale Konfiguration, Sicherung erneut hoch.",
   "company_backup.err_run_not_ready": "Dieser Import ist noch nicht abgeschlossen, daher kann sein Unternehmen nicht kopiert werden. Warten Sie, bis der Import fertig ist, und versuchen Sie es dann erneut.",

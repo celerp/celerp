@@ -66,7 +66,7 @@ from celerp.models.company import Company, User
 from celerp.modules.importer import TABLE_NAME, InstalledModules, installed_modules
 from celerp.modules import requirements
 from celerp.modules.boundary import take_company_locks
-from celerp.modules.loader import module_label, modules_holding_events
+from celerp.modules.loader import module_label, modules_holding_events, unidentified_events
 from celerp.modules.registry import commit_with_load_set, company_modules, hold_module_state, set_enabled
 from celerp.services import attachments, bootstrap, company_lifecycle, payments
 from celerp.services.auth import HAS_COMPANY, hold_companyless_login, password_attempts
@@ -204,6 +204,7 @@ DEACTIVATED = "company_backup.err_deactivated"
 STALE_PREVIEW = "company_backup.err_stale_preview"
 ATTACHMENT_MISSING = "company_backup.err_attachment_missing"
 MODULES_REQUIRED = "company_backup.err_modules_required"
+UNIDENTIFIED_EVENTS = "company_backup.err_unidentified_events"
 NAME_TAKEN = "company_backup.err_name_taken"
 OLDER = "company_backup.err_older"
 RESHAPED = "company_backup.err_reshaped"
@@ -1101,7 +1102,11 @@ def needed_modules(backup: BackupFile) -> set[str]:
 
 def requirement_plan(backup: BackupFile) -> requirements.RequirementPlan:
     """Every module the backup needs, with what stands between it and running here at a
-    version that will do."""
+    version that will do. A backup whose ledger records events core does not apply and no
+    module installed here owns is refused: which module they need cannot be known, and
+    restoring without it would leave those records unread."""
+    if unknown := unidentified_events(set(backup.event_types)):
+        raise BackupError(422, t(UNIDENTIFIED_EVENTS, events=", ".join(unknown)))
     versions = backup.manifest["modules"]["versions"]
     return requirements.plan_requirements({name: versions.get(name) for name in needed_modules(backup)})
 

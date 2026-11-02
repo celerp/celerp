@@ -4443,6 +4443,7 @@
   "company_backup.err_stale_preview": "Qualcosa è cambiato da questa anteprima. Non è stato ripristinato nulla. Controlla l'anteprima aggiornata prima di continuare.",
   "company_backup.err_attachment_missing": "In questa copia aziendale manca uno dei file allegati. Non è stato ripristinato nulla. Crea una nuova copia aziendale nell'azienda di origine, poi riprova.",
   "company_backup.err_modules_required": "Questa copia aziendale richiede moduli che qui non sono pronti: {labels}. Non è stato ripristinato nulla. Attivali nella pagina Moduli, poi riprova.",
+  "company_backup.err_unidentified_events": "Questa copia aziendale contiene record ({events}) che nessun modulo installato qui sa leggere, quindi il modulo di cui hanno bisogno è sconosciuto. Non è stato ripristinato nulla. Installa il modulo che li ha creati, poi riprova.",
   "company_backup.err_name_taken": "Hai già un'azienda con questo nome. Non è stato ripristinato nulla. Scegli un nome diverso.",
   "company_backup.err_run_not_found": "Celerp non ha trovato questo caricamento. Potrebbe essere scaduto. Carica di nuovo il file di copia aziendale in Configurazione globale, Backup.",
   "company_backup.err_run_not_ready": "Questa importazione non è ancora terminata, quindi non è possibile fare la copia aziendale della sua azienda. Attendi la fine dell'importazione, poi riprova.",

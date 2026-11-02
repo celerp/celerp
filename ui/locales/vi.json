@@ -4443,6 +4443,7 @@
   "company_backup.err_stale_preview": "Đã có thay đổi kể từ bản xem trước này. Không có gì được khôi phục. Hãy kiểm tra bản xem trước đã cập nhật trước khi tiếp tục.",
   "company_backup.err_attachment_missing": "Bản sao công ty này thiếu một trong các tệp đính kèm. Không có gì được khôi phục. Hãy tạo bản sao công ty mới trong công ty gốc rồi thử lại.",
   "company_backup.err_modules_required": "Bản sao công ty này cần các mô-đun chưa sẵn sàng ở đây: {labels}. Không có gì được khôi phục. Hãy bật chúng trên trang Mô-đun rồi thử lại.",
+  "company_backup.err_unidentified_events": "Bản sao công ty này chứa các bản ghi ({events}) mà không mô-đun nào được cài ở đây đọc được, nên không rõ chúng cần mô-đun nào. Chưa khôi phục gì. Hãy cài mô-đun đã tạo ra chúng rồi thử lại.",
   "company_backup.err_name_taken": "Bạn đã có một công ty với tên này. Không có gì được khôi phục. Hãy chọn tên khác.",
   "company_backup.err_run_not_found": "Celerp không tìm thấy bản tải lên này. Có thể nó đã hết hạn. Hãy tải lại tệp bản sao công ty trong Cấu hình chung, Sao lưu.",
   "company_backup.err_run_not_ready": "Lần nhập này chưa hoàn tất nên chưa thể sao chép công ty của nó. Hãy đợi quá trình nhập xong rồi thử lại.",

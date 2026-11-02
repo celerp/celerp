@@ -1028,27 +1028,40 @@ def _refuse_shared_import_names(candidates: dict[str, AdmittedModule],
         claimed.update(dict.fromkeys(roots, name))
 
 
-def _refuse_overlapping_projection_prefixes(candidates: dict[str, AdmittedModule],
-                                            refused: dict[str, str]) -> None:
-    """The projection engine applies the first projection_handler prefix an
-    event type starts with, so two overlapping prefixes would leave one handler
-    unreachable. Core's own prefixes are claimed first, then first-party
-    modules', then the rest in name order; a later module with a prefix that
-    overlaps a claimed one moves from *candidates* to *refused*."""
+def claim_projection_prefixes(modules: list[tuple[str, bool, list[str]]]
+                              ) -> tuple[dict[str, str], dict[str, tuple[str, str]]]:
+    """The one rule for which module owns a projection_handler prefix, given each module's
+    (name, first party, prefixes): core's own prefixes are claimed first, then first-party
+    modules', then the rest in name order, and a module with a prefix overlapping one
+    already claimed claims none. So no two claimed prefixes overlap and an event type has
+    at most one owner. Returns each claimed prefix with its claimant ("Celerp" for core) and
+    each module left out with its clash (its prefix, the claimed one)."""
     claimed = dict.fromkeys(KERNEL_PROJECTION_PREFIXES, "Celerp")
-    for name in sorted(candidates, key=lambda n: (not candidates[n].first_party, n)):
-        prefixes = _projection_prefixes(
-            candidates[name].manifest["slots"].get("projection_handler", []))
-        clash = next(((p, c) for p in prefixes for c in claimed
-                      if projection_prefixes_overlap(p, c)), None)
+    clashes: dict[str, tuple[str, str]] = {}
+    for name, _first_party, prefixes in sorted(modules, key=lambda m: (not m[1], m[0])):
+        clash = next(((p, c) for p in prefixes for c in claimed if projection_prefixes_overlap(p, c)), None)
         if clash is not None:
-            refused[name] = (f"Projection prefix {clash[0]!r} overlaps {clash[1]!r}, which "
-                             f"{claimed[clash[1]]!r} already handles; each event type may "
-                             f"have one handler only.")
-            log.error("Module %r refused: %s", name, refused[name])
-            del candidates[name]
+            clashes[name] = clash
             continue
         claimed.update(dict.fromkeys(prefixes, name))
+    return claimed, clashes
+
+
+def _refuse_overlapping_projection_prefixes(candidates: dict[str, AdmittedModule],
+                                            refused: dict[str, str]) -> None:
+    """The projection engine applies the first projection_handler prefix an event type
+    starts with, so two overlapping prefixes would leave one handler unreachable. A module
+    whose prefix overlaps one claim_projection_prefixes gives another moves from
+    *candidates* to *refused*."""
+    claimed, clashes = claim_projection_prefixes([
+        (name, module.first_party, _projection_prefixes(module.manifest["slots"].get("projection_handler", [])))
+        for name, module in candidates.items()])
+    for name, (prefix, other) in sorted(clashes.items()):
+        refused[name] = (f"Projection prefix {prefix!r} overlaps {other!r}, which "
+                         f"{claimed[other]!r} already handles; each event type may "
+                         f"have one handler only.")
+        log.error("Module %r refused: %s", name, refused[name])
+        del candidates[name]
 
 
 def admit_modules(module_dir: str | Path, enabled: set[str]) -> Admission:
@@ -1221,20 +1234,35 @@ def modules_holding_events(event_types: set[str]) -> set[str]:
     return {owner[0] for t in event_types if (owner := _owner_of(t, owners))}
 
 
+def unidentified_events(event_types: set[str]) -> list[str]:
+    """The event types core does not apply itself and no installed module owns, enabled or
+    not: nothing here can say which module their records need."""
+    from celerp.projections.engine import core_event
+
+    owners = _event_prefix_owners()
+    return sorted(t for t in event_types if not core_event(t) and not _owner_of(t, owners))
+
+
 def _event_prefix_owners() -> dict[str, tuple[str, str]]:
-    """Each installed module's projection prefix, with the module's name and display name;
-    the first module in search path order holding a prefix owns it."""
-    owners: dict[str, tuple[str, str]] = {}
+    """Each installed module's projection prefix, enabled or not, with the module's name and
+    display name, owned as claim_projection_prefixes decides; a module installed twice is
+    the copy first in search path order, as the loader reads it."""
+    found: dict[str, tuple[Path, dict]] = {}
     for pkg in _installed_packages():
         manifest = read_manifest(pkg)
-        name = manifest.get("name") or pkg.name
-        for contrib in (manifest.get("slots") or {}).get("projection_handler") or []:
-            owners.setdefault(contrib.get("prefix") or "", (name, manifest.get("display_name") or name))
-    return owners
+        found.setdefault(manifest.get("name") or pkg.name, (pkg, manifest))
+    claimed, _ = claim_projection_prefixes([
+        (name, is_first_party(pkg),
+         [c.get("prefix") for c in (manifest.get("slots") or {}).get("projection_handler") or [] if c.get("prefix")])
+        for name, (pkg, manifest) in found.items()])
+    return {prefix: (name, found[name][1].get("display_name") or name)
+            for prefix, name in claimed.items() if name in found}
 
 
 def _owner_of(event_type: str, owners: dict[str, tuple[str, str]]) -> tuple[str, str] | None:
-    return next((owner for prefix, owner in owners.items() if prefix and event_type.startswith(prefix)), None)
+    """The owner of the one claimed prefix ``event_type`` starts with; claimed prefixes
+    never overlap, so there is at most one."""
+    return next((owner for prefix, owner in owners.items() if event_type.startswith(prefix)), None)
 
 
 def _installed_packages():

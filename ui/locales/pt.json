@@ -4443,6 +4443,7 @@
   "company_backup.err_stale_preview": "Algo mudou desde esta pré-visualização. Nada foi restaurado. Confira a pré-visualização atualizada antes de continuar.",
   "company_backup.err_attachment_missing": "Está faltando um dos arquivos anexos nesta cópia da empresa. Nada foi restaurado. Faça uma nova cópia na empresa de origem e tente novamente.",
   "company_backup.err_modules_required": "Esta cópia da empresa precisa de módulos que não estão prontos aqui: {labels}. Nada foi restaurado. Ative-os na página Módulos e tente novamente.",
+  "company_backup.err_unidentified_events": "Esta cópia da empresa contém registros ({events}) que nenhum módulo instalado aqui consegue ler, por isso o módulo de que precisam é desconhecido. Nada foi restaurado. Instale o módulo que os criou e tente novamente.",
   "company_backup.err_name_taken": "Você já tem uma empresa com este nome. Nada foi restaurado. Escolha outro nome.",
   "company_backup.err_run_not_found": "O Celerp não encontrou este envio. Ele pode ter expirado. Envie o arquivo de cópia da empresa novamente em Configuração global, Backup.",
   "company_backup.err_run_not_ready": "Esta importação ainda não terminou, então não é possível fazer cópia da empresa. Aguarde a importação terminar e tente novamente.",

@@ -4443,6 +4443,7 @@
   "company_backup.err_stale_preview": "Algo cambió desde esta vista previa. No se restauró nada. Revise la vista previa actualizada antes de continuar.",
   "company_backup.err_attachment_missing": "A esta copia de empresa le falta uno de sus archivos adjuntos. No se restauró nada. Haga una copia de empresa nueva en la empresa de origen e inténtelo de nuevo.",
   "company_backup.err_modules_required": "Esta copia de empresa necesita módulos que no están listos aquí: {labels}. No se restauró nada. Actívelos en la página Módulos e inténtelo de nuevo.",
+  "company_backup.err_unidentified_events": "Esta copia de empresa contiene registros ({events}) que ningún módulo instalado aquí puede leer, por lo que se desconoce qué módulo necesitan. No se restauró nada. Instale el módulo que los creó e inténtelo de nuevo.",
   "company_backup.err_name_taken": "Ya tiene una empresa con este nombre. No se restauró nada. Elija otro nombre.",
   "company_backup.err_run_not_found": "Celerp no encontró esta carga. Puede que haya caducado. Vuelva a subir el archivo de copia de empresa en Configuración global, Copia de seguridad.",
   "company_backup.err_run_not_ready": "Esta importación todavía no ha terminado, así que no se puede copiar su empresa. Espere a que termine la importación e inténtelo de nuevo.",

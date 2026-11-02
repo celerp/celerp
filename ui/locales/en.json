@@ -4513,6 +4513,7 @@
   "company_backup.err_stale_preview": "Something changed since this preview. Nothing was restored. Check the updated preview before continuing.",
   "company_backup.err_attachment_missing": "This company copy is missing one of its attached files. Nothing was restored. Make a new company copy in the company it came from, then try again.",
   "company_backup.err_modules_required": "This company copy needs modules that aren't ready here: {labels}. Nothing was restored. Turn them on on the Modules page, then try again.",
+  "company_backup.err_unidentified_events": "This company copy holds records ({events}) that no module installed here can read, so the module they need is unknown. Nothing was restored. Install the module that made them, then try again.",
   "company_backup.err_name_taken": "You already have a company with this name. Nothing was restored. Choose a different name.",
   "company_backup.err_run_not_found": "Celerp couldn't find this upload. It may have expired. Upload the company copy file again in Global Config, Backup.",
   "company_backup.err_run_not_ready": "This import hasn't finished yet, so its company can't be copied. Wait for the import to finish, then try again.",
