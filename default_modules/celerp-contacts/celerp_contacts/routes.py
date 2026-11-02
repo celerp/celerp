@@ -196,6 +196,7 @@ async def get_contact(contact_id: str, company_id: str = Depends(get_current_com
                                                     "x-celerp-agent-result-permissions": ["edit_contacts", "manage_company_settings"]})
 async def update_contact(contact_id: str, payload: ContactUpdate, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), _: None = require_permission("edit_contacts"), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _locked_identity_contact(session, company_id, user, contact_id)
+    services.require_contact_write_fields(payload.fields_changed)
     if payload.idempotency_key:
         replay = await find_event_by_idempotency(session, company_id, payload.idempotency_key)
         if replay is not None:

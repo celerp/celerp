@@ -65,6 +65,11 @@ def _placeholder_name(contact_type: str) -> str:
     return t(_PLACEHOLDER_KEYS[contact_type])
 
 
+def _identity_read_only(contact: dict, company: dict) -> bool:
+    return bool(contact.get("is_self")) and not role_has_permission(
+        company.get("settings") or {}, api.role_from_company(company), "manage_company_settings")
+
+
 def _contact_schema(contact_type: str) -> list[dict]:
     """Return contact schema with translated labels and show_in_table defaults
     appropriate for the contact_type. Runs at render time, so ``t()`` resolves each
@@ -78,7 +83,7 @@ def _contact_schema(contact_type: str) -> list[dict]:
 
 
 # A contact's fields open for editing on one click; Esc cancels, blur or Enter saves.
-def _contact_display_cell(contact_id: str, field: str, value) -> FT:
+def _contact_display_cell(contact_id: str, field: str, value, *, read_only: bool = False) -> FT:
     if field == "credit_limit":
         display = format_value(value, "money")
     elif field == "contact_type":
@@ -87,6 +92,8 @@ def _contact_display_cell(contact_id: str, field: str, value) -> FT:
         display = str(value) if value and str(value).strip() else t("contacts.company_default")
     else:
         display = str(value) if value and str(value).strip() else EMPTY
+    if read_only:
+        return Td(display)
     return Td(
         display,
         title=t("documents.click_to_edit"),
@@ -96,7 +103,7 @@ def _contact_display_cell(contact_id: str, field: str, value) -> FT:
     )
 
 
-def _contact_tags_section(contact: dict, vocabulary: list[dict] | None = None) -> FT:
+def _contact_tags_section(contact: dict, vocabulary: list[dict] | None = None, *, read_only: bool = False) -> FT:
     """Tags section for contact detail page.
 
     After adding a tag the whole section is re-rendered via HTMX.
@@ -112,7 +119,7 @@ def _contact_tags_section(contact: dict, vocabulary: list[dict] | None = None) -
         tag_pills.append(
             Span(
                 tag,
-                Button(
+                (Button(
                     "×",
                     hx_post=f"/contacts/{contact_id}/tags/remove",
                     hx_vals=hx_vals({"tag": tag}),
@@ -120,7 +127,7 @@ def _contact_tags_section(contact: dict, vocabulary: list[dict] | None = None) -
                     hx_swap="outerHTML",
                     cls="tag-remove",
                     title=t("contacts.remove_tag_title", tag=tag),
-                ),
+                ) if not read_only else ""),
                 cls="tag-pill",
                 style=pill_style,
             )
@@ -142,7 +149,7 @@ def _contact_tags_section(contact: dict, vocabulary: list[dict] | None = None) -
     )
     return Div(
         H3(t("page.tags"), cls="section-title"),
-        Div(*tag_pills, add_input, cls="tags-row"),
+        Div(*tag_pills, *([] if read_only else [add_input]), cls="tags-row"),
         cls="tags-section",
         id="contact-tags",
     )
@@ -183,10 +190,13 @@ def _collect_company_files(self_contact: dict, items: list[dict], docs: list[dic
     return out
 
 
-def _files_section(contact: dict, contact_id: str, docs: list[dict] | None = None, **kwargs) -> FT:
+def _files_section(contact: dict, contact_id: str, docs: list[dict] | None = None, *, read_only: bool = False, **kwargs) -> FT:
     """Wrapper - merges contact-own files with related doc files, then delegates to shared component."""
     merged = linked_files(contact.get("files", []), docs or [])
-    return _shared_files_section("contact", contact_id, merged, **kwargs)
+    return _shared_files_section("contact", contact_id,
+                                 [{**f, "_no_delete": True} for f in merged] if read_only else merged,
+                                 can_tag=not read_only, can_describe=not read_only,
+                                 can_upload=not read_only, **kwargs)
 
 
 async def _contact_docs(token: str, contact_id: str, company: dict | None = None) -> list[dict]:
@@ -200,7 +210,7 @@ async def _contact_docs(token: str, contact_id: str, company: dict | None = None
 
 def _contact_info_card(
     c: dict, *, oob: bool = False, hide_fields: tuple = (),
-    company_name_help: str = "",
+    company_name_help: str = "", read_only: bool = False,
 ) -> FT:
     """Left-column contact info: click-to-edit fields. hide_fields drops rows that would be redundant in
     a given context (e.g. the Company Details page hides Currency - it's in the Settings card - and the
@@ -224,7 +234,7 @@ def _contact_info_card(
     return Div(
         H3(t("page.contact_info"), cls="section-title"),
         Table(*[
-            Tr(_label_cell(key, label), _contact_display_cell(cid, key, c.get(key)))
+            Tr(_label_cell(key, label), _contact_display_cell(cid, key, c.get(key), read_only=read_only))
             for key, label in fields
         ], cls="detail-table"),
         cls="detail-card section-card",
@@ -233,7 +243,7 @@ def _contact_info_card(
     )
 
 
-def _settings_card(c: dict) -> FT:
+def _settings_card(c: dict, *, read_only: bool = False) -> FT:
     """Right-column settings: price list, payment terms, credit limit."""
     cid = c.get("entity_id") or c.get("id") or ""
     fields = [
@@ -241,7 +251,7 @@ def _settings_card(c: dict) -> FT:
     ]
     return Div(
         H3(t("page.settings"), cls="section-title"),
-        Table(*[Tr(Td(label, cls="detail-label"), _contact_display_cell(cid, key, c.get(key))) for key, label in fields], cls="detail-table"),
+        Table(*[Tr(Td(label, cls="detail-label"), _contact_display_cell(cid, key, c.get(key), read_only=read_only)) for key, label in fields], cls="detail-table"),
         cls="detail-card section-card",
     )
 
@@ -365,7 +375,7 @@ def _compose_address_str(addr: dict) -> str:
     return ", ".join(p for p in parts if p)
 
 
-def _address_card(cid: str, addr: dict) -> FT:
+def _address_card(cid: str, addr: dict, *, read_only: bool = False) -> FT:
     """Render a single address card with edit/delete/make-primary actions."""
     addr_id = addr.get("address_id", "")
     _dom = f"addr-{addr_id.replace(':', '-')}"  # address ids contain ':' which is invalid in a CSS id selector
@@ -396,7 +406,7 @@ def _address_card(cid: str, addr: dict) -> FT:
     )
     return Div(
         *lines,
-        Div(
+        (Div(
             primary_btn,
             Button("✏", hx_get=f"/contacts/{cid}/addresses/{addr_id}/edit", hx_target=f"#{_dom}", hx_swap="outerHTML", cls="btn btn--xs btn--secondary", title=t("btn.edit")),
             # The primary address can't be deleted - it keeps the contact (incl. the company) with a
@@ -404,12 +414,12 @@ def _address_card(cid: str, addr: dict) -> FT:
             (Button("×", hx_delete=f"/contacts/{cid}/addresses/{addr_id}", hx_target="#addresses-section", hx_swap="outerHTML", hx_confirm=t("contacts.confirm_remove_address"), cls="btn btn--xs btn--danger", title=t("btn.remove"))
              if not is_default else None),
             cls="addr-actions",
-        ),
+        ) if not read_only else (Div(primary_btn, cls="addr-actions") if is_default else "")),
         cls="address-card", id=_dom,
     )
 
 
-def _addresses_section(contact: dict) -> FT:
+def _addresses_section(contact: dict, *, read_only: bool = False) -> FT:
     """Render addresses in two columns: Billing | Shipping, each with Make Primary."""
     cid = contact.get("entity_id") or contact.get("id") or ""
     addresses = list(contact.get("addresses") or [])
@@ -418,17 +428,17 @@ def _addresses_section(contact: dict) -> FT:
 
     billing_col = Div(
         Div(H4(t("page.billing_addresses"), cls="addr-col-title"),
-            Button(t("btn._add_billing"), hx_get=f"/contacts/{cid}/addresses/new?type=billing", hx_target=f"#addr-new-billing", hx_swap="innerHTML", cls="btn btn--xs btn--secondary"),
+            (Button(t("btn._add_billing"), hx_get=f"/contacts/{cid}/addresses/new?type=billing", hx_target=f"#addr-new-billing", hx_swap="innerHTML", cls="btn btn--xs btn--secondary") if not read_only else ""),
             cls="addr-col-header"),
-        *[_address_card(cid, a) for a in billing] if billing else [P(t("label.none_yet"), cls="empty-state-msg")],
+        *[_address_card(cid, a, read_only=read_only) for a in billing] if billing else [P(t("label.none_yet"), cls="empty-state-msg")],
         Div(id="addr-new-billing"),
         cls="addr-col",
     )
     shipping_col = Div(
         Div(H4(t("page.shipping_addresses"), cls="addr-col-title"),
-            Button(t("btn._add_shipping"), hx_get=f"/contacts/{cid}/addresses/new?type=shipping", hx_target=f"#addr-new-shipping", hx_swap="innerHTML", cls="btn btn--xs btn--secondary"),
+            (Button(t("btn._add_shipping"), hx_get=f"/contacts/{cid}/addresses/new?type=shipping", hx_target=f"#addr-new-shipping", hx_swap="innerHTML", cls="btn btn--xs btn--secondary") if not read_only else ""),
             cls="addr-col-header"),
-        *[_address_card(cid, a) for a in shipping] if shipping else [P(t("label.none_yet"), cls="empty-state-msg")],
+        *[_address_card(cid, a, read_only=read_only) for a in shipping] if shipping else [P(t("label.none_yet"), cls="empty-state-msg")],
         Div(id="addr-new-shipping"),
         cls="addr-col",
     )
@@ -439,7 +449,7 @@ def _addresses_section(contact: dict) -> FT:
     )
 
 
-def _people_section(contact: dict) -> FT:
+def _people_section(contact: dict, *, read_only: bool = False) -> FT:
     """Render contact people list with add button."""
     cid = contact.get("entity_id") or contact.get("id") or ""
     people = list(contact.get("people") or [])
@@ -459,11 +469,11 @@ def _people_section(contact: dict) -> FT:
         cards.append(Div(
             Div(*name_parts),
             *extras,
-            Div(
+            (Div(
                 Button("✏", hx_get=f"/contacts/{cid}/people/{pid}/edit", hx_target=f"#person-{pid}", hx_swap="outerHTML", cls="btn btn--xs btn--secondary", title=t("btn.edit")),
                 Button("×", hx_delete=f"/contacts/{cid}/people/{pid}", hx_target="#people-section", hx_swap="outerHTML", hx_confirm=t("contacts.confirm_remove_person"), cls="btn btn--xs btn--danger", title=t("btn.remove")),
                 cls="person-actions",
-            ),
+            ) if not read_only else ""),
             cls="person-card", id=f"person-{pid}",
         ))
     if not cards:
@@ -471,7 +481,7 @@ def _people_section(contact: dict) -> FT:
     return Div(
         H3(t("page.contact_people"), cls="section-title"),
         *cards,
-        Button(t("btn._add_person"), hx_get=f"/contacts/{cid}/people/new", hx_target="#person-new-form", hx_swap="innerHTML", cls="btn btn--secondary btn--sm"),
+        (Button(t("btn._add_person"), hx_get=f"/contacts/{cid}/people/new", hx_target="#person-new-form", hx_swap="innerHTML", cls="btn btn--secondary btn--sm") if not read_only else ""),
         Div(id="person-new-form"),
         cls="section-card", id="people-section",
     )
@@ -549,7 +559,7 @@ async def _company_timezone(token: str) -> str:
         return "UTC"
 
 
-def _notes_tab(contact_id: str, notes: list[dict], tz: str = "UTC") -> FT:
+def _notes_tab(contact_id: str, notes: list[dict], tz: str = "UTC", *, read_only: bool = False) -> FT:
     """Notes tab content: add form + timeline. Delegates to shared notes_tab component."""
     return _shared_notes_tab(
         entity_id=contact_id,
@@ -561,6 +571,7 @@ def _notes_tab(contact_id: str, notes: list[dict], tz: str = "UTC") -> FT:
         note_field="note",
         author_field="author_name",
         tz=tz,
+        read_only=read_only,
     )
 
 
@@ -847,7 +858,7 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
                          consigned_total: float | None = None,
                          on_memo_total: float | None = None,
                          invoice_totals: dict | None = None,
-                         docs_error: FT | None = None) -> FT:
+                         docs_error: FT | None = None, read_only: bool = False) -> FT:
     """Shared assembly for the contact detail page. The Company Details page reuses this verbatim with
     show_financials=False / show_delete=False / show_contact_addresses=False (the company is its own
     customer+vendor self-contact, and it has no financial-summary-against-itself) - one page layout, no
@@ -920,24 +931,24 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
           if show_financials and docs_on and docs_error is None else []),
         Div(
             Div(
-                _contact_info_card(contact),
-                _people_section(contact),
+                _contact_info_card(contact, read_only=read_only),
+                _people_section(contact, read_only=read_only),
                 cls="detail-col-left",
             ),
             Div(
-                _settings_card(contact),
-                _contact_tags_section(contact, vocab),
+                _settings_card(contact, read_only=read_only),
+                _contact_tags_section(contact, vocab, read_only=read_only),
                 cls="detail-col-right",
             ),
             cls="detail-layout",
         ),
-        *([_addresses_section(contact)] if show_contact_addresses else []),
+        *([_addresses_section(contact, read_only=read_only)] if show_contact_addresses else []),
         *(extra_sections or []),
         _tab_bar(cid, reload_documents=docs_error is not None) if docs_on else
         _tab_bar(cid, active="files", lead_tabs=[("files", t("label.files"), None)], documents=False),
         Div(
-            (docs_error if docs_error is not None else _documents_tab(docs, contact, cid)) if docs_on else
-            _files_section(contact, cid),
+            (docs_error if docs_error is not None else _documents_tab(docs, contact, cid, show_files=not read_only)) if docs_on else
+            _files_section(contact, cid, read_only=read_only),
             id="tab-content",
         ),
         title=f"{page_title} - Celerp",
@@ -1243,7 +1254,7 @@ def setup_routes(app):
         own = bool(contact.get("is_self"))
         # The company's own contact is edited in Company Details, which only those who manage the
         # company's settings open; everyone else reads it here, and the API refuses their edits.
-        if own and role_has_permission(company.get("settings") or {}, _get_role(request), "manage_company_settings"):
+        if own and not _identity_read_only(contact, company):
             return RedirectResponse("/finance/company-details", status_code=302)
         docs_error = None
         try:
@@ -1282,7 +1293,7 @@ def setup_routes(app):
         return await build_contact_detail(contact, docs, vocab, company, request, contact_id=contact_id,
                                           on_memo_total=on_memo_total, consigned_total=consigned_total,
                                           invoice_totals=invoice_totals, docs_error=docs_error,
-                                          show_financials=not own, show_delete=not own,
+                                          show_financials=not own, show_delete=not own, read_only=own,
                                           extra_sections=[P(t("contacts.own_contact_read_only"),
                                                             cls="form-hint own-contact-note")] if own else None)
 
@@ -1461,9 +1472,11 @@ def setup_routes(app):
         try:
             contact = await api.get_contact(token, contact_id)
             docs = await _contact_docs(token, contact_id)
+            company = await api.get_company(token) if contact.get("is_self") else {}
         except APIError as e:
             return files_error(t("msg.files_load_failed", detail=str(e.detail)), e.status)
-        return _files_section(contact, contact_id, docs)
+        return _files_section(contact, contact_id, docs,
+                              read_only=_identity_read_only(contact, company))
 
     @app.get("/contacts/{contact_id}/tab/notes")
     async def contact_tab_notes(request: Request, contact_id: str):
@@ -1475,7 +1488,12 @@ def setup_routes(app):
         except APIError:
             notes = []
         tz = await _company_timezone(token)
-        return _notes_tab(contact_id, notes, tz)
+        try:
+            contact = await api.get_contact(token, contact_id)
+            company = await api.get_company(token) if contact.get("is_self") else {}
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return _notes_tab(contact_id, notes, tz, read_only=_identity_read_only(contact, company))
 
     @app.get("/contacts/{contact_id}/tab/activity")
     async def contact_tab_activity(request: Request, contact_id: str):
@@ -2139,9 +2157,11 @@ def setup_routes(app):
         try:
             contact = await api.get_contact(token, contact_id)
             docs = await _contact_docs(token, contact_id)
+            company = await api.get_company(token) if contact.get("is_self") else {}
         except APIError as e:
             return files_error(str(e.detail), e.status)
         return _files_section(contact, contact_id, docs,
+            read_only=_identity_read_only(contact, company),
             page=int(qp.get("page", "1") or "1"),
             sort_dir=qp.get("sort_dir", "desc"),
             tag_filter=qp.get("tag_filter", ""),

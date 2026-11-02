@@ -17,6 +17,18 @@ from celerp.services.peer_import import SourceRevision
 from ui.i18n import t
 
 CONTACT_CREATED = "crm.contact.created"
+CONTACT_WRITE_FIELDS = frozenset({
+    "name", "company_name", "website", "email", "phone", "currency",
+    "billing_address", "shipping_address", "tax_id", "contact_type",
+    "price_list", "payment_terms", "credit_limit", "attributes", "tags",
+})
+
+
+def require_contact_write_fields(values: dict) -> None:
+    if set(values) - CONTACT_WRITE_FIELDS:
+        raise HTTPException(status_code=422, detail=catalog_refusal("label.not_editable"))
+
+
 _NULLABLE_CONTACT_FIELDS = frozenset({
     "company_name", "email", "phone", "billing_address", "shipping_address", "currency",
 })
@@ -104,6 +116,11 @@ async def import_contact_records(
             continue
         if "is_self" in rec.data:
             outcome.add(rec.entity_id, "rejected", f"{label}: {t('contacts.err_import_own_contact')}")
+            continue
+        try:
+            require_contact_write_fields(rec.data)
+        except HTTPException as exc:
+            outcome.add(rec.entity_id, "rejected", f"{label}: {failure_reason(exc)}")
             continue
         identity = contact_import_identity(rec.data)
         keyed = await find_event_by_idempotency(session, company_id, rec.idempotency_key)
@@ -220,6 +237,7 @@ async def _emit_contact(company_id: str, idem_key: str, data: dict) -> str:
 
     data = {k: v for k, v in data.items() if v is not None}
     try:
+        require_contact_write_fields(data)
         require_contact_fields(data)
     except HTTPException as exc:
         raise ValueError(failure_reason(exc)) from None

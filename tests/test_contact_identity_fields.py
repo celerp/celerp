@@ -5,6 +5,12 @@ company's own contact (its identity on documents) is changed only by a role that
 company settings, and the screens say which record it is."""
 from __future__ import annotations
 
+import uuid
+
+import pytest
+from sqlalchemy import func, select
+from celerp.models.ledger import LedgerEntry
+
 from test_helpers import invite_user, register_admin, ui_request
 
 
@@ -107,3 +113,59 @@ async def test_company_own_contact_is_never_deleted_or_merged_away(client):
     _refused(await client.post("/crm/contacts/merge", json={"target_contact_id": cid, "source_contact_ids": [sid]},
                                headers=h), "contacts.err_own_contact_kept")
     assert not (await client.get(f"/crm/contacts/{sid}", headers=h)).json().get("deleted")
+
+@pytest.mark.parametrize("field,value", [
+    ("is_self", True), ("deleted", True), ("merged_into", "contact:other"),
+    ("entity_type", "doc"), ("people", []), ("addresses", []), ("files", []),
+])
+async def test_contact_fields_outside_the_edit_contract_are_refused(client, session, field, value):
+    h = {"Authorization": f"Bearer {await register_admin(client)}"}
+    cid = await _customer(client, h)
+    count = lambda: select(func.count()).select_from(LedgerEntry).where(LedgerEntry.entity_id == cid)
+    before = (await session.execute(count())).scalar_one()
+    original = (await client.get(f"/crm/contacts/{cid}", headers=h)).json()
+    _refused(await _patch(client, h, cid, field, value), "label.not_editable")
+    assert (await session.execute(count())).scalar_one() == before
+    assert (await client.get(f"/crm/contacts/{cid}", headers=h)).json() == original
+
+
+@pytest.mark.parametrize("field,value", [
+    ("deleted", True), ("merged_into", "contact:other"),
+    ("entity_type", "doc"), ("people", []), ("files", []),
+])
+async def test_contact_import_respects_the_same_edit_contract(client, session, field, value):
+    h = {"Authorization": f"Bearer {await register_admin(client)}"}
+    eid = f"contact:{uuid.uuid4()}"
+    row = {"entity_id": eid, "event_type": "crm.contact.created",
+           "source": "csv_import", "idempotency_key": uuid.uuid4().hex,
+           "data": {"name": "Imported Contact", field: value}}
+    result = await client.post("/crm/contacts/import/batch", headers=h, json={"records": [row]})
+    assert result.status_code == 200, result.text
+    outcome = result.json()
+    assert outcome["created"] == 0 and outcome["updated"] == 0 and len(outcome["errors"]) == 1
+    assert (await session.execute(select(func.count()).select_from(LedgerEntry).where(
+        LedgerEntry.entity_id == eid))).scalar_one() == 0
+
+
+async def test_company_contact_is_displayed_without_edit_actions_for_an_operator(client, session):
+    owner = {"Authorization": f"Bearer {await register_admin(client)}"}
+    operator = {"Authorization": f"Bearer {await invite_user(client, session, owner, 'readonly@contacts.test', 'operator')}"}
+    sid = await _self_contact_id(client, owner)
+    response = await ui_request(operator, "GET", f"/contacts/{sid}")
+    assert response.status_code == 200, response.text
+    page = response.text
+    assert f'hx-get="/contacts/{sid}/field/' not in page
+    assert f'hx-post="/contacts/{sid}/tags/add"' not in page
+    assert f'hx-get="/contacts/{sid}/people/new"' not in page
+    assert f'hx-get="/contacts/{sid}/addresses/new' not in page
+    notes = await ui_request(operator, "GET", f"/contacts/{sid}/tab/notes")
+    assert notes.status_code == 200, notes.text
+    assert f'hx-post="/contacts/{sid}/notes"' not in notes.text
+    assert f'hx-delete="/contacts/{sid}/notes/' not in notes.text
+    files = await ui_request(operator, "GET", f"/contacts/{sid}/tab/files")
+    assert files.status_code == 200, files.text
+    assert f'hx-delete="/contacts/{sid}/files/' not in files.text
+    assert f'hx-post="/contacts/{sid}/files"' not in files.text
+    cid = await _customer(client, owner)
+    editable = (await ui_request(operator, "GET", f"/contacts/{cid}")).text
+    assert f'hx-get="/contacts/{cid}/field/email/edit"' in editable
