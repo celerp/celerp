@@ -6,6 +6,7 @@ the edits the page saves (a price, a discount, a tax, an added line deleted agai
 its stones are sold to the customer and the memo keeps the rest of the parcel."""
 from __future__ import annotations
 
+import datetime
 import uuid
 
 import pytest
@@ -15,6 +16,7 @@ from .test_demo_items_link import _seed_demo_items
 from .test_fulfillment import _assert_no_crash
 
 from .conftest import answer_in_app
+from .test_header_discount_after_save import _poll
 
 pytestmark = pytest.mark.browser
 
@@ -54,6 +56,14 @@ def _edit(page, field, value: str) -> None:
         field.fill(value)
         field.blur()
     assert saved.value.ok, saved.value.text()
+
+
+def _issue(page):
+    """Click Issue Invoice and return the page's finalize request's response."""
+    with page.expect_response(lambda r: r.request.method == "POST"
+                              and r.url.endswith("/action/finalize"), timeout=15000) as answered:
+        page.get_by_role("button", name="Issue Invoice").click()
+    return answered.value
 
 
 def test_an_invoice_drawn_from_a_memo_issues_after_page_edits(page, ui_server, fresh_company):
@@ -100,10 +110,10 @@ def test_an_invoice_drawn_from_a_memo_issues_after_page_edits(page, ui_server, f
     assert float(stored[1]["discount_pct"]) == 5.0
     assert all("weight" not in li and "pieces" not in li for li in stored), stored
 
-    page.get_by_role("button", name="Issue Invoice").click()
-    expect(page.locator(".badge", has_text="Draft")).to_have_count(0, timeout=15000)
-    doc = api.get(f"/docs/{invoice}").json()
-    assert doc["status"] not in ("draft", "void"), doc["status"]
+    issued = _issue(page)
+    assert issued.status == 204 and issued.headers.get("hx-redirect") == f"/docs/{invoice}", issued.headers
+    doc = _poll(api, f"/docs/{invoice}", lambda d: d["status"] != "draft")
+    assert doc and doc["status"] != "void", doc
     for li in doc["line_items"]:
         lot = api.get(f"/items/{li['item_id']}").json()
         assert lot.get("status_doc_id") == invoice, lot
@@ -148,3 +158,25 @@ def test_the_memo_page_explains_its_lines_and_totals(page, ui_server, fresh_comp
     page.locator("tbody .li-select").first.check()
     page.select_option("#li-bulk-select", "li-invoice")
     expect(page.locator("#draw-preview")).to_contain_text("Set as shipped first", timeout=15000)
+
+
+def test_a_refused_issue_leaves_the_invoice_draft_and_says_why(page, ui_server, fresh_company):
+    """Issuing into a locked period is refused: the invoice stays a draft, its stones stay on
+    the memo, and the page shows the refusal instead of moving on."""
+    api = fresh_company
+    _seed_demo_items(api, "gemstones")
+    stone = _demo_gem(api, "piece")
+    customer = api.post("/crm/contacts", json={"name": "Showroom Customer", "contact_type": "customer"}).json()["id"]
+    memo, (stone_line,) = _issued_memo(api, customer, [stone])
+    invoice = _draw(api, memo, {stone_line: float(stone["quantity"])})
+    locked = api.post("/accounting/period-lock", json={"lock_date": datetime.date.today().isoformat()})
+    assert locked.status_code == 200, locked.text
+
+    page.set_viewport_size({"width": 1440, "height": 900})
+    page.goto(f"{ui_server}/docs/{invoice}", wait_until="domcontentloaded")
+    _assert_no_crash(page, "drawn invoice")
+    refused = _issue(page)
+    assert refused.headers.get("hx-reswap") == "none" and "hx-redirect" not in refused.headers, refused.headers
+    expect(page.locator(".toast-container .toast").first).to_be_visible(timeout=10000)
+    assert api.get(f"/docs/{invoice}").json()["status"] == "draft"
+    assert api.get(f"/items/{stone['id']}").json().get("status_doc_id") == memo

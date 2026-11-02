@@ -3660,6 +3660,7 @@
     "tests/test_bootstrap_flow.py::test_register_bootstraps_system": 0.149,
     "tests/test_bootstrap_flow.py::test_register_locked_after_bootstrap": 0.161,
     "tests/test_bootstrap_flow.py::test_truncate_resets_bootstrap": 0.16,
+    "tests/test_browser/test_memo_invoice_issue.py::test_a_refused_issue_leaves_the_invoice_draft_and_says_why": 0.3,
     "tests/test_browser_api_renewal.py::test_a_lapsed_token_is_renewed_once_and_the_request_sent_again": 0.004,
     "tests/test_browser_api_renewal.py::test_a_refused_renewal_returns_the_401": 0.003,
     "tests/test_browser_class_reads_retry.py::test_every_negative_class_check_names_a_class_the_app_sets": 0.322,
