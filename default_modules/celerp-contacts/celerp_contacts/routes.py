@@ -27,7 +27,7 @@ from celerp.services.attachments import attach_file, local_attachment_url_path, 
 from celerp.services.auth import AuthContext, get_auth_context, get_current_company_id, get_current_user
 from celerp.services.peer_import import peer_batch
 from celerp.services.company_lock import lock_company, lock_projections
-from celerp.services.currencies import require_currency_code, require_email, require_phone
+from celerp.services.currencies import require_email, require_phone
 from celerp.services.permissions import assert_role_permission, locked_authority, read_authority, require_permission
 from ui.i18n import t
 
@@ -148,11 +148,8 @@ async def create_contact(payload: ContactCreate, company_id: str = Depends(get_c
             if replay.event_type != "crm.contact.created":
                 raise HTTPException(status_code=409, detail=catalog_refusal("contacts.err_resubmitted"))
             return {"event_id": replay.id, "id": replay.entity_id}
-    if not payload.name or not payload.name.strip():
-        raise HTTPException(status_code=422, detail=catalog_refusal("contacts.err_name_required"))
-    require_currency_code(payload.currency)
-    require_phone(payload.phone)
-    require_email(payload.email)
+    services.require_contact_fields(
+        {"name": payload.name, "currency": payload.currency, "phone": payload.phone, "email": payload.email})
     entity_id = f"contact:{uuid.uuid4()}"
     entry = await emit_event(
         session,
@@ -205,14 +202,8 @@ async def update_contact(contact_id: str, payload: ContactUpdate, company_id: st
             if replay.event_type != "crm.contact.updated" or replay.entity_id != contact_id:
                 raise HTTPException(status_code=409, detail=catalog_refusal("contacts.err_resubmitted"))
             return {"event_id": replay.id}
-    currency = (payload.fields_changed.get("currency") or {}).get("new")
-    # A contact kept in a currency ISO 4217 has since withdrawn keeps it; none is moved to one.
-    if currency != row.state.get("currency"):
-        require_currency_code(currency)
-    require_phone((payload.fields_changed.get("phone") or {}).get("new"))
-    require_email((payload.fields_changed.get("email") or {}).get("new"))
-    if "name" in payload.fields_changed and not str(payload.fields_changed["name"].get("new") or "").strip():
-        raise HTTPException(status_code=422, detail=catalog_refusal("contacts.err_name_required"))
+    services.require_contact_fields({k: (c or {}).get("new") for k, c in payload.fields_changed.items()},
+                                    row.state or {})
     entry = await emit_event(
         session,
         company_id=company_id,
