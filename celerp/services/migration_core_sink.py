@@ -39,6 +39,7 @@ from celerp.importers.sinks import (
     SinkError,
 )
 from celerp.models.company import Company, Location, User
+from celerp.tax_regimes import with_taxes
 from celerp.models.migration import MigrationCleanupTask, MigrationEntityMap
 from celerp.models.projections import Projection
 from celerp.services.attachments import FILE_ATTACHED_EVENTS, attach_file, item_file_role, store_file
@@ -324,8 +325,7 @@ def _apply_tax_code(company: Company, tax: CIFTaxCode) -> str | None:
         "name": tax.name, "rate": rate, "tax_type": "purchase" if rate < 0 else "both", "is_default": False,
         "description": "", "is_compound": False, "default_order": 0,
     })
-    settings["taxes"] = taxes
-    company.settings = settings
+    company.settings = with_taxes(settings, taxes)
     return None
 
 

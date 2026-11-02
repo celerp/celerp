@@ -47,7 +47,7 @@ from celerp.services.permissions import (
     role_has_permission,
 )
 from celerp.schemas.numbers import FiniteFloat
-from celerp.tax_regimes import TAX_REGIMES, configured, get_regime, purchasing_taxes, sales_taxes, tax_country
+from celerp.tax_regimes import TAXES_SEEDED_FOR, configured, get_regime, purchasing_taxes, sales_taxes, tax_country, with_taxes
 from celerp.services import company_lifecycle
 from celerp.services.currencies import require_phone
 from celerp.services.provisioning import provision_additional_company
@@ -67,11 +67,13 @@ async def _maybe_apply_regime(session: AsyncSession, company_id, address: dict |
     """Seed the tax regime of the country in ``address`` into a company that has not
     set anything up yet, and return the country whose taxes it set (None when it set none).
 
-    Taxes are replaced only while they are unset or exactly a list Celerp starts a
-    company with (the generic one or a country's), so naming another country before
-    any change replaces them. The currency is set only while none was ever saved. A company that has posted entries of its
-    own keeps both: changing them would silently restate its books, so it changes
-    them explicitly in settings. Safe to call repeatedly."""
+    Taxes are replaced only while they are unset or still the list Celerp itself seeded
+    (TAXES_SEEDED_FOR), and only when the country differs from the one they were seeded
+    for. Taxes someone saved or imported, even at the very same rates, and taxes stored
+    before Celerp recorded where its lists came from, are kept. The currency is set only
+    while none was ever saved. A company that has posted entries of its own keeps both:
+    changing them would silently restate its books, so it changes them explicitly in
+    settings. Safe to call repeatedly."""
     if not address:
         return None
     country = str(address.get("country") or "").strip()
@@ -81,23 +83,22 @@ async def _maybe_apply_regime(session: AsyncSession, company_id, address: dict |
     company = await locked_company(session, company_id)
     if company is None:
         return None
-    taxes = company.settings.get("taxes")
-    if taxes is not None and not any(taxes == regime["taxes"] for regime in TAX_REGIMES.values()):
+    seeded_for, code = company.settings.get(TAXES_SEEDED_FOR), tax_country(country)
+    if company.settings.get("taxes") is not None and (seeded_for is None or seeded_for == code):
         return None
     from celerp.services.demo import has_own_books
     if await has_own_books(session, company_id):
         return None
 
     regime = get_regime(country)
-    settings = dict(company.settings)
-    settings["taxes"] = copy.deepcopy(regime["taxes"])
+    settings = with_taxes(dict(company.settings), copy.deepcopy(regime["taxes"]), code)
     seeds_currency = "currency" not in settings
     if seeds_currency:
         settings["currency"] = regime["currency"]
     company.settings = settings
     if seeds_currency:
         await _books_currency_set(session, company_id)
-    return tax_country(country) or None
+    return code or None
 
 
 async def _books_currency_set(session: AsyncSession, company_id) -> None:
@@ -1354,8 +1355,7 @@ async def patch_taxes(
     company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
-    settings = dict(company.settings)
-    settings["taxes"] = [t.model_dump() for t in payload.taxes]
+    settings = with_taxes(dict(company.settings), [t.model_dump() for t in payload.taxes])
     company.settings = settings
     await reconcile_tax_seed_notices(session, company_id, settings)
     await session.commit()
@@ -1427,7 +1427,7 @@ async def import_taxes_batch(
         existing_names.add(key)
         res.created += 1
 
-    settings["taxes"] = taxes
+    settings = with_taxes(settings, taxes)
     company.settings = settings
     await reconcile_tax_seed_notices(session, company_id, settings)
     await session.commit()

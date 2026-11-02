@@ -269,6 +269,23 @@ def get_regime(country_code: str | None) -> dict:
     return TAX_REGIMES.get(country_code.strip().upper(), TAX_REGIMES["_default"])
 
 
+# Which catalog Celerp set the company's sales taxes from: a tax country's code, or "" for the
+# generic list. Present only while those taxes are untouched; any other write of them drops it.
+TAXES_SEEDED_FOR = "taxes_seeded_for"
+
+
+def with_taxes(settings: dict, taxes: list[dict], seeded_for: str | None = None) -> dict:
+    """``settings`` with the company's sales taxes set to ``taxes``. ``seeded_for`` is the
+    catalog Celerp set them from; a write by anyone else passes none, so the list is the
+    company's own from then on and is never replaced automatically."""
+    out = {**settings, "taxes": taxes}
+    if seeded_for is None:
+        out.pop(TAXES_SEEDED_FOR, None)
+    else:
+        out[TAXES_SEEDED_FOR] = seeded_for
+    return out
+
+
 def generic_taxes() -> list[dict]:
     """The neutral tax list a company starts from until it configures its own."""
     return copy.deepcopy(TAX_REGIMES["_default"]["taxes"])
