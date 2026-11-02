@@ -16,7 +16,7 @@ GOOD_NAV = {MODULE: ["/inventory", "/inventory?status=sold"]}
 
 EXPECTED = {
     "check_schema": {"placeholder.json", "per-locale.json"},
-    "check_label_keys": {"unknown-label.json"},
+    "check_label_keys": {"unknown-label.json", "label-with-blank.json"},
     "check_routes": {"unknown-route.json"},
     "check_permissions": {"unknown-permission.json"},
     "check_images": {"missing-image.json", "unmarked-image.json"},

@@ -157,8 +157,18 @@ async def _read_scan(request: Request, mode: WizardMode, token: str) -> dict:
 # Shared page pieces
 # ---------------------------------------------------------------------------
 
+def _wizard_help(request: Request) -> list:
+    """The way to the imports help page. Help pages need a signed-in company, so a login
+    that has no company yet is not offered a page it cannot open."""
+    if not get_token(request):
+        return []
+    return [A(t("help.title"), href="/help/core.imports", target="_blank",
+              cls="btn btn--secondary btn--sm migration-wizard__help")]
+
+
 def wizard_page(request: Request, *content, status_code: int = 200, title: str = "migration.title"):
-    page = auth_shell(*client_scripts(get_lang(request), request), Div(*content, cls="auth-card migration-wizard"),
+    page = auth_shell(*client_scripts(get_lang(request), request),
+                      Div(*_wizard_help(request), *content, cls="auth-card migration-wizard"),
                       title=page_title(title))
     if status_code == 200:
         return page

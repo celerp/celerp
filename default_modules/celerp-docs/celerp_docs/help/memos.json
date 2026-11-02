@@ -1,0 +1,48 @@
+{
+  "id": "docs.memos",
+  "title": "Memos and consignment out",
+  "summary": "Send goods to a customer on memo, invoice what they keep, and take back the rest.",
+  "keywords": ["memo", "consignment", "consignment out", "on memo", "approval", "invoice from memo", "return"],
+  "routes": ["/docs?type=memo"],
+  "permission": "view_documents",
+  "order": 2,
+  "steps": [
+    {
+      "text": "Open {co} from the sidebar and click {new} to start a memo for the customer receiving the goods.",
+      "labels": {"co": "nav.consignment_out", "new": "btn.new_memo"},
+      "image": null,
+      "capture": {"route": "/docs?type=memo", "selector": "main", "actions": []}
+    },
+    {
+      "text": "Add a line for each item you are sending, then click {issue}. The items stay in your stock, marked as on memo, until the customer buys them or sends them back.",
+      "labels": {"issue": "documents.finalize_label_memo"},
+      "image": null,
+      "capture": {"route": "/docs?type=memo", "selector": "main", "actions": [{"click": "main button[hx-post='/docs/create-blank?type=memo']"}]}
+    },
+    {
+      "text": "When the goods leave, tick their lines on the memo and choose Set as shipped from the line actions. Only shipped lines can be invoiced.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/docs?type=memo", "selector": "main", "actions": []}
+    },
+    {
+      "text": "When the customer keeps some items, tick those lines and choose Invoice selected. Check the preview, then confirm to put them on a new draft invoice or one you already have. Invoice all puts everything still out on one draft invoice.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/docs?type=memo", "selector": "main", "actions": []}
+    },
+    {
+      "text": "When items come back, tick their lines and choose Set as available. They return to your stock as available to sell.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/docs?type=memo", "selector": "main", "actions": []}
+    },
+    {
+      "text": "The totals on the memo show what each invoice took and what is still on memo. Once nothing is out, click Close. A closed memo can be reopened.",
+      "labels": {},
+      "image": null,
+      "capture": {"route": "/docs?type=memo", "selector": "main", "actions": []}
+    }
+  ],
+  "related": ["docs.sales-documents", "docs.payments"]
+}

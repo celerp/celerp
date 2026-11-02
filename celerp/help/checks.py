@@ -85,25 +85,29 @@ def check_schema(pages: list[PageFile]) -> list[str]:
     return out
 
 
-def english_label_keys() -> set[str]:
-    """Every key of the English UI catalog and of each first-party module's English catalog."""
-    keys = set(json.loads(_UI_CATALOG.read_text(encoding="utf-8")))
+def english_labels() -> dict[str, str]:
+    """The English UI catalog and each first-party module's English catalog, key to text."""
+    labels = json.loads(_UI_CATALOG.read_text(encoding="utf-8"))
     for _name, path, manifest in _first_party_modules():
         entry = (manifest.get("locales") or {}).get("en")
         if isinstance(entry, dict) and isinstance(entry.get("file"), str):
-            keys |= set(json.loads((path / entry["file"]).read_text(encoding="utf-8")))
-    return keys
+            labels |= json.loads((path / entry["file"]).read_text(encoding="utf-8"))
+    return labels
 
 
-def check_label_keys(pages: list[PageFile], keys: set[str] | None = None) -> list[str]:
-    keys = english_label_keys() if keys is None else keys
+def check_label_keys(pages: list[PageFile], labels: dict[str, str] | None = None) -> list[str]:
+    """Every label key is in the English catalogs and names a fixed label: a text with a
+    blank to fill ("{n} item(s)") would reach the reader with the blank in it."""
+    labels = english_labels() if labels is None else labels
     out = []
     for page in pages:
         for step in _steps(page):
-            labels = step.get("labels")
-            for key in (labels.values() if isinstance(labels, dict) else []):
-                if key not in keys:
+            step_labels = step.get("labels")
+            for key in (step_labels.values() if isinstance(step_labels, dict) else []):
+                if key not in labels:
                     out.append(f"{page.path.name}: label key {key!r} is not in the English catalogs")
+                elif "{" in str(labels[key]):
+                    out.append(f"{page.path.name}: label key {key!r} has a blank to fill: {labels[key]!r}")
     return out
 
 

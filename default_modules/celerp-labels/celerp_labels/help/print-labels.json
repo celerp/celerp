@@ -9,7 +9,7 @@
   "steps": [
     {
       "text": "Selecting items in {inv} opens the print screen, titled {print}, with those items ready to print.",
-      "labels": {"inv": "nav.inventory", "print": "labels.print_labels_heading"},
+      "labels": {"inv": "nav.inventory", "print": "labels.print_labels"},
       "image": null,
       "capture": {"route": "/labels/print-list", "selector": "main", "actions": []}
     },

@@ -1873,3 +1873,16 @@ async def test_a_single_question_reads_as_a_field_not_a_one_row_table(ui, router
     page = _page(r)
     assert 'name="mapping__currency:base"' in page and "<table" not in page
     assert "Currency these books are kept in" in _visible(r)
+
+
+async def test_the_wizard_offers_its_help_page_to_a_signed_in_company(ui, router):
+    """The wizard has no top bar, so it carries its own way to the imports help page; a
+    login with no company yet (no session to open help with) is not offered it."""
+    from starlette.requests import Request
+
+    from ui.routes.migrations import _wizard_help
+    _owner(ui)
+    page = _page(await ui.get("/setup/new-company/migrate"))
+    link = re.search(r'<a [^>]*href="/help/core\.imports"[^>]*>([^<]*)</a>', page)
+    assert link and link.group(1) == "Help" and 'target="_blank"' in link.group(0)
+    assert _wizard_help(Request({"type": "http", "headers": []})) == []

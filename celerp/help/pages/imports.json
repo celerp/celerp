@@ -1,0 +1,42 @@
+{
+  "id": "core.imports",
+  "title": "Moving your books into Celerp",
+  "summary": "Bring a company over from another accounting system, from upload to the final check.",
+  "keywords": ["import", "migrate", "migration", "move", "switch", "QuickBooks", "Xero", "Sage", "Odoo", "opening balances", "cutover"],
+  "routes": ["/setup/new-company/migrate"],
+  "permission": "manage_company_settings",
+  "order": 6,
+  "steps": [
+    {
+      "text": "Under {src}, choose {sys}, upload the export file it gives you and click {analyze}. Nothing is created yet.",
+      "labels": {"src": "migration.step_source", "sys": "migration.source_label", "analyze": "migration.analyze"},
+      "image": null,
+      "capture": {"route": "/setup/new-company/migrate", "selector": ".migration-wizard", "actions": []}
+    },
+    {
+      "text": "Under {cov}, choose how much to bring. Full history recreates every transaction in the file. Cutover starts your books on a date you pick: balances on that date become opening balances, and open invoices, bills and stock are recreated.",
+      "labels": {"cov": "migration.step_coverage"},
+      "image": null,
+      "capture": {"route": "/setup/new-company/migrate", "selector": ".migration-wizard", "actions": []}
+    },
+    {
+      "text": "Under {map}, choose where each account and setting from your file goes in Celerp. Celerp proposes a match for each one; check them before you go on.",
+      "labels": {"map": "migration.step_mapping"},
+      "image": null,
+      "capture": {"route": "/setup/new-company/migrate", "selector": ".migration-wizard", "actions": []}
+    },
+    {
+      "text": "Under {rev}, read the summary of what will be created, then start the import. The new company is created and the records move over.",
+      "labels": {"rev": "migration.step_review"},
+      "image": null,
+      "capture": {"route": "/setup/new-company/migrate", "selector": ".migration-wizard", "actions": []}
+    },
+    {
+      "text": "Under {ver}, Celerp compares its totals with the totals in your file. Review each difference before you finish; you can also fix the file and upload it again.",
+      "labels": {"ver": "migration.step_verify"},
+      "image": null,
+      "capture": {"route": "/setup/new-company/migrate", "selector": ".migration-wizard", "actions": []}
+    }
+  ],
+  "related": ["core.companies"]
+}

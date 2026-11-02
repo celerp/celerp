@@ -153,6 +153,8 @@ a:hover { text-decoration: underline; }
 .auth-container:has(.migration-wizard) { max-width: 760px; }
 /* A wizard step showing a table (coverage, mapping, checks) takes the room a wide screen has. */
 .auth-container:has(.migration-wizard .data-table) { max-width: 1120px; }
+.migration-wizard { position: relative; }
+.migration-wizard__help { position: absolute; top: 16px; right: 16px; }
 .auth-container:has(.setup-card) { max-width: 600px; }
 .setup-options { margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--c-border); }
 .setup-options-heading { font-size: 13px; font-weight: 600; color: var(--c-text2); margin: 0 0 10px; }

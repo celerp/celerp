@@ -18,7 +18,7 @@ import ui.api_client as api
 from celerp.help.registry import MAX_ADDRESS_LEN, get_index
 from celerp.modules.loader import module_label
 from ui.api_client import APIError, refusal_response
-from ui.components.shell import base_shell, load_error, page_header
+from ui.components.shell import base_shell, load_error, page_header, visible_nav
 from ui.config import get_role
 from ui.config import get_token as _token
 from ui.i18n import get_lang, t
@@ -35,8 +35,29 @@ def _back(lang: str) -> FT:
     return A(t("acct.post_again_back", lang, page=t("help.title", lang)), href="/help", cls="help-back")
 
 
-def _ask_ai(lang: str) -> FT:
-    return A(t("help.ask_ai", lang), href="/ai", cls="btn btn--secondary btn--sm")
+async def _company_settings(token: str) -> dict:
+    """The company's settings for the shell and the AI rule; none when they cannot be read,
+    as the shell itself does."""
+    try:
+        company = await api.get_company(token)
+    except Exception:
+        return {}
+    return (company.get("settings") if isinstance(company, dict) else {}) or {}
+
+
+def _ai_on(settings: dict, role: str) -> bool:
+    """Celerp AI is offered where the sidebar offers it to this role, never as a refusal."""
+    return any(item.get("href") == "/ai" for item in visible_nav(settings, role))
+
+
+def _ask_ai(lang: str, ai_on: bool) -> list[FT]:
+    return [A(t("help.ask_ai", lang), href="/ai", cls="btn btn--secondary btn--sm")] if ai_on else []
+
+
+def _in_english_notice(lang: str, ai_on: bool) -> list[FT]:
+    """Help pages are written in English; a reader of another language is told so, with the
+    way to an answer in their language."""
+    return [P(t("help.answers_in_your_language", lang), cls="flash")] if lang != "en" and ai_on else []
 
 
 def _search_form(q: str, module: str, lang: str) -> FT:
@@ -80,10 +101,10 @@ async def _browse(token: str, module: str, lang: str) -> FT:
     return Div(H2(t("help.browse", lang)), *sections, cls="help-browse")
 
 
-async def _results(token: str, q: str, module: str, role: str, lang: str) -> FT:
+async def _results(token: str, q: str, module: str, role: str, lang: str, ai_on: bool) -> FT:
     found = await api.help_search(token, q, module or None)
     if not found["hits"]:
-        return Div(P(found.get("message") or t("help.no_results", lang)), _ask_ai(lang), cls="empty-state")
+        return Div(P(found.get("message") or t("help.no_results", lang)), *_ask_ai(lang, ai_on), cls="empty-state")
     return Ul(*[Li(A(h["title"], href=f"/help/{h['id']}", cls="help-list__title"),
                    P(h["summary"], cls="help-list__summary"), *_flags(h, role, lang))
                 for h in found["hits"]], cls="help-list")
@@ -113,8 +134,11 @@ def setup_routes(app):
         lang = get_lang(request)
         q = request.query_params.get("q", "").strip()
         module = request.query_params.get("module", "").strip()
+        role = get_role(request)
+        settings = await _company_settings(token)
+        ai_on = _ai_on(settings, role)
         try:
-            body = (await _results(token, q, module, get_role(request), lang) if q
+            body = (await _results(token, q, module, role, lang, ai_on) if q
                     else await _browse(token, module, lang))
         except APIError as e:
             if e.status == 401:  # an ended session goes to sign-in through the app's handler
@@ -122,9 +146,10 @@ def setup_routes(app):
             here = request.url.path + (f"?{request.url.query}" if request.url.query else "")
             body = load_error(t("help.load_failed", lang), lang, href=here)
         page = await base_shell(
-            page_header(t("help.title", lang), _ask_ai(lang)),
-            Div(_search_form(q, module, lang), body, cls="help-page"),
+            page_header(t("help.title", lang), *_ask_ai(lang, ai_on)),
+            Div(*_in_english_notice(lang, ai_on), _search_form(q, module, lang), body, cls="help-page"),
             title=t("help.title", lang), nav_active="help", lang=lang, request=request,
+            company_settings=settings,
         )
         return HTMLResponse(to_xml(page))
 
@@ -145,11 +170,13 @@ def setup_routes(app):
             if e.status == 401:
                 raise
             listing = P(t("help.load_failed", lang), cls="help-panel__none")
+        ai_on = _ai_on(await _company_settings(token), get_role(request))
         panel = Div(
             Div(t("help.for_this_page", lang), cls="help-panel__title"),
+            *_in_english_notice(lang, ai_on),
             listing,
             Div(A(t("help.search_placeholder", lang), href="/help", cls="btn btn--secondary btn--sm"),
-                _ask_ai(lang), cls="help-panel__actions"),
+                *_ask_ai(lang, ai_on), cls="help-panel__actions"),
             id="topbar-help-panel", cls="help-panel popover-panel", role="dialog",
         )
         return Div(
@@ -176,10 +203,11 @@ def setup_routes(app):
             return RedirectResponse(_LOGIN, status_code=302)
         lang = get_lang(request)
         status = 200
+        settings = await _company_settings(token)
         try:
             body = await api.help_read(token, page_id)
             content = Div(
-                P(t("help.answers_in_your_language", lang), cls="flash"),
+                *_in_english_notice(lang, _ai_on(settings, get_role(request))),
                 *_flags(body, get_role(request), lang),
                 P(body["summary"], cls="help-page__summary"),
                 _steps(body),
@@ -199,5 +227,5 @@ def setup_routes(app):
                 content = Div(load_error(t("help.load_failed", lang), lang, href=request.url.path),
                               _back(lang), cls="help-page")
         page = await base_shell(page_header(title), content, title=title, nav_active="help",
-                                lang=lang, request=request)
+                                lang=lang, request=request, company_settings=settings)
         return HTMLResponse(to_xml(page), status_code=status)

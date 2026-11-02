@@ -3,7 +3,7 @@
   "title": "Planning what to make",
   "summary": "See which open orders need stock made and start production runs for what is short.",
   "keywords": ["demand", "to make", "production", "manufacturing", "make", "build"],
-  "routes": ["/manufacturing", "/docs"],
+  "routes": ["/manufacturing", "/docs?type=production_order"],
   "permission": "manage_manufacturing",
   "order": 1,
   "steps": [
@@ -23,7 +23,7 @@
       "text": "To track the demand as its own order instead of a run, open {so} from the sidebar.",
       "labels": {"so": "documents.page_stock_orders"},
       "image": null,
-      "capture": {"route": "/docs", "selector": "main", "actions": []}
+      "capture": {"route": "/docs?type=production_order", "selector": "main", "actions": []}
     }
   ],
   "related": ["manufacturing.production", "manufacturing.settings"]
