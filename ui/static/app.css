@@ -269,23 +269,14 @@ a:hover { text-decoration: underline; }
   }
   .sidebar.sidebar--open { left: 0; }
   .sidebar-toggle { display: block; }
-  /* The menu control stays first and on screen; the other controls shrink to fit. */
-  .topbar { justify-content: flex-start; padding: 8px 12px; gap: 0.5rem; }
-  .topbar > * { min-width: 0; }
-  .topbar .lang-switcher-wrap { flex-shrink: 1; }
-  .topbar .lang-switcher-wrap .combobox-input { min-width: 0; max-width: 4.5rem; }
-  .topbar .global-search-wrap { flex: 1 1 4rem; min-width: 4rem; margin: 0; }
-  .topbar .user-menu__trigger, .topbar .company-switcher-select { max-width: 4.5rem; }
-  .topbar .notif-wrap, .topbar .user-menu { flex-shrink: 0; }
-}
-/* Phones: two rows. Menu, language, bell and user on the first; search and company
-   share the second, so the search box keeps room to type and names show whole. */
-@media (max-width: 480px) {
-  .topbar { flex-wrap: wrap; height: auto; row-gap: 6px; }
-  .topbar .global-search-wrap { order: 1; flex: 1 1 13rem; }
-  .topbar .company-switcher-select { order: 1; max-width: 50%; }
-  .topbar .lang-switcher-wrap { flex-shrink: 0; }
-  .topbar .lang-switcher-wrap .combobox-input { max-width: 8rem; }
+  /* Phones and tablets share one top bar layout. The controls sit on the first row and wrap
+     onto another when they do not fit, each kept whole (a long company name takes a row of its
+     own); the search always takes a full row of its own below them, so it keeps room to type. */
+  .topbar { flex-wrap: wrap; height: auto; padding: 8px 12px; gap: 6px 8px; justify-content: flex-start; }
+  .topbar > * { flex-shrink: 0; min-width: 0; max-width: 100%; }
+  .topbar .global-search-wrap { order: 1; flex: 1 0 100%; max-width: none; margin: 0; }
+  .topbar .company-switcher-select { max-width: 100%; }
+  .topbar .user-menu__trigger { max-width: 8rem; }
 }
 
 /* ─── Main content ────────────────────────────────────────────────────── */
@@ -294,14 +285,6 @@ a:hover { text-decoration: underline; }
 .main-content { flex: 1; min-width: 0; padding: 24px 28px; }
 @media (max-width: 768px) {
   .main-content { padding: 16px 12px; }
-  /* Phone top bar: menu, company, language, alerts and account on the first row, the
-     global search on its own row below. Nothing is pushed off either edge. */
-  .topbar { flex-wrap: wrap; height: auto; padding: 8px 12px; gap: 8px; justify-content: flex-start; }
-  .topbar > * { min-width: 0; }
-  .topbar .global-search-wrap { order: 1; flex: 1 0 100%; max-width: none; margin: 0; }
-  .company-switcher-select { max-width: 9rem; }
-  .user-menu { flex-shrink: 1; }
-  .user-menu__trigger { max-width: 8rem; }
 }
 /* Up to tablet width the shared rule holds for every page: no box grows past the screen to
    fit its content (a grid's 1fr track or a flex row otherwise widens to its widest child),
@@ -2656,7 +2639,7 @@ th.cell--right { text-align: right !important; }
 .relay-dot-link { display: flex; align-items: center; line-height: 1; text-decoration: none; }
 
 /* ── Notification bell + panel ────────────────────────────────────────── */
-.notif-wrap { position: relative; margin-left: auto; }
+.notif-wrap { position: relative; margin-left: auto; display: flex; align-items: center; }
 .notif-bell-btn {
   background: none; border: none; font-size: 1.25rem; cursor: pointer;
   position: relative; padding: 0.25rem 0.5rem;
