@@ -1,0 +1,92 @@
+name: PR415 final validation
+on:
+  push:
+    branches: [fix/pr415-final-check]
+permissions:
+  contents: read
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: {POSTGRES_USER: celerp, POSTGRES_PASSWORD: celerp, POSTGRES_DB: celerp_test}
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      ALLOW_INSECURE_JWT: "true"
+      DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with: {python-version: "3.12"}
+      - name: Install dependencies
+        run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split -c constraints.txt
+      - name: Migrations and canonical module lock
+        run: |
+          python -m alembic heads
+          python scripts/gen_first_party_lock.py
+          python - <<'PY'
+          import json
+          x=json.load(open("default_modules/first_party.lock.json"))
+          print("CANONICAL_DIGESTS",json.dumps({k:x[k] for k in ("celerp-docs","celerp-accounting")}))
+          PY
+      - name: Fresh DB upgrade downgrade upgrade
+        run: |
+          python - <<'PY'
+          import asyncio
+          import asyncpg
+          async def main():
+              c=await asyncpg.connect(host="localhost",user="celerp",password="celerp",database="postgres")
+              try:
+                  await c.execute("CREATE DATABASE celerp_pr415_index")
+              finally:
+                  await c.close()
+          asyncio.run(main())
+          PY
+          export DATABASE_URL=postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_pr415_index
+          python -m alembic upgrade head
+          python - <<'PY'
+          import asyncio,asyncpg
+          async def main():
+              c=await asyncpg.connect(host="localhost",user="celerp",password="celerp",database="celerp_pr415_index")
+              try:
+                  valid=await c.fetchval("SELECT indisvalid FROM pg_index WHERE indexrelid = to_regclass('ix_ledger_je_doc_refs_gin')")
+                  assert valid is True, valid
+                  print("LEDGER_INDEX_CREATED",valid)
+              finally:
+                  await c.close()
+          asyncio.run(main())
+          PY
+          python -m alembic downgrade -1
+          python -m alembic upgrade head
+      - name: Focused regression tests
+        run: |
+          cp tests/.test_durations /tmp/durations-before.json
+          set +e
+          timeout 1200 pytest -n 2 -q --tb=short --no-cov --store-durations \
+            --durations-path tests/.test_durations \
+            tests/test_nav_overrides.py \
+            tests/test_doc_gl_impact_ui.py \
+            tests/test_services/test_sequences.py \
+            tests/test_picker_starting_list_per_type.py \
+            default_modules/celerp-accounting/tests/test_journal_gl_soa.py
+          RESULT=$?
+          set -e
+          python - <<'PY'
+          import json
+          a=json.load(open("/tmp/durations-before.json"))
+          b=json.load(open("tests/.test_durations"))
+          fresh={k:round(v,4) for k,v in b.items() if k not in a}
+          print("NEW_MEASUREMENTS",json.dumps(fresh,sort_keys=True,separators=(",",":")))
+          PY
+          exit "$RESULT"
+      - name: Inventory and syntax
+        run: |
+          pytest tests/test_ci_shard_split.py -q --tb=short --no-cov
+          python -m compileall -q celerp ui default_modules
