@@ -140,7 +140,11 @@ def _slot_handlers() -> list[tuple]:
     from celerp.modules.slots import all_slots, resolve_handler
 
     found = []
-    for entries in all_slots().values():
+    for slot, entries in all_slots().items():
+        # Unattended operations do not answer an agent request. Their helpers
+        # remain covered when an agent-callable route actually invokes them.
+        if slot == "periodic_operation":
+            continue
         for entry in entries:
             if isinstance(entry.get("handler"), str):
                 obj = resolve_handler(entry["handler"])
@@ -148,6 +152,19 @@ def _slot_handlers() -> list[tuple]:
                     if isinstance(obj, type) else [(obj, None)]
     assert found
     return found
+
+
+def test_periodic_operations_are_not_agent_route_roots():
+    """Background-only operations cannot directly return refusals to an AI caller."""
+    from celerp.modules.slots import all_slots, resolve_handler
+
+    handlers = {fn for fn, _owner in _slot_handlers()}
+    entries = all_slots().get("periodic_operation") or []
+    assert entries
+    assert all(
+        resolve_handler(entry["handler"]) not in handlers
+        for entry in entries if isinstance(entry.get("handler"), str)
+    )
 
 
 def _exception_handlers(app) -> list[tuple]:
