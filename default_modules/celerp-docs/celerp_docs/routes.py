@@ -7924,7 +7924,7 @@ async def create_shipment_from_docs(
     _ship_to = next((s.get("contact_shipping_address") for s in states
                      if s.get("contact_shipping_address")), None)
     _attn = next((s.get("shipping_attn") for s in states if s.get("shipping_attn")), None)
-    ref_id = next_doc_ref(company, list_sequence_key("shipping_doc"))
+    ref_id = next_doc_ref(company, list_sequence_key("shipping_doc", company.settings))
     new_entity_id = f"list:{ref_id}"
     data = {k: v for k, v in {
         "list_type": "shipping_doc",
@@ -9059,7 +9059,7 @@ async def create_list_record(payload: ListCreatePayload, company_id, role: str, 
     company = await locked_company(session, company_id)
     if (done := await _replay()) is not None:
         return done
-    ref_id = payload.ref_id or next_doc_ref(company, list_sequence_key(payload.list_type))
+    ref_id = payload.ref_id or next_doc_ref(company, list_sequence_key(payload.list_type, company.settings))
     entity_id = f"list:{ref_id}"
 
     # Uniqueness check
@@ -10028,7 +10028,7 @@ async def duplicate_list(
     row = await _get_list_for_update(session, company_id, entity_id)
     _assert_contacts_unchanged(named, [row])
     state = row.state
-    ref_id = next_doc_ref(company, list_sequence_key(state.get("list_type")))
+    ref_id = next_doc_ref(company, list_sequence_key(state.get("list_type"), company.settings))
     new_entity_id = f"list:{ref_id}"
     new_data = {k: v for k, v in state.items()
                 if k not in {"status", "entity_type", "ref_id", "share_token", SCAN_RUNS_FIELD, RESTORE_POINT}}
@@ -13510,7 +13510,7 @@ async def create_audit_list_record(payload: AuditCreateBody, company_id: str, us
             continue
         lines.append({"item_id": r.entity_id, "sku": st.get("sku"), "name": st.get("name"),
                       "barcode": st.get("barcode"), "quantity": float(st.get("quantity") or 0)})
-    ref_id = next_doc_ref(company, "audit")
+    ref_id = next_doc_ref(company, list_sequence_key("audit", company.settings))
     entity_id = entity_id_override or f"list:{ref_id}"
     if await session.get(Projection, {"company_id": company_id, "entity_id": entity_id}) is not None:
         raise HTTPException(status_code=409, detail=t("documents.err_audit_number_taken", number=ref_id))
@@ -14336,7 +14336,7 @@ async def create_writeoff_list(
         lines.append(_writeoff_seed_line(item, company.settings or {}))
     if not lines:
         raise HTTPException(status_code=422, detail=t("documents.err_writeoff_no_items"))
-    ref_id = next_doc_ref(company, "writeoff")
+    ref_id = next_doc_ref(company, list_sequence_key("writeoff", company.settings))
     entity_id = f"list:{ref_id}"
     if await session.get(Projection, {"company_id": company_id, "entity_id": entity_id}) is not None:
         raise HTTPException(status_code=409, detail=t("documents.err_writeoff_number_taken", number=ref_id))

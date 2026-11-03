@@ -91,7 +91,8 @@ async def test_drafts_are_skipped_and_the_reading_stops(ui_client):
          patch("ui.api_client.get_doc", new=AsyncMock(return_value={})):
         ui_client.cookies.update(_authed())
         r = await ui_client.get("/docs/catalog-search?q=&doc_type=invoice&doc_id=doc:new")
-    assert r.status_code == 200 and r.json() == []
+    assert r.status_code == 409
+    assert "error" in r.json()
     assert lookup.await_count == _PICKER_START_PAGES
 
 

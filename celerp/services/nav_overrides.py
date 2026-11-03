@@ -11,6 +11,9 @@ only hides and reorders what the viewer's permissions already show; it never add
 """
 from __future__ import annotations
 
+import hashlib
+import json
+
 from fastapi import HTTPException
 
 from celerp.accounting_roles import refusal
@@ -51,3 +54,10 @@ def normalize(raw: dict | None) -> dict[str, list[str]]:
         if ids:
             out[field] = ids
     return out
+
+
+def revision(raw: dict | None) -> str:
+    """Stable version of the current menu choices for conditional writes."""
+    choices = normalize(raw)
+    value = json.dumps(choices, sort_keys=True, separators=(",", ":")).encode()
+    return '"' + hashlib.sha256(value).hexdigest() + '"'

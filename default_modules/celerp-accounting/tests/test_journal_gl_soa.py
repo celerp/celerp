@@ -2544,6 +2544,40 @@ async def test_by_doc_includes_the_cost_of_sales_and_inventory_legs(client, sess
 
 
 @pytest.mark.asyncio
+async def test_by_doc_includes_related_credit_and_return_postings(client, session):
+    from celerp.services.auto_je import _emit_auto_posted_je
+
+    tok = await _reg(client)
+    invoice = await _doc_with_items(client, tok, "invoice", [("WIDGET", 1, 10.0)])
+    note = await client.post("/docs", headers=_h(tok), json={
+        "doc_type": "credit_note", "contact_id": "contact:1",
+        "issue_date": "2026-02-02", "line_items": [],
+        "subtotal": 0, "tax": 0, "total": 0,
+    })
+    assert note.status_code == 200, note.text
+    note_id = note.json()["id"]
+    company_id, user_id = _ids(tok)
+    for suffix, metadata in (
+        ("applied", {"doc_id": invoice, "credit_note_id": note_id}),
+        ("return", {"cn_id": note_id}),
+    ):
+        je_id = f"je:test:{suffix}:{note_id}"
+        await _emit_auto_posted_je(
+            session, company_id=company_id, user_id=user_id, je_id=je_id,
+            idem_create=f"{je_id}:c", idem_posted=f"{je_id}:p",
+            memo=suffix, ts="2026-02-02", entries=_bal(5.0), metadata_=metadata,
+        )
+    await session.commit()
+
+    invoice_ids = {e["je_id"] for e in (await _by_doc(client, tok, invoice))["entries"]}
+    note_ids = {e["je_id"] for e in (await _by_doc(client, tok, note_id))["entries"]}
+    assert f"je:test:applied:{note_id}" in invoice_ids
+    assert f"je:test:applied:{note_id}" in note_ids
+    assert f"je:test:return:{note_id}" in note_ids
+    assert f"je:test:return:{note_id}" not in invoice_ids
+
+
+@pytest.mark.asyncio
 async def test_by_doc_lines_carry_the_documents_contact_as_party(client):
     tok = await _reg(client)
     doc = await _doc_with_items(client, tok, "invoice", [("WIDGET", 1, 10.0)])

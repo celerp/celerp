@@ -4693,18 +4693,24 @@ async def label_source_rows(token: str, source: str, ids: list[str]) -> list[dic
 
 
 async def get_nav_overrides(token: str) -> dict:
-    """The company's side-menu choices: hidden entries and groups, and their order."""
+    """The company's side-menu choices and the revision needed to save them."""
     async with _api_client(token) as c:
-        return _raise(await c.get("/companies/me/nav-overrides")).json()
+        response = _raise(await c.get("/companies/me/nav-overrides"))
+        return {**response.json(), "_etag": response.headers["etag"]}
 
 
-async def patch_nav_overrides(token: str, overrides: dict) -> dict:
-    """Replace the company's side-menu choices. Owner-gated by the backing endpoint."""
+async def patch_nav_overrides(token: str, overrides: dict, *, etag: str) -> dict:
+    """Conditionally replace the company's side-menu choices."""
     async with _api_client(token) as c:
-        return _raise(await c.patch("/companies/me/nav-overrides", json=overrides)).json()
+        return _raise(await c.patch(
+            "/companies/me/nav-overrides", json=overrides,
+            headers={"If-Match": etag},
+        )).json()
 
 
-async def reset_nav_overrides(token: str) -> dict:
-    """Put the side menu back to its defaults. Owner-gated by the backing endpoint."""
+async def reset_nav_overrides(token: str, *, etag: str) -> dict:
+    """Conditionally reset the side menu to its defaults."""
     async with _api_client(token) as c:
-        return _raise(await c.delete("/companies/me/nav-overrides")).json()
+        return _raise(await c.delete(
+            "/companies/me/nav-overrides", headers={"If-Match": etag},
+        )).json()

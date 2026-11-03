@@ -20,7 +20,8 @@ REVERSAL_SUFFIX = ":reversal"
 
 
 async def journal_rows(
-    session: AsyncSession, company_id: uuid.UUID, *, include_void: bool = False
+    session: AsyncSession, company_id: uuid.UUID, *, include_void: bool = False,
+    entry_ids: list[str] | None = None,
 ) -> list[tuple[str, dict, str]]:
     """All journal entry projections as (entity_id, state, date) tuples.
 
@@ -30,14 +31,21 @@ async def journal_rows(
     the general ledger buckets one scan into opening (before date_from) and period
     ranges, so callers apply their own date filtering.
     """
-    rows = (
-        await session.execute(
-            select(Projection).where(
-                Projection.company_id == company_id,
-                Projection.entity_type == "journal_entry",
-            )
-        )
-    ).scalars().all()
+    query = select(Projection).where(
+        Projection.company_id == company_id,
+        Projection.entity_type == "journal_entry",
+    )
+    if entry_ids is not None:
+        ids = sorted(set(entry_ids))
+        if not ids:
+            return []
+        rows = []
+        for start in range(0, len(ids), 10_000):
+            rows.extend((await session.execute(
+                query.where(Projection.entity_id.in_(ids[start:start + 10_000]))
+            )).scalars().all())
+    else:
+        rows = (await session.execute(query)).scalars().all()
     out: list[tuple[str, dict, str]] = []
     for row in rows:
         out.extend(entry_rows(row.entity_id, row.state, include_void=include_void))

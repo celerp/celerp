@@ -121,3 +121,14 @@ async def test_endpoint_shows_nothing_when_the_books_cannot_answer(ui_client):
          patch("ui.api_client.get_doc_gl_impact", new=AsyncMock(side_effect=APIError(404, "gone"))):
         r = await ui_client.get("/docs/doc:inv-1/gl-impact")
     assert r.status_code == 200 and "GL Impact" not in r.text
+
+
+@pytest.mark.asyncio
+async def test_endpoint_displays_a_ledger_failure_instead_of_an_empty_section(ui_client):
+    ui_client.cookies.update(_authed())
+    with patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)), \
+         patch("ui.api_client.get_doc_gl_impact", new=AsyncMock(side_effect=APIError(503, "Unavailable"))):
+        response = await ui_client.get("/docs/doc:inv-1/gl-impact")
+    assert response.status_code == 200
+    assert t("documents.gl_impact") in response.text
+    assert "Unavailable" in response.text

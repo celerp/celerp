@@ -188,6 +188,12 @@ def test_choices_survive_a_language_switch():
 
 # ── Saving and resetting ──────────────────────────────────────────────────
 
+
+async def _versioned(client, headers):
+    response = await client.get("/companies/me/nav-overrides", headers=headers)
+    assert response.status_code == 200
+    return {**headers, "If-Match": response.headers["etag"]}
+
 @pytest.mark.asyncio
 async def test_the_choices_are_saved_in_company_settings_and_reset(client, session):
     from celerp.models.company import Company
@@ -196,7 +202,9 @@ async def test_the_choices_are_saved_in_company_settings_and_reset(client, sessi
     payload = {"hidden_entries": ["customers", "customers"], "hidden_groups": ["finance"],
                "entry_order": ["b", "a"], "group_order": ["x", "y"]}
 
-    saved = await client.patch("/companies/me/nav-overrides", json=payload, headers=h)
+    saved = await client.patch(
+        "/companies/me/nav-overrides", json=payload, headers=await _versioned(client, h)
+    )
 
     assert saved.status_code == 200, saved.text
     assert saved.json() == {"hidden_entries": ["customers"], "hidden_groups": ["finance"],
@@ -206,7 +214,9 @@ async def test_the_choices_are_saved_in_company_settings_and_reset(client, sessi
     await session.refresh(company)
     assert company.settings[KEY]["hidden_groups"] == ["finance"]
 
-    reset = await client.delete("/companies/me/nav-overrides", headers=h)
+    reset = await client.delete(
+        "/companies/me/nav-overrides", headers=await _versioned(client, h)
+    )
 
     assert reset.status_code == 200, reset.text
     assert (await client.get("/companies/me/nav-overrides", headers=h)).json() == {
@@ -219,9 +229,14 @@ async def test_the_choices_are_saved_in_company_settings_and_reset(client, sessi
 @pytest.mark.asyncio
 async def test_saving_no_choices_is_a_reset(client):
     h = {"Authorization": f"Bearer {await register_admin(client)}"}
-    await client.patch("/companies/me/nav-overrides", json={"hidden_entries": ["customers"]}, headers=h)
+    await client.patch(
+        "/companies/me/nav-overrides", json={"hidden_entries": ["customers"]},
+        headers=await _versioned(client, h),
+    )
 
-    r = await client.patch("/companies/me/nav-overrides", json={}, headers=h)
+    r = await client.patch(
+        "/companies/me/nav-overrides", json={}, headers=await _versioned(client, h)
+    )
 
     assert r.status_code == 200 and r.json()["hidden_entries"] == []
 
@@ -236,7 +251,10 @@ async def test_only_a_role_that_edits_permissions_can_change_the_menu(client, se
     for h in (other, viewer):
         assert (await client.patch("/companies/me/nav-overrides", json={"hidden_entries": ["x"]}, headers=h)).status_code == 403
         assert (await client.delete("/companies/me/nav-overrides", headers=h)).status_code == 403
-    assert (await client.patch("/companies/me/nav-overrides", json={"hidden_entries": ["x"]}, headers=admin)).status_code == 200
+    assert (await client.patch(
+        "/companies/me/nav-overrides", json={"hidden_entries": ["x"]},
+        headers=await _versioned(client, admin),
+    )).status_code == 200
 
 
 @pytest.mark.asyncio
@@ -247,6 +265,34 @@ async def test_the_api_refuses_malformed_choices(client):
                  {"entry_order": [f"e{n}" for n in range(201)]}):
         r = await client.patch("/companies/me/nav-overrides", json=body, headers=h)
         assert r.status_code == 422, (list(body), r.text)
+
+
+
+@pytest.mark.asyncio
+async def test_stale_menu_write_and_reset_do_not_discard_newer_changes(client):
+    h = {"Authorization": f"Bearer {await register_admin(client)}"}
+    old = await _versioned(client, h)
+    first = await client.patch(
+        "/companies/me/nav-overrides", json={"hidden_entries": ["customers"]},
+        headers=old,
+    )
+    assert first.status_code == 200
+    stale = await client.patch(
+        "/companies/me/nav-overrides", json={"hidden_entries": ["vendors"]},
+        headers=old,
+    )
+    stale_reset = await client.delete("/companies/me/nav-overrides", headers=old)
+    assert stale.status_code == stale_reset.status_code == 412
+    missing = await client.patch("/companies/me/nav-overrides", json={}, headers=h)
+    assert missing.status_code == 428
+    assert (await client.get("/companies/me/nav-overrides", headers=h)).json()["hidden_entries"] == ["customers"]
+    fresh = await _versioned(client, h)
+    changed = await client.patch(
+        "/companies/me/nav-overrides",
+        json={"hidden_entries": ["customers", "vendors"]}, headers=fresh,
+    )
+    assert changed.status_code == 200
+    assert changed.json()["hidden_entries"] == ["customers", "vendors"]
 
 
 # ── The settings page ─────────────────────────────────────────────────────
@@ -266,14 +312,14 @@ def _page_patches(saved: dict | None = None, role_settings: dict | None = None):
         return {"settings": {**(role_settings or {}), KEY: {k: v for k, v in store.items() if v}}}
 
     async def get(token):
-        return dict(store)
+        return {**store, "_etag": "mock"}
 
-    async def patch(token, body):
+    async def patch(token, body, *, etag):
         calls.append(body)
         store.update(body)
         return dict(store)
 
-    async def reset(token):
+    async def reset(token, *, etag):
         store.update({k: [] for k in store})
         return dict(store)
 

@@ -457,14 +457,23 @@ async def _starting_options(token: str, company_settings: dict, *, doc_id: str |
     leaves the list empty while other stock is free. At most _PICKER_START_PAGES pages are read."""
     drawable: list[dict] = []
     options: list[dict] = []
+    more = False
     for page in range(_PICKER_START_PAGES):
-        found = (await api.list_items(token, {"limit": _PICKER_START_LIMIT,
-                                              "offset": page * _PICKER_START_LIMIT}))["items"]
+        result = await api.list_items(token, {
+            "limit": _PICKER_START_LIMIT,
+            "offset": page * _PICKER_START_LIMIT,
+        })
+        found = result["items"]
         drawable += _drawable_lots(found, doc_id, line_id, source_memo_id)
         options = _consolidate_sales_lots(drawable, company_settings)
-        if len(options) >= _PICKER_START_LIMIT or len(found) < _PICKER_START_LIMIT:
+        more = (
+            len(found) == _PICKER_START_LIMIT
+            and (result.get("total") is None
+                 or result["total"] > (page + 1) * _PICKER_START_LIMIT)
+        )
+        if len(options) >= _PICKER_START_LIMIT or not more:
             break
-    return options[:_PICKER_START_LIMIT]
+    return options[:_PICKER_START_LIMIT], more
 
 
 def _enrich_doc_files(doc: dict) -> list[dict]:
@@ -2040,8 +2049,12 @@ def setup_routes(app):
                             seen.add(key)
                             items.append(item)
                     return _J([extract(i) for i in items])
-                items = await _starting_options(token, ctx["settings"], doc_id=ctx["doc_id"],
-                                                line_id=ctx["line_id"], source_memo_id=ctx["source_memo_id"])
+                items, more = await _starting_options(
+                    token, ctx["settings"], doc_id=ctx["doc_id"],
+                    line_id=ctx["line_id"], source_memo_id=ctx["source_memo_id"],
+                )
+                if not items and more:
+                    return _J({"error": t("inventory.scope_all_items")}, status_code=409)
                 return _J([extract(i) for i in items])
             lot = await _exact_physical_lot(token, q, doc_type=ctx["doc_type"], doc_id=ctx["doc_id"],
                                             line_id=ctx["line_id"], source_memo_id=ctx["source_memo_id"])
@@ -4560,10 +4573,14 @@ celerpUpdateBulkAlloc();
             if not role_has_permission(company.get("settings") or {}, _get_role(request), "view_financial_reports"):
                 return _R("", status_code=403)
             data = await api.get_doc_gl_impact(token, entity_id)
-        except APIError:
-            # The books are not available to this document (accounting off, or the
-            # document is gone): show nothing rather than a section that errors.
-            return Div(id=_gl_impact_dom_id(entity_id))
+        except APIError as e:
+            if e.status == 404:
+                return Div(id=_gl_impact_dom_id(entity_id))
+            return Div(
+                H3(t("documents.gl_impact"), cls="section-title"),
+                P(error_message(e), cls="flash flash--error"),
+                id=_gl_impact_dom_id(entity_id), cls="doc-section",
+            )
         return _doc_gl_impact_section(data, entity_id, data.get("currency"))
 
     @app.get("/docs/{entity_id}/history")
