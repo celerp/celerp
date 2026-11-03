@@ -12,6 +12,8 @@ backlog older than the agreement's catch-up window. Sending is requested after c
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import logging
 import uuid
 from contextlib import asynccontextmanager
@@ -493,13 +495,17 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
             await session.commit()
             return send
         message = await doc_email(session, company_id, entry["doc_id"], doc.state, to, actor)
+        payload_digest = hashlib.sha256(json.dumps(message, sort_keys=True).encode()).hexdigest()
+        if send.get("state") == "sending" and send.get("payload_digest") != payload_digest:
+            raise HTTPException(status_code=409, detail="The unconfirmed email changed; verify the prior delivery first")
         # A confirmed failed attempt may use a new identity; an uncertain attempt
         # must reuse its original identity to preserve transport deduplication.
         operation_id = (send.get("operation_id") if send.get("state") == "sending"
                         else str(uuid.uuid5(uuid.NAMESPACE_URL,
                                            f"subscription-email:{company_id}:{entry['doc_id']}:{n}")))
         periods[str(k)]["send"] = {"state": "sending", "n": n, "at": now_stamp(),
-                                  "operation_id": operation_id, "deduplicated": relay_idempotent}
+                                  "operation_id": operation_id, "deduplicated": relay_idempotent,
+                                  "payload_digest": payload_digest}
         await write_agreement(session, company_id, template_id, {"periods": periods}, actor.id)
         await session.commit()
     try:
@@ -519,7 +525,7 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
             return sending
         outcome = "sent" if ok else ("sending" if detail.startswith("unconfirmed: ") else "failed")
         send = {"state": outcome, "n": n, "at": now_stamp(), "operation_id": operation_id,
-                "deduplicated": relay_idempotent,
+                "deduplicated": relay_idempotent, "payload_digest": payload_digest,
                 **({} if ok else {"error": detail})}
         periods[str(k)]["send"] = send
         await write_agreement(session, company_id, template_id, {"periods": periods}, actor.id)

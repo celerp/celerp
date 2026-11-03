@@ -392,3 +392,37 @@ async def test_inactive_company_is_not_billed(client, session, monkeypatch):
     await session.commit()
     assert result.done == 0
     assert await billed_docs(session, eid) == []
+
+
+async def test_uncertain_email_cannot_replay_with_changed_payload(client, session, monkeypatch, mail):
+    import asyncio
+    from celerp.services import email
+    from celerp_docs import routes as docs_routes
+
+    monkeypatch.setattr(email, "relay_send_is_idempotent", lambda: True)
+    freeze_day(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    eid = await _auto(client, hd, start="2026-07-01", send=True,
+                      contact_id=await contact(client, hd, "member@example.test"))
+
+    async def uncertain(*args, **kwargs):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(email, "send_email", uncertain)
+    with pytest.raises(asyncio.CancelledError):
+        await tick(session, cid, "2026-07-01")
+    row = next(r for r in (await summary(client, hd))["rows"] if r["kind"] == "send_unconfirmed")
+    assert row["retry_url"]
+
+    original = docs_routes.doc_email
+
+    async def changed_message(*args, **kwargs):
+        message = await original(*args, **kwargs)
+        return {**message, "subject": message["subject"] + " changed"}
+
+    monkeypatch.setattr(docs_routes, "doc_email", changed_message)
+    monkeypatch.setattr(email, "send_email", mail)
+    refused = await client.post(row["retry_url"], headers=hd)
+    assert refused.status_code == 409
+    assert mail.sent == []
