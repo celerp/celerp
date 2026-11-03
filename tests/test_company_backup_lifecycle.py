@@ -110,7 +110,16 @@ async def test_restored_legacy_subscription_is_upgraded_before_activation(real_c
     from celerp.events.engine import emit_event
     from celerp.models.projections import Projection
 
+    from celerp.modules.registry import enable_for_company, hold_module_state
+    from celerp.services.company_lock import locked_company
+
     uid, cid, tok = await _setup(real_engine)
+    async with AsyncSession(real_engine) as session:
+        await hold_module_state(session)
+        company = await locked_company(session, cid)
+        company.settings, _ = enable_for_company(company.settings, "celerp-subscriptions")
+        await session.commit()
+
     eid = f"doc:SUBT-{uuid.uuid4().hex[:8]}"
     async with AsyncSession(real_engine) as session:
         await emit_event(
