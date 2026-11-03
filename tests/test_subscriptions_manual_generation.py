@@ -63,8 +63,9 @@ def test_the_subscriptions_module_bills_on_its_own_only_through_the_dispatcher()
     manifest = mod.PLUGIN_MANIFEST
     # Unattended billing runs only as the dispatcher's periodic operation, which bills an
     # agreement only in an automatic mode someone allowed to has turned on.
-    assert set(manifest["slots"]) == {"nav", "search_provider", "periodic_operation", "on_modules_ready"}
+    assert set(manifest["slots"]) == {"nav", "search_provider", "periodic_operation", "on_modules_ready", "on_company_restored"}
     assert manifest["slots"]["periodic_operation"]["handler"] == "celerp_subscriptions.billing:run_due"
+    assert manifest["slots"]["on_company_restored"][0]["handler"] == "celerp_subscriptions.migration:migrate_restored_company"
     assert "billed once" in manifest["description"].lower()
 
 

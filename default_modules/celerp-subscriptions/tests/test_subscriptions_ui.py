@@ -149,6 +149,16 @@ class TestSubscriptionActions:
         sub = (await owner_ui.api.get(f"/docs/{eid}")).json()
         assert [e["state"] for e in sub["periods"].values()].count("billed") == 1
 
+    async def test_period_skip_and_unskip_through_ui_persist(self, owner_ui):
+        eid = await _active_subscription(owner_ui)
+        r = await owner_ui.post(f"/subscriptions/{eid}/periods/0/skip", data={"reason": "Closed"})
+        assert r.status_code == 204, r.text
+        assert (await owner_ui.api.get(f"/docs/{eid}")).json()["periods"]["0"]["state"] == "skipped"
+
+        r = await owner_ui.post(f"/subscriptions/{eid}/periods/0/unskip")
+        assert r.status_code == 204, r.text
+        assert (await owner_ui.api.get(f"/docs/{eid}")).json()["periods"]["0"]["state"] == "released"
+
     async def test_an_unknown_action_is_not_found_and_calls_nothing(self, owner_ui):
         eid = await _active_subscription(owner_ui)
         with patch("ui.api_client._client", side_effect=AssertionError("API called")):
@@ -290,6 +300,27 @@ class TestBillingPages:
             r = await owner_ui.post(f"/subscriptions/{eid}/history/doc:gone/set-aside")
         assert r.headers["HX-Redirect"] == f"/subscriptions/{eid}#history-review"
         assert action.await_args.args[2:] == ("doc:gone", "set-aside", None)
+
+
+async def test_history_set_aside_through_ui_persists(owner_ui, session):
+    from uuid import UUID, uuid4
+    from celerp.events.engine import emit_event
+    from agreement_kit import company_id
+
+    eid = await _active_subscription(owner_ui)
+    cid = UUID(await company_id(owner_ui.api, {}))
+    await emit_event(
+        session, company_id=cid, entity_id=eid, entity_type="doc", event_type="doc.updated",
+        data={"fields_changed": {"history_review": {
+            "new": [{"doc_id": "doc:missing", "candidates": []}]}}},
+        actor_id=None, location_id=None, source="test", idempotency_key=str(uuid4()),
+    )
+    await session.commit()
+
+    r = await owner_ui.post(f"/subscriptions/{eid}/history/doc:missing/set-aside")
+    assert r.status_code == 204, r.text
+    state = (await owner_ui.api.get(f"/docs/{eid}")).json()
+    assert any(row["doc_id"] == "doc:missing" for row in state["history_set_aside"])
 
 
 @pytest.mark.parametrize("method,path,api_call,form", [

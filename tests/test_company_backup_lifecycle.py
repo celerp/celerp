@@ -104,6 +104,38 @@ async def test_restoration_runs_module_reconciliation_before_activation(real_cli
     assert seen == [response.json()["company_id"]]
 
 
+async def test_restored_legacy_subscription_is_upgraded_before_activation(real_client, real_engine):
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import AsyncSession
+    from celerp.events.engine import emit_event
+    from celerp.models.projections import Projection
+
+    uid, cid, tok = await _setup(real_engine)
+    eid = f"doc:SUBT-{uuid.uuid4().hex[:8]}"
+    async with AsyncSession(real_engine) as session:
+        await emit_event(
+            session, company_id=cid, entity_id=eid, entity_type="doc", event_type="doc.created",
+            data={"doc_type": "subscription_invoice", "status": "active", "ref_id": eid[4:],
+                  "frequency": "monthly", "start_date": "2026-01-01",
+                  "next_run_date": "2026-04-01", "generated_doc_ids": [],
+                  "contact_id": "contact:test-001",
+                  "line_items": [{"description": "Service", "quantity": 1, "unit_price": 100}],
+                  "currency": "USD"},
+            actor_id=uid, location_id=None, source="test", idempotency_key=str(uuid.uuid4()),
+        )
+        await session.commit()
+
+    response = await restore(real_client, tok, await download(real_client, tok))
+    assert response.status_code == 201, response.text
+    new_id = uuid.UUID(response.json()["company_id"])
+    async with AsyncSession(real_engine) as session:
+        rows = (await session.execute(select(Projection).where(Projection.company_id == new_id))).scalars().all()
+    states = [row.state for row in rows if row.state.get("doc_type") == "subscription_invoice"]
+    assert len(states) == 1
+    assert states[0]["anchor_date"] == "2026-04-01"
+    assert "next_run_date" not in states[0]
+
+
 async def test_restoration_refuses_failed_module_reconciliation(real_client, real_engine, monkeypatch):
     from celerp.modules import slots
 

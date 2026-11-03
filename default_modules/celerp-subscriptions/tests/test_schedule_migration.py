@@ -324,3 +324,17 @@ async def test_restored_company_hook_reconciles_legacy_schedule_before_commit(se
     state = await _state(session, auth["company_id"], tid)
     assert state["anchor_date"] == "2026-04-01"
     assert "next_run_date" not in state
+
+    from celerp.migrations._data_reconcile import get_meta
+    from celerp_subscriptions.migration import _MARKER, migrate_company
+
+    marker = _MARKER.format(auth["company_id"])
+    conn = await session.connection()
+    assert await conn.run_sync(lambda c: get_meta(c, marker)) is None
+    before = await _events(session, auth["company_id"])
+    result = await migrate_company(session, auth["company_id"])
+    await session.commit()
+    assert result["marked"] and result["migrated"] == 0
+    assert await _events(session, auth["company_id"]) == before
+    conn = await session.connection()
+    assert await conn.run_sync(lambda c: get_meta(c, marker)) == "done"

@@ -217,7 +217,7 @@ async def migrate_company(session: AsyncSession, company_id, *, force: bool = Fa
                           action_url="/subscriptions?direction=sales",
                           i18n={"title": f"{_NOTICE}_title", "body": f"{_NOTICE}_body"})
     result["marked"] = not result["failed"] and not problems
-    if result["marked"]:
+    if result["marked"] and not force:
         await conn.run_sync(lambda c: set_meta(c, marker, "done"))
     return result
 

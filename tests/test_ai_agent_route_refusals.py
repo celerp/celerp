@@ -339,6 +339,9 @@ class _Walk:
                     return False
                 self.carried.update((c, self._where(fn, node)) for c in classes)
                 return True
+            if callee is i18n.t and node.args:
+                key = node.args[0]
+                return isinstance(key, ast.Constant) and isinstance(key.value, str) and key.value in _EN
             if (index := _key_index(callee)) is not None:
                 key = node.args[index] if len(node.args) > index else None
                 return not isinstance(key, ast.Constant) or key.value in _EN
@@ -424,6 +427,14 @@ def test_every_refusal_an_agent_route_can_answer_with_is_keyed_where_it_is_raise
     listed = {line for line in DEBT_FILE.read_text(encoding="utf-8").splitlines() if line and not line.startswith("#")}
     problems = _debt_problems(_Walk(app).findings(), listed)
     assert not problems, "\n".join(problems)
+
+
+def test_translated_catalog_text_keeps_its_key_in_error_responses():
+    from celerp.error_body import as_refusal
+
+    detail = as_refusal(i18n.t("subscriptions.err_not_found"))
+    assert detail["message_key"] == "subscriptions.err_not_found"
+    assert "message" in detail
 
 
 def test_the_unkeyed_list_only_shrinks():
