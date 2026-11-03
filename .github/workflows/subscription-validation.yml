@@ -117,6 +117,49 @@ jobs:
           if remaining:
               raise SystemExit("Conflicts remain: " + remaining)
           PY
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          rank = Path("tests/lock_rank.py")
+          source = rank.read_text()
+          target = '"adv:connector-runtime": 20, "adv:connector-owner": 21, "adv:sync-run": 22, "adv:outbound": 23,'
+          assert source.count(target) == 1
+          rank.write_text(source.replace(target, target + ' "adv:periodic": 24,'))
+          catalog = Path("tests/test_role_permissions.py")
+          source = catalog.read_text()
+          target = '    "manage_module_settings": ("manager", True, "viewer"),'
+          assert source.count(target) == 1
+          source = source.replace(target, target + '\n'
+              '    "automate_billing": ("manager", True, "viewer"),\n'
+              '    "automate_sending": ("manager", True, "viewer"),\n'
+              '    "automate_collection": ("admin", True, "viewer"),')
+          catalog.write_text(source)
+          names = ("automate_billing", "automate_sending", "automate_collection")
+          translations = {
+              "en": ("Enable automatic billing", "Enable automatic sending", "Enable automatic collection"),
+              "am": ("ራስ-ሰር የክፍያ ሂሳብ ማውጣትን አንቃ", "ራስ-ሰር መላክን አንቃ", "ራስ-ሰር ክፍያ መሰብሰብን አንቃ"),
+              "ar": ("تفعيل الفوترة التلقائية", "تفعيل الإرسال التلقائي", "تفعيل التحصيل التلقائي"),
+              "de": ("Automatische Abrechnung aktivieren", "Automatischen Versand aktivieren", "Automatischen Zahlungseinzug aktivieren"),
+              "es": ("Activar la facturación automática", "Activar el envío automático", "Activar el cobro automático"),
+              "fr": ("Activer la facturation automatique", "Activer l'envoi automatique", "Activer le recouvrement automatique"),
+              "id": ("Aktifkan penagihan otomatis", "Aktifkan pengiriman otomatis", "Aktifkan penagihan pembayaran otomatis"),
+              "it": ("Attiva la fatturazione automatica", "Attiva l'invio automatico", "Attiva la riscossione automatica"),
+              "ja": ("自動請求を有効にする", "自動送信を有効にする", "自動回収を有効にする"),
+              "pt": ("Ativar faturamento automático", "Ativar envio automático", "Ativar cobrança automática"),
+              "th": ("เปิดใช้งานการออกใบแจ้งหนี้อัตโนมัติ", "เปิดใช้งานการส่งอีเมลอัตโนมัติ", "เปิดใช้งานการเรียกเก็บเงินอัตโนมัติ"),
+              "vi": ("Bật lập hóa đơn tự động", "Bật gửi tự động", "Bật thu tiền tự động"),
+          }
+          for lang, labels in translations.items():
+              path = Path(f"ui/locales/{lang}.json")
+              data = json.loads(path.read_text())
+              for name, label in zip(names, labels):
+                  key = f"perm.name.{name}"
+                  assert key not in data
+                  data[key] = label
+              path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+          PY
+          git add tests/lock_rank.py tests/test_role_permissions.py ui/locales/*.json
           git rm -q -f .github/workflows/subscription-validation.yml
           python scripts/gen_first_party_lock.py
           git add default_modules/first_party.lock.json

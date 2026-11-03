@@ -26,7 +26,7 @@ async def test_generate_due_refuses_before_bill_date(client, session, monkeypatc
     hd = await register(client)
     eid = await agreement(client, hd, start="2026-04-01")
     r = await generate_due(client, hd, eid)
-    assert r.status_code == 409 and "2026-04-01" in r.json()["detail"]
+    assert r.status_code == 409 and "2026-04-01" in str(r.json()["detail"])
     assert await billed_docs(session, eid) == []
     assert await next_bill_date(client, hd, eid) == "2026-04-01"
 
@@ -112,7 +112,7 @@ async def test_generate_refuses_draft_paused_cancelled_ended(client, session, mo
         assert (await generate_due(client, hd, ended)).status_code == 200
     for eid, word in ((draft, "draft"), (paused, "paused"), (cancelled, "cancelled"), (ended, "ended")):
         r = await generate_due(client, hd, eid)
-        assert r.status_code == 409 and word in r.json()["detail"].lower(), (word, r.text)
+        assert r.status_code == 409 and word in str(r.json()["detail"]).lower(), (word, r.text)
     for eid in (draft, paused, cancelled):
         assert await billed_docs(session, eid) == []
 
@@ -178,7 +178,7 @@ async def test_skip_period_recorded_and_unskip_restores(client, session, monkeyp
     billed = await generate_due(client, hd, eid)
     assert billed.json()["period_index"] == 0
     refused = await _skip(client, hd, eid, 0)
-    assert refused.status_code == 409 and billed.json()["ref_id"] in refused.json()["detail"]
+    assert refused.status_code == 409 and billed.json()["ref_id"] in str(refused.json()["detail"])
 
 
 async def test_release_period_only_after_void_rebills_once(client, session, monkeypatch):
@@ -187,7 +187,7 @@ async def test_release_period_only_after_void_rebills_once(client, session, monk
     eid = await agreement(client, hd, start="2026-03-01")
     first = (await generate_due(client, hd, eid)).json()
     reopen = await client.post(f"/subscriptions/{eid}/periods/0/reopen", headers=hd)
-    assert reopen.status_code == 409 and first["ref_id"] in reopen.json()["detail"]
+    assert reopen.status_code == 409 and first["ref_id"] in str(reopen.json()["detail"])
     assert (await client.post(f"/docs/{first['doc_id']}/void", headers=hd, json={"reason": "Wrong amount"})).status_code == 200
     assert (await client.post(f"/subscriptions/{eid}/periods/0/reopen", headers=hd)).status_code == 200
     again = (await generate_due(client, hd, eid)).json()
@@ -351,7 +351,7 @@ async def test_anchor_editable_only_before_first_claim(client, session, monkeypa
     assert await next_bill_date(client, hd, eid) == "2026-03-10"
     await generate_due(client, hd, eid)
     r = await schedule(client, hd, eid, anchor_date="2026-03-20")
-    assert r.status_code == 409 and "skip" in r.json()["detail"].lower()
+    assert r.status_code == 409 and "skip" in str(r.json()["detail"]).lower()
     assert await next_bill_date(client, hd, eid) == "2026-04-10"
 
 

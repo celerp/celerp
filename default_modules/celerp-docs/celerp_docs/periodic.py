@@ -14,7 +14,6 @@ passes: each operation finds its work in its own records.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 from dataclasses import dataclass, field
 from datetime import date
@@ -44,18 +43,13 @@ class OperationReport:
     after_commit: list[Callable[..., Awaitable[None]]] = field(default_factory=list)
 
 
-def _lock_key(operation: str, company_id) -> int:
-    return int.from_bytes(hashlib.sha256(f"periodic:{operation}:{company_id}".encode()).digest()[:8],
-                          "big", signed=True)
-
-
 async def _try_lock(session: AsyncSession, operation: str, company_id) -> bool:
     """Hold the operation for this company until the transaction ends; False when another
     pass holds it. SQLite writes one transaction at a time already."""
     if session.get_bind().dialect.name != "postgresql":
         return True
-    return bool(await session.scalar(text("SELECT pg_try_advisory_xact_lock(:k)"),
-                                     {"k": _lock_key(operation, company_id)}))
+    return bool(await session.scalar(text("SELECT pg_try_advisory_xact_lock(hashtextextended(:k, 0))"),
+                                     {"k": f"periodic:{operation}:{company_id}"}))
 
 
 async def _run_operation(factory, company_id, entry: dict, today: date | None) -> OperationReport | None:
