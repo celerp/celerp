@@ -364,13 +364,21 @@ async def test_relay_retry_keeps_original_transport_identity(client, session, mo
     row = next(r for r in (await summary(client, hd))["rows"] if r["kind"] == "send_unconfirmed")
     assert row["retry_url"]
 
+    async def rejected(*args, **kw):
+        keys.append(kw["operation_id"])
+        return False, "This operation id belongs to a different email"
+
+    monkeypatch.setattr(email, "send_email", rejected)
+    assert (await client.post(row["retry_url"], headers=hd)).status_code == 200
+    assert (await template(client, hd, eid))["periods"]["0"]["send"]["state"] == "sending"
+
     async def verified(*args, **kw):
         keys.append(kw["operation_id"])
         return await mail(*args, **kw)
 
     monkeypatch.setattr(email, "send_email", verified)
     assert (await client.post(row["retry_url"], headers=hd)).status_code == 200
-    assert keys[0] == keys[1] and len(set(keys)) == 1
+    assert len(keys) == 3 and len(set(keys)) == 1
 
 
 async def test_inactive_company_is_not_billed(client, session, monkeypatch):

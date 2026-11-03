@@ -524,7 +524,8 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
                 or sending.get("n") != n or sending.get("state") != "sending"
                 or sending.get("operation_id") != operation_id):
             return sending
-        outcome = "sent" if ok else ("sending" if detail.startswith("unconfirmed: ") else "failed")
+        previously_uncertain = send.get("state") == "sending"
+        outcome = "sent" if ok else ("sending" if previously_uncertain or detail.startswith("unconfirmed: ") else "failed")
         send = {"state": outcome, "n": n, "at": now_stamp(), "operation_id": operation_id,
                 "deduplicated": relay_idempotent, "payload_digest": payload_digest,
                 **({} if ok else {"error": detail})}
