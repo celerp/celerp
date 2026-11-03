@@ -173,16 +173,41 @@ jobs:
           test ! -e .github/workflows/subscription-validation.yml
       - name: Focused and integration tests
         run: |
-          timeout 660 pytest -q --tb=short --no-cov -n 2 -m "not process and not browser and not integration" \
+          cp tests/.test_durations /tmp/subscription-original-durations.json
+          timeout 660 pytest -q --tb=short --no-cov -n 2 --store-durations --durations-path tests/.test_durations \
+            -m "not process and not browser and not integration" \
             default_modules/celerp-subscriptions/tests/ \
             tests/test_one_unit.py tests/test_role_permissions.py tests/test_periodic_dispatcher.py \
             tests/test_company_today_api.py tests/test_cross_workstream_dedup_atomicity.py \
             tests/test_subscriptions_manual_generation.py tests/test_default_sell_qty.py \
-            tests/test_issued_document_tax_side.py tests/test_email_service.py
+            tests/test_issued_document_tax_side.py tests/test_email_service.py \
+            tests/test_golden_no_feature_entries.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("tests/.test_durations")
+          original = json.loads(Path("/tmp/subscription-original-durations.json").read_text())
+          measured = json.loads(path.read_text())
+          existing_files = {key.split("::")[0] for key in original}
+          additions = {key: value for key, value in measured.items()
+                       if key.split("::")[0] not in existing_files}
+          original.update(additions)
+          path.write_text(json.dumps(original, indent=4, sort_keys=True) + "\n")
+          print(f"Recorded {len(additions)} measured new-test durations")
+          PY
       - name: PostgreSQL race tests
         run: |
           PYTHONPATH=tests timeout 420 pytest -q --tb=short --no-cov -n 2 \
             default_modules/celerp-subscriptions/tests/test_billing_races_pg.py
+      - name: Verify shard durations and finalize source commit
+        run: |
+          pytest -q --tb=short --no-cov tests/test_ci_shard_split.py
+          git add tests/.test_durations
+          git -c user.name="Noah Severs" -c user.email="118095044+ngsevers@users.noreply.github.com" \
+            commit --amend --no-edit
+          git diff HEAD^ --check
+          test ! -e .github/workflows/subscription-validation.yml
       - name: Publish validated integration branch
         run: |
           set -euo pipefail

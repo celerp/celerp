@@ -83,7 +83,7 @@ def test_sub_create_and_detail(page, ui_server, api):
     assert "/new" not in page.url, f"Expected a subscription detail page, got {page.url}"
 
     # Draft detail must expose the inline-editable subscription controls.
-    assert page.locator("select[hx-patch$='/field/frequency']").count() > 0, \
+    assert page.locator("select[hx-patch$='/schedule/frequency']").count() > 0, \
         "Frequency control missing on subscription detail"
-    assert page.locator("input[hx-patch$='/field/start_date']").count() > 0, \
-        "Start-date control missing on subscription detail"
+    assert page.locator("input[hx-patch$='/schedule/anchor_date']").count() > 0, \
+        "First-bill-date control missing on subscription detail"

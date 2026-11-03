@@ -439,6 +439,9 @@ async def test_period_list_first_use_shows_first_bill_date():
         ui.cookies.update({"celerp_token": make_test_token(role="owner")})
         with (
             patch("ui.api_client.get_subscription", new=AsyncMock(return_value=doc)),
+            patch("ui.api_client.get_subscription_periods",
+                  new=AsyncMock(return_value={"next_bill_date": "2026-06-01",
+                                              "oldest_open_index": 0, "rows": []})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "ACME", "currency": "USD", "timezone": "UTC"})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": []})),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
