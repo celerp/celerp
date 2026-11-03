@@ -1066,6 +1066,19 @@ def _je_memo(memo: str, ref: dict | None) -> str:
 _DOC_SOURCE_KEYS = ("doc_id", "cn_id", "dn_id", "from_doc_id")
 
 
+def _linked_doc_events(doc_id: str, dialect_name: str):
+    """Match all actual document-reference keys using the native indexed PG containment op."""
+    from celerp.models.ledger import LedgerEntry
+
+    if dialect_name == "postgresql":
+        from sqlalchemy import cast
+        from sqlalchemy.dialects.postgresql import JSONB
+
+        metadata = cast(LedgerEntry.metadata_, JSONB)
+        return or_(*(metadata.contains({key: doc_id}) for key in _DOC_SOURCE_KEYS))
+    return or_(*(LedgerEntry.metadata_[key].as_string() == doc_id for key in _DOC_SOURCE_KEYS))
+
+
 async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: list[str]) -> dict[str, dict]:
     """Source-doc display info per journal entry: {je_id: {"doc_id", "doc_ref", "fx"}}.
 
@@ -1632,9 +1645,7 @@ async def journal_by_doc(
     # (_line_party): a line's own contact wins over the document's.
     from celerp.models.ledger import LedgerEntry
 
-    linked = or_(*(
-        LedgerEntry.metadata_[key].as_string() == doc_id for key in _DOC_SOURCE_KEYS
-    ))
+    linked = _linked_doc_events(doc_id, session.get_bind().dialect.name)
     entry_ids = sorted(set((await session.execute(
         select(LedgerEntry.entity_id).where(
             LedgerEntry.company_id == company_id,
