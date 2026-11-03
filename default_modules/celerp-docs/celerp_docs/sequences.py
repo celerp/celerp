@@ -221,6 +221,9 @@ def update_sequence(company: Company, doc_type: str, prefix: str | None = None,
         else None
     )
     seq = dict(sequences.get(doc_type) or inherited or {})
+    if inherited is not None:
+        # A split counter must not mint the same references as the shared one.
+        seq["prefix"] = _PREFIX_BY_DOC_TYPE[doc_type]
 
     if prefix is not None:
         seq["prefix"] = prefix
@@ -233,6 +236,19 @@ def update_sequence(company: Company, doc_type: str, prefix: str | None = None,
         # The number belongs to today's period, so the reset for a later period cannot discard it.
         day = _numbering_day(settings, seq)
         seq.update(next=max(1, next_num), year=day.year, month=day.month, day=day.day)
+
+    if doc_type in _LIST_PREFIX_KEYS:
+        def namespace(kind: str, row: dict) -> str:
+            fmt = str(row.get("pattern") or DEFAULT_PATTERN)
+            name = str(row.get("prefix") or _PREFIX_BY_DOC_TYPE[kind])
+            return fmt.replace("{PREFIX}", name)
+
+        target = namespace(doc_type, seq)
+        for kind in sorted({"list", *_LIST_PREFIX_KEYS} - {doc_type}):
+            other = sequences.get(kind)
+            if other and target == namespace(kind, other):
+                raise ValueError(f"Numbering format overlaps the active {kind} counter. "
+                                 "Choose a distinct prefix or pattern.")
 
     sequences[doc_type] = seq
     settings["sequences"] = sequences

@@ -201,3 +201,40 @@ def test_legacy_sequence_preview_and_type_configuration_do_not_reset_numbering()
     assert list_sequence_key("quotation", c.settings) == "quotation"
     assert next_doc_ref(c, "quotation") == "QUO-0040"
     assert c.settings["sequences"]["list"]["next"] == 40
+
+
+
+def test_legacy_split_preserves_old_count_but_uses_new_type_prefix():
+    c = _company(sequences={"list": {
+        "prefix": "LEGACY", "pattern": "{PREFIX}-{####}", "next": 41,
+    }})
+    changed = update_sequence(c, "quotation")
+    assert changed["preview"] == "QUO-0041"
+    assert list_sequence_key("quotation", c.settings) == "quotation"
+    assert next_doc_ref(c, "quotation") == "QUO-0041"
+    assert next_doc_ref(c, "list") == "LEGACY-0041"
+
+
+def test_split_refuses_same_namespace_as_legacy_counter_without_mutation():
+    c = _company(sequences={"list": {
+        "prefix": "QUO", "pattern": "{PREFIX}-{####}", "next": 41,
+    }})
+    before = dict(c.settings["sequences"])
+    with pytest.raises(ValueError, match="overlaps"):
+        update_sequence(c, "quotation")
+    assert c.settings["sequences"] == before
+
+    with pytest.raises(ValueError, match="overlaps"):
+        update_sequence(c, "quotation", prefix="QUO")
+    assert c.settings["sequences"] == before
+    assert update_sequence(c, "quotation", prefix="QUOTE")["preview"] == "QUOTE-0041"
+
+
+def test_distinct_list_counters_cannot_be_configured_with_same_format():
+    c = _company(sequences={"quotation": {
+        "prefix": "SHARED", "pattern": "{PREFIX}-{####}", "next": 6,
+    }})
+    with pytest.raises(ValueError, match="overlaps"):
+        update_sequence(c, "transfer", prefix="SHARED", pattern="{PREFIX}-{####}")
+    assert "transfer" not in c.settings["sequences"]
+    assert update_sequence(c, "transfer", prefix="TRF", pattern="{PREFIX}-{####}")["prefix"] == "TRF"
