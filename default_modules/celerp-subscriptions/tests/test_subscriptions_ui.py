@@ -351,3 +351,58 @@ async def test_ui_posts_the_original_period_with_a_request_key(ui_client):
     action.assert_awaited_once_with(
         ui_client.cookies.get("celerp_token"), "sub-001", "generate-due",
         {"request_key": "user-click", "period_index": 0})
+
+
+@pytest.mark.asyncio
+async def test_subscription_read_errors_are_not_shown_as_empty(ui_client):
+    from ui.api_client import APIError
+
+    ui_client.cookies.update(_authed())
+    cases = [
+        ("/subscriptions", "ui.api_client.list_subscriptions"),
+        ("/subscriptions/search", "ui.api_client.list_subscriptions"),
+        ("/subscriptions/catch-up", "ui.api_client.subscriptions_catch_up"),
+        ("/subscriptions/summary", "ui.api_client.subscriptions_summary"),
+    ]
+    for path, method in cases:
+        with patch(method, new=AsyncMock(side_effect=APIError(503, "Service unavailable"))):
+            response = await ui_client.get(path)
+        assert response.status_code == 200, path
+        assert "Service unavailable" in response.text, path
+
+
+@pytest.mark.asyncio
+async def test_subscription_detail_requires_its_periods(ui_client):
+    from ui.api_client import APIError
+
+    ui_client.cookies.update(_authed())
+    with (
+        patch("ui.api_client.get_subscription", new=AsyncMock(return_value=_SUB_DOC)),
+        patch("ui.api_client.get_subscription_periods",
+              new=AsyncMock(side_effect=APIError(503, "Period service unavailable"))),
+        patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "ACME", "timezone": "UTC"})),
+        patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": []})),
+        patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
+        patch("ui.api_client.get_taxes", new=AsyncMock(return_value=[])),
+        patch("ui.api_client.list_doc_notes", new=AsyncMock(return_value=[])),
+    ):
+        response = await ui_client.get("/subscriptions/sub-001")
+    assert response.status_code == 200
+    assert "Period service unavailable" in response.text
+    assert "Generate due" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_optional_billing_summary_failure_is_visible_on_list(ui_client):
+    from ui.api_client import APIError
+
+    ui_client.cookies.update(_authed())
+    with (
+        patch("ui.api_client.list_subscriptions", new=AsyncMock(return_value={"items": [], "total": 0})),
+        patch("ui.api_client.subscriptions_catch_up", new=AsyncMock(return_value={"items": []})),
+        patch("ui.api_client.subscriptions_summary",
+              new=AsyncMock(side_effect=APIError(503, "Billing summary unavailable"))),
+    ):
+        response = await ui_client.get("/subscriptions")
+    assert response.status_code == 200
+    assert "Billing summary unavailable" in response.text

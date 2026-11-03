@@ -580,17 +580,22 @@ def _sends_to_check(counts: dict) -> int:
     return counts.get("send_failed", 0) + counts.get("send_unconfirmed", 0)
 
 
-async def _held_and_unread(token: str) -> tuple[list[dict], dict]:
-    """The catch-up preview and this user's unread summary; neither shown when unavailable."""
+async def _held_and_unread(token: str) -> tuple[list[dict], dict, list[str]]:
+    """Optional banners never silently report an unavailable service as empty."""
+    errors = []
     try:
         catch_up = (await api.subscriptions_catch_up(token)).get("items") or []
-    except APIError:
+    except APIError as exc:
+        _signed_out(exc)
         catch_up = []
+        errors.append(refusal_text(exc.data or exc.detail))
     try:
         summary = await api.subscriptions_summary(token)
-    except APIError:
+    except APIError as exc:
+        _signed_out(exc)
         summary = {}
-    return catch_up, summary
+        errors.append(refusal_text(exc.data or exc.detail))
+    return catch_up, summary, errors
 
 
 async def _all_agreements(token: str, direction: str | None = None, *, review: bool = False) -> list[dict]:
@@ -622,6 +627,16 @@ def _catch_up_items(form) -> list[dict]:
         if eid and k.lstrip("-").isdigit():
             items.append({"entity_id": eid, "period_index": int(k)})
     return items
+
+
+async def _load_error_page(request: Request, title: str, exc: APIError, nav: str):
+    """Show a failed read as an error page, never as an empty business record."""
+    _signed_out(exc)
+    return await base_shell(
+        page_header(title),
+        Div(P(refusal_text(exc.data or exc.detail), cls="text-danger"), cls="settings-card"),
+        title=title, request=request, nav_active=nav,
+    )
 
 
 def setup_routes(app) -> None:
@@ -666,9 +681,7 @@ def setup_routes(app) -> None:
             items = (await api.subscriptions_catch_up(token)).get("items") or []
             subs = await _agreements(token)
         except APIError as e:
-            _signed_out(e)
-            items, subs = [], {}
-            logger.warning("Catch-up preview unavailable: %s", e.detail)
+            return await _load_error_page(request, t("subscriptions.catchup_title"), e, "subscriptions_sales")
         title = t("subscriptions.catchup_title")
         return await base_shell(page_header(title), _catch_up_card(items, subs), title=title, request=request,
                                 nav_active="subscriptions_sales")
@@ -715,9 +728,7 @@ def setup_routes(app) -> None:
             summary = await api.subscriptions_summary(token, everything=all)
             subs = await _agreements(token)
         except APIError as e:
-            _signed_out(e)
-            summary, subs = {}, {}
-            logger.warning("Subscription summary unavailable: %s", e.detail)
+            return await _load_error_page(request, t("subscriptions.summary_title"), e, "subscriptions_sales")
         rows = summary.get("rows") or []
         counts = summary.get("counts") or {}
         title = t("subscriptions.summary_title")
@@ -762,8 +773,9 @@ def setup_routes(app) -> None:
 
         try:
             all_items = await _all_agreements(token, direction, review=review)
-        except APIError:
-            all_items = []
+        except APIError as exc:
+            return await _load_error_page(request, t(f"nav.subscriptions_{'sales' if direction == 'sales' else 'purchasing'}"),
+                                          exc, "subscriptions_sales" if direction == "sales" else "subscriptions_purchasing")
 
         filtered = all_items
         if status:
@@ -786,7 +798,7 @@ def setup_routes(app) -> None:
         extra = urlencode({k: v for k, v in {"direction": direction, "status": status, "q": q,
                                              "review": "1" if review else ""}.items() if v})
         can_import = await _check_permission(request, "import_export_data") is None
-        catch_up, summary = await _held_and_unread(token)
+        catch_up, summary, banner_errors = await _held_and_unread(token)
 
         content = Div(
             page_header(
@@ -802,6 +814,7 @@ def setup_routes(app) -> None:
                   data_import_hint=True) if can_import else "",
             ),
             *_list_banners(catch_up, summary),
+            *[Div(error, cls="flash flash--warning") for error in banner_errors],
             _review_banner(all_items, direction, review),
             Div(id="sub-due-panel", data_esc_clear="1"),
             _PANEL_ESC_JS,
@@ -823,8 +836,9 @@ def setup_routes(app) -> None:
         q = request.query_params.get("q", "")
         try:
             items = await _all_agreements(token, direction, review=review)
-        except APIError:
-            items = []
+        except APIError as exc:
+            _signed_out(exc)
+            return Div(refusal_text(exc.data or exc.detail), id="sub-table", cls="flash flash--warning")
         if status:
             items = [i for i in items if i.get("status") == status]
         else:
@@ -866,8 +880,10 @@ def setup_routes(app) -> None:
 
         try:
             doc = await api.get_subscription(token, entity_id)
-        except APIError:
-            return RedirectResponse("/subscriptions", status_code=302)
+        except APIError as exc:
+            if exc.status == 404:
+                return RedirectResponse("/subscriptions", status_code=302)
+            return await _load_error_page(request, t("nav.subscriptions_sales"), exc, "subscriptions_sales")
 
         doc_type = doc.get("doc_type", "subscription_invoice")
         direction = "sales" if doc_type == "subscription_invoice" else "purchasing"
@@ -916,11 +932,10 @@ def setup_routes(app) -> None:
         except Exception:
             pass
 
-        schedule: dict = {}
         try:
             schedule = await api.get_subscription_periods(token, entity_id)
-        except Exception:
-            pass
+        except APIError as exc:
+            return await _load_error_page(request, t("nav.subscriptions_sales"), exc, "subscriptions_sales")
 
         status = doc.get("status", "draft")
         ref = doc.get("ref_id") or doc.get("doc_number") or entity_id.split(":")[-1]
