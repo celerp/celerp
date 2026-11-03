@@ -43,4 +43,8 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     with op.get_context().autocommit_block():
-        op.drop_index(_NAME, table_name="ledger", postgresql_concurrently=True)
+        present = op.get_bind().execute(sa.text(
+            "SELECT to_regclass(:name)"
+        ), {"name": _NAME}).scalar()
+        if present is not None:
+            op.drop_index(_NAME, table_name="ledger", postgresql_concurrently=True)
