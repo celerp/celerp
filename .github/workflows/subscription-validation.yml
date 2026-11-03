@@ -1,0 +1,67 @@
+name: Subscription Validation
+on:
+  push:
+    branches:
+      - validation/subscription-periods-414
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: celerp
+          POSTGRES_PASSWORD: celerp
+          POSTGRES_DB: celerp_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      ALLOW_INSECURE_JWT: "true"
+      DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Compile changed modules
+        run: |
+          python -m compileall -q celerp/services/email.py default_modules/celerp-subscriptions ui/routes/subscriptions.py ui/api_client.py
+      - name: Install dependencies
+        run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split -c constraints.txt
+      - name: Focused tests
+        run: |
+          timeout 670 pytest -q --tb=short --no-cov -n 2 \
+            default_modules/celerp-subscriptions/tests/test_periods.py \
+            default_modules/celerp-subscriptions/tests/test_agreement_schedule.py \
+            default_modules/celerp-subscriptions/tests/test_schedule_migration.py \
+            default_modules/celerp-subscriptions/tests/test_unattended_billing.py \
+            default_modules/celerp-subscriptions/tests/test_subscriptions_ui.py \
+            tests/test_periodic_dispatcher.py \
+            -m "not process"
+      - name: PostgreSQL billing races
+        if: success()
+        run: |
+          timeout 390 pytest -q --tb=short --no-cov -n 2 \
+            default_modules/celerp-subscriptions/tests/test_billing_races_pg.py
+      - name: Main integration status
+        if: always()
+        run: |
+          git fetch -q --no-tags origin main
+          if git merge-tree --write-tree origin/main HEAD >/tmp/merge-status.txt 2>&1; then
+            echo "Clean merge with main"
+          else
+            echo "Main reconciliation requires conflict resolution:"
+            tail -50 /tmp/merge-status.txt
+          fi
