@@ -84,7 +84,7 @@ class CatchUpBody(BaseModel):
 class ScheduleBody(BaseModel):
     anchor_date: date | None = None
     frequency: str | None = None
-    custom_interval_days: int | None = Field(None, gt=0)
+    custom_interval_days: int | None = Field(None, gt=0, le=36500)
     billing_timing: str | None = None
     term_start: date | None = None
     term_end: date | None = None
@@ -462,6 +462,10 @@ def _build_router() -> APIRouter:
             raise HTTPException(status_code=422, detail=t("subscriptions.err_term_order"))
         if schedule is not None and any(not schedule.exists(k) for k in recorded):
             raise HTTPException(status_code=409, detail=t("subscriptions.err_term_cuts_claimed"))
+        if schedule is not None and claimed and state.get("anchor_date"):
+            previous = Schedule.from_state(state)
+            if any(schedule.service_end(k) != previous.service_end(k) for k in claimed):
+                raise HTTPException(status_code=409, detail=t("subscriptions.err_term_cuts_claimed"))
         if needed:
             stamp = {"by": str(user.id), "at": billing.now_stamp()}
             changes["consents"] = {**(state.get("consents") or {}), **{m: stamp for m in needed}}

@@ -140,6 +140,29 @@ async def test_term_end_never_bills_post_term_period(client, session, monkeypatc
     assert [d["period_index"] for d in await billed_docs(session, short)] == [0, 1]  # a period starting on term end does not exist
 
 
+async def test_term_end_keeps_issued_service_dates_unchanged(client, session, monkeypatch):
+    freeze_day(monkeypatch, "2026-02-15")
+    hd = await register(client)
+    issued = await agreement(client, hd, start="2026-01-01")
+    assert (await generate_due(client, hd, issued)).status_code == 200
+    assert (await generate_due(client, hd, issued)).status_code == 200
+    assert (await schedule(client, hd, issued, term_end="2026-02-15")).status_code == 409
+    assert (await schedule(client, hd, issued, term_end="2026-03-01")).status_code == 200
+    docs = await billed_docs(session, issued)
+    assert docs[1]["service_end"] == "2026-02-28"
+
+    partial = await agreement(client, hd, start="2026-01-01")
+    assert (await schedule(client, hd, partial, term_end="2026-02-15")).status_code == 200
+    assert (await generate_due(client, hd, partial)).status_code == 200
+    assert (await generate_due(client, hd, partial)).status_code == 200
+    docs = await billed_docs(session, partial)
+    assert docs[1]["service_end"] == "2026-02-14"
+    response = await client.get(f"/subscriptions/{partial}/periods", headers=hd)
+    assert response.status_code == 200, response.text
+    row = next(r for r in response.json()["rows"] if r["period_index"] == 1)
+    assert row["service_end"] == docs[1]["service_end"]
+
+
 async def test_cancel_at_period_end_stops_after_current_period(client, session, monkeypatch):
     freeze_day(monkeypatch, "2026-03-15")
     hd = await register(client)
