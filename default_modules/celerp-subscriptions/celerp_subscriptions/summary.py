@@ -19,7 +19,7 @@ from celerp_subscriptions import billing
 from ui.i18n import t
 
 ACK_SETTING = "subscription_summary_ack"
-KINDS = ("generated", "sent", "send_failed", "send_unconfirmed", "billing_lapsed", "sending_lapsed")
+KINDS = ("generated", "generation_failed", "sent", "send_failed", "send_unconfirmed", "billing_lapsed", "sending_lapsed")
 # A send recorded as going out with no outcome after it was cut off mid-send: it may or may not have arrived.
 _SEND_KINDS = {"sent": "sent", "failed": "send_failed", "sending": "send_unconfirmed"}
 _LAPSED = {"generation": "billing_lapsed", "sending": "sending_lapsed"}
@@ -64,6 +64,11 @@ async def report(session: AsyncSession, company_id, user_id, *, everything: bool
                                             if kind == "send_failed" or (
                                                 kind == "send_unconfirmed" and send.get("deduplicated"))
                                             else None)})
+        failure = state.get("billing_failure") or {}
+        if failure.get("at") and failure["at"] > since:
+            found.append({"entity_id": row.entity_id, "doc_id": row.entity_id,
+                          "period_index": failure.get("period_index"),
+                          "kind": "generation_failed", "at": failure["at"]})
         if state.get("status") != "active":
             continue
         for mode in billing.lapsed_modes(state):

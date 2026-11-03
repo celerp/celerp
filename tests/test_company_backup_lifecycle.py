@@ -85,6 +85,45 @@ async def test_copy_beside_same_name_gets_distinct_default_name(real_client, rea
     assert again.json()["destination_name"] == "Alpha Trading (Restored 2)"
 
 
+async def test_restoration_runs_module_reconciliation_before_activation(real_client, real_engine, monkeypatch):
+    from celerp.modules import slots
+
+    _user, _cid, token_ = await _setup(real_engine)
+    data = await download(real_client, token_)
+    original = slots.fire_lifecycle
+    seen = []
+
+    async def observe(slot, **kwargs):
+        if slot == "on_company_restored":
+            seen.append(str(kwargs["company_id"]))
+        return await original(slot, **kwargs)
+
+    monkeypatch.setattr(slots, "fire_lifecycle", observe)
+    response = await restore(real_client, token_, data)
+    assert response.status_code == 201, response.text
+    assert seen == [response.json()["company_id"]]
+
+
+async def test_restoration_refuses_failed_module_reconciliation(real_client, real_engine, monkeypatch):
+    from celerp.modules import slots
+
+    _user, _cid, token_ = await _setup(real_engine)
+    data = await download(real_client, token_)
+    before = await _companies(real_engine)
+    original = slots.fire_lifecycle
+
+    async def reject(slot, **kwargs):
+        if slot == "on_company_restored":
+            return [("synthetic", "failed")]
+        return await original(slot, **kwargs)
+
+    monkeypatch.setattr(slots, "fire_lifecycle", reject)
+    preview = await read(real_client, token_, data)
+    response = await real_client.post("/company-backups/restore", json=confirm(preview), headers=auth(token_))
+    assert response.status_code == 422, response.text
+    assert await _companies(real_engine) == before
+
+
 async def test_unambiguous_name_is_kept(real_client, real_engine):
     """A backup restored by someone without a company of that name keeps its name."""
     _, _, tok = await _setup(real_engine)

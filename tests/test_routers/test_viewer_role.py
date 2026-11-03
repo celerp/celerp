@@ -185,8 +185,9 @@ async def test_subscription_actions_follow_document_permissions(client, session)
     sub = r.json()["id"]
     for action in ("activate", "pause", "resume", "generate-due", "cancel"):
         url = f"/subscriptions/{sub}/{action}"
-        assert (await client.post(url, headers=_h(viewer))).status_code == 403, action
-        r = await client.post(url, headers=_h(operator))
+        body = {"request_key": "role-test-generate"} if action == "generate-due" else None
+        assert (await client.post(url, headers=_h(viewer), json=body)).status_code == 403, action
+        r = await client.post(url, headers=_h(operator), json=body)
         assert r.status_code == 200, (action, r.text)
 
 

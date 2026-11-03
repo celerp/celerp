@@ -86,3 +86,32 @@ def test_arrears_catchup_window_begins_at_bill_date():
 
     expired = _s(date(2026, 1, 1), term_end=date(2026, 2, 1))
     assert outside_window({"catchup_periods": 0}, expired, [0], date(2026, 7, 1))
+
+def test_invalid_calendar_intervals_and_terms_are_rejected():
+    with pytest.raises(ValueError):
+        _s(date(2026, 1, 1), "custom", custom_days=36501)
+    with pytest.raises(ValueError):
+        _s(date(2026, 1, 1), "custom", custom_days=10**12)
+    with pytest.raises(ValueError):
+        _s(date(9999, 12, 31), "monthly")
+    with pytest.raises(ValueError):
+        _s(date(2026, 1, 1), term_end=date(2025, 12, 31))
+
+
+def test_partial_final_period_preserves_exact_service_end_without_prorating():
+    schedule = _s(date(2026, 1, 1), term_end=date(2026, 2, 15))
+    assert schedule.exists(1)
+    assert schedule.service_end(0) == date(2026, 1, 31)
+    assert schedule.service_end(1) == date(2026, 2, 14)
+    assert not schedule.exists(2)
+
+
+def test_term_end_truncates_displayed_and_issued_service_end():
+    from celerp_subscriptions.billing import _period_row
+
+    schedule = _s(date(2026, 1, 1), term_end=date(2026, 2, 15))
+    assert schedule.service_end(0) == date(2026, 1, 31)
+    assert schedule.service_end(1) == date(2026, 2, 14)
+    assert _period_row(schedule, 1)["service_end"] == "2026-02-14"
+    assert schedule.bill_date(1) == date(2026, 2, 1)
+    assert not schedule.exists(2)

@@ -35,6 +35,9 @@ projection_handler Maps event-type prefixes to a handler function. Each event ty
                    "permission" names the one its events are read with: activity
                    and ledger feeds leave them out for a role without it
 on_company_created Async callback(session, company_id) fired after a new company is persisted
+on_company_restored
+                   First-party callback(session, company_id) after backup rows are restored,
+                   before commit; failure aborts the restore
 on_modules_ready   Async callback(session) fired once after every module has loaded
 on_books_currency_set
                    Async callback(session, company_id) fired, before commit, whenever a
@@ -171,7 +174,7 @@ from typing import Callable
 SLOT_NAMES = frozenset({
     "nav", "bulk_action", "send_to_targets", "catalog_channel", "item_action",
     "pricing_action", "doc_detail_actions", "doc_detail_badges", "category_schema",
-    "projection_handler", "on_company_created", "on_modules_ready", "on_books_currency_set", "doc_finalize_hook",
+    "projection_handler", "on_company_created", "on_company_restored", "on_modules_ready", "on_books_currency_set", "doc_finalize_hook",
     "on_doc_payment", "search_provider", "inventory_in_production", "item_lineage_guard",
     "demo_records", "background_loop", "doc_asset_lines", "fixed_asset_rules", "label_source",
     "import_target", "turn_off_preflight", "periodic_operation",
@@ -181,7 +184,7 @@ SLOT_NAMES = frozenset({
 # other module that fills one.
 FIRST_PARTY_SLOTS = frozenset({"inventory_in_production", "demo_records", "background_loop",
                                "doc_asset_lines", "turn_off_preflight", "on_books_currency_set",
-                               "periodic_operation"})
+                               "periodic_operation", "on_company_restored"})
 
 # projection_handler prefixes core handles itself: system events (registered at
 # startup, celerp.main) and the core-folded connectors' declared prefixes.

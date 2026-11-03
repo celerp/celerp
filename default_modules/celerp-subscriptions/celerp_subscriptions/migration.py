@@ -167,7 +167,7 @@ async def check_template_schedule_integrity(session: AsyncSession, company_id) -
     return problems
 
 
-async def migrate_company(session: AsyncSession, company_id) -> dict | None:
+async def migrate_company(session: AsyncSession, company_id, *, force: bool = False) -> dict | None:
     """Move one company's templates; None when the company waits for a later start. Caller commits."""
     from celerp.migrations._data_reconcile import get_meta, set_meta
     from celerp.models.company import Company
@@ -183,7 +183,7 @@ async def migrate_company(session: AsyncSession, company_id) -> dict | None:
     marker = _MARKER.format(company_id)
     conn = await session.connection()
     result = {"migrated": 0, "review": 0, "failed": 0, "marked": True}
-    if await conn.run_sync(lambda c: get_meta(c, marker)):
+    if not force and await conn.run_sync(lambda c: get_meta(c, marker)):
         return result
     agreements = await billing.agreements(session, company_id)
     owners: dict[str, str] = {}
@@ -220,6 +220,13 @@ async def migrate_company(session: AsyncSession, company_id) -> dict | None:
     if result["marked"]:
         await conn.run_sync(lambda c: set_meta(c, marker, "done"))
     return result
+
+
+async def migrate_restored_company(*, session: AsyncSession, company_id) -> None:
+    """Upgrade a restored company's schedules before it becomes available."""
+    result = await migrate_company(session, company_id, force=True)
+    if result is not None and not result["marked"]:
+        raise ValueError("Restored subscription schedules need repair before activation")
 
 
 async def migrate_schedules_hook(*, session: AsyncSession) -> None:

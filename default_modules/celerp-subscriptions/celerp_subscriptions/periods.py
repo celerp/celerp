@@ -57,10 +57,18 @@ class Schedule:
     def __post_init__(self) -> None:
         if self.frequency not in FREQUENCIES:
             raise ValueError(f"Unknown frequency {self.frequency!r}")
-        if self.frequency == "custom" and not (isinstance(self.custom_days, int) and self.custom_days > 0):
-            raise ValueError("A custom frequency needs its interval in days")
+        if self.frequency == "custom" and not (
+                type(self.custom_days) is int and 0 < self.custom_days <= 36500):
+            raise ValueError("Custom billing intervals must be 1 to 36500 days")
         if self.timing not in TIMINGS:
             raise ValueError(f"Unknown billing timing {self.timing!r}")
+        if self.term_end is not None and self.term_end <= self.anchor:
+            raise ValueError("The term must end after the first billing period starts")
+        try:
+            self.start(1)
+            self.start(2)
+        except (ValueError, OverflowError) as exc:
+            raise ValueError("The billing interval exceeds the supported calendar") from exc
 
     @classmethod
     def from_state(cls, state: dict) -> Schedule:
@@ -86,6 +94,11 @@ class Schedule:
 
     def bill_date(self, k: int) -> date:
         return self.start(k + 1) if self.timing == "arrears" else self.start(k)
+
+    def service_end(self, k: int) -> date:
+        """Last covered day, bounded by the exclusive term end; no implicit proration."""
+        end = self.end(k)
+        return min(end, self.term_end - timedelta(days=1)) if self.term_end else end
 
     @property
     def lowest(self) -> int:
