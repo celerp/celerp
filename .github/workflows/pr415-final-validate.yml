@@ -50,7 +50,7 @@ jobs:
           asyncio.run(main())
           PY
           export DATABASE_URL=postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_pr415_index
-          python -m alembic upgrade head
+          celerp migrate --db-url "$DATABASE_URL"
           python - <<'PY'
           import asyncio,asyncpg
           async def main():
@@ -63,8 +63,15 @@ jobs:
                   await c.close()
           asyncio.run(main())
           PY
-          python -m alembic downgrade -1
-          python -m alembic upgrade head
+          python - <<'PY'
+          import os
+          from alembic import command
+          from celerp.alembic_config import build_alembic_config
+          from celerp.cli import _migration_lock
+          with _migration_lock(os.environ["DATABASE_URL"]):
+              command.downgrade(build_alembic_config(), "-1")
+          PY
+          celerp migrate --db-url "$DATABASE_URL"
       - name: Focused regression tests
         run: |
           cp tests/.test_durations /tmp/durations-before.json

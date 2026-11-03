@@ -2583,6 +2583,26 @@ async def test_by_doc_includes_related_credit_and_return_postings(client, sessio
 
 
 @pytest.mark.asyncio
+async def test_unclassified_journal_cannot_inherit_invoice_items_by_amount(client, session):
+    from celerp.services.auto_je import _emit_auto_posted_je
+
+    tok = await _reg(client)
+    doc = await _doc_with_items(client, tok, "invoice", [("WIDGET", 1, 10.0)])
+    company_id, user_id = _ids(tok)
+    je_id = f"je:test:unclassified:{doc}"
+    await _emit_auto_posted_je(
+        session, company_id=company_id, user_id=user_id, je_id=je_id,
+        idem_create=f"{je_id}:c", idem_posted=f"{je_id}:p",
+        memo="Unclassified journal", ts="2026-02-02", entries=_bal(10.0),
+        metadata_={"doc_id": doc},
+    )
+    await session.commit()
+    entry = next(e for e in (await _by_doc(client, tok, doc))["entries"] if e["je_id"] == je_id)
+    assert entry["items_status"] == "no_items"
+    assert not any(line.get("item") for line in entry["lines"])
+
+
+@pytest.mark.asyncio
 async def test_by_doc_lines_carry_the_documents_contact_as_party(client):
     tok = await _reg(client)
     doc = await _doc_with_items(client, tok, "invoice", [("WIDGET", 1, 10.0)])
