@@ -308,3 +308,32 @@ async def test_an_ended_session_on_a_billing_action_goes_to_sign_in(owner_ui, me
         r = await getattr(owner_ui, method)(path.format(eid=eid), **sent)
     to = r.headers.get("HX-Redirect") or r.headers.get("location", "")
     assert to.startswith("/login"), (r.status_code, r.headers, r.text[:200])
+
+@pytest.mark.asyncio
+async def test_api_client_batches_large_due_selection(monkeypatch):
+    from contextlib import asynccontextmanager
+    from httpx import Request, Response
+    from ui import api_client
+
+    batches = []
+
+    class Client:
+        async def post(self, path, json):
+            assert path == "/subscriptions/generate-due"
+            batches.append(json["items"])
+            return Response(200, request=Request("POST", "http://test" + path), json={
+                "results": [{"entity_id": row["entity_id"], "period_index": row["period_index"],
+                             "ok": True, "doc_id": f"doc:{row['entity_id']}"}
+                            for row in json["items"]]
+            })
+
+    @asynccontextmanager
+    async def client(_token):
+        yield Client()
+
+    monkeypatch.setattr(api_client, "_api_client", client)
+    items = [{"entity_id": f"sub:{i}", "period_index": 0} for i in range(120)]
+    result = await api_client.generate_all_due("token", items)
+    assert [len(b) for b in batches] == [50, 50, 20]
+    assert result["billed"] == 120 and result["refused"] == 0
+    assert [r["entity_id"] for r in result["results"]] == [i["entity_id"] for i in items]

@@ -2160,8 +2160,15 @@ async def subscriptions_due(token: str) -> dict:
 
 
 async def generate_all_due(token: str, items: list[dict]) -> dict:
+    """Bill the chosen periods in bounded batches; retries keep each period identity."""
+    results = []
     async with _api_client(token) as c:
-        return _raise(await c.post("/subscriptions/generate-due", json={"items": items})).json()
+        for start in range(0, len(items), 50):
+            batch = _raise(await c.post("/subscriptions/generate-due",
+                                        json={"items": items[start:start + 50]})).json()
+            results.extend(batch["results"])
+    billed = sum(bool(row.get("ok")) for row in results)
+    return {"results": results, "billed": billed, "refused": len(results) - billed}
 
 
 async def subscriptions_catch_up(token: str) -> dict:

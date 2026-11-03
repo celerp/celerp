@@ -476,6 +476,7 @@ def _build_router() -> APIRouter:
         row = next((r for r in review if r.get("doc_id") == doc_id), None)
         if row is None or body.period_index not in (row.get("candidates") or []):
             raise HTTPException(status_code=409, detail=t("subscriptions.err_history_not_candidate"))
+        await billing.require_history_document(session, company_id, entity_id, proj.state, doc_id)
         if entry.get("state") in CLAIMED_STATES:
             await _refuse_claimed(session, company_id, entry)
             raise HTTPException(status_code=409, detail=t("subscriptions.err_period_skipped"))

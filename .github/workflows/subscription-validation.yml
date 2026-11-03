@@ -44,6 +44,8 @@ jobs:
           git fetch -q --no-tags origin main validation/subscription-periods-414
           test "$(git rev-parse origin/main)" = "7cbe1a2c1aefcae3c18b1dce768b6757a7d709f6"
           git checkout -B integrated origin/main
+          git config user.name "Noah Severs"
+          git config user.email "118095044+ngsevers@users.noreply.github.com"
           git merge --squash origin/validation/subscription-periods-414 || true
           python - <<'PY'
           import json

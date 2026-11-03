@@ -298,3 +298,16 @@ async def test_migration_missing_anchor_keeps_legacy_state_for_repair(session, a
     assert result["failed"] == 1 and not result["marked"]
     state = await _state(session, auth["company_id"], tid)
     assert "anchor_date" not in state and "next_run_date" in state
+
+async def test_history_confirmation_refuses_another_agreements_document(client, session, auth, monkeypatch):
+    _today(monkeypatch, "2026-03-15")
+    first, docs = await _legacy(session, auth, next_run="2026-04-01", doc_dates=["2026-03-01"])
+    second, _ = await _legacy(session, auth, next_run="2026-04-01", doc_dates=["2026-03-01"])
+    await _emit(session, auth["company_id"], auth["user_id"], second, "doc.updated",
+                {"fields_changed": {"generated_doc_ids": {"new": docs}}})
+    await session.commit()
+    await _migrate(session, auth["company_id"])
+    hd = auth["headers"]
+    url = lambda eid: f"/subscriptions/{eid}/history/{docs[0]}/confirm"
+    assert (await client.post(url(first), headers=hd, json={"period_index": -1})).status_code == 200
+    assert (await client.post(url(second), headers=hd, json={"period_index": -1})).status_code == 409

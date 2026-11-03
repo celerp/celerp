@@ -235,6 +235,22 @@ async def agreements(session: AsyncSession, company_id) -> list[Projection]:
     return list(rows)
 
 
+async def require_history_document(session: AsyncSession, company_id, template_id: str,
+                                   state: dict, doc_id: str) -> None:
+    """A historical placement must reference an eligible, unclaimed company document."""
+    doc = await doc_state(session, company_id, doc_id)
+    allowed = {"invoice"} if doc_kind(state) == "invoice" else {"purchase_order", "bill"}
+    if (doc is None or doc.get("doc_type") not in allowed
+            or doc.get("status") in ("draft", "void", "cancelled")
+            or any(doc.get(field) and doc[field] != template_id
+                   for field in ("source_agreement", "subscription_id"))):
+        raise HTTPException(status_code=409, detail=t("subscriptions.err_history_not_candidate"))
+    for agreement in await agreements(session, company_id):
+        if any(entry.get("state") == BILLED and entry.get("doc_id") == doc_id
+               for entry in (agreement.state.get("periods") or {}).values()):
+            raise HTTPException(status_code=409, detail=t("subscriptions.err_history_not_candidate"))
+
+
 def _period_row(schedule: Schedule, k: int) -> dict:
     return {"period_index": k, "service_start": schedule.start(k).isoformat(),
             "service_end": schedule.end(k).isoformat(), "bill_date": schedule.bill_date(k).isoformat()}

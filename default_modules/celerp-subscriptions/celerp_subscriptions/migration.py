@@ -59,8 +59,8 @@ async def _placements(session, company_id, state: dict, schedule: Schedule,
         if doc is not None:
             if doc.get("doc_type") not in _DOC_TYPES[billing.doc_kind(state)]:
                 problems.append(f"{doc_id} is not the expected document type")
-            if doc.get("status") == "void":
-                problems.append(f"{doc_id} was voided")
+            if doc.get("status") in ("draft", "void", "cancelled"):
+                problems.append(f"{doc_id} has an unissued or voided status")
             for field in ("source_agreement", "subscription_id"):
                 if doc.get(field) and doc[field] != state.get("id"):
                     problems.append(f"{doc_id} belongs to a different agreement")
