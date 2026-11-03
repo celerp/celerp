@@ -31,6 +31,10 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split -c constraints.txt
+      - name: Regenerate first-party module lock
+        run: |
+          python scripts/gen_first_party_lock.py
+          python -c 'import json; d=json.load(open("default_modules/first_party.lock.json")); print("UPDATED_DIGESTS", {k:d[k] for k in ("celerp-docs", "celerp-subscriptions")})'
       - name: Syntax and narrow regression
         run: |
           python -m compileall -q celerp/modules/slots.py celerp/modules/loader.py celerp/services/company_backup.py default_modules/celerp-subscriptions/celerp_subscriptions/ ui/routes/subscriptions.py
