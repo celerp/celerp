@@ -1914,7 +1914,7 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
         try:
             await _settle_replaced(session, closure, task_id)
             # The restore has committed: rewriting the load set's mirror never undoes it.
-            await commit_with_load_set(session)
+            await commit_with_load_set(session, activated=[])
             if stored:
                 await asyncio.to_thread(attachments.clear_landing, str(new_id))
         except Exception:
@@ -1934,7 +1934,7 @@ async def finish_restore() -> None:
     settled by their own retries."""
     await reconcile_landings()
     async with AsyncSession(bind=celerp.db.engine) as session:
-        await commit_with_load_set(session)
+        await commit_with_load_set(session, activated=[])
 
 
 async def reopen_restored(company_id, *, user_id=None, owner_account: dict | None = None,

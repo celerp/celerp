@@ -299,6 +299,19 @@ async def test_migration_missing_anchor_keeps_legacy_state_for_repair(session, a
     state = await _state(session, auth["company_id"], tid)
     assert "anchor_date" not in state and "next_run_date" in state
 
+    from celerp.models.notification import Notification
+    from ui.i18n import t
+    title = t("subscriptions.notice_schedule_check_title", "en")
+
+    async def notices():
+        return await session.scalar(select(func.count()).select_from(Notification).where(
+            Notification.company_id == auth["company_id"], Notification.title == title,
+        ))
+
+    assert await notices() == 1
+    await _migrate(session, auth["company_id"])
+    assert await notices() == 1
+
 async def test_history_confirmation_refuses_another_agreements_document(client, session, auth, monkeypatch):
     _today(monkeypatch, "2026-03-15")
     first, docs = await _legacy(session, auth, next_run="2026-04-01", doc_dates=["2026-03-01"])

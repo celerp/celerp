@@ -255,7 +255,53 @@ def restart_needed(names) -> bool:
     return any(not is_running(n) and restart_would_load(n) for n in names)
 
 
-async def commit_with_load_set(session) -> None:
+async def _reconcile_newly_enabled(session, activated) -> None:
+    """Prepare newly enabled running modules before their company settings commit.
+
+    Callers supply each company's settings from before its change. This also covers
+    writers that flushed intermediate changes before reaching the commit boundary.
+    The caller holds the module-state boundary and company locks.
+    """
+    from fastapi import HTTPException
+    from celerp.modules import loader
+    from celerp.modules.slots import fire_lifecycle, get as get_slot
+
+    contributors = {entry["_module"] for entry in get_slot("on_company_module_enabled")}
+    changes = []
+    for company, previous in activated:
+        added = company_modules(company.settings) - company_modules(previous)
+        for name in added:
+            if not loader.is_running(name):
+                continue  # the startup hook reconciles it after the module loads
+            path = loader.resolve_runtime_module_path(name, loader.module_search_path())
+            if path is None:
+                continue
+            manifest = loader.read_manifest(path)
+            if "on_company_module_enabled" in (manifest.get("slots") or {}) and (
+                name not in contributors or loader.running_version(name) != manifest.get("version")
+            ):
+                await session.rollback()
+                raise HTTPException(
+                    status_code=409,
+                    detail="Restart Celerp to load the updated module before enabling it.",
+                )
+        running = {name for name in added & contributors if loader.is_running(name)}
+        if running:
+            changes.append((company.id, running))
+    for company_id, modules in sorted(changes, key=lambda item: str(item[0])):
+        failed = await fire_lifecycle(
+            "on_company_module_enabled", only_modules=modules,
+            session=session, company_id=company_id,
+        )
+        if failed:
+            await session.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="A module could not prepare this company's existing records. Nothing was changed.",
+            )
+
+
+async def commit_with_load_set(session, *, activated) -> None:
     """Commit the caller's change to a company's set, then rewrite the load set's mirror.
 
     The caller holds the module-state boundary (hold_module_state) from before its
@@ -269,6 +315,7 @@ async def commit_with_load_set(session) -> None:
     import asyncio
     from celerp.config import replace_enabled_modules
 
+    await _reconcile_newly_enabled(session, activated)
     await session.commit()
     await hold_module_state(session)
     names = await load_set(session)

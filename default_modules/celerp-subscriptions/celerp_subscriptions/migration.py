@@ -212,7 +212,7 @@ async def migrate_company(session: AsyncSession, company_id, *, force: bool = Fa
     problems = await check_template_schedule_integrity(session, company_id)
     for line in problems:
         log.error("Subscription schedule check: %s", line)
-    if problems:
+    if result["failed"] or problems:
         await notify_once(session, company_id, "system", t(f"{_NOTICE}_title", "en"), t(f"{_NOTICE}_body", "en"),
                           action_url="/subscriptions?direction=sales",
                           i18n={"title": f"{_NOTICE}_title", "body": f"{_NOTICE}_body"})
@@ -222,8 +222,8 @@ async def migrate_company(session: AsyncSession, company_id, *, force: bool = Fa
     return result
 
 
-async def migrate_restored_company(*, session: AsyncSession, company_id) -> None:
-    """Upgrade a restored company's schedules before it becomes available."""
+async def reconcile_company_schedules(*, session: AsyncSession, company_id) -> None:
+    """Upgrade existing schedules before a restored or newly enabled company is usable."""
     result = await migrate_company(session, company_id, force=True)
     if result is not None and not result["marked"]:
         raise ValueError("Restored subscription schedules need repair before activation")

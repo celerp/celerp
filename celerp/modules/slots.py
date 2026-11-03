@@ -38,6 +38,9 @@ on_company_created Async callback(session, company_id) fired after a new company
 on_company_restored
                    First-party callback(session, company_id) after backup rows are restored,
                    before commit; failure aborts the restore
+on_company_module_enabled
+                   First-party callback(session, company_id) for a newly enabled, already-running
+                   module, before the module-setting change commits; failure aborts activation
 on_modules_ready   Async callback(session) fired once after every module has loaded
 on_books_currency_set
                    Async callback(session, company_id) fired, before commit, whenever a
@@ -174,7 +177,7 @@ from typing import Callable
 SLOT_NAMES = frozenset({
     "nav", "bulk_action", "send_to_targets", "catalog_channel", "item_action",
     "pricing_action", "doc_detail_actions", "doc_detail_badges", "category_schema",
-    "projection_handler", "on_company_created", "on_company_restored", "on_modules_ready", "on_books_currency_set", "doc_finalize_hook",
+    "projection_handler", "on_company_created", "on_company_restored", "on_company_module_enabled", "on_modules_ready", "on_books_currency_set", "doc_finalize_hook",
     "on_doc_payment", "search_provider", "inventory_in_production", "item_lineage_guard",
     "demo_records", "background_loop", "doc_asset_lines", "fixed_asset_rules", "label_source",
     "import_target", "turn_off_preflight", "periodic_operation",
@@ -184,7 +187,7 @@ SLOT_NAMES = frozenset({
 # other module that fills one.
 FIRST_PARTY_SLOTS = frozenset({"inventory_in_production", "demo_records", "background_loop",
                                "doc_asset_lines", "turn_off_preflight", "on_books_currency_set",
-                               "periodic_operation", "on_company_restored"})
+                               "periodic_operation", "on_company_restored", "on_company_module_enabled"})
 
 # projection_handler prefixes core handles itself: system events (registered at
 # startup, celerp.main) and the core-folded connectors' declared prefixes.
@@ -277,7 +280,7 @@ async def _company_hooks(slot: str, kwargs: dict) -> list[dict]:
     return [c for c in contributions if uses_module(settings, c.get("_module"))]
 
 
-async def fire_lifecycle(slot: str, **kwargs) -> list[tuple[str, str]]:
+async def fire_lifecycle(slot: str, *, only_modules: set[str] | None = None, **kwargs) -> list[tuple[str, str]]:
     """Invoke all async callbacks registered under a lifecycle slot.
 
     Each contribution must have a "handler" key pointing to a dotted path
@@ -296,6 +299,8 @@ async def fire_lifecycle(slot: str, **kwargs) -> list[tuple[str, str]]:
     failed: list[tuple[str, str]] = []
 
     for contrib in await _company_hooks(slot, kwargs):
+        if only_modules is not None and contrib.get("_module") not in only_modules:
+            continue
         try:
             async with (session.begin_nested() if session is not None
                         else contextlib.nullcontext()):

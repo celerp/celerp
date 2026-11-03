@@ -79,7 +79,7 @@ async def set_business_type(
     demo = {"replaced": 0, "kept": 0}
     if changed:
         demo = await replace_demo_items(session, company_id, actor_id, vertical)
-    await commit_with_load_set(session)
+    await commit_with_load_set(session, activated=[(company, before)])
 
     old_schemas = before.get("category_schemas") or {}
     labels = with_categories.get("category_display_names") or {}

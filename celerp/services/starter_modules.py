@@ -104,6 +104,6 @@ async def enable_starter_modules(session: AsyncSession) -> None:
     if add_to_installation:
         await (await session.connection()).run_sync(lambda c: set_meta(c, STARTER_MODULES_KEY, "done"))
     if own_lists:
-        await commit_with_load_set(session)
+        await commit_with_load_set(session, activated=[])
     else:
         await session.commit()
