@@ -426,3 +426,16 @@ async def test_uncertain_email_cannot_replay_with_changed_payload(client, sessio
     refused = await client.post(row["retry_url"], headers=hd)
     assert refused.status_code == 409
     assert mail.sent == []
+
+
+async def test_auto_arrears_bills_on_first_bill_date_with_zero_catchup(client, session, monkeypatch):
+    freeze_day(monkeypatch, "2026-01-01")
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    eid = await _auto(client, hd, start="2026-01-01", billing_timing="arrears", catchup=0)
+    freeze_day(monkeypatch, "2026-01-31")
+    await tick(session, cid, "2026-01-31")
+    assert await billed_docs(session, eid) == []
+    freeze_day(monkeypatch, "2026-02-01")
+    await tick(session, cid, "2026-02-01")
+    assert [d["period_index"] for d in await billed_docs(session, eid)] == [0]

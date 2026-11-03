@@ -67,3 +67,22 @@ def test_large_period_offsets_and_terminated_due_date_are_bounded():
     ended = _s(date(2025, 1, 1), term_end=date(2025, 3, 1))
     assert ended.latest_due(date(2026, 7, 1)) == 1
     assert ended.current(date(2026, 7, 1)) > ended.latest_due(date(2026, 7, 1))
+
+
+def test_arrears_catchup_window_begins_at_bill_date():
+    from celerp_subscriptions.billing import outside_window
+
+    arrears = _s(date(2026, 1, 1), timing="arrears")
+    today = date(2026, 2, 1)
+    assert arrears.due(today) == [0]
+    assert not outside_window({"catchup_periods": 0}, arrears, [0], today)
+    overdue = date(2026, 3, 1)
+    assert outside_window({"catchup_periods": 0}, arrears, [0, 1], overdue)
+    assert not outside_window({"catchup_periods": 1}, arrears, [0, 1], overdue)
+
+    advance = _s(date(2026, 1, 1))
+    assert not outside_window({"catchup_periods": 0}, advance, [0], date(2026, 1, 1))
+    assert outside_window({"catchup_periods": 0}, advance, [0, 1], date(2026, 2, 1))
+
+    expired = _s(date(2026, 1, 1), term_end=date(2026, 2, 1))
+    assert outside_window({"catchup_periods": 0}, expired, [0], date(2026, 7, 1))

@@ -324,7 +324,8 @@ def outside_window(state: dict, schedule: Schedule, due: list[int], today: date)
     latest = schedule.latest_due(today)
     # A terminated agreement can have no recent due period. Compare with the
     # present schedule index, not only its final eligible period.
-    age = max(schedule.current(today), latest or 0) - due[0]
+    bill_index = schedule.current(today) - int(schedule.timing == "arrears")
+    age = max(bill_index, latest if latest is not None else bill_index) - due[0]
     return bool(due) and age > int(state.get("catchup_periods") or 0)
 
 

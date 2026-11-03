@@ -212,5 +212,5 @@ jobs:
         run: |
           set -euo pipefail
           remote=$(git ls-remote origin refs/heads/validation/subscription-integrated-414 | cut -f1)
-          test "$remote" = "870e047d981cc7ea08b7098bc40c72578e6d184a"
+          test "$remote" = "192b9df1ff371a3ec8c4a6458c82c229cc74aa9a"
           git push --force-with-lease=refs/heads/validation/subscription-integrated-414:$remote origin HEAD:refs/heads/validation/subscription-integrated-414
