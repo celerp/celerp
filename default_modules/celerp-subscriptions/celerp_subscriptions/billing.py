@@ -268,7 +268,7 @@ async def require_history_document(session: AsyncSession, company_id, template_i
 
 def _period_row(schedule: Schedule, k: int) -> dict:
     return {"period_index": k, "service_start": schedule.start(k).isoformat(),
-            "service_end": schedule.end(k).isoformat(), "bill_date": schedule.bill_date(k).isoformat()}
+            "service_end": schedule.service_end(k).isoformat(), "bill_date": schedule.bill_date(k).isoformat()}
 
 
 async def period_list(session: AsyncSession, company_id, state: dict, today: date, *, limit: int = 24) -> dict:

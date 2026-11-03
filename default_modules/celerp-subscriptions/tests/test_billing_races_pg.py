@@ -167,3 +167,49 @@ async def test_two_dispatchers_respect_budget_and_claims(committed_engine, monke
     billed = await _billed(factory, cid)
     assert len(billed) == 10 and len(set(billed)) == 10  # one budget per pass, one document per period
     assert {e for e, _ in billed} <= set(eids)
+
+
+async def test_concurrent_email_delivery_only_claims_one_send(committed_engine, monkeypatch):
+    """Two workers recovering the same pending email cannot both call the transport."""
+    from agreement_kit import contact
+    from celerp.services import email
+    from celerp_subscriptions import billing
+
+    freeze_day(monkeypatch, "2026-07-01")
+    factory = _factory(committed_engine)
+    seeded = await _company(factory)
+    owner, cid = seeded["h"]["owner"], seeded["company_id"]
+    async with _app_client(factory) as (client, _pending):
+        recipient = await contact(client, owner, "concurrency@example.test")
+        eid = await agreement(client, owner, start="2026-07-01", contact_id=recipient)
+        changed = await schedule(client, owner, eid, generation_mode="auto_invoice", auto_send=True)
+        assert changed.status_code == 200, changed.text
+
+    async with factory() as session:
+        report = await billing.run_due(session=session, company_id=cid, today=date(2026, 7, 1), budget=1)
+        assert report.done == 1
+        await session.commit()
+
+    started, release = asyncio.Event(), asyncio.Event()
+    calls = []
+
+    async def send_once(*, operation_id=None, **kwargs):
+        calls.append((operation_id, kwargs["to"]))
+        started.set()
+        await release.wait()
+        return True, "accepted"
+
+    monkeypatch.setattr(email, "send_email", send_once)
+    first = asyncio.create_task(billing.deliver(factory, cid, eid, 0))
+    try:
+        await asyncio.wait_for(started.wait(), 30)
+        second = await asyncio.wait_for(billing.deliver(factory, cid, eid, 0), 30)
+        assert second["state"] == "sending"
+    finally:
+        release.set()
+    first_result = await asyncio.wait_for(first, 30)
+    assert first_result["state"] == "sent"
+    assert len(calls) == 1 and calls[0][1] == "concurrency@example.test"
+    async with factory() as session:
+        state = (await session.get(Projection, {"company_id": cid, "entity_id": eid})).state
+    assert state["periods"]["0"]["send"]["state"] == "sent"
