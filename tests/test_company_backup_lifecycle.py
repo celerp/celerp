@@ -104,7 +104,7 @@ async def test_restoration_runs_module_reconciliation_before_activation(real_cli
     assert seen == [response.json()["company_id"]]
 
 
-async def test_restored_legacy_subscription_is_upgraded_before_activation(real_client, real_engine):
+async def test_restored_legacy_subscription_is_upgraded_before_activation(real_client, real_engine, monkeypatch):
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import AsyncSession
     from celerp.events.engine import emit_event
@@ -133,6 +133,11 @@ async def test_restored_legacy_subscription_is_upgraded_before_activation(real_c
             actor_id=uid, location_id=None, source="test", idempotency_key=str(uuid.uuid4()),
         )
         await session.commit()
+
+    # Test routes and hooks are registered without running the normal module loader.
+    from celerp.modules import loader
+    original_is_running = loader.is_running
+    monkeypatch.setattr(loader, "is_running", lambda name: name == "celerp-subscriptions" or original_is_running(name))
 
     response = await restore(real_client, tok, await download(real_client, tok))
     assert response.status_code == 201, response.text
