@@ -24,9 +24,9 @@ def operation_key_input():
     return Input(type="hidden", name=FIELD, value=str(uuid.uuid4()))
 
 
-def operation_key_vals(kept: str = "") -> str:
-    """hx-vals carrying a new key (or the ``kept`` one), for an action button with no form of its own."""
-    return json.dumps({FIELD: kept or str(uuid.uuid4())})
+def operation_key_vals(kept: str = "", **fields) -> str:
+    """hx-vals with a stable action key and optional bound request fields."""
+    return json.dumps({**fields, FIELD: kept or str(uuid.uuid4())})
 
 
 def operation_key_attrs(kept: str = "") -> dict:

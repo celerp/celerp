@@ -500,3 +500,19 @@ async def test_released_period_still_pins_schedule_placement(client, session, mo
                               json={"reason": "deferred"})).status_code == 200
     assert (await client.post(f"/subscriptions/{eid}/periods/0/unskip", headers=hd)).status_code == 200
     assert (await schedule(client, hd, eid, anchor_date="2026-02-01")).status_code == 409
+
+
+async def test_explicit_generate_due_target_never_advances_after_another_claim(client, session, monkeypatch):
+    freeze_day(monkeypatch, "2026-03-15")
+    hd = await register(client)
+    eid = await agreement(client, hd, start="2026-01-01")
+    preview = (await client.get(f"/subscriptions/{eid}/periods", headers=hd)).json()
+    assert preview["oldest_open_index"] == 0
+    url = f"/subscriptions/{eid}/generate-due"
+    first = await client.post(url, headers=hd, json={"request_key": "first", "period_index": 0})
+    second = await client.post(url, headers=hd, json={"request_key": "second", "period_index": 0})
+    assert first.status_code == second.status_code == 200
+    assert first.json()["doc_id"] == second.json()["doc_id"]
+    assert [d["period_index"] for d in await billed_docs(session, eid)] == [0]
+    next_period = await client.post(url, headers=hd, json={"request_key": "third", "period_index": 1})
+    assert next_period.status_code == 200 and next_period.json()["period_index"] == 1

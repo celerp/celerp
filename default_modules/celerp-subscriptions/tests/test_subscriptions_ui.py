@@ -91,7 +91,7 @@ class TestSubscriptionsUI:
         with (
             patch("ui.api_client.get_subscription", new=AsyncMock(return_value=_SUB_DOC)),
             patch("ui.api_client.get_subscription_periods",
-                  new=AsyncMock(return_value={"next_bill_date": "2026-02-01", "rows": []})),
+                  new=AsyncMock(return_value={"next_bill_date": "2026-02-01", "oldest_open_index": 0, "rows": []})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "ACME", "currency": "USD", "timezone": "UTC"})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": []})),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
@@ -102,6 +102,8 @@ class TestSubscriptionsUI:
         assert r.status_code == 200
         assert "sub-001" in r.text  # ref_id shown in breadcrumb/header
         assert "Generate due" in r.text  # active-status action visible
+        from html import unescape
+        assert '"period_index": 0' in unescape(r.text)
 
     async def test_detail_page_unauthenticated_redirects(self, ui_client):
         r = await ui_client.get("/subscriptions/sub-001")
@@ -337,3 +339,15 @@ async def test_api_client_batches_large_due_selection(monkeypatch):
     assert [len(b) for b in batches] == [50, 50, 20]
     assert result["billed"] == 120 and result["refused"] == 0
     assert [r["entity_id"] for r in result["results"]] == [i["entity_id"] for i in items]
+
+
+@pytest.mark.asyncio
+async def test_ui_posts_the_original_period_with_a_request_key(ui_client):
+    ui_client.cookies.update(_authed())
+    with patch("ui.api_client.subscription_action", new=AsyncMock(return_value={})) as action:
+        r = await ui_client.post("/subscriptions/sub-001/generate-due",
+                                 data={"idempotency_key": "user-click", "period_index": "0"})
+    assert r.status_code == 204
+    action.assert_awaited_once_with(
+        ui_client.cookies.get("celerp_token"), "sub-001", "generate-due",
+        {"request_key": "user-click", "period_index": 0})

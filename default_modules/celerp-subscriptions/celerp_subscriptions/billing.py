@@ -288,8 +288,9 @@ async def period_list(session: AsyncSession, company_id, state: dict, today: dat
               for r in state.get("history_review") or []]
     set_aside = [{"doc_id": r.get("doc_id"), "ref_id": await doc_ref(session, company_id, r.get("doc_id"))}
                  for r in state.get("history_set_aside") or []]
-    return {"next_bill_date": nxt.isoformat() if nxt else None, "rows": rows, "review": review,
-            "set_aside": set_aside}
+    return {"next_bill_date": nxt.isoformat() if nxt else None,
+            "oldest_open_index": schedule.oldest_open(floor=review_floor(state)),
+            "rows": rows, "review": review, "set_aside": set_aside}
 
 
 def due_periods(state: dict, today: date) -> tuple[Schedule, list[int]] | None:

@@ -178,7 +178,7 @@ jobs:
             tests/test_one_unit.py tests/test_role_permissions.py tests/test_periodic_dispatcher.py \
             tests/test_company_today_api.py tests/test_cross_workstream_dedup_atomicity.py \
             tests/test_subscriptions_manual_generation.py tests/test_default_sell_qty.py \
-            tests/test_issued_document_tax_side.py
+            tests/test_issued_document_tax_side.py tests/test_email_service.py
       - name: PostgreSQL race tests
         run: |
           PYTHONPATH=tests timeout 420 pytest -q --tb=short --no-cov -n 2 \
@@ -187,5 +187,5 @@ jobs:
         run: |
           set -euo pipefail
           remote=$(git ls-remote origin refs/heads/validation/subscription-integrated-414 | cut -f1)
-          test "$remote" = "7cbe1a2c1aefcae3c18b1dce768b6757a7d709f6"
-          git push origin HEAD:refs/heads/validation/subscription-integrated-414
+          test "$remote" = "fd9a6bf475705a1f5301b5911fada1875da5cec1"
+          git push --force-with-lease=refs/heads/validation/subscription-integrated-414:$remote origin HEAD:refs/heads/validation/subscription-integrated-414

@@ -226,7 +226,8 @@ def _bill_date_note(sub: dict, next_bill: str | None) -> FT | str:
     return ""
 
 
-def _sub_action_controls(entity_id: str, sub: dict, next_bill: str | None = None) -> tuple[list, list]:
+def _sub_action_controls(entity_id: str, sub: dict, next_bill: str | None = None,
+                         period_index: int | None = None) -> tuple[list, list]:
     """Return (left_actions, right_actions) for the subscription detail page.
 
     Draft:   left=[Frequency, FirstBill, CustomDays, Activate, note]      right=[]
@@ -236,6 +237,10 @@ def _sub_action_controls(entity_id: str, sub: dict, next_bill: str | None = None
     """
     status = sub.get("status", "draft")
     note = _bill_date_note(sub, next_bill)
+
+    def _bill_vals():
+        fields = {"period_index": period_index} if period_index is not None else {}
+        return operation_key_vals(**fields)
 
     if status == "draft":
         return _schedule_inputs(entity_id, sub) + [
@@ -250,9 +255,9 @@ def _sub_action_controls(entity_id: str, sub: dict, next_bill: str | None = None
     if status == "active":
         left.extend([
             Button(t("btn.generate_due"), cls="btn btn--secondary btn--sm", hx_post=f"/subscriptions/{entity_id}/generate-due",
-                   hx_swap="none", hx_vals=operation_key_vals()),
+                   hx_swap="none", hx_vals=_bill_vals()),
             Button(t("btn.bill_early"), cls="btn btn--secondary btn--sm", hx_post=f"/subscriptions/{entity_id}/bill-early",
-                   hx_swap="none", hx_vals=operation_key_vals()),
+                   hx_swap="none", hx_vals=_bill_vals()),
         ])
         right.append(
             Button(t("btn.pause"), cls="btn btn--warning btn--sm", hx_post=f"/subscriptions/{entity_id}/pause", hx_swap="none")
@@ -924,7 +929,7 @@ def setup_routes(app) -> None:
         list_url = f"/subscriptions?direction={direction}"
 
         doc = {**doc, "next_bill_date": schedule.get("next_bill_date")}
-        _sub_left_actions, _sub_right_actions = _sub_action_controls(entity_id, doc, doc["next_bill_date"])
+        _sub_left_actions, _sub_right_actions = _sub_action_controls(entity_id, doc, doc["next_bill_date"], schedule.get("oldest_open_index"))
 
         return await base_shell(
             breadcrumbs([
@@ -966,8 +971,14 @@ def setup_routes(app) -> None:
         token = _token(request)
         if not token:
             return Response(status_code=401, headers={"HX-Redirect": "/login"})
-        key = submitted_operation_key(await request.form())
+        form = await request.form()
+        key = submitted_operation_key(form)
         body = {"request_key": key[FIELD]} if action in _BILLING_ACTIONS and key else None
+        if body is not None and "period_index" in form:
+            try:
+                body["period_index"] = int(str(form["period_index"]))
+            except ValueError:
+                return _action_error(t("subscriptions.err_early_not_next"))
         try:
             await api.subscription_action(token, entity_id, action, body)
         except APIError as e:
