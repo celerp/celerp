@@ -8,6 +8,7 @@ keeps its declared place, and saving no choices is a reset.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import uuid
 from unittest.mock import AsyncMock, patch
@@ -293,6 +294,23 @@ async def test_stale_menu_write_and_reset_do_not_discard_newer_changes(client):
     )
     assert changed.status_code == 200
     assert changed.json()["hidden_entries"] == ["customers", "vendors"]
+
+
+@pytest.mark.asyncio
+async def test_simultaneous_menu_writes_cannot_lose_a_committed_choice(client):
+    h = {"Authorization": f"Bearer {await register_admin(client)}"}
+    headers = await _versioned(client, h)
+    left, right = await asyncio.gather(
+        client.patch("/companies/me/nav-overrides",
+                     json={"hidden_entries": ["customers"]}, headers=headers),
+        client.patch("/companies/me/nav-overrides",
+                     json={"hidden_entries": ["vendors"]}, headers=headers),
+    )
+    assert sorted([left.status_code, right.status_code]) == [200, 412]
+    winner = left if left.status_code == 200 else right
+    saved = await client.get("/companies/me/nav-overrides", headers=h)
+    assert saved.status_code == 200
+    assert saved.json()["hidden_entries"] == winner.json()["hidden_entries"]
 
 
 # ── The settings page ─────────────────────────────────────────────────────
