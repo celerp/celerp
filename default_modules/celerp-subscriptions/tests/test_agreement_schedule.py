@@ -500,4 +500,3 @@ async def test_released_period_still_pins_schedule_placement(client, session, mo
                               json={"reason": "deferred"})).status_code == 200
     assert (await client.post(f"/subscriptions/{eid}/periods/0/unskip", headers=hd)).status_code == 200
     assert (await schedule(client, hd, eid, anchor_date="2026-02-01")).status_code == 409
-

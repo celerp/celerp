@@ -77,7 +77,7 @@ class ConfirmBody(BaseModel):
 
 
 class CatchUpBody(BaseModel):
-    items: list[CatchUpItem]
+    items: list[CatchUpItem] = Field(..., max_length=1000)
 
 
 class ScheduleBody(BaseModel):
