@@ -104,7 +104,8 @@ async def test_restoration_runs_module_reconciliation_before_activation(real_cli
     assert seen == [response.json()["company_id"]]
 
 
-async def test_restored_legacy_subscription_is_upgraded_before_activation(real_client, real_engine, monkeypatch):
+@pytest.mark.parametrize("invalid", [False, True], ids=["migrates", "refuses-unmigratable"])
+async def test_restored_legacy_subscription_is_upgraded_before_activation(real_client, real_engine, monkeypatch, invalid):
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import AsyncSession
     from celerp.events.engine import emit_event
@@ -125,8 +126,8 @@ async def test_restored_legacy_subscription_is_upgraded_before_activation(real_c
         await emit_event(
             session, company_id=cid, entity_id=eid, entity_type="doc", event_type="doc.created",
             data={"doc_type": "subscription_invoice", "status": "active", "ref_id": eid[4:],
-                  "frequency": "monthly", "start_date": "2026-01-01",
-                  "next_run_date": "2026-04-01", "generated_doc_ids": [],
+                  "frequency": "monthly", "start_date": "" if invalid else "2026-01-01",
+                  "next_run_date": "" if invalid else "2026-04-01", "generated_doc_ids": [],
                   "contact_id": "contact:test-001",
                   "line_items": [{"description": "Service", "quantity": 1, "unit_price": 100}],
                   "currency": "USD"},
@@ -134,12 +135,24 @@ async def test_restored_legacy_subscription_is_upgraded_before_activation(real_c
         )
         await session.commit()
 
-    # Test routes and hooks are registered without running the normal module loader.
-    from celerp.modules import loader
-    original_is_running = loader.is_running
-    monkeypatch.setattr(loader, "is_running", lambda name: name == "celerp-subscriptions" or original_is_running(name))
+    # The test harness registers routes and hooks without starting the module loader.
+    # Model the loaded manifest, as the other company-backup tests do, so both running
+    # status and running version are checked by the real restore requirements boundary.
+    from celerp.modules import loader, requirements
+    module = "celerp-subscriptions"
+    path = loader.resolve_runtime_module_path(module, loader.module_search_path())
+    assert path is not None
+    manifest = loader.read_manifest(path)
+    assert manifest["name"] == module and manifest.get("version")
+    monkeypatch.setattr(loader, "_loaded", [*(m for m in loader._loaded if m["name"] != module), manifest])
+    assert requirements.plan_requirements({module: manifest["version"]}).ready
 
+    before = await _companies(real_engine)
     response = await restore(real_client, tok, await download(real_client, tok))
+    if invalid:
+        assert response.status_code == 422, response.text
+        assert await _companies(real_engine) == before
+        return
     assert response.status_code == 201, response.text
     new_id = uuid.UUID(response.json()["company_id"])
     async with AsyncSession(real_engine) as session:
