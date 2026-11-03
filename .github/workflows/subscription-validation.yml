@@ -1,16 +1,16 @@
-name: Subscription Validation
+name: Subscription Reconciliation
 on:
   push:
     branches:
       - validation/subscription-periods-414
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  focused:
+  integrate:
     runs-on: ubuntu-latest
-    timeout-minutes: 16
+    timeout-minutes: 22
     services:
       postgres:
         image: postgres:16-alpine
@@ -35,33 +35,112 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - name: Compile changed modules
-        run: |
-          python -m compileall -q celerp/services/email.py default_modules/celerp-subscriptions ui/routes/subscriptions.py ui/api_client.py
       - name: Install dependencies
         run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split -c constraints.txt
-      - name: Focused tests
+      - name: Reconcile main and prepare final source commit
+        shell: bash
         run: |
-          timeout 670 pytest -q --tb=short --no-cov -n 2 \
-            default_modules/celerp-subscriptions/tests/test_periods.py \
-            default_modules/celerp-subscriptions/tests/test_agreement_schedule.py \
-            default_modules/celerp-subscriptions/tests/test_schedule_migration.py \
-            default_modules/celerp-subscriptions/tests/test_unattended_billing.py \
-            default_modules/celerp-subscriptions/tests/test_subscriptions_ui.py \
-            tests/test_periodic_dispatcher.py \
-            -m "not process"
-      - name: PostgreSQL billing races
-        if: success()
+          set -euo pipefail
+          git fetch -q --no-tags origin main validation/subscription-periods-414
+          test "$(git rev-parse origin/main)" = "7cbe1a2c1aefcae3c18b1dce768b6757a7d709f6"
+          git checkout -B integrated origin/main
+          git merge --squash origin/validation/subscription-periods-414 || true
+          python - <<'PY'
+          import json
+          import subprocess
+          from pathlib import Path
+
+          def git(*args):
+              return subprocess.check_output(["git", *args], text=True)
+
+          unresolved = set(git("diff", "--name-only", "--diff-filter=U").splitlines())
+          allowed = {"celerp/db.py", "celerp/services/permissions.py",
+                     "default_modules/first_party.lock.json"}
+          allowed.update(f"ui/locales/{lang}.json" for lang in
+                         ("am", "ar", "de", "en", "es", "fr", "id", "it", "ja", "pt", "th", "vi"))
+          if unresolved - allowed:
+              raise SystemExit(f"Unanticipated conflicts: {sorted(unresolved - allowed)}")
+
+          if "celerp/db.py" in unresolved:
+              path = "celerp/db.py"
+              main, feature = git("show", f":2:{path}"), git("show", f":3:{path}")
+              begin = "# Set on the session while a change"
+              end = "# Redacts the password in any Postgres URL"
+              assert all(s.count(begin) == 1 and s.count(end) == 1 for s in (main, feature))
+              merged = main[:main.index(begin)] + feature[feature.index(begin):feature.index(end)] + main[main.index(end):]
+              Path(path).write_text(merged)
+
+          if "celerp/services/permissions.py" in unresolved:
+              path = "celerp/services/permissions.py"
+              main = git("show", f":2:{path}")
+              before = '    Permission("manage_users", "admin", True, "viewer"),'
+              assert main.count(before) == 1
+              additions = (
+                  '    Permission("automate_billing", "manager", True, "viewer"),\n'
+                  '    Permission("automate_sending", "manager", True, "viewer"),\n'
+                  '    Permission("automate_collection", "admin", True, "viewer"),\n'
+              )
+              Path(path).write_text(main.replace(before, additions + before))
+
+          if "default_modules/first_party.lock.json" in unresolved:
+              path = "default_modules/first_party.lock.json"
+              Path(path).write_text(git("show", f":2:{path}"))
+
+          base = git("merge-base", "origin/main", "origin/validation/subscription-periods-414").strip()
+          for path in sorted(p for p in unresolved if p.startswith("ui/locales/")):
+              ancestor = json.loads(git("show", f"{base}:{path}"))
+              current = json.loads(git("show", f":2:{path}"))
+              feature = json.loads(git("show", f":3:{path}"))
+              conflicts = []
+              for key, value in feature.items():
+                  if key not in ancestor or ancestor[key] != value:
+                      if key in current and key in ancestor and current[key] != ancestor[key] and current[key] != value:
+                          conflicts.append(key)
+                      elif key in current and key not in ancestor and current[key] != value:
+                          conflicts.append(key)
+                      else:
+                          current[key] = value
+              for key in ancestor.keys() - feature.keys():
+                  if key in current and current[key] != ancestor[key]:
+                      conflicts.append(key)
+                  else:
+                      current.pop(key, None)
+              if conflicts:
+                  raise SystemExit(f"{path}: overlapping translation changes: {sorted(conflicts)}")
+              Path(path).write_text(json.dumps(current, ensure_ascii=False, indent=2) + "\n")
+
+          for path in unresolved:
+              subprocess.run(["git", "add", "--", path], check=True)
+          remaining = git("diff", "--name-only", "--diff-filter=U")
+          if remaining:
+              raise SystemExit("Conflicts remain: " + remaining)
+          PY
+          git rm -q -f .github/workflows/subscription-validation.yml
+          python scripts/gen_first_party_lock.py
+          git add default_modules/first_party.lock.json
+          git diff --cached --check
+          python -m compileall -q celerp default_modules/celerp-subscriptions ui/routes/subscriptions.py
+          git -c user.name="Noah Severs" -c user.email="118095044+ngsevers@users.noreply.github.com" \
+            commit -m "Add reliable period-based subscription billing"
+          echo "RECONCILED_HEAD=$(git rev-parse HEAD)"
+          echo "RECONCILED_PARENT=$(git rev-parse HEAD^)"
+          echo "RECONCILED_TREE=$(git rev-parse HEAD^{tree})"
+          test ! -e .github/workflows/subscription-validation.yml
+      - name: Focused and integration tests
         run: |
-          timeout 390 pytest -q --tb=short --no-cov -n 2 \
+          timeout 660 pytest -q --tb=short --no-cov -n 2 -m "not process and not browser and not integration" \
+            default_modules/celerp-subscriptions/tests/ \
+            tests/test_one_unit.py tests/test_role_permissions.py tests/test_periodic_dispatcher.py \
+            tests/test_company_today_api.py tests/test_cross_workstream_dedup_atomicity.py \
+            tests/test_subscriptions_manual_generation.py tests/test_default_sell_qty.py \
+            tests/test_issued_document_tax_side.py
+      - name: PostgreSQL race tests
+        run: |
+          timeout 420 pytest -q --tb=short --no-cov -n 2 \
             default_modules/celerp-subscriptions/tests/test_billing_races_pg.py
-      - name: Main integration status
-        if: always()
+      - name: Publish validated integration branch
         run: |
-          git fetch -q --no-tags origin main
-          if git merge-tree --write-tree origin/main HEAD >/tmp/merge-status.txt 2>&1; then
-            echo "Clean merge with main"
-          else
-            echo "Main reconciliation requires conflict resolution:"
-            tail -50 /tmp/merge-status.txt
-          fi
+          set -euo pipefail
+          remote=$(git ls-remote origin refs/heads/validation/subscription-integrated-414 | cut -f1)
+          test "$remote" = "7cbe1a2c1aefcae3c18b1dce768b6757a7d709f6"
+          git push origin HEAD:refs/heads/validation/subscription-integrated-414

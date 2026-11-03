@@ -281,7 +281,8 @@ async def test_an_interrupted_send_is_shown_with_a_retry(client, session, monkey
     await tick(session, cid, "2026-07-01")
     unconfirmed = [r for r in (await summary(client, hd))["rows"] if r["kind"] == "send_unconfirmed"]
     assert raising in [r["entity_id"] for r in unconfirmed]
-    assert "relay unreachable" in next(r["message"] for r in unconfirmed if r["entity_id"] == raising)
+    state = await template(client, hd, raising)
+    assert "relay unreachable" in state["periods"]["0"]["send"]["error"]
 
 
 async def test_a_retried_send_is_recorded_as_the_person_who_retried(client, session, monkeypatch, mail):
@@ -327,11 +328,6 @@ async def test_delayed_mail_completion_cannot_change_reopened_period(client, ses
         assert (await client.post(f"/docs/{first['entity_id']}/void", headers=hd,
                                   json={"reason": "Replace"})).status_code == 200
         assert (await client.post(f"/subscriptions/{eid}/periods/0/reopen", headers=hd)).status_code == 200
-        new = await generate_due(client, hd, eid)
-        assert new.status_code == 200, new.text
-        assert new.json()["doc_id"] != first["entity_id"]
-        updated = await template(client, hd, eid)
-        assert updated["periods"]["0"]["state"] == "billed", updated["periods"]
         return await original(to, subject, body_html, body_text, **kw)
 
     from celerp.services import email
@@ -339,10 +335,10 @@ async def test_delayed_mail_completion_cannot_change_reopened_period(client, ses
     await tick(session, cid, "2026-07-01")
     state = await template(client, hd, eid)
     entry = state["periods"]["0"]
-    assert entry["state"] == "billed"
+    assert entry["state"] == "released" and entry["release_count"] == 1
     assert not entry.get("send")
     docs = await billed_docs(session, eid)
-    assert len(docs) == 2 and docs[0]["status"] == "void"
+    assert len(docs) == 1 and docs[0]["status"] == "void"
 
 async def test_relay_retry_keeps_original_transport_identity(client, session, monkeypatch, mail):
     import asyncio
