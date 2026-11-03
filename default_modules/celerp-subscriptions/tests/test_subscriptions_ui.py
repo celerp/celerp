@@ -178,7 +178,8 @@ class TestBillingPages:
         eid = await agreement(owner_ui.api, {}, start="2026-02-01")  # periods 0 and 1 due
         panel = (await owner_ui.get("/subscriptions/due?direction=sales")).text
         assert f'value="{eid}|0"' in panel and t("subscriptions.due_more", "en", n=1) in panel
-        r = await owner_ui.post("/subscriptions/generate-due", data={"item": [f"{eid}|0"]})
+        assert 'name="idempotency_key"' in panel
+        r = await owner_ui.post("/subscriptions/generate-due", data={"item": [f"{eid}|0"], "idempotency_key": "due-click"})
         assert t("subscriptions.due_result", "en", billed=1, refused=0) in r.text
         sub = (await owner_ui.api.get(f"/docs/{eid}")).json()
         assert [k for k, e in sub["periods"].items() if e["state"] == "billed"] == ["0"]
@@ -188,9 +189,10 @@ class TestBillingPages:
         freeze_day(monkeypatch, "2026-03-15")
         eid = await agreement(owner_ui.api, {}, start="2026-03-01")
         assert (await owner_ui.api.post(f"/subscriptions/{eid}/pause")).status_code == 200
-        r = await owner_ui.post("/subscriptions/generate-due", data={"item": [f"{eid}|0"]})
+        r = await owner_ui.post("/subscriptions/generate-due", data={"item": [f"{eid}|0"], "idempotency_key": "due-click"})
         assert t("subscriptions.err_bill_paused", "en") in r.text
         assert t("btn.retry", "en") in r.text and "#sub-due-panel" in r.text
+        assert "due-click" in r.text  # retry preserves the original batch identity
 
     async def test_nothing_due_names_the_next_bill_date_and_its_agreement(self, owner_ui, monkeypatch):
         from agreement_kit import agreement, freeze_day
@@ -225,7 +227,7 @@ class TestBillingPages:
         assert t("subscriptions.catchup_banner", "en", n=1, m=3) in listing
         page = (await owner_ui.get("/subscriptions/catch-up")).text
         assert f'value="{eid}|0"' in page and f'value="{eid}|2"' in page
-        r = await owner_ui.post("/subscriptions/catch-up/run", data={"item": [f"{eid}|0", f"{eid}|1", f"{eid}|2"]})
+        r = await owner_ui.post("/subscriptions/catch-up/run", data={"item": [f"{eid}|0", f"{eid}|1", f"{eid}|2"], "idempotency_key": "catchup-click"})
         assert t("subscriptions.catchup_result", "en", done=3, refused=0) in r.text
         assert t("subscriptions.catchup_empty", "en") in r.text
 
@@ -293,7 +295,7 @@ class TestBillingPages:
 @pytest.mark.parametrize("method,path,api_call,form", [
     ("post", "/subscriptions/{eid}/periods/0/skip", "subscription_period_action", {"reason": "Closed"}),
     ("patch", "/subscriptions/{eid}/schedule/generation_mode", "update_subscription_schedule", {"value": "manual_due"}),
-    ("post", "/subscriptions/generate-due", "generate_all_due", {"item": ["{eid}|0"]}),
+    ("post", "/subscriptions/generate-due", "generate_all_due", {"item": ["{eid}|0"], "idempotency_key": "replay-key"}),
     ("post", "/subscriptions/summary/ack", "acknowledge_subscriptions_summary", {}),
     ("get", "/subscriptions/catch-up", "subscriptions_catch_up", None),
     ("get", "/subscriptions/summary", "subscriptions_summary", None),
@@ -334,7 +336,7 @@ async def test_api_client_batches_large_due_selection(monkeypatch):
         yield Client()
 
     monkeypatch.setattr(api_client, "_api_client", client)
-    items = [{"entity_id": f"sub:{i}", "period_index": 0} for i in range(120)]
+    items = [{"entity_id": f"sub:{i}", "period_index": 0, "request_key": f"bulk:{i}"} for i in range(120)]
     result = await api_client.generate_all_due("token", items)
     assert [len(b) for b in batches] == [50, 50, 20]
     assert result["billed"] == 120 and result["refused"] == 0

@@ -55,6 +55,7 @@ class EarlyBody(BaseModel):
 class CatchUpItem(BaseModel):
     entity_id: str
     period_index: int
+    request_key: str = Field(..., min_length=1, max_length=200)
 
 
 class BulkBody(BaseModel):
@@ -196,7 +197,8 @@ def _build_router() -> APIRouter:
             try:
                 async with session.begin_nested():
                     found = await billing.claim_period(
-                        session, company_id, eid, actor=user, period_index=item.period_index)
+                        session, company_id, eid, actor=user, period_index=item.period_index,
+                        request_key=item.request_key)
                 results.append({"entity_id": eid, "period_index": item.period_index, "ok": True, **found})
             except HTTPException as exc:
                 detail = "Not found" if exc.status_code == 404 else str(exc.detail)
@@ -241,7 +243,8 @@ def _build_router() -> APIRouter:
                     if oldest != item.period_index:
                         raise HTTPException(status_code=409, detail=t("subscriptions.err_early_not_next"))
                     found = await billing.claim_period(
-                        session, company_id, item.entity_id, actor=user, period_index=item.period_index)
+                        session, company_id, item.entity_id, actor=user, period_index=item.period_index,
+                        request_key=item.request_key)
                 results.append({**row, "ok": True, **found})
             except HTTPException as exc:
                 results.append({**row, "ok": False, "error": str(exc.detail)})

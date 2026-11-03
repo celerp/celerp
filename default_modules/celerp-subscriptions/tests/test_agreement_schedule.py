@@ -16,6 +16,12 @@ from agreement_kit import (
 
 pytestmark = pytest.mark.asyncio
 
+def _bulk_item(entity_id: str, period_index: int = 0) -> dict:
+    """The same command identity represents a replay of the same selected period."""
+    return {"entity_id": entity_id, "period_index": period_index,
+            "request_key": f"bulk-test:{entity_id}:{period_index}"}
+
+
 
 async def _skip(client, hd, eid, k, reason="Office closed"):
     return await client.post(f"/subscriptions/{eid}/periods/{k}/skip", headers=hd, json={"reason": reason})
@@ -206,7 +212,7 @@ async def test_generate_all_due_preview_counts_match_run(client, session, monkey
     preview = (await client.get("/subscriptions/due", headers=hd)).json()
     ids = [i["entity_id"] for i in preview["items"]]
     assert sorted(ids) == sorted(due)
-    run = (await client.post("/subscriptions/generate-due", headers=hd, json={"items": [{"entity_id": eid, "period_index": 0} for eid in ids]})).json()
+    run = (await client.post("/subscriptions/generate-due", headers=hd, json={"items": [_bulk_item(eid, 0) for eid in ids]})).json()
     assert run["billed"] + run["refused"] == len(ids) == preview["total"]
     empty = (await client.get("/subscriptions/due", headers=hd)).json()
     assert empty["total"] == 0 and empty["next_bill_date"] == "2026-04-01"
@@ -227,11 +233,11 @@ async def test_generate_all_due_batch_bound_and_partial_failure(client, session,
         return await real(session, company_id, template_id, **kw)
 
     monkeypatch.setattr(billing, "claim_period", _claim)
-    over = await client.post("/subscriptions/generate-due", headers=hd, json={"items": [{"entity_id": eid, "period_index": 0} for eid in ids[:51]]})
+    over = await client.post("/subscriptions/generate-due", headers=hd, json={"items": [_bulk_item(eid, 0) for eid in ids[:51]]})
     assert over.status_code == 422
     billed = refused = 0
     for start in range(0, 120, 50):
-        r = (await client.post("/subscriptions/generate-due", headers=hd, json={"items": [{"entity_id": eid, "period_index": 0} for eid in ids[start:start + 50]]})).json()
+        r = (await client.post("/subscriptions/generate-due", headers=hd, json={"items": [_bulk_item(eid, 0) for eid in ids[start:start + 50]]})).json()
         billed, refused = billed + r["billed"], refused + r["refused"]
         if broken in ids[start:start + 50]:
             row = next(x for x in r["results"] if x["entity_id"] == broken)
@@ -306,7 +312,7 @@ async def test_generate_requires_finalize_permission(client, session, monkeypatc
     viewer, _ = await member(client, session, hd, "viewer")
     assert (await generate_due(client, viewer, eid)).status_code == 403
     assert (await bill_early(client, viewer, eid, "v-1")).status_code == 403
-    assert (await client.post("/subscriptions/generate-due", headers=viewer, json={"items": [{"entity_id": eid, "period_index": 0}]})).status_code == 403
+    assert (await client.post("/subscriptions/generate-due", headers=viewer, json={"items": [_bulk_item(eid, 0)]})).status_code == 403
     assert await billed_docs(session, eid) == []
 
 
@@ -368,9 +374,9 @@ async def test_generate_all_due_rejects_over_cap_and_foreign_ids(client, session
     mine = await agreement(client, hd, start="2026-03-01")
     assert foreign != mine
     assert (await client.post("/subscriptions/generate-due", headers=hd,
-                              json={"items": [{"entity_id": mine, "period_index": 0}] * 51})).status_code == 422
+                              json={"items": [_bulk_item(mine, 0)] * 51})).status_code == 422
     r = (await client.post("/subscriptions/generate-due", headers=hd,
-                           json={"items": [{"entity_id": eid, "period_index": 0} for eid in [mine, foreign, "doc:SUB-NOPE"]]})).json()
+                           json={"items": [_bulk_item(eid, 0) for eid in [mine, foreign, "doc:SUB-NOPE"]]})).json()
     rows = {x["entity_id"]: x for x in r["results"]}
     assert rows[mine]["ok"] and r["billed"] == 1
     assert rows[foreign]["error"] == rows["doc:SUB-NOPE"]["error"] == "Not found"
@@ -390,10 +396,10 @@ async def test_catchup_run_refuses_items_outside_preview(client, session, monkey
     preview = (await client.get("/subscriptions/catch-up", headers=hd)).json()["items"]
     rows = {i["entity_id"]: [p["period_index"] for p in i["periods"]] for i in preview}
     assert rows[behind] == [0, 1, 2, 3, 4, 5] and current not in rows
-    items = ([{"entity_id": behind, "period_index": 0}, {"entity_id": behind, "period_index": 0},
-              {"entity_id": behind, "period_index": 4}, {"entity_id": current, "period_index": 0},
-              {"entity_id": skipped, "period_index": 0}, {"entity_id": behind, "period_index": 1}]
-             + [{"entity_id": behind, "period_index": 2}] * 50)
+    items = ([_bulk_item(behind, 0), _bulk_item(behind, 0),
+              _bulk_item(behind, 4), _bulk_item(current, 0),
+              _bulk_item(skipped, 0), _bulk_item(behind, 1)]
+             + [_bulk_item(behind, 2)] * 50)
     r = (await client.post("/subscriptions/catch-up/run", headers=hd, json={"items": items})).json()
     ok = [x["ok"] for x in r["results"]]
     assert ok[:6] == [True, False, False, False, False, True]
@@ -471,7 +477,7 @@ async def test_bulk_stale_preview_never_bills_next_overdue_period(client, sessio
     freeze_day(monkeypatch, "2026-03-15")
     hd = await register(client)
     eid = await agreement(client, hd, start="2026-01-01")
-    selected = {"items": [{"entity_id": eid, "period_index": 0}]}
+    selected = {"items": [_bulk_item(eid, 0)]}
     first = await client.post("/subscriptions/generate-due", headers=hd, json=selected)
     assert first.status_code == 200, first.text
     again = await client.post("/subscriptions/generate-due", headers=hd, json=selected)
@@ -479,7 +485,7 @@ async def test_bulk_stale_preview_never_bills_next_overdue_period(client, sessio
     assert first.json()["results"][0]["doc_id"] == again.json()["results"][0]["doc_id"]
     assert [d["period_index"] for d in await billed_docs(session, eid)] == [0]
     later = await client.post("/subscriptions/generate-due", headers=hd,
-                              json={"items": [{"entity_id": eid, "period_index": 1}]})
+                              json={"items": [_bulk_item(eid, 1)]})
     assert later.status_code == 200 and later.json()["results"][0]["period_index"] == 1
     assert [d["period_index"] for d in await billed_docs(session, eid)] == [0, 1]
 
@@ -519,3 +525,28 @@ async def test_explicit_generate_due_target_never_advances_after_another_claim(c
     assert [d["period_index"] for d in await billed_docs(session, eid)] == [0]
     next_period = await client.post(url, headers=hd, json={"request_key": "third", "period_index": 1})
     assert next_period.status_code == 200 and next_period.json()["period_index"] == 1
+
+
+async def test_bulk_replay_after_void_and_reopen_never_creates_replacement(client, session, monkeypatch):
+    freeze_day(monkeypatch, "2026-03-15")
+    hd = await register(client)
+    eid = await agreement(client, hd, start="2026-03-01")
+    url = "/subscriptions/generate-due"
+    original = {"items": [_bulk_item(eid)]}
+    first = await client.post(url, headers=hd, json=original)
+    assert first.status_code == 200, first.text
+    doc_id = first.json()["results"][0]["doc_id"]
+    assert (await client.post(f"/docs/{doc_id}/void", headers=hd,
+                              json={"reason": "Replace"})).status_code == 200
+    assert (await client.post(f"/subscriptions/{eid}/periods/0/reopen", headers=hd)).status_code == 200
+
+    repeated = await client.post(url, headers=hd, json=original)
+    assert repeated.status_code == 200, repeated.text
+    assert repeated.json()["results"][0]["doc_id"] == doc_id
+    assert len(await billed_docs(session, eid)) == 1
+
+    fresh = {"items": [{**_bulk_item(eid), "request_key": "new-generation"}]}
+    replacement = await client.post(url, headers=hd, json=fresh)
+    assert replacement.status_code == 200, replacement.text
+    assert replacement.json()["results"][0]["doc_id"] != doc_id
+    assert len(await billed_docs(session, eid)) == 2

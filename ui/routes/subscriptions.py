@@ -23,7 +23,7 @@ from celerp.output.document_context import prepare_document_output
 from celerp.services.record_quantities import template_label
 from ui.components.activity import format_timestamp
 from ui.components.icons import import_icon
-from ui.components.operation_key import FIELD, operation_key_vals, submitted_operation_key
+from ui.components.operation_key import FIELD, operation_key_vals, operation_key_input, required_operation_key, submitted_operation_key
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
 from ui.components.table import breadcrumbs, display_enum, empty_state_cta, fmt_money, pagination, per_page_value, search_bar, status_cards
@@ -391,6 +391,7 @@ def _due_panel(preview: dict, subs: dict[str, dict]) -> FT:
         )
 
     return Form(
+        operation_key_input(),
         P(t("subscriptions.due_hint", n=len(items)), cls="text-muted"),
         Table(Thead(Tr(Th(""), Th(t("th.name")), Th(t("th.contact")), Th(t("th.period")), Th(t("th.bill_date")),
                        Th(""), Th(t("th.total"), cls="cell--number"))),
@@ -404,7 +405,7 @@ def _due_panel(preview: dict, subs: dict[str, dict]) -> FT:
     )
 
 
-def _due_results(result: dict, subs: dict[str, dict]) -> FT:
+def _due_results(result: dict, subs: dict[str, dict], request_key: str) -> FT:
     """One row per agreement: the document it billed, or why it was refused with Retry.
     The list stays until it is closed."""
     def _row(r: dict) -> FT:
@@ -416,7 +417,8 @@ def _due_results(result: dict, subs: dict[str, dict]) -> FT:
         else:
             outcome = Td(r.get("error") or "")
             action = Td(Button(t("btn.retry"), cls="btn btn--secondary btn--sm", hx_post="/subscriptions/generate-due",
-                               hx_vals={"item": f"{eid}|{r['period_index']}"}, hx_target="#sub-due-panel", hx_swap="innerHTML"))
+                               hx_vals={"item": f"{eid}|{r['period_index']}", FIELD: request_key},
+                               hx_target="#sub-due-panel", hx_swap="innerHTML"))
         return Tr(Td(A(name, href=f"/subscriptions/{eid}")), outcome, action)
 
     return Div(
@@ -462,6 +464,7 @@ def _catch_up_card(items: list[dict], subs: dict[str, dict], results: list[dict]
         *notes,
         P(t("subscriptions.catchup_hint"), cls="text-muted"),
         Form(
+            operation_key_input(),
             Table(Thead(Tr(Th(""), Th(t("th.name")), Th(t("th.period")), Th(t("th.bill_date")),
                            Th(t("th.total"), cls="cell--number"))),
                   Tbody(*rows), cls="data-table"),
@@ -660,15 +663,19 @@ def setup_routes(app) -> None:
         token = _token(request)
         if not token:
             return Response(status_code=401, headers={"HX-Redirect": "/login"})
-        items = _catch_up_items(await request.form())
+        form = await request.form()
+        items = _catch_up_items(form)
         if not items:
             return _action_error(t("label.select_rows_first"))
         try:
+            key = required_operation_key(form, "generate-due")
+            for item in items:
+                item["request_key"] = f"{key}:{item['period_index']}"
             result = await api.generate_all_due(token, items)
             subs = await _agreements(token)
         except APIError as e:
             return _refused(e)
-        return _due_results(result, subs)
+        return _due_results(result, subs, str(form[FIELD]))
 
     @app.get("/subscriptions/catch-up")
     async def subscriptions_catch_up_page(request: Request):
@@ -699,6 +706,9 @@ def setup_routes(app) -> None:
             return _action_error(t("label.select_rows_first"))
         try:
             if action == "run":
+                key = required_operation_key(form, "catch-up")
+                for item in chosen:
+                    item["request_key"] = f"{key}:{item['period_index']}"
                 results = (await api.run_subscriptions_catch_up(token, chosen)).get("results") or []
             else:
                 reason = str(form.get("reason", "")).strip()
