@@ -79,6 +79,7 @@ jobs:
           timeout 1200 pytest -n 2 -q --tb=short --no-cov --store-durations \
             --durations-path tests/.test_durations \
             tests/test_nav_overrides.py \
+            tests/test_auto_stamp.py::test_journal_ref_index_is_recognized_as_schema_ddl_not_data_backfill \
             tests/test_doc_gl_impact_ui.py \
             tests/test_services/test_sequences.py \
             tests/test_picker_starting_list_per_type.py \
