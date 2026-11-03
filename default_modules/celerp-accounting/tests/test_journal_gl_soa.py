@@ -2558,8 +2558,8 @@ async def test_by_doc_includes_related_credit_and_return_postings(client, sessio
     note_id = note.json()["id"]
     company_id, user_id = _ids(tok)
     for suffix, metadata in (
-        ("applied", {"doc_id": invoice, "credit_note_id": note_id}),
-        ("return", {"cn_id": note_id}),
+        ("applied", {"doc_id": invoice, "cn_id": note_id, "trigger": "cn.applied"}),
+        ("return", {"cn_id": note_id, "trigger": "doc.return_received"}),
     ):
         je_id = f"je:test:{suffix}:{note_id}"
         await _emit_auto_posted_je(
@@ -2575,6 +2575,11 @@ async def test_by_doc_includes_related_credit_and_return_postings(client, sessio
     assert f"je:test:applied:{note_id}" in note_ids
     assert f"je:test:return:{note_id}" in note_ids
     assert f"je:test:return:{note_id}" not in invoice_ids
+    for entity_id in (invoice, note_id):
+        applied = next(e for e in (await _by_doc(client, tok, entity_id))["entries"]
+                       if e["je_id"] == f"je:test:applied:{note_id}")
+        assert applied["items_status"] == "no_items"
+        assert not any(line.get("item") for line in applied["lines"])
 
 
 @pytest.mark.asyncio
@@ -2624,6 +2629,42 @@ async def test_by_doc_for_a_draft_or_unposted_document_has_no_entries(client):
     impact = await _by_doc(client, tok, r.json()["id"])
     assert impact["entries"] == [] and impact["status"] == "draft"
     assert impact["total_debit"] == impact["total_credit"] == 0
+
+
+@pytest.mark.asyncio
+async def test_by_doc_rejects_non_document_projection(client):
+    tok = await _reg(client)
+    r = await client.get("/accounting/journal/by-doc/contact:1", headers=_h(tok))
+    assert r.status_code == 404, r.text
+
+
+@pytest.mark.asyncio
+async def test_by_doc_includes_real_supplier_credit_note_application(client, session):
+    from celerp.services.auto_je import _emit_auto_posted_je
+
+    tok = await _reg(client)
+    bill = await _doc_with_items(client, tok, "bill", [("STOCK", 1, 10.0)])
+    note_resp = await client.post("/docs", headers=_h(tok), json={
+        "doc_type": "debit_note", "contact_id": "contact:1",
+        "issue_date": "2026-02-02", "line_items": [],
+        "subtotal": 0, "tax": 0, "total": 0,
+    })
+    assert note_resp.status_code == 200, note_resp.text
+    note_id = note_resp.json()["id"]
+    company_id, user_id = _ids(tok)
+    je_id = f"je:test:dnapply:{note_id}"
+    await _emit_auto_posted_je(
+        session, company_id=company_id, user_id=user_id, je_id=je_id,
+        idem_create=f"{je_id}:c", idem_posted=f"{je_id}:p",
+        memo="Supplier note", ts="2026-02-02", entries=_bal(10.0),
+        metadata_={"doc_id": bill, "dn_id": note_id, "trigger": "dn.applied"},
+    )
+    await session.commit()
+    for entity_id in (bill, note_id):
+        found = [e for e in (await _by_doc(client, tok, entity_id))["entries"]
+                 if e["je_id"] == je_id]
+        assert len(found) == 1
+        assert found[0]["items_status"] == "no_items"
 
 
 @pytest.mark.asyncio
