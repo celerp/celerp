@@ -181,7 +181,7 @@ jobs:
             tests/test_issued_document_tax_side.py
       - name: PostgreSQL race tests
         run: |
-          timeout 420 pytest -q --tb=short --no-cov -n 2 \
+          PYTHONPATH=tests timeout 420 pytest -q --tb=short --no-cov -n 2 \
             default_modules/celerp-subscriptions/tests/test_billing_races_pg.py
       - name: Publish validated integration branch
         run: |
