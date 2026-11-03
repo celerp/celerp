@@ -266,10 +266,11 @@ async def test_an_interrupted_send_is_shown_with_a_retry(client, session, monkey
     with pytest.raises(asyncio.CancelledError):
         await tick(session, cid, "2026-07-01")
     [row] = [r for r in (await summary(client, hd))["rows"] if r["kind"] == "send_unconfirmed"]
-    assert row["entity_id"] == stopped and row["retry_url"]
+    assert row["entity_id"] == stopped and row["retry_url"] is None
     monkeypatch.setattr(email, "send_email", mail)
-    assert (await client.post(row["retry_url"], headers=hd)).status_code == 200
-    assert mail.sent == ["member@example.test"]
+    # A self-hosted transport cannot safely retry an outcome it did not confirm.
+    assert (await client.post(row["retry_url"], headers=hd)).status_code == 409
+    assert mail.sent == []
 
     async def broken(*_, **__):
         raise RuntimeError("relay unreachable")
@@ -278,8 +279,9 @@ async def test_an_interrupted_send_is_shown_with_a_retry(client, session, monkey
     raising = await _auto(client, hd, start="2026-07-01", send=True,
                           contact_id=await contact(client, hd, "other@example.test"))
     await tick(session, cid, "2026-07-01")
-    failed = [r for r in (await summary(client, hd))["rows"] if r["kind"] == "send_failed"]
-    assert [r["entity_id"] for r in failed] == [raising] and "relay unreachable" in failed[0]["message"]
+    unconfirmed = [r for r in (await summary(client, hd))["rows"] if r["kind"] == "send_unconfirmed"]
+    assert raising in [r["entity_id"] for r in unconfirmed]
+    assert "relay unreachable" in next(r["message"] for r in unconfirmed if r["entity_id"] == raising)
 
 
 async def test_a_retried_send_is_recorded_as_the_person_who_retried(client, session, monkeypatch, mail):
@@ -311,3 +313,62 @@ async def test_purchase_agreements_are_not_emailed_unattended(client, session, m
     r = await schedule(client, hd, eid, auto_send=True)
     assert r.status_code == 422, r.text
     assert not (await template(client, hd, eid)).get("auto_send")
+
+async def test_delayed_mail_completion_cannot_change_reopened_period(client, session, monkeypatch, mail):
+    freeze_day(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    eid = await _auto(client, hd, start="2026-07-01", send=True,
+                      contact_id=await contact(client, hd, "member@example.test"))
+    original = mail.__call__
+
+    async def superseded(to, subject, body_html, body_text="", **kw):
+        [first] = await billed_docs(session, eid)
+        assert (await client.post(f"/docs/{first['entity_id']}/void", headers=hd,
+                                  json={"reason": "Replace"})).status_code == 200
+        assert (await client.post(f"/subscriptions/{eid}/periods/0/reopen", headers=hd)).status_code == 200
+        new = await generate_due(client, hd, eid)
+        assert new.status_code == 200, new.text
+        assert new.json()["doc_id"] != first["entity_id"]
+        return await original(to, subject, body_html, body_text, **kw)
+
+    from celerp.services import email
+    monkeypatch.setattr(email, "send_email", superseded)
+    await tick(session, cid, "2026-07-01")
+    state = await template(client, hd, eid)
+    entry = state["periods"]["0"]
+    assert entry["state"] == "billed"
+    assert not entry.get("send")
+    docs = await billed_docs(session, eid)
+    assert len(docs) == 2 and docs[0]["status"] == "void"
+
+async def test_relay_retry_keeps_original_transport_identity(client, session, monkeypatch, mail):
+    import asyncio
+    from celerp.config import settings
+    from celerp.services import email
+
+    monkeypatch.setattr(settings, "gateway_token", "connected-for-test")
+    freeze_day(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    eid = await _auto(client, hd, start="2026-07-01", send=True,
+                      contact_id=await contact(client, hd, "member@example.test"))
+    keys = []
+
+    async def interrupted(*args, **kw):
+        keys.append(kw["operation_id"])
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(email, "send_email", interrupted)
+    with pytest.raises(asyncio.CancelledError):
+        await tick(session, cid, "2026-07-01")
+    row = next(r for r in (await summary(client, hd))["rows"] if r["kind"] == "send_unconfirmed")
+    assert row["retry_url"]
+
+    async def verified(*args, **kw):
+        keys.append(kw["operation_id"])
+        return await mail(*args, **kw)
+
+    monkeypatch.setattr(email, "send_email", verified)
+    assert (await client.post(row["retry_url"], headers=hd)).status_code == 200
+    assert keys[0] == keys[1] and len(set(keys)) == 1

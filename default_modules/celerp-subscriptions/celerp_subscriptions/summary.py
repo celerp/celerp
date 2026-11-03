@@ -60,7 +60,10 @@ async def report(session: AsyncSession, company_id, user_id, *, everything: bool
             if send.get("state") in _SEND_KINDS and (send.get("at") or "") > since:
                 kind = _SEND_KINDS[send["state"]]
                 found.append({**base, "kind": kind, "at": send["at"], "error": send.get("error"),
-                              "retry_url": f"/subscriptions/{row.entity_id}/periods/{k}/send" if kind != "sent" else None})
+                              "retry_url": (f"/subscriptions/{row.entity_id}/periods/{k}/send"
+                                            if kind == "send_failed" or (
+                                                kind == "send_unconfirmed" and send.get("deduplicated"))
+                                            else None)})
         if state.get("status") != "active":
             continue
         for mode in billing.lapsed_modes(state):

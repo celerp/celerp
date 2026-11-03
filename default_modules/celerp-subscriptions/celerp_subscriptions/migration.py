@@ -45,7 +45,8 @@ def _is_legacy(state: dict) -> bool:
     return "anchor_date" not in state and any(f in state for f in _LEGACY)
 
 
-async def _placements(session, company_id, state: dict, schedule: Schedule) -> tuple[dict, list]:
+async def _placements(session, company_id, state: dict, schedule: Schedule,
+                      conflicts: set[str]) -> tuple[dict, list]:
     """Each old document's period, and the reasons the history is not clean."""
     start = state.get("start_date")
     placed: dict[str, list[int]] = {}
@@ -53,11 +54,26 @@ async def _placements(session, company_id, state: dict, schedule: Schedule) -> t
     for doc_id in state.get("generated_doc_ids") or []:
         doc = await billing.doc_state(session, company_id, doc_id)
         day = (doc or {}).get("issue_date")
+        if doc_id in conflicts:
+            problems.append(f"{doc_id} is referenced by another agreement")
+        if doc is not None:
+            if doc.get("doc_type") not in _DOC_TYPES[billing.doc_kind(state)]:
+                problems.append(f"{doc_id} is not the expected document type")
+            if doc.get("status") == "void":
+                problems.append(f"{doc_id} was voided")
+            for field in ("source_agreement", "subscription_id"):
+                if doc.get(field) and doc[field] != state.get("id"):
+                    problems.append(f"{doc_id} belongs to a different agreement")
         if not day:
             placed[doc_id] = []
             problems.append(f"{doc_id} missing")
             continue
-        k = schedule.current(date.fromisoformat(day))
+        try:
+            k = schedule.current(date.fromisoformat(day))
+        except ValueError:
+            placed[doc_id] = []
+            problems.append(f"{doc_id} has an invalid issue date")
+            continue
         placed[doc_id] = [k]
         if k >= 0:
             problems.append(f"{doc_id} dated on or after the next date")
@@ -71,7 +87,8 @@ async def _placements(session, company_id, state: dict, schedule: Schedule) -> t
     return placed, problems
 
 
-async def _migrate_template(session: AsyncSession, company_id, proj: Projection) -> bool | None:
+async def _migrate_template(session: AsyncSession, company_id, proj: Projection,
+                            conflicts: set[str] | None = None) -> bool | None:
     """Move one template onto a schedule; True when it waits for history review, None when
     another start already moved it. Caller holds the savepoint and commits."""
     row = await billing.locked_agreement(session, company_id, proj.entity_id)
@@ -82,10 +99,13 @@ async def _migrate_template(session: AsyncSession, company_id, proj: Projection)
     changes: dict = {"generation_mode": "manual_due", "billing_timing": "advance"}
     review: list = []
     anchor = old_next or state.get("start_date")
+    if not anchor:
+        raise ValueError("Cannot migrate a subscription without its first billing date")
     if anchor:
         changes["anchor_date"] = anchor
         schedule = Schedule.from_state({**state, **changes, "periods": {}})
-        placed, problems = await _placements(session, company_id, state, schedule)
+        placed, problems = await _placements(session, company_id,
+                                              {**state, "id": proj.entity_id}, schedule, conflicts or set())
         periods = {}
         if problems:
             review = [{"doc_id": d, "candidates": ks} for d, ks in placed.items()]
@@ -165,12 +185,23 @@ async def migrate_company(session: AsyncSession, company_id) -> dict | None:
     result = {"migrated": 0, "review": 0, "failed": 0, "marked": True}
     if await conn.run_sync(lambda c: get_meta(c, marker)):
         return result
-    for proj in await billing.agreements(session, company_id):
+    agreements = await billing.agreements(session, company_id)
+    owners: dict[str, str] = {}
+    conflicts: set[str] = set()
+    for agreement in agreements:
+        doc_ids = list(agreement.state.get("generated_doc_ids") or [])
+        doc_ids.extend(e["doc_id"] for e in (agreement.state.get("periods") or {}).values()
+                       if e.get("state") == BILLED and e.get("doc_id"))
+        for doc_id in doc_ids:
+            owner = owners.setdefault(doc_id, agreement.entity_id)
+            if owner != agreement.entity_id:
+                conflicts.add(doc_id)
+    for proj in agreements:
         if not _is_legacy(proj.state):
             continue
         try:
             async with session.begin_nested():
-                review = await _migrate_template(session, company_id, proj)
+                review = await _migrate_template(session, company_id, proj, conflicts)
         except Exception:
             result["failed"] += 1
             log.exception("Could not move template %s onto a schedule", proj.entity_id)

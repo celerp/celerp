@@ -588,11 +588,24 @@ async def _held_and_unread(token: str) -> tuple[list[dict], dict]:
     return catch_up, summary
 
 
+async def _all_agreements(token: str, direction: str | None = None, *, review: bool = False) -> list[dict]:
+    """Read every server page, without silently truncating large agreement sets."""
+    items: list[dict] = []
+    offset = 0
+    while True:
+        params = {"limit": 1000, "offset": offset, **({"direction": direction} if direction else {}),
+                  **({"review": "true"} if review else {})}
+        resp = await api.list_subscriptions(token, params)
+        batch = resp if isinstance(resp, list) else resp.get("items", [])
+        items.extend(batch)
+        offset += len(batch)
+        if not batch or len(batch) < 1000 or (isinstance(resp, dict) and offset >= resp.get("total", 0)):
+            return items
+
+
 async def _agreements(token: str, direction: str | None = None) -> dict[str, dict]:
     """Agreements by id, of one direction or both."""
-    params = {"limit": 1000, **({"direction": direction} if direction else {})}
-    resp = await api.list_subscriptions(token, params)
-    items = resp if isinstance(resp, list) else resp.get("items", [])
+    items = await _all_agreements(token, direction)
     return {(i.get("id") or i.get("entity_id")): i for i in items}
 
 
@@ -742,10 +755,8 @@ def setup_routes(app) -> None:
         page = int(request.query_params.get("page", 1))
         per_page = per_page_value(request.query_params.get("per_page"), _PER_PAGE)
 
-        params = {"direction": direction, "limit": 1000, **({"review": "true"} if review else {})}
         try:
-            all_resp = await api.list_subscriptions(token, params)
-            all_items = all_resp if isinstance(all_resp, list) else all_resp.get("items", [])
+            all_items = await _all_agreements(token, direction, review=review)
         except APIError:
             all_items = []
 
@@ -806,9 +817,7 @@ def setup_routes(app) -> None:
             return Div(t("error.session_expired"), id="sub-table")
         q = request.query_params.get("q", "")
         try:
-            resp = await api.list_subscriptions(token, {"direction": direction, "limit": 1000,
-                                                        **({"review": "true"} if review else {})})
-            items = resp if isinstance(resp, list) else resp.get("items", [])
+            items = await _all_agreements(token, direction, review=review)
         except APIError:
             items = []
         if status:

@@ -422,10 +422,23 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
     outcome is recorded after, and a sent email marks the document sent through its own
     send transition. Only a pending send goes, or, retried by the member ``retry_by``, a
     failed one or one cut off before its outcome was recorded."""
+    from celerp.config import settings as app_settings
+    from celerp.modules.registry import uses_module
+    from celerp_docs.doc_constants import NO_SEND_DOC_TYPES
     from celerp_docs.routes import DocSendBody, doc_email, mark_doc_sent
 
+    relay_idempotent = bool(app_settings.gateway_token)
     async with factory() as session:
         proj = await locked_agreement(session, company_id, template_id)
+        company = await session.get(Company, company_id)
+        if retry_by is None:
+            if (company is None or not company.is_active
+                    or not uses_module(company.settings, "celerp-subscriptions")
+                    or proj.state.get("status") != "active"
+                    or not proj.state.get("auto_send")
+                    or proj.state.get("generation_mode") not in AUTO_MODES
+                    or await authorizer(session, company_id, company.settings or {}, proj.state, "sending") is None):
+                return {"state": "pending"}
         periods = periods_of(proj.state)
         entry = periods.get(str(k)) or {}
         send = dict(entry.get("send") or {})
@@ -433,6 +446,8 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
             raise HTTPException(status_code=409, detail=t("subscriptions.err_send_not_billed"))
         if send.get("state") not in (("pending", "failed", "sending") if retry_by else ("pending",)):
             return send
+        if send.get("state") == "sending" and not (relay_idempotent and send.get("deduplicated")):
+            raise HTTPException(status_code=409, detail="Email outcome is unconfirmed; verify receipt before retrying")
         doc = await session.get(Projection, {"company_id": company_id, "entity_id": entry["doc_id"]})
         contact_id = proj.state.get("contact_id")
         contact = (await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})) if contact_id else None
@@ -440,7 +455,8 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
         by = retry_by or ((proj.state.get("consents") or {}).get("sending") or {}).get("by") or entry.get("by")
         actor = SimpleNamespace(id=uuid.UUID(str(by)) if by else None)
         n = int(send.get("n") or 0) + 1
-        if doc is None or (doc.state or {}).get("status") == "void" or not to:
+        if doc is None or (doc.state or {}).get("status") == "void" or (
+            doc.state or {}).get("doc_type") in NO_SEND_DOC_TYPES or not to:
             send = {"state": "failed", "n": n, "at": now_stamp(),
                     "error": t("subscriptions.err_send_no_email") if doc is not None and not to
                     else t("subscriptions.err_send_void")}
@@ -449,18 +465,31 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
             await session.commit()
             return send
         message = await doc_email(session, company_id, entry["doc_id"], doc.state, to, actor)
-        periods[str(k)]["send"] = {"state": "sending", "n": n, "at": now_stamp()}
+        operation_id = str(uuid.uuid5(uuid.NAMESPACE_URL,
+                                     f"subscription-email:{company_id}:{entry['doc_id']}"))
+        periods[str(k)]["send"] = {"state": "sending", "n": n, "at": now_stamp(),
+                                  "operation_id": operation_id, "deduplicated": relay_idempotent}
         await write_agreement(session, company_id, template_id, {"periods": periods}, actor.id)
         await session.commit()
     try:
-        ok, detail = await email.send_email(**message)
+        ok, detail = await email.send_email(**message, operation_id=operation_id,
+                                            fail_closed_on_uncertain=True)
     except Exception as exc:
         log.exception("Sending period %s of %s failed", k, template_id)
-        ok, detail = False, str(exc)
+        ok, detail = False, "unconfirmed: " + str(exc)
     async with factory() as session:
         proj = await locked_agreement(session, company_id, template_id)
         periods = periods_of(proj.state)
-        send = {"state": "sent" if ok else "failed", "n": n, "at": now_stamp(), **({} if ok else {"error": detail})}
+        current = periods.get(str(k)) or {}
+        sending = current.get("send") or {}
+        if (current.get("state") != BILLED or current.get("doc_id") != entry["doc_id"]
+                or sending.get("n") != n or sending.get("state") != "sending"
+                or sending.get("operation_id") != operation_id):
+            return sending
+        outcome = "sent" if ok else ("sending" if detail.startswith("unconfirmed: ") else "failed")
+        send = {"state": outcome, "n": n, "at": now_stamp(), "operation_id": operation_id,
+                "deduplicated": relay_idempotent,
+                **({} if ok else {"error": detail})}
         periods[str(k)]["send"] = send
         await write_agreement(session, company_id, template_id, {"periods": periods}, actor.id)
         if ok:

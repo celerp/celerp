@@ -56,3 +56,14 @@ async def test_period_bounds_company_timezone_dst(client, monkeypatch):
     freeze_instant(monkeypatch, datetime(2026, 11, 1, 5, 30, tzinfo=timezone.utc))
     r = await generate_due(client, h, eid)
     assert r.status_code == 200 and r.json()["period_index"] == 1
+
+def test_large_period_offsets_and_terminated_due_date_are_bounded():
+    daily = _s(date(1900, 1, 1), "custom", custom_days=1)
+    assert daily.current(date(2026, 7, 1)) == (date(2026, 7, 1) - date(1900, 1, 1)).days
+    assert len(daily.due(date(2026, 7, 1))) == 500
+    month_end = _s(date(1900, 1, 31))
+    current = month_end.current(date(2026, 7, 1))
+    assert month_end.start(current) <= date(2026, 7, 1) < month_end.start(current + 1)
+    ended = _s(date(2025, 1, 1), term_end=date(2025, 3, 1))
+    assert ended.latest_due(date(2026, 7, 1)) == 1
+    assert ended.current(date(2026, 7, 1)) > ended.latest_due(date(2026, 7, 1))

@@ -94,7 +94,10 @@ class Schedule:
     def exists(self, k: int) -> bool:
         if k < self.lowest or (self.last is not None and k > self.last):
             return False
-        start = self.start(k)
+        try:
+            start = self.start(k)
+        except (ValueError, OverflowError):
+            return False
         return ((self.term_start is None or start >= self.term_start)
                 and (self.term_end is None or start < self.term_end))
 
@@ -108,8 +111,10 @@ class Schedule:
     def first(self) -> int | None:
         """The lowest existing period, or None when none exists."""
         k = self.lowest
-        while self.term_start is not None and self.start(k) < self.term_start:
-            k += 1
+        if self.term_start is not None:
+            k = max(k, self.current(self.term_start))
+            if self.start(k) < self.term_start:
+                k += 1
         return k if self.exists(k) else None
 
     def oldest_open(self, *, floor: int | None = None) -> int | None:
@@ -129,14 +134,14 @@ class Schedule:
         k = self.oldest_open(floor=floor)
         return None if k is None else self.bill_date(k)
 
-    def due(self, today: date, *, floor: int | None = None) -> list[int]:
+    def due(self, today: date, *, floor: int | None = None, limit: int = 500) -> list[int]:
         """Every open existing period whose bill date is on or before ``today``, oldest first."""
         k = self.first()
         if k is None:
             return []
         k = max(k, floor) if floor is not None else k
         out = []
-        while self.exists(k) and self.bill_date(k) <= today:
+        while self.exists(k) and self.bill_date(k) <= today and len(out) < limit:
             if self.is_open(k):
                 out.append(k)
             k += 1
@@ -144,21 +149,30 @@ class Schedule:
 
     def latest_due(self, today: date) -> int | None:
         """The newest existing period whose bill date has come."""
-        k = self.first()
-        if k is None or self.bill_date(k) > today:
+        first = self.first()
+        if first is None or self.bill_date(first) > today:
             return None
-        while self.exists(k + 1) and self.bill_date(k + 1) <= today:
-            k += 1
-        return k
+        k = self.current(today) - (1 if self.timing == "arrears" else 0)
+        if self.term_end is not None:
+            end = self.current(self.term_end)
+            k = min(k, end - (1 if self.start(end) == self.term_end else 0))
+        if self.last is not None:
+            k = min(k, self.last)
+        return k if k >= first and self.exists(k) else None
 
     def current(self, today: date) -> int:
-        """The period ``today`` falls in (may be before the lowest index or past the term)."""
-        k = 0
-        while self.start(k) > today:
-            k -= 1
-        while self.start(k + 1) <= today:
-            k += 1
-        return k
+        """The period containing today, including dates before or after the term."""
+        if self.frequency in _MONTHS:
+            stride = _MONTHS[self.frequency]
+            months = (today.year - self.anchor.year) * 12 + today.month - self.anchor.month
+            k = months // stride
+            if self.start(k) > today:
+                k -= 1
+            elif self.start(k + 1) <= today:
+                k += 1
+            return k
+        stride = _DAYS.get(self.frequency) or self.custom_days
+        return (today - self.anchor).days // stride
 
     def ended(self, today: date) -> bool:
         """The term is over and no existing period is left open."""

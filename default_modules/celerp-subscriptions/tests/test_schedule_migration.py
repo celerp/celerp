@@ -276,3 +276,25 @@ async def test_history_set_aside_clears_documents_no_period_can_take(client, ses
     assert not (await _state(session, cid, dtid)).get("history_review")
     assert (await generate_due(client, hd, dtid)).json()["period_index"] == 0
     assert (await act(dtid, feb15, "withdraw")).status_code == 409  # a later period is billed
+
+async def test_migration_reviews_shared_historical_document(session, auth, monkeypatch):
+    _today(monkeypatch, "2026-03-15")
+    a, docs = await _legacy(session, auth, next_run="2026-04-01", doc_dates=["2026-03-01"])
+    b, other = await _legacy(session, auth, next_run="2026-04-01", doc_dates=["2026-03-01"])
+    await _emit(session, auth["company_id"], auth["user_id"], b, "doc.updated",
+                {"fields_changed": {"generated_doc_ids": {"new": docs}}})
+    await session.commit()
+    await _migrate(session, auth["company_id"])
+    for tid in (a, b):
+        state = await _state(session, auth["company_id"], tid)
+        assert state.get("history_review")
+        assert not any(e.get("state") == "billed" for e in (state.get("periods") or {}).values())
+
+
+async def test_migration_missing_anchor_keeps_legacy_state_for_repair(session, auth, monkeypatch):
+    _today(monkeypatch, "2026-03-15")
+    tid, _ = await _legacy(session, auth, next_run="", start="", doc_dates=[])
+    result = await _migrate(session, auth["company_id"])
+    assert result["failed"] == 1 and not result["marked"]
+    state = await _state(session, auth["company_id"], tid)
+    assert "anchor_date" not in state and "next_run_date" in state

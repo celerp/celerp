@@ -12,7 +12,7 @@ from __future__ import annotations
 import uuid
 from datetime import date
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -76,7 +76,7 @@ class ConfirmBody(BaseModel):
 
 
 class CatchUpBody(BaseModel):
-    items: list[CatchUpItem]
+    items: list[CatchUpItem] = Field(..., max_length=BATCH_CAP)
 
 
 class ScheduleBody(BaseModel):
@@ -157,8 +157,8 @@ def _build_router() -> APIRouter:
         status: str | None = None,
         q: str | None = None,
         review: bool = False,
-        limit: int = 50,
-        offset: int = 0,
+        limit: int = Query(50, ge=1, le=1000),
+        offset: int = Query(0, ge=0),
         company_id: uuid.UUID = Depends(get_current_company_id),
         _: None = require_permission("view_subscriptions"),
         session: AsyncSession = Depends(get_session),
