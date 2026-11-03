@@ -191,7 +191,7 @@ async def test_generate_due_creates_invoice(client):
     sub = await _create_sub_template(client, h, name="My Sub Template")
     eid = sub.get("entity_id") or sub.get("id") or ""
 
-    r = await client.post(f"/subscriptions/{eid}/generate-due", headers=h, json={})
+    r = await client.post(f"/subscriptions/{eid}/generate-due", headers=h, json={"request_key": str(uuid.uuid4())})
     assert r.status_code == 200, r.text
     body = r.json()
     doc_id = body.get("doc_id", "")
@@ -218,7 +218,7 @@ async def test_generate_due_preserves_legacy_customer_terms(client):
     sub = await _create_sub_template(client, h, terms="Legacy subscription customer terms.")
     eid = sub.get("entity_id") or sub.get("id") or ""
 
-    r = await client.post(f"/subscriptions/{eid}/generate-due", headers=h, json={})
+    r = await client.post(f"/subscriptions/{eid}/generate-due", headers=h, json={"request_key": str(uuid.uuid4())})
     assert r.status_code == 200, r.text
     doc = (await client.get(f"/docs/{r.json()['doc_id']}", headers=h)).json()
     assert doc.get("terms_text") == "Legacy subscription customer terms."
@@ -245,7 +245,7 @@ async def test_generate_due_computes_totals(client):
     )
     eid = sub.get("entity_id") or sub.get("id") or ""
 
-    r = await client.post(f"/subscriptions/{eid}/generate-due", headers=h, json={})
+    r = await client.post(f"/subscriptions/{eid}/generate-due", headers=h, json={"request_key": str(uuid.uuid4())})
     assert r.status_code == 200, r.text
     doc_id = r.json()["doc_id"]
 
@@ -382,7 +382,7 @@ async def test_subscription_custom_frequency_needs_its_interval(client):
         "start_date": "2026-01-01", "line_items": [{"description": "S", "quantity": 1, "unit_price": 100.0}]})
     assert (await client.post(f"/subscriptions/{r.json()['id']}/activate", headers=h)).status_code == 422
     sub = await _create_sub_template(client, h, frequency="custom", custom_interval_days=30)
-    r = await client.post(f"/subscriptions/{sub['id']}/generate-due", headers=h, json={})
+    r = await client.post(f"/subscriptions/{sub['id']}/generate-due", headers=h, json={"request_key": str(uuid.uuid4())})
     assert r.status_code == 200, r.text
     assert r.json()["next_bill_date"] == "2026-01-31"
 
@@ -398,7 +398,7 @@ async def test_generated_invoice_appears_in_normal_invoice_list(client):
     sub = await _create_sub_template(client, h)
     eid = sub.get("entity_id") or sub.get("id") or ""
 
-    r = await client.post(f"/subscriptions/{eid}/generate-due", headers=h, json={})
+    r = await client.post(f"/subscriptions/{eid}/generate-due", headers=h, json={"request_key": str(uuid.uuid4())})
     assert r.status_code == 200
     doc_id = r.json()["doc_id"]
 
@@ -467,7 +467,7 @@ async def test_generate_finalizes_the_invoice_with_its_journal_entry(client, ses
     h = _h(await _register(client))
     eid = (await _create_sub_template(client, h))["id"]
 
-    r = await client.post(f"/subscriptions/{eid}/generate-due", headers=h, json={})
+    r = await client.post(f"/subscriptions/{eid}/generate-due", headers=h, json={"request_key": str(uuid.uuid4())})
     assert r.status_code == 200, r.text
     doc = (await client.get(f"/docs/{r.json()['doc_id']}", headers=h)).json()
     assert doc["status"] == "final" and doc["ref_id"].startswith("INV-")
@@ -481,7 +481,7 @@ async def test_generate_on_a_purchase_order_subscription_creates_a_bill(client, 
     h = _h(await _register(client))
     eid = (await _create_sub_template(client, h, doc_type="subscription_po"))["id"]
 
-    r = await client.post(f"/subscriptions/{eid}/generate-due", headers=h, json={})
+    r = await client.post(f"/subscriptions/{eid}/generate-due", headers=h, json={"request_key": str(uuid.uuid4())})
     assert r.status_code == 200, r.text
     doc = (await client.get(f"/docs/{r.json()['doc_id']}", headers=h)).json()
     assert doc["doc_type"] == "bill" and r.json()["ref_id"] == doc["ref_id"]
@@ -553,7 +553,7 @@ async def test_generate_in_a_locked_period_is_refused_and_writes_nothing(client,
     await session.commit()
     before = (await client.get("/docs?doc_type=invoice", headers=h)).json()["items"]
 
-    r = await client.post(f"/subscriptions/{eid}/generate-due", headers=h, json={})
+    r = await client.post(f"/subscriptions/{eid}/generate-due", headers=h, json={"request_key": str(uuid.uuid4())})
     assert r.status_code == 422, r.text
     assert r.json()["detail"] == t("error.period_locked", "en", date=date.today().isoformat())
     assert (await client.get("/docs?doc_type=invoice", headers=h)).json()["items"] == before

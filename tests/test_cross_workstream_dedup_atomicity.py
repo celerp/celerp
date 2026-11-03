@@ -304,7 +304,7 @@ async def test_subscription_generate_duplicate_is_atomic(client, session):
     before_invoices = await _target_doc_count(session, cid, "invoice")
     before_template = await _doc_state(session, cid, sub_id)
 
-    r = await client.post(f"/subscriptions/{sub_id}/generate-due", headers=_h(t), json={})
+    r = await client.post(f"/subscriptions/{sub_id}/generate-due", headers=_h(t), json={"request_key": str(_uuid.uuid4())})
 
     assert r.status_code == 409, r.text
     assert r.json()["detail"]["code"] == "duplicate_document_item"

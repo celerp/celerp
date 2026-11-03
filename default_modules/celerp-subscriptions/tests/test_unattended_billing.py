@@ -269,7 +269,7 @@ async def test_an_interrupted_send_is_shown_with_a_retry(client, session, monkey
     assert row["entity_id"] == stopped and row["retry_url"] is None
     monkeypatch.setattr(email, "send_email", mail)
     # A self-hosted transport cannot safely retry an outcome it did not confirm.
-    assert (await client.post(row["retry_url"], headers=hd)).status_code == 409
+    assert row["retry_url"] is None
     assert mail.sent == []
 
     async def broken(*_, **__):
@@ -330,6 +330,8 @@ async def test_delayed_mail_completion_cannot_change_reopened_period(client, ses
         new = await generate_due(client, hd, eid)
         assert new.status_code == 200, new.text
         assert new.json()["doc_id"] != first["entity_id"]
+        updated = await template(client, hd, eid)
+        assert updated["periods"]["0"]["state"] == "billed", updated["periods"]
         return await original(to, subject, body_html, body_text, **kw)
 
     from celerp.services import email
@@ -344,10 +346,9 @@ async def test_delayed_mail_completion_cannot_change_reopened_period(client, ses
 
 async def test_relay_retry_keeps_original_transport_identity(client, session, monkeypatch, mail):
     import asyncio
-    from celerp.config import settings
     from celerp.services import email
 
-    monkeypatch.setattr(settings, "gateway_token", "connected-for-test")
+    monkeypatch.setattr(email, "relay_send_is_idempotent", lambda: True)
     freeze_day(monkeypatch, "2026-07-01")
     hd = await register(client)
     cid = await company_id(client, hd)

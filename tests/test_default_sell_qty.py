@@ -676,13 +676,13 @@ async def test_an_unnamed_subscription_is_named_as_the_subscriptions_list_names_
     row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": sub})
     row.state = {**row.state, "status": "active"}
     await session.commit()
-    r = await client.post(f"/subscriptions/{sub}/generate-due", headers=auth["headers"], json={})
+    r = await client.post(f"/subscriptions/{sub}/generate-due", headers=auth["headers"], json={"request_key": str(uuid.uuid4())})
     assert r.status_code == 422, r.text
     detail = r.json()["detail"]
     assert detail["message_key"] == "units.template_finer_than_unit", detail
     assert detail["params"]["template"] == ref, detail
     assert detail["message"].startswith(f"Subscription {ref} lists Stone at 0.275 carat"), detail
-    r = await client.post(f"/subscriptions/{fits}/generate-due", headers=auth["headers"], json={})
+    r = await client.post(f"/subscriptions/{fits}/generate-due", headers=auth["headers"], json={"request_key": str(uuid.uuid4())})
     assert r.status_code == 200, r.text
     fits_ref = (await _state(session, auth, fits))["ref_id"]
     assert f"Auto-created from subscription template {fits_ref}" in (
@@ -918,7 +918,7 @@ async def test_a_subscription_never_makes_a_document_finer_than_its_units(client
     await session.commit()
 
     before = await _doc_count(session, auth)
-    r = await client.post(f"/subscriptions/{old}/generate-due", headers=auth["headers"], json={})
+    r = await client.post(f"/subscriptions/{old}/generate-due", headers=auth["headers"], json={"request_key": str(uuid.uuid4())})
     assert r.status_code == 422, r.text
     detail = r.json()["detail"]
     assert detail["message_key"] == "units.template_finer_than_unit", detail
@@ -930,13 +930,13 @@ async def test_a_subscription_never_makes_a_document_finer_than_its_units(client
     assert not (await _state(session, auth, old)).get("periods")
 
     # A template whose lines fit makes its document as before.
-    r = await client.post(f"/subscriptions/{fits}/generate-due", headers=auth["headers"], json={})
+    r = await client.post(f"/subscriptions/{fits}/generate-due", headers=auth["headers"], json={"request_key": str(uuid.uuid4())})
     assert r.status_code == 200, r.text
     assert (await _state(session, auth, r.json()["doc_id"]))["line_items"][0]["quantity"] == 0.27
 
     # The way out the message names: the unit back to 3 places, then the old template makes its document.
     assert (await _set_carat_decimals(client, auth, 3)).status_code == 200
-    r = await client.post(f"/subscriptions/{old}/generate-due", headers=auth["headers"], json={})
+    r = await client.post(f"/subscriptions/{old}/generate-due", headers=auth["headers"], json={"request_key": str(uuid.uuid4())})
     assert r.status_code == 200, r.text
     assert (await _state(session, auth, r.json()["doc_id"]))["line_items"][0]["quantity"] == 0.275
 

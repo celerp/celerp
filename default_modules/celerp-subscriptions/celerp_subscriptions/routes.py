@@ -43,7 +43,8 @@ def next_bill_date(state: dict) -> str | None:
 
 
 class RequestBody(BaseModel):
-    request_key: str | None = Field(None, min_length=1, max_length=200)
+    request_key: str = Field(..., min_length=1, max_length=200)
+    period_index: int | None = None
 
 
 class EarlyBody(BaseModel):
@@ -76,7 +77,7 @@ class ConfirmBody(BaseModel):
 
 
 class CatchUpBody(BaseModel):
-    items: list[CatchUpItem] = Field(..., max_length=BATCH_CAP)
+    items: list[CatchUpItem]
 
 
 class ScheduleBody(BaseModel):
@@ -273,7 +274,7 @@ def _build_router() -> APIRouter:
     @router.post("/{entity_id}/generate-due")
     async def generate_due(
         entity_id: str,
-        body: RequestBody | None = None,
+        body: RequestBody,
         company_id: uuid.UUID = Depends(get_current_company_id),
         _: None = require_permission("finalize_documents"),
         user=Depends(get_current_user),
@@ -281,7 +282,7 @@ def _build_router() -> APIRouter:
     ) -> dict:
         """Bill the agreement's oldest due period."""
         result = await billing.claim_period(session, company_id, entity_id, actor=user,
-                                            request_key=body.request_key if body else None)
+                                            request_key=body.request_key, period_index=body.period_index)
         await session.commit()
         return result
 

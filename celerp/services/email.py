@@ -17,6 +17,12 @@ log = logging.getLogger(__name__)
 _BRAND_URL = _brand_url("email")
 
 
+def relay_send_is_idempotent() -> bool:
+    """The configured relay supports deduplicated retry with a stable operation id."""
+    from celerp.config import settings
+    return bool(settings.gateway_token)
+
+
 def _with_footer(body_html: str, body_text: str) -> tuple[str, str]:
     """Append the brand footer to both MIME parts so they stay in sync."""
     footer_html = (

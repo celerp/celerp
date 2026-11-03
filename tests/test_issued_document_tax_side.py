@@ -101,7 +101,7 @@ async def test_a_subscription_with_withholding_tax_generates_nothing(client, ses
     assert r.status_code == 200, r.text
     before = await _entries(session)
     assert (await client.post(f"/subscriptions/{eid}/activate", headers=h)).status_code == 200
-    _refused_for(await client.post(f"/subscriptions/{eid}/generate-due", headers=h, json={}), "WHT 3%")
+    _refused_for(await client.post(f"/subscriptions/{eid}/generate-due", headers=h, json={"request_key": str(uuid.uuid4())}), "WHT 3%")
     assert await _entries(session) == before
     invoices = (await client.get("/docs", headers=h, params={"doc_type": "invoice"})).json()["items"]
     assert [d for d in invoices if d.get("finalized") or d.get("status") != "draft"] == []

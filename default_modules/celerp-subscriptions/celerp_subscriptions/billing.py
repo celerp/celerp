@@ -253,6 +253,11 @@ async def period_list(session: AsyncSession, company_id, state: dict, today: dat
     rows = []
     if first is not None:
         top = max([schedule.current(today) + 1, *schedule.periods])
+        if schedule.term_end is not None:
+            end = schedule.current(schedule.term_end)
+            top = min(top, end - (1 if schedule.start(end) == schedule.term_end else 0))
+        if schedule.last is not None:
+            top = min(top, schedule.last)
         k = top
         while k >= first and len(rows) < limit:
             if schedule.exists(k):
@@ -422,12 +427,11 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
     outcome is recorded after, and a sent email marks the document sent through its own
     send transition. Only a pending send goes, or, retried by the member ``retry_by``, a
     failed one or one cut off before its outcome was recorded."""
-    from celerp.config import settings as app_settings
     from celerp.modules.registry import uses_module
     from celerp_docs.doc_constants import NO_SEND_DOC_TYPES
     from celerp_docs.routes import DocSendBody, doc_email, mark_doc_sent
 
-    relay_idempotent = bool(app_settings.gateway_token)
+    relay_idempotent = email.relay_send_is_idempotent()
     async with factory() as session:
         proj = await locked_agreement(session, company_id, template_id)
         company = await session.get(Company, company_id)

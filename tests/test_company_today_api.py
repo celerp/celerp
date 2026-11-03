@@ -135,7 +135,7 @@ async def test_subscription_dates_count_from_the_company_day(co, client):
     r = await client.post(f"/subscriptions/{sub_id}/resume", headers=co.headers)
     assert r.status_code == 200, r.text
     assert r.json()["next_bill_date"] == today
-    r = await client.post(f"/subscriptions/{sub_id}/generate-due", headers=co.headers, json={})
+    r = await client.post(f"/subscriptions/{sub_id}/generate-due", headers=co.headers, json={"request_key": str(uuid.uuid4())})
     assert r.status_code == 200, r.text
     made = (await client.get(f"/docs/{r.json()['doc_id']}", headers=co.headers)).json()
     assert made["issue_date"] == co.day.isoformat()

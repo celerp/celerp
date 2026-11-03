@@ -48,7 +48,7 @@ async def test_a_due_subscription_generates_nothing_until_generate_due(client):
     assert not template.get("periods") and template.get("generation_mode") in (None, "manual_due")
     assert await _invoices(client, h) == []
 
-    r = await client.post(f"/subscriptions/{sub_id}/generate-due", headers=h, json={})
+    r = await client.post(f"/subscriptions/{sub_id}/generate-due", headers=h, json={"request_key": str(uuid.uuid4())})
     assert r.status_code == 200, r.text
     assert [d["id"] for d in await _invoices(client, h)] == [r.json()["doc_id"]]
 

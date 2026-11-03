@@ -135,7 +135,7 @@ class TestSubscriptionActions:
     async def test_a_refused_action_says_why_and_stays_on_the_page(self, owner_ui):
         eid = await _active_subscription(owner_ui)
         assert (await owner_ui.api.post(f"/subscriptions/{eid}/cancel")).status_code == 200
-        r = await owner_ui.post(f"/subscriptions/{eid}/generate-due")
+        r = await owner_ui.post(f"/subscriptions/{eid}/generate-due", data={"idempotency_key": "cancelled-check"})
         assert r.status_code == 200
         assert "location" not in r.headers and "HX-Redirect" not in r.headers
         assert t("subscriptions.err_generate_cancelled", "en") in json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"]
@@ -291,7 +291,7 @@ class TestBillingPages:
 @pytest.mark.parametrize("method,path,api_call,form", [
     ("post", "/subscriptions/{eid}/periods/0/skip", "subscription_period_action", {"reason": "Closed"}),
     ("patch", "/subscriptions/{eid}/schedule/generation_mode", "update_subscription_schedule", {"value": "manual_due"}),
-    ("post", "/subscriptions/generate-due", "generate_all_due", {"items": [{"entity_id": "{eid}", "period_index": 0}]}),
+    ("post", "/subscriptions/generate-due", "generate_all_due", {"item": ["{eid}|0"]}),
     ("post", "/subscriptions/summary/ack", "acknowledge_subscriptions_summary", {}),
     ("get", "/subscriptions/catch-up", "subscriptions_catch_up", None),
     ("get", "/subscriptions/summary", "subscriptions_summary", None),

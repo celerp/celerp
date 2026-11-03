@@ -84,7 +84,7 @@ async def schedule(client, headers: dict, eid: str, **change):
 
 async def generate_due(client, headers: dict, eid: str, key: str | None = None):
     return await client.post(f"/subscriptions/{eid}/generate-due", headers=headers,
-                             json={"request_key": key} if key else {})
+                             json={"request_key": key or str(uuid.uuid4())})
 
 
 async def bill_early(client, headers: dict, eid: str, key: str, **extra):
