@@ -17,6 +17,7 @@ PLUGIN_MANIFEST = {
             {"group": "Subscriptions", "key": "subscriptions_purchasing", "href": "/subscriptions?direction=purchasing", "label": "Purchasing Subscriptions", "label_key": "nav.subscriptions_purchasing", "order": 26, "permission": "view_subscriptions"},
         ],
         "on_modules_ready": [{"handler": "celerp_subscriptions.migration:migrate_schedules_hook"}],
+        "on_company_restored": [{"handler": "celerp_subscriptions.migration:migrate_restored_company"}],
         "periodic_operation": {"handler": "celerp_subscriptions.billing:run_due", "module": "celerp-subscriptions"},
         "search_provider": {
             "handler": "celerp_subscriptions.search:global_search",

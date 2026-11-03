@@ -78,8 +78,6 @@ EXPECTED_CATALOGUE = {
     "view_financial_reports": ("manager", True, "viewer"),
     "manage_accounting": ("manager", True, "viewer"),
     "manage_module_settings": ("manager", True, "viewer"),
-    "automate_billing": ("manager", True, "viewer"),
-    "automate_sending": ("manager", True, "viewer"),
     "automate_collection": ("admin", True, "viewer"),
     "automate_billing": ("manager", True, "viewer"),
     "automate_sending": ("manager", True, "viewer"),

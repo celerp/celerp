@@ -47,6 +47,8 @@ AUTO_MODES = frozenset({"auto_invoice", "auto_invoice_collect"})
 # Each unattended mode and the permission its authorizer must keep holding.
 MODE_PERMISSION = {"generation": "automate_billing", "sending": "automate_sending",
                    "collection": "automate_collection"}
+MODE_DOCUMENT_PERMISSION = {"generation": "finalize_documents", "sending": "edit_documents",
+                            "collection": "record_payments"}
 CATCHUP_CAP = 12
 
 
@@ -116,6 +118,17 @@ async def doc_ref(session, company_id, doc_id: str) -> str:
     return ((await doc_state(session, company_id, doc_id)) or {}).get("ref_id") or doc_id
 
 
+async def replay_result(session, company_id, template_id: str, request_key: str,
+                        *, early: bool = False, period_index: int | None = None) -> dict | None:
+    """Return the committed receipt for precisely this billing request, without claiming a new period."""
+    event = await find_event_by_idempotency(session, company_id, f"subreq:{template_id}:{request_key}")
+    if event is None:
+        return None
+    if (event.metadata_ or {}).get("request") != {"early": early, "period_index": period_index}:
+        raise HTTPException(status_code=409, detail="This billing request key was used for a different operation")
+    return event.metadata_["result"]
+
+
 async def _result(session, company_id, doc_id: str, k: int, schedule: Schedule, state: dict) -> dict:
     nxt = schedule.next_bill_date(floor=review_floor(state))
     return {"doc_id": doc_id, "ref_id": await doc_ref(session, company_id, doc_id), "period_index": k,
@@ -139,7 +152,7 @@ async def _bill(session, company, company_id, tid: str, state: dict, schedule: S
     contact = (await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})) if contact_id else None
     contact_state = (contact.state or {}) if contact is not None and contact.entity_type == "contact" else {}
     service = {"source_agreement": tid, "period_index": k,
-               "service_start": schedule.start(k).isoformat(), "service_end": schedule.end(k).isoformat()}
+               "service_start": schedule.start(k).isoformat(), "service_end": schedule.service_end(k).isoformat()}
     lines = [{**li, **service} for li in copy.deepcopy(list(state.get("line_items") or []))]
     template_name = template_label(state, tid)
     auto_note = f"Auto-created from subscription template {template_name}"
@@ -173,7 +186,8 @@ async def _bill(session, company, company_id, tid: str, state: dict, schedule: S
     periods[str(k)] = {"state": BILLED, "doc_id": doc_id, "release_count": release, "at": now_stamp(),
                        "by": str(actor.id) if actor.id else None, "auto": auto,
                        **({"send": {"state": "pending", "n": 0}} if send else {})}
-    await write_agreement(session, company_id, tid, {"periods": periods}, actor.id)
+    await write_agreement(session, company_id, tid, {"periods": periods}, actor.id,
+                          drop=("billing_failure",) if state.get("billing_failure") else ())
     return doc_id
 
 
@@ -186,10 +200,9 @@ async def claim_period(session: AsyncSession, company_id, template_id: str, *, a
     company = await locked_company(session, company_id)
     req = f"subreq:{template_id}:{request_key}" if request_key else None
     request = {"early": early, "period_index": period_index}
-    if req and (earlier := await find_event_by_idempotency(session, company_id, req)) is not None:
-        if (earlier.metadata_ or {}).get("request") != request:
-            raise HTTPException(status_code=409, detail="This billing request key was used for a different operation")
-        return earlier.metadata_["result"]
+    if request_key and (prior := await replay_result(
+            session, company_id, template_id, request_key, early=early, period_index=period_index)) is not None:
+        return prior
     proj = await locked_agreement(session, company_id, template_id)
     state = proj.state
     refuse_status(state)
@@ -365,7 +378,8 @@ async def authorizer(session, company_id, settings: dict, state: dict, mode: str
     permission; None when the consent is missing or has lapsed."""
     by = ((state.get("consents") or {}).get(mode) or {}).get("by")
     role = await _member_role(session, company_id, by)
-    if role is None or not role_has_permission(settings, role, MODE_PERMISSION[mode]):
+    if (role is None or not role_has_permission(settings, role, MODE_PERMISSION[mode])
+            or not role_has_permission(settings, role, MODE_DOCUMENT_PERMISSION[mode])):
         return None
     return SimpleNamespace(id=uuid.UUID(str(by)))
 
@@ -400,6 +414,7 @@ async def run_due(*, session: AsyncSession, company_id, today: date, budget: int
             held.append(len(found[1]))
             continue
         while report.done < budget:
+            failed_period = None
             try:
                 async with session.begin_nested():
                     # Decided again from the agreement as locked: the read above may be stale.
@@ -418,10 +433,23 @@ async def run_due(*, session: AsyncSession, company_id, today: date, budget: int
                     send = (bool(proj.state.get("auto_send"))
                             and await authorizer(session, company_id, settings, proj.state, "sending") is not None)
                     k = found[1][0]
+                    failed_period = k
                     await _bill(session, company, company_id, row.entity_id, proj.state, found[0], k, actor,
                                 auto=True, send=send)
             except Exception:
                 log.exception("Unattended billing of %s failed", row.entity_id)
+                if failed_period is not None:
+                    try:
+                        proj = await locked_agreement(session, company_id, row.entity_id)
+                        prior = proj.state.get("billing_failure") or {}
+                        if prior.get("period_index") != failed_period:
+                            await write_agreement(session, company_id, row.entity_id, {
+                                "billing_failure": {"period_index": failed_period, "at": now_stamp()},
+                            }, None)
+                            await _notify(session, company_id, "notice_billing_failed",
+                                          "/subscriptions/summary")
+                    except Exception:
+                        log.exception("Recording failed billing of %s failed", row.entity_id)
                 break
             report.done += 1
             if send:

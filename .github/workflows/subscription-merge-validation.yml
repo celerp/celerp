@@ -1,0 +1,37 @@
+name: Subscription Merge Validation
+on:
+  push:
+    branches: [validation/subscription-merge-414]
+permissions:
+  contents: read
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: celerp
+          POSTGRES_PASSWORD: celerp
+          POSTGRES_DB: celerp_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      ALLOW_INSECURE_JWT: "true"
+      DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split -c constraints.txt
+      - name: Syntax and narrow regression
+        run: |
+          python -m compileall -q celerp/modules/slots.py celerp/modules/loader.py celerp/services/company_backup.py default_modules/celerp-subscriptions/celerp_subscriptions/ ui/routes/subscriptions.py
+          timeout 850 pytest -q --tb=short --no-cov             tests/test_i18n.py tests/test_role_permissions.py tests/test_slot_connector_gate.py tests/test_routers/test_viewer_role.py             tests/test_modules/test_admission.py tests/test_modules/test_slot_reads.py tests/test_ci_shard_split.py             default_modules/celerp-subscriptions/tests/test_periods.py             default_modules/celerp-subscriptions/tests/test_agreement_schedule.py             default_modules/celerp-subscriptions/tests/test_unattended_billing.py             default_modules/celerp-subscriptions/tests/test_schedule_migration.py             default_modules/celerp-subscriptions/tests/test_billing_races_pg.py

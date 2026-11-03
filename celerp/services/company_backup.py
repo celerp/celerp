@@ -1887,6 +1887,12 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 await _rebind_actors(session, new_id)
             await _turn_off_shop_sync(session, new_id, user.id)
             await place_company_stock(session, new_id)
+            # Restored data must satisfy each enabled first-party module's current schema
+            # before this new company is committed or can replace an existing one.
+            from celerp.modules.slots import fire_lifecycle
+            failures = await fire_lifecycle("on_company_restored", session=session, company_id=new_id)
+            if failures:
+                raise BackupError(422, t(UNSAVABLE))
             team = await _add_team(session, new_id, team_to_add) if team_to_add else 0
             if replacing is not None:
                 # Last, once its team has the new company, so no one is signed out by it.

@@ -447,3 +447,44 @@ async def test_auto_arrears_bills_on_first_bill_date_with_zero_catchup(client, s
     freeze_day(monkeypatch, "2026-02-01")
     await tick(session, cid, "2026-02-01")
     assert [d["period_index"] for d in await billed_docs(session, eid)] == [0]
+
+async def test_failed_generation_is_visible_once_and_clears_after_recovery(client, session, monkeypatch):
+    from celerp_docs import routes as docs_routes
+
+    freeze_day(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    eid = await _auto(client, hd, start="2026-07-01")
+    original = docs_routes.finalize_document
+
+    async def broken(*args, **kwargs):
+        raise ValueError("synthetic finalize failure")
+
+    monkeypatch.setattr(docs_routes, "finalize_document", broken)
+    await tick(session, cid, "2026-07-01")
+    first = (await template(client, hd, eid))["billing_failure"]
+    assert first["period_index"] == 0 and first["at"]
+    assert (await summary(client, hd))["counts"]["generation_failed"] == 1
+    assert await billed_docs(session, eid) == []
+    await tick(session, cid, "2026-07-01")
+    assert (await template(client, hd, eid))["billing_failure"] == first
+
+    monkeypatch.setattr(docs_routes, "finalize_document", original)
+    await tick(session, cid, "2026-07-01")
+    assert [d["period_index"] for d in await billed_docs(session, eid)] == [0]
+    assert "billing_failure" not in await template(client, hd, eid)
+
+
+async def test_revoked_document_permission_stops_automated_generation(client, session, monkeypatch):
+    freeze_day(monkeypatch, "2026-07-01")
+    owner = await register(client)
+    cid = await company_id(client, owner)
+    manager, _ = await member(client, session, owner, "manager")
+    eid = await agreement(client, owner, start="2026-07-01")
+    assert (await schedule(client, manager, eid, generation_mode="auto_invoice")).status_code == 200
+    await revoke(client, owner, "finalize_documents", "manager")
+    await tick(session, cid, "2026-07-01")
+    assert await billed_docs(session, eid) == []
+    assert "authorization lapsed" in str(await summary(client, owner))
+    denied = await agreement(client, owner, start="2026-07-01")
+    assert (await schedule(client, manager, denied, generation_mode="auto_invoice")).status_code == 403

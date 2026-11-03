@@ -311,3 +311,16 @@ async def test_history_confirmation_refuses_another_agreements_document(client, 
     url = lambda eid: f"/subscriptions/{eid}/history/{docs[0]}/confirm"
     assert (await client.post(url(first), headers=hd, json={"period_index": -1})).status_code == 200
     assert (await client.post(url(second), headers=hd, json={"period_index": -1})).status_code == 409
+
+async def test_restored_company_hook_reconciles_legacy_schedule_before_commit(session, auth, monkeypatch):
+    from celerp.modules.slots import fire_lifecycle
+
+    _today(monkeypatch, "2026-03-15")
+    tid, _ = await _legacy(session, auth, next_run="2026-04-01", doc_dates=["2026-03-01"])
+    assert (await _state(session, auth["company_id"], tid)).get("anchor_date") is None
+    failures = await fire_lifecycle("on_company_restored", session=session, company_id=auth["company_id"])
+    assert not failures, failures
+    await session.commit()
+    state = await _state(session, auth["company_id"], tid)
+    assert state["anchor_date"] == "2026-04-01"
+    assert "next_run_date" not in state

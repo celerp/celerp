@@ -233,10 +233,19 @@ def _build_router() -> APIRouter:
         results = []
         for n, item in enumerate(body.items):
             row = {"entity_id": item.entity_id, "period_index": item.period_index}
-            if n >= BATCH_CAP or (item.entity_id, item.period_index) not in listed:
+            if n >= BATCH_CAP:
                 results.append({**row, "ok": False, "error": t("subscriptions.err_catchup_not_listed")})
                 continue
             try:
+                # A response lost after commit must replay its receipt, even after
+                # that period has left the catch-up preview.
+                prior = await billing.replay_result(session, company_id, item.entity_id,
+                                                    item.request_key, period_index=item.period_index)
+                if prior is not None:
+                    results.append({**row, "ok": True, **prior})
+                    continue
+                if (item.entity_id, item.period_index) not in listed:
+                    raise HTTPException(status_code=409, detail=t("subscriptions.err_catchup_not_listed"))
                 async with session.begin_nested():
                     proj = await billing.locked_agreement(session, company_id, item.entity_id)
                     oldest = Schedule.from_state(proj.state).oldest_open(floor=billing.review_floor(proj.state))
@@ -421,8 +430,9 @@ def _build_router() -> APIRouter:
         if sent.get("auto_send"):
             needed.append("sending")
         for mode in needed:
-            if not role_has_permission(settings, role, billing.MODE_PERMISSION[mode]):
-                raise missing_permission(billing.MODE_PERMISSION[mode])
+            for permission in (billing.MODE_PERMISSION[mode], billing.MODE_DOCUMENT_PERMISSION[mode]):
+                if not role_has_permission(settings, role, permission):
+                    raise missing_permission(permission)
         if "collection" in needed:
             # Collection runs through the Connect service; until it offers it, no agreement collects.
             raise HTTPException(status_code=422, detail=t("subscriptions.err_collect_unavailable"))

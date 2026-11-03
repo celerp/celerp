@@ -709,7 +709,10 @@ def setup_routes(app) -> None:
                 key = required_operation_key(form, "catch-up")
                 for item in chosen:
                     item["request_key"] = f"{key}:{item['period_index']}"
-                results = (await api.run_subscriptions_catch_up(token, chosen)).get("results") or []
+                results = []
+                for offset in range(0, len(chosen), 50):
+                    response = await api.run_subscriptions_catch_up(token, chosen[offset:offset + 50])
+                    results.extend(response.get("results") or [])
             else:
                 reason = str(form.get("reason", "")).strip()
                 results = []

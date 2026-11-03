@@ -222,6 +222,13 @@ async def migrate_company(session: AsyncSession, company_id) -> dict | None:
     return result
 
 
+async def migrate_restored_company(*, session: AsyncSession, company_id) -> None:
+    """Upgrade a restored company's schedules before it becomes available."""
+    result = await migrate_company(session, company_id)
+    if result is not None and not result["marked"]:
+        raise ValueError("Restored subscription schedules need repair before activation")
+
+
 async def migrate_schedules_hook(*, session: AsyncSession) -> None:
     """on_modules_ready: move every company's templates onto schedules."""
     from celerp.models.company import Company

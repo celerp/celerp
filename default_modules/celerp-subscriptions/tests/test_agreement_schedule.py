@@ -402,7 +402,7 @@ async def test_catchup_run_refuses_items_outside_preview(client, session, monkey
              + [_bulk_item(behind, 2)] * 50)
     r = (await client.post("/subscriptions/catch-up/run", headers=hd, json={"items": items})).json()
     ok = [x["ok"] for x in r["results"]]
-    assert ok[:6] == [True, False, False, False, False, True]
+    assert ok[:6] == [True, True, False, False, False, True]
     assert not any(ok[50:])  # above the batch cap: refused per item
     assert [d["period_index"] for d in await billed_docs(session, behind)] == [0, 1, 2]
 
@@ -550,3 +550,33 @@ async def test_bulk_replay_after_void_and_reopen_never_creates_replacement(clien
     assert replacement.status_code == 200, replacement.text
     assert replacement.json()["results"][0]["doc_id"] != doc_id
     assert len(await billed_docs(session, eid)) == 2
+
+async def test_catchup_replays_committed_receipt_after_preview_advances(client, session, monkeypatch):
+    freeze_day(monkeypatch, "2026-06-15")
+    hd = await register(client)
+    eid = await agreement(client, hd, start="2026-01-01")
+    assert (await schedule(client, hd, eid, generation_mode="auto_invoice",
+                           catchup_periods=0)).status_code == 200
+    item = _bulk_item(eid, 0)
+    url = "/subscriptions/catch-up/run"
+    first = await client.post(url, headers=hd, json={"items": [item]})
+    assert first.status_code == 200 and first.json()["results"][0]["ok"], first.text
+    listing = (await client.get("/subscriptions/catch-up", headers=hd)).json()["items"]
+    assert 0 not in [p["period_index"] for r in listing if r["entity_id"] == eid for p in r["periods"]]
+    replay = await client.post(url, headers=hd, json={"items": [item]})
+    assert replay.status_code == 200 and replay.json()["results"][0]["ok"]
+    assert replay.json()["results"][0]["doc_id"] == first.json()["results"][0]["doc_id"]
+    rejected = await client.post(url, headers=hd,
+        json={"items": [{**item, "request_key": "new-intent-not-in-preview"}]})
+    assert not rejected.json()["results"][0]["ok"]
+    assert [d["period_index"] for d in await billed_docs(session, eid)] == [0]
+
+
+async def test_schedule_rejects_invalid_calendar_range(client, monkeypatch):
+    freeze_day(monkeypatch, "2026-03-15")
+    hd = await register(client)
+    eid = await agreement(client, hd, start="2026-03-01")
+    for change in ({"custom_interval_days": 36501, "frequency": "custom"},
+                   {"anchor_date": "9999-12-31"}, {"term_end": "2026-02-01"}):
+        r = await schedule(client, hd, eid, **change)
+        assert r.status_code == 422, (change, r.text)
