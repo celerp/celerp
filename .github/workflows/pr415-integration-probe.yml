@@ -1,0 +1,44 @@
+name: PR415 integration probe
+on:
+  push:
+    branches: [fix/pr415-integration]
+permissions:
+  contents: write
+jobs:
+  integrate:
+    if: github.event.head_commit.message == 'probe-pr415-integration'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Integrate exact heads
+        shell: bash
+        run: |
+          set -euo pipefail
+          CURRENT=530cf7aa60d0dee03d440c809911b6fe8a36a358
+          MAIN=7cbe1a2c1aefcae3c18b1dce768b6757a7d709f6
+          TEMP="${GITHUB_SHA}"
+          test "$(git rev-parse "${CURRENT}")" = "${CURRENT}"
+          test "$(git ls-remote origin refs/heads/main | cut -f1)" = "${MAIN}"
+          git checkout --detach "${CURRENT}"
+          git config user.name "Noah Severs"
+          git config user.email "118095044+ngsevers@users.noreply.github.com"
+          if ! git merge --no-ff --no-commit "${MAIN}"; then
+            echo "BEGIN_CONFLICT_PATHS"
+            git diff --name-only --diff-filter=U
+            echo "END_CONFLICT_PATHS"
+            for path in $(git diff --name-only --diff-filter=U | head -n 12); do
+              echo "BEGIN_CONFLICT $path"
+              git diff --cc -- "$path" | head -n 90 || true
+              echo "END_CONFLICT $path"
+            done
+            echo "CONFLICTS_REQUIRE_RESOLUTION"
+            exit 0
+          fi
+          git commit -m "Merge main into PR415 corrections"
+          echo "CLEAN_INTEGRATION_COMMIT $(git rev-parse HEAD)"
+          test "$(git rev-list --parents -n 1 HEAD)" = "$(git rev-parse HEAD) ${CURRENT} ${MAIN}"
+          test "$(git ls-remote origin refs/heads/fix/pr415-integration | cut -f1)" = "${TEMP}"
+          git push --force-with-lease=refs/heads/fix/pr415-integration:${TEMP} origin HEAD:refs/heads/fix/pr415-integration
