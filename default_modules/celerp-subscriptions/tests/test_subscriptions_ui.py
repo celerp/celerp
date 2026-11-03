@@ -175,8 +175,8 @@ class TestBillingPages:
         freeze_day(monkeypatch, "2026-03-15")
         eid = await agreement(owner_ui.api, {}, start="2026-02-01")  # periods 0 and 1 due
         panel = (await owner_ui.get("/subscriptions/due?direction=sales")).text
-        assert f'value="{eid}"' in panel and t("subscriptions.due_more", "en", n=1) in panel
-        r = await owner_ui.post("/subscriptions/generate-due", data={"ids": [eid]})
+        assert f'value="{eid}|0"' in panel and t("subscriptions.due_more", "en", n=1) in panel
+        r = await owner_ui.post("/subscriptions/generate-due", data={"item": [f"{eid}|0"]})
         assert t("subscriptions.due_result", "en", billed=1, refused=0) in r.text
         sub = (await owner_ui.api.get(f"/docs/{eid}")).json()
         assert [k for k, e in sub["periods"].items() if e["state"] == "billed"] == ["0"]
@@ -186,7 +186,7 @@ class TestBillingPages:
         freeze_day(monkeypatch, "2026-03-15")
         eid = await agreement(owner_ui.api, {}, start="2026-03-01")
         assert (await owner_ui.api.post(f"/subscriptions/{eid}/pause")).status_code == 200
-        r = await owner_ui.post("/subscriptions/generate-due", data={"ids": [eid]})
+        r = await owner_ui.post("/subscriptions/generate-due", data={"item": [f"{eid}|0"]})
         assert t("subscriptions.err_bill_paused", "en") in r.text
         assert t("btn.retry", "en") in r.text and "#sub-due-panel" in r.text
 
@@ -291,7 +291,7 @@ class TestBillingPages:
 @pytest.mark.parametrize("method,path,api_call,form", [
     ("post", "/subscriptions/{eid}/periods/0/skip", "subscription_period_action", {"reason": "Closed"}),
     ("patch", "/subscriptions/{eid}/schedule/generation_mode", "update_subscription_schedule", {"value": "manual_due"}),
-    ("post", "/subscriptions/generate-due", "generate_all_due", {"ids": ["{eid}"]}),
+    ("post", "/subscriptions/generate-due", "generate_all_due", {"items": [{"entity_id": "{eid}", "period_index": 0}]}),
     ("post", "/subscriptions/summary/ack", "acknowledge_subscriptions_summary", {}),
     ("get", "/subscriptions/catch-up", "subscriptions_catch_up", None),
     ("get", "/subscriptions/summary", "subscriptions_summary", None),

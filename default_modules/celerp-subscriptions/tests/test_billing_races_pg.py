@@ -136,7 +136,7 @@ async def test_two_processes_dispatch_same_company_one_invoice(committed_engine,
         await asyncio.gather(
             periodic.run_company(factory, cid, today=today),
             periodic.run_company(factory, cid, today=today),
-            client.post("/subscriptions/generate-due", headers=owner, json={"ids": [eid]}),
+            client.post("/subscriptions/generate-due", headers=owner, json={"items": [{"entity_id": eid, "period_index": 0}]}),
         )
         await periodic.run_company(factory, cid, today=today)
     assert await _billed(factory, cid) == [(eid, 0), (eid, 1), (eid, 2)]

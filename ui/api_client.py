@@ -2159,9 +2159,9 @@ async def subscriptions_due(token: str) -> dict:
         return _raise(await c.get("/subscriptions/due")).json()
 
 
-async def generate_all_due(token: str, ids: list[str]) -> dict:
+async def generate_all_due(token: str, items: list[dict]) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post("/subscriptions/generate-due", json={"ids": ids})).json()
+        return _raise(await c.post("/subscriptions/generate-due", json={"items": items})).json()
 
 
 async def subscriptions_catch_up(token: str) -> dict:

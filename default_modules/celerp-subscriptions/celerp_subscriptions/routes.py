@@ -51,8 +51,13 @@ class EarlyBody(BaseModel):
     period_index: int | None = None
 
 
+class CatchUpItem(BaseModel):
+    entity_id: str
+    period_index: int
+
+
 class BulkBody(BaseModel):
-    ids: list[str] = Field(..., max_length=BATCH_CAP)
+    items: list[CatchUpItem] = Field(..., max_length=BATCH_CAP)
 
 
 class SkipBody(BaseModel):
@@ -67,11 +72,6 @@ class SkipBody(BaseModel):
 
 
 class ConfirmBody(BaseModel):
-    period_index: int
-
-
-class CatchUpItem(BaseModel):
-    entity_id: str
     period_index: int
 
 
@@ -160,6 +160,7 @@ def _build_router() -> APIRouter:
         limit: int = 50,
         offset: int = 0,
         company_id: uuid.UUID = Depends(get_current_company_id),
+        _: None = require_permission("view_subscriptions"),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
         """List agreements, each with its derived next bill date; ``review`` keeps those
@@ -189,14 +190,16 @@ def _build_router() -> APIRouter:
         """Bill the oldest due period of each listed agreement, each on its own: one
         refusal never stops the rest."""
         results = []
-        for eid in body.ids:
+        for item in body.items:
+            eid = item.entity_id
             try:
                 async with session.begin_nested():
-                    found = await billing.claim_period(session, company_id, eid, actor=user)
-                results.append({"entity_id": eid, "ok": True, **found})
+                    found = await billing.claim_period(
+                        session, company_id, eid, actor=user, period_index=item.period_index)
+                results.append({"entity_id": eid, "period_index": item.period_index, "ok": True, **found})
             except HTTPException as exc:
                 detail = "Not found" if exc.status_code == 404 else str(exc.detail)
-                results.append({"entity_id": eid, "ok": False, "error": detail})
+                results.append({"entity_id": eid, "period_index": item.period_index, "ok": False, "error": detail})
         await session.commit()
         billed = sum(1 for r in results if r["ok"])
         return {"results": results, "billed": billed, "refused": len(results) - billed}
@@ -236,7 +239,8 @@ def _build_router() -> APIRouter:
                     oldest = Schedule.from_state(proj.state).oldest_open(floor=billing.review_floor(proj.state))
                     if oldest != item.period_index:
                         raise HTTPException(status_code=409, detail=t("subscriptions.err_early_not_next"))
-                    found = await billing.claim_period(session, company_id, item.entity_id, actor=user)
+                    found = await billing.claim_period(
+                        session, company_id, item.entity_id, actor=user, period_index=item.period_index)
                 results.append({**row, "ok": True, **found})
             except HTTPException as exc:
                 results.append({**row, "ok": False, "error": str(exc.detail)})
@@ -342,7 +346,7 @@ def _build_router() -> APIRouter:
         release = entry.get("release_count", 0)
         if entry.get("state") == BILLED:
             doc = await billing.doc_state(session, company_id, entry["doc_id"])
-            if not after_void or (doc is not None and doc.get("status") != "void"):
+            if not after_void or doc is None or doc.get("status") != "void":
                 await _refuse_claimed(session, company_id, entry)
             release += 1  # the next document for this period takes a new claim key
         elif entry.get("state") != SKIPPED:
@@ -419,8 +423,11 @@ def _build_router() -> APIRouter:
             # Collection runs through the Connect service; until it offers it, no agreement collects.
             raise HTTPException(status_code=422, detail=t("subscriptions.err_collect_unavailable"))
         changes = {f: (v.isoformat() if isinstance(v, date) else v) for f, v in sent.items()}
+        recorded = [int(k) for k in (state.get("periods") or {})]
         claimed = [int(k) for k, e in (state.get("periods") or {}).items() if e.get("state") in CLAIMED_STATES]
-        if claimed and any(f in changes and changes[f] != state.get(f) for f in PLACING_FIELDS):
+        if (recorded or state.get("history_review") or state.get("history_set_aside")) and any(
+            f in changes and changes[f] != state.get(f) for f in PLACING_FIELDS
+        ):
             raise HTTPException(status_code=409, detail=t("subscriptions.err_schedule_claimed"))
         if sent.get("auto_send") and billing.doc_kind(state) in NO_SEND_DOC_TYPES:
             raise HTTPException(status_code=422, detail=t("subscriptions.err_send_purchase"))
@@ -439,7 +446,7 @@ def _build_router() -> APIRouter:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         if merged.get("term_start") and merged.get("term_end") and merged["term_start"] >= merged["term_end"]:
             raise HTTPException(status_code=422, detail=t("subscriptions.err_term_order"))
-        if schedule is not None and any(not schedule.exists(k) for k in claimed):
+        if schedule is not None and any(not schedule.exists(k) for k in recorded):
             raise HTTPException(status_code=409, detail=t("subscriptions.err_term_cuts_claimed"))
         if needed:
             stamp = {"by": str(user.id), "at": billing.now_stamp()}

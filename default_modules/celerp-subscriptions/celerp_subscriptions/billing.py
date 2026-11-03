@@ -183,7 +183,10 @@ async def claim_period(session: AsyncSession, company_id, template_id: str, *, a
     the first answer to the same request. Caller commits."""
     company = await locked_company(session, company_id)
     req = f"subreq:{template_id}:{request_key}" if request_key else None
+    request = {"early": early, "period_index": period_index}
     if req and (earlier := await find_event_by_idempotency(session, company_id, req)) is not None:
+        if (earlier.metadata_ or {}).get("request") != request:
+            raise HTTPException(status_code=409, detail="This billing request key was used for a different operation")
         return earlier.metadata_["result"]
     proj = await locked_agreement(session, company_id, template_id)
     state = proj.state
@@ -191,6 +194,14 @@ async def claim_period(session: AsyncSession, company_id, template_id: str, *, a
     schedule = Schedule.from_state(state)
     today = business_today((company.settings or {}).get("timezone"))
     k = schedule.oldest_open(floor=review_floor(state))
+    if period_index is not None and period_index != k:
+        # A stale preview or repeated batch must never advance to a different period.
+        entry = schedule.periods.get(period_index) or {}
+        if entry.get("state") == BILLED and not early:
+            doc = await doc_state(session, company_id, entry["doc_id"])
+            if doc is not None and doc.get("status") != "void":
+                return await _result(session, company_id, entry["doc_id"], period_index, schedule, state)
+        raise HTTPException(status_code=409, detail=t("subscriptions.err_early_not_next"))
     if early:
         if k is None:
             raise HTTPException(status_code=409, detail=t("subscriptions.err_no_period_left"))
@@ -212,7 +223,7 @@ async def claim_period(session: AsyncSession, company_id, template_id: str, *, a
     if req:
         await emit_event(session, company_id=company_id, entity_id=template_id, entity_type="doc",
                          event_type="doc.updated", data={"fields_changed": {}}, actor_id=actor.id, location_id=None,
-                         source="subscription", idempotency_key=req, metadata_={"result": result})
+                         source="subscription", idempotency_key=req, metadata_={"request": request, "result": result})
     return result
 
 
@@ -287,7 +298,10 @@ async def due_preview(session: AsyncSession, company_id, today: date) -> dict:
 def outside_window(state: dict, schedule: Schedule, due: list[int], today: date) -> bool:
     """The oldest due period is further back than the agreement's catch-up window."""
     latest = schedule.latest_due(today)
-    return bool(due) and latest is not None and latest - due[0] > int(state.get("catchup_periods") or 0)
+    # A terminated agreement can have no recent due period. Compare with the
+    # present schedule index, not only its final eligible period.
+    age = max(schedule.current(today), latest or 0) - due[0]
+    return bool(due) and age > int(state.get("catchup_periods") or 0)
 
 
 def unattended_due(state: dict, today: date) -> tuple[Schedule, list[int]] | None:

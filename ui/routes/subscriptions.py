@@ -376,7 +376,7 @@ def _due_panel(preview: dict, subs: dict[str, dict]) -> FT:
         eid, first, more = i["entity_id"], i["periods"][0], len(i["periods"]) - 1
         sub = subs[eid]
         return Tr(
-            Td(Input(type="checkbox", name="ids", value=eid, checked=True), cls="col-checkbox"),
+            Td(Input(type="checkbox", name="item", value=f"{eid}|{first['period_index']}", checked=True), cls="col-checkbox"),
             Td(A(template_label(sub, eid), href=f"/subscriptions/{eid}")),
             Td(sub.get("contact_name") or "--"),
             Td(_period_text(first)),
@@ -411,7 +411,7 @@ def _due_results(result: dict, subs: dict[str, dict]) -> FT:
         else:
             outcome = Td(r.get("error") or "")
             action = Td(Button(t("btn.retry"), cls="btn btn--secondary btn--sm", hx_post="/subscriptions/generate-due",
-                               hx_vals={"ids": eid}, hx_target="#sub-due-panel", hx_swap="innerHTML"))
+                               hx_vals={"item": f"{eid}|{r['period_index']}"}, hx_target="#sub-due-panel", hx_swap="innerHTML"))
         return Tr(Td(A(name, href=f"/subscriptions/{eid}")), outcome, action)
 
     return Div(
@@ -627,11 +627,11 @@ def setup_routes(app) -> None:
         token = _token(request)
         if not token:
             return Response(status_code=401, headers={"HX-Redirect": "/login"})
-        ids = [str(i) for i in (await request.form()).getlist("ids")]
-        if not ids:
+        items = _catch_up_items(await request.form())
+        if not items:
             return _action_error(t("label.select_rows_first"))
         try:
-            result = await api.generate_all_due(token, ids)
+            result = await api.generate_all_due(token, items)
             subs = await _agreements(token)
         except APIError as e:
             return _refused(e)
