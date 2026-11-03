@@ -40,9 +40,9 @@ async def journal_rows(
         if not ids:
             return []
         rows = []
-        for start in range(0, len(ids), 10_000):
+        for start in range(0, len(ids), 500):
             rows.extend((await session.execute(
-                query.where(Projection.entity_id.in_(ids[start:start + 10_000]))
+                query.where(Projection.entity_id.in_(ids[start:start + 500]))
             )).scalars().all())
     else:
         rows = (await session.execute(query)).scalars().all()

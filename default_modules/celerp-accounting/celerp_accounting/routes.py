@@ -1183,9 +1183,9 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
             "is_payment": isinstance(payment_index, int),
             "is_cost_posting": meta.get("trigger") == "doc.fulfilled",
             # Other posting kinds may happen to equal a document's net price.
-            "is_item_posting": not meta.get("trigger") or meta["trigger"] in {
-                "doc.finalized", "doc.imported", "doc.converted_to_bill",
-            },
+            "is_item_posting": meta.get("trigger") in (
+                None, "", "doc.finalized", "doc.imported", "doc.converted_to_bill",
+            ),
             "doc": state,
         }
     return {je_id: refs[original] for je_id, original in reverses.items() if original in refs}
