@@ -380,12 +380,16 @@ def lapsed_modes(state: dict) -> list[str]:
 async def run_due(*, session: AsyncSession, company_id, today: date, budget: int) -> OperationReport:
     """The dispatcher's billing pass for one company (the ``periodic_operation`` slot)."""
     report = OperationReport()
+    from celerp.modules.registry import uses_module
+
     held: list[int] = []  # due periods of each agreement held for the catch-up preview
+    queued_sends = 0
     for row in await agreements(session, company_id):
         state = row.state
         for k, entry in (state.get("periods") or {}).items():
-            if ((entry.get("send") or {}).get("state")) == "pending":
+            if ((entry.get("send") or {}).get("state")) == "pending" and queued_sends < budget:
                 report.after_commit.append(_deliverer(company_id, row.entity_id, int(k)))
+                queued_sends += 1
         found = unattended_due(state, today)
         if found is None:
             continue
@@ -397,6 +401,9 @@ async def run_due(*, session: AsyncSession, company_id, today: date, budget: int
                 async with session.begin_nested():
                     # Decided again from the agreement as locked: the read above may be stale.
                     company = await locked_company(session, company_id)
+                    if (company is None or not company.is_active
+                            or not uses_module(company.settings, "celerp-subscriptions")):
+                        break
                     proj = await locked_agreement(session, company_id, row.entity_id)
                     found = unattended_due(proj.state, today)
                     if found is None or outside_window(proj.state, *found, today):
@@ -486,8 +493,11 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
             await session.commit()
             return send
         message = await doc_email(session, company_id, entry["doc_id"], doc.state, to, actor)
-        operation_id = str(uuid.uuid5(uuid.NAMESPACE_URL,
-                                     f"subscription-email:{company_id}:{entry['doc_id']}"))
+        # A confirmed failed attempt may use a new identity; an uncertain attempt
+        # must reuse its original identity to preserve transport deduplication.
+        operation_id = (send.get("operation_id") if send.get("state") == "sending"
+                        else str(uuid.uuid5(uuid.NAMESPACE_URL,
+                                           f"subscription-email:{company_id}:{entry['doc_id']}:{n}")))
         periods[str(k)]["send"] = {"state": "sending", "n": n, "at": now_stamp(),
                                   "operation_id": operation_id, "deduplicated": relay_idempotent}
         await write_agreement(session, company_id, template_id, {"periods": periods}, actor.id)

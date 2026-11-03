@@ -56,7 +56,7 @@ async def _run_operation(factory, company_id, entry: dict, today: date | None) -
     async with factory() as session:
         try:
             company = await session.get(Company, company_id)
-            if (company is None or not uses_module(company.settings, entry["module"])
+            if (company is None or not company.is_active or not uses_module(company.settings, entry["module"])
                     or await is_company_migration_staged(session, company_id)):
                 await session.rollback()
                 return None

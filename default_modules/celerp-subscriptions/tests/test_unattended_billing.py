@@ -22,10 +22,11 @@ class _Mail:
     """Stands in for the email transport: records each send and answers ``result``."""
 
     def __init__(self, result=(True, "accepted")):
-        self.result, self.sent = result, []
+        self.result, self.sent, self.operation_ids = result, [], []
 
-    async def __call__(self, to, subject, body_html, body_text="", **_):
+    async def __call__(self, to, subject, body_html, body_text="", **kwargs):
         self.sent.append(to)
+        self.operation_ids.append(kwargs.get("operation_id"))
         return self.result
 
 
@@ -145,6 +146,7 @@ async def test_email_failure_keeps_invoice_and_shows_retry(client, session, monk
     again = await client.post(row["retry_url"], headers=hd)
     assert again.status_code == 200
     assert len(mail.sent) == 2  # the retry sent once
+    assert len(set(mail.operation_ids)) == 2  # a confirmed failure permits a new send identity
     assert [d["status"] for d in await billed_docs(session, eid)] == ["sent"]
     assert (await summary(client, hd))["counts"]["sent"] == 1
 
@@ -369,3 +371,24 @@ async def test_relay_retry_keeps_original_transport_identity(client, session, mo
     monkeypatch.setattr(email, "send_email", verified)
     assert (await client.post(row["retry_url"], headers=hd)).status_code == 200
     assert keys[0] == keys[1] and len(set(keys)) == 1
+
+
+async def test_inactive_company_is_not_billed(client, session, monkeypatch):
+    from datetime import date
+    import uuid
+    from celerp.models.company import Company
+    from celerp_subscriptions import billing
+
+    freeze_day(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    eid = await _auto(client, hd, start="2026-07-01")
+    company = await session.get(Company, uuid.UUID(cid))
+    company.is_active = False
+    await session.commit()
+
+    await tick(session, cid, "2026-07-01")
+    result = await billing.run_due(session=session, company_id=uuid.UUID(cid), today=date(2026, 7, 1), budget=10)
+    await session.commit()
+    assert result.done == 0
+    assert await billed_docs(session, eid) == []
