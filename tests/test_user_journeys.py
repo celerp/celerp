@@ -820,11 +820,11 @@ class TestWorkflows:
         assert r.status_code in (200, 204, 302, 303)
 
     @pytest.mark.asyncio
-    async def test_subscription_generate(self, ui):
+    async def test_subscription_generate_due(self, ui):
         ui.cookies.update(_c())
         with _Patches({"ui.api_client.subscription_action": AsyncMock(return_value={"ok": True}),
                        "ui.api_client.get_subscription": AsyncMock(return_value=_SUB)}):
-            r = await ui.post("/subscriptions/sub:1/generate")
+            r = await ui.post("/subscriptions/sub:1/generate-due")
         assert r.status_code in (200, 204, 302, 303)
 
 

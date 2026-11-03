@@ -319,3 +319,49 @@ async def test_send_email_brands_by_default_and_not_when_opted_out():
 
         assert ok is True
         assert (_BRAND_LINE in captured["html"]) is expected
+
+
+@pytest.mark.asyncio
+async def test_durable_send_identity_forwarded_to_transport():
+    factory, client = _mock_httpx(200)
+    key = "a2f95c3b-0e6b-47a4-b817-3357e78bfbc0"
+    with (
+        patch("celerp.config.settings.gateway_token", "api-key-123"),
+        patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
+        patch("httpx.AsyncClient", factory),
+    ):
+        from celerp.services import email as email_mod
+        ok, _ = await email_mod.send_email("user@example.com", "Hello", "<p>Hi</p>",
+                                           operation_id=key, fail_closed_on_uncertain=True)
+    assert ok
+    assert client.post.call_args_list[-1].kwargs["json"]["operation_id"] == key
+
+
+@pytest.mark.asyncio
+async def test_subscription_send_never_falls_through_after_ambiguous_relay_error():
+    factory, _ = _mock_httpx(503, detail="The email service did not confirm this send")
+    with (
+        patch("celerp.config.settings.gateway_token", "api-key-123"),
+        patch("celerp.gateway.state.relay_http_url", return_value="https://relay.test"),
+        patch("httpx.AsyncClient", factory),
+        _smtp_configured(),
+        patch("aiosmtplib.send", new=AsyncMock(return_value=None)) as smtp,
+    ):
+        from celerp.services import email as email_mod
+        ok, detail = await email_mod.send_email("user@example.com", "Hello", "<p>Hi</p>",
+                                                fail_closed_on_uncertain=True)
+    assert not ok and detail.startswith("unconfirmed: ")
+    smtp.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_subscription_smtp_ambiguous_failure_is_not_retriable_as_definite_failure():
+    with (
+        patch("celerp.config.settings.gateway_token", ""),
+        _smtp_configured(),
+        patch("aiosmtplib.send", new=AsyncMock(side_effect=TimeoutError("outcome unknown"))),
+    ):
+        from celerp.services import email as email_mod
+        ok, detail = await email_mod.send_email("user@example.com", "Hello", "<p>Hi</p>",
+                                                fail_closed_on_uncertain=True)
+    assert not ok and detail.startswith("unconfirmed: ")

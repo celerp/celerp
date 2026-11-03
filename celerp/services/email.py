@@ -17,6 +17,12 @@ log = logging.getLogger(__name__)
 _BRAND_URL = _brand_url("email")
 
 
+def relay_send_is_idempotent() -> bool:
+    """The configured relay supports deduplicated retry with a stable operation id."""
+    from celerp.config import settings
+    return bool(settings.gateway_token)
+
+
 def _with_footer(body_html: str, body_text: str) -> tuple[str, str]:
     """Append the brand footer to both MIME parts so they stay in sync."""
     footer_html = (
@@ -42,6 +48,8 @@ async def send_email(
     bcc: str = "",
     from_name: str = "",
     branded: bool = True,
+    operation_id: str | None = None,
+    fail_closed_on_uncertain: bool = False,
 ) -> tuple[bool, str]:
     """Send a transactional email via the relay or SMTP fallback.
 
@@ -80,6 +88,7 @@ async def send_email(
                         "cc": cc,
                         "bcc": bcc,
                         "from_name": from_name,
+                        **({"operation_id": operation_id} if operation_id else {}),
                     },
                 )
             if resp.status_code == 200:
@@ -89,9 +98,14 @@ async def send_email(
             except Exception:
                 detail = f"relay error {resp.status_code}"
             log.warning("Relay email to %s failed: %s", to, detail)
+            if fail_closed_on_uncertain:
+                uncertain = resp.status_code >= 500 or resp.status_code == 409
+                return False, ("unconfirmed: " if uncertain else "") + detail
         except Exception as exc:
             detail = f"relay send failed: {exc}"
             log.warning("Relay email to %s failed: %s", to, detail)
+            if fail_closed_on_uncertain:
+                return False, "unconfirmed: relay send outcome unknown"
 
     # 2. SMTP fallback
     if settings.smtp_host:
@@ -126,7 +140,8 @@ async def send_email(
             return True, "delivered via SMTP"
         except Exception as exc:
             log.debug("SMTP email failed: %s", exc)
-            return False, detail or f"SMTP send failed: {exc}"
+            failure = detail or f"SMTP send failed: {exc}"
+            return False, "unconfirmed: " + failure if fail_closed_on_uncertain else failure
 
     # 3. Neither configured (or the relay refused and no SMTP fallback exists)
     log.debug("Email not sent: to=%s subject=%s detail=%s", to, subject, detail)

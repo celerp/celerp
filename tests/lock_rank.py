@@ -62,7 +62,7 @@ RANKS: dict[str, int] = {
     "row:password_resets": 18, "row:password_reset_notices": 19,
     # Connector guard (R0, R1), the run lock and the outbound identity lock (taken with no
     # transaction open in the task, on its own connection).
-    "adv:connector-runtime": 20, "adv:connector-owner": 21, "adv:sync-run": 22, "adv:outbound": 23,
+    "adv:connector-runtime": 20, "adv:connector-owner": 21, "adv:sync-run": 22, "adv:outbound": 23, "adv:periodic": 24,
     # Execution lease (fence, KEY SHARE) and its heartbeat. Every FOR UPDATE on either table runs
     # in a transaction that holds nothing else, and acquire/takeover use NOWAIT.
     "row:connector_execution_leases": 25, "row:connector_execution_heartbeats": 26,

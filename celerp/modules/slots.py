@@ -66,6 +66,15 @@ background_loop    {"handler": "module.path:function"} naming `async def handler
                    stored records current, never while they are held back. It runs for the
                    life of the process and decides itself which companies it serves
                    (uses_module). Filled by Celerp's own modules only (FIRST_PARTY_SLOTS)
+periodic_operation {"handler": "module.path:function", "module": name} naming
+                   `async def handler(*, session, company_id, today, budget) ->
+                   OperationReport` (celerp_docs.periodic), called with exactly those
+                   keyword arguments by the periodic dispatcher every hour, for each
+                   company that uses the named module and is not staged for a migration,
+                   in its own transaction under a try-lock per operation and company.
+                   It does at most ``budget`` units of unattended work found in its own
+                   records and returns what it did and the steps to take after commit.
+                   Filled by Celerp's own modules only (FIRST_PARTY_SLOTS)
 doc_asset_lines    {"handler": "module.path:function"} naming
                    `async def handler(*, session, company_id, user_id, doc_id, doc, change)
                    -> None`, called with exactly those keyword arguments when a document
@@ -165,13 +174,14 @@ SLOT_NAMES = frozenset({
     "projection_handler", "on_company_created", "on_modules_ready", "on_books_currency_set", "doc_finalize_hook",
     "on_doc_payment", "search_provider", "inventory_in_production", "item_lineage_guard",
     "demo_records", "background_loop", "doc_asset_lines", "fixed_asset_rules", "label_source",
-    "import_target", "turn_off_preflight",
+    "import_target", "turn_off_preflight", "periodic_operation",
 })
 
 # Slots only Celerp's own (first-party) modules may fill; admission refuses any
 # other module that fills one.
 FIRST_PARTY_SLOTS = frozenset({"inventory_in_production", "demo_records", "background_loop",
-                               "doc_asset_lines", "turn_off_preflight", "on_books_currency_set"})
+                               "doc_asset_lines", "turn_off_preflight", "on_books_currency_set",
+                               "periodic_operation"})
 
 # projection_handler prefixes core handles itself: system events (registered at
 # startup, celerp.main) and the core-folded connectors' declared prefixes.

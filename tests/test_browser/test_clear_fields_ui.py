@@ -71,7 +71,7 @@ def test_clear_barcode_via_ui(page, ui_server, api, item_id):
     inp = page.locator('[name="value"]').first
     inp.wait_for(state="visible", timeout=5000)
     inp.fill("")
-    page.keyboard.press("Enter")
+    inp.blur()  # The inline editor persists changed values on blur.
     _await_saved(inp)                    # cell swaps back to display once the PATCH returns
     assert _poll_cleared(api, item_id, "barcode"), "barcode not cleared from UI"
 
