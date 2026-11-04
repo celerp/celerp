@@ -227,6 +227,8 @@ function celerpConfirm(question) {
     form.append(text, actions);
     dialog.append(form);
     dialog.addEventListener('close', function() { dialog.remove(); resolve(dialog.returnValue === 'ok'); });
+    // Answering is not a click on the page: a panel or menu that asked stays open to show what follows.
+    dialog.addEventListener('click', function(e) { e.stopPropagation(); });
     document.body.append(dialog);
     dialog.showModal();
     actions.lastChild.focus();

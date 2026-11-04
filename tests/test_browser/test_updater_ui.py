@@ -727,18 +727,53 @@ def test_desktop_restart_asks_before_installing(page, ui_server, monkeypatch):
     _fake_electron(page, [_FOUND, _PROGRESS, _DOWNLOADED])
     ready = _open(page, f"{ui_server}/")
     assert ready["restart"] is True
+    page.locator(".notif-bell-btn").click()
     restart = page.locator(".update-card__restart-btn")
-    page.evaluate("() => document.querySelector('.update-card__restart-btn').click()")
+    restart.click()
     assert answer_in_app(page, accept=False) == t("shell.update_restart_confirm_windows", "en")
     assert page.evaluate("() => window.__bridgeCalls.installUpdate") == 0
     assert page.evaluate(_VISIBLE_STATE_JS) == ready
-    assert restart.is_enabled()
-    page.evaluate("() => document.querySelector('.update-card__restart-btn').click()")
+    assert restart.is_visible() and restart.is_enabled()
+    restart.click()
     answer_in_app(page, accept=True)
     page.wait_for_function("() => window.__bridgeCalls.installUpdate === 1")
-    assert page.evaluate(_VISIBLE_STATE_JS)["state"] == t(
+    state = page.locator(".update-card__state")
+    assert state.is_visible()
+    assert state.text_content() == t(
         "shell.update_installing_windows", "en").replace("{version}", "2.0.1")
     assert restart.is_disabled()
+
+
+def test_pip_restart_keeps_the_installing_notice_in_view(page, ui_server):
+    """Restart to install on a pip install asks first; answering keeps the bell panel open,
+    so Cancel leaves the card as it was and OK shows the installing notice."""
+    import json
+
+    _open_card(page, ui_server, _status())
+    installs = []
+
+    def update(route):
+        if route.request.method == "POST":
+            installs.append(1)
+            body = {"installing": "1.1.0"}
+        else:
+            body = _status(installing="1.1.0" if installs else None)
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
+
+    page.route("**/system/update", update)
+    restart = page.locator(".update-card__restart-btn")
+    state = page.locator(".update-card__state")
+    restart.click()
+    answer_in_app(page, accept=False)
+    assert installs == []
+    assert state.is_visible() and state.text_content() == "Update available: v1.1.0"
+    restart.click()
+    answer_in_app(page, accept=True)
+    page.wait_for_function("() => document.querySelector('.update-card__state').textContent"
+                           " !== 'Update available: v1.1.0'")
+    assert installs == [1]
+    assert state.is_visible()
+    assert state.text_content() == t("shell.update_installing", "en").replace("{version}", "1.1.0")
 
 
 def test_stopped_setup_card_says_setup_stopped(page, ui_server):
