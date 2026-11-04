@@ -3231,18 +3231,19 @@ def stamped_line(event) -> str | None:
     return line_id if isinstance(line_id, str) and line_id else None
 
 
-def line_of_lot(line_items: list[dict], lot_id: str, lot_state: dict, recorded: int | None,
-                source_line_id: str | None = None) -> int | None:
-    """The index of the doc line a lot belongs to, or None when it cannot be told safely.
+def lines_of_lot(line_items: list[dict], lot_id: str, lot_state: dict, recorded: int | None,
+                 source_line_id: str | None = None) -> list[int]:
+    """The indexes of the doc lines a lot may belong to: one when it can be told, none when no
+    line fits it, several when more than one does and nothing tells them apart.
 
     In order: the line its shipment recorded by id (``source_line_id``), while that line is
     still on the doc; the line its shipment recorded by position (``recorded``), while that
-    line still binds the lot or is of its SKU; the only line binding the lot; the only line
-    of its SKU."""
+    line still binds the lot or is of its SKU; every line binding the lot; every line of its
+    SKU."""
     if source_line_id:
         for idx, line in enumerate(line_items):
             if line.get("line_id") == source_line_id:
-                return idx
+                return [idx]
     sku = str(lot_state.get("sku") or "").strip()
 
     def _binds(line: dict) -> bool:
@@ -3253,14 +3254,17 @@ def line_of_lot(line_items: list[dict], lot_id: str, lot_state: dict, recorded: 
 
     if recorded is not None and 0 <= recorded < len(line_items) and (
             _binds(line_items[recorded]) or _same_sku(line_items[recorded])):
-        return recorded
+        return [recorded]
     binders = [idx for idx, line in enumerate(line_items) if _binds(line)]
-    if len(binders) == 1:
-        return binders[0]
-    if binders:
-        return None
-    matches = [idx for idx, line in enumerate(line_items) if _same_sku(line)]
-    return matches[0] if len(matches) == 1 else None
+    return binders or [idx for idx, line in enumerate(line_items) if _same_sku(line)]
+
+
+def line_of_lot(line_items: list[dict], lot_id: str, lot_state: dict, recorded: int | None,
+                source_line_id: str | None = None) -> int | None:
+    """The index of the doc line a lot belongs to (lines_of_lot), or None when it cannot be
+    told safely: no line fits the lot, or several do."""
+    lines = lines_of_lot(line_items, lot_id, lot_state, recorded, source_line_id)
+    return lines[0] if len(lines) == 1 else None
 
 
 async def doc_line_of_lot(session, company_id, doc_id: str, doc_state: dict, lot_id: str, lot_state: dict) -> int | None:
@@ -3366,7 +3370,12 @@ class _Shipments:
     fulfillment event for the doc not reversed) and the lots it took back into stock and
     no longer holds, each with the quantity that came back (a lot reversed and then
     reserved to the doc again is still held for it, so it is in neither), and per
-    (doc, lot) the line id and line index its latest fulfillment for the doc recorded."""
+    (doc, lot) the line id and line index its latest fulfillment for the doc recorded.
+
+    Only the doc's current issue counts: what it shipped before its last revert to draft
+    belongs to the earlier issue. No lot is out across a revert (the revert is refused while
+    one is) and the revert voids every cost the earlier issue recognized, so that history
+    holds no cost for the reissued doc and its lines may since have changed."""
 
     out: dict[str, list[Projection]] = field(default_factory=dict)
     back: dict[str, list[tuple[Projection, float]]] = field(default_factory=dict)
@@ -3389,16 +3398,26 @@ async def _shipments(session, company_id, doc_ids) -> _Shipments:
     if not doc_ids:
         return result
     rows = (await session.execute(
-        _select(LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.data, LedgerEntry.metadata_).where(
+        _select(LedgerEntry.id, LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.data,
+                LedgerEntry.metadata_).where(
             LedgerEntry.company_id == company_id,
             LedgerEntry.entity_type == "item",
             LedgerEntry.event_type.in_(("item.fulfilled", "item.fulfillment_reversed")),
             LedgerEntry.data["source_doc_id"].as_string().in_(sorted(doc_ids)),
         ).order_by(LedgerEntry.id)
     )).all()
+    reverted = dict((await session.execute(
+        _select(LedgerEntry.entity_id, func.max(LedgerEntry.id)).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.entity_id.in_(sorted(doc_ids)),
+            LedgerEntry.event_type == "doc.reverted_to_draft",
+        ).group_by(LedgerEntry.entity_id)
+    )).all())
     last: dict[tuple[str, str], tuple[str, dict]] = {}
-    for entity_id, event_type, data, metadata_ in rows:
+    for entry_id, entity_id, event_type, data, metadata_ in rows:
         key = (str((data or {}).get("source_doc_id")), entity_id)
+        if entry_id <= reverted.get(key[0], 0):
+            continue
         last[key] = (event_type, data or {})
         if event_type == "item.fulfilled":
             result.recorded[key] = recorded_line(SimpleNamespace(metadata_=metadata_))
@@ -3560,8 +3579,8 @@ async def _recognized_by_account(
     """What an invoice recognizes today, per inventory account, in two parts: the actual
     cost of the lots it shipped, and, per line, its allocation's share (with every cost
     correction since) for the goods it has not shipped, with the quantity not shipped.
-    Raises Refused when a shipped or returned lot cannot be matched to one of the
-    invoice's lines."""
+    Raises Refused when a lot shipped in this issue cannot be matched to one of the
+    invoice's lines, or a lot that came back matches several."""
     recognized = books.recognized[doc_id]
     shipped: dict[str, float] = {}
     held: dict[int, dict[str, float]] = {}
@@ -3571,25 +3590,31 @@ async def _recognized_by_account(
         for code, amount in by_account.items():
             into[code] = into.get(code, 0.0) + amount
 
-    def _line(lot: Projection) -> int | None:
+    def _lines(lot: Projection) -> list[int]:
         line_id, recorded = books.shipments.recorded.get((doc_id, lot.entity_id), (None, None))
-        return line_of_lot(doc_state.get("line_items", []), lot.entity_id, lot.state or {}, recorded, line_id)
+        return lines_of_lot(doc_state.get("line_items", []), lot.entity_id, lot.state or {}, recorded, line_id)
 
+    def _refuse(lots: list[Projection]) -> None:
+        if lots:
+            raise Refused("error.cogs_line_unknown", doc=_doc_number(doc_id, doc_state), items=", ".join(
+                str((lot.state or {}).get("sku") or lot.entity_id) for lot in lots))
+
+    # A lot shipped in this issue holds cost, so it must be on exactly one line. A lot that
+    # came back only lowers its line's share of what is not shipped: with no line left there
+    # is no share to lower, but with several Celerp cannot tell whose share it lowers.
+    out = [(lot, _lines(lot)) for lot in books.shipments.out.get(doc_id, [])]
+    back = [(lot, qty, _lines(lot)) for lot, qty in books.shipments.back.get(doc_id, [])]
+    _refuse([lot for lot, lines in out if len(lines) != 1] + [lot for lot, _qty, lines in back if len(lines) > 1])
     shipped_qty: dict[int, float] = {}
     back_qty: dict[int, float] = {}
-    for lot in books.shipments.out.get(doc_id, []):
-        idx = _line(lot)
-        if idx is None:
-            raise Refused("error.cogs_line_unknown")
+    for lot, (idx,) in out:
         cost = lot_cost_of_sale(lot.state or {})
         if cost:
             _add(shipped, {await _sold_key(session, company_id, lot.entity_id, lot.state or {}, books): cost})
         shipped_qty[idx] = shipped_qty.get(idx, 0.0) + float((lot.state or {}).get("quantity") or 0)
-    for lot, qty in books.shipments.back.get(doc_id, []):
-        idx = _line(lot)
-        if idx is None:
-            raise Refused("error.cogs_line_unknown")
-        back_qty[idx] = back_qty.get(idx, 0.0) + qty
+    for _lot, qty, lines in back:
+        for idx in lines:
+            back_qty[idx] = back_qty.get(idx, 0.0) + qty
     repriced = books.repriced.get((doc_id, recognized.cycle), {})
     for idx, alloc in recognized.allocations.items():
         amount = float(alloc.get("amount") or 0)
@@ -3838,7 +3863,7 @@ async def other_invoices_naming(session, company_id, doc_id: str, lot_ids) -> di
         return {}
     out: dict[str, list[dict]] = {}
     for other, state in (await _open_invoices(session, company_id, exclude=doc_id, lots=ids)).items():
-        number = str(state.get("doc_number") or state.get("ref_id") or other)
+        number = _doc_number(other, state)
         named: dict[str, float] = {}
         for li in state.get("line_items") or []:
             lot = str(line_item_id(li) or "")
@@ -3851,10 +3876,14 @@ async def other_invoices_naming(session, company_id, doc_id: str, lot_ids) -> di
     return out
 
 
+def _doc_number(doc_id: str, state: dict) -> str:
+    """The number a reader knows document ``doc_id`` by."""
+    return str(state.get("doc_number") or state.get("ref_id") or doc_id)
+
+
 async def _doc_number_of(session, company_id, doc_id: str) -> str:
     doc = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
-    state = (doc.state if doc is not None else None) or {}
-    return str(state.get("doc_number") or state.get("ref_id") or doc_id)
+    return _doc_number(doc_id, (doc.state if doc is not None else None) or {})
 
 
 async def refuse_stranding_set_aside(session, company_id, lot_id: str, before: dict, after: dict,

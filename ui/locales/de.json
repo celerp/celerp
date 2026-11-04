@@ -3525,7 +3525,7 @@
   "error.file_gone": "Diese Datei ist nicht mehr verfügbar. Hängen Sie sie erneut an.",
   "error.attachment_not_found": "Celerp konnte diesen Anhang nicht finden. Er wurde möglicherweise gelöscht. Wählen Sie „Erneut versuchen“.",
   "error.auto_je_unbalanced": "{memo}: Die beiden Seiten dieser Buchung stimmen nicht überein ({debits} gegenüber {credits} {currency}). Prüfen Sie die Beträge und versuchen Sie es erneut.",
-  "error.cogs_line_unknown": "Celerp kann nicht erkennen, zu welcher Rechnungszeile einige der versandten Waren gehören, daher ist diese Änderung hier nicht möglich. Korrigieren Sie den Bestand stattdessen mit Lagerbestand anpassen auf einer Liste unter Listen / Angebote.",
+  "error.cogs_line_unknown": "Celerp kann nicht erkennen, auf welcher Zeile der Rechnung {doc} die Waren {items} versendet wurden, daher können ihre Kosten nicht gebucht werden. Setzen Sie diese Waren auf der Rechnung wieder auf verfügbar, oder stornieren Sie die Rechnung.",
   "error.output_tax_negative": "Die Steuern dieses Belegs ergeben weniger als null. Ein Verkauf kann keine negative Steuer tragen. Entfernen Sie die Quellensteuer und schließen Sie den Beleg dann erneut ab.",
   "error.backup_tool_missing": "Die Sicherung konnte nicht erstellt werden, weil auf diesem Computer ein Datenbankwerkzeug fehlt. Bitten Sie die Person, die Celerp installiert hat, die PostgreSQL-Client-Tools zu installieren.",
   "error.restore_tool_missing": "Die Sicherung konnte nicht wiederhergestellt werden, weil auf diesem Computer ein Datenbankwerkzeug fehlt. Bitten Sie die Person, die Celerp installiert hat, die PostgreSQL-Client-Tools zu installieren.",

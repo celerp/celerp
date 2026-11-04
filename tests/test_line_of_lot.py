@@ -61,6 +61,22 @@ def test_only_line_of_the_product_takes_an_unbound_lot():
     assert _of(two, lot_id="item:sibling") is None
 
 
+def test_lines_of_lot_tells_none_from_several():
+    """No line, one line and several lines are three answers: line_of_lot gives None for
+    both no line and several, lines_of_lot keeps them apart."""
+    from celerp.services.auto_je import lines_of_lot
+
+    def both(lines, **kw):
+        return lines_of_lot(lines, "item:a", {"sku": "S"}, kw.get("recorded"), kw.get("source_line_id")), _of(lines, **kw)
+
+    assert both(_lines(("item:b", "T", L1))) == ([], None)
+    assert both(_lines(("item:b", "T", L1), ("item:a", "S", L2))) == ([1], 1)
+    assert both(_lines(("item:a", "S", L1), ("item:a", "S", L2))) == ([0, 1], None)
+    assert both(_lines(("item:b", "S", L1), ("item:c", "S", L2))) == ([0, 1], None)
+    assert both(_lines(("item:b", "S", L1), ("item:c", "S", L2)), source_line_id=L2) == ([1], 1)
+    assert both(_lines(("item:b", "S", L1), ("item:c", "S", L2)), recorded=0) == ([0], 0)
+
+
 def test_recorded_line_reads_id_and_position():
     from celerp.services.auto_je import recorded_line
 

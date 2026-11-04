@@ -3524,7 +3524,7 @@
   "error.file_gone": "Este archivo ya no está disponible. Adjúntalo de nuevo.",
   "error.attachment_not_found": "Celerp no encontró este adjunto. Puede que se haya eliminado. Seleccione Reintentar.",
   "error.auto_je_unbalanced": "{memo}: los dos lados de este asiento no coinciden ({debits} frente a {credits} {currency}). Revise los importes e inténtelo de nuevo.",
-  "error.cogs_line_unknown": "Celerp no puede saber a qué línea de la factura pertenecen algunos de los productos enviados, así que este cambio no se puede hacer aquí. Corrija el stock con Ajustar stock en una lista de Listas / Cotizaciones.",
+  "error.cogs_line_unknown": "Celerp no puede saber en qué línea de la factura {doc} se enviaron los productos {items}, así que no se puede registrar su costo. Vuelva a poner esos productos como disponibles en la factura, o anule la factura.",
   "error.output_tax_negative": "Los impuestos de este documento suman menos de cero. Una venta no puede llevar impuesto negativo: quite la retención y vuelva a finalizar.",
   "error.backup_tool_missing": "No se pudo hacer la copia de seguridad porque falta una herramienta de base de datos en este equipo. Pida a quien instaló Celerp que instale las herramientas cliente de PostgreSQL.",
   "error.restore_tool_missing": "No se pudo restaurar la copia de seguridad porque falta una herramienta de base de datos en este equipo. Pida a quien instaló Celerp que instale las herramientas cliente de PostgreSQL.",

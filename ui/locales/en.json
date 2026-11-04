@@ -2654,7 +2654,7 @@
   "error.file_gone": "This file is no longer available. Attach it again.",
   "error.attachment_not_found": "Celerp couldn't find this attachment. It may have been deleted. Select Try again.",
   "error.auto_je_unbalanced": "{memo}: the two sides of this entry don't match ({debits} against {credits} {currency}). Check the amounts and try again.",
-  "error.cogs_line_unknown": "Celerp can't tell which invoice line some of the shipped goods belong to, so this change can't be made here. Correct the stock with Adjust stock on a list in Lists / Quotations instead.",
+  "error.cogs_line_unknown": "Celerp can't tell which line of invoice {doc} the goods {items} were shipped on, so their cost can't be booked. Set those goods back to available on the invoice, or void the invoice.",
   "error.output_tax_negative": "This document's taxes add up to less than zero. A sale can't carry negative tax, so remove the withholding tax from it, then finalize again.",
   "error.backup_tool_missing": "The backup couldn't be made because a database tool is missing on this computer. Ask whoever installed Celerp to install the PostgreSQL client tools.",
   "error.restore_tool_missing": "The backup couldn't be restored because a database tool is missing on this computer. Ask whoever installed Celerp to install the PostgreSQL client tools.",

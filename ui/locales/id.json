@@ -3524,7 +3524,7 @@
   "error.file_gone": "File ini sudah tidak tersedia. Lampirkan lagi.",
   "error.attachment_not_found": "Celerp tidak menemukan lampiran ini. Lampiran mungkin sudah dihapus. Pilih Coba lagi.",
   "error.auto_je_unbalanced": "{memo}: kedua sisi jurnal ini tidak cocok ({debits} berbanding {credits} {currency}). Periksa jumlahnya lalu coba lagi.",
-  "error.cogs_line_unknown": "Celerp tidak bisa menentukan baris faktur mana untuk sebagian barang yang dikirim, jadi perubahan ini tidak bisa dilakukan di sini. Perbaiki stok dengan Sesuaikan stok pada daftar di Daftar / Penawaran.",
+  "error.cogs_line_unknown": "Celerp tidak bisa menentukan di baris mana pada faktur {doc} barang {items} dikirim, jadi biayanya tidak bisa dibukukan. Setel kembali barang tersebut menjadi tersedia di faktur, atau batalkan faktur.",
   "error.output_tax_negative": "Total pajak dokumen ini kurang dari nol. Penjualan tidak boleh memuat pajak negatif. Hapus pajak potongannya, lalu finalisasi lagi.",
   "error.backup_tool_missing": "Cadangan tidak bisa dibuat karena alat basis data tidak ada di komputer ini. Minta orang yang memasang Celerp untuk memasang PostgreSQL client tools.",
   "error.restore_tool_missing": "Cadangan tidak bisa dipulihkan karena alat basis data tidak ada di komputer ini. Minta orang yang memasang Celerp untuk memasang PostgreSQL client tools.",
