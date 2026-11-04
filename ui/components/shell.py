@@ -187,6 +187,26 @@ function liSelectAll(table, sa, onChange) {
     if (e.target && e.target.classList.contains('li-select')) sync();
   });
 }
+// Name the ticked rows an action left out, as 6 "GIA Certificate", in a notice that stays. rows
+// are their checkboxes; forms is {one, many}, each with {lines}. A row is numbered by its
+// position plus the page's line offset and named by its SKU, description or name, as the
+// server names a line (line_label), else by the label its checkbox carries.
+function liSkipNotice(rows, forms) {
+  if (!rows.length || !window.celerpToast) return;
+  var named = rows.map(function(cb) {
+    var row = cb.closest('tr'), all = Array.prototype.slice.call(cb.closest('tbody').querySelectorAll('.li-select'));
+    var name = '';
+    ['sku', 'description', 'name'].some(function(k) {
+      var el = row && row.querySelector('[data-name="' + k + '"]');
+      name = el ? el.value.trim() : '';
+      return name;
+    });
+    name = name || cb.getAttribute('data-label') || '';
+    var n = all.indexOf(cb) + 1 + (window._CELERP_LINE_OFFSET || 0);
+    return name ? n + ' "' + name + '"' : String(n);
+  });
+  celerpToast(forms[named.length === 1 ? 'one' : 'many'].replace('{lines}', named.join(', ')), 'info', true);
+}
 // A count message in the form that reads right for n: forms is {one, many}, each with {n}.
 function celerpCount(forms, n) {
   return forms[n === 1 ? 'one' : 'many'].replace('{n}', n);

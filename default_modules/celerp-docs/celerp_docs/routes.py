@@ -599,9 +599,10 @@ class FulfillLinesRequest(BaseModel):
 
     @field_validator("line_ids", "line_entity_ids")
     @classmethod
-    def strip_empty(cls, v: list[str]) -> list[str]:
-        """Drop empty strings and de-duplicate: bulk selects may include value="" rows."""
-        return list(dict.fromkeys(eid for eid in v if eid))
+    def distinct(cls, v: list[str]) -> list[str]:
+        """De-duplicate. An empty line id is kept, so a row sent without one is refused as
+        not on the record rather than dropped from the choice unseen."""
+        return list(dict.fromkeys(v))
 
 
 class RevertLinesRequest(FulfillLinesRequest):

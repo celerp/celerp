@@ -26,7 +26,7 @@ from celerp.downloads import content_disposition
 from celerp.services.units import (
     DEFAULT_UNITS, RECEIVE_KINDS, build_unit_map, default_receive_as, format_qty, line_receive_kind, plain_number, quantity_step,
 )
-from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
+from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, line_label, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
 from ui.components.shell import base_shell, page_header, refusal_fix, toast_header, page_title
 from ui.security import not_permitted_redirect
 from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, period_all_time_link, period_empty_text, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum, display_unit, doc_href, doc_status_badge, doc_status_shown
@@ -8175,7 +8175,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             cells = [
                 Td(Input(type="checkbox", cls="li-select", value=li_entity_id,
                          **{"data-item-status": str((item_status_map or {}).get(li_entity_id, "")),
-                            "data-line-id": str(li.get("line_id") or "")}),
+                            "data-line-id": str(li.get("line_id") or ""), "data-label": line_label(li)}),
                    cls="col-checkbox li-checkbox-cell"),
                 Td(_static_ident_cell_content(li) if pol["counting"]
                    else _sku_input(li.get("sku", "") or "", li_entity_id, li.get("barcode", "") or ""),
@@ -8702,6 +8702,8 @@ window._L = {_json.dumps({
     "rows_selected": t("documents.rows_selected"),
     "no_lines_selected": t("documents.no_lines_selected"),
     "no_inventory_labels": t("documents.no_inventory_items_labels"),
+    "lines_skipped": _count_forms("documents.lines_skipped"),
+    "labels_skipped": _count_forms("documents.labels_skipped"),
     "confirm_set_reserved": _count_forms("documents.confirm_set_reserved"),
     "confirm_set_available": _count_forms("documents.confirm_set_available"),
     "confirm_delete_lines": _count_forms("documents.confirm_delete_lines"),
@@ -10392,8 +10394,8 @@ async function celerpCsvImport(input, entityId) {{
     return ok;
   }}); }};
   window.liBulkSetScanned=async function(scanned){{
-    var ids=[];
-    if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{ if(cb.value) ids.push(cb.value); }});
+    var ids=[], left=[];
+    if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{ if(cb.value) ids.push(cb.value); else left.push(cb); }});
     var fd=new URLSearchParams();
     fd.append('scanned', scanned?'1':'0');
     fd.append('offset', window._CELERP_LINE_OFFSET); fd.append('limit', window._CELERP_LINE_LIMIT);
@@ -10405,6 +10407,7 @@ async function celerpCsvImport(input, entityId) {{
         var tbody=document.getElementById('{line_body_id}');
         if(tbody&&html) tbody.outerHTML=html;
         htmx.process(document.getElementById('{line_body_id}'));
+        liSkipNotice(left, _L.lines_skipped);
       }} else if(window.celerpToast) celerpToast(html||_L.unexpected_error,'error');
     }}catch(err){{
       if(window.celerpToast) celerpToast(_L.unexpected_error,'error');
@@ -10422,13 +10425,13 @@ async function celerpCsvImport(input, entityId) {{
     _hideBtns(); _update();
   }};
   window.liBulkLabelsConfirmed=function(){{
-    var ids=[];
+    var ids=[], left=[];
     if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{
       var row=cb.closest('tr');
       var eidInput=row?row.querySelector('[data-name="entity_id"]'):null;
       var id=(eidInput&&eidInput.value)||cb.value||'';
       if(!id){{var skuEl=row?row.querySelector('[data-name="sku"]'):null;var sku=skuEl?skuEl.value.trim():'';if(sku)id='sku:'+sku;}}
-      if(id) ids.push(id);
+      if(id) ids.push(id); else left.push(cb);
     }});
     if(!ids.length){{if(window.celerpToast)celerpToast(_L.no_inventory_labels,'error');return;}}
     var form=document.createElement('form');
@@ -10438,6 +10441,7 @@ async function celerpCsvImport(input, entityId) {{
       form.appendChild(inp);
     }});
     document.body.appendChild(form);form.submit();setTimeout(function(){{form.remove();}},100);
+    liSkipNotice(left, _L.labels_skipped);
   }};
   window.liActionChanged=function(action){{ window.liBulkActionSelected(action); }};
 }})();
@@ -10511,7 +10515,7 @@ async function celerpCsvImport(input, entityId) {{
                 cells.append(Td(
                     Input(type="checkbox", cls="li-select", value=li_eid, data_sku=li_sku,
                           data_item_status=_li_status, data_line_id=str(li.get("line_id") or ""),
-                          data_line_index=str(idx)),
+                          data_line_index=str(idx), data_label=line_label(li)),
                     Input(type="hidden", value=li_eid, data_name="entity_id"),
                     cls="col-checkbox li-checkbox-cell",
                 ))
@@ -10666,6 +10670,8 @@ async function celerpCsvImport(input, entityId) {{
   const _L = {_json.dumps({
     "rows_selected": t("documents.rows_selected"),
     "no_inventory_labels": t("documents.no_inventory_items_labels"),
+    "lines_skipped": _count_forms("documents.lines_skipped"),
+    "labels_skipped": _count_forms("documents.labels_skipped"),
     "no_lines_selected": t("documents.no_lines_selected"),
     "none_can_available": t("documents.none_can_available"),
     "confirm_set_reserved": _count_forms("documents.confirm_set_reserved"),
@@ -10730,13 +10736,13 @@ async function celerpCsvImport(input, entityId) {{
     }});
   }};
   window.liBulkLabelsConfirmed=function(){{
-    var ids=[];
-    if(table) table.querySelectorAll('.li-select:checked').forEach(function(cb){{
+    var ids=[], left=[];
+    if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{
       var row=cb.closest('tr');
       var eidInput=row?row.querySelector('[data-name="entity_id"]'):null;
       var id=(eidInput&&eidInput.value)||cb.value||'';
       if(!id){{var sku=cb.dataset.sku||'';if(sku)id='sku:'+sku;}}
-      if(id) ids.push(id);
+      if(id) ids.push(id); else left.push(cb);
     }});
     if(!ids.length){{if(window.celerpToast)celerpToast(_L.no_inventory_labels,'error');return;}}
     var form=document.createElement('form');
@@ -10746,6 +10752,7 @@ async function celerpCsvImport(input, entityId) {{
       form.appendChild(inp);
     }});
     document.body.appendChild(form);form.submit();setTimeout(function(){{form.remove();}},100);
+    liSkipNotice(left, _L.labels_skipped);
   }};
   window.liActionChanged=function(action){{ window.liBulkActionSelected(action); }};
   // The operation key this page was rendered with (see ui/components/operation_key.py).
