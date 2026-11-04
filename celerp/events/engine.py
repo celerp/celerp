@@ -615,6 +615,20 @@ async def _check_asset_lines(session, kwargs: dict) -> None:
                                       doc_id=kwargs.get("entity_id"), doc={**before, **written}, before=before)
 
 
+async def _doc_applied(session, entry: LedgerEntry, transition) -> None:
+    """Every live document event that changes the document's status, whichever writer
+    sends it (finalize, void, unvoid, revert to draft, send, payment, import), goes through
+    the modules' doc_status_guard handlers under the row lock that applied it; raising
+    refuses the event. A handler that cannot be resolved fails the event, never skips it.
+    Replay applies events through ProjectionEngine directly and is not affected."""
+    if (transition.before or {}).get("status") == transition.after.get("status"):
+        return
+    from celerp.modules.slots import get as get_slot, resolve_handler
+
+    for handler in sorted({c["handler"] for c in get_slot("doc_status_guard")}):
+        await resolve_handler(handler)(session=session, entry=entry, transition=transition)
+
+
 async def emit_event(
     session, *, preserve_external_code_conflicts: bool = False,
     memo_draw: MemoDraw | MemoReturn | None = None, held_lot_carve: HeldLotCarve | None = None, **kwargs
@@ -896,6 +910,8 @@ async def emit_event(
         transition = await ProjectionEngine.apply_event(session, entry)
         if item:
             await _item_applied(session, entry, transition, held_lot_carve)
+        elif entry.entity_type == "doc":
+            await _doc_applied(session, entry, transition)
     except BaseException:
         await savepoint.rollback()
         raise

@@ -20,6 +20,7 @@ PLUGIN_MANIFEST = {
         "on_company_restored": [{"handler": "celerp_subscriptions.migration:reconcile_restored_company_schedules"}],
         "on_company_module_enabled": [{"handler": "celerp_subscriptions.migration:reconcile_company_schedules"}],
         "periodic_operation": {"handler": "celerp_subscriptions.billing:run_due", "module": "celerp-subscriptions"},
+        "doc_status_guard": {"handler": "celerp_subscriptions.billing:guard_bill_status"},
         "search_provider": {
             "handler": "celerp_subscriptions.search:global_search",
             "result_key": "items",

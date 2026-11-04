@@ -81,7 +81,7 @@ _ACTION_DONE = {"activate": "subscriptions.done_activated", "pause": "subscripti
 _PERIOD_DONE = {"skip": "subscriptions.done_skipped", "unskip": "subscriptions.done_unskipped",
                 "reopen": "subscriptions.done_reopened"}
 # How the Periods table marks each period status; one not listed is plain text.
-_PERIOD_BADGE = {"overdue": "badge--overdue", "due": "badge--warning", "voided": "badge--void"}
+_PERIOD_BADGE = {"overdue": "badge--overdue", "due": "badge--warning", "draft": "badge--draft", "voided": "badge--void"}
 # Edits that change what the Billing section and the header badge show, so both are drawn again.
 _BILLING_FIELDS = ("generation_mode", "auto_send", "catchup_periods")
 _MODES = ("manual_due", "auto_invoice")
@@ -177,6 +177,7 @@ register_fields({
     "history_review": _count_change("subscriptions.history_heading"),
     "history_set_aside": _count_change("subscriptions.history_set_aside"),
     "resume_restarts": lambda c: None,
+    "released_bills": lambda c: None,
 })
 # Escape clears an inline preview or result panel (GDR 2j).
 _PANEL_ESC_JS = Script("""
@@ -413,7 +414,8 @@ def _sub_action_controls(entity_id: str, sub: dict, next_bill: str | None = None
 
 def _period_actions(entity_id: str, row: dict) -> FT:
     """Skip an open period with a reason; un-skip a skipped one; reopen a billed one whose
-    document is voided. The server refuses any that does not apply and says why."""
+    document no longer bills it (void, or back in draft). The server refuses any that does
+    not apply and says why."""
     k, state = row["period_index"], row.get("state")
     base = f"/subscriptions/{entity_id}/periods/{k}"
     if state == "skipped":

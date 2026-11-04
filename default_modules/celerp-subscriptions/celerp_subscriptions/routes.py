@@ -381,15 +381,18 @@ def _build_router() -> APIRouter:
         periods = _periods(proj.state)
         entry = periods.get(str(k)) or {}
         release = entry.get("release_count", 0)
+        written = {}
         if entry.get("state") == BILLED:
             doc = await billing.doc_state(session, company_id, entry["doc_id"])
-            if not after_void or doc is None or doc.get("status") != "void":
+            if not after_void or billing.bills(doc):
                 await _refuse_claimed(session, company_id, entry)
             release += 1  # the next document for this period takes a new claim key
+            # The document let go never bills again: billing.guard_bill_status reads this.
+            written["released_bills"] = {**(proj.state.get("released_bills") or {}), entry["doc_id"]: k}
         elif entry.get("state") != SKIPPED:
             return _period_answer(proj.state, k)
         periods[str(k)] = {"state": RELEASED, "release_count": release, "by": str(user.id), "at": billing.now_stamp()}
-        await billing.write_agreement(session, company_id, entity_id, {"periods": periods}, user.id)
+        await billing.write_agreement(session, company_id, entity_id, {"periods": periods, **written}, user.id)
         if entry.get("state") == BILLED:
             await billing.discard_email_attempts(session, company_id, entry["doc_id"])
         await session.commit()
@@ -416,7 +419,8 @@ def _build_router() -> APIRouter:
         user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
-        """Open a billed period again once its document is voided, so it can be billed once more."""
+        """Open a billed period again once its document no longer bills it (void, or back in
+        draft), so it can be billed once more; that document never bills again."""
         return await _hand_back(entity_id, k, company_id, user, session, after_void=True)
 
     @router.post("/{entity_id}/periods/{k}/send")

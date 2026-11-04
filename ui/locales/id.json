@@ -7230,5 +7230,9 @@
   "subscriptions.history_billing_failed": "Penagihan otomatis gagal untuk periode {start} hingga {end}.",
   "subscriptions.consent_generation_withdrawn": "Izin penagihan otomatis dicabut",
   "subscriptions.consent_sending_withdrawn": "Izin pengiriman otomatis dicabut",
-  "subscriptions.th_more_due": "Periode jatuh tempo lainnya"
+  "subscriptions.th_more_due": "Periode jatuh tempo lainnya",
+  "subscriptions.err_bill_rebilled": "{ref} can't bill again. It was taken off {agreement} for {start} to {end}, and that period is now billed on {newer}. Issuing {ref} as well would bill the period twice.",
+  "subscriptions.err_bill_reopened": "{ref} can't bill again. Its period on {agreement}, {start} to {end}, was reopened, so the next document for that period bills it. Use Generate due on the agreement to bill the period.",
+  "subscriptions.err_period_draft": "The document for this period, {ref}, is back in draft. Finalize {ref} to bill the period, or use Reopen on its row in the periods list to bill it on a new document.",
+  "subscriptions.period_draft": "Document in draft"
 }

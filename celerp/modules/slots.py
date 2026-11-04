@@ -60,6 +60,11 @@ item_lineage_guard {"handler": "module.path:function"} naming
                    with exactly those keyword arguments on every live item event, after
                    it is applied and before its effects are booked; raising refuses the
                    event
+doc_status_guard   {"handler": "module.path:function"} naming
+                   `async def handler(*, session, entry, transition) -> None`, called
+                   with exactly those keyword arguments on every live document event
+                   that changes the document's status, after it is applied and before
+                   it commits; raising refuses the event
 demo_records       {"handler": "module.path:function"} naming
                    `async def handler(*, session, company_id, user_id) -> None`, called
                    with exactly those keyword arguments whenever a company's demo data
@@ -144,7 +149,7 @@ a dict, catalog_channel "can_create" true or false; category_schema "category" n
 app-local paths; and every
 callable an entry names is the module's own code, async exactly where core awaits it,
 and takes exactly the keyword arguments core passes where the slot names them
-(inventory_in_production, item_lineage_guard, demo_records, doc_asset_lines,
+(inventory_in_production, item_lineage_guard, doc_status_guard, demo_records, doc_asset_lines,
 label_source, import_target, turn_off_preflight). A nav entry with a "probe_href" is shown only when that page,
 loaded with the sidebar, answers with the link: for an entry whose audience
 depends on the records themselves (the assets in a member's care), not on a
@@ -179,7 +184,7 @@ SLOT_NAMES = frozenset({
     "pricing_action", "doc_detail_actions", "doc_detail_badges", "category_schema",
     "projection_handler", "on_company_created", "on_company_restored", "on_company_module_enabled", "on_modules_ready", "on_books_currency_set", "doc_finalize_hook",
     "on_doc_payment", "search_provider", "inventory_in_production", "item_lineage_guard",
-    "demo_records", "background_loop", "doc_asset_lines", "fixed_asset_rules", "label_source",
+    "doc_status_guard", "demo_records", "background_loop", "doc_asset_lines", "fixed_asset_rules", "label_source",
     "import_target", "turn_off_preflight", "periodic_operation",
 })
 
@@ -220,7 +225,7 @@ def resolve_handler(dotted: str) -> Callable:
 
 # Slots whose handler core calls directly: a contribution without a
 # "module.path:function" handler would fail every such call, so it is refused here.
-_HANDLER_SLOTS = frozenset({"inventory_in_production", "item_lineage_guard", "demo_records",
+_HANDLER_SLOTS = frozenset({"inventory_in_production", "item_lineage_guard", "doc_status_guard", "demo_records",
                             "doc_asset_lines", "label_source", "import_target", "turn_off_preflight"})
 
 

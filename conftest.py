@@ -331,7 +331,8 @@ if _wh_available:
     app.include_router(_wh_router, prefix="/warehousing", tags=["warehousing"])
 
 # Slots the harness reads from the modules' own manifests rather than listing below.
-_MANIFEST_SLOTS = ("nav", "periodic_operation", "on_company_restored", "on_company_module_enabled")
+_MANIFEST_SLOTS = ("nav", "periodic_operation", "on_company_restored", "on_company_module_enabled",
+                   "doc_status_guard")
 
 
 def _manifest_slot_contributions() -> list[dict]:

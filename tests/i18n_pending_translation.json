@@ -12,5 +12,35 @@
     "th",
     "vi"
   ],
-  "keys": {}
+  "keys": {
+    "subscriptions.err_bill_rebilled": {
+      "en": "{ref} can't bill again. It was taken off {agreement} for {start} to {end}, and that period is now billed on {newer}. Issuing {ref} as well would bill the period twice.",
+      "params": [
+        "agreement",
+        "end",
+        "newer",
+        "ref",
+        "start"
+      ]
+    },
+    "subscriptions.err_bill_reopened": {
+      "en": "{ref} can't bill again. Its period on {agreement}, {start} to {end}, was reopened, so the next document for that period bills it. Use Generate due on the agreement to bill the period.",
+      "params": [
+        "agreement",
+        "end",
+        "ref",
+        "start"
+      ]
+    },
+    "subscriptions.err_period_draft": {
+      "en": "The document for this period, {ref}, is back in draft. Finalize {ref} to bill the period, or use Reopen on its row in the periods list to bill it on a new document.",
+      "params": [
+        "ref"
+      ]
+    },
+    "subscriptions.period_draft": {
+      "en": "Document in draft",
+      "params": []
+    }
+  }
 }
