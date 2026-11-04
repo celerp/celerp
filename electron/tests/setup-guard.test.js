@@ -7,23 +7,27 @@ const os = require("os");
 const path = require("path");
 const { setupRunning, SETUP_MUTEX } = require("../setup-guard");
 
-// A TEMP folder, with the pid hint a setup leaves in its plugins folder when `hint` is set.
+// A TEMP folder, with the pid hint a setup leaves in its plugins folder when `hint` is
+// set (the text setup wrote: its process ID).
 function temp(hint) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "celerp-temp-"));
   fs.mkdirSync(path.join(dir, "nsA1B2.tmp"));
-  if (hint) fs.writeFileSync(path.join(dir, "nsA1B2.tmp", "celerp-setup.pid"), "4242");
+  if (hint !== false) fs.writeFileSync(path.join(dir, "nsA1B2.tmp", "celerp-setup.pid"), hint === true ? "4242" : hint);
   return dir;
 }
 
-// Runs the guard with the PowerShell probe answering `result` (what spawnSync returns).
-function guard({ argv = ["Celerp.exe"], hint = true, result = { status: 1 }, platform = "win32" } = {}) {
+// Runs the guard with the PowerShell probe answering `result` (what spawnSync returns),
+// and the processes in `live` running.
+function guard({ argv = ["Celerp.exe"], hint = true, result = { status: 1 }, platform = "win32", live = [4242] } = {}) {
   const probes = [];
   const logged = [];
+  const asked = [];
   const running = setupRunning({
     platform, argv, tempDir: temp(hint), log: (line) => logged.push(line),
     spawnSync: (cmd, args, options) => { probes.push({ cmd, args, options }); return result; },
+    alive: (pid) => { asked.push(pid); return live.includes(pid); },
   });
-  return { running, probes, logged };
+  return { running, probes, logged, asked };
 }
 
 test("only a Celerp started by hand while setup runs is held back; every other start goes ahead",
@@ -51,10 +55,30 @@ test("only a Celerp started by hand while setup runs is held back; every other s
       expect(logged.length).toBe(1);
       expect(logged[0]).toMatch(/setup guard/);
     }
+    // a hint left by a setup that was killed: its process is gone, so no probe and no wait
+    expect(guard({ live: [], result: { status: 0 } })).toMatchObject({ running: false, probes: [], asked: [4242] });
+    // a hint that names no process (cut short as it was written): the probe decides
+    for (const hint of ["", "abc"]) {
+      expect(guard({ hint, live: [], result: { status: 0 } })).toMatchObject({ running: true, asked: [] });
+    }
     // no hint: no probe
     expect(guard({ hint: false, result: { status: 0 } })).toMatchObject({ running: false, probes: [] });
     // not Windows: no probe
     expect(guard({ platform: "linux", result: { status: 0 } })).toMatchObject({ running: false, probes: [] });
+  });
+
+// The real check: this process runs, and a process ID nothing uses does not.
+test("a hint is followed only while the setup that wrote it runs",
+  function test_setup_hint_checks_its_process() {
+    const dir = temp(String(process.pid));
+    const probes = [];
+    const ask = () => setupRunning({ platform: "win32", argv: ["Celerp.exe"], tempDir: dir, log: () => {},
+      spawnSync: () => { probes.push(true); return { status: 1 }; } });
+    ask();
+    expect(probes.length).toBe(1);
+    fs.writeFileSync(path.join(dir, "nsA1B2.tmp", "celerp-setup.pid"), "2147483644");   // above any process ID Linux gives out, and unused on Windows
+    ask();
+    expect(probes.length).toBe(1);
   });
 
 test("the app asks for the same mutex setup creates",

@@ -7,8 +7,10 @@
 //
 // Setup holds a named mutex for its whole life (build/installer.nsh, which owns the
 // name), and Windows frees it when setup ends or is stopped. Setup also marks its
-// temporary folder with a celerp-setup.pid file; that file is only a cheap hint that
-// saves the probe on a normal start, and its content is never read.
+// temporary folder with a celerp-setup.pid file holding its process ID; that file is
+// only a cheap hint that saves the probe on a normal start. A setup that was killed
+// leaves its file behind until the next setup removes it, so a hint counts only
+// while its process runs.
 //
 // No Electron imports: safe to require in Jest.
 
@@ -31,10 +33,26 @@ const PROBE = `try { [Threading.Mutex]::OpenExisting('${SETUP_MUTEX}').Dispose()
   + "catch [Threading.WaitHandleCannotBeOpenedException] { exit 1 } "
   + "catch [UnauthorizedAccessException] { exit 0 } catch { exit 2 }";
 
-function setupHint(fs, tempDir) {
+// Signal 0 only asks whether the process exists; EPERM means it does.
+function processAlive(pid) {
   try {
-    return fs.readdirSync(tempDir).some((name) => /^ns.*\.tmp$/i.test(name)
-      && fs.existsSync(path.join(tempDir, name, "celerp-setup.pid")));
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code !== "ESRCH";
+  }
+}
+
+// A file that names no process (cut short as setup wrote it) still counts: the probe decides.
+function setupHint(fs, tempDir, alive) {
+  try {
+    return fs.readdirSync(tempDir).some((name) => {
+      if (!/^ns.*\.tmp$/i.test(name)) return false;
+      const file = path.join(tempDir, name, "celerp-setup.pid");
+      if (!fs.existsSync(file)) return false;
+      const text = fs.readFileSync(file, "utf8").trim();
+      return !/^\d+$/.test(text) || alive(Number(text));
+    });
   } catch {
     return false;
   }
@@ -44,10 +62,10 @@ function setupHint(fs, tempDir) {
 // with --updated, its reopen with the failed-install argument) always go ahead, and
 // a probe that cannot answer lets Celerp start: setup closes a Celerp it finds
 // before it replaces the files.
-function setupRunning({ platform, argv, tempDir, spawnSync, log, fs = nodeFs }) {
+function setupRunning({ platform, argv, tempDir, spawnSync, log, fs = nodeFs, alive = processAlive }) {
   if (platform !== "win32") return false;
   if (argv.some((arg) => arg === UPDATED_ARG || arg.startsWith(INSTALL_FAILED_ARG))) return false;
-  if (!setupHint(fs, tempDir)) return false;
+  if (!setupHint(fs, tempDir, alive)) return false;
   const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", PROBE],
     { timeout: PROBE_TIMEOUT_MS, windowsHide: true });
   if (result.status === 0) return true;
