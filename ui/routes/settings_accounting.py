@@ -18,7 +18,7 @@ from ui.api_client import APIError
 from ui.components.shell import base_shell, bug_report_url, flash, page_header, page_title
 from celerp.accounting_roles import account_label
 from celerp.services.lot_origin import OLDER_STOCK_PATH
-from ui.components.table import (EMPTY, add_new_option, bulk_toolbar, searchable_select, display_enum, fmt_money,
+from ui.components.table import (EMPTY, select_all_th, add_new_option, bulk_toolbar, searchable_select, display_enum, fmt_money,
                                  server_pager)
 
 from ui.components.posting_accounts import account_picker
@@ -626,7 +626,7 @@ def _older_stock_card(view: dict, filters: dict, message: str = "", kind: str = 
         return Div(Table(Thead(Tr(*head)), Tbody(*rows), cls="data-table", id=table_id, **attrs),
                    cls="table-scroll-wrap")
 
-    select_all = Th(Input(type="checkbox", cls="bulk-select-all", title=t("label.select_all")), cls="col-checkbox")
+    select_all = select_all_th()
     number = {"cls": "cell--number"}
     if lots:
         lot_table = table("older-stock-table", [

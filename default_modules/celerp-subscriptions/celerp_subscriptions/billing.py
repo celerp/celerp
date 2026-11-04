@@ -130,10 +130,29 @@ def not_moved(state: dict) -> str | None:
 async def write_agreement(session: AsyncSession, company_id, entity_id: str, changes: dict, actor_id, *,
                           drop: tuple[str, ...] = (), key: str | None = None, result: dict | None = None) -> None:
     """Record a change to the agreement's own fields (``{field: new value}``); ``drop``
-    removes fields from its state."""
+    removes fields from its state. Each field keeps its value before the change, and a
+    change to periods keeps the dates of each period it touched, so History can name them."""
+    before = (await session.execute(select(Projection.state).where(
+        Projection.company_id == company_id, Projection.entity_id == entity_id))).scalar_one_or_none() or {}
+    after = {**{k: v for k, v in before.items() if k not in drop}, **changes}
+    fields = {**{k: {"old": before.get(k), "new": v} for k, v in changes.items()},
+              **{k: {"old": before.get(k), "drop": True} for k in drop}}
+    old_periods, new_periods = before.get("periods") or {}, after.get("periods") or {}
+    touched = {k for k in {*old_periods, *new_periods} if old_periods.get(k) != new_periods.get(k)}
+    if (failed := (changes.get("billing_failure") or {}).get("period_index")) is not None:
+        touched.add(str(failed))
+    if touched and after.get("anchor_date"):
+        try:
+            schedule = Schedule.from_state(after)
+            dates = {k: [schedule.start(int(k)).isoformat(), schedule.service_end(int(k)).isoformat()] for k in touched}
+        except ValueError:
+            dates = {}
+        for k in ("periods", "billing_failure"):
+            if dates and k in changes:
+                fields[k]["dates"] = dates
     await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.updated",
-        data={"fields_changed": {**{k: {"new": v} for k, v in changes.items()}, **{k: {"drop": True} for k in drop}}},
+        data={"fields_changed": fields},
         actor_id=actor_id, location_id=None, source="subscription",
         idempotency_key=key or str(uuid.uuid4()), metadata_={"result": result} if result is not None else None,
     )

@@ -7,6 +7,7 @@ import json
 
 import pytest
 import pytest_asyncio
+from bs4 import BeautifulSoup
 from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, patch
 
@@ -217,7 +218,10 @@ class TestBillingPages:
         freeze_day(monkeypatch, "2026-03-15")
         eid = await agreement(owner_ui.api, {}, start="2026-02-01")  # periods 0 and 1 due
         panel = (await owner_ui.get("/subscriptions/due?direction=sales")).text
-        assert f'value="{eid}|0"' in panel and t("subscriptions.due_more", "en", n=1) in panel
+        assert f'value="{eid}|0"' in panel
+        soup = BeautifulSoup(panel, "html.parser")
+        more = [th.get_text(strip=True) for th in soup.select("thead th")].index(t("subscriptions.th_more_due", "en"))
+        assert soup.select_one(f'input[value="{eid}|0"]').find_parent("tr").select("td")[more].get_text(strip=True) == "1"
         assert 'name="idempotency_key"' in panel
         r = await owner_ui.post("/subscriptions/generate-due", data={"item": [f"{eid}|0"], "idempotency_key": "due-click"})
         assert t("subscriptions.due_result", "en", billed=1, refused=0) in r.text

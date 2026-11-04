@@ -21,12 +21,12 @@ from starlette.responses import RedirectResponse, Response
 import ui.api_client as api
 from celerp.output.document_context import prepare_document_output
 from celerp.services.record_quantities import template_label
-from ui.components.activity import format_timestamp
+from ui.components.activity import change_text, format_timestamp, register_fields
 from ui.components.icons import import_icon
 from ui.components.operation_key import FIELD, operation_key_vals, operation_key_input, required_operation_key, submitted_operation_key
 from ui.api_client import APIError, error_message
 from ui.components.shell import base_shell, page_header, toast_header
-from ui.components.table import breadcrumbs, display_enum, empty_state_cta, fmt_money, pagination, per_page_value, search_bar, status_cards
+from ui.components.table import breadcrumbs, display_enum, select_all_th, empty_state_cta, fmt_money, pagination, per_page_value, search_bar, status_cards
 from ui.config import get_token as _token, get_role as _get_role
 from ui.routes.documents import _action_error
 from ui.routes.reports import _get_company
@@ -88,6 +88,96 @@ _MODES = ("manual_due", "auto_invoice")
 _MODE_BADGE = {"auto_invoice": "subscriptions.bills_automatically"}
 # The agreement keeps a consent only for a mode that runs, so each one kept is shown.
 _CONSENTS = ("generation", "sending")
+
+
+def _yes_no(on) -> str:
+    return t("settings.yes") if on else t("settings.no")
+
+
+# Each agreement field the page sets: its label key and how its value reads, as unset
+# values are shown. The page's controls and the agreement's History both read it.
+_FIELD_TEXT = {
+    "frequency": ("th.frequency", lambda v: display_enum(v or "monthly", "subscription_frequency")),
+    "custom_interval_days": ("subscriptions.custom_interval_title", lambda v: str(v) if v else None),
+    "anchor_date": ("label.first_bill_date", lambda v: v),
+    "start_date": ("label.start_date", lambda v: v),
+    "billing_timing": ("subscriptions.billing_timing", lambda v: t(f"subscriptions.timing_{v or 'advance'}")),
+    "term_start": ("subscriptions.term_start", lambda v: v),
+    "term_end": ("subscriptions.term_end", lambda v: v),
+    "cancel_at_period_end": ("subscriptions.stop_at_period_end", lambda v: _yes_no(v is not None)),
+    "generation_mode": ("subscriptions.billing_mode", lambda v: t(f"subscriptions.mode_{v or 'manual_due'}")),
+    "auto_send": ("subscriptions.auto_send", _yes_no),
+    "catchup_periods": ("subscriptions.catchup_window", lambda v: str(v or 0)),
+}
+
+
+def _label(field: str) -> str:
+    return t(_FIELD_TEXT[field][0])
+
+
+def _value_text(field: str, value) -> str | None:
+    return _FIELD_TEXT[field][1](value)
+
+
+def _term_change(field: str):
+    return lambda c: change_text(_label(field), _value_text(field, c.get("old")), _value_text(field, c.get("new")))
+
+
+def _consents_change(c: dict) -> str:
+    old, new = c.get("old") or {}, c.get("new") or {}
+    return ", ".join(
+        [t(f"subscriptions.consent_{m}", date=format_timestamp((new[m] or {}).get("at") or ""))
+         for m in _CONSENTS if m in new and new[m] != old.get(m)]
+        + [t(f"subscriptions.consent_{m}_withdrawn") for m in _CONSENTS if m in old and m not in new])
+
+
+def _period_change(old: dict, new: dict, start: str, end: str) -> str | None:
+    """What happened to one period: billed, skipped, opened again, held for review, or its email."""
+    was, now = old.get("state"), new.get("state")
+    dates = {"start": start, "end": end}
+    if now == "billed" and was != "billed":
+        return t("subscriptions.history_billed", **dates)
+    if now == "skipped" and was != "skipped":
+        return t("subscriptions.history_skipped", reason=new.get("reason") or "", **dates)
+    if now == "released" and was in ("billed", "skipped"):
+        return t("subscriptions.done_reopened" if was == "billed" else "subscriptions.done_unskipped", **dates)
+    if now == "unresolved" and was != "unresolved":
+        return t("subscriptions.history_unresolved", **dates)
+    send = (new.get("send") or {}).get("state")
+    if send and new.get("send") != old.get("send"):
+        return t(f"subscriptions.history_send_{send}", **dates)
+    return None
+
+
+def _periods_change(c: dict) -> str:
+    old, new = c.get("old") or {}, c.get("new") or {}
+    lines = [_period_change(old.get(k) or {}, new.get(k) or {}, *span)
+             for k, span in sorted((c.get("dates") or {}).items(), key=lambda kv: int(kv[0]))]
+    return ", ".join(x for x in lines if x) or t("activity.generic_updated", field=t("subscriptions.periods_heading"))
+
+
+def _billing_failure_change(c: dict) -> str | None:
+    """A failed automatic bill names its period; clearing the failure is not a change of its own."""
+    if c.get("drop"):
+        return None
+    span = (c.get("dates") or {}).get(str((c.get("new") or {}).get("period_index")))
+    return t("subscriptions.history_billing_failed", start=span[0], end=span[1]) if span \
+        else t("subscriptions.notice_billing_failed_title")
+
+
+def _count_change(label: str):
+    return lambda c: f"{t(label)}: {len(c.get('new') or [])}"
+
+
+register_fields({
+    **{f: _term_change(f) for f in _FIELD_TEXT},
+    "consents": _consents_change,
+    "periods": _periods_change,
+    "billing_failure": _billing_failure_change,
+    "history_review": _count_change("subscriptions.history_heading"),
+    "history_set_aside": _count_change("subscriptions.history_set_aside"),
+    "resume_restarts": lambda c: None,
+})
 # Escape clears an inline preview or result panel (GDR 2j).
 _PANEL_ESC_JS = Script("""
 document.addEventListener('keydown', function(e) {
@@ -198,34 +288,34 @@ def _schedule_section(entity_id: str, sub: dict) -> FT:
     timing = sub.get("billing_timing") or "advance"
     stops = sub.get("cancel_at_period_end") is not None
 
-    def _date(label: str, field: str) -> FT:
-        return Label(t(label), Input(type="date", name="value", value=sub.get(field) or "",
+    def _date(field: str) -> FT:
+        return Label(_label(field), Input(type="date", name="value", value=sub.get(field) or "",
                                      hx_patch=f"{base}/{field}", **attrs))
 
     return Div(
         H3(t("subscriptions.schedule_heading")),
         Div(
             # Choosing Custom shows the days box; the days entered choose it.
-            Label(t("th.frequency"),
-                  Select(*[Option(display_enum(f, "subscription_frequency"), value=f, selected=(f == freq))
+            Label(_label("frequency"),
+                  Select(*[Option(_value_text("frequency", f), value=f, selected=(f == freq))
                            for f in _FREQUENCIES],
                          name="value", hx_patch=f"{base}/frequency", data_days=interval,
                          onchange="document.getElementById('sub-custom-days').style.display ="
                                   " this.value === 'custom' ? '' : 'none'",
                          **{**attrs, "hx_trigger": "change[this.value!=='custom' || this.dataset.days]"})),
-            Label(t("subscriptions.custom_interval_title"),
+            Label(_label("custom_interval_days"),
                   Input(type="number", name="value", value=interval, min="1", hx_patch=f"{base}/custom_interval_days",
                         style="width:80px", **attrs),
                   id="sub-custom-days", style="" if freq == "custom" else "display:none"),
-            _date("label.first_bill_date", "anchor_date"),
-            Label(t("subscriptions.billing_timing"),
-                  Select(*[Option(t(f"subscriptions.timing_{m}"), value=m, selected=(m == timing)) for m in _TIMINGS],
+            _date("anchor_date"),
+            Label(_label("billing_timing"),
+                  Select(*[Option(_value_text("billing_timing", m), value=m, selected=(m == timing)) for m in _TIMINGS],
                          name="value", hx_patch=f"{base}/billing_timing", **attrs)),
-            _date("subscriptions.term_start", "term_start"),
-            _date("subscriptions.term_end", "term_end"),
-            Label(t("subscriptions.stop_at_period_end"),
-                  Select(Option(t("settings.no"), value="false", selected=not stops),
-                         Option(t("settings.yes"), value="true", selected=stops),
+            _date("term_start"),
+            _date("term_end"),
+            Label(_label("cancel_at_period_end"),
+                  Select(Option(_yes_no(False), value="false", selected=not stops),
+                         Option(_yes_no(True), value="true", selected=stops),
                          name="value", hx_patch=f"{base}/cancel_at_period_end", **attrs)),
             style="display:flex;gap:1rem;flex-wrap:wrap;align-items:center",
         ),
@@ -413,6 +503,11 @@ def _period_text(p: dict) -> str:
     return f"{p['service_start']} - {p['service_end']}"
 
 
+def _row_box(value: str) -> FT:
+    """A ticked row checkbox of a table that bills several agreements at once."""
+    return Td(Input(type="checkbox", name="item", value=value, checked=True, cls="bulk-select"), cls="col-checkbox")
+
+
 def _due_panel(preview: dict, subs: dict[str, dict]) -> FT:
     """What Generate all due bills: each listed agreement's oldest due period, from the same
     query the run uses. Agreements with the most overdue bill date come first, the order
@@ -432,20 +527,21 @@ def _due_panel(preview: dict, subs: dict[str, dict]) -> FT:
         eid, first, more = i["entity_id"], i["periods"][0], len(i["periods"]) - 1
         sub = subs[eid]
         return Tr(
-            Td(Input(type="checkbox", name="item", value=f"{eid}|{first['period_index']}", checked=True), cls="col-checkbox"),
+            _row_box(f"{eid}|{first['period_index']}"),
             Td(A(template_label(sub, eid), href=f"/subscriptions/{eid}")),
             Td(sub.get("contact_name") or "--"),
             Td(_period_text(first)),
             Td(first["bill_date"]),
-            Td(t("subscriptions.due_more", n=more) if more else ""),
+            Td(str(more), cls="cell--number"),
             _sub_amount(sub),
+            cls="data-row",
         )
 
     return Form(
         operation_key_input(),
         P(t("subscriptions.due_hint", n=len(items)), cls="text-muted"),
-        Table(Thead(Tr(Th(""), Th(t("th.name")), Th(t("th.contact")), Th(t("th.period")), Th(t("th.bill_date")),
-                       Th(""), Th(t("th.total"), cls="cell--number"))),
+        Table(Thead(Tr(select_all_th(), Th(t("th.name")), Th(t("th.contact")), Th(t("th.period")), Th(t("th.bill_date")),
+                       Th(t("subscriptions.th_more_due"), cls="cell--number"), Th(t("th.total"), cls="cell--number"))),
               Tbody(*[_row(i) for i in items]), cls="data-table"),
         Div(Button(t("btn.generate_due"), type="submit", cls="btn btn--primary btn--sm"),
             Button(t("btn.close"), type="button", cls="btn btn--ghost btn--sm",
@@ -507,18 +603,19 @@ def _catch_up_card(items: list[dict], subs: dict[str, dict], results: list[dict]
         sub = subs.get(eid) or {}
         for p in i["periods"]:
             rows.append(Tr(
-                Td(Input(type="checkbox", name="item", value=f"{eid}|{p['period_index']}", checked=True), cls="col-checkbox"),
+                _row_box(f"{eid}|{p['period_index']}"),
                 Td(A(template_label(sub, eid), href=f"/subscriptions/{eid}")),
                 Td(_period_text(p)),
                 Td(p["bill_date"]),
                 _sub_amount(sub),
+                cls="data-row",
             ))
     return Div(
         *notes,
         P(t("subscriptions.catchup_hint"), cls="text-muted"),
         Form(
             operation_key_input(),
-            Table(Thead(Tr(Th(""), Th(t("th.name")), Th(t("th.period")), Th(t("th.bill_date")),
+            Table(Thead(Tr(select_all_th(), Th(t("th.name")), Th(t("th.period")), Th(t("th.bill_date")),
                            Th(t("th.total"), cls="cell--number"))),
                   Tbody(*rows), cls="data-table"),
             Div(Button(t("subscriptions.catchup_bill"), type="submit", cls="btn btn--primary btn--sm",
@@ -578,14 +675,14 @@ def _billing_section(entity_id: str, sub: dict) -> FT:
     return Div(
         H3(t("subscriptions.billing_heading")),
         Div(
-            Label(t("subscriptions.billing_mode"),
-                  Select(*[Option(t(f"subscriptions.mode_{m}"), value=m, selected=(m == mode)) for m in _MODES],
+            Label(_label("generation_mode"),
+                  Select(*[Option(_value_text("generation_mode", m), value=m, selected=(m == mode)) for m in _MODES],
                          name="value", hx_patch=f"{base}/generation_mode", **attrs)),
-            Label(t("subscriptions.auto_send"),
-                  Select(Option(t("settings.no"), value="false", selected=not sub.get("auto_send")),
-                         Option(t("settings.yes"), value="true", selected=bool(sub.get("auto_send"))),
+            Label(_label("auto_send"),
+                  Select(Option(_yes_no(False), value="false", selected=not sub.get("auto_send")),
+                         Option(_yes_no(True), value="true", selected=bool(sub.get("auto_send"))),
                          name="value", hx_patch=f"{base}/auto_send", **attrs)),
-            Label(t("subscriptions.catchup_window"),
+            Label(_label("catchup_periods"),
                   Input(type="number", name="value", min="0", max="12", value=str(sub.get("catchup_periods") or 0),
                         hx_patch=f"{base}/catchup_periods", style="width:80px", **attrs),
                   title=t("subscriptions.catchup_window_title")),

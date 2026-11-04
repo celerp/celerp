@@ -17,7 +17,7 @@ REPO = Path(__file__).resolve().parents[3]
 
 
 async def _history(ui, eid: str) -> str:
-    return BeautifulSoup((await ui.get(f"/docs/{eid}/history")).text, "html.parser").get_text(" ", strip=True)
+    return BeautifulSoup((await ui.get(f"/docs/{eid}/history?per_page=100")).text, "html.parser").get_text(" ", strip=True)
 
 
 async def _changed_fields(ui, eid: str) -> list[dict]:
@@ -52,8 +52,10 @@ async def test_history_names_each_change_as_the_agreement_page_does(owner_ui, mo
     eid = await _changed_agreement(owner_ui, monkeypatch)
     text = await _history(owner_ui, eid)
     for raw in ("Generation Mode", "Auto Send", "Catchup Periods", "Consents", "Periods updated", "Billing Timing",
-                "Cancel At Period End", "auto_invoice", "manual_due", "True", "False", "arrears"):
+                "Cancel At Period End", "auto_invoice", "manual_due", "True", "False", "→ arrears", "→ advance"):
         assert raw not in text, raw
+    timing = (t("subscriptions.timing_advance", "en"), t("subscriptions.timing_arrears", "en"))
+    assert f"{t('subscriptions.billing_timing', 'en')}: {timing[0]} → {timing[1]}" in text
     mode = t("subscriptions.billing_mode", "en")
     assert f"{mode}: {t('subscriptions.mode_manual_due', 'en')} → {t('subscriptions.mode_auto_invoice', 'en')}" in text
     assert f"{t('subscriptions.auto_send', 'en')}: {t('settings.no', 'en')} → {t('settings.yes', 'en')}" in text
@@ -115,17 +117,17 @@ def test_no_subscription_message_puts_a_count_before_a_plural_noun():
     assert not bad, bad
 
 
-async def test_one_held_period_reads_as_one(owner_ui, session, monkeypatch):
+async def test_one_held_agreement_reads_as_one(owner_ui, session, monkeypatch):
     freeze_day(monkeypatch, "2026-01-01")
     eid = await agreement(owner_ui.api, {}, start="2026-01-01")
     r = await schedule(owner_ui.api, {}, eid, generation_mode="auto_invoice", catchup_periods=0)
     assert r.status_code == 200, r.text
-    freeze_day(monkeypatch, "2026-01-15")
-    await tick(session, await company_id(owner_ui.api, {}), "2026-01-15")
+    freeze_day(monkeypatch, "2026-02-15")  # two periods due, a window of none: both held
+    await tick(session, await company_id(owner_ui.api, {}), "2026-02-15")
     for lang in ("en", "de"):
         owner_ui.cookies.set("celerp_lang", lang)
         page = (await owner_ui.get("/subscriptions?direction=sales")).text
-        banner = t("subscriptions.catchup_banner", lang, n=1, m=1)
+        banner = t("subscriptions.catchup_banner", lang, n=1, m=2)
         assert banner in page, (lang, page[:500])
         assert not re.search(r"\b1 (agreements|periods|Vereinbarungen|Zeiträume)\b", banner), banner
 

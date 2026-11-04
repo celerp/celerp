@@ -224,6 +224,101 @@
     "subscriptions.err_stop_draft": {
       "en": "A draft has no current period yet. Activate it first, or set an end of term.",
       "params": []
+    },
+    "subscriptions.history_billed": {
+      "en": "Billed {start} to {end}.",
+      "params": [
+        "end",
+        "start"
+      ]
+    },
+    "subscriptions.history_skipped": {
+      "en": "Skipped {start} to {end}: {reason}",
+      "params": [
+        "end",
+        "reason",
+        "start"
+      ]
+    },
+    "subscriptions.history_unresolved": {
+      "en": "{start} to {end} waits for history review.",
+      "params": [
+        "end",
+        "start"
+      ]
+    },
+    "subscriptions.history_send_pending": {
+      "en": "The bill for {start} to {end} is waiting to be emailed.",
+      "params": [
+        "end",
+        "start"
+      ]
+    },
+    "subscriptions.history_send_sending": {
+      "en": "Started emailing the bill for {start} to {end}.",
+      "params": [
+        "end",
+        "start"
+      ]
+    },
+    "subscriptions.history_send_sent": {
+      "en": "Emailed the bill for {start} to {end}.",
+      "params": [
+        "end",
+        "start"
+      ]
+    },
+    "subscriptions.history_send_failed": {
+      "en": "Could not email the bill for {start} to {end}.",
+      "params": [
+        "end",
+        "start"
+      ]
+    },
+    "subscriptions.history_billing_failed": {
+      "en": "Automatic billing failed for {start} to {end}.",
+      "params": [
+        "end",
+        "start"
+      ]
+    },
+    "subscriptions.consent_generation_withdrawn": {
+      "en": "Automatic billing authorization withdrawn",
+      "params": []
+    },
+    "subscriptions.consent_sending_withdrawn": {
+      "en": "Automatic sending authorization withdrawn",
+      "params": []
+    },
+    "subscriptions.th_more_due": {
+      "en": "More periods due",
+      "params": []
+    },
+    "subscriptions.catchup_banner": {
+      "en": "Billing paused for review. Agreements held: {n}. Periods outside their automatic window: {m}.",
+      "params": [
+        "m",
+        "n"
+      ]
+    },
+    "subscriptions.notice_catchup_body": {
+      "en": "Some agreements have periods outside their automatic window. Review them before they are billed. Agreements: {n}. Periods: {m}.",
+      "params": [
+        "m",
+        "n"
+      ]
+    },
+    "subscriptions.review_banner": {
+      "en": "Some agreements have earlier documents that could not be matched to their periods. Their past periods stay unbilled until you confirm where each document belongs. Agreements: {n}.",
+      "params": [
+        "n"
+      ]
+    },
+    "subscriptions.due_hint": {
+      "en": "Agreements with a period due: {n}. Generate due bills the oldest due period of each ticked agreement. Agreements with more periods due can be run again.",
+      "params": [
+        "n"
+      ]
     }
   }
 }
