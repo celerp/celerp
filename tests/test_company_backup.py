@@ -761,10 +761,20 @@ async def _bk_add_membership(engine, cid, user, marker):
     await member(engine, clerk, cid, role="manager")
 
 
+async def _bk_add_subscription_email_attempt(engine, cid, user, marker):
+    from celerp.models.subscription_email import SubscriptionEmailAttempt
+    async with maker(engine)() as s:
+        s.add(SubscriptionEmailAttempt(
+            company_id=cid, operation_id=uuid.uuid4(), doc_id="doc:testing", attempt_number=1,
+            payload_json=json.dumps({"to": "test@example.test", "body_html": marker})))
+        await s.commit()
+
+
 _BK_CATEGORIES = {
     "connector_configs": _bk_add_connector,
     "outbound_queue": _bk_add_outbound,
     "doc_share_tokens": _bk_add_share,
+    "subscription_email_attempts": _bk_add_subscription_email_attempt,
     "notifications": _bk_add_notification,
     "ai_conversations": _bk_add_conversation,
     "ai_batch_jobs": _bk_add_ai_job,

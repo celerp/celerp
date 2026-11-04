@@ -9,7 +9,6 @@ unattended mode whose authorizer no longer holds its permission is shown while i
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -53,14 +52,11 @@ async def report(session: AsyncSession, company_id, user_id, *, everything: bool
     settings = (company.settings or {}) if company else {}
     since = "" if everything else ((settings.get(ACK_SETTING) or {}).get(str(user_id)) or "")
     # Only a live, durable payload within the transport retry window permits replay.
-    now = datetime.now(timezone.utc)
     attempts = (await session.execute(select(
         SubscriptionEmailAttempt.operation_id, SubscriptionEmailAttempt.created_at).where(
             SubscriptionEmailAttempt.company_id == company_id))).all()
     retryable = {str(operation_id) for operation_id, created_at in attempts
-                 if created_at and ((created_at.replace(tzinfo=timezone.utc)
-                                     if created_at.tzinfo is None else created_at)
-                                    > now - timedelta(hours=22))}
+                 if billing.retryable_attempt_time(created_at)}
     found = []
     for row in await billing.agreements(session, company_id):
         state = row.state

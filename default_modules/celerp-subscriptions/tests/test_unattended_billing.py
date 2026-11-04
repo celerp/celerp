@@ -496,6 +496,42 @@ async def test_missing_private_payload_refuses_uncertain_retry(client, session, 
     assert (await client.post(f"/subscriptions/{eid}/periods/0/send", headers=hd)).status_code == 409
 
 
+async def test_uncertain_send_replay_window_enforced_at_api(client, session, monkeypatch, mail):
+    import asyncio
+    import uuid
+    from datetime import datetime, timedelta, timezone
+    from celerp.services import email
+    from celerp.models.subscription_email import SubscriptionEmailAttempt
+    from celerp_subscriptions import billing
+
+    monkeypatch.setattr(email, "relay_send_is_idempotent", lambda: True)
+    freeze_day(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    eid = await _auto(client, hd, start="2026-07-01", send=True,
+                      contact_id=await contact(client, hd, "member@example.test"))
+
+    async def cut_off(*args, **kwargs):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(email, "send_email", cut_off)
+    with pytest.raises(asyncio.CancelledError):
+        await tick(session, cid, "2026-07-01")
+    state = await template(client, hd, eid)
+    operation_id = uuid.UUID(state["periods"]["0"]["send"]["operation_id"])
+    attempt = await session.get(
+        SubscriptionEmailAttempt, {"company_id": uuid.UUID(cid), "operation_id": operation_id})
+    attempt.created_at = datetime.now(timezone.utc) - billing.RECOVERY_RETRY_AGE - timedelta(seconds=1)
+    await session.commit()
+
+    row = next(r for r in (await summary(client, hd))["rows"] if r["kind"] == "send_unconfirmed")
+    assert row["retry_url"] is None
+    monkeypatch.setattr(email, "send_email", mail)
+    refused = await client.post(f"/subscriptions/{eid}/periods/0/send", headers=hd)
+    assert refused.status_code == 409
+    assert mail.sent == []
+
+
 async def test_auto_arrears_bills_on_first_bill_date_with_zero_catchup(client, session, monkeypatch):
     freeze_day(monkeypatch, "2026-01-01")
     hd = await register(client)

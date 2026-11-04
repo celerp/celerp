@@ -53,11 +53,20 @@ MODE_DOCUMENT_PERMISSION = {"generation": "finalize_documents", "sending": "edit
 CATCHUP_CAP = 12
 MAX_EMAIL_PAYLOAD_BYTES = 2 * 1024 * 1024
 EMAIL_ATTEMPT_RETENTION = timedelta(days=2)
+RECOVERY_RETRY_AGE = timedelta(hours=12)
 
 
 def now_stamp() -> str:
     """Wall-clock time of a record (not the business day): what a summary acknowledgment compares."""
     return datetime.now(timezone.utc).isoformat()
+
+
+def retryable_attempt_time(created_at: datetime | None) -> bool:
+    """Refuse old unknown-outcome retries even after extended downtime."""
+    if created_at is None:
+        return False
+    when = created_at if created_at.tzinfo else created_at.replace(tzinfo=timezone.utc)
+    return when > datetime.now(timezone.utc) - RECOVERY_RETRY_AGE
 
 
 def doc_kind(state: dict) -> str:
@@ -556,7 +565,8 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
                     {"company_id": company_id, "operation_id": uuid.UUID(operation_id)})
             except ValueError:
                 attempt = None
-            if (attempt is None or attempt.doc_id != doc_id or attempt.attempt_number != n):
+            if (attempt is None or attempt.doc_id != doc_id or attempt.attempt_number != n
+                    or not retryable_attempt_time(attempt.created_at)):
                 raise HTTPException(status_code=409, detail="Verify the previous email before sending another")
             message = json.loads(attempt.payload_json)
             digest = hashlib.sha256(json.dumps(message, sort_keys=True).encode()).hexdigest()
