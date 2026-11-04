@@ -408,3 +408,16 @@ test("an installer that could not start moves a downloaded update to a failed in
     updater.emit("update-available", { version: "2.6.1" });
     expect(getUpdateState().failure).toBe("install");
   });
+
+test("a setup that started and then stopped keeps its own failure kind, so the app can say what happened",
+  function test_stopped_install_state() {
+    const updater = new EventEmitter();
+    const { installFailed, getUpdateState } = trackUpdater(updater, () => {});
+    installFailed("2.8.1", "", "stopped");
+    const state = getUpdateState();
+    expect([state.status, state.failure, state.version]).toEqual(["error", "stopped", "2.8.1"]);
+    // without a kind it is still an installer that could not start
+    const other = trackUpdater(new EventEmitter(), () => {});
+    other.installFailed("2.8.1", "spawn UNKNOWN");
+    expect(other.getUpdateState().failure).toBe("install");
+  });

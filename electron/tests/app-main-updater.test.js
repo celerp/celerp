@@ -80,6 +80,7 @@ function resourcesFolder() {
 // will-quit as Electron does, and the app has quit only if no handler held it.
 // Dialogs wait until the test answers them with answer(response).
 function packagedApp({ argv = process.argv } = {}) {
+  const userData = fs.mkdtempSync(path.join(os.tmpdir(), "celerp-user-"));
   const shown = [];
   const answers = [];
   const opened = [];
@@ -89,6 +90,7 @@ function packagedApp({ argv = process.argv } = {}) {
   const app = {
     isPackaged: true,
     getLocale: () => "en-US",
+    getPath: () => userData,
     on: (event, fn) => { (events[event] ||= []).push(fn); },
     relaunch: (options) => relaunched.push(options),
     exit: () => {},
@@ -120,7 +122,7 @@ function packagedApp({ argv = process.argv } = {}) {
   loaded.setupAutoUpdater();
   if (loadedHandler) loadedHandler();
   const answer = async (response) => { answers.shift()(response); await settle(); };
-  return { ...loaded, app, shown, answer, opened, relaunched, quits, checks };
+  return { ...loaded, app, shown, answer, opened, relaunched, quits, checks, userData };
 }
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
@@ -219,4 +221,60 @@ test("failures of the app's own checks and downloads stay on the update card; a 
     expect(t.shown[0].message).toMatch(/would not let Celerp save/);
     await t.answer(1);
     expect(t.opened).toEqual([]);
+  });
+
+test("Restart to install runs setup in its own window and lets it reopen Celerp",
+  async function test_install_update_runs_installer_visible() {
+    const t = packagedApp();
+    useInstallStep(t.updater, t.app, 1, true);
+    const spawned = [];
+    t.updater.spawnLog = (exe, args) => { spawned.push(args); return Promise.resolve(true); };
+    const calls = [];
+    const quitAndInstall = t.updater.quitAndInstall;
+    t.updater.quitAndInstall = function (...args) { calls.push(args); return quitAndInstall.apply(this, args); };
+    t.updater.emit("update-available", { version: "2.8.1" });
+    t.updater.emit("update-downloaded", { version: "2.8.1" });
+    await t.listeners["install-update"]();
+    await until(() => t.quits.length > 0);
+    expect(t.updater.autoRunAppAfterInstall).toBe(true);
+    expect(calls).toEqual([[false]]);
+    expect(spawned).toEqual([["--updated", "--force-run"]]);   // never /S
+  });
+
+test("Celerp reopened by a setup that stopped says the update stopped and where its logs are",
+  async function test_relaunch_after_stopped_install_shows_dialog() {
+    const t = packagedApp({ argv: [process.execPath, "--updated", "--update-install-failed=2.8.1"] });
+    await settle();
+    const state = t.handlers["get-update-state"]();
+    expect([state.status, state.failure, state.version]).toEqual(["error", "stopped", "2.8.1"]);
+    expect(t.shown.length).toBe(1);
+    expect(t.shown[0].message).toBe("The update stopped before it finished, so Celerp is still on the version you had.");
+    expect(t.shown[0].detail).toContain(path.join(t.userData, "celerp-data", "logs"));
+    expect(t.checks).toEqual([]);
+    // when a setup that stopped reopens Celerp and it then fails again, the new restart is not one by setup
+    t.updater.emit("update-available", { version: "2.8.1" });
+    t.updater.emit("update-downloaded", { version: "2.8.1" });
+    useInstallStep(t.updater, t.app, 1);
+    await t.listeners["install-update"]();
+    await until(() => t.relaunched.length > 0);
+    expect(t.relaunched[0].args).toContain("--update-install-failed=2.8.1");
+    expect(t.relaunched[0].args).not.toContain("--updated");
+  });
+
+test("the updater writes what it does to update.log in Celerp's logs folder, and a log error never stops it",
+  async function test_updater_logs_to_log_dir() {
+    const t = packagedApp();
+    const logger = t.updater.logger;
+    expect(logger).toBeDefined();
+    for (const level of ["info", "warn", "error"]) logger[level](`${level} line`);
+    const file = path.join(t.userData, "celerp-data", "logs", "update.log");
+    await until(() => fs.existsSync(file) && fs.readFileSync(file, "utf8").includes("error line"));
+    const text = fs.readFileSync(file, "utf8");
+    for (const level of ["info", "warn", "error"]) expect(text).toContain(`${level} line`);
+    // a log folder that cannot be written: the updater carries on
+    const broken = packagedApp();
+    fs.mkdirSync(path.join(broken.userData, "celerp-data"), { recursive: true });
+    fs.writeFileSync(path.join(broken.userData, "celerp-data", "logs"), "a file where the folder should be");
+    expect(() => broken.updater.logger.info("still fine")).not.toThrow();
+    await settle();
   });
