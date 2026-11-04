@@ -432,7 +432,10 @@ async def test_back_to_memo_refuses_when_only_own_item_less_lines(client, sessio
     before = await _state(client, g, invoice)
     r = await back_to_memo(client, g.h, invoice, [own])
     assert r.status_code == 409, r.text
-    assert _detail(r)["message_key"] == "docs.back_to_memo_not_drawn"
+    detail = _detail(r)
+    n = [li["line_id"] for li in before["line_items"]].index(own) + 1
+    assert (detail["message_key"], detail["params"]) == ("docs.back_to_memo_not_drawn_one", {"lines": f'{n} "GIA Certificate"'})
+    assert detail["message"].startswith(f'Line {n} "GIA Certificate" did not come from a memo')
     assert (await _state(client, g, invoice))["line_items"] == before["line_items"]
 
 
@@ -514,7 +517,7 @@ async def test_a_choice_of_only_item_less_lines_changes_nothing_and_is_refused(c
     assert item_less
     r = await send(client, g, owner, item_less)
     assert r.status_code in (409, 422), r.text
-    assert _detail(r)["message_key"] in ("lines.no_stock_one", "docs.back_to_memo_not_drawn")
+    assert _detail(r)["message_key"] in ("lines.no_stock_one", "docs.back_to_memo_not_drawn_one")
     after = await _state(client, g, owner)
     assert after["version"] == before["version"] and after["line_items"] == before["line_items"]
 

@@ -10397,13 +10397,18 @@ _SKIP_KEYS = {"no_item": ("documents.lines_skipped", "lines.no_stock"),
               "idle": ("documents.idle_lines_skipped", "documents.idle_lines_skipped")}
 
 
+def _line_name(number: int, label: str) -> str:
+    """A line as a message names it: its number and, when it has one, its label in quotes."""
+    return f'{number} "{label}"' if label else str(number)
+
+
 def _skip_messages(skipped: list[dict], *, refuse: bool) -> list[dict]:
     """One message per kind in ``skipped`` naming its lines, as ``6 "GIA Certificate"``: the
     notice that they were left as they are, or with ``refuse`` the refusal that none of the
     chosen lines has stock to act on."""
     messages = []
     for kind, keys in _SKIP_KEYS.items():
-        named = [f'{s["line"]} "{s["name"]}"' if s["name"] else str(s["line"]) for s in skipped if s["kind"] == kind]
+        named = [_line_name(s["line"], s["name"]) for s in skipped if s["kind"] == kind]
         if named:
             key = f"{keys[refuse]}_{'one' if len(named) == 1 else 'many'}"
             messages.append(catalog_refusal(key, lines=", ".join(named)))
@@ -12012,11 +12017,9 @@ async def back_to_memo(
         chosen = [lines[i] for i in indices if i not in own]
         refused = [i for i in own if line_item_id(lines[i])] if chosen else own
         if refused or not chosen:
-            names = ", ".join(line_label(lines[i]) for i in refused)
-            raise HTTPException(status_code=409, detail=refusal(
-                "docs.back_to_memo_not_drawn",
-                f"{names} did not come from a memo, so there is no memo to send it back to. "
-                "Delete the line instead.", lines=names))
+            names = ", ".join(_line_name(i + 1, line_label(lines[i])) for i in refused)
+            raise HTTPException(status_code=409, detail=catalog_refusal(
+                f"docs.back_to_memo_not_drawn_{'one' if len(refused) == 1 else 'many'}", lines=names))
         removed = frozenset(li["line_id"] for li in chosen)
         kept = [li for li in lines if li.get("line_id") not in removed]
         # Numbered as the invoice stands once the drawn lines have gone back.

@@ -12,5 +12,12 @@
     "th",
     "vi"
   ],
-  "keys": {}
+  "keys": {
+    "docs.back_to_memo_not_drawn_many": {
+      "en": "Lines {lines} did not come from a memo, so there is no memo to send them back to. Delete those lines instead.",
+      "params": [
+        "lines"
+      ]
+    }
+  }
 }
