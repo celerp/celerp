@@ -271,13 +271,15 @@ def _period_row(schedule: Schedule, k: int) -> dict:
             "service_end": schedule.service_end(k).isoformat(), "bill_date": schedule.bill_date(k).isoformat()}
 
 
-async def period_list(session: AsyncSession, company_id, state: dict, today: date, *, limit: int = 24) -> dict:
+async def period_list(session: AsyncSession, company_id, state: dict, today: date, *,
+                      limit: int = 24, before: int | None = None) -> dict:
     """An agreement's periods from its lowest to the one after today (and any claimed later),
     newest first, at most ``limit``, with each claim's state and document; its next bill date;
     the earlier documents waiting for history review, each with its candidate periods; and the
     ones set aside as billing no period of their own."""
     if not state.get("anchor_date"):
-        return {"next_bill_date": None, "rows": [], "review": [], "set_aside": []}
+        return {"next_bill_date": None, "rows": [], "review": [], "set_aside": [],
+                "older_before": None, "oldest_due_row": None}
     schedule = Schedule.from_state(state)
     nxt = schedule.next_bill_date(floor=review_floor(state))
     first = schedule.first()
@@ -289,7 +291,7 @@ async def period_list(session: AsyncSession, company_id, state: dict, today: dat
             top = min(top, end - (1 if schedule.start(end) == schedule.term_end else 0))
         if schedule.last is not None:
             top = min(top, schedule.last)
-        k = top
+        k = min(top, before - 1) if before is not None else top
         while k >= first and len(rows) < limit:
             if schedule.exists(k):
                 entry = schedule.periods.get(k) or {}
@@ -298,14 +300,23 @@ async def period_list(session: AsyncSession, company_id, state: dict, today: dat
                              "ref_id": await doc_ref(session, company_id, doc_id) if doc_id else None,
                              "reason": entry.get("reason"), "history": bool(entry.get("history"))})
             k -= 1
+    older_before = rows[-1]["period_index"] if rows and first is not None and k >= first else None
+    oldest_open = schedule.oldest_open(floor=review_floor(state))
+    oldest_due_row = None
+    if (before is None and oldest_open is not None and oldest_open not in
+            {r["period_index"] for r in rows} and schedule.bill_date(oldest_open) <= today):
+        entry = schedule.periods.get(oldest_open) or {}
+        oldest_due_row = {**_period_row(schedule, oldest_open), "state": entry.get("state"),
+                          "doc_id": entry.get("doc_id"), "ref_id": None,
+                          "reason": entry.get("reason"), "history": bool(entry.get("history"))}
     review = [{"doc_id": r.get("doc_id"), "ref_id": await doc_ref(session, company_id, r.get("doc_id")),
                "candidates": [_period_row(schedule, c) for c in r.get("candidates") or []]}
               for r in state.get("history_review") or []]
     set_aside = [{"doc_id": r.get("doc_id"), "ref_id": await doc_ref(session, company_id, r.get("doc_id"))}
                  for r in state.get("history_set_aside") or []]
     return {"next_bill_date": nxt.isoformat() if nxt else None,
-            "oldest_open_index": schedule.oldest_open(floor=review_floor(state)),
-            "rows": rows, "review": review, "set_aside": set_aside}
+            "oldest_open_index": oldest_open, "oldest_due_row": oldest_due_row,
+            "older_before": older_before, "rows": rows, "review": review, "set_aside": set_aside}
 
 
 def due_periods(state: dict, today: date) -> tuple[Schedule, list[int]] | None:

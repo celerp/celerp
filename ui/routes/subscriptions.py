@@ -313,9 +313,10 @@ def _period_actions(entity_id: str, row: dict) -> FT:
     )
 
 
-def _periods_table(entity_id: str, rows: list[dict]) -> FT:
+def _periods_table(entity_id: str, rows: list[dict], *, oldest_due_row: dict | None = None,
+                   older_before: int | None = None, historical_page: bool = False) -> FT:
     """The agreement's periods, newest first: dates, state, the document that billed it."""
-    if not rows:
+    if not rows and oldest_due_row is None:
         return ""
 
     def _row(r: dict) -> FT:
@@ -327,11 +328,19 @@ def _periods_table(entity_id: str, rows: list[dict]) -> FT:
 
     return Div(
         H3(t("subscriptions.periods_heading")),
+        Div(P(t("th.next_due"), cls="text-muted"),
+            Table(Tbody(_row(oldest_due_row)), cls="data-table")) if oldest_due_row else "",
         Table(
             Thead(Tr(Th(t("th.period")), Th(t("th.bill_date")), Th(t("th.status")), Th(t("th.document")), Th(""))),
             Tbody(*[_row(r) for r in rows]),
             cls="data-table",
         ),
+        Div(*([A(t("btn.back"), href=f"/subscriptions/{entity_id}")]
+               if historical_page else []),
+            *([A(t("btn.next"),
+                 href=f"/subscriptions/{entity_id}?period_before={older_before}")]
+              if older_before is not None else []),
+            cls="form-actions"),
         id="sub-periods", cls="mt-lg",
     )
 
@@ -885,7 +894,7 @@ def setup_routes(app) -> None:
     # --- Detail page ---
 
     @app.get("/subscriptions/{entity_id}")
-    async def subscription_detail(request: Request, entity_id: str):
+    async def subscription_detail(request: Request, entity_id: str, period_before: int | None = None):
         from ui.routes.documents import _doc_detail, _merge_company_letterhead, doc_detail_connectors
         token = _token(request)
         if not token:
@@ -946,7 +955,7 @@ def setup_routes(app) -> None:
             pass
 
         try:
-            schedule = await api.get_subscription_periods(token, entity_id)
+            schedule = await api.get_subscription_periods(token, entity_id, before=period_before)
         except APIError as exc:
             return await _load_error_page(request, t("nav.subscriptions_sales"), exc, "subscriptions_sales")
 
@@ -984,7 +993,9 @@ def setup_routes(app) -> None:
             ),
             _billing_section(entity_id, doc),
             _history_review(entity_id, schedule.get("review") or [], schedule.get("set_aside") or []),
-            _periods_table(entity_id, schedule.get("rows") or []),
+            _periods_table(entity_id, schedule.get("rows") or [],
+                           oldest_due_row=schedule.get("oldest_due_row"),
+                           older_before=schedule.get("older_before"), historical_page=period_before is not None),
             title=f"{type_label} {ref} - Celerp",
             nav_active="subscriptions_sales" if direction == "sales" else "subscriptions_purchasing",
             request=request,
