@@ -9735,7 +9735,11 @@ async def reserve_list_lines(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Reserve or release chosen lines of a List of any type (ledger-neutral). Release works
-    in any status; newly reserving stock needs a draft or finalized List."""
+    in any status; newly reserving stock needs a draft or finalized List.
+
+    Lines with no inventory item and service lines are left as they are and listed in the
+    answer's ``skipped`` (each line's number, name, kind and line id), with ``skipped_notice``
+    saying why. A choice of only such lines is refused (422), naming them."""
     # Company first, as the document path does, so a document being created with one of
     # these items either sees the reservation or is seen by it.
     row = await _get_list_for_update(session, company_id, entity_id)
@@ -9757,7 +9761,11 @@ async def set_list_lines_available(
 ) -> dict:
     """Give back what chosen List lines hold. A List never ships, so a line whose goods are
     sold or out on memo is refused: they are taken back on the document that shipped them.
-    A line holding nothing is left as it is and named, as on a document."""
+
+    Lines with no inventory item, service lines and lines holding nothing are left as they
+    are and listed in the answer's ``skipped`` (each line's number, name, kind and line id),
+    with ``skipped_notice`` saying why. A choice in which no line holds anything is refused
+    (422), naming the lines."""
     row = await _get_list_for_update(session, company_id, entity_id)
 
     async def run(indices: list[int]) -> dict:
@@ -11094,6 +11102,11 @@ async def fulfill_lines(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    """Ship chosen lines of an invoice or memo in one request.
+
+    A service line counts as shipped. A line with no inventory item is left as it is and
+    listed in the answer's ``skipped`` (its number, name, kind and line id), with
+    ``skipped_notice`` saying why. A choice of only such lines is refused (422), naming them."""
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     return await _line_action(
         session, company_id, user, row, "fulfill", body,
@@ -11513,6 +11526,10 @@ async def revert_lines(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Take back goods this memo or invoice shipped (Set as available on shipped lines).
+
+    Lines with no inventory item and service lines are left as they are and listed in the
+    answer's ``skipped`` (each line's number, name, kind and line id), with ``skipped_notice``
+    saying why. A choice of only such lines is refused (422), naming them.
 
     Inbound doc types (bill, consignment_in) must use DELETE /receive instead.
     """
@@ -12250,7 +12267,11 @@ async def reserve_lines(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Reserve or release chosen lines of an invoice or memo (ledger-neutral). Release works
-    in any status; newly reserving stock needs a status that allows reserving."""
+    in any status; newly reserving stock needs a status that allows reserving.
+
+    Lines with no inventory item and service lines are left as they are and listed in the
+    answer's ``skipped`` (each line's number, name, kind and line id), with ``skipped_notice``
+    saying why. A choice of only such lines is refused (422), naming them."""
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     doc_type = row.state.get("doc_type", "")
     allowed = RESERVABLE_DOC_STATUSES.get(doc_type)
@@ -12299,7 +12320,13 @@ async def set_lines_available(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Set chosen lines of an invoice or memo as available in one request: holds are given
-    back and shipped goods are taken back, all or nothing."""
+    back and shipped goods are taken back, and the lines it acts on change together or not
+    at all.
+
+    Lines with no inventory item, service lines and lines with nothing held or out are left
+    as they are and listed in the answer's ``skipped`` (each line's number, name, kind and
+    line id), with ``skipped_notice`` saying why. A choice in which no line has anything held
+    or out is refused (422), naming the lines."""
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     doc_type = row.state.get("doc_type", "")
     if doc_type not in RESERVABLE_DOC_STATUSES:

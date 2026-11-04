@@ -568,6 +568,19 @@ async def test_every_bulk_line_action_is_covered_by_the_guard_and_has_its_own_re
     assert {v[1] for v in _ALL_SKIPPED.values()} <= set(LINE_SKIP_REASONS)
 
 
+@pytest.mark.parametrize("path", ["/docs/{entity_id}/fulfill-lines", "/docs/{entity_id}/reserve-lines",
+                                  "/docs/{entity_id}/set-available", "/docs/{entity_id}/revert-lines",
+                                  "/lists/{entity_id}/reserve-lines", "/lists/{entity_id}/set-available"])
+async def test_the_api_reference_describes_the_lines_a_stock_action_leaves(client, path):
+    """Red statement: the reference said nothing of ``skipped``, and set-available called
+    itself "all or nothing" though it leaves lines with nothing to change."""
+    from celerp.main import app
+    app.openapi_schema = None
+    said = app.openapi()["paths"][path]["post"].get("description", "")
+    assert "``skipped``" in said and "``skipped_notice``" in said and "(422)" in said, said
+    assert "all or nothing" not in said
+
+
 async def test_the_page_confirms_every_stock_action_from_the_same_table():
     """The page script's confirm reads each action's kinds from the skip table, and no stock
     action on the toolbar asks a fixed question of its own. Red statement: Set as shipped
