@@ -105,6 +105,36 @@ class TestSubscriptionsUI:
         from html import unescape
         assert '"period_index": 0' in unescape(r.text)
 
+    async def test_oldest_due_period_and_older_pages_reachable(self, ui_client):
+        ui_client.cookies.update(_authed())
+        due = {"period_index": 0, "service_start": "2026-01-01",
+               "service_end": "2026-01-31", "bill_date": "2026-01-01",
+               "state": None, "doc_id": None}
+        recent = {**due, "period_index": 74, "service_start": "2032-03-01",
+                  "service_end": "2032-03-31", "bill_date": "2032-03-01"}
+        schedule = {"next_bill_date": "2026-01-01", "oldest_open_index": 0,
+                    "rows": [recent], "oldest_due_row": due, "older_before": 74}
+        periods = AsyncMock(return_value=schedule)
+        with (
+            patch("ui.api_client.get_subscription", new=AsyncMock(return_value=_SUB_DOC)),
+            patch("ui.api_client.get_subscription_periods", new=periods),
+            patch("ui.api_client.get_company", new=AsyncMock(
+                return_value={"name": "ACME", "currency": "USD", "timezone": "UTC"})),
+            patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": []})),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_taxes", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.list_doc_notes", new=AsyncMock(return_value=[])),
+        ):
+            first = await ui_client.get("/subscriptions/sub-001")
+            assert first.status_code == 200, first.text
+            assert "/subscriptions/sub-001?period_before=74" in first.text
+            assert "/subscriptions/sub-001/periods/0/skip" in first.text
+            older = await ui_client.get("/subscriptions/sub-001?period_before=74")
+            assert older.status_code == 200, older.text
+            assert periods.await_args_list[-1].kwargs["before"] == 74
+            assert 'href="/subscriptions/sub-001"' in older.text
+
+
     async def test_detail_page_unauthenticated_redirects(self, ui_client):
         r = await ui_client.get("/subscriptions/sub-001")
         assert r.status_code == 302

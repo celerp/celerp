@@ -65,7 +65,7 @@ def test_the_subscriptions_module_bills_on_its_own_only_through_the_dispatcher()
     # agreement only in an automatic mode someone allowed to has turned on.
     assert set(manifest["slots"]) == {"nav", "search_provider", "periodic_operation", "on_modules_ready", "on_company_restored", "on_company_module_enabled"}
     assert manifest["slots"]["periodic_operation"]["handler"] == "celerp_subscriptions.billing:run_due"
-    assert manifest["slots"]["on_company_restored"][0]["handler"] == "celerp_subscriptions.migration:reconcile_company_schedules"
+    assert manifest["slots"]["on_company_restored"][0]["handler"] == "celerp_subscriptions.migration:reconcile_restored_company_schedules"
     assert manifest["slots"]["on_company_module_enabled"][0]["handler"] == "celerp_subscriptions.migration:reconcile_company_schedules"
     assert "billed once" in manifest["description"].lower()
 
