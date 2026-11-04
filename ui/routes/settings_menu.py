@@ -168,13 +168,21 @@ def setup_routes(app):
         token, settings = await _gate(request)
         if settings is None:
             return token
-        try:
-            chosen = _current((await api.get_nav_overrides(token)))
-            change(chosen, settings, await request.form())
-            saved = await api.patch_nav_overrides(token, chosen)
-        except APIError as e:
-            return _editor(settings, flash(str(e.detail)))
-        return _editor(_after(settings, saved))
+        form = await request.form()
+        for attempt in range(3):
+            try:
+                current = await api.get_nav_overrides(token)
+                chosen = _current(current)
+                change(chosen, settings, form)
+                saved = await api.patch_nav_overrides(
+                    token, chosen, etag=current["_etag"]
+                )
+                return _editor(_after(settings, saved))
+            except APIError as e:
+                if e.status == 412 and attempt < 2:
+                    continue
+                return _editor(settings, flash(str(e.detail)))
+        raise AssertionError("menu retry exhausted")
 
     @app.get("/settings/menu")
     async def settings_menu_page(request: Request):
@@ -225,8 +233,13 @@ def setup_routes(app):
         token, settings = await _gate(request)
         if settings is None:
             return token
-        try:
-            await api.reset_nav_overrides(token)
-        except APIError as e:
-            return _editor(settings, flash(str(e.detail)))
+        for attempt in range(3):
+            try:
+                current = await api.get_nav_overrides(token)
+                await api.reset_nav_overrides(token, etag=current["_etag"])
+                break
+            except APIError as e:
+                if e.status == 412 and attempt < 2:
+                    continue
+                return _editor(settings, flash(str(e.detail)))
         return _editor({k: v for k, v in settings.items() if k != KEY})

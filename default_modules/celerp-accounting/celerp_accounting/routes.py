@@ -16,7 +16,7 @@ from fastapi.responses import PlainTextResponse
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1063,6 +1063,22 @@ def _je_memo(memo: str, ref: dict | None) -> str:
     return memo
 
 
+_DOC_SOURCE_KEYS = ("doc_id", "cn_id", "dn_id", "from_doc_id")
+
+
+def _linked_doc_events(doc_id: str, dialect_name: str):
+    """Match all actual document-reference keys using the native indexed PG containment op."""
+    from celerp.models.ledger import LedgerEntry
+
+    if dialect_name == "postgresql":
+        from sqlalchemy import cast
+        from sqlalchemy.dialects.postgresql import JSONB
+
+        metadata = cast(LedgerEntry.metadata_, JSONB)
+        return or_(*(metadata.contains({key: doc_id}) for key in _DOC_SOURCE_KEYS))
+    return or_(*(LedgerEntry.metadata_[key].as_string() == doc_id for key in _DOC_SOURCE_KEYS))
+
+
 async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: list[str]) -> dict[str, dict]:
     """Source-doc display info per journal entry: {je_id: {"doc_id", "doc_ref", "fx"}}.
 
@@ -1103,15 +1119,17 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
     je_ts: dict[str, str] = {}
     for ev in ledger_events:
         meta = ev.metadata_ or {}
-        if meta.get("doc_id"):
-            je_meta[ev.entity_id] = meta
+        source_id = meta.get("doc_id") or meta.get("cn_id") or meta.get("dn_id")
+        if source_id:
+            je_meta[ev.entity_id] = {**meta, "doc_id": source_id}
             je_ts[ev.entity_id] = str((ev.data or {}).get("ts") or "")[:10]
 
     # A credit note carries both ids; its own party is the one the entry belongs
     # to, which is not always the party on the invoice it settles.
     doc_ids = sorted(
         {m["doc_id"] for m in je_meta.values()}
-        | {m["cn_id"] for m in je_meta.values() if m.get("cn_id")}
+        | {m[key] for m in je_meta.values()
+           for key in ("cn_id", "dn_id") if m.get(key)}
     )
     doc_states: dict[str, dict] = {}
     for chunk in _id_chunks(doc_ids):
@@ -1154,7 +1172,7 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
         # The party this entry belongs to, resolved from the document that caused
         # it. Every document-driven posting records its doc_id, so no separate
         # party field has to be stored or backfilled for them.
-        party_state = doc_states.get(meta["cn_id"], state) if meta.get("cn_id") else state
+        party_state = doc_states.get(meta.get("cn_id") or meta.get("dn_id"), state)
         contact_id = (party_state.get("contact_id") or party_state.get("customer_id")
                       or party_state.get("supplier_id"))
         doc_type = party_state.get("doc_type") or party_state.get("type") or ""
@@ -1162,19 +1180,25 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
             entity_id: number
             for entity_id, number in (
                 (doc_id, state.get("ref_id") or state.get("doc_number")),
-                (meta.get("cn_id"), party_state.get("ref_id") or party_state.get("doc_number")),
+                (meta.get("cn_id") or meta.get("dn_id"),
+                 party_state.get("ref_id") or party_state.get("doc_number")),
             )
             if entity_id and number
         }
         refs[je_id] = {
             "doc_id": doc_id,
             "doc_ref": state.get("ref_id") or state.get("doc_number") or doc_id,
+            "related_doc_ids": {str(meta[k]) for k in _DOC_SOURCE_KEYS if meta.get(k)},
             "numbers": numbers,
             "fx": fx,
             "contact_id": contact_id,
             "doc_type": canonical_doc_type(doc_type),
             "is_payment": isinstance(payment_index, int),
             "is_cost_posting": meta.get("trigger") == "doc.fulfilled",
+            # Other posting kinds may happen to equal a document's net price.
+            "is_item_posting": meta.get("trigger") in (
+                "doc.finalized", "doc.imported", "doc.converted_to_bill",
+            ),
             "doc": state,
         }
     return {je_id: refs[original] for je_id, original in reverses.items() if original in refs}
@@ -1257,6 +1281,7 @@ async def _journal_payload(
     date_from: str | None, date_to: str | None,
     filt: _JournalFilter | None = None,
     survivors: dict[str, str] | None = None,
+    entry_ids: list[str] | None = None,
 ) -> tuple[dict, dict, str]:
     """The journal, its source-doc refs and the base currency.
 
@@ -1269,7 +1294,7 @@ async def _journal_payload(
     stored lines up with these again.
     """
     _require_date_range(date_from, date_to)
-    rows = await journal_rows(session, company_id, include_void=True)
+    rows = await journal_rows(session, company_id, include_void=True, entry_ids=entry_ids)
     # Dateless JEs count as pre-period, exactly like the trial balance,
     # general ledger, and per-account ledger: excluded once a start date is
     # set, included otherwise, so period totals cross-foot between reports.
@@ -1507,7 +1532,7 @@ def _expand_item_lines(lines: list[dict], ref: dict | None, base: str) -> tuple[
     # is the one case here that means something is missing rather than absent.
     if not doc:
         return lines, "no_document"
-    if ref.get("is_payment"):
+    if ref.get("is_payment") or not ref.get("is_item_posting", True):
         return lines, "no_items"
     if ref.get("is_cost_posting"):
         # The fulfilment posting moves inventory to cost of sales at cost, as a
@@ -1613,17 +1638,32 @@ async def journal_by_doc(
         select(Projection).where(Projection.company_id == company_id,
                                  Projection.entity_id == doc_id)
     )).scalar_one_or_none()
-    if doc is None:
+    if doc is None or doc.entity_type not in ("doc", "list"):
         raise HTTPException(status_code=404, detail=t("documents.document_not_found"))
     state = doc.state or {}
     # Each line's party is the one every ledger and statement files it under
     # (_line_party): a line's own contact wins over the document's.
+    from celerp.models.ledger import LedgerEntry
+
+    linked = _linked_doc_events(doc_id, session.get_bind().dialect.name)
+    entry_ids = sorted(set((await session.execute(
+        select(LedgerEntry.entity_id).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.event_type == "acc.journal_entry.created",
+            linked,
+        )
+    )).scalars().all()))
     survivors = await merge_survivors(session, company_id)
-    payload, refs, base = await _journal_payload(session, company_id, None, None, survivors=survivors)
+    payload, refs, base = await _journal_payload(
+        session, company_id, None, None, survivors=survivors, entry_ids=entry_ids
+    )
     own_party = state.get("contact_id") or state.get("customer_id") or state.get("supplier_id") or ""
     own_party = survivors.get(own_party, own_party)
 
-    entries = [e for e in payload["entries"] if (e.get("source_doc") or {}).get("doc_id") == doc_id]
+    entries = [
+        e for e in payload["entries"]
+        if doc_id in (refs.get(e["je_id"]) or {}).get("related_doc_ids", ())
+    ]
     for entry in entries:
         lines, status = _expand_item_lines(entry["lines"], refs.get(entry["je_id"]), base)
         entry["lines"] = lines

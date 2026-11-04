@@ -35,12 +35,13 @@ _PREFIX_BY_DOC_TYPE = {
 _LIST_PREFIX_KEYS = {"quotation", "transfer", "audit", "writeoff", "shipping_doc"}
 
 
-def list_sequence_key(list_type: str | None) -> str:
-    """Numbering key for a list: its own type's counter (QUO, TRF, AUD, WO, SHIP). A list
-    with no type, or one this version does not know, is a quotation, as everywhere else."""
-    if list_type in _LIST_PREFIX_KEYS:
-        return list_type
-    return "quotation"
+def list_sequence_key(list_type: str | None, settings: dict | None = None) -> str:
+    """Keep an existing shared counter until this type has its own configuration."""
+    key = list_type if list_type in _LIST_PREFIX_KEYS else "quotation"
+    sequences = (settings or {}).get("sequences") or {}
+    if sequences.get("list") and not sequences.get(key):
+        return "list"
+    return key
 
 
 # Default pattern for all new companies
@@ -179,8 +180,15 @@ def get_all_sequences(company: Company) -> list[dict]:
     """Return the numbering config for all doc types."""
     settings = dict(company.settings or {})
     sequences = dict(settings.get("sequences") or {})
-    return [_sequence_view(settings, doc_type, dict(sequences.get(doc_type) or {}))
-            for doc_type in _PREFIX_BY_DOC_TYPE]
+    return [
+        _sequence_view(
+            settings, doc_type,
+            dict(sequences.get(
+                list_sequence_key(doc_type, settings) if doc_type in _LIST_PREFIX_KEYS else doc_type
+            ) or {}),
+        )
+        for doc_type in _PREFIX_BY_DOC_TYPE
+    ]
 
 
 def _sequence_view(settings: dict, doc_type: str, seq: dict) -> dict:
@@ -207,7 +215,15 @@ def update_sequence(company: Company, doc_type: str, prefix: str | None = None,
 
     settings = dict(company.settings or {})
     sequences = dict(settings.get("sequences") or {})
-    seq = dict(sequences.get(doc_type) or {})
+    inherited = (
+        sequences.get("list")
+        if doc_type in _LIST_PREFIX_KEYS and not sequences.get(doc_type)
+        else None
+    )
+    seq = dict(sequences.get(doc_type) or inherited or {})
+    if inherited is not None:
+        # A split counter must not mint the same references as the shared one.
+        seq["prefix"] = _PREFIX_BY_DOC_TYPE[doc_type]
 
     if prefix is not None:
         seq["prefix"] = prefix
@@ -220,6 +236,19 @@ def update_sequence(company: Company, doc_type: str, prefix: str | None = None,
         # The number belongs to today's period, so the reset for a later period cannot discard it.
         day = _numbering_day(settings, seq)
         seq.update(next=max(1, next_num), year=day.year, month=day.month, day=day.day)
+
+    if doc_type in _LIST_PREFIX_KEYS:
+        def namespace(kind: str, row: dict) -> str:
+            fmt = str(row.get("pattern") or DEFAULT_PATTERN)
+            name = str(row.get("prefix") or _PREFIX_BY_DOC_TYPE[kind])
+            return fmt.replace("{PREFIX}", name)
+
+        target = namespace(doc_type, seq)
+        for kind in sorted({"list", *_LIST_PREFIX_KEYS} - {doc_type}):
+            other = sequences.get(kind)
+            if other and target == namespace(kind, other):
+                raise ValueError(f"Numbering format overlaps the active {kind} counter. "
+                                 "Choose a distinct prefix or pattern.")
 
     sequences[doc_type] = seq
     settings["sequences"] = sequences

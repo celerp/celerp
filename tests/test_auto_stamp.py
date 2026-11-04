@@ -780,3 +780,14 @@ def test_stamped_but_columns_absent_stamped_behind():
     e7c9 = script.get_revision("e7c9a1b3d5f2")
     below = {r.revision for r in script.iterate_revisions(e7c9.down_revision, "base")}
     assert stamp in below
+
+
+def test_journal_ref_index_is_recognized_as_schema_ddl_not_data_backfill():
+    migration = (
+        Path(__file__).resolve().parent.parent
+        / "celerp/migrations/versions/p9q0r1s2t3u4_ledger_doc_lookup.py"
+    )
+    signatures = extract_signatures(migration)
+    assert [(sig.kind, sig.table, sig.extra) for sig in signatures] == [
+        ("create_index", "ledger", "ix_ledger_je_doc_refs_gin")
+    ]

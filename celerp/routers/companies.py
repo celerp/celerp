@@ -10,7 +10,7 @@ import re
 import uuid
 from datetime import date
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import or_, select
@@ -506,6 +506,7 @@ async def patch_role_permissions(
 
 @router.get("/me/nav-overrides")
 async def get_nav_overrides(
+    response: Response,
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -514,12 +515,14 @@ async def get_nav_overrides(
     if company is None:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     stored = (company.settings or {}).get(nav_overrides.KEY) or {}
+    response.headers["ETag"] = nav_overrides.revision(stored)
     return {field: list(stored.get(field) or []) for field in nav_overrides.FIELDS}
 
 
 @router.patch("/me/nav-overrides")
 async def patch_nav_overrides(
     payload: NavOverridesPatch,
+    request: Request,
     company_id=Depends(get_current_company_id),
     _: None = require_permission("manage_permissions"),
     session: AsyncSession = Depends(get_session),
@@ -532,10 +535,15 @@ async def patch_nav_overrides(
     choices at all is the same as a reset.
     """
     cleaned = nav_overrides.normalize(payload.model_dump())
+    expected = request.headers.get("if-match")
+    if expected is None:
+        raise HTTPException(status_code=428)
     company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     settings = dict(company.settings or {})
+    if expected != nav_overrides.revision(settings.get(nav_overrides.KEY)):
+        raise HTTPException(status_code=412)
     if cleaned:
         settings[nav_overrides.KEY] = cleaned
     else:
@@ -547,15 +555,21 @@ async def patch_nav_overrides(
 
 @router.delete("/me/nav-overrides")
 async def reset_nav_overrides(
+    request: Request,
     company_id=Depends(get_current_company_id),
     _: None = require_permission("manage_permissions"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Put the side menu back to its default entries and order."""
+    expected = request.headers.get("if-match")
+    if expected is None:
+        raise HTTPException(status_code=428)
     company = await locked_company(session, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     settings = dict(company.settings or {})
+    if expected != nav_overrides.revision(settings.get(nav_overrides.KEY)):
+        raise HTTPException(status_code=412)
     settings.pop(nav_overrides.KEY, None)
     company.settings = settings
     await session.commit()
