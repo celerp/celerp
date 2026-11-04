@@ -110,7 +110,7 @@ test("installing an update hands over to the installer only after everything has
     await until(() => log.includes("exit"));
     expect([alive(api), alive(ui)]).toEqual([false, false]);
     expect(database.stop).toHaveBeenCalledTimes(1);
-    expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true);
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(false);
     expect(log).toEqual(["database stop (servers alive: false)", "install", "exit"]);
   });
 

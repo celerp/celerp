@@ -78,7 +78,7 @@ test("a Celerp started by hand while setup runs says so and quits before it star
       app: { whenReady: () => new Promise((resolve) => { ready = resolve; }), quit: () => quits.push(true),
              getLocale: () => "en-US", requestSingleInstanceLock: () => { locks.push(true); return true; } },
       dialog: { showMessageBox: (options) => { shown.push(options); return Promise.resolve({ response: 0 }); } },
-      extraFakes: { "./setup-guard": { SETUP_MUTEX, setupRunning: () => true } },
+      extraFakes: { "./setup-guard": { ...require("../setup-guard"), setupRunning: () => true } },
       platform: "win32",
     });
     expect(locks).toEqual([]);
