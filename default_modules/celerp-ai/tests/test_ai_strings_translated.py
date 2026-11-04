@@ -190,7 +190,8 @@ _UNKEYED_DETAILS = {
     ("llm.py", "detail"): "the AI service's refusal: explained by its code or never shown (_keyed)",
     ("routes.py", "refusal['detail']"): "a question's stored refusal, raised again as it was stored",
     ("routes.py", "out['error']"): "a question's failure, written in its asker's language (service.user_error)",
-    ("routes.py", "str(exc)"): "create_batch_job's refusals, translated where raised (batch.py)",
+    ("routes.py", "getattr(exc, 'detail', str(exc))"):
+        "create_batch_job's refusals, translated where raised (batch.py), or a Refused's keyed detail",
     ("routes.py", "error"): "a confirmed action's error, kept whole by _action_error",
     ("routes.py", "{'code': 'job_failed', 'message': job.error}"):
         "the job's failure, written in its asker's language when it failed",

@@ -23996,6 +23996,7 @@
     "tests/test_user_journeys.py::TestWorkflows::test_subscription_pause": 0.014,
     "tests/test_user_journeys.py::TestWorkflows::test_subscription_resume": 0.013,
     "tests/test_valuation_cost_gap.py::test_cost_gap_reads_unknown_cost_and_sale_gap_reads_without_a_price": 0.5,
+    "tests/test_value_error_refusals_keep_their_key.py::test_no_value_error_handler_flattens_a_keyed_refusal": 2.749137240985874,
     "tests/test_version_policy.py::test_backup_without_a_recorded_version_accepted[meta0]": 0.021,
     "tests/test_version_policy.py::test_backup_without_a_recorded_version_accepted[meta1]": 0.024,
     "tests/test_version_policy.py::test_backup_without_a_recorded_version_accepted[meta2]": 0.033,
