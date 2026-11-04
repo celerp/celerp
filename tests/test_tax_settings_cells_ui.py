@@ -182,3 +182,34 @@ async def test_new_tax_waits_for_a_pending_cell_save(prefix):
     assert re.search(r'class="settings-card"[^>]*hx-sync="this:queue all"|hx-sync="this:queue all"[^>]*class="settings-card"', html), html
     button = re.search(r'<button[^>]*hx-post="/settings/' + prefix + r'/new"[^>]*>', html).group(0)
     assert 'hx-trigger="click delay:' in button, button
+
+
+# A company still on the shared List counter: its Quotation row shows that counter's values.
+_LEGACY_QUOTATION = {"doc_type": "quotation", "prefix": "LST", "pattern": "{PREFIX}-{YY}{MM}-{####}",
+                     "next": 41, "preview": "LST-2611-0041"}
+
+
+@pytest.mark.parametrize("field, shown", [("prefix", "LST"), ("pattern", "{PREFIX}-{YY}{MM}-{####}"),
+                                          ("next", "41")])
+async def test_numbering_cell_left_unchanged_saves_nothing(ui_client, field, shown):
+    """Clicking into a Numbering cell and leaving it changes nothing: no save is sent, so the
+    type stays on the counter it draws from (here the shared one)."""
+    saved = AsyncMock(return_value={})
+    ui_client.cookies.update(_authed())
+    with patch("ui.api_client.get_doc_sequences", new=AsyncMock(return_value=[_LEGACY_QUOTATION])), \
+         patch("ui.api_client.patch_doc_sequence", new=saved):
+        r = await ui_client.patch(f"/settings/numbering/quotation/{field}", data={"value": f" {shown} "})
+    assert r.status_code == 200 and "cell-error" not in r.text
+    assert "LST-2611-0041" in r.text
+    saved.assert_not_awaited()
+
+
+async def test_numbering_cell_changed_is_saved(ui_client):
+    saved = AsyncMock(return_value={})
+    ui_client.cookies.update(_authed())
+    with patch("ui.api_client.get_doc_sequences", new=AsyncMock(return_value=[_LEGACY_QUOTATION])), \
+         patch("ui.api_client.patch_doc_sequence", new=saved):
+        r = await ui_client.patch("/settings/numbering/quotation/prefix", data={"value": "QUOTE"})
+    assert r.status_code == 200
+    saved.assert_awaited_once()
+    assert saved.await_args.args[1:] == ("quotation", {"prefix": "QUOTE"})

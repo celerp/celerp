@@ -285,6 +285,15 @@ def setup_routes(app):
             return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         value = str(form.get("value", "")).strip()
+        try:
+            sequences = await api.get_doc_sequences(token)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        seq = next((s for s in sequences if s["doc_type"] == doc_type), {})
+        # Leaving a cell unchanged saves nothing: a save would split a type still on the shared
+        # List counter off it, or be refused for a value the user did not change.
+        if value == str(seq.get(field, "")).strip():
+            return _numbering_row(seq)
         patch_data = {}
         if field == "prefix":
             patch_data["prefix"] = value

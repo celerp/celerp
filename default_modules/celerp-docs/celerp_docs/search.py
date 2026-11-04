@@ -52,8 +52,8 @@ async def global_search(
     """Global-search provider: newest documents and Lists matching q, capped to limit.
 
     A List is a document the user finds the same way (by its number or its customer), so it is
-    searched with them; each row says which it is under ``kind``. ``view_documents`` gates both,
-    as it does the document and List pages."""
+    searched with them; each row says which it is under ``kind``. ``view_documents`` gates both
+    here, as it does the document pages and the List index."""
     where = [
         Projection.company_id == company_id,
         Projection.entity_type.in_(("doc", "list")),
