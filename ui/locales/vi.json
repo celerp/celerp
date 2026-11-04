@@ -7116,7 +7116,6 @@
   "subscriptions.first_bill_on": "Lập hóa đơn đầu tiên vào {date}",
   "subscriptions.next_bill_on": "Lập hóa đơn tiếp theo vào {date}",
   "subscriptions.periods_heading": "Các kỳ",
-  "subscriptions.period_billed": "Đã lập hóa đơn",
   "subscriptions.period_skipped": "Đã bỏ qua",
   "subscriptions.period_unresolved": "Cần rà soát",
   "subscriptions.reopen_title": "Sau khi hủy chứng từ của kỳ này, hãy mở lại kỳ để có thể lập hóa đơn lần nữa",
@@ -7174,7 +7173,6 @@
   "perm.name.automate_billing": "Bật lập hóa đơn tự động",
   "perm.name.automate_sending": "Bật gửi tự động",
   "subscriptions.err_period_void": "Chứng từ của kỳ này, {ref}, đã bị hủy. Để lập hóa đơn lại, hãy chọn “Mở lại” tại dòng tương ứng trong danh sách kỳ, rồi chọn “Tạo hóa đơn đến hạn”.",
-  "subscriptions.period_already_billed": "Đã lập hóa đơn vào",
   "subscriptions.due_already": "Đã lập hóa đơn trước lần chạy này nên không lập lại: {n}.",
   "subscriptions.err_early_due": "Đã có một kỳ đến hạn (ngày lập hóa đơn {date}). Hãy dùng “Tạo hóa đơn đến hạn” để lập hóa đơn. “Lập hóa đơn sớm” chỉ áp dụng cho kỳ chưa tới ngày lập hóa đơn.",
   "subscriptions.err_not_moved": "{ref} chưa có lịch lập hóa đơn nên không thể lập hóa đơn: {reason}. Hãy sửa lịch trên trang này để đưa vào lịch ngay lập tức.",
@@ -7247,5 +7245,8 @@
   "subscriptions.history_send_unconfirmed": "Emailing the bill for {start} to {end} was cut off, so it may not have arrived. Check with the customer before sending it again.",
   "subscriptions.set_schedule": "Set the schedule",
   "subscriptions.err_send_manual": "Send automatically works only with Bill automatically. Choose Bill automatically first, or send each bill from its page.",
-  "subscriptions.sending_off_manual": "Bills are made by hand now, so Send automatically is off too."
+  "subscriptions.sending_off_manual": "Bills are made by hand now, so Send automatically is off too.",
+  "subscriptions.doc_bills_period": "Bills {start} to {end} of a subscription agreement.",
+  "subscriptions.doc_open_agreement": "Open the agreement",
+  "subscriptions.doc_void_period": "While this document is void, that period is not billed. Unvoid it, or reopen the period on the agreement to bill it again."
 }

@@ -7116,7 +7116,6 @@
   "subscriptions.first_bill_on": "የመጀመሪያ ደረሰኝ በ{date}",
   "subscriptions.next_bill_on": "ቀጣዩ ደረሰኝ በ{date}",
   "subscriptions.periods_heading": "ወቅቶች",
-  "subscriptions.period_billed": "ደረሰኝ ወጥቷል",
   "subscriptions.period_skipped": "ታልፏል",
   "subscriptions.period_unresolved": "ግምገማ ያስፈልጋል",
   "subscriptions.reopen_title": "የዚህን ወቅት ሰነድ ከሰረዙ በኋላ ደረሰኝ እንደገና እንዲወጣለት ወቅቱን ይክፈቱ",
@@ -7174,7 +7173,6 @@
   "perm.name.automate_billing": "ራስ-ሰር የክፍያ ሂሳብ ማውጣትን አንቃ",
   "perm.name.automate_sending": "ራስ-ሰር መላክን አንቃ",
   "subscriptions.err_period_void": "የዚህ ወቅት ሰነድ {ref} ተሰርዟል። እንደገና መጠየቂያ ለማዘጋጀት በወቅቶች ዝርዝር ውስጥ «እንደገና ክፈት» ይምረጡ፣ ከዚያም «የደረሱ መጠየቂያዎችን ፍጠር» ይጠቀሙ።",
-  "subscriptions.period_already_billed": "አስቀድሞ መጠየቂያ የተዘጋጀበት ቀን",
   "subscriptions.due_already": "ከዚህ ሂደት በፊት መጠየቂያ የተዘጋጀላቸውና እንደገና ያልተዘጋጁ፦ {n}።",
   "subscriptions.err_early_due": "አንድ ወቅት ለመጠየቂያ አስቀድሞ ደርሷል (የመጠየቂያ ቀን {date})። ለዚህ ወቅት «የደረሱ መጠየቂያዎችን ፍጠር» ይጠቀሙ። «ቀድሞ መጠየቂያ አዘጋጅ» የመጠየቂያ ቀናቸው ገና ላልደረሰ ወቅቶች ብቻ ነው።",
   "subscriptions.err_not_moved": "{ref} ገና በመጠየቂያ መርሐግብር ውስጥ የለም፤ ስለዚህ መጠየቂያ ሊዘጋጅለት አይችልም፦ {reason}። መርሐግብሩን በዚህ ገጽ ያስተካክሉ፤ ወዲያውኑ ይካተታል።",
@@ -7247,5 +7245,8 @@
   "subscriptions.history_send_unconfirmed": "Emailing the bill for {start} to {end} was cut off, so it may not have arrived. Check with the customer before sending it again.",
   "subscriptions.set_schedule": "Set the schedule",
   "subscriptions.err_send_manual": "Send automatically works only with Bill automatically. Choose Bill automatically first, or send each bill from its page.",
-  "subscriptions.sending_off_manual": "Bills are made by hand now, so Send automatically is off too."
+  "subscriptions.sending_off_manual": "Bills are made by hand now, so Send automatically is off too.",
+  "subscriptions.doc_bills_period": "Bills {start} to {end} of a subscription agreement.",
+  "subscriptions.doc_open_agreement": "Open the agreement",
+  "subscriptions.doc_void_period": "While this document is void, that period is not billed. Unvoid it, or reopen the period on the agreement to bill it again."
 }

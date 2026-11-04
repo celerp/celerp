@@ -206,6 +206,28 @@ async def test_generate_all_due_redraws_the_list_rows_and_counts_it_changed(owne
     assert str(before.select_one("#sub-table")) != str(after.select_one("#sub-table"))
 
 
+async def test_a_bill_names_its_period_and_leads_back_to_its_agreement(owner_ui, monkeypatch):
+    """A document an agreement made says which period it bills and links to the agreement;
+    void, it says how that period bills again."""
+    from ui.i18n import sentence, t
+
+    freeze_day(monkeypatch, "2026-03-15")
+    eid = await agreement(owner_ui.api, {}, start="2026-03-01")
+    doc_id = (await generate_due(owner_ui.api, {}, eid)).json()["doc_id"]
+    bills = sentence("subscriptions.doc_bills_period", start="2026-03-01", end="2026-03-31")
+
+    def back(page) -> list[str]:
+        return [a["href"] for a in page.select(f'a[href="/subscriptions/{eid}"]')]
+
+    page = BeautifulSoup((await owner_ui.get(f"/docs/{doc_id}")).text, "html.parser")
+    assert bills in page.get_text(" ", strip=True) and back(page)
+    assert t("subscriptions.doc_void_period") not in page.get_text(" ", strip=True)
+    assert (await owner_ui.api.post(f"/docs/{doc_id}/void", json={"reason": "x", **_key()})).status_code == 200
+    page = BeautifulSoup((await owner_ui.get(f"/docs/{doc_id}")).text, "html.parser")
+    text = page.get_text(" ", strip=True)
+    assert bills in text and t("subscriptions.doc_void_period") in text and back(page)
+
+
 _CHANGED = {"anchor_date": "2026-04-05", "frequency": "weekly", "custom_interval_days": "10", "billing_timing": "arrears",
             "term_start": "2026-04-01", "term_end": "2027-04-01", "cancel_at_period_end": "true",
             "catchup_periods": "3", "generation_mode": "manual_due", "auto_send": "true"}

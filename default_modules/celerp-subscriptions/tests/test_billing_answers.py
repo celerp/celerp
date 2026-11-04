@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 
 from agreement_kit import agreement, bill_early, billed_docs, freeze_day, generate_due, register, template
-from ui.i18n import t
+from ui.i18n import sentence, t
 
 pytestmark = pytest.mark.asyncio
 
@@ -109,9 +109,9 @@ async def test_due_results_row_says_already_billed():
 
     result = {"billed": 0, "already_billed": 1, "refused": 0, "results": [
         {"entity_id": "doc:SUB-1", "period_index": 0, "ok": True, "already_billed": True,
-         "doc_id": "doc:INV-1", "ref_id": "INV-1"}]}
+         "doc_id": "doc:INV-1", "ref_id": "INV-1", "service_start": "2026-03-01", "service_end": "2026-03-31"}]}
     html = str(_due_results(result, {}, "key"))
-    assert t("subscriptions.period_already_billed") in html
+    assert sentence("subscriptions.done_already_billed", ref="INV-1", start="2026-03-01", end="2026-03-31") in html
     assert t("subscriptions.due_already", n=1) in html
 
 

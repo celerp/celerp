@@ -7116,7 +7116,6 @@
   "subscriptions.first_bill_on": "Première facturation le {date}",
   "subscriptions.next_bill_on": "Prochaine facturation le {date}",
   "subscriptions.periods_heading": "Périodes",
-  "subscriptions.period_billed": "Facturée",
   "subscriptions.period_skipped": "Ignorée",
   "subscriptions.period_unresolved": "À vérifier",
   "subscriptions.reopen_title": "Après avoir annulé le document de cette période, rouvrez-la pour pouvoir la facturer à nouveau",
@@ -7174,7 +7173,6 @@
   "perm.name.automate_billing": "Activer la facturation automatique",
   "perm.name.automate_sending": "Activer l'envoi automatique",
   "subscriptions.err_period_void": "Le document de cette période, {ref}, est annulé. Pour facturer à nouveau la période, choisissez « Rouvrir » sur sa ligne dans la liste des périodes, puis « Générer les échéances ».",
-  "subscriptions.period_already_billed": "Déjà facturé le",
   "subscriptions.due_already": "Déjà facturées avant cette exécution, donc non refacturées : {n}.",
   "subscriptions.err_early_due": "Une période est déjà échue (date de facturation : {date}). Utilisez « Générer les échéances » pour la facturer. La facturation anticipée ne concerne que les périodes dont la date de facturation n'est pas encore arrivée.",
   "subscriptions.err_not_moved": "{ref} n'est pas encore associé à un calendrier de facturation et ne peut pas être facturé : {reason}. Corrigez son calendrier sur cette page pour l'y ajouter immédiatement.",
@@ -7247,5 +7245,8 @@
   "subscriptions.history_send_unconfirmed": "Emailing the bill for {start} to {end} was cut off, so it may not have arrived. Check with the customer before sending it again.",
   "subscriptions.set_schedule": "Set the schedule",
   "subscriptions.err_send_manual": "Send automatically works only with Bill automatically. Choose Bill automatically first, or send each bill from its page.",
-  "subscriptions.sending_off_manual": "Bills are made by hand now, so Send automatically is off too."
+  "subscriptions.sending_off_manual": "Bills are made by hand now, so Send automatically is off too.",
+  "subscriptions.doc_bills_period": "Bills {start} to {end} of a subscription agreement.",
+  "subscriptions.doc_open_agreement": "Open the agreement",
+  "subscriptions.doc_void_period": "While this document is void, that period is not billed. Unvoid it, or reopen the period on the agreement to bill it again."
 }

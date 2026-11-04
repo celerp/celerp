@@ -21,6 +21,9 @@ PLUGIN_MANIFEST = {
         "on_company_module_enabled": [{"handler": "celerp_subscriptions.migration:reconcile_company_schedules"}],
         "periodic_operation": {"handler": "celerp_subscriptions.billing:run_due", "module": "celerp-subscriptions"},
         "doc_status_guard": {"handler": "celerp_subscriptions.billing:guard_bill_status"},
+        # A document an agreement made leads back to it and names the period it bills.
+        "doc_detail_badges": [{"render": "celerp_subscriptions.ui_routes:doc_period_badge",
+                               "permission": "view_subscriptions"}],
         "search_provider": {
             "handler": "celerp_subscriptions.search:global_search",
             "result_key": "items",

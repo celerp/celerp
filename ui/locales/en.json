@@ -7116,7 +7116,6 @@
   "subscriptions.first_bill_on": "First bill on {date}",
   "subscriptions.next_bill_on": "Next bill on {date}",
   "subscriptions.periods_heading": "Periods",
-  "subscriptions.period_billed": "Billed",
   "subscriptions.period_skipped": "Skipped",
   "subscriptions.period_unresolved": "Needs review",
   "subscriptions.reopen_title": "After voiding this period's document, reopen the period so it can be billed again",
@@ -7174,7 +7173,6 @@
   "perm.name.automate_billing": "Enable automatic billing",
   "perm.name.automate_sending": "Enable automatic sending",
   "subscriptions.err_period_void": "The document for this period, {ref}, is void. To bill the period again, use Reopen on its row in the periods list, then Generate due.",
-  "subscriptions.period_already_billed": "Already billed on",
   "subscriptions.due_already": "Already billed before this run, so not billed again: {n}.",
   "subscriptions.err_early_due": "A period is already due (bill date {date}). Use Generate due to bill it. Bill early only bills a period whose bill date has not come yet.",
   "subscriptions.err_not_moved": "{ref} is not on a schedule yet, so it cannot bill: {reason}. Correct its schedule on this page and it moves onto one at once.",
@@ -7247,5 +7245,8 @@
   "subscriptions.history_send_unconfirmed": "Emailing the bill for {start} to {end} was cut off, so it may not have arrived. Check with the customer before sending it again.",
   "subscriptions.set_schedule": "Set the schedule",
   "subscriptions.err_send_manual": "Send automatically works only with Bill automatically. Choose Bill automatically first, or send each bill from its page.",
-  "subscriptions.sending_off_manual": "Bills are made by hand now, so Send automatically is off too."
+  "subscriptions.sending_off_manual": "Bills are made by hand now, so Send automatically is off too.",
+  "subscriptions.doc_bills_period": "Bills {start} to {end} of a subscription agreement.",
+  "subscriptions.doc_open_agreement": "Open the agreement",
+  "subscriptions.doc_void_period": "While this document is void, that period is not billed. Unvoid it, or reopen the period on the agreement to bill it again."
 }

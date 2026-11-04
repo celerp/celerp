@@ -7116,7 +7116,6 @@
   "subscriptions.first_bill_on": "ออกใบแจ้งหนี้ครั้งแรกวันที่ {date}",
   "subscriptions.next_bill_on": "ออกใบแจ้งหนี้ครั้งถัดไปวันที่ {date}",
   "subscriptions.periods_heading": "รอบ",
-  "subscriptions.period_billed": "ออกใบแจ้งหนี้แล้ว",
   "subscriptions.period_skipped": "ข้ามแล้ว",
   "subscriptions.period_unresolved": "ต้องตรวจสอบ",
   "subscriptions.reopen_title": "หลังจากยกเลิกเอกสารของรอบนี้แล้ว ให้เปิดรอบนี้อีกครั้งเพื่อออกใบแจ้งหนี้ใหม่",
@@ -7174,7 +7173,6 @@
   "perm.name.automate_billing": "เปิดใช้งานการออกใบแจ้งหนี้อัตโนมัติ",
   "perm.name.automate_sending": "เปิดใช้งานการส่งอีเมลอัตโนมัติ",
   "subscriptions.err_period_void": "เอกสารของรอบนี้คือ {ref} ถูกยกเลิกแล้ว หากต้องการออกใบแจ้งหนี้สำหรับรอบนี้อีกครั้ง ให้เลือก «เปิดอีกครั้ง» ในแถวของรอบนั้น แล้วเลือก «สร้างใบแจ้งหนี้ที่ถึงกำหนด»",
-  "subscriptions.period_already_billed": "ออกใบแจ้งหนี้แล้วเมื่อ",
   "subscriptions.due_already": "ออกใบแจ้งหนี้ไปแล้วก่อนการประมวลผลครั้งนี้ จึงไม่ออกซ้ำ: {n}",
   "subscriptions.err_early_due": "มีรอบที่ถึงกำหนดออกใบแจ้งหนี้แล้ว (วันที่ออกใบแจ้งหนี้ {date}) ให้ใช้ «สร้างใบแจ้งหนี้ที่ถึงกำหนด» ส่วน «ออกใบแจ้งหนี้ล่วงหน้า» ใช้ได้เฉพาะรอบที่ยังไม่ถึงวันที่ออกใบแจ้งหนี้",
   "subscriptions.err_not_moved": "{ref} ยังไม่อยู่ในกำหนดการออกใบแจ้งหนี้ จึงไม่สามารถออกใบแจ้งหนี้ได้: {reason} โปรดแก้ไขกำหนดการในหน้านี้ แล้วระบบจะนำเข้าในกำหนดการทันที",
@@ -7247,5 +7245,8 @@
   "subscriptions.history_send_unconfirmed": "Emailing the bill for {start} to {end} was cut off, so it may not have arrived. Check with the customer before sending it again.",
   "subscriptions.set_schedule": "Set the schedule",
   "subscriptions.err_send_manual": "Send automatically works only with Bill automatically. Choose Bill automatically first, or send each bill from its page.",
-  "subscriptions.sending_off_manual": "Bills are made by hand now, so Send automatically is off too."
+  "subscriptions.sending_off_manual": "Bills are made by hand now, so Send automatically is off too.",
+  "subscriptions.doc_bills_period": "Bills {start} to {end} of a subscription agreement.",
+  "subscriptions.doc_open_agreement": "Open the agreement",
+  "subscriptions.doc_void_period": "While this document is void, that period is not billed. Unvoid it, or reopen the period on the agreement to bill it again."
 }

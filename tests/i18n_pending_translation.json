@@ -108,6 +108,21 @@
     "subscriptions.sending_off_manual": {
       "en": "Bills are made by hand now, so Send automatically is off too.",
       "params": []
+    },
+    "subscriptions.doc_bills_period": {
+      "en": "Bills {start} to {end} of a subscription agreement.",
+      "params": [
+        "end",
+        "start"
+      ]
+    },
+    "subscriptions.doc_open_agreement": {
+      "en": "Open the agreement",
+      "params": []
+    },
+    "subscriptions.doc_void_period": {
+      "en": "While this document is void, that period is not billed. Unvoid it, or reopen the period on the agreement to bill it again.",
+      "params": []
     }
   }
 }

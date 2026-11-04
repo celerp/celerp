@@ -7116,7 +7116,6 @@
   "subscriptions.first_bill_on": "Tagihan pertama pada {date}",
   "subscriptions.next_bill_on": "Tagihan berikutnya pada {date}",
   "subscriptions.periods_heading": "Periode",
-  "subscriptions.period_billed": "Sudah ditagih",
   "subscriptions.period_skipped": "Dilewati",
   "subscriptions.period_unresolved": "Perlu ditinjau",
   "subscriptions.reopen_title": "Setelah membatalkan dokumen periode ini, buka kembali periodenya agar dapat ditagih lagi",
@@ -7174,7 +7173,6 @@
   "perm.name.automate_billing": "Aktifkan penagihan otomatis",
   "perm.name.automate_sending": "Aktifkan pengiriman otomatis",
   "subscriptions.err_period_void": "Dokumen periode ini, {ref}, telah dibatalkan. Untuk menagih periode tersebut lagi, pilih “Buka kembali” pada barisnya dalam daftar periode, lalu “Buat tagihan jatuh tempo”.",
-  "subscriptions.period_already_billed": "Sudah ditagih pada",
   "subscriptions.due_already": "Sudah ditagih sebelum proses ini, sehingga tidak ditagih lagi: {n}.",
   "subscriptions.err_early_due": "Ada periode yang sudah jatuh tempo (tanggal penagihan {date}). Gunakan “Buat tagihan jatuh tempo” untuk menagihnya. “Tagih lebih awal” hanya berlaku untuk periode yang tanggal penagihannya belum tiba.",
   "subscriptions.err_not_moved": "{ref} belum memiliki jadwal, sehingga belum dapat ditagih: {reason}. Perbaiki jadwalnya di halaman ini agar langsung masuk ke jadwal.",
@@ -7247,5 +7245,8 @@
   "subscriptions.history_send_unconfirmed": "Emailing the bill for {start} to {end} was cut off, so it may not have arrived. Check with the customer before sending it again.",
   "subscriptions.set_schedule": "Set the schedule",
   "subscriptions.err_send_manual": "Send automatically works only with Bill automatically. Choose Bill automatically first, or send each bill from its page.",
-  "subscriptions.sending_off_manual": "Bills are made by hand now, so Send automatically is off too."
+  "subscriptions.sending_off_manual": "Bills are made by hand now, so Send automatically is off too.",
+  "subscriptions.doc_bills_period": "Bills {start} to {end} of a subscription agreement.",
+  "subscriptions.doc_open_agreement": "Open the agreement",
+  "subscriptions.doc_void_period": "While this document is void, that period is not billed. Unvoid it, or reopen the period on the agreement to bill it again."
 }

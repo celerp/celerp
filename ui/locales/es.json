@@ -7116,7 +7116,6 @@
   "subscriptions.first_bill_on": "Primera facturación el {date}",
   "subscriptions.next_bill_on": "Próxima facturación el {date}",
   "subscriptions.periods_heading": "Períodos",
-  "subscriptions.period_billed": "Facturado",
   "subscriptions.period_skipped": "Omitido",
   "subscriptions.period_unresolved": "Requiere revisión",
   "subscriptions.reopen_title": "Después de anular el documento de este período, vuelva a abrirlo para poder facturarlo otra vez",
@@ -7174,7 +7173,6 @@
   "perm.name.automate_billing": "Activar la facturación automática",
   "perm.name.automate_sending": "Activar el envío automático",
   "subscriptions.err_period_void": "El documento de este período, {ref}, está anulado. Para volver a facturarlo, use «Reabrir» en su fila de la lista de períodos y después «Generar vencidos».",
-  "subscriptions.period_already_billed": "Ya facturado el",
   "subscriptions.due_already": "Ya facturados antes de esta ejecución, sin volver a facturar: {n}.",
   "subscriptions.err_early_due": "Ya hay un período pendiente de facturar (fecha de facturación: {date}). Use «Generar vencidos» para facturarlo. «Facturar anticipadamente» solo factura un período cuya fecha de facturación aún no ha llegado.",
   "subscriptions.err_not_moved": "{ref} todavía no está incluido en un calendario de facturación y no puede facturarse: {reason}. Corrija su calendario en esta página para incorporarlo de inmediato.",
@@ -7247,5 +7245,8 @@
   "subscriptions.history_send_unconfirmed": "Emailing the bill for {start} to {end} was cut off, so it may not have arrived. Check with the customer before sending it again.",
   "subscriptions.set_schedule": "Set the schedule",
   "subscriptions.err_send_manual": "Send automatically works only with Bill automatically. Choose Bill automatically first, or send each bill from its page.",
-  "subscriptions.sending_off_manual": "Bills are made by hand now, so Send automatically is off too."
+  "subscriptions.sending_off_manual": "Bills are made by hand now, so Send automatically is off too.",
+  "subscriptions.doc_bills_period": "Bills {start} to {end} of a subscription agreement.",
+  "subscriptions.doc_open_agreement": "Open the agreement",
+  "subscriptions.doc_void_period": "While this document is void, that period is not billed. Unvoid it, or reopen the period on the agreement to bill it again."
 }
