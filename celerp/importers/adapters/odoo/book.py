@@ -29,8 +29,8 @@ from celerp.importers.adapters.attachment_files import MAX_ATTACHMENT_BYTES
 from celerp.importers.adapters.base import CONVERSION_ERRORS, ScanError, SourceRevisionError
 from celerp.importers.adapters.exports import steps
 from celerp.importers.adapters.exports.book import (
-    PARTY_SIGN, ZERO, Account, Book, Contact, DocLine, Document, GLJournal, GLLine, Item, LineTax, StockHolding,
-    TaxCode,
+    MONEY_CONTROLS, PARTY_SIGN, ZERO, Account, Book, Contact, DocLine, Document, GLJournal, GLLine, Item, LineTax,
+    StockHolding, TaxCode,
 )
 from celerp.importers.adapters.odoo.dump import (
     DAMAGED, DOCUMENT_BYTES, DOCUMENT_LINE_BYTES, HOLDING_BYTES, KEY_ID_BYTES, MONTH_ACCOUNT_BYTES, STOCK_MOVE_BYTES,
@@ -496,7 +496,7 @@ class _Reader:
                 self._document(move, lines[move["id"]], tax_rel)
         settles, settled_base = self._allocations()
         payments = {r["id"]: r for r in self.rows.get("account_payment", [])}
-        self._mark_banks(ordered, lines, payments)
+        self._mark_clearing(ordered, lines, payments)
         for move in ordered:
             if move["state"] != "posted":
                 if self._move_type(move) not in DOCUMENTS:
@@ -507,10 +507,10 @@ class _Reader:
             if journal is not None:
                 book.journals.append(journal)
 
-    def _mark_banks(self, moves: list[Row], lines: dict[str, list[Row]], payments: dict[str, Row]) -> None:
-        """An asset account a posted payment moves money through is a bank account: Odoo 14 and
-        later post a payment to an outstanding receipts or payments account until the bank
-        statement clears it."""
+    def _mark_clearing(self, moves: list[Row], lines: dict[str, list[Row]], payments: dict[str, Row]) -> None:
+        """An asset account other than a bank that a posted payment moves money through is a
+        clearing account: Odoo 14 and later post a payment to an outstanding receipts or payments
+        account until the bank statement clears it. It stays an asset account, not a bank."""
         for move in moves:
             payment = self._payment(move, lines[move["id"]], payments)
             if move["state"] != "posted" or payment is None or _internal(payment):
@@ -518,7 +518,7 @@ class _Reader:
             for r in lines[move["id"]]:
                 account = self.book.accounts.get(self.accounts.get(r["account_id"], ""))
                 if account is not None and account.account_type == "asset" and account.control is None:
-                    account.control = "bank"
+                    account.control = "clearing"
 
     def _payment(self, move: Row, lines: list[Row], payments: dict[str, Row]) -> Row | None:
         """The payment a move posts: named on the move from Odoo 14, on its lines before."""
@@ -576,7 +576,7 @@ class _Reader:
             contact = next(iter(named)) if len(named) == 1 else self.partners.get(
                 move.get("commercial_partner_id") or move.get("partner_id") or "", "")
             types = {book.documents[k].doc_type for k in settles}
-            banked = payment is not None or any(book.accounts[ln.account].control == "bank" for ln in out)
+            banked = payment is not None or any(book.accounts[ln.account].control in MONEY_CONTROLS for ln in out)
             if banked and len(types) == 1 and next(iter(types)) in SETTLING and kind != INTERNAL_TRANSFER[1]:
                 source, kind = SETTLING[next(iter(types))]
                 allocated, contact = dict(settles), book.documents[next(iter(settles))].contact

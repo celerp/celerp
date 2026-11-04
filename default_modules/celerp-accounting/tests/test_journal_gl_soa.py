@@ -26,7 +26,7 @@ import uuid
 
 import pytest
 
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 from celerp.services.permissions import missing_permission_text
 
 
@@ -150,7 +150,7 @@ async def test_manual_je_unbalanced_rejected(client):
         {"account": "4100", "debit": 0, "credit": 90.0},
     ])
     assert r.status_code == 422
-    assert "balance" in r.json()["detail"].lower()
+    assert "balance" in refusal_text(r.json()["detail"]).lower()
     assert (await _journal(client, tok))["entries"] == start["entries"]
 
 
@@ -221,7 +221,7 @@ async def test_manual_je_locked_period_rejected(client):
     assert r.status_code == 200
     r = await _post_manual_je(client, tok, _bal(10.0), ts="2026-01-15")
     assert r.status_code == 422
-    assert "locked" in r.json()["detail"].lower()
+    assert "locked" in refusal_text(r.json()["detail"]).lower()
     # After the lock date it posts fine
     r = await _post_manual_je(client, tok, _bal(10.0), ts="2026-02-01")
     assert r.status_code == 200, r.text
@@ -281,7 +281,7 @@ async def test_void_auto_je_rejected(client):
     r = await client.post(f"/accounting/journal-entries/{auto[0]['je_id']}/void",
                           headers=_h(tok), json={})
     assert r.status_code == 422
-    assert "document" in r.json()["detail"].lower()
+    assert "document" in refusal_text(r.json()["detail"]).lower()
 
 
 @pytest.mark.asyncio
@@ -498,7 +498,7 @@ async def test_bulk_void_requires_manage_accounting(client, session):
 
     r = await _bulk_void(client, reader, [je_id], reason="Not mine to void")
     assert r.status_code == 403, r.text
-    assert r.json()["detail"] == missing_permission_text("manage_accounting")
+    assert refusal_text(r.json()["detail"]) == missing_permission_text("manage_accounting")
     entry = [e for e in (await _journal(client, admin))["entries"] if e["je_id"] == je_id][0]
     assert entry["status"] == "posted"
 
@@ -509,7 +509,7 @@ async def test_bulk_void_caps_the_selection(client):
     tok = await _reg(client)
     r = await _bulk_void(client, tok, [f"je:manual:{i}" for i in range(201)])
     assert r.status_code == 422, r.text
-    assert "201" in r.json()["detail"] and "200" in r.json()["detail"]
+    assert "201" in refusal_text(r.json()["detail"]) and "200" in refusal_text(r.json()["detail"])
 
     empty = await _bulk_void(client, tok, [" ", ""])
     assert empty.status_code == 422, empty.text
@@ -923,7 +923,7 @@ async def test_journal_search_cap_is_422(client):
     tok = await _reg(client)
     r = await client.get("/accounting/journal", headers=_h(tok), params={"q": "x" * 201})
     assert r.status_code == 422, r.text
-    assert "200" in r.json()["detail"]
+    assert "200" in refusal_text(r.json()["detail"])
     assert (await client.get("/accounting/journal", headers=_h(tok),
                              params={"q": "x" * 200})).status_code == 200
 
@@ -1272,7 +1272,7 @@ async def test_revert_to_draft_blocked_in_locked_period(client):
 
     r = await client.post(f"/docs/{inv}/revert-to-draft", headers=_h(tok), json={})
     assert r.status_code == 422, r.text
-    assert "locked" in r.json()["detail"].lower()
+    assert "locked" in refusal_text(r.json()["detail"]).lower()
     # The finalize entry still stands
     tb = (await client.get("/accounting/trial-balance", headers=_h(tok),
                            params={"date_to": "2026-01-31"})).json()
@@ -1298,7 +1298,7 @@ async def test_delete_payment_blocked_in_locked_period(client):
 
     r = await client.delete(f"/docs/{inv}/payments/0", headers=_h(tok))
     assert r.status_code == 422, r.text
-    assert "locked" in r.json()["detail"].lower()
+    assert "locked" in refusal_text(r.json()["detail"]).lower()
 
 
 @pytest.mark.asyncio
@@ -1426,7 +1426,7 @@ async def test_ledger_rejects_a_contact_filter_that_matches_no_contact(client):
     r = await client.get("/accounting/ledger/1120", headers=_h(tok),
                          params={"contact_id": "contact:not-a-real-id"})
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("acct.err_contact_pick", "en")
+    assert refusal_text(r.json()["detail"]) == t("acct.err_contact_pick", "en")
 
 
 @pytest.mark.asyncio
@@ -1500,7 +1500,7 @@ async def test_general_ledger_rejects_a_contact_filter_that_matches_no_contact(c
     r = await client.get("/accounting/general-ledger", headers=_h(tok),
                          params={"contact_id": "contact:not-a-real-id"})
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("acct.err_contact_pick", "en")
+    assert refusal_text(r.json()["detail"]) == t("acct.err_contact_pick", "en")
 
 
 # ---------------------------------------------------------------------------
@@ -1737,7 +1737,7 @@ async def test_report_date_filters_reject_unparsable_dates(client, param, bad):
         r = await client.get(path, headers=_h(tok), params={param: bad})
         assert r.status_code == 422, f"{path} accepted {bad!r}: {r.text}"
         field = t("label.start_date" if param == "date_from" else "acct.field_end_date", "en")
-        assert r.json()["detail"] == t("acct.err_date_invalid", "en", field=field)
+        assert refusal_text(r.json()["detail"]) == t("acct.err_date_invalid", "en", field=field)
 
 
 async def test_report_date_filters_reject_an_inverted_range(client):
@@ -1753,8 +1753,8 @@ async def test_report_date_filters_reject_an_inverted_range(client):
         r = await client.get(path, headers=_h(tok), params={
             "date_from": "2026-12-31", "date_to": "2026-01-01"})
         assert r.status_code == 422, f"{path} accepted an inverted range: {r.text}"
-        detail = r.json()["detail"]
-        assert detail == t("acct.err_date_range", "en", start="2026-12-31", end="2026-01-01"), detail
+        detail = refusal_text(r.json()["detail"])
+        assert detail == t("acct.err_date_range", "en", start="31 Dec 2026", end="1 Jan 2026"), detail
 
 
 async def test_report_date_filters_accept_valid_dates(client):
@@ -1878,7 +1878,7 @@ async def test_manual_je_line_in_base_currency_at_another_rate_rejected(client):
         {"account": "4100", "debit": 0, "credit": 20.0},
     ])
     assert r.status_code == 422
-    detail = r.json()["detail"]
+    detail = refusal_text(r.json()["detail"])
     assert "THB" in detail and "Line 1" in detail
 
 
@@ -1890,7 +1890,7 @@ async def test_manual_je_line_invalid_currency_code_rejected(client):
         {"account": "4100", "debit": 0, "credit": 20.0},
     ])
     assert r.status_code == 422
-    assert "QQQ" in r.json()["detail"]
+    assert "QQQ" in refusal_text(r.json()["detail"])
 
 
 @pytest.mark.parametrize("rate", [0, -5.0])
@@ -1902,7 +1902,7 @@ async def test_manual_je_line_nonpositive_rate_rejected(client, rate):
         {"account": "4100", "debit": 0, "credit": 10.0},
     ])
     assert r.status_code == 422
-    assert "rate" in r.json()["detail"].lower()
+    assert "rate" in refusal_text(r.json()["detail"]).lower()
 
 
 async def test_manual_je_line_currency_without_a_rate_rejected(client):
@@ -1914,7 +1914,7 @@ async def test_manual_je_line_currency_without_a_rate_rejected(client):
         {"account": "4100", "debit": 0, "credit": 10.0},
     ])
     assert r.status_code == 422
-    assert "rate" in r.json()["detail"].lower()
+    assert "rate" in refusal_text(r.json()["detail"]).lower()
 
 
 async def test_manual_je_line_rate_without_a_currency_rejected(client):
@@ -1927,7 +1927,7 @@ async def test_manual_je_line_rate_without_a_currency_rejected(client):
         {"account": "4100", "debit": 0, "credit": 10.0},
     ])
     assert r.status_code == 422
-    assert "currency" in r.json()["detail"].lower()
+    assert "currency" in refusal_text(r.json()["detail"]).lower()
 
 
 async def test_manual_je_balance_is_checked_in_base_currency(client):
@@ -1940,7 +1940,7 @@ async def test_manual_je_balance_is_checked_in_base_currency(client):
         _fx({"account": "4100", "debit": 0, "credit": 9.0}, "USD", 35.0),
     ])
     assert r.status_code == 422
-    detail = r.json()["detail"]
+    detail = refusal_text(r.json()["detail"])
     assert "THB" in detail and "credit" in detail
 
 
@@ -1960,7 +1960,7 @@ async def test_manual_je_conversion_difference_is_refused_not_plugged(client):
     # 33.33 and 33.34 convert to 100.07, 100.07 and 100.10 = 300.24, while the
     # 100.00 credit converts to 300.25: one satang the debit side is short of.
     assert r.status_code == 422
-    detail = r.json()["detail"]
+    detail = refusal_text(r.json()["detail"])
     assert "0.01" in detail and "debit" in detail
     assert (await _journal(client, tok))["entries"] == start["entries"]
 
@@ -2235,7 +2235,7 @@ async def test_the_balance_sheet_rejects_an_unparsable_as_of(client):
     tok = await _reg(client)
     r = await client.get("/accounting/balance-sheet?as_of=2026-W01", headers=_h(tok))
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("acct.err_date_invalid", "en", field=t("acct.field_as_of_date", "en"))
+    assert refusal_text(r.json()["detail"]) == t("acct.err_date_invalid", "en", field=t("acct.field_as_of_date", "en"))
 
 
 def test_the_screen_offers_exactly_the_account_types_the_api_accepts():
@@ -2340,7 +2340,7 @@ async def test_a_credit_note_is_attributed_to_its_own_party_not_the_invoiced_one
     r = await client.post(f"/docs/{mismatched}/apply-to-invoice", headers=_h(tok),
                           json={"target_doc_id": invoice, "amount": 40.0, "date": "2026-01-21"})
     assert r.status_code == 422, r.text
-    assert "same contact" in r.json()["detail"]
+    assert "same contact" in refusal_text(r.json()["detail"])
 
     unnamed = await _issued_credit_note(client, tok, 40.0, "2026-01-20")
     r = await client.post(f"/docs/{unnamed}/apply-to-invoice", headers=_h(tok),
@@ -2463,7 +2463,7 @@ async def test_a_line_naming_a_contact_that_is_not_there_is_refused(client):
         {"account": "4100", "debit": 0, "credit": 10.0},
     ])
     assert r.status_code == 422, r.text
-    assert "contact:nobody" in r.json()["detail"]
+    assert "contact:nobody" in refusal_text(r.json()["detail"])
     assert (await _journal(client, tok))["entries"] == start["entries"]
 
 

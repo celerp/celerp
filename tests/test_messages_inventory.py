@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from ui.i18n import t
+from ui.i18n import refusal_text, set_lang, t
 
 _LOCALES = Path(__file__).resolve().parents[1] / "ui" / "locales"
 _LANGS = ("en", "th", "de", "fr", "es", "it", "pt", "id", "vi", "ja", "ar", "am")
@@ -42,15 +42,15 @@ async def _create_rejected(client, h, **fields) -> str:
 @pytest.mark.asyncio
 async def test_bad_codes_say_what_to_remove(client):
     h = await _headers(client)
-    assert await _create_rejected(client, h, sku="A,B") == t("inventory.err_sku_comma", "en")
-    assert await _create_rejected(client, h, barcode="12AB") == t("inventory.err_barcode_digits", "en")
-    assert await _create_rejected(client, h, gtin="1234567") == t("inventory.err_gtin_length", "en")
+    assert refusal_text(await _create_rejected(client, h, sku="A,B")) == t("inventory.err_sku_comma", "en")
+    assert refusal_text(await _create_rejected(client, h, barcode="12AB")) == t("inventory.err_barcode_digits", "en")
+    assert refusal_text(await _create_rejected(client, h, gtin="1234567")) == t("inventory.err_gtin_length", "en")
 
 
 @pytest.mark.asyncio
 async def test_unknown_unit_and_location_say_where_to_fix_them(client):
     h = await _headers(client)
-    assert await _create_rejected(client, h, sell_by="crate") == t("inventory.err_unit_unknown", "en", unit="crate")
+    assert refusal_text(await _create_rejected(client, h, sell_by="crate")) == t("inventory.err_unit_unknown", "en", unit="crate")
     iid = await _item(client, h, f"LC-{uuid.uuid4().hex[:6]}")
     r = await client.patch(f"/items/{iid}", headers=h,
                            json={"fields_changed": {"location_id": {"old": None, "new": "nowhere"}}})
@@ -64,13 +64,13 @@ async def test_missing_item_says_refresh(client):
     h = await _headers(client)
     r = await client.get("/items/item:nope", headers=h)
     assert r.status_code == 404
-    assert r.json()["detail"] == t("inventory.err_item_not_found", "en")
+    assert refusal_text(r.json()["detail"]) == t("inventory.err_item_not_found", "en")
     r = await client.post("/items/bulk/status", headers=h, json={"entity_ids": ["item:nope"], "status": "archived"})
     assert r.status_code == 404
-    assert r.json()["detail"] == t("inventory.err_items_not_found", "en")
+    assert refusal_text(r.json()["detail"]) == t("inventory.err_items_not_found", "en")
     r = await client.post("/items/bulk/status", headers=h, json={"entity_ids": [], "status": "archived"})
     assert r.status_code == 422
-    assert r.json()["detail"] == t("inventory.err_none_selected", "en")
+    assert refusal_text(r.json()["detail"]) == t("inventory.err_none_selected", "en")
 
 
 @pytest.mark.asyncio
@@ -79,12 +79,12 @@ async def test_status_edits_point_to_the_right_action(client):
     iid = await _item(client, h, f"ST-{uuid.uuid4().hex[:6]}")
     r = await client.post("/items/bulk/status", headers=h, json={"entity_ids": [iid], "status": "disposed"})
     assert r.status_code == 422
-    assert r.json()["detail"] == t("inventory.err_dispose_via_write_off", "en")
+    assert refusal_text(r.json()["detail"]) == t("inventory.err_dispose_via_write_off", "en")
     r = await client.post("/items/bulk/status", headers=h, json={"entity_ids": [iid], "status": "archived"})
     assert r.status_code == 200, r.text
     r = await client.post("/items/bulk/revert-to-draft", headers=h, json={"entity_ids": [iid]})
     assert r.status_code == 409
-    assert r.json()["detail"] == t("inventory.err_revert_not_available", "en", status="Archived")
+    assert refusal_text(r.json()["detail"]) == t("inventory.err_revert_not_available", "en", status="Archived")
 
 
 @pytest.mark.asyncio
@@ -93,13 +93,13 @@ async def test_merge_and_undo_messages(client):
     iid = await _item(client, h, f"MG-{uuid.uuid4().hex[:6]}")
     r = await client.post("/items/merge", headers=h, json={"source_entity_ids": [iid], "target_sku_from": iid})
     assert r.status_code == 422
-    assert r.json()["detail"] == t("inventory.err_merge_min_two", "en")
+    assert refusal_text(r.json()["detail"]) == t("inventory.err_merge_min_two", "en")
     r = await client.post("/items/merge", headers=h, json={"source_entity_ids": [iid, iid], "target_sku_from": iid})
     assert r.status_code == 422
-    assert r.json()["detail"] == t("inventory.err_merge_duplicate", "en")
+    assert refusal_text(r.json()["detail"]) == t("inventory.err_merge_duplicate", "en")
     r = await client.post(f"/items/import/batches/{uuid.uuid4()}/undo", headers=h)
     assert r.status_code == 404
-    assert r.json()["detail"] == t("inventory.err_import_not_found", "en")
+    assert refusal_text(r.json()["detail"]) == t("inventory.err_import_not_found", "en")
 
 
 @pytest.mark.asyncio
@@ -107,16 +107,21 @@ async def test_work_center_messages(client):
     h = await _headers(client)
     r = await client.post("/manufacturing/work-centers", headers=h, json={"name": "  "})
     assert r.status_code == 422
-    assert r.json()["detail"] == t("manufacturing.err_wc_name_required", "en")
+    assert refusal_text(r.json()["detail"]) == t("manufacturing.err_wc_name_required", "en")
     r = await client.delete(f"/manufacturing/work-centers/{uuid.uuid4()}", headers=h)
     assert r.status_code == 404
-    assert r.json()["detail"] == t("manufacturing.err_wc_not_found", "en")
+    assert refusal_text(r.json()["detail"]) == t("manufacturing.err_wc_not_found", "en")
 
 
 @pytest.mark.asyncio
 async def test_inventory_messages_follow_the_users_language(client):
     h = {**await _headers(client), "Accept-Language": "th"}
-    assert await _create_rejected(client, h, sku="A,B") == t("inventory.err_sku_comma", "th")
+    detail = await _create_rejected(client, h, sku="A,B")
+    set_lang("th")
+    try:
+        assert refusal_text(detail) == t("inventory.err_sku_comma", "th")
+    finally:
+        set_lang("en")
     assert t("inventory.err_sku_comma", "th") != t("inventory.err_sku_comma", "en")
 
 
@@ -133,8 +138,8 @@ def test_code_validators_raise_the_translated_message():
 def test_projection_conflicts_say_refresh():
     from celerp.projections import engine
 
-    assert engine._not_found("item").detail == t("inventory.err_item_not_found", "en")
-    assert engine._not_found("doc").detail == t("error.record_not_found", "en")
+    assert refusal_text(engine._not_found("item").detail) == t("inventory.err_item_not_found", "en")
+    assert refusal_text(engine._not_found("doc").detail) == t("error.record_not_found", "en")
 
 
 def test_status_words_are_translated_with_a_raw_fallback():

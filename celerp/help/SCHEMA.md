@@ -22,7 +22,7 @@ their English text: the help viewer and Celerp AI show each label in the reader'
 | `title` | string | up to 120 characters |
 | `summary` | string | one sentence |
 | `keywords` | list of strings | words a reader might search for |
-| `routes` | list of strings | the screens the page covers, as UI route patterns such as `/inventory/{entity_id}` |
+| `routes` | list of strings | the screens the page covers, as UI route patterns such as `/inventory/{entity_id}`; a list served per type names it (`/docs?type=invoice`), since a route covers only screens of its own `type` |
 | `permission` | string or null | the permission key those screens need |
 | `order` | whole number | position in the module's list |
 | `steps` | list | 1 to 20 steps |

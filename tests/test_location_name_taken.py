@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy import func, select
 
 from celerp.models.company import Location
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 pytestmark = pytest.mark.asyncio
 
@@ -27,7 +27,7 @@ async def test_adding_a_location_with_a_name_in_use_is_refused_by_name(client, s
     assert (await _add(client, auth, "Back room")).status_code == 200
     r = await _add(client, auth, "Back room")
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == t("company.err_location_name_taken", name="Back room")
+    assert refusal_text(r.json()["detail"]) == t("company.err_location_name_taken", name="Back room")
     assert await _count(session, "Back room") == 1
 
 
@@ -36,7 +36,7 @@ async def test_renaming_a_location_to_a_name_in_use_is_refused_by_name(client, s
     other = (await _add(client, auth, "Side")).json()["id"]
     r = await client.patch(f"/companies/me/locations/{other}", headers=auth["headers"], json={"name": "Front"})
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == t("company.err_location_name_taken", name="Front")
+    assert refusal_text(r.json()["detail"]) == t("company.err_location_name_taken", name="Front")
     assert await _count(session, "Side") == 1
 
 
@@ -59,5 +59,5 @@ async def test_every_location_writer_refuses_a_name_in_use_by_name(client, sessi
         r = await client.patch(f"/companies/me/locations/{other}", headers=auth["headers"],
                                json={"name": "Front", "is_default": True})
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == t("company.err_location_name_taken", name="Front")
+    assert refusal_text(r.json()["detail"]) == t("company.err_location_name_taken", name="Front")
     assert await _count(session, "Front") == 1

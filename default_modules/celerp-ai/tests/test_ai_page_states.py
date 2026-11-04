@@ -292,7 +292,8 @@ async def test_free_text_too_large_message(ui_client):
 @pytest.mark.parametrize("detail, shows", [
     ({"code": "not_available", "message": "AI is not available on this plan"}, "not_eligible"),
     ({"code": "plan_limit", "message": "This plan allows 1 file per question. Remove the extra files, "
-                                       "or choose Connect + AI to attach more."}, "relay_text"),
+                                       "or choose Connect + AI to attach more.", "max_files": 1}, "plan_files"),
+    ({"code": "plan_limit", "message": "Service text"}, "plan_limit"),
     ({**_FREE_USED_UP, "tier": "ai", "base_limit": 200, "used": 200}, "paid_card"),
 ])
 async def test_conversation_inline_402_codes(ui_client, detail, shows):
@@ -301,8 +302,10 @@ async def test_conversation_inline_402_codes(ui_client, detail, shows):
     subscribe_card = t("msg.upgrade_to_keep_your_ai_operator_working")
     if shows == "not_eligible":
         assert t("ai.free_not_eligible") in r.text
-    elif shows == "relay_text":
-        assert detail["message"] in r.text
+    elif shows == "plan_files":
+        assert t("ai.err_plan_files", max_files=1) in r.text
+    elif shows == "plan_limit":
+        assert t("ai.err_plan_limit") in r.text and detail["message"] not in r.text
     else:
         assert paid_card in r.text and t("ai.credits_exhausted", limit=200) in r.text
     if shows != "paid_card":

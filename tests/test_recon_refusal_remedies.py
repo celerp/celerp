@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy import select, text
 
 from test_reconciliation_history import legacy_deposit, admin, bank, deposit, fx_deposit, legacy_session, match, start
-from ui.i18n import t
+from ui.i18n import t, refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -22,7 +22,7 @@ async def test_an_entry_with_no_amount_in_the_account_currency_is_refused_naming
     je = await legacy_deposit(client, h, session, b, "2026-09-10", 200.0)
     sid = (await start(client, h, b["id"], "2026-09-30", 200.0)).json()["id"]
     r = await match(client, h, sid, [je])
-    assert r.status_code == 409 and r.json()["detail"] == t("acct.err_recon_book_entry_no_amount"), r.text
+    assert r.status_code == 409 and refusal_text(r.json()["detail"]) == t("acct.err_recon_book_entry_no_amount"), r.text
     # The correction it names: the account offers to be set to the books' currency.
     assert (await client.get(f"/accounting/reconciliation/{sid}", headers=h)).json()["bank_account"]["relabel_to"] == "USD"
     assert (await client.patch(f"/accounting/bank-accounts/{b['id']}", json={"currency": "USD"}, headers=h)).status_code == 200
@@ -42,7 +42,7 @@ async def test_a_counted_entry_with_no_amount_is_let_go_of_with_undo_then_the_se
     sid = await legacy_session(session, b, "2026-09-30", status="open", je_ids=[eur, base_only], balance=100.0)
 
     r = await client.post(f"/accounting/reconciliation/{sid}/complete", headers=h)
-    assert r.status_code == 422 and r.json()["detail"] == t("acct.err_recon_amount_unknown", currency="EUR"), r.text
+    assert r.status_code == 422 and refusal_text(r.json()["detail"]) == t("acct.err_recon_amount_unknown", currency="EUR"), r.text
     async with _ui_as(tok) as ui:
         page = (await ui.get(f"/accounting/reconcile/{sid}")).text
         undo = f"/accounting/reconcile/{sid}/entries/{base_only}/unmatch"
@@ -66,7 +66,7 @@ async def test_unmatching_an_entry_a_statement_line_holds_points_to_that_line(cl
     await session.commit()
     assert (await match(client, h, sid, [je])).status_code == 200
     r = await client.post(f"/accounting/reconciliation/{sid}/unmatch", json={"je_ids": [je]}, headers=h)
-    assert r.status_code == 409 and r.json()["detail"] == t("acct.err_recon_book_entry_matched"), r.text
+    assert r.status_code == 409 and refusal_text(r.json()["detail"]) == t("acct.err_recon_book_entry_matched"), r.text
 
 
 async def test_an_opening_balance_posted_without_its_own_amount_still_counts_on_a_foreign_account(client, session):

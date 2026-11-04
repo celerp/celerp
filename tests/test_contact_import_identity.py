@@ -51,12 +51,12 @@ async def _contact_events(session) -> int:
 
 async def test_reimport_under_a_new_key_updates_the_contact_with_that_email(client):
     h = await _reg(client)
-    await _batch(client, h, _row({"name": "Acme", "email": "Buyer@Acme.test", "phone": "+100"}))
+    await _batch(client, h, _row({"name": "Acme", "email": "Buyer@Acme.test", "phone": "+1 555 0100"}))
     result = await _batch(client, h, _row({"name": "Acme Trading", "email": "buyer@acme.test"}))
     assert (result["created"], result["updated"], result["skipped"]) == (0, 1, 0), result
     [contact] = await _contacts(None, client, h)
     assert contact["name"] == "Acme Trading"
-    assert contact["phone"] == "+100"  # a blank cell leaves the field as it was
+    assert contact["phone"] == "+1 555 0100"  # a blank cell leaves the field as it was
 
 
 @pytest.mark.parametrize("first, again", [
@@ -97,7 +97,7 @@ async def test_a_row_matching_two_contacts_is_refused_and_writes_nothing(client,
         r = await client.post("/crm/contacts", headers=h, json={"name": name, "email": "twin@t.test"})
         assert r.status_code == 200, r.text
     before = await _contact_events(session)
-    result = await _batch(client, h, _row({"name": "Twin", "email": "TWIN@t.test", "phone": "+1"}),
+    result = await _batch(client, h, _row({"name": "Twin", "email": "TWIN@t.test", "phone": "+1 555 0101"}),
                           _row({"name": "Other", "email": "other@t.test"}))
     assert (result["created"], result["updated"], result["skipped"]) == (1, 0, 1), result
     [error] = result["errors"]
@@ -109,10 +109,10 @@ async def test_a_row_matching_two_contacts_is_refused_and_writes_nothing(client,
 async def test_two_rows_for_one_new_contact_in_one_file_make_one_contact(client):
     h = await _reg(client)
     result = await _batch(client, h, _row({"name": "Dup", "email": "dup@t.test"}),
-                          _row({"name": "Dup", "email": "dup@t.test", "phone": "+2"}))
+                          _row({"name": "Dup", "email": "dup@t.test", "phone": "+66 81 000 0002"}))
     assert (result["created"], result["updated"]) == (1, 1), result
     [contact] = await _contacts(None, client, h)
-    assert contact["phone"] == "+2"
+    assert contact["phone"] == "+66 81 000 0002"
 
 
 async def test_a_blank_contact_type_keeps_a_vendor_a_vendor_and_a_new_contact_is_a_customer(client):
@@ -173,3 +173,112 @@ async def test_a_merged_away_contact_is_not_matched(client):
     assert r.status_code == 200, r.text
     result = await _batch(client, h, _row({"name": "Gone Again", "email": "gone@t.test"}))
     assert result["created"] == 1, result
+
+
+async def _me(client, h) -> dict:
+    return next(c for c in (await client.get("/crm/contacts", headers=h)).json()["items"] if c.get("is_self"))
+
+
+async def test_no_import_path_writes_the_company_own_contact(client, session):
+    """The company's identity is changed only in Company details: an import row naming the
+    company's contact by its id, sent again under the key that created it, or claiming to be
+    the company's own is refused, through the batch and the single record import alike, and
+    nothing is written."""
+    h = await _reg(client)
+    me = await _me(client, h)
+    created_key = (await session.execute(select(LedgerEntry.idempotency_key).where(
+        LedgerEntry.entity_id == me["id"], LedgerEntry.event_type == "crm.contact.created"))).scalar_one()
+    before = await _contact_events(session)
+    rows = [_row({"name": "Taken Over"}, entity_id=me["id"]),
+            _row({"name": "Taken Over"}, key=created_key),
+            _row({"name": "Second Me", "is_self": True})]
+    result = await _batch(client, h, *rows)
+    assert result["created"] == result["updated"] == 0, result
+    assert all(t("contacts.err_import_own_contact") in e for e in result["errors"]), result
+    assert len(result["errors"]) == 3, result
+    for row in rows:
+        single = await client.post("/crm/contacts/import", headers=h, json=row)
+        assert single.status_code == 409, single.text
+    assert await _contact_events(session) == before
+    assert (await client.get(f"/crm/contacts/{me['id']}", headers=h)).json()["name"] == me["name"]
+    assert [c["id"] for c in (await client.get("/crm/contacts", headers=h, params={"limit": 500})).json()["items"]
+            if c.get("is_self")] == [me["id"]]
+
+
+async def test_the_merge_service_never_merges_the_company_own_contact_away(client, session):
+    """The merge service itself, whichever endpoint calls it, refuses the company's own contact
+    as a source on the locked record."""
+    from fastapi import HTTPException
+
+    from celerp.models.company import Company
+    from celerp_contacts.routes import merge_contacts_service
+
+    h = await _reg(client)
+    me = await _me(client, h)
+    other = (await client.post("/crm/contacts", headers=h, json={"name": "Other", "email": "o@t.test"})).json()["id"]
+    company_id = (await session.execute(select(Projection.company_id).where(
+        Projection.entity_id == me["id"]))).scalar_one()
+    owner = (await session.execute(select(LedgerEntry.actor_id).where(
+        LedgerEntry.entity_id == me["id"]))).scalars().first()
+    before = await _contact_events(session)
+    with pytest.raises(HTTPException) as exc:
+        await merge_contacts_service(session, company_id, owner, target_contact_id=other, source_contact_ids=[me["id"]])
+    assert exc.value.status_code == 422
+    await session.rollback()
+    assert await _contact_events(session) == before
+    assert await session.get(Company, company_id) is not None
+
+
+_MALFORMED = [
+    ({"name": "Bad Mail", "email": "not-an-address"}, "error.email_invalid"),
+    ({"name": "Bad Phone", "phone": "12"}, "error.phone_too_short"),
+    ({"name": "   ", "email": "blank-name@t.test"}, "contacts.err_name_required"),
+    ({"email": "no-name@t.test"}, "contacts.err_name_required"),
+    ({"name": "Bad Money", "currency": "XXQ"}, "error.invalid_currency"),
+]
+
+
+@pytest.mark.parametrize("data,key", _MALFORMED)
+async def test_a_malformed_row_is_refused_through_every_import_path(client, session, data, key):
+    """The rules a contact keeps when typed in hold for every import: the file import, the
+    single record import and the migration and connected-company imports (the service they
+    share) refuse the row by itself, writing nothing, while the file's good rows import."""
+    from celerp_contacts.services import CRMImportRecord, import_contact_records
+
+    h = await _reg(client)
+    before = await _contact_events(session)
+    result = await _batch(client, h, _row(data), _row({"name": "Fine", "email": "fine@t.test"}))
+    assert (result["created"], len(result["errors"])) == (1, 1), result
+    single = await client.post("/crm/contacts/import", headers=h, json=_row(data))
+    assert single.status_code == 409, single.text
+    assert await _contact_events(session) == before + 1
+
+    company_id = (await session.execute(select(Projection.company_id).where(
+        Projection.entity_type == "contact"))).scalars().first()
+    for match_identity in (False, True):
+        outcome = await import_contact_records(
+            session, company_id, None, [CRMImportRecord(**_row(data))], match_identity=match_identity)
+        assert [r.status for r in outcome.records] == ["rejected"], outcome.records
+    await session.rollback()
+    assert await _contact_events(session) == before + 1
+
+
+async def test_an_import_cannot_blank_an_existing_contact_name(client, session):
+    h = await _reg(client)
+    first = await _batch(client, h, _row({"name": "Named", "email": "named@t.test"}))
+    assert first["created"] == 1
+    again = await _batch(client, h, _row({"name": "", "email": "named@t.test"}))
+    assert again["updated"] == 0 and len(again["errors"]) == 1, again
+    assert [c["name"] for c in await _contacts(session, client, h)] == ["Named"]
+
+
+async def test_a_store_customer_breaking_the_contact_rules_is_refused_before_any_write(monkeypatch):
+    from celerp.events import engine
+    from celerp_contacts import services
+
+    async def never(*args, **kwargs):
+        raise AssertionError("a refused customer reached the ledger")
+
+    monkeypatch.setattr(engine, "connector_upsert", never)
+    with pytest.raises(ValueError):
+        await services.upsert_contact_from_shopify(str(uuid.uuid4()), {"id": 7, "first_name": "Ann", "email": "nope"})

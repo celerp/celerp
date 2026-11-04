@@ -30,7 +30,7 @@ from test_stripe_legacy_payments import _deliver, _released_page_payment
 from test_stripe_refunds import (RELEASED_AT, STRIPE_OWNED, _assert_books, _at, _deliver_one, _doc, _kept_refunds,
                                  _ledger, _paid_invoice, _payment, _RefundCloud)
 from test_stripe_release_race_pg import _waiting
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 pytestmark = pytest.mark.asyncio
 
@@ -140,7 +140,7 @@ async def test_a_refund_here_and_a_release_applying_stripes_refund_never_give_ba
     assert released is True
     # Release first: 870.00 is left, so 900.00 is too much. Refund first: Stripe still holds it.
     assert here.status_code == 422, here.text
-    assert here.json()["detail"] == (
+    assert refusal_text(here.json()["detail"]) == (
         t("documents.err_refund_too_much", "en", amount=870.0, currency="USD") if release_first else STRIPE_OWNED)
     await _assert_books(real_engine, invoice, refunded="200")
     assert (await _ledger(real_engine, invoice)).count("doc.payment.refunded") == 1

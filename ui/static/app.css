@@ -151,6 +151,10 @@ a:hover { text-decoration: underline; }
    submit button, stretched over the whole card. */
 .auth-container:has(.setup-chooser),
 .auth-container:has(.migration-wizard) { max-width: 760px; }
+/* A wizard step showing a table (coverage, mapping, checks) takes the room a wide screen has. */
+.auth-container:has(.migration-wizard .data-table) { max-width: 1120px; }
+/* Help sits on its own row above the steps, so it never crowds them on a narrow screen. */
+.migration-wizard__help { display: block; width: fit-content; margin: 0 0 12px auto; }
 .auth-container:has(.setup-card) { max-width: 600px; }
 .setup-options { margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--c-border); }
 .setup-options-heading { font-size: 13px; font-weight: 600; color: var(--c-text2); margin: 0 0 10px; }
@@ -177,6 +181,7 @@ a:hover { text-decoration: underline; }
    the table past the card. Figures and dates never wrap. */
 .migration-wizard .data-table { margin-bottom: 16px; width: 100%; }
 .migration-wizard > p + :is(form, .table-scroll-wrap) { margin-top: 16px; }
+.migration-wizard > :not(.btn) + .btn--full { margin-top: 16px; }
 .migration-wizard .data-table td:not(.cell--number, .cell--money, .cell--date) { white-space: normal; overflow-wrap: break-word; }
 /* Client companies: reasons wrap in their cell; the filters keep their own width. */
 #firm-view .data-table { width: 100%; }
@@ -264,23 +269,14 @@ a:hover { text-decoration: underline; }
   }
   .sidebar.sidebar--open { left: 0; }
   .sidebar-toggle { display: block; }
-  /* The menu control stays first and on screen; the other controls shrink to fit. */
-  .topbar { justify-content: flex-start; padding: 8px 12px; gap: 0.5rem; }
-  .topbar > * { min-width: 0; }
-  .topbar .lang-switcher-wrap { flex-shrink: 1; }
-  .topbar .lang-switcher-wrap .combobox-input { min-width: 0; max-width: 4.5rem; }
-  .topbar .global-search-wrap { flex: 1 1 4rem; min-width: 4rem; margin: 0; }
-  .topbar .user-menu__trigger, .topbar .company-switcher-select { max-width: 4.5rem; }
-  .topbar .notif-wrap, .topbar .user-menu { flex-shrink: 0; }
-}
-/* Phones: two rows. Menu, language, bell and user on the first; search and company
-   share the second, so the search box keeps room to type and names show whole. */
-@media (max-width: 480px) {
-  .topbar { flex-wrap: wrap; height: auto; row-gap: 6px; }
-  .topbar .global-search-wrap { order: 1; flex: 1 1 13rem; }
-  .topbar .company-switcher-select { order: 1; max-width: 50%; }
-  .topbar .lang-switcher-wrap { flex-shrink: 0; }
-  .topbar .lang-switcher-wrap .combobox-input { max-width: 8rem; }
+  /* Phones and tablets share one top bar layout. The controls sit on the first row and wrap
+     onto another when they do not fit, each kept whole (a long company name takes a row of its
+     own); the search always takes a full row of its own below them, so it keeps room to type. */
+  .topbar { flex-wrap: wrap; height: auto; padding: 8px 12px; gap: 6px 8px; justify-content: flex-start; }
+  .topbar > * { flex-shrink: 0; min-width: 0; max-width: 100%; }
+  .topbar .global-search-wrap { order: 1; flex: 1 0 100%; max-width: none; margin: 0; }
+  .topbar .company-switcher-select { max-width: 100%; }
+  .topbar .user-menu__trigger { max-width: 8rem; }
 }
 
 /* ─── Main content ────────────────────────────────────────────────────── */
@@ -289,14 +285,6 @@ a:hover { text-decoration: underline; }
 .main-content { flex: 1; min-width: 0; padding: 24px 28px; }
 @media (max-width: 768px) {
   .main-content { padding: 16px 12px; }
-  /* Phone top bar: menu, company, language, alerts and account on the first row, the
-     global search on its own row below. Nothing is pushed off either edge. */
-  .topbar { flex-wrap: wrap; height: auto; padding: 8px 12px; gap: 8px; justify-content: flex-start; }
-  .topbar > * { min-width: 0; }
-  .topbar .global-search-wrap { order: 1; flex: 1 0 100%; max-width: none; margin: 0; }
-  .company-switcher-select { max-width: 9rem; }
-  .user-menu { flex-shrink: 1; }
-  .user-menu__trigger { max-width: 8rem; }
 }
 /* Up to tablet width the shared rule holds for every page: no box grows past the screen to
    fit its content (a grid's 1fr track or a flex row otherwise widens to its widest child),
@@ -328,10 +316,11 @@ a:hover { text-decoration: underline; }
 }
 
 /* ─── Buttons ─────────────────────────────────────────────────────────── */
+/* A button, a link and a summary styled as one read in the page font, so a row of them lines up. */
 .btn {
   display: inline-flex; align-items: center; justify-content: center;
   padding: 6px 14px; border-radius: var(--radius); border: 1px solid transparent;
-  font-size: 12px; font-weight: 500; cursor: pointer; white-space: nowrap;
+  font-family: inherit; font-size: 12px; font-weight: 500; line-height: normal; cursor: pointer; white-space: nowrap;
   transition: background 0.1s, color 0.1s;
   text-decoration: none;
 }
@@ -378,7 +367,8 @@ a:hover { text-decoration: underline; }
    narrow screen are not mistaken for none. The shade is an overlay drawn above the table (an
    inset shadow on the box would sit under the table's own background and never show), held
    at the visible edge by --scroll-x, and it takes no clicks. Never a mask: a mask would hide
-   the row menus and tips a table opens past its edge. The shell's scroll-cue script sets the
+   the row menus and tips a table opens past its edge. A tab strip (.category-tabs) takes the
+   same cue. The shell's scroll-cue script sets the
    classes and --scroll-x. */
 .scroll-more-left, .scroll-more-right { position: relative; }
 .scroll-more-left::before, .scroll-more-right::after {
@@ -456,10 +446,13 @@ a:hover { text-decoration: underline; }
 .data-table th.col-drag-over { border-left: 2px solid var(--c-accent); }
 .data-table td { text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* A header over figures sits right, over them, but reads as a label in the headers' face. */
-.data-table td.cell--money, .data-table td.cell--number, .cell--number { text-align: right; font-family: var(--font-mono); }
+.data-table td.cell--money, .data-table td.cell--rate, .data-table td.cell--weight,
+.data-table td.cell--number, .cell--number { text-align: right; font-family: var(--font-mono); }
+/* A quantity with its unit ("1 piece") is a figure too: it sits right with the other numbers. */
+.data-table td.cell--paired:not(.cell--conversion) { text-align: right; }
 /* Free text that can run long (an asset's name) wraps at a readable measure instead of
    pushing every column after it out of view. */
-.data-table td.cell--text { white-space: normal; overflow-wrap: anywhere; max-width: 32ch; }
+.data-table td.cell--text { white-space: normal; overflow-wrap: break-word; max-width: 32ch; }
 .data-table td.cell--note { white-space: normal; }
 th.cell--number { font-family: inherit; }
 .data-table td { padding: 0 10px; height: var(--c-row-h); border-bottom: 1px solid var(--c-border); vertical-align: middle; }
@@ -563,6 +556,8 @@ th.cell--number { font-family: inherit; }
   opacity: 0.55; cursor: not-allowed;
 }
 .cell-input--number { text-align: right; font-family: var(--font-mono); }
+/* Every number box sits right, like the figures it edits. */
+input[type="number"] { text-align: right; }
 .cell-input--select { cursor: pointer; background: var(--c-bg2); }
 .cell-input--select option { background: var(--c-bg2); color: var(--c-text); }
 .cell-input--status { cursor: pointer; background: var(--c-bg2); }
@@ -583,9 +578,11 @@ th.cell--number { font-family: inherit; }
 .data-table--compact th, .data-table--compact td { padding: 4px 8px; }
 
 /* ─── Badges ──────────────────────────────────────────────────────────── */
+/* Every badge is a pill: a value with no colour of its own reads as neutral, never as bare text. */
 .badge {
   display: inline-block; padding: 1px 7px; border-radius: 10px;
   font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+  background: rgba(139,148,172,0.12); color: var(--c-text2); border: 1px solid var(--c-border);
 }
 .badge--active, .badge--available { background: rgba(34,197,94,0.15); color: var(--c-green); border: 1px solid rgba(34,197,94,0.3); }
 .badge--inactive, .badge--sold, .badge--expired { background: rgba(139,148,172,0.15); color: var(--c-text2); border: 1px solid rgba(139,148,172,0.3); }
@@ -604,7 +601,8 @@ th.cell--number { font-family: inherit; }
 .badge--sale { background: rgba(14,165,122,0.12); color: var(--c-accent); border: 1px solid rgba(14,165,122,0.3); }
 .badge--consignment { background: rgba(168,85,247,0.12); color: var(--c-purple); border: 1px solid rgba(168,85,247,0.3); }
 .badge--open { background: rgba(234,179,8,0.15); color: var(--c-yellow); border: 1px solid rgba(234,179,8,0.3); }
-.badge--awaiting-payment { background: rgba(234,179,8,0.15); color: var(--c-yellow); border: 1px solid rgba(234,179,8,0.3); }
+.badge--awaiting-payment, .badge--partial { background: rgba(234,179,8,0.15); color: var(--c-yellow); border: 1px solid rgba(234,179,8,0.3); }
+.badge--final, .badge--partially-received { background: rgba(14,165,122,0.15); color: var(--c-accent); border: 1px solid rgba(14,165,122,0.3); }
 /* Other existing badges */
 .badge--invoice { background: rgba(14,165,122,0.12); color: var(--c-accent); border: 1px solid rgba(14,165,122,0.3); }
 .badge--purchase-order, .badge--purchase_order { background: rgba(249,115,22,0.12); color: var(--c-orange); border: 1px solid rgba(249,115,22,0.3); }
@@ -615,7 +613,7 @@ th.cell--number { font-family: inherit; }
 .badge--liability { background: rgba(249,115,22,0.12); color: var(--c-orange); border: 1px solid rgba(249,115,22,0.3); }
 .badge--equity { background: rgba(34,197,94,0.12); color: var(--c-green); border: 1px solid rgba(34,197,94,0.3); }
 .badge--revenue { background: rgba(34,197,94,0.12); color: var(--c-green); border: 1px solid rgba(34,197,94,0.3); }
-.badge--expense { background: rgba(239,68,68,0.12); color: var(--c-red); border: 1px solid rgba(239,68,68,0.3); }
+.badge--expense, .badge--cogs { background: rgba(239,68,68,0.12); color: var(--c-red); border: 1px solid rgba(239,68,68,0.3); }
 .badge--neutral { background: rgba(139,148,172,0.12); color: var(--c-text2); border: 1px solid var(--c-border); }
 .badge--admin { background: rgba(14,165,122,0.12); color: var(--c-accent); border: 1px solid rgba(14,165,122,0.3); }
 .badge--manager { background: rgba(14,165,122,0.1); color: var(--c-accent); border: 1px solid rgba(14,165,122,0.2); }
@@ -631,7 +629,7 @@ th.cell--number { font-family: inherit; }
 .badge--memo_out, .badge--memo-out { background: rgba(234,179,8,0.15); color: var(--c-yellow); border: 1px solid rgba(234,179,8,0.3); }
 .badge--production { background: rgba(14,165,122,0.12); color: var(--c-accent); border: 1px solid rgba(14,165,122,0.3); }
 .badge--reserved { background: rgba(249,115,22,0.12); color: var(--c-orange); border: 1px solid rgba(249,115,22,0.3); }
-.badge--draft { background: rgba(139,148,172,0.10); color: var(--c-text2); border: 1px dashed rgba(139,148,172,0.4); }
+.badge--draft, .badge--pro-forma { background: rgba(139,148,172,0.10); color: var(--c-text2); border: 1px dashed rgba(139,148,172,0.4); }
 
 /* ─── Valuation bar ───────────────────────────────────────────────────── */
 .valuation-bar { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
@@ -735,15 +733,10 @@ th.cell--number { font-family: inherit; }
 .wf-thumbs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .wf-thumb { display: inline-flex; border: 2px solid transparent; border-radius: 4px; overflow: hidden;
   padding: 0; background: none; cursor: pointer; }
-/* Item files table in the narrow Manufacturing right column: keep it within the column. Below
-   1400px the column stacks full width and the table scrolls in its own box instead. */
-@media (min-width: 1401px) {
-  .recipe-right table.data-table { table-layout: fixed; width: 100%; }
-  .recipe-right table.data-table td, .recipe-right table.data-table th { overflow: hidden; }
-  .recipe-right table.data-table select { max-width: 100%; }
-}
+/* A files table keeps every header whole and scrolls in its own box when its column is narrow
+   (the Manufacturing right column); a long file name is clipped, with the full name on hover. */
 .files-name-cell { overflow: hidden; }
-.file-link--clip { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+.file-link--clip { display: inline-block; max-width: 16rem; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; vertical-align: bottom; }
 .wf-thumb--active { border-color: var(--c-accent, #2563eb); }
 .wf-thumb-img { height: 48px; width: auto; display: block; object-fit: cover; }
@@ -874,23 +867,21 @@ th.cell--number { font-family: inherit; }
 .doc-meta { display: flex; gap: 24px; margin-bottom: 16px; flex-wrap: wrap; }
 .doc-meta-left, .doc-meta-right { display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
 .doc-lines { margin-top: 12px; }
-/* width:max-content sizes the table to its columns and lets it exceed the
-   section (so dragging a column wider overflows into the .table-scroll-wrap,
-   which scrolls — like inventory); width:auto would cap it at the container.
-   min-width:0 overrides the base .data-table's min-width:100% so columns are not
-   stretched to fill — a resize handle sits on each column's real edge and saved
-   widths restore exactly. */
-.data-table.doc-lines { table-layout: fixed; width: 100%; }
+/* The lines fill the section, and never squeeze below readable column widths: on a narrow
+   screen the table keeps them and scrolls sideways in its .table-scroll-wrap. A header wraps
+   onto a second line rather than being cut short. */
+.data-table.doc-lines { table-layout: fixed; width: 100%; min-width: 920px; }
 .doc-lines th, .doc-lines td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc-lines th { white-space: normal; text-overflow: clip; vertical-align: bottom; }
 .doc-lines tbody tr.doc-line--reprice-warning { outline: 2px solid var(--c-amber); outline-offset: -2px; }
 /* Tight cell padding so the full-width inputs nearly fill each cell (dense, spreadsheet-like)
    rather than sitting inside the base table's 10px gutters. Per-column overrides still apply. */
 .doc-lines th, .doc-lines td { padding-left: 4px; padding-right: 4px; }
-/* doc-lines column widths — fixed layout, all px, must sum to ≤ table width */
+/* doc-lines column widths: fixed layout, all px, summing to about the table's 920px min-width */
 .doc-lines th.col-checkbox,    .doc-lines td.col-checkbox    { width: 36px;  padding: 0 4px; text-align: center; }
 .doc-lines th.col-item-status, .doc-lines td.col-item-status { width: 160px; }
 .doc-lines th.col-shipped-label, .doc-lines td.col-shipped-label { width: 120px; }
-.doc-lines th.col-sku,         .doc-lines td.col-sku         { width: 70px;  }
+.doc-lines th.col-sku,         .doc-lines td.col-sku         { width: 96px;  }
 .doc-lines th.col-desc,        .doc-lines td.col-desc        { width: 300px; }
 .doc-lines th.col-cat,         .doc-lines td.col-cat         { width: 60px;  }
 .doc-lines th.col-type,        .doc-lines td.col-type        { width: 55px;  }
@@ -924,7 +915,7 @@ th.cell--number { font-family: inherit; }
 .doc-lines--audit td.col-desc { background: var(--audit-row-bg, transparent); }
 .doc-lines--audit tr.data-row--audited { --audit-row-bg: rgba(14,165,122,0.14); }
 .doc-lines--audit tr.data-row--adjusted { --audit-row-bg: var(--c-blue-light); }
-.doc-lines--invoice th.col-qty, .doc-lines--invoice td.col-qty { width: 75px; }
+.doc-lines--invoice th.col-qty, .doc-lines--invoice td.col-qty { width: 90px; }
 .drawn-from { font-size: 11px; line-height: 1.3; }
 /* Draft tables showing the item Status column: the badge column's width comes out of the
    description column (the flexible one), so every other column keeps its usual width and
@@ -984,20 +975,27 @@ th.cell--number { font-family: inherit; }
 .li-deleted-mark { margin-left: 4px; font-size: 11px; color: var(--c-danger, #b42318); white-space: nowrap; }
 .doc-lines th.col-unit,        .doc-lines td.col-unit        { width: 44px;  }
 .doc-lines th.col-unit-price,  .doc-lines td.col-unit-price  { width: 90px;  text-align: right; }
-.doc-lines th.col-disc,        .doc-lines td.col-disc        { width: 44px;  text-align: right; }
-.doc-lines th.col-tax,         .doc-lines td.col-tax         { width: 50px;  text-align: right; }
-.doc-lines th.col-account,     .doc-lines td.col-account     { width: 100px; }
-.doc-lines th.col-total,       .doc-lines td.col-total       { width: 100px; text-align: right; padding-right: 8px; }
+.doc-lines th.col-disc,        .doc-lines td.col-disc        { width: 60px;  text-align: right; }
+/* Wide enough for a tax's whole name in its select ("Sin impuestos", "GST 18%"). */
+.doc-lines th.col-tax,         .doc-lines td.col-tax         { width: 110px; text-align: right; }
+/* An account reads "code name": wide enough for the usual name, and a long one wraps rather than clips. */
+.doc-lines th.col-account,     .doc-lines td.col-account     { width: 160px; }
+.doc-lines td.col-account { white-space: normal; overflow-wrap: anywhere; }
+.doc-lines td.col-account select { width: 100%; }
+.doc-lines th.col-total,       .doc-lines td.col-total       { width: 120px; text-align: right; padding-right: 8px; }
 /* A line cell holding badges or links (a line's status, what became of a memo line, the memo an
    invoice line came from) wraps them inside the column, whatever its width, so each shows whole.
    After the column rules so it wins over their nowrap at equal specificity. */
 .doc-lines td.cell-badges { white-space: normal; overflow: visible; text-overflow: clip; }
 .cell-badges .badge, .cell-badges .drawn-from { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 .cell-badges .badge + .badge { margin-top: 2px; }
-/* Audit columns. Without explicit widths these (under table-layout:fixed) soaked up all the space
-   freed by the hidden money columns, dwarfing qty and breaking proportional resize. */
+/* Audit and write-off columns. Every line column has an explicit width: under table-layout:fixed
+   a column without one gets only the space the others leave, which is none once their widths
+   reach the table's, and its cells collapse out of reach. */
 .doc-lines th.col-onhand,      .doc-lines td.col-onhand      { width: 92px;  text-align: right; }
 .doc-lines th.col-counted,     .doc-lines td.col-counted     { width: 92px;  text-align: right; }
+.doc-lines th.col-qtyout,      .doc-lines td.col-qtyout      { width: 92px;  text-align: right; }
+.doc-lines th.col-comment,     .doc-lines td.col-comment     { width: 180px; }
 /* No-money lists (audit/transfer/production) hide price/disc/tax/total; let the description absorb
    the freed width so the item name dominates rather than stretching the number columns. */
 .doc-lines--no-money th.col-desc, .doc-lines--no-money td.col-desc { width: 380px; }
@@ -1038,6 +1036,8 @@ th.cell--number { font-family: inherit; }
 .settings-card { margin-top: 16px; padding: 16px 20px; border: 1px solid var(--c-border); border-radius: var(--radius); background: var(--c-bg); }
 .settings-hint { font-size: 11px; color: var(--c-text2); margin-bottom: 10px; }
 .settings-section-title { font-size: 14px; font-weight: 600; color: var(--c-text); margin: 0 0 8px; }
+/* A section title after other content in the card starts a new section, set apart from it. */
+.settings-card > * + .settings-section-title { margin-top: 20px; }
 /* Underline via inset shadow, not border + negative tab margins: overflow-x:auto
    forces overflow-y to auto too, and tabs protruding 2px below the content box
    (margin-bottom:-2px) then read as vertical overflow and grow a scrollbar. */
@@ -1716,7 +1716,7 @@ form:has(> #fa-preview:not(:empty)) ~ .empty-state-cta { display: none; }
      cut off at the edge of its scroll box or card. */
   .table-scroll-wrap, .detail-card { overflow: visible !important; }
   .data-table { width: 100%; }
-  .data-table td:not(.cell--number, .cell--money) { white-space: normal; overflow-wrap: anywhere; }
+  .data-table td:not(.cell--number, .cell--money, .cell--rate, .cell--weight, .cell--paired) { white-space: normal; overflow-wrap: anywhere; }
   /* A header wraps between its words, never inside one, in a face small enough that the
      longest header word still fits over its figures. */
   .data-table th { white-space: normal; overflow-wrap: normal; font-size: 9px; letter-spacing: 0; }
@@ -1992,6 +1992,8 @@ form:has(> #fa-preview:not(:empty)) ~ .empty-state-cta { display: none; }
 .doc-actions-print { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .doc-actions-sep { color: var(--color-border, #ccc); font-size: 1.2rem; line-height: 1; padding: 0 2px; user-select: none; }
 .doc-actions-right details { display: inline-flex; align-items: center; }
+/* Header actions behind a confirm (Close, Revert to Draft, Void) line up with plain buttons. */
+.doc-actions .void-section { margin-top: 0; }
 .doc-inventory-action { display: flex; justify-content: flex-end; margin-bottom: 8px; }
 
 /* Metadata bar: one row of equal columns at top, however many cells it has */
@@ -2015,6 +2017,7 @@ form:has(> #fa-preview:not(:empty)) ~ .empty-state-cta { display: none; }
 .doc-section .form-group { padding: 8px 14px; display: flex; flex-direction: row; align-items: center; gap: 10px; flex-wrap: wrap; }
 /* A read-only value starts where the text of an editable cell does (its padding plus border). */
 .doc-section .form-group > .meta-value { padding-inline: 7px; }
+.doc-section .form-group > .form-hint { flex-basis: 100%; }
 .doc-section .form-label { font-size: 12px; color: var(--c-text2); min-width: 100px; }
 
 /* Two-column rows */
@@ -2047,6 +2050,7 @@ form:has(> #fa-preview:not(:empty)) ~ .empty-state-cta { display: none; }
 .total-label--final { font-weight: 700; color: var(--c-text); font-size: 14px; }
 .total-label--conversion { color: var(--c-text2); font-style: italic; font-size: 12px; }
 .total-row--conversion { border-top: 1px dashed var(--c-border); margin-top: 2px; padding-top: 4px; }
+.total-hint { margin: 0 0 4px; max-width: 340px; }
 .total-label--editable { text-decoration: underline dotted var(--c-text2); text-underline-offset: 3px; }
 .total-label--editable:hover { color: var(--c-text); }
 .total-value { font-weight: 500; color: var(--c-text); text-align: right; }
@@ -2178,7 +2182,7 @@ form:has(> #fa-preview:not(:empty)) ~ .empty-state-cta { display: none; }
    cell classes are listed here, and only here, so screen matches print.
    (!important beats base th{text-align:center}) */
 .data-table th.cell--number,
-.data-table th.cell--right { text-align: right !important; }
+th.cell--right { text-align: right !important; }
 /* The figures under that header, declared once for both cases. A bare `.cell--right`
    loses to `.data-table td { text-align: left }`, which left counts and percentages
    hugging the wrong edge on screen while print right-aligned them. */
@@ -2249,6 +2253,7 @@ form:has(> #fa-preview:not(:empty)) ~ .empty-state-cta { display: none; }
 .recon-progress { height: 8px; background: var(--c-border); border-radius: 4px; overflow: hidden; margin-top: 4px; }
 .recon-progress-fill { height: 100%; background: var(--c-green); border-radius: 4px; transition: width 0.3s; }
 .recon-progress-label { font-size: 12px; color: var(--c-text2); }
+.recon-progress-label + .recon-progress-label { margin-left: 4px; }
 /* Expand area */
 .recon-row-expand { overflow: hidden; }
 /* Inline forms */
@@ -2434,6 +2439,9 @@ form:has(> #fa-preview:not(:empty)) ~ .empty-state-cta { display: none; }
 .payment-voided td { text-decoration: line-through; opacity: 0.6; }
 .payment-voided .badge--void { text-decoration: none; opacity: 1; }
 .void-inline { display: inline; }
+/* A payment's Refund and Void stay on one line; an opened form wraps inside the cell. */
+.payment-actions { white-space: nowrap; }
+.payment-actions details[open] { white-space: normal; }
 .void-inline > summary { list-style: none; cursor: pointer; }
 .void-inline > summary::-webkit-details-marker { display: none; }
 .inline-form--compact { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin-top: 0.25rem; padding: 0.5rem; background: var(--c-bg-alt, #f8f9fa); border-radius: var(--radius); border: 1px solid var(--c-border); }
@@ -2670,7 +2678,7 @@ form:has(> #fa-preview:not(:empty)) ~ .empty-state-cta { display: none; }
 .relay-dot-link { display: flex; align-items: center; line-height: 1; text-decoration: none; }
 
 /* ── Notification bell + panel ────────────────────────────────────────── */
-.notif-wrap { position: relative; margin-left: auto; }
+.notif-wrap { position: relative; margin-left: auto; display: flex; align-items: center; }
 .notif-bell-btn {
   background: none; border: none; font-size: 1.25rem; cursor: pointer;
   position: relative; padding: 0.25rem 0.5rem;
@@ -3504,16 +3512,16 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 
 /* --- Toast notifications --- */
 /* A toast stays inside the screen on any width; a long account name or code wraps. */
-.toast-container { position: fixed; bottom: 1.5rem; right: 1.5rem; z-index: 9999; display: flex; flex-direction: column; gap: 0.5rem; pointer-events: none; max-width: calc(100vw - 3rem); }
-.toast { pointer-events: all; display: flex; align-items: flex-start; gap: 0.75rem; padding: 0.75rem 1rem; border-radius: var(--radius); box-shadow: 0 4px 16px rgba(0,0,0,0.15); font-size: 0.875rem; max-width: min(360px, 100%); opacity: 0; transform: translateY(8px); transition: opacity 0.2s ease, transform 0.2s ease; }
+.toast-container { position: fixed; bottom: 1.5rem; right: 1.5rem; z-index: 9999; display: flex; flex-direction: column; align-items: flex-end; gap: 0.5rem; pointer-events: none; max-width: calc(100vw - 3rem); }
+.toast { pointer-events: all; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0.5rem 0.75rem; padding: 0.75rem 1rem; border-radius: var(--radius); box-shadow: 0 4px 16px rgba(0,0,0,0.15); font-size: 0.875rem; max-width: min(360px, 100%); opacity: 0; transform: translateY(8px); transition: opacity 0.2s ease, transform 0.2s ease; }
 .toast--visible { opacity: 1; transform: translateY(0); }
-/* A multi-line toast (a summary of changes) keeps its line breaks. */
-.toast__msg { white-space: pre-line; min-width: 0; overflow-wrap: anywhere; }
+/* A multi-line toast (a summary of changes) keeps its line breaks; its links sit on their own lines below it. */
+.toast__msg { white-space: pre-line; min-width: 0; overflow-wrap: anywhere; flex: 1 1 calc(100% - 2rem); }
 .toast--error { background: #fef2f2; border: 1px solid rgba(239,68,68,0.4); color: #b91c1c; }
 .toast--success { background: #f0fdf4; border: 1px solid rgba(34,197,94,0.4); color: #15803d; }
 .toast--warning { background: #fefce8; border: 1px solid rgba(234,179,8,0.4); color: #92710a; }
 .toast--info { background: var(--c-bg-alt, #f8f9fa); border: 1px solid var(--c-border); color: var(--c-text); }
-.toast__action { color: inherit; font-weight: 600; text-decoration: underline; flex-shrink: 0; }
+.toast__action { color: inherit; font-weight: 600; text-decoration: underline; order: 1; flex-basis: 100%; }
 .toast__close { margin-left: auto; background: none; border: none; cursor: pointer; font-size: 1.1rem; line-height: 1; padding: 0; opacity: 0.6; flex-shrink: 0; }
 .toast__close:hover { opacity: 1; }
 .btn--active { background: var(--c-accent); color: #fff; border-color: var(--c-accent); }
@@ -3728,3 +3736,5 @@ a.notif-item__link:hover .notif-item__title { color: var(--c-accent); }
 .menu-editor__badge { font-size: 11px; color: var(--c-text2); }
 .menu-editor__row--hidden .menu-editor__label, .menu-editor__section--hidden .menu-editor__label { color: var(--c-text2); text-decoration: line-through; }
 .menu-editor__move { display: inline-flex; gap: 4px; }
+/* The app's own confirmation (celerpConfirm in shell.py): the question, then Cancel and Confirm. */
+.confirm-dialog__question { margin: 0; white-space: pre-line; }

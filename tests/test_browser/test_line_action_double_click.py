@@ -8,6 +8,8 @@ import uuid
 
 import pytest
 
+from .conftest import answer_confirms
+
 pytestmark = pytest.mark.browser
 
 
@@ -44,7 +46,7 @@ def _bill(api) -> str:
 def test_a_double_click_asks_once(page, ui_server, api, make, action, button, answer):
     doc_id = make(api)
     asked = []
-    page.on("dialog", lambda d: (asked.append(d.message), getattr(d, answer)()))
+    answer_confirms(page, lambda question: asked.append(question) or answer == "accept")
     page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
     page.locator(".li-select").first.check()
     page.locator("#li-bulk-select").select_option(value=action)

@@ -14,7 +14,7 @@ _CELL = 'td[hx-get$="/field/phone/edit"]'
 
 def _edit_phone(page: Page, contact_id: str, typed: str) -> None:
     page.goto(f"/contacts/{contact_id}")
-    page.locator(_CELL).dblclick()
+    page.locator(_CELL).click()
     box = page.locator("#contact-phone-visible")
     box.wait_for(state="visible")
     box.fill("")
@@ -34,7 +34,9 @@ def test_a_partial_phone_is_refused_and_the_saved_one_kept(page: Page, fresh_com
     cid = fresh_company.post("/crm/contacts", json={"name": "Partial", "phone": "+66812345678"}).json()["id"]
     _edit_phone(page, cid, "12")
     assert fresh_company.get(f"/crm/contacts/{cid}").json()["phone"] == "+66812345678"
-    assert page.locator(".cell-error").is_visible()
+    page.wait_for_selector(".toast-container .toast", timeout=10000)
+    assert "at least 4 digits" in page.locator(".toast-container .toast").first.inner_text()
+    assert "+66812345678" in page.locator(_CELL).inner_text()
 
 
 def test_a_phone_typed_when_the_picker_fails_to_start_is_saved(page: Page, fresh_company):

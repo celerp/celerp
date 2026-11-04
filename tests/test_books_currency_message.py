@@ -11,6 +11,7 @@ import pytest
 from fastapi import HTTPException
 
 from celerp_docs import routes, routes_payments
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -28,7 +29,7 @@ async def test_refusal_says_why_and_points_to_a_correcting_entry():
     with pytest.raises(HTTPException) as e:
         await routes.books_currency_still(_Session({"currency": "EUR"}), "c", "USD")
     assert e.value.status_code == 422
-    detail = e.value.detail
+    detail = refusal_text(e.value.detail)
     assert "USD" in detail and "EUR" in detail
     assert "mix two currencies" in detail
     assert "correcting journal entry in Accounting, Journal" in detail

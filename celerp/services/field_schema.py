@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.accounting_roles import CONSIGNOR_FIELD, CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD, refusal
 from celerp.models.company import Company
 from celerp.services.cost_visibility import COST_DERIVED_ITEM_KEYS
-from celerp.services.pricing import is_cost_list_name, is_derived, price_key
+from celerp.services.pricing import PRICE_LISTS_FALLBACK, is_cost_list_name, is_derived, price_key, price_lists_in
 from ui.i18n import field_label_key
 
 # Reserved system value for a field whose sources disagreed and cannot be reconciled (e.g. a merge
@@ -68,11 +68,6 @@ AMOUNT_EDIT_GATED_KEYS: frozenset[str] = AMOUNT_ITEM_KEYS | {"sell_by"}
 COST_SCHEMA_KEYS: frozenset[str] = frozenset({"cost_price", "cost_price_total"})
 
 # Default price lists (used when company has none configured)
-_DEFAULT_PRICE_LISTS: list[dict] = [
-    {"name": "Wholesale"},
-    {"name": "Retail"},
-]
-
 # Base schema fields (without price columns - those are injected dynamically)
 _BASE_FIELDS: list[dict] = [
     {"key": "thumbnail",         "label": "Image",             "type": "image",  "editable": True,  "required": False, "options": [],                                            "visible_to_roles": [],               "position": -1, "show_in_table": False, "label_key": "field.label.thumbnail"},
@@ -268,7 +263,7 @@ NUMERIC_SCHEMA_TYPES: frozenset[str] = frozenset({"number", "money", "rate", "we
 NON_HIDEABLE_FIELD_KEYS: frozenset[str] = frozenset({"status"})
 
 # Backward-compatible constant: base fields + default price columns
-DEFAULT_ITEM_SCHEMA: list[dict] = _inject_price_columns(_BASE_FIELDS, _DEFAULT_PRICE_LISTS)
+DEFAULT_ITEM_SCHEMA: list[dict] = _inject_price_columns(_BASE_FIELDS, PRICE_LISTS_FALLBACK)
 
 
 def _with_missing_defaults(stored: list[dict], defaults: list[dict]) -> list[dict]:
@@ -311,7 +306,7 @@ def effective_field_schema(settings: dict, category: str | None = None) -> list[
     """The effective item field schema the company settings ``settings`` give (get_effective_field_schema)."""
     # Build base schema: stored fields + any missing _BASE_FIELDS defaults
     stored: list[dict] = settings.get("item_schema") or _BASE_FIELDS
-    price_lists: list[dict] = settings.get("price_lists") or _DEFAULT_PRICE_LISTS
+    price_lists = price_lists_in(settings)
     # Inject price columns (idempotent - skips already-present keys)
     stored_with_prices = _inject_price_columns(stored, price_lists)
     full_defaults = _inject_price_columns(_BASE_FIELDS, price_lists)

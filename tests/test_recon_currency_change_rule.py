@@ -15,7 +15,7 @@ from sqlalchemy import text
 
 from test_reconciliation_history import (
     admin, bank, completed, deposit, fx_deposit, history, legacy_deposit, legacy_session, start)
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 pytestmark = pytest.mark.asyncio
 
@@ -86,7 +86,7 @@ async def test_a_correction_held_by_a_completed_reconciliation_names_reopen_and_
     je = await legacy_deposit(client, h, session, b, "2026-09-10", 50.0)
     sid = await legacy_session(session, b, "2026-09-30", balance=50.0, je_ids=[je])
     r = await client.patch(f"/accounting/bank-accounts/{b['id']}", json={"currency": "USD"}, headers=h)
-    assert r.status_code == 409 and r.json()["detail"] == t("acct.err_bank_currency_reconciled", currency="THB"), r.text
+    assert r.status_code == 409 and refusal_text(r.json()["detail"]) == t("acct.err_bank_currency_reconciled", currency="THB"), r.text
     assert (await client.post(f"/accounting/reconciliation/{sid}/reopen", headers=h)).status_code == 200
     r = await client.patch(f"/accounting/bank-accounts/{b['id']}", json={"currency": "USD"}, headers=h)
     assert r.status_code == 200 and r.json()["balance"] == 50.0, r.text

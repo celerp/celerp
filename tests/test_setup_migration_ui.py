@@ -568,7 +568,8 @@ async def test_setup_failure_states_keep_typed_values(ui, router, session):
     router.overrides[("GET", "/auth/bootstrap-status")] = _raise(httpx.ConnectError)
     r = await ui.get("/setup")
     assert r.status_code == 200
-    assert t("error.api_unavailable") in _page(r)
+    assert t("page.api_unavailable") in _page(r)
+    assert t("api.unreachable") in _page(r)
     del router.overrides[("GET", "/auth/bootstrap-status")]
 
     good = _GOOD_SETUP
@@ -1465,8 +1466,8 @@ async def test_the_backup_company_choice_reads_as_a_choice_from_the_backup(ui, r
     assert "Company to import from this backup" in visible
     assert "<table" not in page[:choice_at], "the company choice comes before the mapping table"
     if with_accounts:
-        table = page[page.index("<table"):page.index("</table>")]
-        assert 'name="mapping__account:fx-gain"' in table and f"mapping__{COMPANY_QUESTION}" not in table
+        # One account to match reads as a field of the form, after the company choice.
+        assert page.index('name="mapping__account:fx-gain"') > choice_at and "<table" not in page
         assert t("migration.mapping_title", "en") in visible
     else:
         assert "<table" not in page
@@ -1855,3 +1856,33 @@ def test_xero_attachments_gate_says_what_signing_in_is_for():
     from ui.routes.account import _GATE_BENEFIT_KEYS
     text = t(_GATE_BENEFIT_KEYS["xero-attachments"])
     assert "Xero" in text and "free" not in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_a_single_question_reads_as_a_field_not_a_one_row_table(ui, router, fake_api):
+    _owner(ui)
+    base = "/setup/new-company/migrate"
+    r = await ui.post(f"{base}/scan", files=_UPLOAD, data={"source": "manager_io", "prepared_by": "Example Bookkeeping"})
+    token = _cookie_value(r, SCAN_COOKIE)
+    ui.cookies.set(SCAN_COOKIE, token)
+    fake_api.scans[token]["scan"]["questions"] = [
+        {"key": "currency:base", "source_type": "Company", "source_external_id": "company",
+         "label": "Currency these books are kept in", "options": ["ETB", "USD"], "suggested": "ETB"}]
+    r = await ui.get(f"{base}/mapping")
+    assert r.status_code == 200
+    page = _page(r)
+    assert 'name="mapping__currency:base"' in page and "<table" not in page
+    assert "Currency these books are kept in" in _visible(r)
+
+
+async def test_the_wizard_offers_its_help_page_to_a_signed_in_company(ui, router):
+    """The wizard has no top bar, so it carries its own way to the imports help page; a
+    login with no company yet (no session to open help with) is not offered it."""
+    from starlette.requests import Request
+
+    from ui.routes.migrations import _wizard_help
+    _owner(ui)
+    page = _page(await ui.get("/setup/new-company/migrate"))
+    link = re.search(r'<a [^>]*href="/help/core\.imports"[^>]*>([^<]*)</a>', page)
+    assert link and link.group(1) == "Help" and 'target="_blank"' in link.group(0)
+    assert _wizard_help(Request({"type": "http", "headers": []})) == []

@@ -25,7 +25,6 @@ _NOT_AN_INSTRUCTION = (
     "The app will reload.",
     "this page will reload when it is back",
     "This page reloads when the server is back",
-    "uvicorn celerp.main:app --reload",
     "Celerp couldn't refresh it",
     "the list did not refresh",
 )
@@ -48,7 +47,7 @@ _OTHER_LANGUAGE_RELOAD = {
 # Catalog keys whose text is about a restart or a list that did not refresh, kept as they are.
 _KEPT_KEYS = {
     "modules.restart_confirm", "modules.restarting", "settings.restarting_automatically",
-    "msg.restart_api", "marketplace.from_cache", "documents.scan_reload_needed",
+    "marketplace.from_cache", "documents.scan_reload_needed",
 }
 
 

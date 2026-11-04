@@ -4,7 +4,7 @@
 most 40 characters, not counting surrounding spaces, or is empty.
 
 Phones already stored are never rechecked: a contact keeping an old phone can still be
-edited, and imports are unchanged.
+edited. An import applies the same rule as typing the phone in.
 """
 from __future__ import annotations
 
@@ -64,16 +64,24 @@ async def test_phones_with_spaces_extensions_or_nothing_are_accepted(client):
     assert (await client.patch("/companies/me", headers=h, json={"settings": {"phone": ""}})).status_code == 200
 
 
-async def test_a_contact_keeping_an_old_phone_can_still_be_edited(client):
+async def test_a_contact_keeping_an_old_phone_can_still_be_edited(client, session):
+    from celerp.events.engine import emit_event
+    from celerp.models.projections import Projection
+
     h = await _reg(client)
-    r = await client.post("/crm/contacts/import/batch", headers=h, json={"records": [{
-        "entity_id": f"contact:{uuid.uuid4()}", "event_type": "crm.contact.created", "source": "csv_import",
-        "data": {"name": "Old Phone", "phone": "n/a"}, "idempotency_key": f"k-{uuid.uuid4().hex}"}]})
-    assert r.status_code == 200 and r.json()["created"] == 1, r.text
-    cid = (await client.get("/crm/contacts", headers=h)).json()["items"][0]["id"]
+    company_id = (await session.execute(select(Projection.company_id).where(
+        Projection.entity_type == "contact"))).scalars().first()
+    cid = f"contact:{uuid.uuid4()}"
+    # Stored before phones were checked.
+    await emit_event(session, company_id=company_id, entity_id=cid, entity_type="contact",
+                     event_type="crm.contact.created", data={"name": "Old Phone", "phone": "n/a"},
+                     actor_id=None, location_id=None, source="csv_import",
+                     idempotency_key=f"k-{uuid.uuid4().hex}", metadata_={})
+    await session.commit()
     r = await client.patch(f"/crm/contacts/{cid}", headers=h,
                            json={"fields_changed": {"name": {"old": "Old Phone", "new": "Renamed"}}})
     assert r.status_code == 200, r.text
+    assert (await client.get(f"/crm/contacts/{cid}", headers=h)).json()["phone"] == "n/a"
 
 
 async def test_a_phone_over_40_characters_is_refused(client):

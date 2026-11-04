@@ -21,7 +21,7 @@ import uuid
 import pytest
 
 from test_helpers import grant_permission, perm_setup
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 PATH = "/accounting/accounts/import/batch"
 PREVIEW_PATH = "/accounting/accounts/import/preview"
@@ -288,7 +288,7 @@ async def test_chart_import_over_the_limit_says_so_plainly(client):
     rows = [_row(f"A{i:04d}", f"Account {i}") for i in range(2001)]
     r = await _import(client, h, rows)
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("acct.err_chart_import_too_many", "en", count=2001, max=2000)
+    assert refusal_text(r.json()["detail"]) == t("acct.err_chart_import_too_many", "en", count=2001, max=2000)
     assert "A0000" not in await _chart(client, h)
 
 

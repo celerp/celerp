@@ -33,7 +33,7 @@ from migration_support import (
     staged_run,
     upload_parts,
 )
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 BOOTSTRAPPED = t("migration.err_bootstrapped", "en")
 EXPIRED = "This scan has expired. Upload the file again."
@@ -98,7 +98,7 @@ async def test_bootstrap_scan_and_start_require_bootstrap_authority(client, sess
 
     for headers in ({}, {"X-Setup-Code": "wrong"}):
         r = await scan_upload(client, fake_bytes(), headers=headers)
-        assert r.status_code == 403 and r.json()["detail"] == t("auth.setup_code_invalid", "en")
+        assert r.status_code == 403 and refusal_text(r.json()["detail"]) == t("auth.setup_code_invalid", "en")
 
     # One active bootstrap scan: a new scan replaces the previous token.
     first = (await scan_upload(client, fake_bytes(), headers=good)).json()["scan_token"]
@@ -106,7 +106,7 @@ async def test_bootstrap_scan_and_start_require_bootstrap_authority(client, sess
     assert r.status_code == 200, r.text
     scan_token = r.json()["scan_token"]
     r = await client.post("/migrations/bootstrap/scan/read", json={"scan_token": first})
-    assert r.status_code == 410 and r.json()["detail"] == EXPIRED
+    assert r.status_code == 410 and refusal_text(r.json()["detail"]) == EXPIRED
     assert len(list((migration_env["data_dir"] / "migration_scans").iterdir())) == 1
 
     assert (await save_decisions(client, scan_token)).status_code == 200
@@ -121,11 +121,11 @@ async def test_bootstrap_scan_and_start_require_bootstrap_authority(client, sess
 
     # Once an owner exists, every bootstrap migration route is closed.
     r = await scan_upload(client, fake_bytes(), headers=good)
-    assert r.status_code == 409 and r.json()["detail"] == BOOTSTRAPPED
+    assert r.status_code == 409 and refusal_text(r.json()["detail"]) == BOOTSTRAPPED
     r = await save_decisions(client, scan_token)
-    assert r.status_code == 409 and r.json()["detail"] == BOOTSTRAPPED
+    assert r.status_code == 409 and refusal_text(r.json()["detail"]) == BOOTSTRAPPED
     r = await client.post("/migrations/bootstrap/start", json=_start_body(scan_token), headers=good)
-    assert r.status_code == 409 and r.json()["detail"] == BOOTSTRAPPED
+    assert r.status_code == 409 and refusal_text(r.json()["detail"]) == BOOTSTRAPPED
     assert (await session.execute(text("SELECT count(*) FROM users"))).scalar_one() == 1
 
 

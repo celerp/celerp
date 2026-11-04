@@ -66,7 +66,7 @@ from celerp.models.company import Company, User
 from celerp.modules.importer import TABLE_NAME, InstalledModules, installed_modules
 from celerp.modules import requirements
 from celerp.modules.boundary import take_company_locks
-from celerp.modules.loader import module_label
+from celerp.modules.loader import module_label, modules_holding_events, unidentified_events
 from celerp.modules.registry import commit_with_load_set, company_modules, hold_module_state, set_enabled
 from celerp.services import attachments, bootstrap, company_lifecycle, payments
 from celerp.services.auth import HAS_COMPANY, hold_companyless_login, password_attempts
@@ -86,11 +86,15 @@ FORMAT = "celerp-company-backup"
 FORMAT_VERSION = 2
 EXTENSION = ".celerp-company"
 
-# The core and bundled-module company tables a backup carries.
-PORTABLE_TABLES = frozenset({
-    "locations", "work_centers", "ledger", "projections", "accounts", "bank_accounts",
-    "reconciliation_sessions", "reconciliation_rules", "bank_statement_lines", "label_templates",
-})
+# The core and bundled-module company tables a backup carries, each with the module that
+# creates it (None: Celerp's own). A copy holding rows in a module's table needs that module,
+# whatever module list the copy records: older copies record none.
+PORTABLE_TABLES: dict[str, str | None] = {
+    "locations": None, "work_centers": None, "ledger": None, "projections": None,
+    "accounts": "celerp-accounting", "bank_accounts": "celerp-accounting",
+    "reconciliation_sessions": "celerp-accounting", "reconciliation_rules": "celerp-accounting",
+    "bank_statement_lines": "celerp-accounting", "label_templates": "celerp-labels",
+}
 
 # Company tables that stay with the installation, and why.
 EXCLUDED_TABLES = {
@@ -200,6 +204,7 @@ DEACTIVATED = "company_backup.err_deactivated"
 STALE_PREVIEW = "company_backup.err_stale_preview"
 ATTACHMENT_MISSING = "company_backup.err_attachment_missing"
 MODULES_REQUIRED = "company_backup.err_modules_required"
+UNIDENTIFIED_EVENTS = "company_backup.err_unidentified_events"
 NAME_TAKEN = "company_backup.err_name_taken"
 OLDER = "company_backup.err_older"
 RESHAPED = "company_backup.err_reshaped"
@@ -865,6 +870,8 @@ class BackupFile:
     path: Path
     manifest: dict
     sha256: str
+    # The kinds of event the copy's ledger records: they name the modules its data belongs to.
+    event_types: frozenset[str] = frozenset()
 
     def summary(self) -> dict:
         m = self.manifest
@@ -1046,6 +1053,7 @@ def read_backup(path: Path) -> BackupFile:
                 _check_member(budget, zf, f"tables/{table}.jsonl", meta["sha256"], rows=meta["rows"])
             for f in manifest["attachments"]:
                 _check_member(budget, zf, f"attachments/{f['name']}", f["sha256"], size=f["size"])
+            event_types = _event_types(zf, manifest)
     except (zlib.error, EOFError):
         raise BackupError(422, t(INCOMPLETE)) from None
     except (zipfile.LargeZipFile, KeyError, *ZIP_ERRORS):
@@ -1054,7 +1062,22 @@ def read_backup(path: Path) -> BackupFile:
     with open(path, "rb") as f:
         while chunk := f.read(_CHUNK):
             whole.update(chunk)
-    return BackupFile(path=path, manifest=manifest, sha256=whole.hexdigest())
+    return BackupFile(path=path, manifest=manifest, sha256=whole.hexdigest(), event_types=event_types)
+
+
+def _event_types(zf: zipfile.ZipFile, manifest: dict) -> frozenset[str]:
+    if "ledger" not in manifest["tables"]:
+        return frozenset()
+    found: set[str] = set()
+    for line in _lines(zf, "tables/ledger.jsonl"):
+        try:
+            row = _parse_row(line)
+        except ValueError:
+            raise BackupError(422, t(DAMAGED)) from None
+        if not isinstance(row, dict):
+            raise BackupError(422, t(DAMAGED))
+        found.add(str(row.get("event_type")))
+    return frozenset(found)
 
 
 # ── Checking a backup against this installation ──────────────────────────────
@@ -1067,12 +1090,25 @@ class _Checked:
     digests: dict[str, int]
 
 
+def needed_modules(backup: BackupFile) -> set[str]:
+    """Every module the backup's company uses: enabled in the copy, holding its data, or
+    owning the events its ledger records."""
+    m = backup.manifest
+    holding = {PORTABLE_TABLES[name] for name, meta in m["tables"].items()
+               if PORTABLE_TABLES.get(name) and meta["rows"]}
+    return (set(m["modules"]["enabled"]) | set(m["modules"]["versions"]) | holding
+            | modules_holding_events(set(backup.event_types)))
+
+
 def requirement_plan(backup: BackupFile) -> requirements.RequirementPlan:
-    """Every module the backup needs, enabled or holding its data, with what stands
-    between it and running here at a version that will do."""
+    """Every module the backup needs, with what stands between it and running here at a
+    version that will do. A backup whose ledger records events core does not apply and no
+    module installed here owns is refused: which module they need cannot be known, and
+    restoring without it would leave those records unread."""
+    if unknown := unidentified_events(set(backup.event_types)):
+        raise BackupError(422, t(UNIDENTIFIED_EVENTS, events=", ".join(unknown)))
     versions = backup.manifest["modules"]["versions"]
-    return requirements.plan_requirements(
-        {name: versions.get(name) for name in set(backup.manifest["modules"]["enabled"]) | set(versions)})
+    return requirements.plan_requirements({name: versions.get(name) for name in needed_modules(backup)})
 
 
 def _lines(zf: zipfile.ZipFile, name: str):
@@ -1198,7 +1234,9 @@ async def check_backup(session: AsyncSession, backup: BackupFile) -> _Checked:
         raise ModulesRequired(modules)
     await _pin(session, restoring=True)
     plan = await _classify(session, installed_modules(), strict=False)
-    tables = backup.manifest["tables"]
+    # An empty table of a module that never ran here carries nothing, so it is not restored.
+    tables = {name: meta for name, meta in backup.manifest["tables"].items()
+              if name in plan.schema or meta["rows"] or not PORTABLE_TABLES.get(name)}
     for name, meta in tables.items():
         if name not in plan.schema or not set(meta["columns"]) <= set(plan.schema[name].insertable):
             raise BackupError(422, t(NEWER))
@@ -1805,7 +1843,7 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                         raise BackupError(422, t(ATTACHMENT_FAILED)) from None
                 id_map = {source: str(new_id), **{old: str(uuid.uuid4()) for old in checked.ids}, **url_map}
                 settings = remap(_kept_settings(m["company"]["settings"]), id_map)
-                settings = set_enabled(settings, set(m["modules"]["enabled"]))  # the checked list, never the copied key
+                settings = set_enabled(settings, needed_modules(backup))  # the checked list, never the copied key
                 settings[LINEAGE_SETTING] = _copy_lineage(m["company"])
                 team_to_add, grants = plan.team_to_add, plan.role_grants
                 if replacing is not None:

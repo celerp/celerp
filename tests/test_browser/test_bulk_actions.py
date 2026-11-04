@@ -4,6 +4,8 @@
 """Group 9: Bulk actions — inventory checkboxes + bulk operations."""
 import pytest
 
+from .conftest import answer_confirms
+
 pytestmark = pytest.mark.browser
 
 
@@ -91,6 +93,7 @@ def test_archive_qtypositive_offers_choice_no_autoledger(page, ui_server, api):
     Control: a zero-stock item archives plain, with no choice dialog."""
     native: list[str] = []
     page.on("dialog", lambda d: (native.append(d.message), d.accept()))
+    answer_confirms(page)
 
     # qty>0 -> the two-way choice modal, no automatic archive or JE. The item must be available
     # (on the books) for the guard to matter: a draft holds no stock value and cannot be archived
@@ -140,7 +143,7 @@ def test_writeoff_journey_terminal_and_undo(page, ui_server, api):
     iid = api.post("/items", json={
         "sku": "WO-E2E-001", "sell_by": "piece", "name": "Writeoff E2E", "quantity": 8}).json()["id"]
     api.post("/items/bulk/make-available", json={"entity_ids": [iid]})
-    page.on("dialog", lambda d: d.accept())
+    answer_confirms(page)
 
     page.goto(f"{ui_server}/inventory", wait_until="domcontentloaded")
     page.evaluate("window.CelerpSelection && window.CelerpSelection.clear()")

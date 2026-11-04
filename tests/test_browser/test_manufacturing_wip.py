@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 from playwright.sync_api import expect
 
-from .conftest import css_class
+from .conftest import answer_confirms, css_class
 
 pytestmark = pytest.mark.browser
 
@@ -120,7 +120,7 @@ def test_wip_bulk_actions_and_priority_funnel(page, ui_server, api):
     page.screenshot(path=str(SHOTS / "wip-after-start.png"), full_page=True)
 
     # ── Bulk Complete via the Action dropdown (accept the confirm) -> completed + output lots ──
-    page.on("dialog", lambda d: d.accept())
+    answer_confirms(page)
     page.wait_for_selector("#mfg-table:has-text('WIP-WIDGET')", timeout=8000)
     # Tick both runs and confirm "2 selected" actually registered before dispatching Complete. The
     # bulk Start above swaps the table via HTMX; under a large suite that swap settles late and can

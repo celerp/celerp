@@ -16,6 +16,7 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.accounting_roles import catalog_refusal
 from celerp.services.cost_visibility import COST_DERIVED_ITEM_KEYS, COST_ITEM_KEYS
 from celerp.services.list_behavior import SUPPLIER_DOC_TYPES
 from celerp.services.money import round_rate
@@ -29,9 +30,15 @@ DEFAULT_PRICE_LIST_NAME: str = "Retail"
 # The cost list: its price is the item's cost_price.
 COST_PRICE_LIST_NAME: str = "Cost"
 
-# Read fallback for companies whose settings were never seeded. Includes Cost so
-# cost columns and valuation keep working before first settings access.
-PRICE_LISTS_FALLBACK: list[dict] = [{"name": "Retail"}, {"name": "Wholesale"}, {"name": "Cost"}]
+# The system's cost list: every company has it, whatever its stored lists hold (price_lists_in).
+SYSTEM_COST_LIST: dict = {"name": COST_PRICE_LIST_NAME, "description": "Cost / landed price"}
+
+# The price lists of a company that never saved its own, in the one default order.
+PRICE_LISTS_FALLBACK: list[dict] = [
+    {"name": DEFAULT_PRICE_LIST_NAME, "description": "Standard retail price"},
+    {"name": "Wholesale", "description": "Wholesale / trade price"},
+    SYSTEM_COST_LIST,
+]
 
 # Rounding increments offered by the settings UI; the API accepts any positive number.
 ROUNDING_CHOICES: tuple[str, ...] = ("0.01", "0.05", "0.10", "0.50", "1", "5", "10")
@@ -200,8 +207,8 @@ def inject_derived_prices(flat: dict, price_lists: list[dict], base_name: str, c
     return flat
 
 
-def validate_price_lists(price_lists: list[dict], base_name: str, base_explicit: bool = True) -> str | None:
-    """First human-readable rule violation in a price-lists config, else None.
+def validate_price_lists(price_lists: list[dict], base_name: str, base_explicit: bool = True) -> dict | None:
+    """First rule violation in a price-lists config as a catalog refusal, else None.
 
     ``base_explicit`` is False when the base name is only the unconfigured fallback; the
     base-must-exist rule then binds only once a list actually derives from it, so a company
@@ -216,32 +223,32 @@ def validate_price_lists(price_lists: list[dict], base_name: str, base_explicit:
 
     names = [str(pl.get("name", "")).strip() for pl in price_lists]
     if any(not n for n in names):
-        return "Price list names cannot be empty"
+        return catalog_refusal("company.err_price_list_name_empty")
     lowered = [n.lower() for n in names]
     duplicates = sorted({n for n in lowered if lowered.count(n) > 1})
     if duplicates:
-        return f"Price list names must be unique ('{duplicates[0]}' appears more than once)"
+        return catalog_refusal("company.err_price_list_name_taken", name=duplicates[0])
     for pl, name in zip(price_lists, names):
         multiplier = pl.get("multiplier")
         rounding = pl.get("rounding")
         if multiplier is not None:
             if not _valid_factor(multiplier):
-                return f"Factor for '{name}' must be a number greater than 0 and at most {MAX_FACTOR:,.0f}"
+                return catalog_refusal("company.err_price_list_factor", name=name, max=f"{MAX_FACTOR:,.0f}")
             if is_cost_list_name(name):
-                return f"'{name}' cannot be derived; cost comes from purchases and recipes"
+                return catalog_refusal("company.err_price_list_cost_derived", name=name)
             if name == base_name:
-                return f"'{name}' is the base price list; a base list cannot have a factor"
+                return catalog_refusal("company.err_price_list_base_factor", name=name)
         if rounding is not None:
             if multiplier is None:
-                return f"Rounding on '{name}' requires a factor"
+                return catalog_refusal("company.err_price_list_rounding_needs_factor", name=name)
             if not _valid_factor(rounding):
-                return f"Rounding for '{name}' must be a number greater than 0 and at most {MAX_FACTOR:,.0f}"
+                return catalog_refusal("company.err_price_list_rounding", name=name, max=f"{MAX_FACTOR:,.0f}")
     if base_name not in names and (base_explicit or any(is_derived(pl) for pl in price_lists)):
-        return f"Base price list '{base_name}' does not exist"
+        return catalog_refusal("company.err_price_list_missing", name=base_name)
     return None
 
 
-def new_cost_name_error(price_lists: list[dict], stored_price_lists: list[dict]) -> str | None:
+def new_cost_name_error(price_lists: list[dict], stored_price_lists: list[dict]) -> dict | None:
     """Reject cost-family names that were not already present in the stored config.
 
     Renaming a sell list to e.g. "landed cost" would silently convert it into a
@@ -256,12 +263,12 @@ def new_cost_name_error(price_lists: list[dict], stored_price_lists: list[dict])
     for pl in price_lists:
         name = str(pl.get("name", "")).strip()
         if is_cost_list_name(name) and name.lower() not in stored_cost:
-            return f"'{name}' is a reserved cost name; the cost list is managed by the system"
+            return catalog_refusal("company.err_price_list_cost_name", name=name)
     return None
 
 
 def price_config_error(price_lists: list[dict], explicit_base: str | None,
-                       stored_price_lists: list[dict]) -> str | None:
+                       stored_price_lists: list[dict]) -> dict | None:
     """The full write gate for a price-lists config: structural validation plus the
     reserved-cost-name rule. Every door that stores price config must call this, so the
     two checks can never drift apart between endpoints."""
@@ -287,8 +294,13 @@ def normalized_price_lists(price_lists: list[dict]) -> list[dict]:
 
 
 def price_lists_in(settings: dict) -> list[dict]:
-    """The company's price lists from its settings, or the fallback lists."""
-    return settings.get("price_lists") or PRICE_LISTS_FALLBACK
+    """The company's price lists from its settings, or the fallback lists, always holding a
+    cost list: one stored without it (an older copy, an import) gets the system's, which the
+    next save of the lists stores. A copy, so a caller may change it."""
+    lists = [dict(pl) for pl in settings.get("price_lists") or PRICE_LISTS_FALLBACK]
+    if not any(is_cost_list_name(str(pl.get("name", "")).strip()) for pl in lists):
+        lists.append(dict(SYSTEM_COST_LIST))
+    return lists
 
 
 async def get_price_config(session: AsyncSession, company_id) -> tuple[list[dict], str, str]:

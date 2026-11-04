@@ -392,6 +392,38 @@ def settled_boxes(page, *selectors: str) -> list[dict]:
     }""", list(selectors))
 
 
+_WATCH_CONFIRMS_JS = """() => {
+  if (window.__celerpConfirmWatch) return;
+  window.__celerpConfirmWatch = true;
+  new MutationObserver(changes => changes.forEach(c => c.addedNodes.forEach(n => {
+    if (n.nodeType !== 1 || !n.matches('dialog.confirm-dialog')) return;
+    window.celerpConfirmAsked(n.querySelector('.confirm-dialog__question').textContent)
+      .then(choice => n.querySelector(`button[value="${choice}"]`).click());
+  }))).observe(document, {childList: true, subtree: true});
+}"""
+
+
+def answer_confirms(page, answer=lambda question: True) -> None:
+    """Answers every question the app asks in its own confirmation dialog (celerpConfirm in
+    shell.py): ``answer(question)`` decides, then the dialog's own Confirm or Cancel button is
+    clicked. The browser's plain box is never used, so ``page.on("dialog")`` does not see these
+    questions. The click comes from the page because a Playwright call made inside a binding
+    callback never returns."""
+    page.expose_binding("celerpConfirmAsked", lambda source, question: "ok" if answer(question) else "")
+    page.add_init_script(f"({_WATCH_CONFIRMS_JS})()")
+    if page.url != "about:blank":
+        page.evaluate(_WATCH_CONFIRMS_JS)
+
+
+def answer_in_app(page, accept: bool = True) -> str:
+    """Answers the question open in the app's own confirmation dialog with Confirm or Cancel,
+    once it shows, and returns the question."""
+    dialog = page.locator("dialog.confirm-dialog[open]")
+    question = dialog.locator(".confirm-dialog__question").inner_text()
+    dialog.locator(f"button[value='{'ok' if accept else ''}']").click()
+    return question
+
+
 def release_held_routes(page, glob: str, held: list) -> None:
     """Aborts the requests a test held with page.route(glob, held.append), then removes
     the route. Unrouting first would send every held request on to the server."""

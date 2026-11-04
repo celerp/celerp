@@ -38,7 +38,6 @@ ERROR_FIELDS = ("cost", "available_date", "class_id", "opening_values", "mainten
 SOURCE_ACTIONS = ("replace_source", "link_source", "release_source")
 CLASSIFICATIONS = ("estimate", "error")
 TREATMENTS = ("retained_earnings", "profit_and_loss")
-NEED = "Needs Manage accounting"
 _OPENING_KEYS = ("cost", "accumulated_depreciation", "accumulated_impairment")
 _AD = "accumulated_depreciation"
 
@@ -447,7 +446,7 @@ async def _open(session, company_id, asset_id: str) -> tuple[dict, list[dict]]:
     row = (await lock_projections(session, company_id, [asset_id])).get(asset_id)
     if row is None or row.entity_type != "fa_asset":
         raise HTTPException(status_code=404, detail="No such asset.")
-    in_use(asset_id, row.state, "it cannot be corrected")
+    in_use(asset_id, row.state, "correct")
     from celerp_fixed_assets import sales
 
     await sales.refuse_waiting(session, company_id, asset_id, row.state)
@@ -694,7 +693,7 @@ async def request(session, company_id, user_id, asset_id: str, body: dict) -> di
     data = {**stored, "asset_id": asset_id, "intent_hash": intent_hash, "number": shown["asset"]["number"],
             "classification": shown["classification"], "default_classification": shown["default_classification"],
             "reason": str(body.get("reason") or "").strip() or None, "requested_by": str(user_id),
-            "requested_at": _now(), "need": NEED}
+            "requested_at": _now()}
     await _emit(session, company_id, user_id, correction_id, "fa_correction", "fa.correction.requested", data)
     await _tell_waiting(session, company_id)
     return {"id": correction_id, **data, "state": "requested"}

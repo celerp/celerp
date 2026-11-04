@@ -137,3 +137,58 @@ def test_spanish_navigation_and_issue_date_strings():
     assert es["nav.lists"] == "Listas"
     assert es["doc.issue_date"] == "Fecha de emisión:"
 
+
+
+# --- who set the taxes -----------------------------------------------------
+
+async def test_taxes_saved_at_a_catalog_rate_are_the_company_own(client):
+    """Saving the very rates a country's catalog holds still makes them the company's own:
+    naming another country afterwards keeps them."""
+    h = await _register(client, "same-rates@test.example")
+    r = await client.patch("/companies/me/taxes", headers=h, json={"taxes": TAX_REGIMES["TH"]["taxes"]})
+    assert r.status_code == 200, r.text
+    await _set_country(client, h, "AU")
+    s = await _settings(client, h)
+    assert s["taxes"] == TAX_REGIMES["TH"]["taxes"] and "taxes_seeded_for" not in s
+
+
+async def test_imported_taxes_are_the_company_own(client):
+    h = await _register(client, "imported-rates@test.example")
+    await _set_country(client, h, "TH")
+    r = await client.post("/companies/me/taxes/import/batch", headers=h, json={"records": [
+        {"entity_id": "tax:levy", "event_type": "sys.tax.created", "source": "csv_import",
+         "idempotency_key": uuid.uuid4().hex, "data": {"name": "Local levy", "rate": 3.0, "tax_type": "both"}}]})
+    assert r.status_code == 200, r.text
+    imported = (await _settings(client, h))["taxes"]
+    await _set_country(client, h, "AU")
+    assert (await _settings(client, h))["taxes"] == imported
+
+
+async def test_seeded_taxes_follow_a_country_change_and_stay_on_repeated_edits(client):
+    h = await _register(client, "moves@test.example")
+    await _set_country(client, h, "TH")
+    assert (await _settings(client, h))["taxes_seeded_for"] == "TH"
+    await _set_country(client, h, "TH")
+    assert (await _settings(client, h))["taxes"] == TAX_REGIMES["TH"]["taxes"]
+    await _set_country(client, h, "AU")
+    s = await _settings(client, h)
+    assert (s["taxes"], s["taxes_seeded_for"]) == (TAX_REGIMES["AU"]["taxes"], "AU")
+
+
+async def test_taxes_stored_before_their_source_was_recorded_are_kept(client, session):
+    """A company whose taxes match a catalog but carry no record of who set them may have
+    chosen them: they are kept."""
+    from sqlalchemy import select
+
+    from celerp.models.company import Company
+
+    h = await _register(client, "legacy-rates@test.example")
+    from celerp.services.company_lock import locked_company
+
+    company_id = (await session.execute(select(Company.id).where(Company.name == "Tax Co")
+                                        .order_by(Company.created_at.desc()))).scalars().first()
+    company = await locked_company(session, company_id)
+    company.settings = {**(company.settings or {}), "taxes": TAX_REGIMES["TH"]["taxes"]}
+    await session.commit()
+    await _set_country(client, h, "AU")
+    assert (await _settings(client, h))["taxes"] == TAX_REGIMES["TH"]["taxes"]

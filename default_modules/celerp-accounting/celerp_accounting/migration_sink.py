@@ -265,8 +265,9 @@ async def _write_account(
 ) -> str:
     session, company_id = context.session, context.company_id
     if account.control in (AccountControl.BANK, AccountControl.CASH):
-        code = await import_service.next_bank_account_code(session, company_id, parent_code)
-        # The bank keeps its place in the imported chart; no standard header is added.
+        code = (_free_code(account.code, taken) if account.code
+                else await import_service.next_bank_account_code(session, company_id, parent_code))
+        # The bank keeps its code and its place in the imported chart; no standard header is added.
         await import_service.add_bank_account(
             session, company_id,
             code=code,

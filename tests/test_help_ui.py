@@ -105,9 +105,30 @@ async def test_help_page_labels_in_user_language_with_note(client, pages):
     assert 'src="/help/img/contacts.add-supplier/1"' in r.text
     assert 'href="/help"' in r.text and t("acct.post_again_back", "th", page=t("help.title", "th")) in r.text
 
+    english = await ui_get(headers, "/help/contacts.add-supplier")
+    assert t("help.answers_in_your_language") not in english.text
+    assert t("help.pages_in_english") not in english.text
+
     missing = await ui_get(headers, "/help/contacts.nothing")
     assert missing.status_code == 404
     assert t("error.not_found_title") in missing.text and 'href="/help"' in missing.text
+
+
+@pytest.mark.asyncio
+async def test_help_offers_celerp_ai_only_to_a_role_that_may_open_it(client, session, pages):
+    """A viewer's sidebar has no Celerp AI, so Help neither offers it nor promises its
+    answers: the page, the search, the empty result and the Help panel all leave it out.
+    The viewer is still told the pages are in English."""
+    admin = {"Authorization": f"Bearer {await register_admin(client)}"}
+    viewer = {"Authorization": f"Bearer {await invite_user(client, session, admin, 'viewer@help.example', 'viewer')}"}
+    for headers, shown in ((admin, True), (viewer, False)):
+        for path in ("/help", "/help?q=zzzzqqq", "/help/contacts.add-supplier",
+                     "/help/for-page?" + urlencode({"path": "/contacts/abc"})):
+            r = await ui_get(headers, path, lang="th")
+            assert r.status_code == 200
+            assert ('href="/ai"' in r.text) is shown, (path, shown)
+            assert (t("help.answers_in_your_language", "th") in r.text) is shown, (path, shown)
+            assert (f'>{t("help.pages_in_english", "th")}</p>' in r.text) is not shown, (path, shown)
 
 
 @pytest.mark.asyncio

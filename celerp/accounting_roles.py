@@ -20,6 +20,7 @@ may share one control. It is not collapsed into AccountRole.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import date
 
 from celerp.compat import StrEnum
 
@@ -321,8 +322,50 @@ def refusal(key: str, message: str, /, **params) -> dict:
     """A message the UI can show in the user's language: ``message`` is the English text,
     ``message_key`` and ``params`` let a translation say the same thing (ui.i18n.refusal_text).
     A ``role`` param is shown as that posting role's label, ``type`` and ``types`` as
-    account types."""
+    account types; a date travels as its ISO day and is shown as a date in the reader's language."""
+    params = {name: value.isoformat() if isinstance(value, date) else value for name, value in params.items()}
     return {"message": message, "message_key": key, "params": params}
+
+
+def catalog_refusal(key: str, /, **params) -> dict:
+    """The ``refusal`` whose English is the en catalog's text for ``key``, its params read
+    as refusal_text reads them (a nested refusal as its own text)."""
+    from ui.i18n import english, refusal_text  # ui.i18n reads prices, whose cost rules raise Refused
+
+    with english():
+        message = refusal_text(refusal(key, "", **params))
+    return refusal(key, message, **params)
+
+
+def period_locked_refusal(lock_date: str | date) -> dict:
+    """A date at or before the lock date refused, naming who can move the lock and where."""
+    return catalog_refusal("error.period_locked", date=lock_date,
+                           permission=catalog_refusal("perm.name.manage_accounting"),
+                           place=catalog_refusal("page.period_lock"))
+
+
+class KeyedRefusal(Exception):
+    """A refusal raised where it is met: ``detail`` is the ``refusal`` a route answers
+    with, so it reads in each reader's language; its text is the refusal in the language
+    of the request that met it. ``message`` is the English, the en catalog's when not given.
+    Refused is the one most code raises; a refusal an app exception handler answers with,
+    which no ``except ValueError`` on its way may catch, derives from this directly."""
+
+    def __init__(self, key: str, message: str | None = None, /, **params):
+        from ui.i18n import refusal_text  # ui.i18n reads prices, whose cost rules raise this
+
+        self.detail = catalog_refusal(key, **params) if message is None else refusal(key, message, **params)
+        super().__init__(refusal_text(self.detail))
+
+    @classmethod
+    def of(cls, detail: dict):
+        """The refusal ``detail`` (a ``refusal``) raised as this class."""
+        return cls(detail["message_key"], detail["message"], **detail["params"])
+
+
+class Refused(KeyedRefusal, ValueError):
+    """A keyed refusal that is also a ValueError, so a validator's caller that refuses
+    a ValueError refuses this one too."""
 
 
 def no_account_chosen() -> dict:

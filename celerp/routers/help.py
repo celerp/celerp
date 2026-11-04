@@ -26,6 +26,7 @@ from celerp.help.render import render_step
 from celerp.help.schema import HelpPage, read_image
 from celerp.services.auth import get_current_role, get_current_user
 from celerp.services.permissions import get_current_company_settings, missing_permission_text
+from celerp.accounting_roles import catalog_refusal
 from ui.i18n import current_lang, t
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -67,7 +68,7 @@ async def help_search(
     """
     query = q.strip()
     if not query:
-        raise HTTPException(status_code=422, detail=t("help.empty_query"))
+        raise HTTPException(status_code=422, detail=catalog_refusal("help.empty_query"))
     if module and module not in {p.module for p in get_index().pages.values()}:
         return {"hits": [], "message": t("help.no_module", module=module)}
     hits = help_search_mod.search(query, current_lang(), settings, role, module)
@@ -83,7 +84,7 @@ async def help_read(
     """Read one help page: its numbered steps, with button and menu names as the user sees them."""
     page = get_index().pages.get(page_id)
     if page is None:
-        raise HTTPException(status_code=404, detail=t("error.not_found_title"))
+        raise HTTPException(status_code=404, detail=catalog_refusal("error.not_found_title"))
     lang = current_lang()
     return {
         **_summary(page),
@@ -130,10 +131,14 @@ def _route_pattern(route: str) -> re.Pattern:
 
 def _covers(route: str, path: str, query: set[tuple[str, str]]) -> bool:
     """Whether a help page route covers the screen at ``path`` with ``query``: the paths
-    match and every query pair the route names (a tab, say) is on the screen's address."""
+    match, every query pair the route names (a tab, say) is on the screen's address, and
+    both name the same ``type``. A list path such as ``/docs`` serves a different screen
+    per type, so a route without a type covers only the untyped list."""
     route_path, _, route_query = route.partition("?")
+    route_pairs = set(parse_qsl(route_query))
     return (_route_pattern(route_path).match(path) is not None
-            and set(parse_qsl(route_query)) <= query)
+            and route_pairs <= query
+            and dict(route_pairs).get("type") == dict(query).get("type"))
 
 
 def _short_path(address: str) -> str:

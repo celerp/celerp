@@ -1917,12 +1917,7 @@ def setup_routes(app):
                 return RedirectResponse("/login", status_code=302)
             schema, item, ledger, locations, company, cat_schemas, price_lists, units_resp, category_names = [], {}, [], [], {}, {}, [], {}, {}
         deleted_parents = await deleted_items(token, [item.get("split_from"), item.get("transformed_from")])
-        # Split preview for the item-detail split card; own try/except so a non-splittable item
-        # (or any preview error) degrades to the disabled card rather than blanking the page.
-        try:
-            split_preview = await api.split_preview(token, entity_id)
-        except APIError:
-            split_preview = None
+        split_preview = await _item_split_preview(token, entity_id)
         # The base price list name (used by the pricing tab's derivation note) rides on the
         # company payload; the settings tab manages it through its dedicated endpoint.
         base_price_list = (company.get("settings") or {}).get("base_price_list") or DEFAULT_PRICE_LIST_NAME
@@ -3157,12 +3152,7 @@ function celerpPrintLabel(entityId, templateId) {
             item, company = await asyncio.gather(api.get_item(token, entity_id), api.get_company(token))
         except APIError as e:
             return api.refusal_response(e)
-        # Fresh split preview in its own try/except so a non-splittable item (or any preview
-        # error) degrades to the disabled card rather than blanking the fragment.
-        try:
-            split_preview = await api.split_preview(token, entity_id)
-        except APIError:
-            split_preview = None
+        split_preview = await _item_split_preview(token, entity_id)
         connected = await connected_connector_ids(str(company.get("id") or ""), required_connectors("item_action"))
         return _advanced_panel(entity_id, item, split_preview, role=_get_role(request), settings=company.get("settings") or {},
                                connected_connectors=connected)
@@ -5458,7 +5448,9 @@ def _valuation_bar(aggregates: dict, currency: str | None = None, lang: str = "e
     for name, total in (aggregates.get("price_totals") or {}).items():
         label = f"{price_list_label(name, lang)}: {fmt_money(total, currency)}"
         if missing.get(name):
-            label += " (" + t("inventory.sold_without_price", lang, n=missing[name]) + ")"
+            # An item missing from the cost list has an unknown cost, not a missing sale price.
+            gap = "inventory.cost_unknown_count" if is_cost_list_name(name) else "inventory.sold_without_price"
+            label += " (" + t(gap, lang, n=missing[name]) + ")"
         chips.append(Span(label, cls="val-chip"))
     return Div(*chips, cls="valuation-bar")
 
@@ -7547,7 +7539,7 @@ def _with_draft_cost_list(price_lists: list[dict], item: dict, company_settings:
         return price_lists
     if any(is_cost_list_name(pl.get("name", "")) for pl in price_lists):
         return price_lists
-    cost_defs = [pl for pl in (company_settings.get("price_lists") or []) if is_cost_list_name(pl.get("name", ""))]
+    cost_defs = [pl for pl in price_lists_in(company_settings) if is_cost_list_name(pl.get("name", ""))]
     return price_lists + cost_defs if cost_defs else price_lists
 
 
@@ -7568,7 +7560,7 @@ def _with_draft_cost_schema(schema: list[dict], item: dict, company_settings: di
         return schema
     if any(f.get("key") in COST_SCHEMA_KEYS for f in schema):
         return schema
-    return schema + cost_columns(company_settings.get("price_lists") or [])
+    return schema + cost_columns(price_lists_in(company_settings))
 
 
 def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency: str | None,
@@ -7596,6 +7588,10 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
 
     unit_hdr = t("inventory.pricing_unit_hdr", sym=cur_sym, sell_by=sell_by) if cur_sym else t("inventory.pricing_unit_hdr_nosym", sell_by=sell_by)
     total_hdr = t("inventory.pricing_total_hdr", qty=f"{qty:g}", sell_by=sell_by) if has_qty else t("inventory.pricing_total_hdr_nostock")
+
+    def price_headers() -> list[FT]:
+        """The price list, then its unit and total figures, each over its own right-aligned column."""
+        return [Th(t("th.price_list")), Th(unit_hdr, cls="cell--right"), Th(total_hdr, cls="cell--right")]
 
     def _cur(v):
         return Div(Span(cur_sym, cls="input-prefix") if cur_sym else "", v, cls="input-with-prefix")
@@ -7637,8 +7633,8 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
             unit_span, total_span = _readonly_price_cells(conventional_key, price_val, qty, has_qty, rdp)
             return (
                 Td(pl_name, cls="detail-label"),
-                Td(_cur(unit_span)),
-                Td(_cur(total_span) if has_qty else empty_mark()),
+                Td(_cur(unit_span), cls="cell--right"),
+                Td(_cur(total_span) if has_qty else empty_mark(), cls="cell--right"),
             ), actions
         unit_id, total_id = f"unit_{conventional_key}", f"total_{conventional_key}"
         # Enter commits by blurring (which fires `change` → the autosave below), matching the
@@ -7671,12 +7667,12 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
                             placeholder="--", cls="form-input", disabled=not has_qty,
                             oninput=f"syncPricingUnit('{unit_id}','{total_id}',{qty},{cdp},{rdp})",
                             onkeydown=enter_commits, **total_save)
-        return (Td(pl_name, cls="detail-label"), Td(_cur(unit_input)), Td(_cur(total_input), *carried)), actions
+        return (Td(pl_name, cls="detail-label"), Td(_cur(unit_input), cls="cell--right"), Td(_cur(total_input), *carried, cls="cell--right")), actions
 
     def _card(title: str, lists: list[dict], editable: bool, note: str | None = None) -> FT:
         rows = [_row(pl, editable) for pl in lists]
         with_actions = any(actions for _, actions in rows)
-        headers = [Th(t("th.price_list")), Th(unit_hdr), Th(total_hdr)]
+        headers = price_headers()
         if with_actions:
             headers.append(Th(t("th.actions")))
             body = [Tr(*cells, Td(*actions)) for cells, actions in rows]
@@ -7719,9 +7715,9 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
         unit_span, total_span = _readonly_price_cells("sold_price", sold_val, qty, has_qty, rdp)
         cards.append(Div(
             H3(t("inventory.card_sold_price"), cls="section-title"),
-            Table(Thead(Tr(Th(t("th.price_list")), Th(unit_hdr), Th(total_hdr))),
-                  Tbody(Tr(Td(t("chip.sold"), cls="detail-label"), Td(_cur(unit_span)),
-                           Td(_cur(total_span) if has_qty else empty_mark()))),
+            Table(Thead(Tr(*price_headers())),
+                  Tbody(Tr(Td(t("chip.sold"), cls="detail-label"), Td(_cur(unit_span), cls="cell--right"),
+                           Td(_cur(total_span) if has_qty else empty_mark(), cls="cell--right"))),
                   cls="detail-table"),
             cls="detail-card",
         ))
@@ -8109,6 +8105,15 @@ def _resolve_visible_cols(
 # T3: Advanced operations panel (non-inline-editable actions only)
 # ---------------------------------------------------------------------------
 
+async def _item_split_preview(token: str, entity_id: str) -> dict:
+    """Split preview for the item's Split card. A refusal (nothing left, item gone) keeps the
+    server's reason so the disabled card says why, rather than blanking the page."""
+    try:
+        return await api.split_preview(token, entity_id)
+    except APIError as e:
+        return {"cannot_split": True, "reason": str(e.detail)}
+
+
 def _advanced_panel(entity_id: str, item: dict, split_preview: dict | None = None, role: str = "owner", settings: dict | None = None,
                     connected_connectors: set[str] | None = None) -> FT:
     """Compact item operations grid: Split, Duplicate, Expire, Dispose."""
@@ -8126,6 +8131,10 @@ def _advanced_panel(entity_id: str, item: dict, split_preview: dict | None = Non
     sell_by = item.get("sell_by") or "piece"
     # Splittable only when the server preview resolved and the parcel can be carved.
     can_split = bool(allow_splitting and split_preview and not split_preview.get("cannot_split"))
+    if not allow_splitting:
+        split_refusal = t("inv.splitting_disabled_hint")
+    else:
+        split_refusal = (split_preview or {}).get("reason") or t("inventory.cannot_split_one_piece")
     if can_split:
         sell_by_label = sell_by.capitalize()
         # Batch Split reuses the unit classification for its optional complement field.
@@ -8234,7 +8243,7 @@ function batchSplitSubmit_{safe_id}(form) {{
     else:
         split_card = Div(
             Strong(t("inv.u2702_split"), cls="action-card-title"),
-            P(t("inv.splitting_disabled_hint"), cls="action-card-hint"),
+            P(split_refusal, cls="action-card-hint"),
             cls="action-card action-card--disabled",
         )
 

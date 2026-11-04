@@ -20,9 +20,9 @@ from starlette.responses import HTMLResponse, RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import base_shell, page_header, page_title
+from ui.components.shell import base_shell, no_access_banner, page_header, page_title
 from ui.components.table import (
-    display_enum, empty_mark, empty_state_cta, fmt_money, format_value, searchable_select,
+    display_enum, doc_status_badge, empty_mark, empty_state_cta, fmt_money, format_value, period_empty_note, searchable_select,
 )
 from ui.components.journal import (
     journal_bulk_toolbar, journal_csv_rows, journal_export_name, journal_filter_bar,
@@ -178,7 +178,7 @@ async def _page(request: Request, *content, title: str) -> FT:
 
 def _error_content(e: APIError):
     if e.status == 403:
-        return Div(t("acct.not_authorized"), cls="error-banner")
+        return no_access_banner(e)
     return Div(e.detail or t("acct.error_loading_data"), cls="error-banner")
 
 
@@ -341,10 +341,11 @@ def _drill_ledger_href(code: str, origin: str, date_from: str = "", date_to: str
                 [("date_from", date_from), ("date_to", date_to), ("src", origin)])
 
 
-def _trial_balance_table(tb: dict, currency: str | None = None, date_from: str = "", date_to: str = "") -> FT:
+def _trial_balance_table(tb: dict, currency: str | None = None, date_from: str = "", date_to: str = "",
+                         period: tuple[str, str, str] | None = None) -> FT:
     lines = tb.get("lines", [])
     if not lines:
-        return P(t("acct.no_trial_balance_entries"), cls="empty-state")
+        return period_empty_note(period) or P(t("acct.no_trial_balance_entries"), cls="empty-state")
 
     def _ledger_href(code: str) -> str:
         return _drill_ledger_href(code, "trial-balance", date_from, date_to)
@@ -420,7 +421,7 @@ def _tie_out_view(data: dict, currency: str | None = None) -> FT:
                     Td(d.get("date") or empty_mark()),
                     Td(A(d.get("number") or d["doc_id"], href=f"/docs/{d['doc_id']}", cls="drilldown-link")),
                     Td(display_enum(d.get("doc_type"), "doc_type")),
-                    Td(format_value(d.get("status"), "badge", domain="doc_status")),
+                    Td(doc_status_badge(d.get("doc_type"), d.get("status"))),
                     Td(d.get("currency") or empty_mark()),
                     Td(empty_mark() if d.get("amount") is None else fmt_money(d["amount"], d.get("currency")),
                        cls=num),
@@ -488,7 +489,8 @@ def _ledger_view(data: dict, currency: str | None = None,
                       date_from=date_from, date_to=date_to)
 
 
-def _pnl_view(data: dict, currency: str | None = None, date_from: str = "", date_to: str = "") -> FT:
+def _pnl_view(data: dict, currency: str | None = None, date_from: str = "", date_to: str = "",
+              period: tuple[str, str, str] | None = None) -> FT:
     rev_total = float(data.get("revenue", {}).get("total", 0) or 0)
 
     _dqs = href("", [("date_from", date_from), ("date_to", date_to)])
@@ -534,7 +536,9 @@ def _pnl_view(data: dict, currency: str | None = None, date_from: str = "", date
         )
 
     net = float(data.get("net_profit", 0))
+    activity = any(data.get(k, {}).get("lines") for k in ("revenue", "cogs", "expenses"))
     return Div(
+        "" if activity else period_empty_note(period),
         _section(t("acct.section_revenue"), data.get("revenue", {}), show_pct=True,
                  total_href=f"/reports/sales{_dqs}"),
         _section(t("acct.section_cogs"), data.get("cogs", {}), show_pct=True,
@@ -621,10 +625,11 @@ def _balance_sheet_view(data: dict, currency: str | None = None, as_of: str = ""
 
 
 def _general_ledger_view(data: dict, currency: str | None = None,
-                         date_from: str = "", date_to: str = "") -> FT:
+                         date_from: str = "", date_to: str = "",
+                         period: tuple[str, str, str] | None = None) -> FT:
     rows = data.get("rows", [])
     if not rows:
-        return P(t("acct.no_journal_entries"), cls="empty-state")
+        return period_empty_note(period) or P(t("acct.no_journal_entries"), cls="empty-state")
     totals = data.get("totals", {})
 
     def _num_cell(val, strong: bool = False) -> FT:
@@ -948,7 +953,8 @@ def setup_routes(app):
                 _date_filter_bar(_report_path("pnl"), d_from, d_to, preset,
                                  settings_link="/settings/general?tab=company"),
                 Div(_bars("pnl", params), cls="flex-row mt-md mb-md"),
-                _pnl_view(data, currency, date_from=d_from or "", date_to=d_to or ""),
+                _pnl_view(data, currency, date_from=d_from or "", date_to=d_to or "",
+                          period=(d_from, d_to, f"{_report_path('pnl')}?preset=all")),
             )
         except APIError as e:
             if e.status == 401:
@@ -1003,7 +1009,8 @@ def setup_routes(app):
                                  settings_link="/settings/general?tab=company"),
                 _trial_balance_summary(data, currency),
                 Div(_bars("trial-balance", params), cls="flex-row mt-md mb-md"),
-                _trial_balance_table(data, currency, date_from=d_from or "", date_to=d_to or ""),
+                _trial_balance_table(data, currency, date_from=d_from or "", date_to=d_to or "",
+                                     period=(d_from, d_to, f"{_report_path('trial-balance')}?preset=all")),
             )
         except APIError as e:
             if e.status == 401:
@@ -1053,7 +1060,8 @@ def setup_routes(app):
                              float(totals.get("credit", 0) or 0),
                              bool(data.get("balanced", True)), currency),
                 Div(_bars("general-ledger", params), cls="flex-row mt-md mb-md"),
-                _general_ledger_view(data, currency, date_from=d_from or "", date_to=d_to or ""),
+                _general_ledger_view(data, currency, date_from=d_from or "", date_to=d_to or "",
+                                     period=(d_from, d_to, f"{_report_path('general-ledger')}?preset=all")),
             )
         except APIError as e:
             if e.status == 401:
@@ -1116,7 +1124,8 @@ def setup_routes(app):
                 Div(_bars("extended-journal", params), cls="flex-row mt-md mb-md"),
                 journal_bulk_toolbar(params, carried, items=True),
                 journal_table(journal_rows(data, items=True), items=True, currency=currency,
-                              select=True, filtered=bool(data.get("filtered"))),
+                              select=True, filtered=bool(data.get("filtered")),
+                              period=(d_from, d_to, f"{path}?preset=all")),
             )
         except APIError as e:
             if e.status == 401:

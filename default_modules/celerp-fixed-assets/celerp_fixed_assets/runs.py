@@ -27,6 +27,7 @@ import uuid
 from datetime import date
 from decimal import Decimal
 
+from celerp.accounting_roles import catalog_refusal
 from celerp.models.projections import Projection
 from celerp.services.business_time import business_today, company_today
 from celerp.services.money import books_currency, round_money
@@ -438,12 +439,11 @@ async def plan_run(session, company_id, month: int, today: date, user_id) -> tup
     currency = books.currency
     label = period_label(month)
     if books.last is not None and month <= books.last:
-        raise setup.refused(409, f"Depreciation for {label} is already posted. Open its run to see it or reverse it.",
+        raise setup.refused(409, "fixed_assets.err_run_posted", month=label,
                             href=f"/fixed-assets/runs/{label}", action="fixed_assets.action.open_run")
     if _end(month) >= today:
         last = period_label(month_index(today) - 1)
-        raise setup.refused(422, f"{label} has not ended yet. Depreciation runs for a month once it has ended, so "
-                                 f"the latest you can run through is {last}.",
+        raise setup.refused(422, "fixed_assets.err_month_not_ended", month=label, last=last,
                             fill={"field": "month", "value": last, "action": "fixed_assets.action.review_through"})
     if month < books.first:
         raise setup.unprocessable(f"{label} is before the first managed period.")
@@ -617,9 +617,8 @@ async def reverse(session, company_id, user_id, label: str, body: dict) -> dict:
         changed = [(asset_id, asset, index) for asset_id, index in last.items()
                    if int((asset := await _state(session, company_id, asset_id)).get("movement_count") or 0) > index]
         if changed:
-            raise await operations.changed_since(session, company_id, changed, ("since this run",) * 2,
-                                                 "to change its depreciation",
-                                                 lead=f"The {label} run can no longer be reversed.")
+            raise await operations.changed_since(session, company_id, changed, "run", lead=catalog_refusal(
+                "fixed_assets.err_run_not_reversible", month=label))
         journals = [await _state(session, company_id, j) for j in record.get("journal_ids") or []]
         shown = {"month": label, "journals": [operations._reversed_lines(je, books.currency) for je in journals if je]}
         return shown, {"record": record}

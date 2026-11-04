@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from ui.i18n import t
+from ui.i18n import refusal_text, set_lang, t
 
 _LOCALES = Path(__file__).resolve().parents[1] / "ui" / "locales"
 _LANGS = ("en", "th", "de", "fr", "es", "it", "pt", "id", "vi", "ja", "ar", "am")
@@ -29,14 +29,14 @@ async def _headers(client) -> dict:
 async def test_blank_category_name_asks_for_a_name(client):
     r = await client.post("/companies/me/categories", headers=await _headers(client), json={"name": "  "})
     assert r.status_code == 422
-    assert r.json()["detail"] == t("settings.name_required", "en") == "Enter a name."
+    assert refusal_text(r.json()["detail"]) == t("settings.name_required", "en") == "Enter a name."
 
 
 @pytest.mark.asyncio
 async def test_category_name_without_letters_says_add_one(client):
     r = await client.post("/companies/me/categories", headers=await _headers(client), json={"name": "!!!"})
     assert r.status_code == 422
-    assert r.json()["detail"] == t("company.err_name_no_letters", "en")
+    assert refusal_text(r.json()["detail"]) == t("company.err_name_no_letters", "en")
 
 
 @pytest.mark.asyncio
@@ -44,14 +44,14 @@ async def test_missing_category_is_named(client):
     r = await client.patch("/companies/me/categories/no_such_cat", headers=await _headers(client),
                            json={"name": "Rings"})
     assert r.status_code == 404
-    assert r.json()["detail"] == t("company.err_category_not_found", "en", name="no_such_cat")
+    assert refusal_text(r.json()["detail"]) == t("company.err_category_not_found", "en", name="no_such_cat")
 
 
 @pytest.mark.asyncio
 async def test_missing_location_says_refresh(client):
     r = await client.delete(f"/companies/me/locations/{uuid.uuid4()}", headers=await _headers(client))
     assert r.status_code == 404
-    assert r.json()["detail"] == t("company.err_location_not_found", "en")
+    assert refusal_text(r.json()["detail"]) == t("company.err_location_not_found", "en")
 
 
 @pytest.mark.asyncio
@@ -60,11 +60,11 @@ async def test_bad_unit_name_and_decimals_name_the_unit(client):
     r = await client.put("/companies/me/units", headers=h,
                          json={"units": [{"name": "Big Box", "label": "Box", "decimals": 0}]})
     assert r.status_code == 422
-    assert r.json()["detail"] == t("company.err_unit_name", "en", name="Big Box")
+    assert refusal_text(r.json()["detail"]) == t("company.err_unit_name", "en", name="Big Box")
     r = await client.put("/companies/me/units", headers=h,
                          json={"units": [{"name": "box", "label": "Box", "decimals": 9}]})
     assert r.status_code == 422
-    assert r.json()["detail"] == t("company.err_unit_decimals", "en", name="box")
+    assert refusal_text(r.json()["detail"]) == t("company.err_unit_decimals", "en", name="box")
 
 
 @pytest.mark.asyncio
@@ -72,7 +72,11 @@ async def test_company_messages_follow_the_users_language(client):
     h = {**await _headers(client), "Accept-Language": "th"}
     r = await client.post("/companies/me/categories", headers=h, json={"name": "  "})
     assert r.status_code == 422
-    assert r.json()["detail"] == t("settings.name_required", "th") == "ป้อนชื่อ"
+    set_lang("th")
+    try:
+        assert refusal_text(r.json()["detail"]) == t("settings.name_required", "th") == "ป้อนชื่อ"
+    finally:
+        set_lang("en")
 
 
 def test_missing_permission_names_it_as_the_role_editor_does():
@@ -82,8 +86,8 @@ def test_missing_permission_names_it_as_the_role_editor_does():
     with pytest.raises(HTTPException) as exc:
         assert_role_permission({}, "operator", "set_inventory_prices")
     assert exc.value.status_code == 403
-    assert exc.value.detail == t("error.permission_missing", "en", label="Set inventory prices")
-    assert "Global Config, Users" in exc.value.detail and "set_inventory_prices" not in exc.value.detail
+    assert refusal_text(exc.value.detail) == t("error.permission_missing", "en", label="Set inventory prices")
+    assert "Global Config, Users" in refusal_text(exc.value.detail) and "set_inventory_prices" not in refusal_text(exc.value.detail)
 
 
 def test_failed_update_step_says_it_stopped_without_its_output():

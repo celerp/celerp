@@ -242,8 +242,8 @@ def test_j4_locked_date_is_refused_and_the_first_open_date_saves(page: Page, fre
     _choose(page, "credit_account", "3100")
     page.get_by_role("button", name="Review", exact=True).click()
     error = page.locator("#fa-preview .flash--error")
-    expect(error).to_contain_text("Locked up to 31 Mar")
-    expect(error).to_contain_text("1 Apr")
+    expect(error).to_have_text(
+        "The books are locked up to 31 Mar 2026. Use a date from 1 Apr 2026, or ask an accountant to unlock.")
     expect(page.locator("input[name=available_date]")).to_have_value("2026-03-15")
 
     page.locator("input[name=available_date]").fill("2026-04-01")

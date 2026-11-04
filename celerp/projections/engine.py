@@ -12,6 +12,7 @@ from fastapi import HTTPException
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
+from celerp.accounting_roles import KeyedRefusal, catalog_refusal
 from celerp.inventory_codes import (
     BarcodeConflictError,
     RfidEpcConflictError,
@@ -20,7 +21,7 @@ from celerp.inventory_codes import (
 )
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
-from ui.i18n import t
+
 from celerp.projections.handlers.system import apply_system_event
 from celerp.projections.retired import RETIRED
 
@@ -44,7 +45,7 @@ _KERNEL_PREFIX = "sys."
 
 
 def _not_found(entity_type: str) -> HTTPException:
-    return HTTPException(status_code=404, detail=t(
+    return HTTPException(status_code=404, detail=catalog_refusal(
         "inventory.err_item_not_found" if entity_type == "item" else "error.record_not_found"))
 
 
@@ -95,6 +96,15 @@ def _merge(state: dict, _event_type: str, data: dict) -> dict:
     return {**state, **data}
 
 
+def core_event(event_type: str) -> bool:
+    """Whether core applies ``event_type`` whichever modules are installed: a retired
+    event, one merged onto its record, or one under a prefix core handles itself."""
+    from celerp.modules.slots import KERNEL_PROJECTION_PREFIXES
+
+    return (event_type in RETIRED or event_type in MERGE_EVENTS
+            or any(event_type.startswith(p) for p in KERNEL_PROJECTION_PREFIXES))
+
+
 def _replay_handler(event_type: str):
     """The one answer to "can this build apply this event as it is meant to": the retired
     handler, the registered projection handler that owns its prefix, or the plain merge for
@@ -110,17 +120,15 @@ def _replay_handler(event_type: str):
     return _merge if event_type in MERGE_EVENTS else None
 
 
-class UnhandledEventsError(Exception):
+class UnhandledEventsError(KeyedRefusal):
     """The ledger holds events this build cannot replay as written (ProjectionEngine.unreplayable)."""
 
     def __init__(self, event_types: set[str]):
         from celerp.modules.loader import modules_owning_events
 
         self.event_types = sorted(event_types)
-        super().__init__(
-            "Records cannot be rebuilt while these modules are not enabled: "
-            f"{', '.join(modules_owning_events(event_types))} ({', '.join(self.event_types)}). "
-            "Enable them in Modules, then try again.")
+        super().__init__("error.unhandled_events", modules=", ".join(modules_owning_events(event_types)),
+                         events=", ".join(self.event_types))
 
 
 class ProjectionEngine:

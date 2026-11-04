@@ -8,7 +8,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 
 async def _register(client, email: str | None = None) -> str:
@@ -107,7 +107,7 @@ async def test_revert_blocked_when_payments_exist(client):
     r = await client.post(f"/docs/{inv}/revert-to-draft", headers=_h(token), json={})
     assert r.status_code == 409
     # Guard fires on status (partial) before payments check - either error is acceptable
-    assert "revert" in r.json()["detail"].lower() or "payment" in r.json()["detail"].lower()
+    assert "revert" in refusal_text(r.json()["detail"]).lower() or "payment" in refusal_text(r.json()["detail"]).lower()
 
 
 @pytest.mark.asyncio
@@ -249,7 +249,7 @@ async def test_unvoid_blocked_when_no_pre_void_status(client):
     legacy_id = void_docs[0]["id"]
     r2 = await client.post(f"/docs/{legacy_id}/unvoid", headers=_h(token), json={})
     assert r2.status_code == 409
-    assert r2.json()["detail"] == t("documents.err_unvoid_legacy", "en")
+    assert refusal_text(r2.json()["detail"]) == t("documents.err_unvoid_legacy", "en")
 
 
 @pytest.mark.asyncio

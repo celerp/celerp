@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import select
 
 from test_helpers import lock_every_company, register_admin
+from ui.i18n import refusal_text
 
 
 async def _rows(session, company_id) -> dict:
@@ -37,7 +38,7 @@ async def test_rebuild_with_a_module_handler_not_running_is_refused_and_changes_
         slots._slots.clear()
         slots._slots.update(saved)
     assert r.status_code == 409, r.text
-    assert "crm.contact.created" in r.json()["detail"] and "crm.contact.tagged" in r.json()["detail"]
+    assert "crm.contact.created" in refusal_text(r.json()["detail"]) and "crm.contact.tagged" in refusal_text(r.json()["detail"])
     assert await _rows(session, cid) == before
     r = await client.post("/ledger/rebuild", headers=h)  # handler running again: rebuilds as before
     assert r.status_code == 200, r.text

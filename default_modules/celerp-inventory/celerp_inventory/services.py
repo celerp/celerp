@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import Select, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import LOT_ACCOUNT_FIELD, refusal
+from celerp.accounting_roles import LOT_ACCOUNT_FIELD, Refused, refusal
 from celerp.connectors.ownership import PRODUCT_CHANNEL_PLATFORMS
 from celerp.services.currencies import KNOWN_CURRENCY_CODES
 from celerp.events.engine import emit_event, find_event_by_idempotency
@@ -186,8 +186,13 @@ async def allocate_internal_codes(session: AsyncSession, company_id, count: int 
     return codes
 
 
-class CostRestatementConflict(ValueError):
+class CostRestatementConflict(Refused):
     """A cost change whose downstream consequences cannot be reconciled exactly."""
+
+
+def _lineage_missing(label: str) -> CostRestatementConflict:
+    return CostRestatementConflict("inventory.err_restate_lineage_missing",
+                                   f"{label} is merged, but its merge lineage is not recorded", lot=label)
 
 
 # History that moves part of a lot's cost somewhere today's state cannot trace
@@ -251,12 +256,8 @@ def goods_cost_empty(state: dict) -> bool:
     return round_basis(float(recorded_value(state)) - landed) == 0
 
 
-class CostRefused(ValueError):
-    """A cost a door refuses to write; ``detail`` is the refusal, in the user's language."""
-
-    def __init__(self, key: str, message: str, **params):
-        self.detail = refusal(key, message, **params)
-        super().__init__(message)
+class CostRefused(Refused):
+    """A cost a door refuses to write."""
 
 
 class CostTotalBelowLanded(CostRefused):
@@ -493,8 +494,9 @@ def _basis_or_conflict(state: dict, label: str) -> float:
         return basis
     if state.get("cost_price") not in (None, ""):
         raise CostRestatementConflict(
+            "inventory.err_restate_unit_cost_only",
             f"{label} has a unit cost but no total cost, so a correction cannot be carried "
-            "from it automatically; correct it with a journal entry instead")
+            "from it automatically; correct it with a journal entry instead", lot=label)
     return 0.0
 
 
@@ -676,30 +678,34 @@ async def _sale_of_lot(session: AsyncSession, company_id, entity_id: str, state:
     returned = await _return_after(session, company_id, str(state.get("sku") or ""), sale.id if sale is not None else 0)
     if returned:
         raise CostRestatementConflict(
+            "inventory.err_restate_returned",
             f"{label} is sold, and {state.get('sku')} was later returned on {returned}, so a correction "
-            "cannot be carried into the returned stock automatically; correct it with a journal entry instead")
+            "cannot be carried into the returned stock automatically; correct it with a journal entry instead",
+            lot=label, sku=str(state.get("sku") or ""), doc=returned)
     if sale is not None and sale.event_type == "item.status.set" and not doc_id and not state.get("status_doc_id"):
         return _Sale()
-    cannot = (f"{label} is sold, but its sale cannot be traced to one invoice line, so its cost "
-              "of goods sold cannot be adjusted automatically; correct it with a journal entry instead")
+    cannot = CostRestatementConflict(
+        "inventory.err_restate_sale_untraced",
+        f"{label} is sold, but its sale cannot be traced to one invoice line, so its cost "
+        "of goods sold cannot be adjusted automatically; correct it with a journal entry instead", lot=label)
     if not doc_id or state.get("status_doc_id") != doc_id:
-        raise CostRestatementConflict(cannot)
+        raise cannot
     doc = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
     doc_state = (doc.state or {}) if doc is not None else {}
     doc_number = data.get("doc_number") or doc_state.get("doc_number") or doc_state.get("ref_id") or doc_id
     if sale.event_type == "item.status.set":
         if doc_state.get("doc_type") != "invoice" or await auto_je.recognized_cogs(session, company_id, doc_id) is None:
-            raise CostRestatementConflict(cannot)
+            raise cannot
         return _Sale(doc_id=doc_id, doc_number=doc_number, allocated=True)
     line_index = (sale.metadata_ or {}).get("line_index")
     if data.get("doc_type") != "invoice" or not isinstance(line_index, int) or isinstance(line_index, bool):
-        raise CostRestatementConflict(cannot)
+        raise cannot
     recognized = await auto_je.recognized_cogs(session, company_id, doc_id)
     if recognized is not None:
         return _Sale(doc_id=doc_id, cycle=recognized.cycle, line=line_index, doc_number=doc_number)
-    reason = await legacy_cogs_refusal(session, company_id, doc_id, doc_state)
+    reason = await legacy_cogs_refusal(session, company_id, doc_id, doc_state, lot=label, doc=doc_number)
     if reason:
-        raise CostRestatementConflict(f"{label} was sold on {doc_number}, {reason}")
+        raise CostRestatementConflict.of(reason)
     return _Sale(doc_id=doc_id, doc_number=doc_number)
 
 
@@ -736,7 +742,7 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
 
     root = await _read(entity_id)
     if root is None or root.entity_type != "item":
-        raise CostRestatementConflict("Item not found")
+        raise CostRestatementConflict("inventory.err_item_not_found")
     old = root.state or {}
     new = apply_item_event(old, event_type, data)
     old_basis, new_basis = goods_basis(old), goods_basis(new)
@@ -745,14 +751,14 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
     cost_changed = old_basis != new_basis
     # The written values too, not only the basis: a unit cost on a lot with no stock
     # leaves no basis at all.
-    refusal = negative_cost_error(label, *event_goods_costs(event_type, data), new_basis)
-    if refusal:
-        raise CostRestatementConflict(refusal)
+    cost_refusal = negative_cost_error(label, *event_goods_costs(event_type, data), new_basis)
+    if cost_refusal:
+        raise CostRestatementConflict.of(cost_refusal)
     if cost_changed and not await _cost_is_traceable(session, company_id, entity_id, old):
         raise CostRestatementConflict(
+            "inventory.err_restate_cost_used",
             f"{label}'s cost was already split, transformed, or used, so the correction "
-            "cannot be carried automatically"
-        )
+            "cannot be carried automatically", lot=label)
 
     successors: list[tuple[str, dict]] = []
     restated: list[tuple[str, dict, dict]] = [(entity_id, old, new)]   # (entity_id, before, after)
@@ -767,22 +773,27 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
         delta = round_basis((new_basis or 0) - _basis_or_conflict(old, label))
         if status == "merged" and new_basis is None:
             raise CostRestatementConflict(
+                "inventory.err_restate_merged_part",
                 f"{label} was merged, and a merge result's cost is the sum of its parts, so clearing "
-                "the cost of one part cannot be carried automatically; correct the merge result's cost instead")
+                "the cost of one part cannot be carried automatically; correct the merge result's cost instead",
+                lot=label)
         seen = {entity_id}
         prev_id, prev_state = entity_id, new
         current, next_id = label, old.get("merged_into") if status == "merged" else None
         if status == "merged" and not next_id:
-            raise CostRestatementConflict(f"{label} is merged, but its merge lineage is not recorded")
+            raise _lineage_missing(label)
         while next_id:
             if next_id in seen:
-                raise CostRestatementConflict(f"{label}: the merge lineage loops back on itself at {next_id}")
+                raise CostRestatementConflict(
+                    "inventory.err_restate_lineage_loop",
+                    f"{label}: the merge lineage loops back on itself at {next_id}", lot=label, item=next_id)
             seen.add(next_id)
             row = await _read(next_id)
             if row is None or row.entity_type != "item":
                 raise CostRestatementConflict(
-                    f"{current} was merged into {next_id}, which is not an item; the merge lineage is broken"
-                )
+                    "inventory.err_restate_lineage_broken",
+                    f"{current} was merged into {next_id}, which is not an item; the merge lineage is broken",
+                    lot=current, item=next_id)
             state = row.state or {}
             current = lot_label(state, next_id)
             succ_status = str(state.get("status") or "").lower()
@@ -790,14 +801,16 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
                 if not delta:
                     break  # no value to carry; past an untraceable lot its goods cost stays as it is
                 raise CostRestatementConflict(
+                    "inventory.err_restate_successor_used",
                     f"{label}'s cost went into {current}, which was later split, transformed, used, or "
-                    "written off, so the correction cannot be carried through it automatically"
-                )
+                    "written off, so the correction cannot be carried through it automatically",
+                    lot=label, successor=current)
             basis = _basis_or_conflict(state, current)
             if basis + delta < 0:
                 raise CostRestatementConflict(
-                    f"{label}'s cost went into {current}, whose cost cannot absorb a change of {delta:g}"
-                )
+                    "inventory.err_restate_successor_negative",
+                    f"{label}'s cost went into {current}, whose cost cannot absorb a change of {delta:g}",
+                    lot=label, successor=current, change=f"{delta:g}")
             # The value follows the part, generation after generation. While the result's
             # cost is still the merge's own, its goods cost is known when every part that
             # holds units or goods value is known; once a cost was set on it, its own stands.
@@ -818,7 +831,7 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
             restated.append((next_id, state, prev_state))
             next_id = state.get("merged_into") if succ_status == "merged" else None
             if succ_status == "merged" and not next_id:
-                raise CostRestatementConflict(f"{current} is merged, but its merge lineage is not recorded")
+                raise _lineage_missing(current)
 
     # What each invoice recognizes for these lots changes with their cost: the invoice
     # that shipped a sold lot by the change in its cost of sale, and every invoice that
@@ -851,8 +864,8 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
                         or ls.get("result") != "written_off" or len(matches) != 1
                         or not isinstance(matches[0].get("account"), str)
                         or not matches[0]["account"]):
-                    raise CostRestatementConflict(
-                        t("inventory.err_cost_disposed_no_writeoff", label=lot_label(before, lot_id)))
+                    raise CostRestatementConflict("inventory.err_cost_disposed_no_writeoff",
+                                                  label=lot_label(before, lot_id))
                 origin = lot_account(before)
                 writeoffs.append((lot_id, list_id, matches[0]["account"], origin, change))
                 lists.append(list_id)
@@ -876,9 +889,11 @@ async def _restatement(session: AsyncSession, company_id, entity_id: str, event_
                 covered = sum(qty for (doc_id, _, _), qty in allocations.items() if doc_id == sale.doc_id)
                 if abs(covered - float(before.get("quantity") or 0)) > 1e-9:
                     raise CostRestatementConflict(
+                        "inventory.err_restate_lot_partly_priced",
                         f"{lot_label(before, lot_id)} was sold on {sale.doc_number}, but that invoice does "
                         "not price the whole lot, so its cost of goods sold cannot be adjusted "
-                        "automatically; correct it with a journal entry instead")
+                        "automatically; correct it with a journal entry instead",
+                        lot=lot_label(before, lot_id), doc=sale.doc_number)
             for (doc_id, cycle, line_index), qty in sorted(allocations.items()):
                 if sale.line is None or doc_id != sale.doc_id:
                     records.append({"doc_id": doc_id, "cycle": cycle, "line": line_index, "amount": qty * unit_delta})
@@ -942,7 +957,7 @@ async def restate_item_cost(
     replay = await find_event_by_idempotency(session, company_id, idempotency_key)
     if replay is not None:
         if replay.event_type != event_type or replay.entity_id != entity_id:
-            raise CostRestatementConflict(t("inventory.err_cost_idempotency_reused"))
+            raise CostRestatementConflict("inventory.err_cost_idempotency_reused")
         return replay
 
     # Company, then the invoices the change adjusts, then the lots: the order every
@@ -966,7 +981,8 @@ async def restate_item_cost(
             or not set(plan.lists) <= set(unlocked.lists)
             or final_cost_event(event_type, asked, lots[entity_id].state or {}) != data):
         raise CostRestatementConflict(
-            f"{plan.label} changed while the correction was being applied; try again")
+            "inventory.err_restate_changed_meanwhile",
+            f"{plan.label} changed while the correction was being applied; try again", lot=plan.label)
     successors, repriced, label = plan.successors, plan.repriced, plan.label
 
     def _metadata(lot_id: str, base: dict) -> dict:
@@ -1047,8 +1063,8 @@ async def restate_item_cost(
                 continue
             try:
                 await auto_je.reconcile_doc_cogs(**adjustment)
-            except ValueError as exc:
-                raise CostRestatementConflict(str(exc)) from exc
+            except Refused as exc:
+                raise CostRestatementConflict.of(exc.detail) from exc
     return entry
 
 
@@ -3096,6 +3112,12 @@ _ITEM_IMPORT_NUMBER_KEYS = ("quantity", "qty", "weight", "weight_ct", "gross_wei
 VALID_INVENTORY_TYPES: frozenset[str] = frozenset({"stocked", "component", "non_stocked", "service", "freight"})
 
 
+def inventory_type_refused() -> dict:
+    """The refusal for an inventory type that is not one of VALID_INVENTORY_TYPES."""
+    return refusal("inventory.err_inventory_type", "Choose what kind of item this is: stocked inventory, "
+                   "non-stocked inventory, component, service or freight.")
+
+
 def _unsupported_item_field_errors(spec: CsvImportSpec, row: dict) -> list[dict]:
     """An error for each item field with a value on the row that import cannot set.
 
@@ -3134,13 +3156,12 @@ def _item_code_error(row: dict) -> dict | None:
     """The first invalid inventory type or identifier code on the row, as a row error."""
     inventory_type = str(row.get("inventory_type") or "").strip()
     if inventory_type and inventory_type not in VALID_INVENTORY_TYPES:
-        return {"field": "inventory_type", "code": "invalid_value",
-                "message": f"inventory_type must be one of {sorted(VALID_INVENTORY_TYPES)}"}
+        return {"field": "inventory_type", "code": "invalid_value", **inventory_type_refused()}
     for field, validate, code in _ITEM_CODE_CHECKS:
         try:
             validate(str(row.get(field) or "").strip())
-        except ValueError as exc:
-            return {"field": field, "code": code, "message": str(exc)}
+        except Refused as exc:
+            return {"field": field, "code": code, **exc.detail}
     return None
 
 
@@ -3571,9 +3592,9 @@ async def build_import_records(
                 else:
                     data[unit_key] = to_stored_float(unit_price_from_total(total_val, price_qty, currency))
         for col_key in ("cost_price", "cost_price_total"):
-            refusal = negative_cost_error(sku or name or f"Row {i + 1}", _flt(col_key))
-            if refusal:
-                price_errors.append({"row": i + 1, "field": col_key, "code": "negative_value", "message": refusal})
+            cost_refusal = negative_cost_error(sku or name or f"Row {i + 1}", _flt(col_key))
+            if cost_refusal:
+                price_errors.append({"row": i + 1, "field": col_key, "code": "negative_value", **cost_refusal})
         if price_errors:
             errors.extend(price_errors)
             continue
@@ -4593,8 +4614,8 @@ async def write_import_batch(
             validate_sku(data.get("sku"))
             validate_barcode(data.get("barcode"))
             validate_rfid_epc(data.get("rfid_epc"))
-        except ValueError as exc:
-            outcome.add(entity_id, "rejected", _row_refused(named, str(exc)))
+        except Refused as exc:
+            outcome.add(entity_id, "rejected", _row_refused(named, exc.detail))
             continue
 
         if event_type != "item.patched":
@@ -4644,7 +4665,7 @@ async def write_import_batch(
                         actor_id=user.id, source=rec.source, idempotency_key=f"{idem_key}:cost",
                     )
         except CostRestatementConflict as exc:
-            outcome.add(entity_id, "rejected", _row_refused(named, str(exc)))
+            outcome.add(entity_id, "rejected", _row_refused(named, exc.detail))
             continue
         except Exception as exc:
             if isinstance(exc, HTTPException) and 400 <= exc.status_code < 500:

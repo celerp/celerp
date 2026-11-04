@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ui.i18n import t
+from celerp.accounting_roles import KeyedRefusal, Refused
 
 MAX_BARCODE_LEN = 64
 MAX_SKU_LEN = 255
@@ -39,14 +39,12 @@ LEGACY_BARCODE_UNIQUE_INDEX = "uq_projection_company_item_barcode"
 BARCODE_UNIQUE_INDEX = "uq_projection_company_resolvable_item_barcode"
 RFID_EPC_UNIQUE_INDEX = "uq_projection_company_item_rfid_epc"
 
-BARCODE_CONFLICT_MESSAGE = "Barcode '{barcode}' already exists"
-RFID_EPC_CONFLICT_MESSAGE = "RFID / EPC '{code}' already exists"
 
 
 def reject_comma_sku(sku: Any) -> Any:
     """Reject a comma-bearing SKU. Returns the sku for chaining."""
     if sku is not None and "," in str(sku):
-        raise ValueError(t("inventory.err_sku_comma"))
+        raise Refused("inventory.err_sku_comma")
     return sku
 
 
@@ -54,7 +52,7 @@ def validate_sku(sku: Any) -> Any:
     """Reject a comma-bearing or over-long SKU. Returns the sku for chaining."""
     reject_comma_sku(sku)
     if sku is not None and len(str(sku)) > MAX_SKU_LEN:
-        raise ValueError(t("inventory.err_sku_too_long", max=MAX_SKU_LEN))
+        raise Refused("inventory.err_sku_too_long", max=MAX_SKU_LEN)
     return sku
 
 
@@ -66,9 +64,9 @@ def validate_barcode(barcode: Any) -> Any:
     if s == "":
         return barcode
     if not s.isdigit():
-        raise ValueError(t("inventory.err_barcode_digits"))
+        raise Refused("inventory.err_barcode_digits")
     if len(s) > MAX_BARCODE_LEN:
-        raise ValueError(t("inventory.err_barcode_too_long", max=MAX_BARCODE_LEN))
+        raise Refused("inventory.err_barcode_too_long", max=MAX_BARCODE_LEN)
     return barcode
 
 
@@ -85,9 +83,9 @@ def validate_gtin(gtin: Any) -> Any:
     if s == "":
         return gtin
     if not s.isdigit():
-        raise ValueError(t("inventory.err_gtin_digits"))
+        raise Refused("inventory.err_gtin_digits")
     if len(s) not in GTIN_LENGTHS:
-        raise ValueError(t("inventory.err_gtin_length"))
+        raise Refused("inventory.err_gtin_length")
     return gtin
 
 
@@ -118,17 +116,17 @@ def validate_rfid_epc(code: Any) -> Any:
     if s == "":
         return s
     if not s.isalnum():
-        raise ValueError(t("inventory.err_rfid_chars"))
+        raise Refused("inventory.err_rfid_chars")
     if len(s) > MAX_RFID_EPC_LEN:
-        raise ValueError(t("inventory.err_rfid_too_long", max=MAX_RFID_EPC_LEN))
+        raise Refused("inventory.err_rfid_too_long", max=MAX_RFID_EPC_LEN)
     return s
 
 
-class CodeConflictError(Exception):
+class CodeConflictError(KeyedRefusal):
     """Base for a physical-code uniqueness violation (barcode or RFID / EPC).
 
     One base so the API layer needs a single exception handler that maps every physical
-    code collision to 409.
+    code collision to 409, with the keyed refusal it carries.
     """
 
 
@@ -142,9 +140,10 @@ class BarcodeConflictError(CodeConflictError):
 
     def __init__(self, barcode: str | None = None):
         self.barcode = barcode
-        super().__init__(
-            BARCODE_CONFLICT_MESSAGE.format(barcode=barcode) if barcode else "Barcode already exists"
-        )
+        if barcode:
+            super().__init__("inventory.err_barcode_taken", barcode=barcode)
+        else:
+            super().__init__("inventory.err_barcode_taken_unnamed")
 
 
 class RfidEpcConflictError(CodeConflictError):
@@ -155,9 +154,10 @@ class RfidEpcConflictError(CodeConflictError):
 
     def __init__(self, code: str | None = None):
         self.code = code
-        super().__init__(
-            RFID_EPC_CONFLICT_MESSAGE.format(code=code) if code else "RFID / EPC already exists"
-        )
+        if code:
+            super().__init__("inventory.err_rfid_epc_taken", code=code)
+        else:
+            super().__init__("inventory.err_rfid_epc_taken_unnamed")
 
 
 def is_barcode_unique_violation(exc: Exception) -> bool:

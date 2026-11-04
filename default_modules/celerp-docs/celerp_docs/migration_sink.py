@@ -283,9 +283,10 @@ def _doc_record(
             "tracking": line.tracking or None,
         }.items() if v is not None})
     tax = record.tax_total or Decimal(0)
+    status = statuses[record.status]
     data = {
         "doc_type": record.doc_type.value,
-        "status": statuses[record.status],
+        "status": status,
         **_conversion(context, record),
         "valid_until": record.metadata.get("valid_until"),
         "contact_id": contact_id,
@@ -301,6 +302,12 @@ def _doc_record(
         "subtotal": _money(record.total - tax, currency),
         "tax": _money(tax, currency),
         "total": _money(record.total, currency),
+        # An issued bill with stock lines whose source keeps no record of their receipt: whether
+        # the goods came in is not known. Issuing a bill is no evidence they did, and asking to
+        # receive them could count stock the imported opening balances already hold.
+        "receipt_unknown": True if (
+            record.doc_type == DocumentType.BILL and status not in ("draft", "void")
+            and not record.metadata.get("receipts") and any(li.get("item_id") for li in lines)) else None,
     }
     return DocImportRecord(
         entity_id=f"doc:{deterministic_id(context, record.source_type, record.source_external_id)}",

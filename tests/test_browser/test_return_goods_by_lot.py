@@ -12,6 +12,8 @@ import uuid
 
 import pytest
 
+from .conftest import answer_confirms
+
 pytestmark = pytest.mark.browser
 
 
@@ -42,7 +44,7 @@ def test_a_line_refused_by_line_goes_back_by_lot(page, ui_server, api, monkeypat
     monkeypatch.setattr(routes, "_LINE_TAKES_RANGES", 0, raising=False)
     monkeypatch.setattr(routes, "_LINE_TAKES_BITS", 0, raising=False)
 
-    page.on("dialog", lambda d: d.accept())
+    answer_confirms(page)
     page.goto(f"{ui_server}/docs/{bill}", wait_until="domcontentloaded")
     page.wait_for_selector("#li-select-all", timeout=8000)
     page.check("#li-select-all")
@@ -86,7 +88,7 @@ def test_a_weighed_lot_goes_back_with_its_weight(page, ui_server, api):
         "weight": {"old": None, "new": 9}, "weight_unit": {"old": None, "new": "carat"}}})
     assert r.status_code == 200, r.text
 
-    page.on("dialog", lambda d: d.accept())
+    answer_confirms(page)
     page.goto(f"{ui_server}/docs/{bill}", wait_until="domcontentloaded")
     page.wait_for_selector("#li-select-all", timeout=8000)
     page.check("#li-select-all")

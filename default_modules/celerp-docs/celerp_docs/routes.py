@@ -41,7 +41,7 @@ from celerp_docs.doc_projections import RESTORE_POINT, UNISSUED_STATUSES, list_l
 from celerp_docs.taxes import TaxApplication
 from celerp.services.field_schema import reject_system_item_fields
 from celerp.services.locations import require_company_location, require_ship_from
-from celerp.accounting_roles import CONSIGNOR_FIELD, CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, VALUED_FROM_KEY, AccountRole, refusal
+from celerp.accounting_roles import CONSIGNOR_FIELD, CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, VALUED_FROM_KEY, AccountRole, Refused, catalog_refusal, refusal
 from celerp.services.account_roles import current_settings, is_consigned, lineage, lot_account, new_lot_account, role_map
 from celerp.services.background import spawn_background
 from celerp.services.company_lock import lock_company, lock_projections, locked_company
@@ -60,7 +60,7 @@ from celerp.services.document_lines import (
     DrawnLine, MemoDraw, MemoReturn, assert_line_holds_respected, assert_new_references_eligible,
     line_id_counts, line_item_id, linked_items, memo_out_refusal, out_on_another_memo, received_line_index,
     converted_from_memo, memo_of_line, new_line_id, refuse_drawn_line_action, refuse_drawn_memo_line_action,
-    shipped_elsewhere, strip_line_ids,
+    shipped_elsewhere, strip_line_ids, drop_neutral_line_values,
 )
 from celerp.services.attachments import attach_file, storing
 from celerp.services.csv_export import csv_stream, resolve_export_cols
@@ -89,7 +89,7 @@ from celerp.services.list_behavior import (
 from celerp.services.shipping import (
     INCOTERMS_2020, ITEM_AT_ISSUE, REASONS_FOR_EXPORT, customs_backfill, issued_item, item_at_issue)
 from celerp.schemas.numbers import FiniteFloat
-from ui.i18n import doc_type_label, t
+from ui.i18n import doc_type_label, refusal_text, t
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -207,11 +207,8 @@ def _stored_conversion_rate(v: float | None) -> float | None:
 def _require_doc_rate_http(doc: dict, base_currency: str) -> Decimal:
     try:
         return require_doc_rate(doc, base_currency)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail=str(exc),
-        ) from exc
+    except Refused as exc:
+        raise HTTPException(status_code=422, detail=exc.detail) from exc
 
 
 def _reject_lifecycle_fields(data):
@@ -268,7 +265,7 @@ def _check_replay(replay, *, event_type: str, digest: str, entity_id: str | None
         or (entity_id is not None and replay.entity_id != entity_id)
         or (replay.metadata_ or {}).get("request") != digest
     ):
-        raise HTTPException(status_code=409, detail=t("documents.err_already_submitted"))
+        raise HTTPException(status_code=409, detail=catalog_refusal("documents.err_already_submitted"))
 
 
 def _replay_result(replay, *, event_type: str, digest: str, entity_id: str | None = None) -> dict:
@@ -286,7 +283,9 @@ def _operation(kind: str, scope: str | None, payload: BaseModel) -> tuple[str, s
     """The key and request digest of one call of an operation on ``scope``."""
     key = payload.idempotency_key or str(uuid.uuid4())
     if len(key) > _OPERATION_KEY_MAX:
-        raise HTTPException(status_code=422, detail=f"idempotency_key is longer than {_OPERATION_KEY_MAX} characters")
+        raise HTTPException(status_code=422, detail=refusal(
+            "error.idempotency_key_too_long", f"idempotency_key is longer than {_OPERATION_KEY_MAX} characters",
+            max=_OPERATION_KEY_MAX))
     if len(key) > _OPERATION_KEY_KEPT:
         key = f"op:{hashlib.sha256(key.encode()).hexdigest()}"
     return key, _request_digest(kind, scope, None, payload.model_dump(mode="json", exclude={"idempotency_key"}))
@@ -325,7 +324,7 @@ def _refuse_protected_fields(fields_changed: dict) -> None:
     if attempted:
         raise HTTPException(
             status_code=422,
-            detail=t("documents.err_fields_not_patchable", fields=", ".join(sorted(attempted))),
+            detail=catalog_refusal("documents.err_fields_not_patchable", fields=", ".join(sorted(attempted))),
         )
 
 
@@ -661,7 +660,7 @@ async def _get_doc(session: AsyncSession, company_id, entity_id: str, *, for_upd
     else:
         row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if row is None or row.entity_type != "doc":
-        raise HTTPException(status_code=404, detail=t("documents.document_not_found"))
+        raise HTTPException(status_code=404, detail=catalog_refusal("documents.document_not_found"))
     return row
 
 
@@ -701,12 +700,12 @@ async def _lock_contact_reference(session: AsyncSession, company_id, contact_id:
     contact = (await lock_contacts(session, company_id, [contact_id])).get(contact_id)
     if contact is None:
         if await session.get(Projection, {"company_id": company_id, "entity_id": contact_id}) is not None:
-            raise HTTPException(status_code=422, detail=t("documents.err_contact_not_contact"))
+            raise HTTPException(status_code=422, detail=catalog_refusal("documents.err_contact_not_contact"))
         return None
     if (contact.state or {}).get("deleted"):
         raise HTTPException(
             status_code=422,
-            detail=t("documents.err_contact_deleted"),
+            detail=catalog_refusal("documents.err_contact_deleted"),
         )
     return contact
 
@@ -843,13 +842,13 @@ def _check_line_quantity(
     require_positive=False so a real zero on-hand count is allowed).
     """
     if qty_raw is None or isinstance(qty_raw, bool):
-        raise HTTPException(status_code=422, detail=t("documents.err_qty_required", label=label))
+        raise HTTPException(status_code=422, detail=catalog_refusal("documents.err_qty_required", label=label))
     try:
         qty = float(qty_raw)
     except (TypeError, ValueError):
-        raise HTTPException(status_code=422, detail=t("documents.err_qty_not_number", label=label, qty=qty_raw))
+        raise HTTPException(status_code=422, detail=catalog_refusal("documents.err_qty_not_number", label=label, qty=qty_raw))
     if not math.isfinite(qty):
-        raise HTTPException(status_code=422, detail=t("documents.err_qty_not_finite", label=label, qty=qty_raw))
+        raise HTTPException(status_code=422, detail=catalog_refusal("documents.err_qty_not_finite", label=label, qty=qty_raw))
     validate_line_quantity(qty, sell_by, unit_map, label=label, require_positive=require_positive)
 
 
@@ -1015,7 +1014,7 @@ async def _assert_ref_id_unique(
         )
     ).scalars().first()
     if existing and existing.entity_id != exclude_entity_id:
-        raise HTTPException(status_code=409, detail=t("documents.err_doc_number_taken", number=ref_id))
+        raise HTTPException(status_code=409, detail=catalog_refusal("documents.err_doc_number_taken", number=ref_id))
 
 
 @dataclass
@@ -1078,7 +1077,7 @@ def _doc_sql_where(company_id: str, f: DocListFilters) -> list:
     ``_doc_list_filter`` pairs the two."""
     id_list = [x.strip() for x in f.ids.split(",") if x.strip()] if f.ids else []
     if len(id_list) > MAX_IDS_FILTER:
-        raise HTTPException(status_code=422, detail=t("documents.err_too_many_ids", max=MAX_IDS_FILTER))
+        raise HTTPException(status_code=422, detail=catalog_refusal("documents.err_too_many_ids", max=MAX_IDS_FILTER))
     base_where = [
         Projection.company_id == company_id,
         Projection.entity_type == "doc",
@@ -1123,12 +1122,12 @@ def _doc_sql_where(company_id: str, f: DocListFilters) -> list:
 def _doc_sort_field(f: DocListFilters) -> str:
     """The state field ``f.sort``/``f.dir`` order by, or a 422 naming the accepted values."""
     if f.dir not in ("asc", "desc"):
-        raise HTTPException(status_code=422, detail=t("documents.err_sort_dir"))
+        raise HTTPException(status_code=422, detail=catalog_refusal("documents.err_sort_dir"))
     if f.sort is None:
         return "issue_date"
     field = _DOC_SORT_FIELDS.get(f.sort)
     if field is None:
-        raise HTTPException(status_code=422, detail=t("documents.err_sort_unknown", sort=f.sort))
+        raise HTTPException(status_code=422, detail=catalog_refusal("documents.err_sort_unknown", sort=f.sort))
     return field
 
 
@@ -1183,7 +1182,8 @@ def _doc_row(r: Projection, contact_name: str | None) -> dict:
 
 
 # The state keys the row-by-row filters of ``_doc_filter`` read, before display fallbacks.
-_DOC_FILTER_KEYS = ("doc_type", "status", "due_date", "amount_outstanding", "total", "fulfillment_status", "return_received_items", "received_items")
+_DOC_FILTER_KEYS = ("doc_type", "status", "due_date", "amount_outstanding", "total", "fulfillment_status", "return_received_items", "received_items",
+                    "line_items", "receipt_unknown")
 
 
 def _doc_flag_rules(today: str) -> dict[str, Callable[[dict], bool]]:
@@ -1199,8 +1199,16 @@ def _doc_flag_rules(today: str) -> dict[str, Callable[[dict], bool]]:
         "paid_only": is_paid_document,
         "unfulfilled_only": lambda x: issued(x) and x.get("status") != CLOSED and x.get("fulfillment_status") != "fulfilled",
         "not_restocked": lambda x: issued(x) and not (x.get("return_received_items") or []),
-        "not_stocked": lambda x: issued(x) and not (x.get("received_items") or []),
+        "not_stocked": lambda x: issued(x) and awaits_stock(x),
     }
+
+
+def awaits_stock(doc: dict) -> bool:
+    """True when a purchase document has stock lines and nothing of them came in: no receipt of
+    its own, and not an imported bill whose receipt its source never recorded (it reads Receipt
+    unknown instead). A bill of expenses only (rent, power) brings in no stock to receive."""
+    return (any(line_receive_kind(li) == "stock" for li in doc.get("line_items") or [])
+            and not (doc.get("received_items") or []) and not doc.get("receipt_unknown"))
 
 
 # Each flag filter's summary figures: the count key, and the receivable total (key, field) its
@@ -1289,7 +1297,7 @@ def _payable_balance(state: dict) -> Decimal:
     number."""
     balance = outstanding_balance(state)
     if balance is None:
-        raise HTTPException(status_code=409, detail=t("documents.err_balance_damaged"))
+        raise HTTPException(status_code=409, detail=catalog_refusal("documents.err_balance_damaged"))
     return round_money(balance, str(state.get("currency") or "USD").upper())
 
 
@@ -1418,7 +1426,7 @@ def _doc_summary(states: list[dict], today: str, base_currency: str) -> dict:
     """The counts and totals of ``get_doc_summary`` over the documents ``states``."""
     totals = dict.fromkeys((
         "ar_gross", "ar_paid", "ar_outstanding", "awaiting_payment", "overdue", "paid", "sent",
-        "draft", "void", "memo", "unfulfilled", "open_credit",
+        "draft", "void", "unfulfilled", "open_credit",
     ), Decimal(0))
     count_by_status: dict[str, int] = {}
     total_by_status: dict[str, Decimal] = {}
@@ -1466,8 +1474,6 @@ def _doc_summary(states: list[dict], today: str, base_currency: str) -> dict:
             if st == "sent":
                 add("sent", amounts, "amount_outstanding")
         elif st not in ("void", "draft"):
-            if dt == "memo":
-                add("memo", amounts, "total")
             if open_credit:
                 add("open_credit", amounts, "amount_outstanding")
     money = {k: to_stored_float(round_money(v, base_currency)) for k, v in totals.items()}
@@ -1495,7 +1501,6 @@ def _doc_summary(states: list[dict], today: str, base_currency: str) -> dict:
         "unfulfilled_total": money["unfulfilled"],
         "unvalued_count": unvalued_count,
         "invoice_unvalued_count": invoice_unvalued_count,
-        "memo_all_total": money["memo"],
         "open_credit_total": money["open_credit"],
         "count_by_status": count_by_status,
         "total_by_status": {k: to_stored_float(round_money(v, base_currency)) for k, v in total_by_status.items()},
@@ -2005,7 +2010,7 @@ async def create_doc_record(payload: DocCreatePayload, company_id, role: str, se
     if inv is not None:
         original_total = float(inv.state.get("total", 0) or 0)
         if payload.total > original_total + 1e-9:
-            raise HTTPException(status_code=409, detail=t("documents.err_credit_over_invoice"))
+            raise HTTPException(status_code=409, detail=catalog_refusal("documents.err_credit_over_invoice"))
     bill = await supplier_credit_original(session, company_id, payload.model_dump(), for_update=True)
     require_currency_code(payload.currency)
 
@@ -2043,7 +2048,7 @@ async def create_doc_record(payload: DocCreatePayload, company_id, role: str, se
     # Uniqueness check: reject if a doc with this ref_id already exists
     existing = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if existing is not None:
-        raise HTTPException(status_code=409, detail=t("documents.err_doc_number_taken", number=ref_id))
+        raise HTTPException(status_code=409, detail=catalog_refusal("documents.err_doc_number_taken", number=ref_id))
 
     data = payload.model_dump(exclude_none=True)
     # A line whose tax is still for the user to set keeps that None, which the dump above drops.
@@ -2174,7 +2179,7 @@ def assert_finalized_edit(state: dict, fields_changed: dict) -> None:
             if v != orig_v:
                 raise HTTPException(
                     status_code=409,
-                    detail=t("documents.err_line_field_finalized", field=k, line=i + 1),
+                    detail=catalog_refusal("documents.err_line_field_finalized", field=k, line=i + 1),
                 )
 
 
@@ -2191,6 +2196,12 @@ def _assert_doc_editable(state: dict) -> None:
         "docs.edit_locked",
         f"This document is {status.replace('_', ' ')} and cannot be edited. To make changes, revert it to Draft first.",
         doc_status=status))
+
+
+def _same_value(field: str, old, new) -> bool:
+    """Whether a document or list field is unchanged by an edit. An unset discount type is a flat
+    discount, so an editor writing "flat" over none changes nothing."""
+    return old == new or (field == "discount_type" and {old, new} <= {None, "flat"})
 
 
 async def write_doc_patch(session: AsyncSession, company_id, role: str, settings: dict, user, entity_id: str, payload: DocPatch,
@@ -2210,7 +2221,7 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     selecting = "contact_id" in fields_changed
     new_contact_id = str((fields_changed.get("contact_id") or {}).get("new") or "")
     if selecting and "line_items" in fields_changed:
-        raise HTTPException(status_code=422, detail=t("documents.err_contact_and_lines"))
+        raise HTTPException(status_code=422, detail=catalog_refusal("documents.err_contact_and_lines"))
     digest, idem_key = _patch_identity("doc", entity_id, payload)
     if (done := await _find_patch_replay(session, company_id, idem_key, "doc.updated", entity_id, digest)) is not None:
         return done
@@ -2256,6 +2267,7 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     _incoming_lines = (fields_changed.get("line_items") or {}).get("new")
     if isinstance(_incoming_lines, list):
         _reject_line_attributes(_incoming_lines)
+        drop_neutral_line_values(_incoming_lines, row.state.get("line_items"))
     if isinstance(_incoming_lines, list) and row.state.get("doc_type") in SALES_PRICED_DOC_TYPES:
         _stored_by_idx = {i: li for i, li in enumerate(row.state.get("line_items") or [])}
         if isinstance(memo_draw, MemoDraw):
@@ -2337,7 +2349,7 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
             try:
                 return to_stored_float(checked_exchange_rate(value))
             except ValueError as exc:
-                raise HTTPException(status_code=422, detail=t("error.rate_invalid", raw=value)) from exc
+                raise HTTPException(status_code=422, detail=catalog_refusal("error.rate_invalid", raw=value)) from exc
         return value
     # Keep only fields that actually changed (old != new). A re-select/blur that resets a
     # field to its current value must emit no event - otherwise it records an empty
@@ -2346,7 +2358,7 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     for k, change in fields_changed.items():
         old = _round_field(k, change.get("old") if change.get("old") is not None else row.state.get(k))
         new = _round_field(k, change.get("new"), incoming=True)
-        if old != new:
+        if not _same_value(k, old, new):
             effective[k] = {"old": old, "new": new}
     if not effective:
         return {"event_id": None, "version": row.version}
@@ -3000,7 +3012,7 @@ async def _refuse_synced(session: AsyncSession, company_id, entity_id: str) -> N
 
     sender = await synced_source(session, uuid.UUID(str(company_id)), "doc", entity_id)
     if sender is not None:
-        raise HTTPException(status_code=422, detail=t("documents.err_peer_synced", company=sender))
+        raise HTTPException(status_code=422, detail=catalog_refusal("documents.err_peer_synced", company=sender))
 
 async def _settle_moved_cost(session, company_id, user_id, doc_id: str, state: dict, tag: str, trigger: str) -> None:
     """Once an invoice stops standing (void, back to draft), settle any cost it still
@@ -4047,7 +4059,7 @@ async def books_currency_still(session, company_id, base: str) -> str:
         .execution_options(populate_existing=True))).scalar_one_or_none()
     current = books_currency((company.settings or {}) if company else {})
     if base != current:
-        raise HTTPException(status_code=422, detail=t("error.books_currency_changed", base=base, current=current))
+        raise HTTPException(status_code=422, detail=catalog_refusal("error.books_currency_changed", base=base, current=current))
     return current
 
 
@@ -4060,7 +4072,7 @@ async def _books_still_kept(session, company_id, doc_state: dict, books: tuple[s
     current = await books_currency_still(session, company_id, base)
     current_rate = _require_doc_rate_http(doc_state, current)
     if rate != current_rate:
-        raise HTTPException(status_code=422, detail=t("documents.err_payment_rate", rate=rate, current_rate=current_rate))
+        raise HTTPException(status_code=422, detail=catalog_refusal("documents.err_payment_rate", rate=rate, current_rate=current_rate))
     return base, float(rate)
 
 
@@ -4071,7 +4083,7 @@ async def require_payment_bank_currency(session, company_id, bank_code: str, doc
     from celerp.services.journal_accounts import bank_currencies
     bank_currency = (await bank_currencies(session, company_id)).get(bank_code)
     if bank_currency and bank_currency not in (str(doc_currency).upper(), str(base).upper()):
-        raise HTTPException(status_code=422, detail=t(
+        raise HTTPException(status_code=422, detail=catalog_refusal(
             "documents.err_payment_bank_currency", bank_currency=bank_currency,
             doc_currency=str(doc_currency).upper(), base=base))
 
@@ -4109,7 +4121,7 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
         if request is not None:
             _check_replay(replay, event_type="doc.payment.received", digest=request, entity_id=entity_id)
         elif replay.event_type != "doc.payment.received" or replay.entity_id != entity_id:
-            raise HTTPException(status_code=409, detail=t("documents.err_already_submitted"))
+            raise HTTPException(status_code=409, detail=catalog_refusal("documents.err_already_submitted"))
         # Match emit_event's duplicate-race contract so callers can distinguish a
         # replay from a newly applied payment without changing this function's return shape.
         replay.was_deduped = True
@@ -4123,7 +4135,7 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
             f"Memo {memo} can't take a payment while its products are on invoice {drawn[0][0]}. Record the "
             "payment on that invoice instead.", memo=memo, invoice=drawn[0][0]))
     if doc_state.get("doc_type") in NON_FINANCIAL_DOC_TYPES:
-        raise HTTPException(status_code=409, detail=t("documents.err_no_money_doc"))
+        raise HTTPException(status_code=409, detail=catalog_refusal("documents.err_no_money_doc"))
     if doc_state.get("status") not in PAYABLE_STATUSES:
         raise HTTPException(status_code=409, detail=not_payable(doc_state))
     # Replay guard for referenced (online) payments: the same Stripe intent
@@ -4133,32 +4145,32 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
     # payment frees its charge to be re-recorded, as removal always did.
     if reference and any(p.get("reference") == reference and p.get("status") != "deleted"
                          for p in doc_state.get("payments", [])):
-        raise HTTPException(status_code=409, detail=t("documents.err_payment_recorded"))
+        raise HTTPException(status_code=409, detail=catalog_refusal("documents.err_payment_recorded"))
     doc_currency = str(doc_state.get("currency") or "USD").upper()
     payment_currency = str(body.get("currency") or doc_currency).upper()
     if payment_currency != doc_currency:
         raise HTTPException(
             status_code=422,
-            detail=t("documents.err_payment_currency", payment_currency=payment_currency, doc_currency=doc_currency),
+            detail=catalog_refusal("documents.err_payment_currency", payment_currency=payment_currency, doc_currency=doc_currency),
         )
     body["currency"] = doc_currency
     outstanding_d = _payable_balance(doc_state)
     if outstanding_d <= 0:
-        raise HTTPException(status_code=409, detail=t("documents.err_invoice_paid"))
+        raise HTTPException(status_code=409, detail=catalog_refusal("documents.err_invoice_paid"))
     amount_d = round_money(body["amount"], doc_currency)
     if amount_d <= 0:
-        raise HTTPException(status_code=422, detail=t("documents.err_payment_amount_positive"))
+        raise HTTPException(status_code=422, detail=catalog_refusal("documents.err_payment_amount_positive"))
     if amount_d > outstanding_d:
         raise HTTPException(
             status_code=409,
-            detail=t("documents.err_payment_too_much", amount=to_stored_float(amount_d),
+            detail=catalog_refusal("documents.err_payment_too_much", amount=to_stored_float(amount_d),
                      outstanding=to_stored_float(outstanding_d)),
         )
     amount = to_stored_float(amount_d)
     body["amount"] = amount
     bank_code = body.get("bank_account")
     if not bank_code:
-        raise HTTPException(status_code=422, detail=t("documents.err_bank_account_required"))
+        raise HTTPException(status_code=422, detail=catalog_refusal("documents.err_bank_account_required"))
     if moves_cash:
         await require_settlement_account(session, company_id, bank_code)
     body["currency"] = doc_currency
@@ -4179,7 +4191,7 @@ async def apply_doc_payment(session, company_id, entity_id: str, body: dict,
             and to_decimal(body["conversion_rate"]) != 1:
         raise HTTPException(
             status_code=422,
-            detail=t("error.rate_not_one_for_base", base=_base_currency, raw=body["conversion_rate"]),
+            detail=catalog_refusal("error.rate_not_one_for_base", base=_base_currency, raw=body["conversion_rate"]),
         )
     if moves_cash:
         await require_payment_bank_currency(session, company_id, bank_code, doc_currency, _base_currency)
@@ -5326,10 +5338,7 @@ async def _received_goods_cost(session: AsyncSession, company_id, doc: dict, it:
         return None
     company = await session.get(Company, company_id)
     base_currency = (company.settings or {}).get("currency", "USD") if company else "USD"
-    try:
-        rate = require_doc_rate(doc, base_currency)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    rate = _require_doc_rate_http(doc, base_currency)
     amount = unit * to_decimal(it.quantity_received)
     cost = to_base(amount, rate, base_currency)
     if it.cost_price is not None:
@@ -9160,6 +9169,7 @@ async def write_list_patch(session: AsyncSession, company_id, role: str, setting
         raise HTTPException(status_code=422, detail=t("documents.err_discount_number"))
     if isinstance(_new_lines, list):
         _normalize_line_item_ids(_new_lines)  # keep the item link the editable UI sends as entity_id
+        drop_neutral_line_values(_new_lines, row.state.get("line_items"))
         await _validate_list_line_quantities(
             _new_lines, session, company_id,
             require_positive=((row.state.get("list_type") or DEFAULT_LIST_TYPE) != "audit"),
@@ -9170,6 +9180,9 @@ async def write_list_patch(session: AsyncSession, company_id, role: str, setting
                 session, company_id, settings, role, _new_lines,
                 {i: line for i, line in enumerate(row.state.get("line_items") or [])},
             )
+    # A save that writes back what is stored records nothing, as for documents.
+    if all(_same_value(f, row.state.get(f), (c or {}).get("new")) for f, c in fields_changed.items()):
+        return {"event_id": None, "version": row.version}
     # expected_version is a concurrency guard, not list data - it never enters the event payload.
     entry = await _emit_list(session, company_id, entity_id, "list.updated",
                              {"fields_changed": fields_changed}, user, idem_key, meta={"request": digest})
@@ -9194,7 +9207,7 @@ def _assert_reprice_access(settings: dict, role: str, price_list: str) -> None:
 def _require_price_list(price_config: tuple[list[dict], str, str], price_list: str) -> None:
     """Refuse a price list the company has not configured."""
     if price_list not in {str(pl.get("name") or "") for pl in price_config[0]}:
-        raise HTTPException(status_code=422, detail=t("documents.err_price_list_unknown", price_list=price_list))
+        raise HTTPException(status_code=422, detail=catalog_refusal("documents.err_price_list_unknown", price_list=price_list))
 
 
 def _check_price_list(settings: dict, role: str, price_list: str, price_config: tuple[list[dict], str, str]) -> None:
@@ -9332,11 +9345,12 @@ def _assert_contact_side(cstate: dict, kind: str, state: dict) -> None:
     vendor_side = kind == "doc" and state.get("doc_type") in SUPPLIER_DOC_TYPES
     role_name = "vendor" if vendor_side else "customer"
     if not contact_accepts(cstate, role_name):
-        raise HTTPException(
-            status_code=422,
-            detail=f"{cstate.get('name') or 'This contact'} is not a {role_name}. "
-                   f"Choose a {role_name}, or change the contact's type to {role_name} or both.",
-        )
+        name = cstate.get("name") or refusal("documents.this_contact", "This contact")
+        raise HTTPException(status_code=422, detail=refusal(
+            f"documents.err_contact_not_{role_name}",
+            f"{refusal_text(name)} is not a {role_name}. "
+            f"Choose a {role_name}, or change the contact's type to {role_name} or both.",
+            name=name))
 
 
 async def _lock_imported_contact(session: AsyncSession, company_id, kind: str, data: dict) -> None:
@@ -9421,7 +9435,7 @@ async def _contact_selection_values(
             if contact_currency not in CURRENCY_CODES:
                 raise HTTPException(
                     status_code=422,
-                    detail=t("documents.err_contact_currency_invalid", currency=contact_currency),
+                    detail=catalog_refusal("documents.err_contact_currency_invalid", currency=contact_currency),
                 )
             currency = values["currency"] = contact_currency
             if kind == "doc":
@@ -10739,7 +10753,7 @@ async def _lock_item_sku_lots(
     locked = {row.entity_id: row for row in rows}
     for eid in ids:
         if eid not in locked:
-            raise HTTPException(status_code=409, detail=t("documents.err_stock_changed"))
+            raise HTTPException(status_code=409, detail=catalog_refusal("documents.err_stock_changed"))
     return locked
 
 
@@ -11654,7 +11668,10 @@ def draw_problems(snap: _DrawSnapshot, body: InvoiceLinesRequest, *,
         out = snap.out(i)
         qty = float(quantities.get(lid, out))
         if not out:
-            problems.append(refusal("lines.revert_nothing_out", f"{name}: nothing is out on this line", name=name))
+            problems.append(refusal("docs.draw_line_not_shipped",
+                                    f"{name} is not out on memo {memo_ref}, so there is nothing to invoice. "
+                                    "If it has not been shipped yet, select the line and use Set as shipped first.",
+                                    name=name, memo=memo_ref))
         elif qty <= 0:
             problems.append(refusal("docs.draw_quantity_positive",
                                     f"{name}: the quantity to invoice must be greater than zero.", name=name))

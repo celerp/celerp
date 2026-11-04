@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from ui.i18n import t
+from ui.i18n import t, refusal_text
 
 _LOCALES = Path(__file__).resolve().parents[1] / "ui" / "locales"
 
@@ -26,7 +26,7 @@ async def _headers(client) -> dict:
 async def test_missing_contact_says_it_no_longer_exists_and_to_choose_again(client):
     r = await client.get("/crm/contacts/contact:nope", headers=await _headers(client))
     assert r.status_code == 404
-    assert r.json()["detail"] == "This contact no longer exists. Choose it again from the list."
+    assert refusal_text(r.json()["detail"]) == "This contact no longer exists. Choose it again from the list."
 
 
 @pytest.mark.asyncio
@@ -35,7 +35,7 @@ async def test_bulk_delete_of_missing_contact_hides_the_id(client):
                           json={"contact_ids": ["contact:secret-id"]})
     assert r.status_code == 404
     assert "secret-id" not in r.json()["detail"]
-    assert r.json()["detail"] == t("contacts.err_selected_not_found", "en")
+    assert refusal_text(r.json()["detail"]) == t("contacts.err_selected_not_found", "en")
 
 
 @pytest.mark.asyncio
@@ -43,7 +43,7 @@ async def test_merge_with_no_sources_says_choose_one(client):
     r = await client.post("/crm/contacts/merge", headers=await _headers(client),
                           json={"source_contact_ids": [], "target_contact_id": "contact:x"})
     assert r.status_code == 422
-    assert r.json()["detail"] == t("contacts.err_merge_no_sources", "en")
+    assert refusal_text(r.json()["detail"]) == t("contacts.err_merge_no_sources", "en")
 
 
 def test_prefix_keys_are_gone():

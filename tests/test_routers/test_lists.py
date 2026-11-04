@@ -645,13 +645,20 @@ class TestListPrefixes:
         assert r.json()["id"].startswith("list:TRF-")
 
     @pytest.mark.asyncio
-    async def test_a_types_prefix_setting_applies_and_the_old_list_setting_does_not(self, client):
+    async def test_a_types_prefix_setting_applies_and_the_old_list_setting_continues_until_then(self, client):
         token = await _register(client)
         for doc_type, body in (("list", {"prefix": "OLD"}), ("audit", {"prefix": "CNT"})):
             r = await client.patch(f"/docs/sequences/{doc_type}", headers=_h(token), json=body)
             assert r.status_code == 200, r.text
         assert (await _create_list(client, token, list_type="audit")).startswith("list:CNT-")
-        assert (await _create_list(client, token, list_type="quotation")).startswith("list:QUO-")
+        # A type with no setting of its own keeps drawing from the shared counter, so its
+        # numbers do not restart; setting the type splits it off under its own prefix.
+        old = await _create_list(client, token, list_type="quotation")
+        assert old.startswith("list:OLD-") and old.endswith("-0001")
+        r = await client.patch("/docs/sequences/quotation", headers=_h(token), json={})
+        assert r.status_code == 200, r.text
+        split = await _create_list(client, token, list_type="quotation")
+        assert split.startswith("list:QUO-") and split.endswith("-0002")
 
     @pytest.mark.asyncio
     async def test_the_old_list_counter_is_still_in_the_api(self, client):

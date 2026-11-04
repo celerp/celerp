@@ -1903,7 +1903,7 @@ def test_chart_taxes_contacts_and_products(tmp_path, version):
     bundle = _adapter().build_manifest(_file(tmp_path, _backup(version)), FULL).bundle
     accounts = {a.code: (a.account_type.value, a.control and a.control.value) for a in bundle.accounts}
     assert accounts == {
-        "101000": ("asset", "bank"), "101401": ("asset", "bank"), "101402": ("asset", "bank"),
+        "101000": ("asset", "bank"), "101401": ("asset", "clearing"), "101402": ("asset", "clearing"),
         "121000": ("asset", "receivable"), "211000": ("liability", "payable"), "251000": ("liability", "tax"),
         "131000": ("asset", "tax"), "400000": ("revenue", None), "600000": ("expense", None),
         "500000": ("cogs", None), "110100": ("asset", None), "110200": ("asset", None),
@@ -1927,7 +1927,8 @@ def test_chart_taxes_contacts_and_products(tmp_path, version):
     assert lakeshore.address == "1 Quay Road, PO1 1AA Portsmouth"
     assert next(c for c in bundle.contacts if c.name == "Northwind Wholesale").tax_id == "GB123456789"
     assert {(i.sku, i.name, i.retail_price, i.status) for i in bundle.items} == {
-        ("WID-1", "Widget", D(50), "available"), ("SRV", "Consulting", D(100), "available")}
+        ("WID-1", "Widget", D(50), "available"), ("SRV", "Consulting", D(100), "available"),
+        ("WID-1", "Widget", D(50), "archived")}  # LOT-0002, sold in full
 
 
 # ── Documents, payments and journals ─────────────────────────────────────────
@@ -2516,6 +2517,15 @@ def test_each_lot_and_location_is_stock_of_its_product(tmp_path, version):
         ("SRV", "SRV", None, None, "WH/Stock"), ("WID-1", "WID-1", None, None, "WH/Stock"),
         (LOT_1, "WID-1", "WID-1", "LOT-0001", "WH/Stock"), (SHELF, "WID-1", "WID-1", "LOT-0001", "WH/Stock/Shelf 2"),
         (LOT_2, "WID-1", "WID-1", "LOT-0002", "WH/Stock")]
+
+
+@pytest.mark.parametrize("version", VERSIONS)
+def test_a_lot_with_nothing_left_comes_in_archived_not_available(tmp_path, version):
+    # LOT-0002 was received and sold in full: it is history, not stock on hand. The widget's own
+    # record holds none of its stock (all of it sits in lots), so it is the product, not a 0-unit row.
+    bundle = _adapter().build_manifest(_file(tmp_path, _backup(version)), FULL).bundle
+    assert {i.source_external_id: i.status for i in bundle.items} == {
+        "SRV": "available", "WID-1": "archived", LOT_1: "available", SHELF: "available", LOT_2: "archived"}
 
 
 def _receipt(version: int, lot_quantities: tuple[str, str], ordered: str = "10", ordered_in_units: str = "10",

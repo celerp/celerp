@@ -107,7 +107,7 @@ async def test_void_of_an_entry_a_completed_reconciliation_holds_is_refused(clie
     r = await void(client, h, je, "2026-10-15")
     assert r.status_code == 409, r.text
     detail = refusal(r)
-    assert "Harbor Bank" in detail and "2026-09-30" in detail
+    assert "Harbor Bank" in detail and "30 Sep 2026" in detail
     assert await _status(session, await _company(session, b), je) == "posted"
 
 
@@ -119,7 +119,7 @@ async def test_void_of_an_entry_an_open_reconciliation_holds_is_refused(client, 
     assert (await match(client, h, sid, [je])).status_code == 200
     r = await void(client, h, je, "2026-10-15")
     assert r.status_code == 409, r.text
-    assert "Harbor Bank" in refusal(r) and "2026-09-30" in refusal(r)
+    assert "Harbor Bank" in refusal(r) and "30 Sep 2026" in refusal(r)
     assert await _status(session, await _company(session, b), je) == "posted"
 
 
@@ -131,7 +131,7 @@ async def test_reversal_of_a_held_entry_is_refused(client, session):
     cid = await _company(session, b)
     reversal = _swapped(await _created_data(session, cid, je), "2026-10-15", je)
     detail = await _refused(session, cid, f"{je}:rev", "acc.journal_entry.created", reversal)
-    assert "Harbor Bank" in detail and "2026-09-30" in detail
+    assert "Harbor Bank" in detail and "30 Sep 2026" in detail
     assert await _status(session, cid, f"{je}:rev") is None
 
 
@@ -144,7 +144,7 @@ async def test_unvoid_removing_a_matched_reversal_row_is_refused(client, session
     cid = await _company(session, b)
     detail = await _refused(session, cid, je, "acc.journal_entry.created", await _unvoid(session, cid, je),
                             {"restores": je})
-    assert "Harbor Bank" in detail and "2026-09-30" in detail
+    assert "Harbor Bank" in detail and "30 Sep 2026" in detail
     assert await _status(session, cid, je) == "void"
 
 
@@ -199,7 +199,7 @@ async def test_backdated_posting_is_refused_when_another_bank_shares_the_ledger_
                     {"account": "4100", "debit": 0, "credit": 5.0}]})
     assert r.status_code == 409, r.text
     detail = refusal(r)
-    assert "Harbor Bank" in detail and "2026-09-30" in detail
+    assert "Harbor Bank" in detail and "30 Sep 2026" in detail
 
 
 # --- The period rule ------------------------------------------------------------------
@@ -214,8 +214,8 @@ async def test_backdated_bank_posting_into_a_completed_period_is_refused(client,
                     {"account": "4100", "debit": 0.0, "credit": 5.0}]})
     assert r.status_code == 409, r.text
     detail = refusal(r)
-    assert "Harbor Bank" in detail and "2026-09-30" in detail
-    assert "Changes dated after 2026-09-30" in detail
+    assert "Harbor Bank" in detail and "30 Sep 2026" in detail
+    assert "Changes dated after 30 Sep 2026" in detail
 
 
 async def test_backdated_payment_from_another_module_is_refused(client, session):
@@ -241,7 +241,7 @@ async def test_unvoid_into_a_completed_period_is_refused(client, session):
     cid = await _company(session, b)
     detail = await _refused(session, cid, je, "acc.journal_entry.created", await _unvoid(session, cid, je),
                             {"restores": je})
-    assert "2026-09-30" in detail
+    assert "30 Sep 2026" in detail
     assert await _status(session, cid, je) == "void"
 
 
@@ -254,7 +254,7 @@ async def test_legacy_statement_date_bounds_no_period(client, session):
     # Read as January 31 the legacy row would end the September period there; it bounds nothing.
     r = await deposit_response(client, h, b, "2026-01-15")
     assert r.status_code == 409, r.text
-    assert "2026-09-30" in refusal(r) and "31/01/2026" not in refusal(r)
+    assert "30 Sep 2026" in refusal(r) and "31/01/2026" not in refusal(r)
     # Its own match is still protected, by id.
     r = await void(client, h, je, "2026-10-15")
     assert r.status_code == 409, r.text
@@ -275,7 +275,7 @@ async def test_a_session_started_after_completion_does_not_shrink_protection(cli
     assert (await start(client, h, b["id"], "2026-08-31")).status_code == 200
     r = await deposit_response(client, h, b, "2026-08-15")
     assert r.status_code == 409, r.text
-    assert "2026-09-30" in refusal(r)
+    assert "30 Sep 2026" in refusal(r)
 
 
 async def test_reopened_earlier_session_bounds_the_later_period(client, session):
@@ -288,7 +288,7 @@ async def test_reopened_earlier_session_bounds_the_later_period(client, session)
     assert r.status_code == 200, r.text
     r = await deposit_response(client, h, b, "2026-09-15")
     assert r.status_code == 409, r.text
-    assert "2026-09-30" in refusal(r) and "2026-08-31" not in refusal(r)
+    assert "30 Sep 2026" in refusal(r) and "31 Aug 2026" not in refusal(r)
 
 
 async def test_correcting_an_earlier_statement_names_only_the_affected_later_periods(client, session):
@@ -303,8 +303,8 @@ async def test_correcting_an_earlier_statement_names_only_the_affected_later_per
     r = await void(client, h, held, "2026-08-25")
     assert r.status_code == 409, r.text
     detail = refusal(r)
-    assert "2026-09-30" in detail
-    assert "2026-10-31" not in detail and "2026-08-31" not in detail
+    assert "30 Sep 2026" in detail
+    assert "31 Oct 2026" not in detail and "31 Aug 2026" not in detail
 
 
 async def test_correcting_an_earlier_statement_needs_no_unrelated_reopen(client, session):
@@ -402,7 +402,7 @@ async def test_delete_payment_refused_while_matched_in_a_reconciliation(client, 
     assert (await match(client, h, sid, [je])).status_code == 200
     r = await client.request("DELETE", f"/docs/{inv}/payments/0", headers=h, json={})
     assert r.status_code == 409, r.text
-    assert "Harbor Bank" in refusal(r) and "2026-09-30" in refusal(r)
+    assert "Harbor Bank" in refusal(r) and "30 Sep 2026" in refusal(r)
     await session.rollback()  # production never commits a refused request; the test client shares the session
     assert len(await _live_payments(client, h, inv)) == 1
     assert await _status(session, await _company(session, b), je) == "posted"
@@ -442,12 +442,12 @@ async def test_refusal_copy_follows_the_callers_role(client, session):
     period_ask = await client.post(f"/docs/{late}/payment", headers=operator, json={
         "payment_date": "2026-09-15", "amount": 100.0, "bank_account": b["chart_account_code"]})
     assert period_ask.status_code == 409, period_ask.text
-    assert "Changes dated after 2026-09-30" in refusal(period_ask)
+    assert "Changes dated after 30 Sep 2026" in refusal(period_ask)
     assert "ask someone who manages accounting to reopen" in refusal(period_ask)
 
     for r in (held_ask, held, period_ask):
         detail = refusal(r).lower()
-        assert "harbor bank" in detail and "2026-09-30" in detail
+        assert "harbor bank" in detail and "30 sep 2026" in detail
         assert "another date" not in detail and "change the date" not in detail and "redate" not in detail
 
 
@@ -569,7 +569,7 @@ async def test_backdated_posting_waiting_on_a_completion_is_refused(monkeypatch,
     assert (await completing).status_code == 200
     r = await posting
     assert r.status_code == 409, r.text
-    assert "2026-09-30" in refusal(r)
+    assert "30 Sep 2026" in refusal(r)
 
 
 async def test_completion_waits_for_a_backdated_posting(monkeypatch, real_engine, real_client):
@@ -624,3 +624,21 @@ async def test_guard_judges_the_entry_as_committed_under_the_lock(real_engine, r
             await s.commit()
     r = await voiding
     assert r.status_code == 200, r.text
+
+
+async def test_a_held_entry_refusal_links_to_the_reconciliation_that_holds_it(client, session):
+    """The void toast leads to the reconciliation to unmatch the entry in, not just its name."""
+    from ui.components.journal import journal_void_toast
+    from ui.components.shell import refusal_fix
+    from ui.i18n import t
+    _, h = await admin(client)
+    b = await bank(client, h)
+    je = await deposit(client, h, b, "2026-09-10", 50.0)
+    sid = (await start(client, h, b["id"], "2026-09-30", OPENING + 50.0)).json()["id"]
+    assert (await match(client, h, sid, [je])).status_code == 200
+    detail = (await void(client, h, je, "2026-10-15")).json()["detail"]
+    link = {"href": f"/accounting/reconcile/{sid}", "label": t("recon.view_completed")}
+    assert refusal_fix(detail) == link
+    toast = __import__("json").loads(journal_void_toast(
+        {"results": [{"status": "refused", "detail": detail}]})["HX-Trigger"])["celerpToast"]
+    assert toast["action"] == [link]

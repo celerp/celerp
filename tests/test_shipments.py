@@ -10,6 +10,7 @@ from httpx import AsyncClient
 
 from celerp.output.doc_print import render_doc_print_html
 from celerp.services.list_behavior import LIST_BEHAVIOR, LIST_TYPES, behavior, is_money_list
+from ui.i18n import refusal_text
 from celerp.services.shipping import (
     COUNTRIES, INCOTERMS_2020, REASONS_FOR_EXPORT, SHIPMENT_HEADER_FIELDS,
     customs_backfill, line_gross_weight,
@@ -251,7 +252,7 @@ async def test_consolidation_rejects_mixed_currencies(client: AsyncClient):
     inv_a = await _issued_doc(client, tok, "invoice")
     inv_eur = await _issued_doc(client, tok, "invoice", currency="EUR")
     r = await _ship_docs(client, tok, [inv_a, inv_eur])
-    assert r.status_code == 422 and "currencies" in r.json()["detail"]
+    assert r.status_code == 422 and "currencies" in refusal_text(r.json()["detail"])
 
 
 @pytest.mark.asyncio

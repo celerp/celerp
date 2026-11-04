@@ -11,6 +11,9 @@ written, and the counts and errors say exactly what happened. Real PostgreSQL.
 
 from __future__ import annotations
 
+from ui.i18n import refusal_text
+from celerp.accounting_roles import period_locked_refusal
+
 import asyncio
 import types
 import uuid
@@ -90,7 +93,7 @@ async def test_a_document_whose_entry_is_refused_is_not_imported(committed_engin
     assert not [r for r in ledger if "INV-A" in r[0]], ledger
     assert (result.created, result.skipped, result.updated) == (1, 0, 0)
     assert len(result.errors) == 1
-    assert result.errors[0] == "doc:INV-A: " + t("error.period_locked", date=_LOCKED_THROUGH), result.errors
+    assert result.errors[0] == "doc:INV-A: " + refusal_text(period_locked_refusal("31 Jan 2026")), result.errors
     assert ("doc:INV-B", "doc.created") in ledger
     assert ("je:auto:doc:INV-B:fin", "acc.journal_entry.posted") in ledger
     assert await _entities(committed_engine, company_id) == ["doc:INV-B", "je:auto:doc:INV-B:fin"]
@@ -107,7 +110,7 @@ async def test_a_refused_row_does_not_block_a_corrected_row_for_the_same_documen
     result = await _batch_docs(factory, company_id, user, [refused, corrected])
 
     assert (result.created, result.skipped) == (1, 0), result
-    assert len(result.errors) == 1 and result.errors[0] == "doc:INV-C: " + t("error.period_locked", date=_LOCKED_THROUGH)
+    assert len(result.errors) == 1 and result.errors[0] == "doc:INV-C: " + refusal_text(period_locked_refusal("31 Jan 2026"))
     assert await _entities(committed_engine, company_id) == ["doc:INV-C", "je:auto:doc:INV-C:fin"]
 
 

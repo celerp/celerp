@@ -9,6 +9,7 @@ import zipfile
 
 import pytest
 from httpx import AsyncClient
+from ui.i18n import refusal_text
 
 
 async def _token(client: AsyncClient) -> str:
@@ -545,7 +546,7 @@ async def test_bulk_refuses_an_archive_over_the_limits_before_attaching_anything
         headers=_h(token),
     )
     assert resp.status_code == 422
-    assert resp.json()["detail"] == t(message[0], **message[1])
+    assert refusal_text(resp.json()["detail"]) == t(message[0], **message[1])
     assert await _item_files(client, token, item_id) == []
 
 

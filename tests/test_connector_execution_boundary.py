@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from celerp.connectors.base import ConnectorContext
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 from company_backup_support import company, owner, token
 from connector_test_support import connected
 from migration_support import real_client, real_engine  # noqa: F401
@@ -77,7 +77,7 @@ async def test_item_publish_waits_for_a_running_products_sync(shop, real_client,
 
     async with connector_execution(cid, "woocommerce", "manual_sync", ["products"]):
         r = await _outside(_request())
-        assert (r.status_code, r.json().get("detail")) == (409, t("connectors.fail_busy")), r.text
+        assert (r.status_code, refusal_text(r.json().get("detail"))) == (409, t("connectors.fail_busy")), r.text
         assert publish.await_count == status.await_count == 0
 
     r = await _outside(_request())
@@ -94,10 +94,10 @@ async def test_conflict_resolution_and_link_undo_refuse_while_products_sync(shop
     async with connector_execution(cid, "woocommerce", "manual_sync", ["products"]):
         r = await _outside(real_client.post("/connectors/woocommerce/products/rec-1/resolve",
                                             headers=_auth(tok), json={"keep": "store"}))
-        assert (r.status_code, r.json().get("detail")) == (409, t("connectors.fail_busy")), r.text
+        assert (r.status_code, refusal_text(r.json().get("detail"))) == (409, t("connectors.fail_busy")), r.text
         r = await _outside(real_client.post("/connectors/woocommerce/first-sync/undo-links",
                                             headers=_auth(tok)))
-        assert (r.status_code, r.json().get("detail")) == (409, t("connectors.fail_busy")), r.text
+        assert (r.status_code, refusal_text(r.json().get("detail"))) == (409, t("connectors.fail_busy")), r.text
 
 
 async def test_resolution_and_undo_need_no_store_credentials(shop, real_client, store_context):
@@ -107,9 +107,9 @@ async def test_resolution_and_undo_need_no_store_credentials(shop, real_client, 
     store_context.return_value = None
     r = await real_client.post("/connectors/woocommerce/products/rec-1/resolve",
                                headers=_auth(tok), json={"keep": "store"})
-    assert (r.status_code, r.json().get("detail")) == (404, t("connectors.err_conflict_gone")), r.text
+    assert (r.status_code, refusal_text(r.json().get("detail"))) == (404, t("connectors.err_conflict_gone")), r.text
     r = await real_client.post("/connectors/woocommerce/first-sync/undo-links", headers=_auth(tok))
-    assert (r.status_code, r.json().get("detail")) == (409, t("connectors.err_no_links_to_undo")), r.text
+    assert (r.status_code, refusal_text(r.json().get("detail"))) == (409, t("connectors.err_no_links_to_undo")), r.text
     assert store_context.await_count == 0
 
 
@@ -295,7 +295,7 @@ async def test_item_publish_on_another_store_is_refused_with_the_reason(unbound_
     monkeypatch.setattr(WooCommerceConnector, "ensure_product_link", publish)
     r = await real_client.post("/connector-items/woocommerce/sync", headers=_auth(tok),
                                json={"entity_ids": [eid], "action": "publish"})
-    assert r.status_code == 409 and "does not have them" in r.json()["detail"], r.text
+    assert r.status_code == 409 and "does not have them" in refusal_text(r.json()["detail"]), r.text
     publish.assert_not_awaited()
 
 

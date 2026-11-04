@@ -34,7 +34,9 @@ from datetime import date
 from decimal import Decimal
 
 from celerp.importers.adapters.base import MigrationDecisions, ScanError
-from celerp.importers.adapters.exports.book import PARTY_SIGN, ZERO, Book, Document, GLJournal, GLLine
+from celerp.importers.adapters.exports.book import (
+    MONEY_CONTROLS, PARTY_SIGN, ZERO, Book, Document, GLJournal, GLLine,
+)
 from celerp.importers.schema import CIFMode
 from celerp.services.money import checked_exchange_rate, round_money, split_to_base
 from ui.i18n import t
@@ -275,7 +277,7 @@ def _settlement(book: Book, j: GLJournal, owing: dict[str, Decimal]) -> Settleme
     contact, currency = docs[0].contact, docs[0].currency
     if any(d.contact != contact or d.currency != currency for d in docs):
         return None
-    banks = [ln for ln in j.lines if book.accounts[ln.account].control == "bank"]
+    banks = [ln for ln in j.lines if book.accounts[ln.account].control in MONEY_CONTROLS]
     party = [ln for ln in j.lines if ln.account in _party(book, doc_type)]
     if len(banks) != 1 or len(party) != 1:
         return None

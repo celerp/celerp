@@ -16,6 +16,7 @@ from migration_support import auth, maker, migration_env, real_client, real_engi
 from test_company_backup_lifecycle import _data_dir  # noqa: F401
 from test_company_handoff_identity_restore import _link_verified  # noqa: F401
 from test_peer_sync_end_to_end import _paired, _route_to_app, _sync, seed_demo
+from ui.i18n import date_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -83,7 +84,7 @@ async def test_accountant_role_and_firm_console(real_client, real_engine, monkey
     assert copy["last_sync"] is not None
     refused = [item for item in copy["attention"] if item["kind"] == "refused"]
     assert [item["label"] for item in refused] == [invoice["ref_id"]], copy["attention"]
-    assert (await _today(real_engine, client_company)).isoformat() in refused[0]["reason"]
+    assert date_text(await _today(real_engine, client_company)) in refused[0]["reason"]
     assert _row(view, "Firm Practice")["attention"] == []
 
     # The client sees only its own company; it has no accountant key of its own.

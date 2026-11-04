@@ -16,6 +16,7 @@ from httpx import ASGITransport, AsyncClient
 from celerp.main import app
 from test_helpers import invite_user, register_admin
 from ui.app import app as ui_app
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -109,4 +110,4 @@ async def test_switch_into_a_deactivated_company_says_to_ask_the_owner(client, s
     _, member_token, perm_id = await _deactivated_first_company(client, session)
     r = await client.post(f"/auth/switch-company/{perm_id}", headers=_h(member_token))
     assert r.status_code == 403
-    assert "Ask the company owner" in r.json()["detail"]
+    assert "Ask the company owner" in refusal_text(r.json()["detail"])

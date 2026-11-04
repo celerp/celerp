@@ -45,8 +45,8 @@ from celerp_accounting.import_service import AccImportRecord
 from celerp_accounting.ledger_accounts import require_money_account
 from celerp_accounting.models import Account, BankAccount, BankStatementLine, ReconciliationRule, ReconciliationSession
 from celerp.models.projections import Projection
-from celerp.accounting_roles import AccountRole, refusal
-from celerp.services.account_roles import current_settings, line_roles, merge_survivors, resolve, resolve_many
+from celerp.accounting_roles import AccountRole, catalog_refusal, refusal
+from celerp.services.account_roles import current_settings, line_roles, merge_survivors, resolve, resolve_many, role_map
 from celerp.services.ledger_rows import REVERSAL_SUFFIX, journal_rows
 from celerp.services.ledger_display import readable_memo
 from celerp.services.lot_origin import rerun_after_placing
@@ -68,7 +68,7 @@ from celerp.services.money import (
 )
 from celerp.services.permissions import locked_authority, require_permission
 from celerp.schemas.numbers import FiniteFloat
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 logger = logging.getLogger(__name__)
 
@@ -553,7 +553,7 @@ def plan_chart_import(records: list[Any], existing: dict[str, dict], targets: di
                     row["account_type"], existing.get(parent) or valid[adding[parent]], parent, targets,
                 )
                 if problem:
-                    bad[i] = f"{label(i, row['code'])}: {problem}"
+                    bad[i] = f"{label(i, row['code'])}: {refusal_text(problem)}"
                 continue
             if parent in in_file:
                 bad[i] = f"{label(i, row['code'])}: its parent {parent} in this file could not be added."
@@ -2785,7 +2785,7 @@ async def _company_bank(
         query = query.with_for_update(key_share=True).execution_options(populate_existing=True)
     bank = (await session.execute(query)).scalar_one_or_none()
     if not bank:
-        raise HTTPException(status_code=404, detail=t("acct.err_bank_account_not_found"))
+        raise HTTPException(status_code=404, detail=catalog_refusal("acct.err_bank_account_not_found"))
     return bank
 
 
@@ -3168,7 +3168,7 @@ async def _get_recon(
         query = query.with_for_update().execution_options(populate_existing=True)
     recon = (await db.execute(query)).scalar_one_or_none()
     if not recon:
-        raise HTTPException(status_code=404, detail=t("acct.err_recon_not_found"))
+        raise HTTPException(status_code=404, detail=catalog_refusal("acct.err_recon_not_found"))
     return recon
 
 
@@ -3186,10 +3186,10 @@ async def _lock_recon(
         .with_for_update(key_share=True).execution_options(populate_existing=True)
     )).scalar_one_or_none()
     if not bank:
-        raise HTTPException(status_code=404, detail=t("acct.err_bank_account_not_found"))
+        raise HTTPException(status_code=404, detail=catalog_refusal("acct.err_bank_account_not_found"))
     recon = await _get_recon(db, session_id, company_id, for_update=True)
     if editable and recon.status == "completed":
-        raise HTTPException(status_code=409, detail=t("error.recon_completed"))
+        raise HTTPException(status_code=409, detail=catalog_refusal("error.recon_completed"))
     return recon, bank
 
 
@@ -3198,7 +3198,7 @@ async def _recon_bank_and_entries(
 ) -> tuple[BankAccount, list[dict]]:
     bank = (await db.execute(select(BankAccount).where(BankAccount.id == recon.bank_account_id))).scalar_one_or_none()
     if not bank:
-        raise HTTPException(status_code=404, detail=t("acct.err_bank_account_not_found"))
+        raise HTTPException(status_code=404, detail=catalog_refusal("acct.err_bank_account_not_found"))
     return bank, await _je_entries_for_account(db, company_id, bank)
 
 
@@ -3236,8 +3236,8 @@ async def _settled_difference(
     balance = _recon_balance(recon, bank, all_entries)
     if balance is None:
         relabel = (await _bank_dicts(db, recon.company_id, [bank]))[0]["relabel_to"]
-        raise HTTPException(status_code=422, detail=t(
-            "acct.err_recon_amount_unknown_relabel", currency=bank.currency, base=relabel) if relabel else t(
+        raise HTTPException(status_code=422, detail=catalog_refusal(
+            "acct.err_recon_amount_unknown_relabel", currency=bank.currency, base=relabel) if relabel else catalog_refusal(
             "acct.err_recon_amount_unknown", currency=bank.currency))
     return balance[1]
 
@@ -3356,11 +3356,11 @@ def _bank_rate(bank: BankAccount, base: str, rate: float | None) -> Decimal | No
     if bank.currency == base:
         return None
     if rate is None:
-        raise HTTPException(status_code=422, detail=t("acct.err_bank_rate_required", currency=bank.currency, base=base))
+        raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_bank_rate_required", currency=bank.currency, base=base))
     try:
         return checked_exchange_rate(rate)
     except ValueError:
-        raise HTTPException(status_code=422, detail=t("acct.err_bank_rate_invalid", raw=rate)) from None
+        raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_bank_rate_invalid", raw=rate)) from None
 
 
 def _money_line(fields: dict, currency: str, rate: Decimal | None, amount: Decimal, base_amount: Decimal,
@@ -3462,10 +3462,10 @@ def _refuse_ineligible(reasons: dict[str, str | None]) -> None:
     here (counted elsewhere, or with no amount in the account's currency)."""
     for reason in reasons.values():
         if reason == "acct.err_recon_book_entry_missing":
-            raise HTTPException(status_code=400, detail=t(reason))
+            raise HTTPException(status_code=400, detail=catalog_refusal(reason))
     for reason in reasons.values():
         if reason:
-            raise HTTPException(status_code=409, detail=t(reason))
+            raise HTTPException(status_code=409, detail=catalog_refusal(reason))
 
 
 @router.post(
@@ -3499,7 +3499,7 @@ async def start_reconciliation(
                                          != round_money(payload.statement_balance, bank.currency)):
             raise HTTPException(
                 status_code=409,
-                detail=t("acct.err_recon_open_exists"),
+                detail=catalog_refusal("acct.err_recon_open_exists"),
             )
         return _recon_to_dict(current)
 
@@ -3612,7 +3612,7 @@ async def complete_reconciliation(
     if difference != 0:
         raise HTTPException(
             status_code=422,
-            detail=t("acct.err_recon_unbalanced", difference=_money_text(difference, bank.currency)),
+            detail=catalog_refusal("acct.err_recon_unbalanced", difference=_money_text(difference, bank.currency)),
         )
 
     recon.status = "completed"
@@ -3649,7 +3649,7 @@ async def reopen_reconciliation(
         ReconciliationSession.status == "open",
     ).limit(1))).scalar_one_or_none()
     if other is not None:
-        raise HTTPException(status_code=409, detail=t("error.recon_reopen_other_open"))
+        raise HTTPException(status_code=409, detail=catalog_refusal("error.recon_reopen_other_open"))
     completed_at = recon.completed_at.isoformat() if recon.completed_at else None
     await emit_event(
         db, company_id=company_id, entity_id=f"recon:{recon.id}", entity_type="reconciliation",
@@ -3776,7 +3776,7 @@ def _statement_csv_bytes(content: bytes, filename: str, content_type: str | None
         try:
             cols, rows = read_table(content, "statement.xlsx")
         except TabularError as e:
-            raise HTTPException(status_code=422, detail=str(e))
+            raise HTTPException(status_code=422, detail=e.detail)
         return _rows_to_csv(rows, cols).encode("utf-8")
     return content
 
@@ -3800,7 +3800,7 @@ async def _import_statement_lines(
     try:
         parsed = parse_bank_csv(content, col_map)
     except TabularError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=422, detail=e.detail)
 
     if parsed["needs_mapping"]:
         return {
@@ -3869,7 +3869,7 @@ async def _import_statement_lines(
                 status_code=409,
                 detail={
                     "code": "statement_has_progress",
-                    "message": t("acct.err_statement_has_progress"),
+                    **catalog_refusal("acct.err_statement_has_progress"),
                 },
             )
         for line in existing:
@@ -3925,7 +3925,7 @@ async def import_recon_csv(
     try:
         content = await read_upload_bytes(file)
     except TabularError as e:
-        raise HTTPException(status_code=413, detail=str(e))
+        raise HTTPException(status_code=413, detail=e.detail)
     col_map = _json.loads(column_map) if column_map else None
     return await _import_statement_lines(db, recon, company_id, content, file.filename or "statement.csv", col_map)
 
@@ -3948,7 +3948,7 @@ async def import_recon_file(
     try:
         content, meta = load_file(payload.file_id, company_id, user.id)
     except (FileNotFoundError, PermissionError):
-        raise HTTPException(status_code=422, detail=f"Uploaded file {payload.file_id} was not found.")
+        raise HTTPException(status_code=422, detail=refusal("error.file_not_found", t("error.file_not_found", "en")))
     filename = str(meta.get("filename") or "statement.csv")
     content = _statement_csv_bytes(content, filename, meta.get("content_type"))
     return await _import_statement_lines(db, recon, company_id, content, filename, payload.column_map)
@@ -4051,11 +4051,11 @@ async def _next_reconciliation_je_id(
         if row is None:
             return entity_id
         if row.entity_type != "journal_entry":
-            raise HTTPException(status_code=409, detail=t("acct.err_recon_entry_exists"))
+            raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_entry_exists"))
         if (row.state or {}).get("status") != "void":
             raise HTTPException(
                 status_code=409,
-                detail=t("acct.err_recon_line_has_entry"),
+                detail=catalog_refusal("acct.err_recon_line_has_entry"),
             )
         attempt += 1
 
@@ -4072,15 +4072,15 @@ async def _void_reconciliation_created_je(
 
     je_id = line.matched_je_id
     if not je_id:
-        raise HTTPException(status_code=409, detail=t("acct.err_recon_undo_no_entry"))
+        raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_undo_no_entry"))
     row = await db.get(Projection, {"company_id": company_id, "entity_id": je_id})
     if row is None or row.entity_type != "journal_entry":
-        raise HTTPException(status_code=409, detail=t("acct.err_recon_undo_entry_gone"))
+        raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_undo_entry_gone"))
     state = row.state or {}
     if state.get("status") == "void":
         return
     if state.get("je_type") not in {"recon_create", "recon_split"}:
-        raise HTTPException(status_code=409, detail=t("acct.err_recon_undo_foreign"))
+        raise HTTPException(status_code=409, detail=catalog_refusal("acct.err_recon_undo_foreign"))
     await emit_event(
         db, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
         event_type="acc.journal_entry.voided",
@@ -4109,7 +4109,8 @@ async def match_stmt_line(
             return _stmt_line_to_dict(sl)
         raise HTTPException(
             status_code=409,
-            detail="This line already created a journal entry. Unmatch it first so that entry is reversed.",
+            detail=refusal("acct.err_recon_line_created",
+                           "This line already created a journal entry. Unmatch it first so that entry is reversed."),
         )
     bank = await db.get(BankAccount, recon.bank_account_id)
     _refuse_ineligible(await _eligible_entries(db, company_id, bank, recon, [payload.je_id], line_id=sl.id))
@@ -4183,18 +4184,19 @@ async def create_je_from_line(
     if sl.status == "matched":
         raise HTTPException(
             status_code=409,
-            detail="This line is already matched. Unmatch it before creating a journal entry.",
+            detail=refusal("acct.err_recon_line_matched",
+                           "This line is already matched. Unmatch it before creating a journal entry."),
         )
     bank = (await db.execute(select(BankAccount).where(BankAccount.id == recon.bank_account_id))).scalar_one_or_none()
     if not bank:
-        raise HTTPException(status_code=404, detail=t("acct.err_bank_account_not_found"))
+        raise HTTPException(status_code=404, detail=catalog_refusal("acct.err_bank_account_not_found"))
     await require_destinations(db, company_id, {payload.account_code})
 
     line_amount = abs(float(sl.amount))
     if payload.amount is not None and abs(float(payload.amount) - line_amount) >= 0.005:
         raise HTTPException(
             status_code=422,
-            detail=t("acct.err_recon_partial"),
+            detail=catalog_refusal("acct.err_recon_partial"),
         )
     entry_date = payload.date or sl.line_date
     memo = payload.memo or sl.description
@@ -4332,12 +4334,12 @@ async def patch_stmt_line(
         if payload.status not in ("unmatched", "skipped"):
             raise HTTPException(
                 status_code=422,
-                detail=t("acct.err_recon_status_set"),
+                detail=catalog_refusal("acct.err_recon_status_set"),
             )
         if sl.status in ("matched", "created"):
             raise HTTPException(
                 status_code=409,
-                detail=t("acct.err_recon_status_matched"),
+                detail=catalog_refusal("acct.err_recon_status_matched"),
             )
         sl.status = payload.status
         sl.matched_je_id = None
@@ -4495,11 +4497,11 @@ async def write_off_difference(
     if abs(remaining) > tol:
         raise HTTPException(
             status_code=422,
-            detail=t("acct.err_writeoff_too_large", difference=_money_text(remaining, bank.currency),
+            detail=catalog_refusal("acct.err_writeoff_too_large", difference=_money_text(remaining, bank.currency),
                      tolerance=_money_text(tol, bank.currency)),
         )
     if remaining == 0:
-        raise HTTPException(status_code=422, detail=t("acct.err_writeoff_nothing"))
+        raise HTTPException(status_code=422, detail=catalog_refusal("acct.err_writeoff_nothing"))
     difference = to_stored_float(remaining)
     if payload.account_code:
         account_code = payload.account_code
@@ -4647,7 +4649,7 @@ async def _get_recon_and_line(
         ).with_for_update()
     )).scalar_one_or_none()
     if not sl:
-        raise HTTPException(status_code=404, detail=t("acct.err_statement_line_not_found"))
+        raise HTTPException(status_code=404, detail=catalog_refusal("acct.err_statement_line_not_found"))
     return recon, sl
 
 

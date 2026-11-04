@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import select
 
 from celerp.models.ledger import LedgerEntry
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 
 async def _register(client) -> str:
@@ -87,7 +87,7 @@ async def test_put_workflow_rejects_bad_time_unit(client) -> None:
     r = await client.put(f"/manufacturing/items/{fg}/workflow", headers=_h(token),
                          json={"steps": [_step(instructions="X", time_value=1, time_unit="weeks")]})
     assert r.status_code == 422
-    assert "time unit" in r.json()["detail"].lower()
+    assert "time unit" in refusal_text(r.json()["detail"]).lower()
 
 
 @pytest.mark.asyncio
@@ -97,7 +97,7 @@ async def test_put_workflow_rejects_unknown_ref_file(client) -> None:
     r = await client.put(f"/manufacturing/items/{fg}/workflow", headers=_h(token),
                          json={"steps": [_step(instructions="X", ref_file_id="nope")]})
     assert r.status_code == 422
-    assert r.json()["detail"] == t("manufacturing.err_step_file_not_attached", "en")
+    assert refusal_text(r.json()["detail"]) == t("manufacturing.err_step_file_not_attached", "en")
 
 
 @pytest.mark.asyncio

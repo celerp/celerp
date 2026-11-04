@@ -196,3 +196,41 @@ async def test_every_first_party_screen_gets_its_module_help_on_both_routes(clie
         assert missing == []
     finally:
         registry.reset()
+
+
+async def test_a_screen_offers_help_only_from_its_own_module_or_core(client):
+    """The Help panel of a sidebar screen lists pages of the module that owns the screen
+    and core pages. Another module's page shows there only when one of its routes names
+    that screen's address exactly (the shared Reports hub), never because a broader route
+    happens to cover it: an invoice list must not offer manufacturing help because both
+    live under /docs."""
+    from celerp.help import checks
+    registry.reset()
+    try:
+        headers = await _headers(client)
+        index = registry.get_index()
+        stray = []
+        for module, paths in sorted(checks.nav_screens().items()):
+            for path in dict.fromkeys(paths):
+                r = await client.get("/help/for-route", params={"path": path}, headers=headers)
+                stray += [f"{path}: {p['id']}" for p in r.json()["pages"]
+                          if index.pages[p["id"]].module not in (module, "core")
+                          and path not in index.pages[p["id"]].routes]
+        assert stray == [], "\n".join(stray)
+    finally:
+        registry.reset()
+
+
+async def test_help_for_route_keeps_typed_lists_apart(client, monkeypatch):
+    found = [_page("docs.sales", "Sales", routes=["/docs?type=invoice"]),
+             _page("docs.all", "All", routes=["/docs"])]
+    monkeypatch.setattr(registry, "_index", registry.Index(pages={p.id: p for p in found}))
+    headers = await _headers(client)
+
+    async def ids(path: str) -> list[str]:
+        r = await client.get("/help/for-route", params={"path": path}, headers=headers)
+        return [p["id"] for p in r.json()["pages"]]
+
+    assert await ids("/docs?type=invoice&status=draft") == ["docs.sales"]
+    assert await ids("/docs?type=production_order") == []
+    assert await ids("/docs?q=x") == ["docs.all"]

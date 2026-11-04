@@ -28,6 +28,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from test_helpers import import_sent_po
+from ui.i18n import refusal_text
 
 
 # ---------------------------------------------------------------------------
@@ -647,7 +648,7 @@ async def test_manufacturing_create_order_empty_description(client):
         "output_item_id": "item:y", "quantity": 1,
     })
     assert r.status_code == 422
-    assert r.json()["detail"] == "Enter a description."
+    assert refusal_text(r.json()["detail"]) == "Enter a description."
 
 
 # ---------------------------------------------------------------------------

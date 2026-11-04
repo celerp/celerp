@@ -11,6 +11,8 @@ import uuid
 
 import pytest
 
+from .conftest import answer_confirms
+
 pytestmark = pytest.mark.browser
 
 
@@ -35,7 +37,7 @@ def _select_all_and_act(page, action: str, form_id: str) -> None:
 def test_receipt_summary_shows_after_the_reload_and_one_line_goes_back(page, ui_server, api):
     tag = uuid.uuid4().hex[:6].upper()
     bill = _bill(api, tag)
-    page.on("dialog", lambda d: d.accept())
+    answer_confirms(page)
     page.goto(f"{ui_server}/docs/{bill}", wait_until="domcontentloaded")
 
     _select_all_and_act(page, "li-fulfill", "li-bulk-fulfill-btn")

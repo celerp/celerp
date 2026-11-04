@@ -24,6 +24,7 @@ from celerp.models.ledger import LedgerEntry
 from fa_fixtures import FA
 from test_runs import _contributed, _lines, _lock, _managed_from, _movements, _notices, _owner_id, _run, _set_module
 from test_helpers import doc_version
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -246,7 +247,7 @@ async def test_s4_draft_finalize_completes_sale_atomically(fa, monkeypatch):
 
     monkeypatch.setattr(disposal, "_plan_asset", broken)
     refused = await _doc(fa, van_inv, "finalize")
-    assert refused.status_code == 409 and "Disposal failed" in refused.json()["detail"]
+    assert refused.status_code == 409 and "Disposal failed" in refusal_text(refused.json()["detail"])
     assert (await fa.state(van_inv))["status"] == "draft"
     assert not [je for je in await fa.entities("journal_entry") if je["entity_id"].startswith(f"je:auto:{van_inv}:")]
     assert not await _sale_journals(fa, van)
@@ -376,13 +377,13 @@ async def test_s4_credit_exceeding_remaining_and_duplicate_refused(fa):
     first = await _credit(fa, inv, "2000")
     over = (await fa.ok(await _credit_note(fa, inv, "9000", on="2026-06-12")))["id"]
     refused = await _doc(fa, over, "finalize")
-    assert refused.status_code == 409 and "Only $8,000.00" in refused.json()["detail"]
-    assert number in refused.json()["detail"]
+    assert refused.status_code == 409 and "Only $8,000.00" in refusal_text(refused.json()["detail"])
+    assert number in refusal_text(refused.json()["detail"])
     assert (await fa.state(over))["status"] == "draft"
     await _credit(fa, inv, "8000", on="2026-06-15", returned=True)
     second = (await fa.ok(await _credit_note(fa, inv, "1", on="2026-06-16", returned=True)))["id"]
     refused = await _doc(fa, second, "finalize")
-    assert refused.status_code == 409 and number in refused.json()["detail"]
+    assert refused.status_code == 409 and number in refusal_text(refused.json()["detail"])
     blocked = await _doc(fa, inv, "void")
     assert blocked.status_code == 409 and await _number(fa, first) in blocked.json()["detail"]["message"]
     assert (await fa.state(inv))["status"] != "void"
@@ -409,11 +410,11 @@ async def test_s4_operator_finalizes_and_voids_sale(fa):
     await fa.session.commit()
     await fa.ok(await _doc(fa, inv, "unvoid"))  # the owner completes it again
     refused = await _doc(fa, inv, "void", headers=operator)
-    assert refused.status_code == 403 and number in refused.json()["detail"]
+    assert refused.status_code == 403 and number in refusal_text(refused.json()["detail"])
     assert (await fa.asset(car))["status"] == "sold"
     await fa.ok(await _doc(fa, inv, "revert-to-draft"))
     refused = await _doc(fa, inv, "finalize", headers=operator)
-    assert refused.status_code == 403 and number in refused.json()["detail"]
+    assert refused.status_code == 403 and number in refusal_text(refused.json()["detail"])
     assert (await fa.state(inv))["status"] == "draft"
 
 
@@ -437,7 +438,7 @@ async def test_s4_mixed_invoice_goods_only_credit_leaves_clearing(fa):
              "source_line_id": "no-such-line"}
     refused = await _discard_refused(fa, await fa.client.post("/docs", headers=fa.h, json={
         "doc_type": "credit_note", "original_doc_id": inv, "line_items": [stray], "total": 100.0}))
-    assert refused.status_code == 422 and "Car" in refused.json()["detail"]
+    assert refused.status_code == 422 and "Car" in refusal_text(refused.json()["detail"])
 
 
 async def test_s4_paid_sale_asset_returned(fa):
@@ -449,7 +450,7 @@ async def test_s4_paid_sale_asset_returned(fa):
     await _credit(fa, inv, "2000")
     short = (await fa.ok(await _credit_note(fa, inv, "7000", on="2026-06-20", returned=True)))["id"]
     refused = await _doc(fa, short, "finalize")
-    assert refused.status_code == 409 and "8,000" in refused.json()["detail"]
+    assert refused.status_code == 409 and "8,000" in refusal_text(refused.json()["detail"])
     assert (await fa.client.delete(f"/docs/{short}", headers=fa.h)).status_code == 200
     made = await fa.operate(f"/assets/{car}/sale/credit", {"kind": "returned", "date": "2026-06-20"}, key="ret-1")
     note = await fa.state(made["credit_note_id"])
@@ -506,7 +507,7 @@ async def test_s4_every_caller_passes_hook(fa, caller):
         with pytest.raises(HTTPException) as refused:
             await auto_je.create_for_doc_finalized(fa.session, company_id=cid, user_id=uid, doc_id="doc:IMP-1",
                                                    doc=doc)
-        assert number in refused.value.detail
+        assert number in refusal_text(refused.value.detail)
         await fa.session.rollback()
         return
     inv = await _sell(fa, car)
@@ -524,7 +525,7 @@ async def test_s4_every_caller_passes_hook(fa, caller):
         with pytest.raises(HTTPException) as refused:
             await auto_je.create_for_credit_note_finalized(fa.session, company_id=cid, user_id=None,
                                                            doc_id="doc:CN-LEGACY", doc=doc)
-        assert number in refused.value.detail
+        assert number in refusal_text(refused.value.detail)
         await fa.session.rollback()
     if caller == "repair":
         before = len(await fa.module_journals())
@@ -622,17 +623,17 @@ async def test_s4_document_write_validation(fa):
         return {"name": name, "quantity": 1, "unit_price": 100.0, **({"asset_id": asset_id} if asset_id else {}), **kw}
 
     on_bill = await create("bill", [line("Bill line", car)])
-    assert on_bill.status_code == 422 and "Bill line" in on_bill.json()["detail"]
+    assert on_bill.status_code == 422 and "Bill line" in refusal_text(on_bill.json()["detail"])
     not_pending = await create("invoice", [line("Unsold car", car)])
-    assert not_pending.status_code in (409, 422) and car_number in not_pending.json()["detail"]
+    assert not_pending.status_code in (409, 422) and car_number in refusal_text(not_pending.json()["detail"])
     inv = await _sell(fa, car, on="2026-01-20")
     twice = await create("invoice", [line("Car again", car), line("Car twice", car)])
-    assert twice.status_code == 422 and "Car twice" in twice.json()["detail"]
+    assert twice.status_code == 422 and "Car twice" in refusal_text(twice.json()["detail"])
     other = await create("invoice", [line("Car elsewhere", car)])
-    assert other.status_code == 409 and f"{car_number} is on draft invoice" in other.json()["detail"]
+    assert other.status_code == 409 and f"{car_number} is on draft invoice" in refusal_text(other.json()["detail"])
     asset_line = await _asset_line(fa, inv)
     two = await _patch(fa, inv, [{**asset_line, "quantity": 2}])
-    assert two.status_code == 422 and asset_line["name"] in two.json()["detail"]
+    assert two.status_code == 422 and asset_line["name"] in refusal_text(two.json()["detail"])
     swapped = await _patch(fa, inv, [{**asset_line, "asset_id": van}])
     assert swapped.status_code in (409, 422)
     await _patch_lines(fa, inv, [asset_line, {"name": "Delivery", "quantity": 1, "unit_price": 50.0}])
@@ -640,7 +641,7 @@ async def test_s4_document_write_validation(fa):
     goods = next(li for li in (await fa.state(inv))["line_items"] if not li.get("asset_id"))
     credit = await create("credit_note", [line("Wrong credit", car, source_line_id=goods["line_id"], unit_price=50.0)],
                           original_doc_id=inv, total=50.0)
-    assert credit.status_code == 422 and "Wrong credit" in credit.json()["detail"]
+    assert credit.status_code == 422 and "Wrong credit" in refusal_text(credit.json()["detail"])
     final = await _patch(fa, inv, [{**asset_line, "asset_id": van}])
     assert final.status_code == 409
     assert (await _asset_line(fa, inv))["asset_id"] == car
@@ -716,10 +717,10 @@ async def test_s4_deleted_draft_and_double_sale_refused(fa):
     draft_number = await _number(fa, inv)
     twice = await fa.post(f"/assets/{car}/sell", {"date": "2026-02-11", "price": "1", "contact_id": await fa.buyer(),
                                                   "preview": True, "op_key": "twice"})
-    assert twice.status_code == 409 and f"{number} is on draft invoice {draft_number}" in twice.json()["detail"]
+    assert twice.status_code == 409 and f"{number} is on draft invoice {draft_number}" in refusal_text(twice.json()["detail"])
     scrap = await fa.post(f"/assets/{car}/dispose", {"date": "2026-02-11", "reason": "scrapped", "preview": True,
                                                      "op_key": "scrap"})
-    assert scrap.status_code == 409 and f"{number} is on draft invoice {draft_number}" in scrap.json()["detail"]
+    assert scrap.status_code == 409 and f"{number} is on draft invoice {draft_number}" in refusal_text(scrap.json()["detail"])
     assert (await fa.client.delete(f"/docs/{inv}", headers=fa.h)).status_code == 200
     sale = await _sale(fa, car)
     assert sale["draft_deleted"] is True and set(sale["actions"]) >= {"reissue", "cancel"}
@@ -753,7 +754,7 @@ async def test_s4_module_off_void_and_credit_correct_disposal(fa):
     await _assert_clearing(fa, van, "0")
     assert (await fa.asset(car))["status"] == "sold"
     refused = await _doc(fa, truck_inv, "finalize")
-    assert refused.status_code == 409 and truck_number in refused.json()["detail"]
+    assert refused.status_code == 409 and truck_number in refusal_text(refused.json()["detail"])
     assert (await fa.state(truck_inv))["status"] == "draft"
 
 

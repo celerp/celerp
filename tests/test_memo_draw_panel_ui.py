@@ -236,6 +236,14 @@ def test_a_drawn_invoice_line_badge_names_the_memo_its_goods_are_out_on():
     assert _line_status_doc({"item_id": "item:1"}, "item:1", held_by) == ("doc:inv-1", "PF-1")
 
 
+def test_a_memo_line_taken_by_a_draft_invoice_badge_names_the_memo_not_the_invoice():
+    """A draw restamps the lot onto its invoice, but on the memo page the goods are still out on
+    this memo: the On memo chip names the memo, and the Shipped column names the invoice."""
+    html = _html(_memo(), item_status_doc_map={"item:1": ("doc:inv-1", "PF-1")})
+    chip = re.search(r'<td[^>]*col-item-status.*?</td>', html, re.S).group(0)
+    assert "M-12" in chip and "PF-1" not in chip
+
+
 _PICKS = {"line_id_0": LINE, "qty_0": "1", "currency": "USD"}
 
 
@@ -297,3 +305,49 @@ def test_the_draw_confirm_waits_for_the_preview_of_the_current_selection():
     assert "disabled" in submit
     preview = re.search(r'<div[^>]*id="draw-preview"[^>]*>', panel).group(0)
     assert 'hx-sync="this:replace"' in preview
+
+
+def test_memo_totals_explain_still_on_memo_and_outstanding():
+    """Still on memo says what it counts, or that nothing has been shipped yet, and a memo's
+    Outstanding says a memo is not paid."""
+    from ui.i18n import t
+
+    fixed = {"memo_fixed_amounts": {"still_on_memo": 0, "takes": []}, "amount_outstanding": 385.0}
+    unshipped = _memo(**fixed)
+    unshipped["line_items"][0]["shipped_label"] = "Not shipped"
+    html = _html(unshipped)
+    assert t("documents.memo_nothing_out_hint") in html
+    assert t("doc.memo_outstanding_hint") in html
+    shipped = _memo(**fixed)
+    shipped["line_items"][0]["shipped_label"] = "On Memo"
+    html = _html(shipped)
+    assert t("documents.memo_still_on_memo_hint") in html and t("documents.memo_nothing_out_hint") not in html
+
+
+@pytest.mark.asyncio
+async def test_issued_memo_ship_to_is_a_click_to_edit_value_that_opens_the_picker(ui_client):
+    """An issued memo shows its Ship To as a value ("--" when none), not an open select;
+    clicking it opens the customer's addresses, since the address stays correctable."""
+    issued = _memo(contact_id="contact:c1")
+    html = _html(issued, contact_shipping_addresses=[{"label": "Shop", "full_address": "1 Main St"}])
+    ship_to = html[html.index(t("page.ship_to")):]
+    ship_to = ship_to[:ship_to.index(t("doc.attn"))]
+    assert "<select" not in ship_to and t("documents.select_address_lower") not in ship_to
+    assert f"/docs/{MEMO}/field/contact_shipping_address/edit" in ship_to and ">--<" in ship_to
+
+    contact = {"addresses": [{"address_type": "shipping", "label": "Shop", "full_address": "1 Main St"},
+                             {"address_type": "billing", "full_address": "9 Bill Rd"}]}
+    with patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}})), \
+         patch("ui.api_client.get_doc", new=AsyncMock(return_value=issued)), \
+         patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)):
+        editor = await ui_client.get(f"/docs/{MEMO}/field/contact_shipping_address/edit")
+    assert editor.status_code == 200
+    assert "<select" in editor.text and "1 Main St" in editor.text and "9 Bill Rd" not in editor.text
+
+
+def test_issued_line_total_reads_in_the_unit_price_format():
+    """An issued line shows its unit price and total the same way, both with the currency."""
+    html = _html(_memo())
+    price = re.search(r'<td class="cell--number col-unit-price">([^<]*)</td>', html).group(1)
+    total = re.search(r'<td class="cell--number col-total">([^<]*)</td>', html).group(1)
+    assert price.strip() == "$175.00" and total.strip() == "$350.00"

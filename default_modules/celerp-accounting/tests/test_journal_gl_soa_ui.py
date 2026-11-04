@@ -14,6 +14,8 @@ in test_financial_reports_ui.py.
 from __future__ import annotations
 
 import json
+from html import escape
+import re
 import os
 from unittest.mock import AsyncMock, patch
 
@@ -21,6 +23,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
+from celerp.services.permissions import missing_permission_text
 from test_helpers import make_test_token
 from ui.api_client import APIError, _api_error
 from ui.i18n import t
@@ -401,7 +404,7 @@ async def test_je_form_not_authorized_below_manager(ui_client):
         for p in ps:
             p.stop()
     assert r.status_code == 200
-    assert t("acct.not_authorized") in r.text
+    assert escape(missing_permission_text("manage_accounting"), quote=False) in r.text
     assert "idempotency_token" not in r.text
 
 
@@ -539,7 +542,8 @@ async def test_no_matches_state_differs_from_empty_period(ui_client, page, call)
     empty_period["total_debit"] = empty_period["total_credit"] = 0.0
     r = await _get_spied(ui_client, page, call, AsyncMock(return_value=empty_period))
     assert r.status_code == 200
-    assert t("acct.no_journal_entries") in r.text
+    # An empty period names its dates and offers All time.
+    assert re.search(r'<p class="empty-state">[^<]*<a href="[^"]*\?preset=all"', r.text)
     assert t("acct.no_matches") not in r.text
 
 

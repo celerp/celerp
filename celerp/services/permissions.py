@@ -21,12 +21,13 @@ from fastapi import Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.accounting_roles import catalog_refusal
 from celerp.db import get_session
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company
 from celerp.services.auth import ROLE_LEVELS, get_current_company_id, get_current_role, normalize_role
 from celerp.services.company_lock import AUTHORITY, locked_company
-from ui.i18n import t
+from ui.i18n import refusal_text
 
 
 class Role(NamedTuple):
@@ -37,10 +38,14 @@ class Role(NamedTuple):
 
 class Permission(NamedTuple):
     key: str
-    label: str  # plain untranslated string, like the matrix rows it labels
     default_role: str
     grantable: bool  # False: fixed at default_role, overrides rejected
     floor_role: str  # lowest role an owner may set as this permission's minimum
+
+    @property
+    def label_key(self) -> str:
+        """The catalog key of the name the role editor and refusals show."""
+        return f"perm.name.{self.key}"
 
 
 ROLES: list[Role] = [
@@ -55,47 +60,47 @@ ROLES: list[Role] = [
 # override may hand it below admin. The floor also clamps every stored override up to at least the floor on read,
 # so the invariant holds for grandfathered overrides, not only at save time.
 PERMISSIONS: list[Permission] = [
-    Permission("view_dashboards", "View dashboards", "viewer", True, "viewer"),
-    Permission("view_documents", "View documents", "viewer", True, "viewer"),
-    Permission("view_contacts", "View contacts", "viewer", True, "viewer"),
-    Permission("view_inventory", "View inventory", "viewer", True, "viewer"),
-    Permission("edit_documents", "Create & edit documents", "operator", True, "viewer"),
-    Permission("edit_contacts", "Create & edit contacts", "operator", True, "viewer"),
-    Permission("edit_inventory", "Create & edit inventory", "operator", True, "viewer"),
-    Permission("edit_inventory_amounts", "Edit quantities & weights", "operator", True, "viewer"),
-    Permission("finalize_documents", "Finalize & void documents", "operator", True, "viewer"),
-    Permission("fulfill_documents", "Fulfill & receive documents", "operator", True, "viewer"),
-    Permission("record_payments", "Record payments", "operator", True, "viewer"),
-    Permission("manage_labels", "Manage label templates", "operator", True, "viewer"),
-    Permission("manage_manufacturing", "Manage manufacturing", "operator", True, "viewer"),
-    Permission("view_fixed_assets", "View fixed assets", "operator", True, "viewer"),
-    Permission("manage_fixed_assets", "Manage fixed assets", "operator", True, "viewer"),
-    Permission("check_fixed_assets", "Record asset checks", "operator", True, "viewer"),
-    Permission("use_ai_assistant", "Use AI assistant", "operator", True, "viewer"),
-    Permission("run_backups", "Run backups", "operator", True, "viewer"),
-    Permission("view_subscriptions", "View subscriptions", "operator", True, "viewer"),
-    Permission("view_inventory_costs", "See inventory costs", "manager", True, "viewer"),
-    Permission("set_inventory_prices", "Set inventory prices", "manager", True, "viewer"),
-    Permission("set_sales_doc_prices", "Set sales document prices", "operator", True, "viewer"),
-    Permission("delete_documents", "Delete documents", "manager", True, "viewer"),
-    Permission("adjust_inventory", "Adjust stock & bulk operations", "manager", True, "viewer"),
-    Permission("revert_items_to_draft", "Revert items to draft", "manager", True, "viewer"),
-    Permission("import_export_data", "Import / export data", "manager", True, "viewer"),
-    Permission("view_payments", "View payments", "manager", True, "viewer"),
-    Permission("view_financial_reports", "View financial reports", "manager", True, "viewer"),
-    Permission("manage_accounting", "Manage accounting", "manager", True, "viewer"),
-    Permission("manage_module_settings", "Manage module settings", "manager", True, "viewer"),
-    Permission("manage_users", "Manage users", "admin", True, "viewer"),
-    Permission("manage_company_settings", "Manage company settings", "admin", True, "admin"),
-    Permission("manage_integrations", "Manage integrations", "admin", True, "viewer"),
+    Permission("view_dashboards", "viewer", True, "viewer"),
+    Permission("view_documents", "viewer", True, "viewer"),
+    Permission("view_contacts", "viewer", True, "viewer"),
+    Permission("view_inventory", "viewer", True, "viewer"),
+    Permission("edit_documents", "operator", True, "viewer"),
+    Permission("edit_contacts", "operator", True, "viewer"),
+    Permission("edit_inventory", "operator", True, "viewer"),
+    Permission("edit_inventory_amounts", "operator", True, "viewer"),
+    Permission("finalize_documents", "operator", True, "viewer"),
+    Permission("fulfill_documents", "operator", True, "viewer"),
+    Permission("record_payments", "operator", True, "viewer"),
+    Permission("manage_labels", "operator", True, "viewer"),
+    Permission("manage_manufacturing", "operator", True, "viewer"),
+    Permission("view_fixed_assets", "operator", True, "viewer"),
+    Permission("manage_fixed_assets", "operator", True, "viewer"),
+    Permission("check_fixed_assets", "operator", True, "viewer"),
+    Permission("use_ai_assistant", "operator", True, "viewer"),
+    Permission("run_backups", "operator", True, "viewer"),
+    Permission("view_subscriptions", "operator", True, "viewer"),
+    Permission("view_inventory_costs", "manager", True, "viewer"),
+    Permission("set_inventory_prices", "manager", True, "viewer"),
+    Permission("set_sales_doc_prices", "operator", True, "viewer"),
+    Permission("delete_documents", "manager", True, "viewer"),
+    Permission("adjust_inventory", "manager", True, "viewer"),
+    Permission("revert_items_to_draft", "manager", True, "viewer"),
+    Permission("import_export_data", "manager", True, "viewer"),
+    Permission("view_payments", "manager", True, "viewer"),
+    Permission("view_financial_reports", "manager", True, "viewer"),
+    Permission("manage_accounting", "manager", True, "viewer"),
+    Permission("manage_module_settings", "manager", True, "viewer"),
+    Permission("manage_users", "admin", True, "viewer"),
+    Permission("manage_company_settings", "admin", True, "admin"),
+    Permission("manage_integrations", "admin", True, "viewer"),
     # Fixed rows. manage_permissions gates the matrix save itself: owner-only so
     # no owner can revoke their own ability to edit permissions. Lifecycle stays
     # with the account owner. Billing is enforced by the cloud account, not by
     # any endpoint here; the row renders as a fixed reference so the matrix
     # stays a complete statement of who can do what.
-    Permission("manage_permissions", "Edit role permissions", "owner", False, "owner"),
-    Permission("manage_company_lifecycle", "Deactivate, reset & reseed company", "owner", False, "owner"),
-    Permission("manage_billing", "Manage billing", "owner", False, "owner"),
+    Permission("manage_permissions", "owner", False, "owner"),
+    Permission("manage_company_lifecycle", "owner", False, "owner"),
+    Permission("manage_billing", "owner", False, "owner"),
 ]
 
 _PERMISSIONS_BY_KEY: dict[str, Permission] = {p.key: p for p in PERMISSIONS}
@@ -145,15 +150,20 @@ def role_has_permission(settings: dict | None, role: str, key: str) -> bool:
     return granted
 
 
-def missing_permission_text(key: str) -> str:
+def missing_permission_refusal(key: str) -> dict:
     """The refusal for a role without *key*, naming the permission as the role editor labels it."""
     perm = _PERMISSIONS_BY_KEY.get(key)
-    return t("error.permission_missing", label=perm.label if perm else key)
+    return catalog_refusal("error.permission_missing", label=catalog_refusal(f"perm.name.{perm.key}") if perm else key)
+
+
+def missing_permission_text(key: str) -> str:
+    """missing_permission_refusal in the user's language."""
+    return refusal_text(missing_permission_refusal(key))
 
 
 def missing_permission(key: str) -> HTTPException:
     """The 403 for a role without *key*."""
-    return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=missing_permission_text(key))
+    return HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=missing_permission_refusal(key))
 
 
 def assert_role_permission(settings: dict | None, role: str, key: str) -> None:
@@ -201,7 +211,7 @@ class RequestAuthority:
         route it reached; then refresh the settings it was handed."""
         role, settings = await read_authority(session, self.company_id, self.user_id)
         if role != self.role:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=t("error.access_changed"))
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=catalog_refusal("error.access_changed"))
         for key in sorted(self.keys):
             assert_role_permission(settings, role, key)
         if self.module:

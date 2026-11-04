@@ -16,7 +16,7 @@ import pytest_asyncio
 
 from celerp.services.permissions import missing_permission_text
 from celerp_inventory.routes import _field_name
-from ui.i18n import t
+from ui.i18n import t, refusal_text
 
 
 def _roles_from(role: str) -> list[str]:
@@ -100,7 +100,7 @@ def test_permissions_registry_shape():
         assert p.default_role == default, key
         assert p.grantable is grantable, key
         assert p.floor_role == floor, key
-        assert p.label, key
+        assert t(p.label_key) != p.label_key, key
 
 
 def test_fixed_rows_not_grantable():
@@ -211,7 +211,7 @@ def test_assert_role_permission_raises_403():
     with pytest.raises(HTTPException) as exc:
         assert_role_permission({}, "operator", "set_inventory_prices")
     assert exc.value.status_code == 403
-    assert missing_permission_text("set_inventory_prices") in exc.value.detail
+    assert missing_permission_text("set_inventory_prices") in refusal_text(exc.value.detail)
     # A granted caller passes silently.
     assert_role_permission({}, "manager", "set_inventory_prices")
 
@@ -571,7 +571,7 @@ async def test_operator_ungranted_price_403(client, session):
         headers=ctx["operator_h"],
     )
     assert r.status_code == 403
-    assert missing_permission_text("set_inventory_prices") in r.json()["detail"]
+    assert missing_permission_text("set_inventory_prices") in refusal_text(r.json()["detail"])
 
 
 async def test_operator_granted_create_with_costs(client, session):
@@ -732,7 +732,7 @@ async def test_operator_revoked_patch_price_403(client, session):
                                  "expected_version": await doc_version(client, ctx["admin_h"], doc_id)},
                            headers=ctx["operator_h"])
     assert r.status_code == 403, r.text
-    assert missing_permission_text("set_sales_doc_prices") in r.json()["detail"]
+    assert missing_permission_text("set_sales_doc_prices") in refusal_text(r.json()["detail"])
 
     r2 = await client.patch(f"/docs/{doc_id}", json={**_line_patch(ctx["item_id"], 3, 50.0),
                                   "expected_version": await doc_version(client, ctx["admin_h"], doc_id)},
@@ -759,7 +759,7 @@ async def test_operator_revoked_create_price_403(client, session):
         headers=ctx["operator_h"],
     )
     assert r.status_code == 403, r.text
-    assert missing_permission_text("set_sales_doc_prices") in r.json()["detail"]
+    assert missing_permission_text("set_sales_doc_prices") in refusal_text(r.json()["detail"])
 
     r2 = await client.post(
         "/docs",
@@ -1493,7 +1493,7 @@ def test_edit_inventory_amounts_in_catalogue():
     assert p.default_role == "operator"
     assert p.grantable is True
     assert p.floor_role == "viewer"
-    assert p.label
+    assert t(p.label_key) != p.label_key
     assert "edit_inventory" in by_key  # the amounts key does not replace the base key
 
 
@@ -1514,7 +1514,7 @@ async def test_amount_edit_denied_without_permission(client, session, field):
     r = await client.patch(f"/items/{ctx['item_id']}", json=_amount_patch(field),
                            headers=ctx["operator_h"])
     assert r.status_code == 403, r.text
-    assert r.json()["detail"] == t("inventory.err_fields_restricted", "en", fields=_field_name(field))
+    assert refusal_text(r.json()["detail"]) == t("inventory.err_fields_restricted", "en", fields=_field_name(field))
 
 
 async def test_amount_edit_allowed_with_permission(client, session):
@@ -1595,7 +1595,7 @@ async def test_merge_override_denied_without_amount_permission(client, session):
         headers=ctx["operator_h"],
     )
     assert r.status_code == 403, r.text
-    assert r.json()["detail"] == missing_permission_text("edit_inventory_amounts")
+    assert refusal_text(r.json()["detail"]) == missing_permission_text("edit_inventory_amounts")
 
 
 async def test_merge_negative_override_rejected(client, session):
@@ -1633,7 +1633,7 @@ async def test_sell_by_change_denied_without_amount_permission(client, session):
         headers=ctx["operator_h"],
     )
     assert r.status_code == 403, r.text
-    assert r.json()["detail"] == t("inventory.err_fields_restricted", "en", fields=_field_name("sell_by"))
+    assert refusal_text(r.json()["detail"]) == t("inventory.err_fields_restricted", "en", fields=_field_name("sell_by"))
 
 
 async def test_sell_by_change_allowed_with_amount_permission(client, session):
@@ -1662,7 +1662,7 @@ async def test_reweigh_denied_without_amount_permission(client, session):
         headers=ctx["operator_h"],
     )
     assert r.status_code == 403, r.text
-    assert "weight" in r.json()["detail"].lower()
+    assert "weight" in refusal_text(r.json()["detail"]).lower()
 
 
 async def test_split_derived_reweigh_allowed_without_amount_permission(client, session):
@@ -1880,7 +1880,7 @@ async def test_create_negative_amount_rejected(client, session, field):
     body[field] = -5
     r = await client.post("/items", json=body, headers=ctx["admin_h"])
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("inventory.err_amount_negative", "en", field=_field_name(field))
+    assert refusal_text(r.json()["detail"]) == t("inventory.err_amount_negative", "en", field=_field_name(field))
 
 
 def test_guard_family_removed():
@@ -1998,7 +1998,7 @@ async def test_item_patch_price_denied_without_permission(client, session, key):
         "fields_changed": {key: {"old": None, "new": 250}, "name": {"old": "Perm Item", "new": "Renamed"}},
     })
     assert r.status_code == 403, r.text
-    assert r.json()["detail"] == _PRICE_DENIED
+    assert refusal_text(r.json()["detail"]) == _PRICE_DENIED
     item = (await client.get(f"/items/{ctx['item_id']}", headers=ctx["admin_h"])).json()
     assert item.get(key) is None and item["name"] == "Perm Item"
 
@@ -2040,7 +2040,7 @@ async def test_item_create_price_denied_without_permission(client, session):
         "location_id": ctx["location_id"], "retail_price": 99,
     })
     assert r.status_code == 403, r.text
-    assert r.json()["detail"] == _PRICE_DENIED
+    assert refusal_text(r.json()["detail"]) == _PRICE_DENIED
     listed = (await client.get("/items", params={"q": "NEW-P"}, headers=ctx["admin_h"])).json()
     assert not [i for i in listed.get("items", []) if i.get("sku") == "NEW-P"]
 
@@ -2074,7 +2074,7 @@ async def test_item_create_nested_price_denied_without_permission(client, sessio
         "location_id": ctx["location_id"], "attributes": {"retail_price": 999, "Wholesale": 555},
     })
     assert r.status_code == 403, r.text
-    assert r.json()["detail"] == _PRICE_DENIED
+    assert refusal_text(r.json()["detail"]) == _PRICE_DENIED
 
 
 async def test_item_patch_nested_price_denied_without_permission(client, session):
@@ -2103,7 +2103,7 @@ async def test_split_child_nested_price_denied_without_permission(client, sessio
         "children": [{"sku": "SPL-NP.1", "quantity": 3, "attributes": {"retail_price": 4321}}],
     })
     assert r.status_code == 403, r.text
-    assert r.json()["detail"] == _PRICE_DENIED
+    assert refusal_text(r.json()["detail"]) == _PRICE_DENIED
 
 
 async def test_merge_resolved_price_denied_without_permission(client, session):
@@ -2120,7 +2120,7 @@ async def test_merge_resolved_price_denied_without_permission(client, session):
         "source_entity_ids": ids, "target_sku_from": ids[0], "resolved_attributes": {"vip_price": "999"},
     })
     assert r.status_code == 403, r.text
-    assert r.json()["detail"] == _PRICE_DENIED
+    assert refusal_text(r.json()["detail"]) == _PRICE_DENIED
 
 
 async def test_batch_import_nested_price_denied_without_permission(client, session):
@@ -2173,7 +2173,7 @@ async def test_bill_receive_request_price_denied_without_permission(client, sess
     bill, template = await _finalized_bill(client, ctx, "RCV-P")
     r = await _receive_bill(client, ctx, bill, template, "RCV-P", attributes=attrs)
     assert r.status_code == 403, r.text
-    assert r.json()["detail"] == _PRICE_DENIED
+    assert refusal_text(r.json()["detail"]) == _PRICE_DENIED
     assert await _parcels(client, ctx, "RCV-P", template) == []
 
 
@@ -2195,7 +2195,7 @@ async def test_consignment_receive_cost_change_denied_without_permission(client,
     doc, template = await _finalized_bill(client, ctx, "CSG-P", doc_type="consignment_in")
     r = await _receive_bill(client, ctx, doc, template, "CSG-P", cost_price=777)
     assert r.status_code == 403, r.text
-    assert r.json()["detail"] == _PRICE_DENIED
+    assert refusal_text(r.json()["detail"]) == _PRICE_DENIED
     assert await _parcels(client, ctx, "CSG-P", template) == []
 
 
@@ -2271,11 +2271,11 @@ async def test_merge_cost_override_denied_without_permission(client, session):
     for cost_total in (99999, 20):
         r = await merge(cost_total)
         assert r.status_code == 403, r.text
-        assert r.json()["detail"] == missing_permission_text("view_inventory_costs")
+        assert refusal_text(r.json()["detail"]) == missing_permission_text("view_inventory_costs")
     await grant_permission(client, ctx["admin_h"], "view_inventory_costs", "operator")
     r = await merge(99999)
     assert r.status_code == 403, r.text
-    assert r.json()["detail"] == _PRICE_DENIED
+    assert refusal_text(r.json()["detail"]) == _PRICE_DENIED
     r = await merge(20)
     assert r.status_code == 200, r.text
 
@@ -2295,7 +2295,7 @@ async def test_transform_cost_override_denied_without_permission(client, session
     r = await client.post(f"/items/{parent}/transform", headers=ctx["manager_h"],
                           json={**body, "child_cost_total": 77777})
     assert r.status_code == 403, r.text
-    assert r.json()["detail"] == _PRICE_DENIED
+    assert refusal_text(r.json()["detail"]) == _PRICE_DENIED
     r = await client.post(f"/items/{parent}/transform", headers=ctx["manager_h"], json=body)
     assert r.status_code == 200, r.text
     child = (await client.get("/items", params={"q": "TF-C.1"}, headers=ctx["admin_h"])).json()["items"]

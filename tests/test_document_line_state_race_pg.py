@@ -30,6 +30,7 @@ from celerp.services.account_roles import reconcile_company
 from celerp_accounting.routes import seed_chart_of_accounts
 from celerp_docs import routes as docs
 from celerp_inventory import routes as inventory
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -152,7 +153,7 @@ async def test_revert_to_draft_while_a_document_checks_its_lines_waits_and_is_re
         outcome = (await asyncio.gather(asyncio.wait_for(revert, timeout=30), return_exceptions=True))[0]
 
     assert isinstance(outcome, HTTPException), outcome
-    assert outcome.status_code == 409 and "is on document" in outcome.detail
+    assert outcome.status_code == 409 and "is on document" in refusal_text(outcome.detail)
     assert await _docs(committed_engine, company_id) == [created["id"]]
     assert (await _item(committed_engine, company_id))["status"] == "available"
 

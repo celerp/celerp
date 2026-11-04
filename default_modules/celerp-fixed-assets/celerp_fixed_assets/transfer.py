@@ -176,7 +176,7 @@ async def transfer(session, company_id, user_id, asset_id: str, body: dict) -> d
         if row is None or row.entity_type != "fa_asset":
             raise HTTPException(status_code=404, detail="No such asset.")
         asset = row.state
-        in_use(asset_id, asset, "it cannot be transferred")
+        in_use(asset_id, asset, "transfer")
         day = _date(body.get("date"), "The transfer date")
         our_name, their_name = await _name(session, company_id), await _name(session, theirs)
         if not _uses(their_settings):

@@ -229,7 +229,7 @@ async def report(session, company_id, at: str | None = None) -> dict:
     at = at or (await company_today(session, company_id)).isoformat()
     at = setup.day(at, "The reconciliation date").isoformat()
     if at < cut:
-        raise setup.unprocessable(f"The reconciliation starts at the cutover {cut}.")
+        raise setup.refuse("fixed_assets.err_recon_at_cutover", cutover=cut)
     classes, surplus, surpluses, clearings = await _accounts(session, company_id)
     accounts = sorted(_class_accounts(classes, surpluses, clearings))
     units = await classify(session, company_id, at)

@@ -17,7 +17,7 @@ import pytest
 from celerp_docs import sequences
 from celerp_docs.sequences import get_all_sequences, next_doc_ref, update_sequence
 from company_today_support import freeze as _freeze_business_day
-from ui.i18n import t
+from ui.i18n import t, refusal_text
 
 
 def freeze(monkeypatch, instant: datetime) -> None:
@@ -143,7 +143,7 @@ async def test_numbering_bad_timezone_refuses_issue_with_the_message(client, ses
 
     r = await client.post(f"/docs/{draft_id}/finalize", headers=auth["headers"])
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == message
+    assert refusal_text(r.json()["detail"]) == message
     assert r.json()["code"] == "company_timezone"
     session.expire_all()
     draft = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": draft_id})
@@ -153,7 +153,7 @@ async def test_numbering_bad_timezone_refuses_issue_with_the_message(client, ses
         "doc_type": "invoice", "contact_name": "Buyer",
         "line_items": [{"description": "Service", "quantity": 1, "unit_price": 100}]})
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == message
+    assert refusal_text(r.json()["detail"]) == message
     assert await _counters(session, auth["company_id"]) == before
 
 
@@ -165,5 +165,5 @@ async def test_numbering_preview_bad_timezone_returns_the_message(client, sessio
     await _bad_timezone(session, auth["company_id"])
     r = await client.get("/docs/sequences", headers=auth["headers"])
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("error.company_timezone_unknown", "en")
+    assert refusal_text(r.json()["detail"]) == t("error.company_timezone_unknown", "en")
     assert r.json()["code"] == "company_timezone"

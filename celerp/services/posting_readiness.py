@@ -196,17 +196,67 @@ def _brief(account: dict) -> dict:
     return {k: account[k] for k in ("code", "name", "account_type", "code_generated")}
 
 
+# Words a source chart commonly names a role's account with, beyond the role's own label.
+_NAME_HINTS: dict[AccountRole, frozenset[str]] = {
+    AccountRole.CASH_AND_EQUIVALENTS: frozenset({"bank"}),
+    AccountRole.DEFAULT_DEPOSIT: frozenset({"bank", "cash"}),
+    AccountRole.TAX_INPUT: frozenset({"paid", "purchase", "purchases"}),
+    AccountRole.TAX_OUTPUT: frozenset({"received", "collected", "payable"}),
+    AccountRole.COGS: frozenset({"cogs"}),
+}
+
+# Words that name another account of the same kind: withholding tax is held for someone
+# else, never the tax a sale collects or a purchase pays.
+_NOT_NAMED = frozenset({"withholding"})
+
+
+def _named(role: str, account: dict) -> bool:
+    """Whether the account's name shares a word with the role's label or its hints, and
+    names no account of another kind (``_NOT_NAMED``)."""
+    words = {w for w in ROLE_LABELS[AccountRole(role)].lower().split() if len(w) > 3}
+    words |= _NAME_HINTS.get(AccountRole(role), frozenset())
+    named = _words(str(account.get("name") or ""))
+    return bool(words & named) and not named & _NOT_NAMED
+
+
+def _words(text: str) -> set[str]:
+    return set("".join(c if c.isalnum() else " " for c in text.lower()).split())
+
+
+def _same_side(role: str, account: dict) -> bool:
+    """Whether the account may be proposed for ``role``: one of the role's own type, or for
+    a gain and loss pair one they share, but never one named for the other side only (an
+    exchange loss is not proposed "Foreign Exchange Gain")."""
+    if account.get("account_type") in ROLE_TYPES[AccountRole(role)]:
+        return True
+    pair = pair_of(role)
+    if not pair:
+        return False
+    own = _words(ROLE_LABELS[AccountRole(role)])
+    other = next(_words(ROLE_LABELS[r]) for r in pair if r.value != role)
+    named = _words(str(account.get("name") or ""))
+
+    def says(words: set[str]) -> bool:
+        return any(n.startswith(w) for n in named for w in words)
+
+    return says(own - other) or not says(other - own)
+
+
 def _ranked(role: str, chart: dict[str, dict], controls: list[str]) -> list[dict]:
     """Accounts that can serve ``role``: the source's controls first, then accounts whose
-    name shares a word with the role's, then by code. The order only helps the user find
-    one; it never chooses."""
-    words = {w for w in ROLE_LABELS[AccountRole(role)].lower().split() if len(w) > 3}
-
+    name matches the role's (``_named``), then by code."""
     def rank(account: dict) -> tuple:
-        named = bool(words & set(str(account.get("name") or "").lower().split()))
-        return (account["code"] not in controls, not named, account["code"])
+        return (account["code"] not in controls, not _named(role, account), account["code"])
 
-    return [_brief(a) for a in sorted((a for a in chart.values() if _fits(role, a)), key=rank)]
+    return sorted((a for a in chart.values() if _fits(role, a)), key=rank)
+
+
+def _suggested(role: str, ranked: list[dict], controls: list[str]) -> str | None:
+    """The account the finish step proposes for ``role`` when the source names no single
+    control: the best ranked control or name match of the role's own type. Only the
+    picker shows it; finishing never sets it unless the user submits it."""
+    return next((a["code"] for a in ranked
+                 if (a["code"] in controls or _named(role, a)) and _same_side(role, a)), None)
 
 
 def _proposals(chart: dict[str, dict], reserved: set[str]) -> dict[str, dict]:
@@ -256,7 +306,8 @@ async def readiness(session: AsyncSession, company_id, previous: dict[str, dict]
 
     Each row: role, label, group, required (a workflow the company uses needs it),
     current and current_account (the code already set, and that chart account), controls (the source books' control accounts),
-    preselect (the single suitable control, when there is exactly one), candidates
+    preselect (the single suitable control of the role's own type, when there is exactly
+    one), suggested (the picker's proposal otherwise, never applied by itself), candidates
     (suitable chart accounts, ranked), proposal (the account to add instead) and
     previous (``{code, add}``: the answer ``previous`` holds for the role, when this
     chart can take it; an added one is the proposal). Offering an earlier answer never
@@ -273,14 +324,17 @@ async def readiness(session: AsyncSession, company_id, previous: dict[str, dict]
     for role in AccountRole:
         offer = offers.get(role.value)
         controls = source_controls(settings, role.value)
-        fitting = [c for c in controls if c in chart and _fits(role.value, chart[c])]
+        fitting = [c for c in controls if c in chart and _fits(role.value, chart[c])
+                   and _same_side(role.value, chart[c])]
+        ranked = _ranked(role.value, chart, controls)
         code = current.get(role.value) or None
         rows.append({
             "role": role.value, "label": ROLE_LABELS[role], "group": _GROUP_OF[role.value],
             "required": role.value in needed, "current": code,
             "current_account": _brief(chart[code]) if code in chart else None,
             "controls": controls, "preselect": fitting[0] if len(controls) == 1 and fitting else None,
-            "candidates": _ranked(role.value, chart, controls),
+            "suggested": _suggested(role.value, ranked, controls),
+            "candidates": [_brief(a) for a in ranked],
             "proposal": offer["account"] if offer and offer["add"] else proposals[role.value],
             "previous": {"code": offer["code"], "add": offer["add"]} if offer else None,
         })

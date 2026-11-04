@@ -12,9 +12,8 @@ import math
 from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import HTTPException
-from ui.i18n import t
 
-from celerp.accounting_roles import refusal
+from celerp.accounting_roles import catalog_refusal, refusal
 from celerp.services.record_quantities import (
     TEMPLATE_DOC_TYPES, doc_still_moving, run_name, run_still_moving, sent_out_by, template_label,
 )
@@ -476,7 +475,7 @@ def validate_positive(qty: float, *, label: str = "Quantity") -> None:
     if qty <= 0:
         raise HTTPException(
             status_code=422,
-            detail=t("error.qty_positive", label=label),
+            detail=catalog_refusal("error.qty_positive", label=label),
         )
 
 

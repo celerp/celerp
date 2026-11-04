@@ -13,6 +13,7 @@ from celerp.models.projections import Projection
 from stock_books import assert_books_carry_stock
 from test_cost_restatement import _set_cost, _state
 from test_posting_roles_kept_stock import _available, _ok, _write_off
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -86,6 +87,6 @@ async def test_writeoff_refusal_explains_next_step(client, session, auth):
     assert (await _state(session, auth, lot))["status"] == "disposed"
     edit = await _set_cost(client, auth, lot, 50.0)
     assert edit.status_code == 409, edit.text
-    detail = edit.json()["detail"]
+    detail = refusal_text(edit.json()["detail"])
     assert "write-off" in detail and "journal entry" in detail, detail
     assert "verifiably" not in detail and "restated" not in detail, detail

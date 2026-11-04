@@ -9,6 +9,8 @@ import uuid
 
 import pytest
 
+from ui.i18n import refusal_text
+
 
 async def _register(client, email: str | None = None) -> str:
     addr = email or f"bank-{uuid.uuid4().hex[:8]}@test.local"
@@ -34,7 +36,7 @@ async def test_create_bank_account_invalid_currency(client):
     r = await client.post("/accounting/bank-accounts", headers=_h(token),
                           json=_bank_payload(currency="FFF"))
     assert r.status_code == 422
-    assert "FFF" in r.json().get("detail", "")
+    assert "FFF" in refusal_text(r.json().get("detail"))
 
 
 @pytest.mark.asyncio
@@ -68,7 +70,7 @@ async def test_patch_bank_account_invalid_currency(client):
     r2 = await client.patch(f"/accounting/bank-accounts/{bank_id}", headers=_h(token),
                             json={"currency": "XYZ"})
     assert r2.status_code == 422
-    assert "XYZ" in r2.json().get("detail", "")
+    assert "XYZ" in refusal_text(r2.json().get("detail"))
 
 
 @pytest.mark.asyncio

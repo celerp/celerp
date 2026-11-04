@@ -37,7 +37,7 @@ _XX = {
     # JS data-attr value (handed to script, never spliced into JS source)
     "contacts.merge_failed": "XX_MERGE_FAILED",
     # count-neutral interpolation
-    "contacts.merge_prompt": "XX_MERGE {type}",
+    "contacts.merge_prompt": "XX_MERGE",
 }
 
 
@@ -84,11 +84,22 @@ def test_financial_card_label_translates():
 def test_bulk_merge_template_data_attr_translates():
     """JS data-attr mechanism: the merge template exposes the failure message to
     its script via data-merge-failed rather than splicing it into JS source."""
-    html = to_xml(_contact_bulk_templates("customer"))
+    html = to_xml(_contact_bulk_templates())
     assert "XX_MERGE_FAILED" in html
 
 
-def test_merge_prompt_interpolates_type():
-    """Count-neutral interpolation: the {type} placeholder is filled at render."""
-    html = to_xml(_contact_bulk_templates("customer"))
-    assert "XX_MERGE customer" in html
+def test_merge_prompt_translates():
+    html = to_xml(_contact_bulk_templates())
+    assert "XX_MERGE" in html
+
+
+@pytest.mark.parametrize("lang", ["th", "de"])
+@pytest.mark.parametrize("contact_type", ["customer", "vendor"])
+def test_an_empty_list_names_its_contact_type_in_the_reader_language(lang, contact_type):
+    """The empty list's sentence and button name the contact type by its label in the
+    reader's language, never the raw value."""
+    i18n.set_lang(lang)
+    label = i18n.t(f"enum.contact_type.{contact_type}", lang)
+    html = to_xml(_contacts_content(contact_type, [], "", 1, 0, 25, "name", "asc"))
+    assert i18n.t("contacts.empty_none", lang, type=label) in html
+    assert i18n.t("contacts.add_type", lang, type=label) in html

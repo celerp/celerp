@@ -13,7 +13,7 @@ import httpx
 import pytest
 from fastapi import HTTPException
 
-from ui.i18n import t
+from ui.i18n import t, refusal_text
 
 _ROOT = Path(__file__).resolve().parents[1]
 _LOCALES = _ROOT / "ui" / "locales"
@@ -40,14 +40,16 @@ async def test_unhandled_error_says_try_again_and_where_to_ask():
     from starlette.requests import Request
     req = Request({"type": "http", "method": "GET", "path": "/x", "headers": [], "query_string": b""})
     resp = await unhandled_exception_handler(req, RuntimeError("boom"))
-    assert json.loads(resp.body)["detail"] == t("error.server_error", "en")
+    assert refusal_text(json.loads(resp.body)["detail"]) == t("error.server_error", "en")
 
 
 @pytest.mark.asyncio
 async def test_rate_limit_says_wait_a_minute():
     from celerp.main import rate_limit_handler
-    resp = await rate_limit_handler(None, None)
-    assert json.loads(resp.body)["detail"] == t("error.rate_limited", "en")
+    from starlette.requests import Request
+    req = Request({"type": "http", "method": "GET", "path": "/x", "headers": [], "query_string": b""})
+    resp = await rate_limit_handler(req, None)
+    assert refusal_text(json.loads(resp.body)["detail"]) == t("error.rate_limited", "en")
 
 
 def _response(status: int, body=None, headers=None) -> httpx.Response:
@@ -129,7 +131,7 @@ def test_quantity_messages_name_the_rule():
         "quantity.precision", {"label": "Ring", "qty": "1.234", "decimals": 2})
     with pytest.raises(HTTPException) as ei:
         validate_positive(-1, label="Ring")
-    assert ei.value.detail == t("error.qty_positive", "en", label="Ring")
+    assert refusal_text(ei.value.detail) == t("error.qty_positive", "en", label="Ring")
 
 
 def test_stripe_amount_says_pay_another_way():
@@ -201,7 +203,7 @@ def test_restore_failures_say_what_to_do(exc, key, kw):
 async def test_unknown_notification_says_refresh(client):
     r = await client.post(f"/notifications/{uuid.uuid4()}/read", headers=await _headers(client))
     assert r.status_code == 404
-    assert r.json()["detail"] == t("error.notification_not_found", "en")
+    assert refusal_text(r.json()["detail"]) == t("error.notification_not_found", "en")
 
 
 @pytest.mark.asyncio
@@ -209,22 +211,26 @@ async def test_long_search_says_how_long(client):
     from celerp.routers.search import _MAX_Q_LEN
     r = await client.get("/search", params={"q": "x" * (_MAX_Q_LEN + 1)}, headers=await _headers(client))
     assert r.status_code == 422
-    assert r.json()["detail"] == t("search.err_too_long", "en", max=_MAX_Q_LEN)
+    assert refusal_text(r.json()["detail"]) == t("search.err_too_long", "en", max=_MAX_Q_LEN)
 
 
 # -- AI assistant -----------------------------------------------------------
 
 def test_ai_errors_are_translated():
     import asyncio
-    from celerp.ai.service import _CallerRefused, _user_error
-    assert _user_error(asyncio.TimeoutError()) == t("ai.err_timeout", "en")
-    assert _user_error(_CallerRefused("session_expired")) == t("error.session_expired", "en")
-    assert _user_error(_CallerRefused("read_refused")) == t("ai.err_read_refused", "en")
+    from celerp.ai.service import _CallerRefused, user_error
+    assert user_error(asyncio.TimeoutError()) == t("ai.err_timeout", "en")
+    assert user_error(_CallerRefused("session_expired")) == t("error.session_expired", "en")
+    assert user_error(_CallerRefused("read_refused")) == t("ai.err_read_refused", "en")
 
 
 def test_unfinished_action_says_retry_is_safe():
-    from celerp.ai.conversations import unfinished_action_text
-    assert unfinished_action_text() == t("ai.action_unfinished", "en")
+    from datetime import datetime, timedelta, timezone
+    from celerp.ai.conversations import EXECUTING_STALE_S, pending_actions
+    from ui.i18n import refusal_text
+    since = (datetime.now(timezone.utc) - timedelta(seconds=EXECUTING_STALE_S + 1)).isoformat()
+    stale = {"id": "a", "name": "create_contact", "status": "executing", "executing_since": since}
+    assert refusal_text(pending_actions([stale])[0]["error"]) == t("ai.action_unfinished", "en")
 
 
 def test_batch_limit_says_remove_some():
@@ -305,4 +311,5 @@ def test_document_rate_problem_is_not_wrapped_twice():
     from celerp_docs.routes import _require_doc_rate_http
     with pytest.raises(HTTPException) as ei:
         _require_doc_rate_http({"currency": "EUR"}, "USD")
-    assert ei.value.detail == t("error.rate_required", "en", currency="EUR", base="USD")
+    assert ei.value.detail["message_key"] == "error.rate_required"
+    assert ei.value.detail["message"] == t("error.rate_required", "en", currency="EUR", base="USD")

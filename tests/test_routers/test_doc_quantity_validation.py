@@ -11,6 +11,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from ui.i18n import refusal_text
 from test_helpers import doc_version
 
 
@@ -109,7 +110,7 @@ async def test_create_invoice_rejects_zero_quantity(client, session):
     token = await _register(client)
     r = await _create_doc(client, token, lines=[_line(qty=0.0, sell_by="piece")])
     assert r.status_code == 422, r.text
-    assert "greater than zero" in r.json()["detail"]
+    assert "greater than zero" in refusal_text(r.json()["detail"])
 
 
 @pytest.mark.asyncio
@@ -277,7 +278,7 @@ async def test_fulfill_quantity_validator_is_wired(client, session):
     # zero with known unit must raise
     with pytest.raises(_HTTPException) as exc_info2:
         validate_line_quantity(0.0, "piece", unit_map, label="Widget")
-    assert "greater than zero" in exc_info2.value.detail
+    assert "greater than zero" in refusal_text(exc_info2.value.detail)
 
     # missing sell_by skips all checks including zero
     validate_line_quantity(0.0, None, unit_map, label="Legacy item")

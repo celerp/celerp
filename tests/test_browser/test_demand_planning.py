@@ -35,7 +35,7 @@ from pathlib import Path
 import pytest
 from playwright.sync_api import expect
 
-from .conftest import css_class
+from .conftest import answer_confirms, css_class
 
 pytestmark = pytest.mark.browser
 
@@ -356,7 +356,7 @@ def test_demand_planning_interactions(page, ui_server, api):
     # ── 4. Make & complete via the toolbar (accept the confirm dialog) ─────────
     page.goto(f"{ui_server}/manufacturing", wait_until="domcontentloaded")
     page.wait_for_selector("#mfg-table:has-text('DP-PENDANT')", timeout=8000)
-    page.on("dialog", lambda d: d.accept())
+    answer_confirms(page)
     page.locator("#mfg-table tr.data-row:has-text('DP-PENDANT') .bulk-select").first.check()
     page.wait_for_function("/1 selected/.test((document.querySelector('.bulk-count')||{}).textContent||'')", timeout=3000)
     page.locator(".bulk-action-select").select_option(value="make_complete")

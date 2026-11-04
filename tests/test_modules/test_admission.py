@@ -2304,7 +2304,7 @@ async def test_api_serves_no_module_route_until_the_ui_has_reported(
     async with httpx.AsyncClient(transport=transport, base_url="http://api") as client:
         early = await client.get(f"/{inner}/api")
         assert early.status_code == 503
-        assert early.json() == {"detail": outcome.STARTING}
+        assert early.json()["detail"]["message_key"] == "error.still_starting"
         assert (await client.get("/kernel")).status_code == 200
 
         fence = Fence.join(sync_url(_engine_url(committed_engine)))

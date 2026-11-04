@@ -479,6 +479,12 @@ _FULFILL_NON_FAMILY_PROSE = {
 }
 
 
+# Strings still waiting for their translation read as English in every locale, so
+# their reviewed value is pinned once they leave the pending list.
+_PENDING_TRANSLATION = set(json.loads(
+    (Path(__file__).parent / "i18n_pending_translation.json").read_text(encoding="utf-8"))["keys"])
+
+
 def _fulfillment_family_keys(en: dict) -> list[str]:
     explicit = {
         "doc.fulfilled",
@@ -489,7 +495,7 @@ def _fulfillment_family_keys(en: dict) -> list[str]:
     }
     return sorted(
         k for k in en
-        if k not in _FULFILL_NON_FAMILY_PROSE
+        if k not in _FULFILL_NON_FAMILY_PROSE and k not in _PENDING_TRANSLATION
         and (k in explicit or "fulfil" in en[k].lower())
     )
 
@@ -529,6 +535,7 @@ def test_line_item_false_friends_absent():
 _FULFILL_EXPECTED = {
     "am": {
         "doc.fulfilled": "ተፈጽሟል",
+        "perm.name.fulfill_documents": "በሰነዶች መሠረት ዕቃዎችን ያስረክቡ እና ይቀበሉ",
         "doc.partially_fulfilled": "በከፊል ተፈጽሟል",
         "status.unfulfilled": "ያልተፈጸመ",
         "event.item.fulfilled": "ተሽጧል",
@@ -540,9 +547,13 @@ _FULFILL_EXPECTED = {
         "lines.cannot_fulfil": "ትዕዛዝ መፈጸም አልተቻለም፦ {reasons}",
         "lines.fulfil_status": "የዚህ መዝገብ ሁኔታ {doc_status} እስከሆነ ድረስ መስመሮችን መፈጸም አይቻልም።",
         "lines.shipped_elsewhere": "{went} መጀመሪያ የትዕዛዝ አፈጻጸምን ይቀልብሱ፦ በ{docs} ላይ ዕቃዎቹን እንዳለ አዘጋጅን ይጠቀሙ።",
+        "inventory.err_left_books_sold": "ይህ ዕቃ ተሽጧል። መልሰው ለማግኘት የማስረከብ ሂደቱን ይቀልብሱ።",
+        "inventory.err_sold_via_invoice": "ዕቃ የሚሸጠው በደረሰኙ መሠረት በማስረከብ ነው፤ ሁኔታን በቀጥታ በመቀየር አይደለም።",
+        "inventory.err_memo_out_via_memo": "ዕቃ በመልእክት ሰነድ የሚላከው ሰነዱን በማስፈጸም ነው፤ ሁኔታን በቀጥታ በመቀየር አይደለም።",
     },
     "ar": {
         "doc.fulfilled": "تم تنفيذه",
+        "perm.name.fulfill_documents": "تنفيذ التسليم واستلام البضائع المرتبطة بالمستندات",
         "doc.partially_fulfilled": "تم تنفيذه جزئيًا",
         "status.unfulfilled": "لم يُنفَّذ",
         "event.item.fulfilled": "مباع",
@@ -554,9 +565,13 @@ _FULFILL_EXPECTED = {
         "lines.cannot_fulfil": "تعذر تنفيذ الطلب: {reasons}",
         "lines.fulfil_status": "لا يمكن تنفيذ البنود ما دامت حالة هذا السجل {doc_status}.",
         "lines.shipped_elsewhere": "{went} تراجع عن تنفيذ الطلب أولًا: عيّن البضاعة كـ «متاح» في {docs}.",
+        "inventory.err_left_books_sold": "بِيع هذا الصنف؛ اعكس تنفيذ التسليم لإعادته.",
+        "inventory.err_sold_via_invoice": "يُباع الصنف من خلال تنفيذ تسليم فاتورته، وليس بتعديل حالته مباشرةً.",
+        "inventory.err_memo_out_via_memo": "يخرج الصنف بموجب مذكرة عند تنفيذ تسليمها، وليس بتعديل حالته مباشرةً.",
     },
     "es": {
         "doc.fulfilled": "Procesado",
+        "perm.name.fulfill_documents": "Despachar y recibir mercancías de documentos",
         "doc.partially_fulfilled": "Procesado parcialmente",
         "status.unfulfilled": "Sin procesar",
         "event.item.fulfilled": "Vendido",
@@ -568,9 +583,13 @@ _FULFILL_EXPECTED = {
         "lines.cannot_fulfil": "No se puede procesar: {reasons}",
         "lines.fulfil_status": "No se pueden procesar líneas mientras el estado de este registro sea {doc_status}.",
         "lines.shipped_elsewhere": "{went} Revierta primero el procesamiento: marque la mercancía como disponible en {docs}.",
+        "inventory.err_left_books_sold": "Este artículo se vendió. Revierta su entrega para recuperarlo.",
+        "inventory.err_sold_via_invoice": "Un artículo se vende al completar la entrega de su factura, no mediante un cambio directo de estado.",
+        "inventory.err_memo_out_via_memo": "Un artículo se entrega en depósito al cumplir su memo, no mediante un cambio directo de estado.",
     },
     "id": {
         "doc.fulfilled": "Diproses",
+        "perm.name.fulfill_documents": "Penuhi pesanan dan terima barang pada dokumen",
         "doc.partially_fulfilled": "Diproses sebagian",
         "status.unfulfilled": "Belum diproses",
         "event.item.fulfilled": "Terjual",
@@ -582,9 +601,13 @@ _FULFILL_EXPECTED = {
         "lines.cannot_fulfil": "Tidak dapat memproses: {reasons}",
         "lines.fulfil_status": "Baris tidak dapat diproses selama status catatan ini {doc_status}.",
         "lines.shipped_elsewhere": "{went} Batalkan pemrosesan pesanan terlebih dahulu: tetapkan barang sebagai tersedia di {docs}.",
+        "inventory.err_left_books_sold": "Barang ini sudah terjual. Batalkan pemenuhannya untuk mengembalikannya.",
+        "inventory.err_sold_via_invoice": "Barang terjual melalui pemenuhan faktur, bukan dengan mengubah status secara langsung.",
+        "inventory.err_memo_out_via_memo": "Barang dikirim dalam memo melalui pemenuhan memo tersebut, bukan dengan mengubah status secara langsung.",
     },
     "pt": {
         "doc.fulfilled": "Processado",
+        "perm.name.fulfill_documents": "Expedir e receber mercadorias de documentos",
         "doc.partially_fulfilled": "Processado parcialmente",
         "status.unfulfilled": "Não processado",
         "event.item.fulfilled": "Vendido",
@@ -596,6 +619,9 @@ _FULFILL_EXPECTED = {
         "lines.cannot_fulfil": "Não é possível processar: {reasons}",
         "lines.fulfil_status": "As linhas não podem ser processadas enquanto o status deste registro for {doc_status}.",
         "lines.shipped_elsewhere": "{went} Reverta primeiro o processamento do pedido: defina a mercadoria como disponível em {docs}.",
+        "inventory.err_left_books_sold": "Este item foi vendido. Reverta sua entrega para recuperá-lo.",
+        "inventory.err_sold_via_invoice": "A venda de um item ocorre pela entrega vinculada à sua fatura, não pela alteração direta do status.",
+        "inventory.err_memo_out_via_memo": "Um item sai em consignação pela entrega vinculada ao seu memorando, não pela alteração direta do status.",
     },
 }
 
@@ -760,17 +786,24 @@ def test_thai_no_truncated_values():
 def test_bundled_module_locales_no_untranslated_prose():
     """Bundled module catalogs get the same source-identical review as the
     central catalogs: no release-complete locale value may be byte-identical to
-    the module's English source (there is currently no reviewed exception)."""
+    the module's English source. The exceptions are a string still waiting for
+    its translation, listed under the module in i18n_pending_translation.json, and a
+    template with no words outside its {parameters}, which has no prose to translate."""
+    pending_modules = json.loads(
+        (Path(__file__).parent / "i18n_pending_translation.json").read_text(encoding="utf-8")
+    ).get("modules", {})
     offenders = {}
     for locdir in _BUNDLED_MODULE_LOCALE_DIRS:
         en = json.loads((locdir / "en.json").read_text())
+        pending = set(pending_modules.get(locdir.parent.parent.name, {}))
         for code in sorted(_COMPLETE_LOCALES):
             if code == "en":
                 continue
             loc = json.loads((locdir / f"{code}.json").read_text())
             identical = sorted(
                 k for k, v in loc.items()
-                if k in en and v == en[k] and en[k].strip()
+                if k in en and v == en[k] and re.search(r"[^\W\d_]", re.sub(r"\{\w+\}", "", en[k]))
+                and k not in pending
             )
             if identical:
                 offenders[f"{locdir.parent.name}:{code}"] = identical
@@ -994,17 +1027,23 @@ def _tu_forms(text: str) -> list[str]:
 
 
 def test_es_uses_usted_register():
-    """An app string still in its reviewed English source (the source-identical allowlist) is
-    not Spanish yet, so its English words are not read as tú forms."""
+    """An app string still in its reviewed English source (the source-identical allowlist, or a
+    module string waiting for its translation) is not Spanish yet, so its English words are not
+    read as tú forms."""
     root = Path(__file__).resolve().parents[1]
-    catalogs = [Path(_LOCALES_DIR) / "es.json",
-                *sorted(root.glob("default_modules/*/*/locales/es.json"))]
+    pending_modules = json.loads(
+        (Path(__file__).parent / "i18n_pending_translation.json").read_text(encoding="utf-8")
+    ).get("modules", {})
     en = _load_locale("en")
-    pending = _load_source_identical_allowlist().get("es", set())
+    still_english = {Path(_LOCALES_DIR) / "es.json":
+                     {k: en.get(k) for k in _load_source_identical_allowlist().get("es", set())}}
+    for p in sorted(root.glob("default_modules/*/*/locales/es.json")):
+        module_en = json.loads((p.parent / "en.json").read_text(encoding="utf-8"))
+        still_english[p] = {k: module_en.get(k) for k in pending_modules.get(p.parent.parent.parent.name, {})}
     informal = {f"{p.parent.parent.name}:{k}": hits
-                for p in catalogs
+                for p, english in still_english.items()
                 for k, v in json.loads(p.read_text(encoding="utf-8")).items()
-                if not (p.parent == Path(_LOCALES_DIR) and k in pending and v == en.get(k))
+                if not (k in english and v == english[k])
                 and (hits := _tu_forms(v))}
     assert not informal, informal
 

@@ -35,7 +35,7 @@ from migration_support import auth, code_config, maker, real_client, real_engine
 from test_system_recovery_exact import _migration_history  # noqa: F401
 
 from celerp.services.payments import reconcile_payments
-from ui.i18n import t
+from ui.i18n import t, refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -1249,7 +1249,7 @@ async def test_every_payment_a_restore_may_have_lost_is_recorded_again_before_a_
 
     # Until they are recorded again, no new payment opens.
     r = await real_client.get(f"/pay/{share}", follow_redirects=False)
-    assert r.status_code == 409 and r.json()["detail"] == t("documents.err_pay_paused", "en")
+    assert r.status_code == 409 and refusal_text(r.json()["detail"]) == t("documents.err_pay_paused", "en")
     assert cloud.checkouts == []
 
     await cloud.deliver()
@@ -1656,7 +1656,7 @@ async def test_a_payment_recorded_again_into_a_locked_period_is_refused_like_any
         assert await s.scalar(text("SELECT paid_at FROM unmatched_payments")) == _OCTOBER_3
     r = await real_client.post(f"/docs/{eid}/payment", headers=auth(await token(real_engine, boss, a)),
                                json={"amount": 500.0, "payment_date": "2025-10-03", "bank_account": "1111"})
-    assert r.status_code == 422 and r.json()["detail"].startswith("Your books are locked up to 2025-10-31")
+    assert r.status_code == 422 and refusal_text(r.json()["detail"]).startswith("Your books are locked up to 31 Oct 2025")
 
 
 @pytest.mark.parametrize("refusal", ["generation_stale", "recovery_pending"])
@@ -1674,7 +1674,7 @@ async def test_a_payment_cloud_refuses_until_a_restore_is_confirmed_reads_as_pau
 
     r = await real_client.get(f"/pay/{share}", follow_redirects=False)
 
-    assert r.status_code == 409 and r.json()["detail"] == t("documents.err_pay_paused", "en")
+    assert r.status_code == 409 and refusal_text(r.json()["detail"]) == t("documents.err_pay_paused", "en")
     assert cloud.checkouts == [(str(a), 0, 409)]
 
 
@@ -1691,7 +1691,7 @@ async def test_new_payments_wait_until_cloud_confirms_a_restore(real_engine, rea
 
     r = await real_client.get(f"/pay/{share}", follow_redirects=False)
 
-    assert r.status_code == 409 and r.json()["detail"] == t("documents.err_pay_paused", "en")
+    assert r.status_code == 409 and refusal_text(r.json()["detail"]) == t("documents.err_pay_paused", "en")
     assert cloud.checkouts == []
 
     r = await real_client.get(f"/pay/{share}", follow_redirects=False)

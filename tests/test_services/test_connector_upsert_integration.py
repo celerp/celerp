@@ -238,13 +238,13 @@ async def test_contacts_create_for_all_platforms(use_test_session):
 
     assert await woo_contact(str(cid), {
         "id": 1, "first_name": "Ada", "last_name": "Lovelace", "email": "ada@x.test",
-        "billing": {"phone": "123", "city": "London", "country": "GB"}}) == "created"
+        "billing": {"phone": "+44 20 7946 0001", "city": "London", "country": "GB"}}) == "created"
     assert await u.upsert_contact_from_quickbooks(str(cid), {
         "Id": "2", "DisplayName": "Bob Co", "PrimaryEmailAddr": {"Address": "bob@x.test"},
-        "PrimaryPhone": {"FreeFormNumber": "456"}, "BillAddr": {"City": "NYC", "Country": "US"}}) == "created"
+        "PrimaryPhone": {"FreeFormNumber": "+1 212 555 0100"}, "BillAddr": {"City": "NYC", "Country": "US"}}) == "created"
     assert await u.upsert_contact_from_xero(str(cid), {
         "ContactID": "x-3", "Name": "Carol", "EmailAddress": "carol@x.test",
-        "Phones": [{"PhoneType": "DEFAULT", "PhoneNumber": "789"}],
+        "Phones": [{"PhoneType": "DEFAULT", "PhoneNumber": "+61 2 9374 4000"}],
         "Addresses": [{"City": "Sydney", "Country": "AU"}]}) == "created"
     assert await u.upsert_contact_from_shopify(str(cid), {
         "id": 4, "first_name": "Dan", "email": "dan@x.test", "addresses": [{"city": "LA"}]}) == "created"
@@ -254,7 +254,7 @@ async def test_contacts_create_for_all_platforms(use_test_session):
 
     st = await _state(session, cid, "xero:contact:x-3")
     assert st["name"] == "Carol"
-    assert st["phone"] == "789"
+    assert st["phone"] == "+61 2 9374 4000"
     assert st["attributes"]["country"] == "AU"
 
 

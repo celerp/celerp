@@ -79,7 +79,7 @@ def local_backup_buttons(
             # never spliced into the JS source string.
             data_confirm_text=t("system_recovery.confirm"),
             data_restoring_text=t("auth.restoring"),
-            hx_on__confirm="event.preventDefault();if(confirm(this.dataset.confirmText))event.detail.issueRequest(true);else this.value='';",
+            hx_on__confirm="event.preventDefault();var input=this;celerpConfirm(input.dataset.confirmText).then(function(yes){if(yes)event.detail.issueRequest(true);else input.value='';});",
             hx_on__before_request="var btn=document.getElementById('backup-import-btn');if(btn){btn.disabled=true;btn.textContent=this.dataset.restoringText;}",
             style="display:none",
         ),

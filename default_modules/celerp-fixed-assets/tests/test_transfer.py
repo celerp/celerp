@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from fa_fixtures import FA
 from test_l10n import _map, _tax_book
 from test_runs import _contributed, _lines, _lock, _managed_from, _movements, _race_company, _run, _set_module
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -149,15 +150,15 @@ async def test_move_validates_and_checks_roles(fa):
                              headers)
 
     nothing = await refused({})
-    assert nothing.status_code == 422 and "location or a custodian" in nothing.json()["detail"]
+    assert nothing.status_code == 422 and "location or a custodian" in refusal_text(nothing.json()["detail"])
     assert (await refused({"location_id": str(uuid.uuid4())})).status_code == 422
     stranger = await refused({"custodian": {"user_id": str(uuid.uuid4())}})
-    assert stranger.status_code == 422 and "member" in stranger.json()["detail"]
+    assert stranger.status_code == 422 and "member" in refusal_text(stranger.json()["detail"])
     assert (await refused({"custodian": {"name": "  "}})).status_code == 422
     yard = await _location(fa, "Yard")
     await _move(fa, car, date="2026-03-01", location_id=yard)
     earlier = await refused({"date": "2026-02-15", "location_id": yard})
-    assert earlier.status_code == 422 and "2026-03-01" in earlier.json()["detail"]
+    assert earlier.status_code == 422 and "2026-03-01" in refusal_text(earlier.json()["detail"])
     # Moving an asset is an operator's job; a viewer cannot reach fixed assets at all.
     operator = await fa.role_headers("operator")
     await _move(fa, car, headers=operator, date="2026-03-02", custodian={"name": "Driver", "not_user": True})
@@ -177,7 +178,8 @@ async def test_move_stale_form_names_the_move_and_asks_to_review_again(fa):
                                                   "fingerprint": preview["fingerprint"]})
     assert stale.status_code == 409 and stale.json()["detail"] == {
         "message": "FA-0001 (Moved) changed since you reviewed it. Press Review again to see it as it stands now.",
-        "params": {"links": [{"label": "FA-0001", "href": f"/fixed-assets/assets/{car}"}]}}, stale.text
+        "message_key": "fixed_assets.err_review_stale.one",
+        "params": {"assets": "FA-0001 (Moved)", "links": [{"label": "FA-0001", "href": f"/fixed-assets/assets/{car}"}]}}, stale.text
     assert (await fa.asset(car))["location_id"] == dock
     await _move(fa, car, **body)
     assert (await fa.asset(car))["location_id"] == yard
@@ -189,7 +191,7 @@ async def test_location_holding_assets_cannot_be_deleted(fa):
     yard = await _location(fa, "Yard")
     await _move(fa, car, date="2026-02-01", location_id=yard)
     refused = await fa.client.delete(f"/companies/me/locations/{yard}", headers=fa.h)
-    assert refused.status_code == 409 and "1 asset" in refused.json()["detail"]
+    assert refused.status_code == 409 and "1 asset" in refusal_text(refused.json()["detail"])
     await fa.operate(f"/assets/{car}/undo-move", {}, key="um")
     assert (await fa.client.delete(f"/companies/me/locations/{yard}", headers=fa.h)).status_code == 200
 
@@ -246,7 +248,7 @@ async def test_reclassify_undo_and_refusals(fa):
     vehicles = (await fa.classes())["Vehicles"]["id"]
     charged = await fa.post(f"/assets/{car}/reclassify", {"date": "2026-03-10", "class_id": plant["id"],
                                                           "preview": True, "op_key": "x"})
-    assert charged.status_code == 409 and "2026-03" in charged.json()["detail"]
+    assert charged.status_code == 409 and "2026-03" in refusal_text(charged.json()["detail"])
     same = await fa.post(f"/assets/{car}/reclassify", {"date": "2026-05-10", "class_id": vehicles,
                                                        "preview": True, "op_key": "x"})
     assert same.status_code == 422
@@ -313,9 +315,9 @@ async def test_s5_transfer_uses_related_party_accounts_no_clearing(fa):
     # A header account in either company is refused.
     van = await _contributed(fa, name="Van")
     header = await _refused_transfer(fa, b, van, receivable_account="1100")
-    assert header.status_code == 422 and "header" in header.json()["detail"]
+    assert header.status_code == 422 and "header" in refusal_text(header.json()["detail"])
     header = await _refused_transfer(fa, b, van, payable_account="2100")
-    assert header.status_code == 422 and "header" in header.json()["detail"]
+    assert header.status_code == 422 and "header" in refusal_text(header.json()["detail"])
 
 
 async def test_s5_related_party_account_type_checked(fa):
@@ -324,10 +326,10 @@ async def test_s5_related_party_account_type_checked(fa):
     b = await _second_company(fa)
     expense = await _refused_transfer(fa, b, car, receivable_account="6200")
     assert expense.status_code == 422
-    assert "asset account" in expense.json()["detail"] and "Demo Co" in expense.json()["detail"]
+    assert "asset account" in refusal_text(expense.json()["detail"]) and "Demo Co" in refusal_text(expense.json()["detail"])
     receivable = await _refused_transfer(fa, b, car, payable_account="1120")
     assert receivable.status_code == 422
-    assert "liability account" in receivable.json()["detail"] and "Beta Co" in receivable.json()["detail"]
+    assert "liability account" in refusal_text(receivable.json()["detail"]) and "Beta Co" in refusal_text(receivable.json()["detail"])
 
 
 async def test_s5_transfer_atomic_both_or_neither(fa):
@@ -337,15 +339,15 @@ async def test_s5_transfer_atomic_both_or_neither(fa):
     before = await _snapshot(fa, car)
     await _lock(b, "2026-04-30")
     locked = await _refused_transfer(fa, b, car)
-    assert locked.status_code == 409 and "Beta Co" in locked.json()["detail"]
+    assert locked.status_code == 409 and "Beta Co" in refusal_text(locked.json()["detail"])
     await _lock(b, None)
     r = await b.client.patch("/accounting/accounts/2140", headers=b.h, json={"is_active": False})
     assert r.status_code == 200, r.text
     inactive = await _refused_transfer(fa, b, car, payable_account="2140")
-    assert inactive.status_code == 422 and "2140" in inactive.json()["detail"]
+    assert inactive.status_code == 422 and "2140" in refusal_text(inactive.json()["detail"])
     await _set_module(b, False)
     off = await _refused_transfer(fa, b, car)
-    assert off.status_code == 409 and "Beta Co" in off.json()["detail"]
+    assert off.status_code == 409 and "Beta Co" in refusal_text(off.json()["detail"])
     assert await _snapshot(fa, car) == before
     assert [a for a in await b.entities("fa_asset") if a.get("transferred_from")] == []
 
@@ -381,7 +383,7 @@ async def test_s5_currency_mismatch_needs_rate(fa):
     r = await b.client.patch("/companies/me/books", headers=b.h, json={"currency": "EUR"})
     assert r.status_code == 200, r.text
     no_rate = await _refused_transfer(fa, b, car)
-    assert no_rate.status_code == 422 and "rate" in no_rate.json()["detail"]
+    assert no_rate.status_code == 422 and "rate" in refusal_text(no_rate.json()["detail"])
     assert (await _refused_transfer(fa, b, car, rate="-1")).status_code == 422
     done = await _transfer(fa, b, car, rate="0.9")
     theirs = await b.asset(done["target"]["asset_id"])
@@ -414,7 +416,7 @@ async def test_transfer_not_undone_once_the_target_moved_on(fa):
     done = await _transfer(fa, b, car)
     await _run(b, "2026-05")
     refused = await fa.post(f"/assets/{car}/undo-latest", {"preview": True, "op_key": "u"})
-    assert refused.status_code == 409 and "Beta Co" in refused.json()["detail"]
+    assert refused.status_code == 409 and "Beta Co" in refusal_text(refused.json()["detail"])
     assert (await b.asset(done["target"]["asset_id"]))["status"] == "active"
 
 
@@ -457,10 +459,10 @@ async def _refused_untouched(fa: FA, b: FA, car: str, *needles: str) -> None:
     refused = await _refused_transfer(fa, b, car, price="9000")
     assert refused.status_code == 409, refused.text
     for needle in ("ZZ asset allowances", *needles):
-        assert needle in refused.json()["detail"], refused.text
+        assert needle in refusal_text(refused.json()["detail"]), refused.text
     done = await fa.post(f"/assets/{car}/transfer", {
         **_transfer_body(b, price="9000", class_id=(await b.classes())["Vehicles"]["id"]), "op_key": "t-refused", "fingerprint": "stale"})
-    assert done.status_code == 409 and "ZZ asset allowances" in done.json()["detail"], done.text
+    assert done.status_code == 409 and "ZZ asset allowances" in refusal_text(done.json()["detail"]), done.text
     assert await _snapshot(fa, car) == before
     assert [a for a in await b.entities("fa_asset") if a.get("transferred_from")] == []
     assert sorted(je["entity_id"] for je in await b.module_journals()) == their_journals

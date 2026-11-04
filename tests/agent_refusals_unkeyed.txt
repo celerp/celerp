@@ -1,0 +1,5 @@
+# Unkeyed refusals a route the AI calls may still raise, one per line, as the guard in
+# tests/test_ai_agent_route_refusals.py reports them without their line numbers. Each
+# reaches the AI under the generic key error.refusal_as_written (celerp/error_body.py), so
+# it reads as the English it is. The list only shrinks: the guard fails on an unkeyed
+# refusal not listed here and on a listed one no longer raised.

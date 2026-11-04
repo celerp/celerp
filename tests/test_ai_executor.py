@@ -15,6 +15,7 @@ import pytest
 
 from test_helpers import perm_setup
 
+from celerp.accounting_roles import refusal
 from celerp.ai import tools as ai_tools
 from celerp.modules.loader import _BUNDLED_MODULES_DIRS, is_core_folded, load_all, register_api_routes
 
@@ -70,7 +71,7 @@ async def test_executor_403_from_target_route_returned_as_error():
 
     @app.get("/forbidden", openapi_extra={"x-celerp-agent": True})
     async def forbidden():
-        raise HTTPException(status_code=403, detail="Not permitted")
+        raise HTTPException(status_code=403, detail=refusal("error.permission_missing", "Not permitted", label="Edit"))
 
     _core_module(app, "forbidden")
     cap = next(iter(ai_tools.compile_agent_capabilities(app, {}).values()))
@@ -80,7 +81,7 @@ async def test_executor_403_from_target_route_returned_as_error():
     )
     assert result["ok"] is False
     assert result["status"] == 403
-    assert result["data"] == {"detail": "Not permitted"}
+    assert result["data"] == {"detail": refusal("error.permission_missing", "Not permitted", label="Edit")}
 
 
 def _bundled_pluggable_names() -> set[str]:

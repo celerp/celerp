@@ -14,7 +14,7 @@ import pytest_asyncio
 from celerp.services.company_lock import locked_company
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 from test_helpers import doc_version
 
 
@@ -167,7 +167,7 @@ async def test_void_blocked_while_fulfilled_and_state_untouched(client, session,
     # Void via API: blocked while goods are out (revert fulfillment first).
     r = await client.post(f"/docs/{doc_id}/void", headers=auth["headers"], json={"reason": "test"})
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == t("documents.err_void_delivered", "en")
+    assert refusal_text(r.json()["detail"]) == t("documents.err_void_delivered", "en")
 
     # The refused void changes nothing: fulfillment state and stock untouched.
     doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
@@ -3164,3 +3164,18 @@ async def test_source_memo_cannot_be_claimed_by_a_client(client, auth):
     r = await client.patch(f"/docs/{inv.json()['id']}", headers=auth["headers"], json={"expected_version": await doc_version(client, auth["headers"], inv.json()['id']), 
         "fields_changed": {"source_memo_id": {"new": memo_id}, "line_items": {"new": [line]}}})
     assert r.status_code == 422, r.text
+
+
+@pytest.mark.asyncio
+async def test_dashboard_memo_out_counts_and_values_what_is_still_out(client, session, auth, _setup_ids):
+    """The dashboard's Memo Out card: the items whose status is out on memo, valued at what their memo
+    lines charge. An issued memo with nothing sent out adds neither an item nor money to it."""
+    before = (await client.get("/dashboard/kpis", headers=auth["headers"])).json()["inventory"]
+    await _memo_out(client, auth, f"DSH-A-{uuid.uuid4().hex[:6]}", 500.0, "contact:custA")
+    await _memo_out(client, auth, f"DSH-B-{uuid.uuid4().hex[:6]}", 750.0, "contact:custB")
+    await _create_memo(client, auth, [{"sku": "DSH-NONE", "name": "Not sent", "quantity": 1, "unit_price": 900.0}],
+                       contact_id="contact:custA")
+
+    after = (await client.get("/dashboard/kpis", headers=auth["headers"])).json()["inventory"]
+    assert after["items_on_memo"] - before["items_on_memo"] == 2
+    assert after["memo_out_value"] - before["memo_out_value"] == 1250.0

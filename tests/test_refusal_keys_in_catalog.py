@@ -21,6 +21,8 @@ import ast
 import json
 from pathlib import Path
 
+from celerp_fixed_assets.calc.rules import CORE
+
 _ROOT = Path(__file__).resolve().parents[1]
 _ROOTS = [_ROOT / "celerp", _ROOT / "default_modules"]
 
@@ -52,27 +54,124 @@ def _literal_or_prefix(node: ast.expr):
     return None, None
 
 
-def _refusal_calls():
-    """Every refusal(key, ...) call site in production code (celerp/ and
-    default_modules/, excluding tests), as (file:line, key_or_prefix, kind)."""
-    calls = []
+def _branches(node: ast.expr) -> list[ast.expr]:
+    """The keys a key argument may be: each branch of a conditional, else the argument."""
+    return [*_branches(node.body), *_branches(node.orelse)] if isinstance(node, ast.IfExp) else [node]
+
+
+def _module(path: Path) -> str:
+    """The dotted module a production file imports as."""
+    rel = path.relative_to(_ROOT).with_suffix("")
+    parts = rel.parts[2:] if rel.parts[0] == "default_modules" and len(rel.parts) > 2 else rel.parts
+    return ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
+
+
+def _trees() -> dict[str, tuple[Path, ast.Module]]:
+    """Every production file (celerp/ and default_modules/, excluding tests) by module."""
+    trees = {}
     for root in _ROOTS:
         for path in root.rglob("*.py"):
             text = str(path)
             if "/tests/" in text or path.name.startswith("test_"):
                 continue
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=text)
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
-                    continue
-                fn = node.func
-                name = fn.id if isinstance(fn, ast.Name) else (
-                    fn.attr if isinstance(fn, ast.Attribute) else None)
-                if name != "refusal" or not node.args:
-                    continue
-                key, kind = _literal_or_prefix(node.args[0])
-                calls.append((f"{path.relative_to(_ROOT)}:{node.lineno}", key, kind))
+            trees[_module(path)] = (path, ast.parse(path.read_text(encoding="utf-8"), filename=text))
+    return trees
+
+
+def _visible(module: str, tree: ast.Module, makers: dict[str, dict[str, int]]) -> dict[str, int]:
+    """The makers a module calls by name: its own, and those it imports from another."""
+    seen = dict(makers.get(module, {}))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module in makers and not node.level:
+            seen.update({a.asname or a.name: makers[node.module][a.name]
+                         for a in node.names if a.name in makers[node.module]})
+    return seen
+
+
+def _key_index(node: ast.FunctionDef, skip: int = 0) -> int | None:
+    """Where ``node`` takes a positional-only ``key``, after ``skip`` leading parameters."""
+    names = [a.arg for a in node.args.posonlyargs][skip:]
+    return names.index("key") if "key" in names else None
+
+
+def _hands_on_key(node: ast.FunctionDef, seen: dict[str, int]) -> bool:
+    """Whether ``node`` passes its ``key``, as it is, to a maker it sees."""
+    return any(isinstance(c, ast.Call) and isinstance(c.func, ast.Name) and c.func.id in seen
+               and len(c.args) > seen[c.func.id] and isinstance(c.args[seen[c.func.id]], ast.Name)
+               and c.args[seen[c.func.id]].id == "key" for c in ast.walk(node))
+
+
+def _makers(trees) -> dict[str, dict[str, int]]:
+    """Per module, every name that builds a refusal from the key it is given, by the key's
+    position: refusal(), every KeyedRefusal subclass whose constructor takes the key, and
+    every helper taking a positional-only ``key`` it hands on, as it is, to one of these
+    (keyed_error, a module's refuse(key, /, **params), a factory returning a Refused
+    subclass). Its callers name the key, so a call to one is a refusal call site."""
+    makers: dict[str, dict[str, int]] = {"celerp.accounting_roles": {"refusal": 0}}
+    refusal_classes = {"KeyedRefusal"}
+    changed = True
+    while changed:
+        changed = False
+        for module, (_path, tree) in trees.items():
+            seen = _visible(module, tree, makers)
+            own = makers.setdefault(module, {})
+            for node in tree.body:
+                index = None
+                if isinstance(node, ast.ClassDef) and (node.name in refusal_classes or any(
+                        (b.id if isinstance(b, ast.Name) else getattr(b, "attr", None)) in refusal_classes
+                        for b in node.bases)):
+                    if node.name not in refusal_classes:
+                        refusal_classes.add(node.name)
+                        changed = True
+                    init = next((f for f in node.body if isinstance(f, ast.FunctionDef) and f.name == "__init__"), None)
+                    parent = next((seen[b.id] for b in node.bases if isinstance(b, ast.Name) and b.id in seen), None)
+                    index = parent if init is None else (_key_index(init, 1) if _hands_on_key(init, seen) else None)
+                elif isinstance(node, ast.FunctionDef) and _hands_on_key(node, seen):
+                    index = _key_index(node)
+                if index is not None and own.get(node.name) != index:
+                    own[node.name] = index
+                    changed = True
+    return makers
+
+
+def _refusal_calls():
+    """Every refusal call site in production code, as (file:line, key_or_prefix, kind): a
+    call naming the key of a maker (_makers) it sees, outside the makers themselves."""
+    trees = _trees()
+    makers = _makers(trees)
+    calls = []
+    for module, (path, tree) in trees.items():
+        seen = _visible(module, tree, makers)
+        modules = {a.asname or a.name: f"{n.module}.{a.name}" for n in ast.walk(tree)
+                   if isinstance(n, ast.ImportFrom) and n.module and not n.level for a in n.names}
+        wrapped = {id(n) for f in tree.body if isinstance(f, (ast.FunctionDef, ast.ClassDef))
+                   and f.name in makers[module] for n in ast.walk(f)}
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or id(node) in wrapped:
+                continue
+            fn = node.func
+            if isinstance(fn, ast.Name):
+                position = seen.get(fn.id)
+            elif isinstance(fn, ast.Attribute) and isinstance(fn.value, ast.Name):
+                position = makers.get(modules.get(fn.value.id, ""), {}).get(fn.attr)
+            else:
+                position = None
+            if position is None or len(node.args) <= position:
+                continue
+            calls += [(f"{path.relative_to(_ROOT)}:{node.lineno}", *_literal_or_prefix(arg))
+                      for arg in _branches(node.args[position])]
     return calls
+
+
+def test_every_kind_of_maker_is_found():
+    """The makers are found, not listed: a helper, a subclass and a factory each count."""
+    makers = _makers(_trees())
+    assert makers["celerp.ai.tools"]["keyed_error"] == 1 and makers["celerp.ai.tools"]["_agent_error"] == 1
+    assert makers["celerp.accounting_roles"]["Refused"] == 0
+    assert makers["celerp_fixed_assets.setup"]["refuse"] == 0 and makers["celerp_fixed_assets.setup"]["refused"] == 1
+    assert "refuse" not in makers["celerp_manufacturing.movements"]  # it prefixes "mfg." to the key
+    assert any(site.startswith("default_modules/celerp-inventory/celerp_inventory/services.py:")
+               and key == "inventory.err_restate_lineage_missing" for site, key, _kind in _refusal_calls())
 
 
 # A handful of call sites build their key from a variable, not a literal, so static
@@ -100,10 +199,13 @@ _DYNAMIC_KEY_SITES = {
         "module_journal.source", "module_journal.unbalanced", "module_journal.unknown_operation",
         "posting.destination.not_in_chart",
     ],
+    # celerp/error_body.py: as_refusal answers a t() text as its own key's refusal; t()
+    # read that key from the catalog, so there is no key here to check
+    "celerp/error_body.py": [],
     # celerp/services/document_lines.py: key, text = _PROTECTED_MESSAGES[why]
     "celerp/services/document_lines.py": ["line.protected_held", "line.protected_received"],
-    # default_modules/celerp-inventory/celerp_inventory/services.py: CostRefused(key, message)
-    # wraps refusal(key, ...); each subclass passes its literal key to super().__init__
+    # default_modules/celerp-inventory/celerp_inventory/services.py: each CostRefused
+    # subclass passes its literal key to Refused through super().__init__
     "default_modules/celerp-inventory/celerp_inventory/services.py": [
         "inventory.cost_total_below_landed", "inventory.cost_text_invalid",
         "inventory.cost_unit_needs_quantity", "inventory.cost_version_stale",
@@ -132,6 +234,26 @@ _DYNAMIC_KEY_SITES = {
     "default_modules/celerp-docs/celerp_docs/routes.py": [
         "docs.undo_return_blocked", "docs.undo_receipt_blocked",
     ],
+    # celerp/ai/jobs.py: Job._refused(refusal) for the key _refusal() returns
+    "celerp/ai/jobs.py": ["ai.job_permission_lost", "ai.job_ai_unavailable"],
+    # celerp/services/auto_je.py: key = one of two literals by the document's side
+    "celerp/services/auto_je.py": ["documents.err_tax_purchase_only", "documents.err_tax_sales_only"],
+    # celerp_accounting/routes.py: _refuse_ineligible(reasons) for the reasons
+    # _eligible_entries maps each entry to
+    "default_modules/celerp-accounting/celerp_accounting/routes.py": [
+        "acct.err_recon_book_entry_missing", "acct.err_recon_book_entry_no_amount",
+        "acct.err_recon_book_entry_matched",
+    ],
+    # celerp_docs/doc_money.py: each step draft_route(state) names, nested in a refusal
+    "default_modules/celerp-docs/celerp_docs/doc_money.py": [
+        "documents.tax_route_available", "documents.tax_route_new", "documents.tax_route_payments",
+        "documents.tax_route_return", "documents.tax_route_revert", "documents.tax_route_void",
+        "documents.tax_route_void_order",
+    ],
+    # celerp_fixed_assets/calc/rules.py: the label of the rule a turned-off module provides,
+    # nested in a refusal; the core rules' labels (a module's own are its own catalog's)
+    "default_modules/celerp-fixed-assets/celerp_fixed_assets/calc/rules.py": [
+        entry.label_key for entries in CORE.values() for entry in entries],
 }
 
 
@@ -231,7 +353,6 @@ _PRE_EXISTING_RAW_HTTPEXCEPTION = {
         "Company not found.",
     },
     "default_modules/celerp-docs/celerp_docs/routes.py": {
-        "idempotency_key is longer than  characters",
         "Cannot send a closed memo; reopen it first.",
         "Add at least one line item before sending this document.",
         "Add at least one line item before finalizing this document.",
@@ -249,7 +370,6 @@ _PRE_EXISTING_RAW_HTTPEXCEPTION = {
         "Select at least one document to ship",
         "offset must be zero or greater",
         "limit must be greater than zero",
-        " is not a . Choose a , or change the contact's type to  or both.",
         "target_type must be 'invoice' or 'memo'",
         "Finalize the quotation before converting it",
         "Finalize the count before adjusting stock",
@@ -289,8 +409,6 @@ _PRE_EXISTING_RAW_HTTPEXCEPTION = {
         "not a direct status edit.",
         "Field '' not available for suggestions",
         "An item is created as draft or available, not .",
-        "inventory_type must be one of ",
-        "landed_cost_kind must be one of ",
         "Nothing was deleted. Only a draft that never became stock can be deleted, and "
         "these cannot: . Use Revert to Draft for stock made available by mistake, "
         "Archive to retire a product, or Write Off Stock for goods that left the company.",

@@ -30,6 +30,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.accounting_roles import catalog_refusal
 from celerp.models.projections import Projection
 from celerp.projections.engine import ProjectionEngine
 from celerp.services.company_lock import lock_company
@@ -38,7 +39,7 @@ from celerp.services.ledger_rows import entry_rows
 from celerp.services.permissions import _authority_for, read_authority, role_has_permission
 from celerp_accounting.models import BankAccount, ReconciliationSession
 from celerp_accounting.routes import _bank_amounts, _base_currency, _line_amounts, _opening_je_id
-from ui.i18n import list_text, t
+from ui.i18n import list_text
 
 # {(row id, bank chart code): (day, the row's lines on it)}, each line its (debit, credit)
 # in the currency of every bank account kept on that code (None where it has no amount in it).
@@ -187,8 +188,8 @@ async def guard_journal_change(
 
 
 async def _refusal(session: AsyncSession, company_id: uuid.UUID,
-                   hits: list[tuple[BankAccount, ReconciliationSession]], *, held: bool) -> str:
-    """The message naming every reconciliation hit, with the remedy the caller can act
+                   hits: list[tuple[BankAccount, ReconciliationSession]], *, held: bool) -> dict:
+    """The keyed refusal naming every reconciliation hit, with the remedy the caller can act
     on: someone who manages accounting is told to act, anyone else whom to ask."""
     accounts = list(dict.fromkeys(bank.bank_name for bank, _ in sorted(hits, key=lambda h: h[0].bank_name)))
     dates = sorted({recon.statement_date for _, recon in hits},
@@ -199,7 +200,8 @@ async def _refusal(session: AsyncSession, company_id: uuid.UUID,
         role, settings = await read_authority(session, company_id, authority.user_id)
         manages = role_has_permission(settings, role, "manage_accounting")
     suffix = "" if manages else "_ask"
-    params = {"account": list_text(accounts), "dates": list_text(dates)}
+    # The first reconciliation hit, for the link to it beside the refusal.
+    params = {"account": list_text(accounts), "dates": list_text(dates), "recon_id": str(hits[0][1].id)}
     if held:
-        return t(f"error.recon_entry_held{suffix}", **params)
-    return t(f"error.recon_period_changed{suffix}", last_date=max(d for d in dates if iso_day(d)), **params)
+        return catalog_refusal(f"error.recon_entry_held{suffix}", **params)
+    return catalog_refusal(f"error.recon_period_changed{suffix}", last_date=max(d for d in dates if iso_day(d)), **params)

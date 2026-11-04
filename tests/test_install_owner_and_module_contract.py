@@ -45,7 +45,7 @@ async def test_install_owner_can_transfer_and_old_owner_loses_authority(client, 
         json={"is_active": False},
     )
     assert deactivate_owner.status_code == 400
-    assert "installation owner" in deactivate_owner.json()["detail"].lower()
+    assert "installation owner" in refusal_text(deactivate_owner.json()["detail"]).lower()
 
     transfer_back = await client.post(
         f"/companies/me/users/{current_id}/installation-owner", headers=new_h)

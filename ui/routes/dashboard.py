@@ -182,7 +182,7 @@ def _dl(text: str) -> str:
 _VERTICAL_CONFIGS: dict[str, dict] = {
     "gemstones": {
         "kpis": [
-            {"key": "memo_out",       "label": "Memo Out",         "value_fn": "memo_balance",      "sub_fn": "memo_count_sub",        "href": "/inventory?filter=on_memo",                        "alert_fn": "memo_exposure_high"},
+            {"key": "memo_out",       "label": "Memo Out",         "value_fn": "memo_balance",      "sub_fn": "memo_count_sub",        "href": "/inventory?status=memo_out",                        "alert_fn": "memo_exposure_high"},
             {"key": "stock_value",    "label": "Stock Value",      "value_fn": "retail_total",      "sub_fn": "active_items_sub",      "href": "/inventory"},
             {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "view_inventory_costs"},
             {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub", "href": _AR_OUTSTANDING_HREF,         "alert_fn": "ar_positive"},
@@ -196,7 +196,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
         ],
         "quick_links": [
             ("/inventory",              "Stock",          "All inventory"),
-            ("/inventory?filter=on_memo","Memo Out",       "Items on consignment"),
+            ("/inventory?status=memo_out","Memo Out",       "Items on consignment"),
             ("/docs?type=invoice",       "Invoices",       "Sales invoices"),
             ("/docs?type=purchase_order","Purchase Orders","Supplier orders"),
             ("/crm",                     "Contacts",       "CRM"),
@@ -210,7 +210,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
             {"key": "stock_cost",     "label": "Stock Value (Cost)","value_fn": "cost_total",       "sub_fn": "active_items_sub",      "href": "/inventory"},
             {"key": "stock_retail",   "label": "Stock Value (Retail)","value_fn": "retail_total",  "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "edit_inventory"},
             {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",   "sub_fn": "invoices_outstanding_sub","href": _AR_OUTSTANDING_HREF,          "alert_fn": "ar_positive"},
-            {"key": "memo_out",       "label": "Memo Out",         "value_fn": "memo_balance",     "sub_fn": "memo_count_sub",        "href": "/inventory?filter=on_memo"},
+            {"key": "memo_out",       "label": "Memo Out",         "value_fn": "memo_balance",     "sub_fn": "memo_count_sub",        "href": "/inventory?status=memo_out"},
             {"key": "pos_pending",    "label": "POs Pending",      "value_fn": "pending_pos_count","sub_fn": "ap_outstanding_sub",    "href": "/docs?type=purchase_order&status=pending"},
             {"key": "revenue_mtd",    "label": "Revenue MTD",      "value_fn": "revenue_mtd",      "sub_fn": None,                    "href": "/reports"},
         ],
@@ -221,7 +221,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
             ("/docs?type=purchase_order", "Purchases",       "Supplier orders"),
             ("/crm",                      "Contacts",        "CRM"),
             ("/reports/ar-aging",         "AR Aging",        "Outstanding receivables"),
-            ("/inventory?filter=on_memo", "Memo Out",        "On consignment"),
+            ("/inventory?status=memo_out", "Memo Out",        "On consignment"),
         ],
         "charts": ["inventory_cat", "ar_aging"],
         "show_activity": True,
@@ -230,7 +230,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
         "kpis": [
             {"key": "stock_value",    "label": "Stock Value",      "value_fn": "retail_total",      "sub_fn": "active_pieces_sub",     "href": "/inventory"},
             {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "view_inventory_costs"},
-            {"key": "memo_out",       "label": "Memo Out",         "value_fn": "memo_balance",      "sub_fn": "memo_count_sub",        "href": "/inventory?filter=on_memo",                        "alert_fn": "memo_positive"},
+            {"key": "memo_out",       "label": "Memo Out",         "value_fn": "memo_balance",      "sub_fn": "memo_count_sub",        "href": "/inventory?status=memo_out",                        "alert_fn": "memo_positive"},
             {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": _AR_OUTSTANDING_HREF,          "alert_fn": "ar_positive"},
             {"key": "pipeline",       "label": "Pipeline",         "value_fn": "deal_value_pipeline","sub_fn": "active_deals_sub",     "href": "/crm"},
             {"key": "pos_pending",    "label": "POs Pending",      "value_fn": "pending_pos_count", "sub_fn": "ap_outstanding_sub",    "href": "/docs?type=purchase_order"},
@@ -238,7 +238,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
         "secondary_kpis": [],
         "quick_links": [
             ("/inventory",               "Stock",           "All pieces"),
-            ("/inventory?filter=on_memo", "Memo Out",        "Pieces on memo"),
+            ("/inventory?status=memo_out", "Memo Out",        "Pieces on memo"),
             ("/crm",                      "Client Pipeline", "CRM deals"),
             ("/docs?type=invoice",        "Sales",           "Invoices"),
             ("/docs?type=purchase_order", "Sourcing",        "Purchase orders"),
@@ -250,7 +250,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
     "artwork": {
         "kpis": [
             {"key": "works_avail",    "label": "Works Available",  "value_fn": "active_items_count","sub_fn": "retail_total_sub",      "href": "/inventory"},
-            {"key": "memo_out",       "label": "On Approval",      "value_fn": "memo_balance",      "sub_fn": "memo_count_sub",        "href": "/inventory?filter=on_memo",                        "alert_fn": "memo_positive"},
+            {"key": "memo_out",       "label": "On Approval",      "value_fn": "memo_balance",      "sub_fn": "memo_count_sub",        "href": "/inventory?status=memo_out",                        "alert_fn": "memo_positive"},
             {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": _AR_OUTSTANDING_HREF,          "alert_fn": "ar_positive"},
             {"key": "revenue_mtd",    "label": "Revenue MTD",      "value_fn": "revenue_mtd",       "sub_fn": "gross_sales_sub",       "href": "/reports"},
             {"key": "pipeline",       "label": "Pipeline",         "value_fn": "deal_value_pipeline","sub_fn": "active_deals_sub",     "href": "/crm"},
@@ -259,7 +259,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
         "secondary_kpis": [],
         "quick_links": [
             ("/inventory",               "Works",           "All works"),
-            ("/inventory?filter=on_memo", "On Approval",     "Works on approval"),
+            ("/inventory?status=memo_out", "On Approval",     "Works on approval"),
             ("/crm",                      "Collectors",      "CRM"),
             ("/docs?type=invoice",        "Sales",           "Invoices"),
             ("/reports/ar-aging",         "AR Aging",        "Outstanding receivables"),
@@ -516,7 +516,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
             {"key": "cost_basis",     "label": "Cost Basis",       "value_fn": "cost_total",        "sub_fn": "margin_pct_sub",        "href": "/inventory", "permission": "view_inventory_costs"},
             {"key": "revenue_mtd",    "label": "Revenue MTD",      "value_fn": "revenue_mtd",       "sub_fn": "ytd_sub",               "href": "/reports"},
             {"key": "ar_outstanding", "label": "AR Outstanding",   "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": _AR_OUTSTANDING_HREF,          "alert_fn": "ar_positive"},
-            {"key": "memo_out",       "label": "Consignment",      "value_fn": "memo_balance",      "sub_fn": "memo_count_sub",        "href": "/inventory?filter=on_memo"},
+            {"key": "memo_out",       "label": "Consignment",      "value_fn": "memo_balance",      "sub_fn": "memo_count_sub",        "href": "/inventory?status=memo_out"},
             {"key": "pos_pending",    "label": "Orders Pending",   "value_fn": "pending_pos_count", "sub_fn": "ap_outstanding_sub",    "href": "/docs?type=purchase_order"},
         ],
         "secondary_kpis": [],
@@ -525,7 +525,7 @@ _VERTICAL_CONFIGS: dict[str, dict] = {
             ("/docs?type=invoice",         "Sales",           "Invoices"),
             ("/docs?type=purchase_order",  "Orders / Returns","Purchase orders"),
             ("/crm",                       "Accounts",        "CRM"),
-            ("/inventory?filter=on_memo",  "Consignment",     "Publisher consignment"),
+            ("/inventory?status=memo_out",  "Consignment",     "Publisher consignment"),
             ("/reports",                   "Reports",         "Analytics"),
         ],
         "charts": ["inventory_cat", "ar_aging"],
@@ -603,7 +603,7 @@ def _kpi_values(kpis: dict, valuation: dict, doc_summary: dict,
     items_reserved = int(inv.get("items_reserved", 0) or 0)
     low_stock = int(inv.get("low_stock_items", 0) or 0)
 
-    memo_balance = float(doc_summary.get("memo_all_total", 0) or 0)
+    memo_balance = float(inv.get("memo_out_value", 0) or 0)
     memo_count = int(items_on_memo)
 
     ar_outstanding = float(sales.get("ar_outstanding", doc_summary.get("ar_outstanding", 0)) or 0)
@@ -1299,7 +1299,7 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict | None,
           data: {{ labels: {cat_labels}, datasets: [{{ label: {json.dumps(t('th.items'))}, data: {cat_data}, backgroundColor: colors[0] }}] }},
           options: {{
             indexAxis: 'y', responsive: true,
-            scales: {{ x: {{ ticks: {{ color: textColor }}, grid: {{ color: gridColor }} }}, y: {{ ticks: {{ color: textColor }}, grid: {{ display: false }} }} }},
+            scales: {{ x: {{ beginAtZero: true, ticks: {{ color: textColor, precision: 0 }}, grid: {{ color: gridColor }} }}, y: {{ ticks: {{ color: textColor }}, grid: {{ display: false }} }} }},
             plugins: {{ legend: {{ display: false }} }}
           }}
         }});

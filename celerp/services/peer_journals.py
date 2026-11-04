@@ -23,7 +23,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import PERIOD_LOCK_PATH
+from celerp.accounting_roles import PERIOD_LOCK_PATH, period_locked_refusal
 from celerp.events.engine import emit_event, write_period_lock
 from celerp.importers.results import failure_reason
 from celerp.models.company import Company
@@ -35,7 +35,7 @@ from celerp.services.business_time import business_date_of
 from celerp.services.company_lock import lock_company, locked_company
 from celerp.services.je_keys import je_void_data
 from celerp.services.posting_readiness import account_names
-from ui.i18n import t
+from ui.i18n import available_langs, date_text, t
 
 FROM_ACCOUNTANT = "/settings/connectors/celerp#from-accountant"
 # Period lock under an address of its own, so moving the lock date for older stock never
@@ -135,8 +135,14 @@ async def sent_marks(company_id: uuid.UUID, grant_id: uuid.UUID, entity: str,
 
 def refused_by_lock(refused: str | None, firm_lock: str | None) -> bool:
     """Whether a refusal was the firm's lock date, unchanged since: the same revision would
-    be refused again, so it is not sent until it changes or the date does."""
-    return bool(refused and firm_lock and firm_lock in refused)
+    be refused again, so it is not sent until it changes or the date does. The firm names
+    the date as its reader reads it (date_text) in whichever language it runs in, or as an
+    ISO day when it runs an older Celerp."""
+    if not (refused and firm_lock):
+        return False
+    day = _day(firm_lock)
+    return firm_lock in refused or (day is not None and any(
+        date_text(day, lang) in refused for lang in available_langs()))
 
 
 async def note_delivery(company_id: uuid.UUID, grant_id: uuid.UUID, entity: str, entity_id: str,
@@ -740,7 +746,7 @@ async def reverse(session: AsyncSession, company_id: uuid.UUID, actor_id, je_id:
     company = await locked_company(session, company_id)
     day, lock = reverse_day(company.settings or {}, state.get("ts"))
     if day is None:
-        raise HTTPException(422, t("error.period_locked", date=lock))
+        raise HTTPException(422, period_locked_refusal(lock))
     memo = state.get("memo") or ""
     await emit_event(session, company_id=company_id, entity_id=rid, entity_type="journal_entry",
                      event_type="acc.journal_entry.created", data={

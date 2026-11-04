@@ -295,6 +295,7 @@ class AccountControl(StrEnum):
     PAYABLE = "payable"
     BANK = "bank"
     CASH = "cash"
+    CLEARING = "clearing"   # money in transit (outstanding receipts or payments): an asset, not a bank
     TAX = "tax"
     INVENTORY = "inventory"
     RETAINED_EARNINGS = "retained_earnings"

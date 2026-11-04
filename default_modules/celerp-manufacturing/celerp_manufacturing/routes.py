@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.accounting_roles import catalog_refusal
 from celerp.db import get_session
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.events.schemas import (
@@ -214,16 +215,16 @@ def _order_item_ids(data: dict) -> list[str]:
     """Every item a new run names: its components and the product it makes."""
     inputs = data.get("inputs", [])
     if not isinstance(inputs, list):
-        raise HTTPException(status_code=422, detail=t("manufacturing.err_inputs_not_list"))
+        raise HTTPException(status_code=422, detail=catalog_refusal("manufacturing.err_inputs_not_list"))
     ids = []
     for line in inputs:
         item_id = line.get("item_id") if isinstance(line, dict) else None
         if not isinstance(item_id, str) or not item_id:
-            raise HTTPException(status_code=422, detail=t("manufacturing.err_component_no_item"))
+            raise HTTPException(status_code=422, detail=catalog_refusal("manufacturing.err_component_no_item"))
         ids.append(item_id)
     output = data.get("output_item_id")
     if not isinstance(output, str) or not output:
-        raise HTTPException(status_code=422, detail=t("manufacturing.err_output_required"))
+        raise HTTPException(status_code=422, detail=catalog_refusal("manufacturing.err_output_required"))
     return [*ids, output]
 
 
@@ -272,7 +273,7 @@ async def _emit_order_created(session: AsyncSession, company_id, order_id: str, 
     if stored is not None:
         return stored
     if not quantity > 0:
-        raise HTTPException(status_code=422, detail=t("manufacturing.err_quantity_not_positive"))
+        raise HTTPException(status_code=422, detail=catalog_refusal("manufacturing.err_quantity_not_positive"))
     # Each line is checked as sent: a component listed twice is one component needing both
     # amounts (the run's projection adds them), so a negative line cannot hide inside a total.
     if any(not float(i.get("quantity") or 0) > 0 for i in data.get("inputs") or []):
@@ -282,7 +283,7 @@ async def _emit_order_created(session: AsyncSession, company_id, order_id: str, 
     for item_id in ids:
         row = rows.get(item_id)
         if row is None or row.entity_type != "item":
-            raise HTTPException(status_code=422, detail=t("manufacturing.err_item_unknown"))
+            raise HTTPException(status_code=422, detail=catalog_refusal("manufacturing.err_item_unknown"))
         movements.require_stock(row.state or {}, item_id)
         if item_id == data["output_item_id"]:
             refuse_deleted(row.state or {}, item_id)

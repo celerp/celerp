@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from celerp.accounting_roles import refusal
+
 GOODS_COST_KEYS = ("cost_price", "cost_total", "cost_base")
 
 # A lot whose value holds goods of unknown cost: the value is what the books carry,
@@ -36,7 +38,7 @@ def lot_label(state: dict, entity_id: str) -> str:
     return str(state.get("sku") or state.get("name") or entity_id)
 
 
-def negative_cost_error(label: str, *costs: Any) -> str | None:
+def negative_cost_error(label: str, *costs: Any) -> dict | None:
     """The refusal for any of ``costs`` below zero, naming the lot, or None.
 
     Blank values are no cost, and a value that is not a number is left to the
@@ -49,7 +51,7 @@ def negative_cost_error(label: str, *costs: Any) -> str | None:
         except (TypeError, ValueError):
             continue
         if negative:
-            return f"{label}: a cost cannot be negative"
+            return refusal("inventory.err_cost_negative", f"{label}: a cost cannot be negative", lot=label)
     return None
 
 
@@ -81,11 +83,12 @@ def clears_goods_cost(event_type: str, data: dict) -> bool:
     return any(value in (None, "") for value in written_goods_costs(event_type, data).values())
 
 
-def unknown_flag_error(event_type: str, data: dict) -> str | None:
+def unknown_flag_error(event_type: str, data: dict) -> dict | None:
     """The refusal for an item event carrying the unknown-cost flag it may not carry, or
     a goods cost in a patch (a patch never restates cost), else None."""
     if GOODS_COST_UNKNOWN in data and event_type not in UNKNOWN_FLAG_EVENTS:
-        return f"{event_type} cannot record whether a goods cost is known"
+        return refusal("inventory.err_cost_unknown_flag", f"{event_type} cannot record whether a goods cost is known",
+                       event=event_type)
     if event_type == "item.patched" and any(key in data for key in GOODS_COST_KEYS):
-        return "a patch cannot set a goods cost"
+        return refusal("inventory.err_cost_in_patch", "a patch cannot set a goods cost")
     return None

@@ -26,7 +26,7 @@ import pytest
 
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, User
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 
 async def _register_owner(client, company_name: str, email: str) -> dict:
@@ -237,7 +237,7 @@ async def test_legacy_salesperson_target_normalized_in_hierarchy(client, session
         f"/companies/me/users/{target_user.id}", json={"is_active": False}, headers=caller_h
     )
     assert r.status_code == 403, r.text
-    assert r.json()["detail"] == t("company.err_user_above_own")
+    assert refusal_text(r.json()["detail"]) == t("company.err_user_above_own")
 
 
 # ---------------------------------------------------------------------------

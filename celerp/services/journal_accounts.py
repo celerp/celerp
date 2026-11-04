@@ -33,6 +33,7 @@ from celerp.accounting_roles import (
     ROLE_LABELS,
     SCHEMA_KEY,
     AccountRole,
+    Refused,
     is_role,
     refusal,
     unknown_role,
@@ -77,15 +78,15 @@ class ReconciledHistoryChanged(HTTPException):
 
     CODE = "reconciled_history_changed"
 
-    def __init__(self, message: str):
-        super().__init__(status_code=409, detail={"code": self.CODE, "message": message})
+    def __init__(self, refusal: dict):
+        super().__init__(status_code=409, detail={"code": self.CODE, **refusal})
 
 
 class UntrustedChartError(ValueError):
     """A chart offered by code that is not the bundled accounting module."""
 
 
-class UnbalancedJournalEntry(ValueError):
+class UnbalancedJournalEntry(Refused):
     """An automatic journal entry whose lines do not balance in the company currency."""
 
 

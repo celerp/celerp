@@ -26,6 +26,8 @@ SALES = frozenset({"invoice", "credit_note"})
 PARTY_SIGN = {"invoice": 1, "credit_note": -1, "bill": -1, "debit_note": 1}
 CREDIT_TYPES = frozenset({"liability", "equity", "revenue"})
 PROFIT_AND_LOSS = frozenset({"revenue", "expense", "cogs"})
+# Accounts a payment can move money through: a bank, or a clearing account it waits in.
+MONEY_CONTROLS = frozenset({"bank", "clearing"})
 
 
 @dataclass

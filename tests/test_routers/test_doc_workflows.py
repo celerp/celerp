@@ -10,7 +10,7 @@ import pytest
 from sqlalchemy import select
 
 from celerp.models.ledger import LedgerEntry
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 from test_helpers import sell_item, doc_version
 
 
@@ -455,7 +455,7 @@ async def test_edit_ref_id_uniqueness(client, session):
         json={"fields_changed": {"ref_id": {"old": None, "new": "DUP-001"}}},
     )
     assert r.status_code == 409
-    assert r.json()["detail"] == t("documents.err_doc_number_taken", "en", number="DUP-001")
+    assert refusal_text(r.json()["detail"]) == t("documents.err_doc_number_taken", "en", number="DUP-001")
 
 
 @pytest.mark.asyncio
@@ -1209,7 +1209,7 @@ async def test_receive_return_fails_loudly_when_no_data_resolvable(client, sessi
     # SKU has no sold record and no matching line item on the CN - must fail loudly
     r = await client.post(f"/docs/{cn_id}/receive-return", headers=h, json={"items": [{"sku": "GHOST-SKU", "quantity": 1}]})
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("documents.err_return_origin_unknown", "en", sku="GHOST-SKU")
+    assert refusal_text(r.json()["detail"]) == t("documents.err_return_origin_unknown", "en", sku="GHOST-SKU")
 
 
 @pytest.mark.asyncio
@@ -1900,7 +1900,7 @@ async def test_patch_doc_status_rejected(client, session):
         json={"fields_changed": {"status": {"old": "draft", "new": "paid"}}},
     )
     assert r.status_code == 422, r.text
-    assert "status" in r.json()["detail"]
+    assert "status" in refusal_text(r.json()["detail"])
 
 
 @pytest.mark.asyncio
@@ -2630,7 +2630,7 @@ async def test_delete_draft_with_journal_entries_is_refused(client, session):
 
     r = await client.delete(f"/docs/{eid}", headers=h)
     assert r.status_code == 409, r.text
-    assert f"je:auto:{eid}:fin" in r.json()["detail"], r.text
+    assert f"je:auto:{eid}:fin" in refusal_text(r.json()["detail"]), r.text
 
     assert (await client.get(f"/docs/{eid}", headers=h)).status_code == 200
     assert await _posting_ids(session, eid) == before
@@ -2653,7 +2653,7 @@ async def test_bulk_delete_drafts_refuses_the_whole_batch_and_deletes_nothing(cl
 
     r = await client.delete(f"/docs/bulk-draft?doc_ids={clean},{posted}", headers=h)
     assert r.status_code == 422, r.text
-    assert posted_ref in r.json()["detail"], r.text
+    assert posted_ref in refusal_text(r.json()["detail"]), r.text
 
     for eid in (clean, posted):
         assert (await client.get(f"/docs/{eid}", headers=h)).status_code == 200, eid

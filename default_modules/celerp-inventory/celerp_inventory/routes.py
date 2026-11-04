@@ -43,6 +43,7 @@ from .services import (
     goods_cost_known,
     IDENTIFIER_TIERS,
     VALID_INVENTORY_TYPES,
+    inventory_type_refused,
     BatchImportRequest,
     BatchImportResult,
     adjust_item_quantity,
@@ -63,7 +64,7 @@ from .services import (
     replaced_price,
     source_header_semantics,
 )
-from celerp.accounting_roles import LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD, refusal
+from celerp.accounting_roles import LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD, Refused, catalog_refusal, refusal
 from celerp.services.company_lock import lock_company, lock_projections
 from celerp.services.item_erasure import depended_on, erase_items, holding_files, referrers, release_from_imports
 from celerp.services.lot_origin import (
@@ -84,7 +85,7 @@ from celerp.services.permissions import (
     assert_role_permission,
     get_current_company_settings,
     locked_authority,
-    missing_permission_text,
+    missing_permission,
     reject_price_change,
     require_permission,
     role_has_permission,
@@ -408,6 +409,12 @@ class PriceBody(BaseModel):
     idempotency_key: str | None = None
 
 
+def _landed_cost_kind_refused() -> dict:
+    """The refusal for a landed cost kind that is not one of LANDED_COST_KINDS."""
+    return refusal("inventory.err_landed_cost_kind",
+                   "Choose what this landed cost is for: freight, insurance, duty or import VAT.")
+
+
 def status_value(value) -> str:
     """An item status as it is stored and compared: lower case, whatever case it was typed in."""
     return str(value or "").lower()
@@ -445,30 +452,42 @@ ITEM_STATUSES: frozenset[str] = frozenset({
 
 # Statuses a generic status edit cannot set: each records an outcome its own action
 # books (Expire is administrative but has its own action and permission).
-_ACTION_OWNED_STATUSES: dict[str, str] = {
-    "sold": "An item is sold by fulfilling its invoice, not a direct status edit.",
-    "merged": "An item is merged through the Merge action, not a direct status edit.",
-    "expired": "Use the Expire action to expire an item, not a direct status edit.",
-    "reserved": "An item is reserved by the sales order or invoice that holds it, not a direct status edit.",
-    "memo_out": "An item goes out on memo by fulfilling its memo, not a direct status edit.",
-    DELETED: "An item is deleted through the Delete action, not a direct status edit.",
+_ACTION_OWNED_STATUSES: dict[str, dict] = {
+    "sold": refusal("inventory.err_sold_via_invoice",
+                    "An item is sold by fulfilling its invoice, not a direct status edit."),
+    "merged": refusal("inventory.err_merged_via_merge",
+                      "An item is merged through the Merge action, not a direct status edit."),
+    "expired": refusal("inventory.err_expired_via_expire",
+                       "Use the Expire action to expire an item, not a direct status edit."),
+    "reserved": refusal("inventory.err_reserved_via_document",
+                        "An item is reserved by the sales order or invoice that holds it, not a direct status edit."),
+    "memo_out": refusal("inventory.err_memo_out_via_memo",
+                        "An item goes out on memo by fulfilling its memo, not a direct status edit."),
+    DELETED: refusal("inventory.err_deleted_via_delete",
+                     "An item is deleted through the Delete action, not a direct status edit."),
 }
 # The only way out of Deleted.
-_RESTORE_ONLY = "A deleted item comes back only through Restore, as a draft."
+_RESTORE_ONLY = refusal("inventory.err_restore_only", "A deleted item comes back only through Restore, as a draft.")
 
 # Why stock that has left the books cannot come back through a status edit, by the
 # status it left them in; each names the action that undoes it.
-_LEFT_THE_BOOKS: dict[str, str] = {
-    "disposed": "This stock was written off; use Undo write-off to bring it back.",
-    "merged": "This item was merged into another; use Undo merge to bring it back.",
-    "sold": "This item was sold; reverse its fulfilment to bring it back.",
-    "fulfilled": "This item was sold; reverse its fulfilment to bring it back.",
-    "void": "This item was deleted.",
+_SOLD_LEFT_THE_BOOKS = refusal("inventory.err_left_books_sold",
+                               "This item was sold; reverse its fulfilment to bring it back.")
+_LEFT_THE_BOOKS: dict[str, dict] = {
+    "disposed": refusal("inventory.err_left_books_disposed",
+                        "This stock was written off; use Undo write-off to bring it back."),
+    "merged": refusal("inventory.err_left_books_merged",
+                      "This item was merged into another; use Undo merge to bring it back."),
+    "sold": _SOLD_LEFT_THE_BOOKS,
+    "fulfilled": _SOLD_LEFT_THE_BOOKS,
+    "void": refusal("inventory.err_left_books_void", "This item was deleted."),
     DELETED: _RESTORE_ONLY,
 }
-_GAVE_UP_ITS_STOCK = ("This item holds no stock on the books: it was sold, or its stock went into other items "
-                      "(a split, transform or merge), or its receipt or return was undone, so a status edit "
-                      "cannot bring it back.")
+_GAVE_UP_ITS_STOCK = refusal(
+    "inventory.err_gave_up_stock",
+    "This item holds no stock on the books: it was sold, or its stock went into other items "
+    "(a split, transform or merge), or its receipt or return was undone, so a status edit "
+    "cannot bring it back.")
 # A sold item can still be archived to tidy the catalog; it stays off the books.
 _ARCHIVABLE_AFTER_SALE = frozenset({"sold", "fulfilled"})
 
@@ -514,17 +533,17 @@ async def assert_status_change_allowed(
     """
     ns = str(new_status or "").lower()
     if ns not in ITEM_STATUSES:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Unknown status '{new_status}'; allowed: {', '.join(sorted(ITEM_STATUSES))}",
-        )
+        raise HTTPException(status_code=422, detail=refusal(
+            "inventory.err_status_unknown",
+            f"Unknown status '{new_status}'; allowed: {', '.join(sorted(ITEM_STATUSES))}",
+            value=str(new_status), allowed=", ".join(sorted(ITEM_STATUSES))))
     if ns == "disposed":
         # disposed is off the books and is set atomically with a journal entry. It is reachable
         # only through the manager-gated Write off stock terminal, never a generic status edit -
         # otherwise edit_inventory alone could take stock off-books with no ledger effect.
         raise HTTPException(
             status_code=422,
-            detail=t("inventory.err_dispose_via_write_off"),
+            detail=catalog_refusal("inventory.err_dispose_via_write_off"),
         )
     if ns in _ACTION_OWNED_STATUSES:
         raise HTTPException(status_code=422, detail=_ACTION_OWNED_STATUSES[ns])
@@ -541,25 +560,22 @@ async def assert_status_change_allowed(
             raise HTTPException(status_code=422, detail=_LEFT_THE_BOOKS.get(current, _GAVE_UP_ITS_STOCK))
         if ns == "available" and await _orphaned_hold(session, company_id, state):
             return
-        _reject_document_held(state, "archived" if ns == "archived" else f"set to {ns}")
+        _reject_document_held(state, ns)
         return
     if current in ("", "draft"):
         return  # creating as draft / already draft: harmless no-op
     if not role_has_permission(settings, role, "revert_items_to_draft"):
-        raise HTTPException(
-            status_code=403,
-            detail=missing_permission_text("revert_items_to_draft"),
-        )
+        raise missing_permission("revert_items_to_draft")
     if current != "available":
         raise HTTPException(
             status_code=409,
-            detail=t("inventory.err_revert_not_available", status=item_status_label(current)),
+            detail=catalog_refusal("inventory.err_revert_not_available", status=current),
         )
     if state.get("status_doc_id"):
         holder = state.get("status_doc_number") or state.get("status_doc_id")
         raise HTTPException(
             status_code=409,
-            detail=t("inventory.err_revert_on_document", ref=holder),
+            detail=catalog_refusal("inventory.err_revert_on_document", ref=holder),
         )
     from celerp.models.ledger import LedgerEntry
     event_types = set((await session.execute(
@@ -573,7 +589,7 @@ async def assert_status_change_allowed(
         from ui.components.activity import event_label
         raise HTTPException(
             status_code=409,
-            detail=t("inventory.err_revert_used", uses=", ".join(event_label(e) for e in circulated)),
+            detail=catalog_refusal("inventory.err_revert_used", uses=", ".join(event_label(e) for e in circulated)),
         )
     from celerp.services.document_lines import listing_record
     doc_ref = await listing_record(session, company_id, entity_id)
@@ -582,7 +598,7 @@ async def assert_status_change_allowed(
         ref = ref_state.get("ref_id") or ref_state.get("doc_number") or doc_ref.entity_id
         raise HTTPException(
             status_code=409,
-            detail=t("inventory.err_revert_on_document", ref=ref),
+            detail=catalog_refusal("inventory.err_revert_on_document", ref=ref),
         )
 
 
@@ -609,7 +625,7 @@ async def _orphaned_hold(session: AsyncSession, company_id, state: dict) -> bool
         li.get("line_id") for li in owner_state.get("line_items") or [] if isinstance(li, dict)}
 
 
-def _reject_document_held(state: dict, action: str) -> None:
+def _reject_document_held(state: dict, status: str) -> None:
     """Goods a document holds (reserved or out on memo, or any status a document
     stamped) are settled by that document: released, returned, converted or closed
     there. A status edit, Archive or Expire would take them from it behind its back,
@@ -617,9 +633,10 @@ def _reject_document_held(state: dict, action: str) -> None:
     if not state.get("status_doc_id") and str(state.get("status") or "").lower() not in _DOCUMENT_HELD_STATUSES:
         return
     holder = state.get("status_doc_number") or state.get("status_doc_id") or "that holds it"
-    raise HTTPException(status_code=409, detail=(
+    raise HTTPException(status_code=409, detail=refusal(
+        "inventory.err_held_by_document",
         f"This item is held by document {holder}; resolve the document first (release or return the goods, "
-        f"or convert the document), then the item can be {action}."))
+        f"or convert the document), then its status can change to {status}.", doc=holder, lot_status=status))
 
 
 async def reject_draft_status_change_via_generic_path(
@@ -635,18 +652,15 @@ async def reject_draft_status_change_via_generic_path(
     if ns == DELETED:
         raise HTTPException(status_code=422, detail=_ACTION_OWNED_STATUSES[DELETED])
     if ns == "draft":
-        raise HTTPException(
-            status_code=422,
-            detail="Use the item's 'Revert to Draft' action, not a direct status edit.",
-        )
+        raise HTTPException(status_code=422, detail=refusal(
+            "inventory.err_revert_via_action", "Use the item's 'Revert to Draft' action, not a direct status edit."))
     current = _status_of(await lock_item(session, company_id, entity_id))
     if current == DELETED:
         raise HTTPException(status_code=422, detail=_RESTORE_ONLY)
     if current == "draft":
-        raise HTTPException(
-            status_code=422,
-            detail="A draft item can only become available through the 'Make Available' action, not a direct status edit.",
-        )
+        raise HTTPException(status_code=422, detail=refusal(
+            "inventory.err_draft_via_make_available",
+            "A draft item can only become available through the 'Make Available' action, not a direct status edit."))
 
 
 async def assert_make_available_allowed(session: AsyncSession, company_id, entity_id: str) -> None:
@@ -1812,11 +1826,18 @@ def _rows_preview_hash(rows: list[dict], upsert: bool, idempotency_key: str | No
 
 
 def _validation_failed(errors: list[dict]) -> HTTPException:
-    return HTTPException(status_code=422, detail={"code": "validation_failed", "errors": errors})
+    """Row errors: the keyed count reads as the refusal, the rows are for the importer."""
+    return HTTPException(status_code=422, detail={
+        "code": "validation_failed", "errors": errors,
+        **refusal("inventory.err_import_rows_invalid",
+                  f"{len(errors)} problems in the rows need changes before they can be imported.",
+                  count=len(errors))})
 
 
 def _preview_stale() -> HTTPException:
-    return HTTPException(status_code=409, detail={"code": "preview_stale"})
+    return HTTPException(status_code=409, detail={"code": "preview_stale", **refusal(
+        "inventory.err_import_preview_stale",
+        "The file, its mapping or its rows changed since the preview. Preview it again, then import.")})
 
 
 async def _import_authority(session, company_id, user_id) -> tuple[str, dict]:
@@ -2021,11 +2042,11 @@ async def _build_item_preview(
     from celerp.services.field_schema import all_category_schemas, union_category_attr_keys
 
     if not _AI_FILE_ID_RE.match(file_id):
-        raise HTTPException(status_code=404, detail=t("inventory.err_file_not_found"))
+        raise HTTPException(status_code=404, detail=catalog_refusal("inventory.err_file_not_found"))
     try:
         data, meta = load_file(file_id, company_id, user_id)
     except (FileNotFoundError, PermissionError):
-        raise HTTPException(status_code=404, detail=t("inventory.err_file_not_found"))
+        raise HTTPException(status_code=404, detail=catalog_refusal("inventory.err_file_not_found"))
 
     filename = meta.get("filename") or file_id
     price_lists, _default_list, _currency = await get_price_config(session, company_id)
@@ -2035,7 +2056,7 @@ async def _build_item_preview(
             data, filename, sheet=sheet, header_row=header_row, known=known_headers(spec.cols),
         )
     except TabularError as exc:
-        detail: dict = {"code": "unreadable_file", "message": str(exc)}
+        detail: dict = {"code": "unreadable_file", **exc.detail}
         if exc.sheets:
             detail["sheets"] = exc.sheets
         if exc.header_lines:
@@ -2201,7 +2222,7 @@ async def get_item(entity_id: str, company_id=Depends(get_current_company_id), r
     from celerp.services.field_schema import get_effective_field_schema
     row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if row is None or row.entity_type != "item":
-        raise HTTPException(status_code=404, detail=t("inventory.err_item_not_found"))
+        raise HTTPException(status_code=404, detail=catalog_refusal("inventory.err_item_not_found"))
     loc_name: str | None = None
     if row.location_id:
         loc = (await session.execute(
@@ -2256,7 +2277,7 @@ async def get_reorder_suggestion(entity_id: str, company_id=Depends(get_current_
     from celerp.services.reorder import suggest_reorder
     row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if row is None or row.entity_type != "item":
-        raise HTTPException(status_code=404, detail=t("inventory.err_item_not_found"))
+        raise HTTPException(status_code=404, detail=catalog_refusal("inventory.err_item_not_found"))
     return await suggest_reorder(session, company_id, entity_id)
 
 
@@ -2280,8 +2301,8 @@ def _validate_sku(sku: str | None) -> None:
     interactive route surfaces a clear message instead of the raw write-time rejection."""
     try:
         reject_comma_sku(sku)
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    except Refused as e:
+        raise HTTPException(status_code=422, detail=e.detail)
 
 
 def _validate_gtin(gtin) -> None:
@@ -2289,16 +2310,16 @@ def _validate_gtin(gtin) -> None:
     message instead of the raw ValueError falling through to a 500."""
     try:
         validate_gtin(gtin)
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    except Refused as e:
+        raise HTTPException(status_code=422, detail=e.detail)
 
 
 def _validate_rfid_epc(rfid_epc) -> None:
     """Friendly-422 wrapper over validate_rfid_epc (same reason as _validate_gtin)."""
     try:
         validate_rfid_epc(rfid_epc)
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+    except Refused as e:
+        raise HTTPException(status_code=422, detail=e.detail)
 
 
 async def get_item_projection(session: AsyncSession, company_id, entity_id: str, *, lock: bool = False) -> Projection:
@@ -2308,7 +2329,7 @@ async def get_item_projection(session: AsyncSession, company_id, entity_id: str,
     else:
         row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if row is None or row.entity_type != "item":
-        raise HTTPException(status_code=404, detail=t("inventory.err_item_not_found"))
+        raise HTTPException(status_code=404, detail=catalog_refusal("inventory.err_item_not_found"))
     return row
 
 
@@ -2339,7 +2360,7 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
         replay = await find_event_by_idempotency(session, company_id, idem_key)
         if replay is not None:
             if replay.event_type != "item.created":
-                raise HTTPException(status_code=409, detail=t("contacts.err_resubmitted"))
+                raise HTTPException(status_code=409, detail=catalog_refusal("contacts.err_resubmitted"))
             return {"event_id": replay.id, "id": replay.entity_id}
 
     # Guard: setting a price on creation requires set_inventory_prices, except that a
@@ -2351,8 +2372,9 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     reject_system_item_fields(payload.model_dump(exclude_none=True))
     _requested_status = str((payload.model_extra or {}).get("status") or "draft").lower()
     if _requested_status not in ("draft", "available"):
-        raise HTTPException(status_code=422, detail=(
-            f"An item is created as draft or available, not {_requested_status}."))
+        raise HTTPException(status_code=422, detail=refusal(
+            "inventory.err_create_status", f"An item is created as draft or available, not {_requested_status}.",
+            lot_status=_requested_status))
     _create_draft = _requested_status == "draft"
     _price_lists = (await get_price_config(session, company_id))[0]
     _gated = price_keys_in(payload.model_dump(exclude_none=True), _price_lists)
@@ -2370,18 +2392,18 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
         ),
     })
     if payload.inventory_type not in VALID_INVENTORY_TYPES:
-        raise HTTPException(status_code=422, detail=f"inventory_type must be one of {sorted(VALID_INVENTORY_TYPES)}")
+        raise HTTPException(status_code=422, detail=inventory_type_refused())
     if not payload.sell_by:
-        raise HTTPException(status_code=422, detail=t("inventory.err_sell_by_required"))
+        raise HTTPException(status_code=422, detail=catalog_refusal("inventory.err_sell_by_required"))
 
     if payload.landed_cost_kind is not None and payload.landed_cost_kind not in LANDED_COST_KINDS:
-        raise HTTPException(status_code=422, detail=f"landed_cost_kind must be one of {sorted(LANDED_COST_KINDS)}")
+        raise HTTPException(status_code=422, detail=_landed_cost_kind_refused())
 
     # Validate sell_by against company units
     units = await _get_company_units(session, company_id)
     unit_map = {u["name"]: u for u in units}
     if payload.sell_by not in unit_map:
-        raise HTTPException(status_code=422, detail=t("inventory.err_unit_unknown", unit=payload.sell_by))
+        raise HTTPException(status_code=422, detail=catalog_refusal("inventory.err_unit_unknown", unit=payload.sell_by))
 
     # Validate quantity precision
     unit_cfg = unit_map[payload.sell_by]
@@ -2389,7 +2411,7 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
 
     # Validate barcode format (digits only)
     if payload.barcode is not None and not payload.barcode.isdigit():
-        raise HTTPException(status_code=422, detail=t("inventory.err_barcode_digits"))
+        raise HTTPException(status_code=422, detail=catalog_refusal("inventory.err_barcode_digits"))
 
     _validate_sku(payload.sku)
     _validate_gtin(payload.gtin)
@@ -2402,7 +2424,7 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     replay = await find_event_by_idempotency(session, company_id, idem_key)
     if replay is not None:
         if replay.event_type != "item.created":
-            raise HTTPException(status_code=409, detail=t("contacts.err_resubmitted"))
+            raise HTTPException(status_code=409, detail=catalog_refusal("contacts.err_resubmitted"))
         return {"event_id": replay.id, "id": replay.entity_id}
 
     # Auto-assign sequential SKU if not provided
@@ -2450,10 +2472,10 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     for _amt in AMOUNT_ITEM_KEYS & set(data):
         _amt_val = data.get(_amt)
         if _amt_val is not None and float(_amt_val) < 0:
-            raise HTTPException(status_code=422, detail=t("inventory.err_amount_negative", field=_field_name(_amt)))
-    refusal = negative_cost_error(lot_label(data, entity_id), *(data.get(k) for k in GOODS_COST_KEYS))
-    if refusal:
-        raise HTTPException(status_code=422, detail=refusal)
+            raise HTTPException(status_code=422, detail=catalog_refusal("inventory.err_amount_negative", field=_field_name(_amt)))
+    cost_refusal = negative_cost_error(lot_label(data, entity_id), *(data.get(k) for k in GOODS_COST_KEYS))
+    if cost_refusal:
+        raise HTTPException(status_code=422, detail=cost_refusal)
     if (sell_qty := validate_default_sell_qty(data.pop("default_sell_qty", None), payload.sell_by, unit_map)) is not None:
         data["default_sell_qty"] = sell_qty
 
@@ -2562,7 +2584,7 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
         replay = await find_event_by_idempotency(session, company_id, payload.idempotency_key)
         if replay is not None:
             if replay.event_type != "item.updated" or replay.entity_id != entity_id:
-                raise HTTPException(status_code=409, detail=t("contacts.err_resubmitted"))
+                raise HTTPException(status_code=409, detail=catalog_refusal("contacts.err_resubmitted"))
             if set(payload.fields_changed) & COST_ITEM_KEYS:
                 from celerp_inventory.services import cost_correction_notice
                 return {"event_id": replay.id, "cost_correction": await cost_correction_notice(session, company_id, replay)}
@@ -2604,7 +2626,7 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
         await assert_status_change_allowed(session, company_id, entity_id, _new_status, role, settings)
     blocked = changed_keys & restricted
     if blocked:
-        raise HTTPException(status_code=403, detail=t(
+        raise HTTPException(status_code=403, detail=catalog_refusal(
             "inventory.err_fields_restricted",
             fields=", ".join(_field_name(k, _price_lists) for k in sorted(blocked))))
 
@@ -2616,7 +2638,7 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     if derived_blocked:
         raise HTTPException(
             status_code=422,
-            detail=t("inventory.err_price_derived",
+            detail=catalog_refusal("inventory.err_price_derived",
                      lists=", ".join(_field_name(k, _price_lists) for k in sorted(derived_blocked)),
                      base=price_list_label(_base_name)),
         )
@@ -2637,7 +2659,7 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
         if is_price_item_key(_f, _price_lists) and isinstance(_fc, dict):
             _new = _fc.get("new")
             if _new is not None and coerce_price(_new) is None:
-                raise HTTPException(status_code=422, detail=t("inventory.err_price_not_number",
+                raise HTTPException(status_code=422, detail=catalog_refusal("inventory.err_price_not_number",
                                                               field=_field_name(_f, _price_lists)))
 
     # A renamed SKU is held to the same rule as a created one: no comma (the OR operator).
@@ -2656,7 +2678,7 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
             units = await _get_company_units(session, company_id)
             unit_map = {u["name"]: u for u in units}
             if new_sell_by not in unit_map:
-                raise HTTPException(status_code=422, detail=t("inventory.err_unit_unknown", unit=new_sell_by))
+                raise HTTPException(status_code=422, detail=catalog_refusal("inventory.err_unit_unknown", unit=new_sell_by))
 
     # Default Sell Qty is held to the item's unit: a new value when it is set, and a stored
     # number when the unit changes (refused, never rounded to fit).
@@ -2708,8 +2730,8 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
         if new_barcode is not None:
             try:
                 validate_barcode(new_barcode)
-            except ValueError as exc:
-                raise HTTPException(status_code=422, detail=str(exc))
+            except Refused as exc:
+                raise HTTPException(status_code=422, detail=exc.detail)
 
     # Validate gtin format if changing (a product identifier: format only, not unique).
     if "gtin" in changed_keys:
@@ -2726,19 +2748,19 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     if "inventory_type" in changed_keys:
         new_inv_type = (payload.fields_changed["inventory_type"] or {}).get("new")
         if new_inv_type not in VALID_INVENTORY_TYPES:
-            raise HTTPException(status_code=422, detail=f"inventory_type must be one of {sorted(VALID_INVENTORY_TYPES)}")
+            raise HTTPException(status_code=422, detail=inventory_type_refused())
 
     # Validate landed_cost_kind if changing
     if "landed_cost_kind" in changed_keys:
         new_kind = (payload.fields_changed["landed_cost_kind"] or {}).get("new")
         if new_kind is not None and new_kind not in LANDED_COST_KINDS:
-            raise HTTPException(status_code=422, detail=f"landed_cost_kind must be one of {sorted(LANDED_COST_KINDS)}")
+            raise HTTPException(status_code=422, detail=_landed_cost_kind_refused())
 
     # Amount fields are non-negative.
     for _amt in sorted(AMOUNT_ITEM_KEYS & changed_keys):
         _amt_new = (payload.fields_changed[_amt] or {}).get("new")
         if _amt_new is not None and float(_amt_new) < 0:
-            raise HTTPException(status_code=422, detail=t("inventory.err_amount_negative", field=_field_name(_amt)))
+            raise HTTPException(status_code=422, detail=catalog_refusal("inventory.err_amount_negative", field=_field_name(_amt)))
 
     # sell_by sync: when sell_by changes unit type, pull the companion field into quantity.
     # quantity always means "how many sell_by units" — so switching piece→carat should set
@@ -2788,9 +2810,7 @@ async def _restate_cost_or_409(session: AsyncSession, company_id, **event) -> di
     from celerp_inventory.services import CostRefused, CostRestatementConflict, cost_correction_notice, restate_item_cost
     try:
         entry = await restate_item_cost(session, company_id, **event)
-    except CostRestatementConflict as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
-    except CostRefused as exc:
+    except (CostRestatementConflict, CostRefused) as exc:
         raise HTTPException(status_code=409, detail=exc.detail)
     notice = await cost_correction_notice(session, company_id, entry)
     await session.commit()
@@ -3158,7 +3178,7 @@ async def split_preview(
 ) -> dict:
     parent = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if parent is None or not is_item_available(parent.state):
-        raise HTTPException(status_code=404, detail=t("inventory.err_item_unavailable"))
+        raise HTTPException(status_code=404, detail=t("inventory.err_split_not_in_stock"))
 
     parent_qty = float(parent.state.get("quantity") or 0)
     if parent_qty <= 0:
@@ -3524,12 +3544,12 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         if payload.mother_qty < 0:
             raise HTTPException(status_code=422, detail=t("inventory.err_remaining_qty_negative"))
         if round(payload.mother_qty, 10) != derived_parent_qty and not role_has_permission(settings, role, "edit_inventory_amounts"):
-            raise HTTPException(status_code=403, detail=missing_permission_text("edit_inventory_amounts"))
+            raise missing_permission("edit_inventory_amounts")
     if payload.mother_weight is not None:
         if payload.mother_weight < 0:
             raise HTTPException(status_code=422, detail=t("inventory.err_remaining_weight_negative"))
         if (derived_mother_weight is None or round(payload.mother_weight, weight_decimals) != derived_mother_weight) and not role_has_permission(settings, role, "edit_inventory_amounts"):
-            raise HTTPException(status_code=403, detail=missing_permission_text("edit_inventory_amounts"))
+            raise missing_permission("edit_inventory_amounts")
     # Clamp sub-epsilon residuals from float subtraction to an exact zero (a submitted
     # negative override was rejected above, never silently zeroed).
     derived_parent_qty = max(derived_parent_qty, 0.0)
@@ -4581,7 +4601,7 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
             raise HTTPException(status_code=422, detail=t("inventory.err_merge_qty_negative"))
         _natural_qty = round(float(total_qty), _qty_dp) if _qty_dp is not None else float(total_qty)
         if resulting_qty != _natural_qty and not role_has_permission(settings, role, "edit_inventory_amounts"):
-            raise HTTPException(status_code=403, detail=missing_permission_text("edit_inventory_amounts"))
+            raise missing_permission("edit_inventory_amounts")
     # A merge keeps the value of what it combines. Changing that value is a cost
     # correction on the merged item, never part of the merge. A role that may not
     # write prices is refused as for any price write, so its answer says nothing
@@ -4589,7 +4609,7 @@ async def _plan_merge(session: AsyncSession, company_id, payload: MergeBody, set
     currency = await company_currency(session, company_id)
     # A role that cannot see cost gets one answer whatever the amount, so it learns nothing of it.
     if payload.resulting_cost_total is not None and not role_has_permission(settings, role, "view_inventory_costs"):
-        raise HTTPException(status_code=403, detail=missing_permission_text("view_inventory_costs"))
+        raise missing_permission("view_inventory_costs")
     if payload.resulting_cost_total is not None and (
         round_money(to_decimal(payload.resulting_cost_total), currency) != round_money(to_decimal(merged_cost_total), currency)
     ):

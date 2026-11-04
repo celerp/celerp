@@ -40,7 +40,7 @@ async def test_backdated_journal_form_shows_the_reconciliation_refusal(owner_ui)
                                data=_form("2026-09-15", bank["chart_account_code"], "10", uuid.uuid4().hex))
     body = html.unescape(page.text)
     assert "already posted with different amounts" not in body
-    assert "Harbor Bank" in body and "2026-09-30" in body
+    assert "Harbor Bank" in body and "30 Sep 2026" in body
 
 
 async def test_replayed_token_with_different_amounts_reads_as_already_posted(owner_ui):

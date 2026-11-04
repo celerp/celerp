@@ -16,7 +16,7 @@ from starlette.requests import Request
 
 from migration_support import auth, load_run, maker, real_client, real_engine, scan_upload  # noqa: F401
 from test_helpers import make_authed_token, register_admin
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 pytestmark = pytest.mark.asyncio
 
@@ -25,7 +25,7 @@ FIXTURES = Path(__file__).parent / "fixtures" / "manager_io"
 # What the first client's accountant answers: none is the first account offered or the
 # single source control, so a later preselection can only come from these answers.
 FIRST_CLIENT = {
-    "roles": {"cash_and_equivalents": "BANK-1", "default_deposit": "BANK-1", "inventory": "1010",
+    "roles": {"cash_and_equivalents": "1010-1", "default_deposit": "1010-1", "inventory": "1010",
               "inventory_opening": "1010", "sales_revenue": "4010", "stock_gain": "4000",
               "general_expense": "6100", "stock_shrinkage": "6100"},
     "add_accounts": [{"role": "tax_input", "code": "1150", "name": "Input tax", "account_type": "asset"},
@@ -178,7 +178,7 @@ async def test_firm_template_forget(real_client, real_engine, runner):
     r = await real_client.get(f"/migrations/{first}", headers=auth(token))
     assert r.json()["saved_answers"] is False
     r = await real_client.delete("/migrations/templates/not-a-source", headers=auth(token))
-    assert r.status_code == 404 and r.json() == {"detail": t("migration.err_unknown_source", "en")}
+    assert r.status_code == 404 and refusal_text(r.json()["detail"]) == t("migration.err_unknown_source", "en")
     run_id = await _migrate(real_client, token, "orders", runner)
     assert _from_previous(await _roles(real_client, token, run_id)) == {}
 

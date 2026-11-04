@@ -9,10 +9,12 @@ from fastapi import HTTPException, Request, status
 
 from celerp.gateway.state import get_session_token
 
-_NO_SESSION_DETAIL = (
-    "No active Celerp Connect session. Connect or reconnect web access "
-    "under Settings > Web Access, then try again."
-)
+
+
+def _not_connected() -> dict:
+    """No Connect session: the refusal names Web Access, where it is connected."""
+    from celerp.accounting_roles import catalog_refusal
+    return catalog_refusal("error.connect_account_first")
 
 
 def validate_session_token(session_token: str) -> None:
@@ -22,18 +24,13 @@ def validate_session_token(session_token: str) -> None:
     if not current:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=(
-                "This instance is not connected to Celerp Connect. "
-                "Connect web access under Settings > Web Access and try again."
-            ),
+            detail=_not_connected(),
         )
     if not supplied or not hmac.compare_digest(supplied, current):
+        from celerp.accounting_roles import catalog_refusal
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=(
-                "The Connect session is no longer valid. "
-                "Reconnect web access under Settings > Web Access."
-            ),
+            detail=catalog_refusal("error.relay_signed_out"),
         )
 
 
@@ -60,7 +57,7 @@ async def require_ai_access(request: Request) -> None:
         return
     if await ai_access_available():
         return
-    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_NO_SESSION_DETAIL)
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_not_connected())
 
 
 async def ai_access_available() -> bool:
@@ -86,4 +83,4 @@ async def require_active_session() -> None:
         if get_session_token():
             return
 
-    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_NO_SESSION_DETAIL)
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_not_connected())

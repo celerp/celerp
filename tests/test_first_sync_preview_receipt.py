@@ -22,6 +22,7 @@ import sqlalchemy as sa
 from company_backup_support import company, owner, token
 from connector_test_support import add_item, connected
 from migration_support import maker, real_client, real_engine  # noqa: F401
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -97,7 +98,7 @@ async def test_start_refuses_a_preview_that_changed(store):
     seen = await store.preview()
     store.products[1] = _product("3", "STORE-3")
     r = await store.start(seen["version"])
-    assert r.status_code == 409 and r.json()["detail"] == refused, r.text
+    assert r.status_code == 409 and refusal_text(r.json()["detail"]) == refused, r.text
 
     # Celerp's catalog gains an item with a store product's SKU: it now links instead of
     # being created.
@@ -105,12 +106,12 @@ async def test_start_refuses_a_preview_that_changed(store):
     async with get_session_ctx() as session:
         await add_item(session, store.cid, "item:store-1", "STORE-1")
     r = await store.start(seen["version"])
-    assert r.status_code == 409 and r.json()["detail"] == refused, r.text
+    assert r.status_code == 409 and refusal_text(r.json()["detail"]) == refused, r.text
 
     # The person changed the directions after the preview was read.
     seen = await store.preview()
     r = await store.start(seen["version"], {"products": "both"})
-    assert r.status_code == 409 and r.json()["detail"] == refused, r.text
+    assert r.status_code == 409 and refusal_text(r.json()["detail"]) == refused, r.text
 
     record = await store.record()
     assert record.state == "pending" and record.preview_version is None and record.reviewed is None
@@ -190,7 +191,7 @@ async def test_start_without_a_preview_version_is_refused_as_a_changed_preview(s
 
     r = await store.start("")
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == t("connectors.err_preview_changed", service="WooCommerce")
+    assert refusal_text(r.json()["detail"]) == t("connectors.err_preview_changed", service="WooCommerce")
     assert (await store.record()).state == "pending"
 
 

@@ -160,3 +160,16 @@ def test_thai_map_columns_reads_as_matching_columns():
     th = _locale("th")
     assert th["page.map_columns"] == "จับคู่คอลัมน์"
     assert "แผนที่" not in th["import.step_map_columns"]
+
+
+_TWO_SOURCES = [*_SOURCES, {"key": "odoo", "display_name": "Odoo",
+                            "artifacts": [{"label": "Odoo backup", "extensions": [".zip"]}],
+                            "accepts": "From Odoo, upload one backup."}]
+
+
+async def test_once_a_system_is_chosen_only_its_export_steps_show():
+    with patch("ui.api_client.migration_sources", new=AsyncMock(return_value=_TWO_SOURCES)):
+        r = await _ui_request("GET", "/setup/new-company/migrate?source=odoo")
+    assert r.status_code == 200, r.text
+    shown = {m.group(1) for m in re.finditer(r'<p[^>]*data-export-help="([a-z_]+)"(?![^>]*hidden)[^>]*>', r.text)}
+    assert shown == {"odoo"}

@@ -459,6 +459,14 @@ class TestPurchaseDisplayCell:
         # sell_by span should NOT have hx-get with sell_by/paired-edit
         assert "sell_by/paired-edit" not in html
 
+    def test_no_purchase_unit_shows_one_mark_that_opens_the_unit_editor(self):
+        from fasthtml.common import to_xml
+        from ui.components.table import EMPTY, purchase_display_cell
+        html = to_xml(purchase_display_cell("item-1", None, 1, None))
+        assert html.count(f">{EMPTY}<") == 1
+        assert "→" not in html
+        assert "purchase_unit/paired-edit" in html
+
     def test_purchase_unit_is_editable(self):
         from ui.components.table import purchase_display_cell
         result = purchase_display_cell("item-1", "Case", 12, "Piece")

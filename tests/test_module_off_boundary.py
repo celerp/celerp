@@ -508,8 +508,7 @@ async def _webhook(woo_store, topic: str, payload: dict | None = None) -> None:
 async def test_a_deleted_store_product_before_inventory_starts_is_recorded(woo_store, monkeypatch):
     """The deletion is refused before anything changes and left on the store's sync
     history in the refusal's words, never dropped unseen; nothing is fetched."""
-    from celerp.modules import loader
-    monkeypatch.setattr(loader, "_loaded", [m for m in loader._loaded if m["name"] != "celerp-inventory"])
+    _inventory_not_running(monkeypatch)
     monkeypatch.setattr(woo_store[1], "_paginate", _not_fetched())
     await _webhook(woo_store, "product.deleted", {"id": 88})
     assert await _history(woo_store[0]) == [
@@ -657,8 +656,15 @@ async def test_connecting_a_store_without_inventory_shows_the_refusal():
 
 # ── Store links while Inventory has not started ─────────────────────────────
 
+def _inventory_not_running(monkeypatch) -> None:
+    """The loader lists Inventory as not running."""
+    from celerp.modules import loader
+    monkeypatch.setattr(loader, "_loaded", [m for m in loader._loaded if m["name"] != "celerp-inventory"])
+
+
 def _inventory_not_importable(monkeypatch) -> None:
-    """Nothing of Inventory importable, as in a process that never loaded it."""
+    """Nothing of Inventory running or importable, as in a process that never loaded it."""
+    _inventory_not_running(monkeypatch)
     for name in ("celerp_inventory", "celerp_inventory.services"):
         monkeypatch.setitem(sys.modules, name, None)
 
@@ -733,11 +739,13 @@ async def test_disconnecting_a_store_before_inventory_starts(client, session, mo
 
 
 @pytest.mark.asyncio
-async def test_connecting_a_store_or_choosing_items_to_sync_needs_inventory(client, session, connect_session):
+async def test_connecting_a_store_or_choosing_items_to_sync_needs_inventory(client, session, connect_session,
+                                                                              monkeypatch):
     """Both write links on Inventory's items, so both are refused, naming it, before
     anything is stored."""
     import sqlalchemy as sa
     from celerp.models.connector_config import ConnectorConfig
+    _inventory_not_running(monkeypatch)
     owner = await _owner(client)
     r = await client.post("/connectors/woocommerce/credentials", headers=owner[0], json={
         "consumer_key": "ck_x", "consumer_secret": "cs_x", "store_url": "https://shop.test"})

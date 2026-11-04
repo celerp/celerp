@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import uuid
 import pytest
+from ui.i18n import refusal_text
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +210,7 @@ async def test_create_doc_with_deleted_contact_rejected(client):
         "currency": "USD",
     })
     assert r2.status_code == 422
-    assert "deleted" in r2.json()["detail"].lower()
+    assert "deleted" in refusal_text(r2.json()["detail"]).lower()
 
 
 # ---------------------------------------------------------------------------
@@ -326,7 +327,7 @@ async def test_merge_contacts_deleted_target_rejected(client):
         "source_contact_ids": [source],
     })
     assert r.status_code == 422
-    assert "deleted" in r.json()["detail"].lower()
+    assert "deleted" in refusal_text(r.json()["detail"]).lower()
 
 
 @pytest.mark.asyncio
@@ -350,7 +351,7 @@ async def test_merge_contacts_already_merged_source_rejected(client):
     })
     assert r2.status_code == 422
     # Source was tombstoned - either "already merged" or "already deleted" are acceptable
-    detail = r2.json()["detail"].lower()
+    detail = refusal_text(r2.json()["detail"]).lower()
     assert "already merged" in detail or "already deleted" in detail or "deleted" in detail
 
 

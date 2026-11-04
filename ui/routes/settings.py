@@ -16,8 +16,10 @@ from ui.components.icons import import_icon
 from ui.api_client import APIError
 from ui.components.attrs import hx_vals
 from ui.components.shell import base_shell, page_header, flash, toast_header, page_title
-from ui.components.table import EMPTY, unwrap_address
+from ui.components.table import EMPTY, editable_cell, searchable_select, unwrap_address
+from celerp.tax_regimes import country_name, tax_country
 from celerp.services.currencies import KNOWN_CURRENCY_CODES
+from celerp.services.units import plain_number
 from celerp.services.field_schema import SYSTEM_ITEM_KEYS
 from ui.components.currency import currency_combobox_td, currency_label
 from ui.components.phone import phone_input_td as _phone_input_td
@@ -32,9 +34,14 @@ from ui.routes.documents import _action_error
 from ui.routes.setup import business_type_label, business_type_options
 
 
+def _refusal_message(e: APIError) -> str:
+    """An API refusal as its message in the user's language."""
+    return refusal_text(e.data or e.detail) or str(e.detail)
+
+
 def _refusal(e: APIError) -> FT:
     """An API refusal as its message in the user's language, shown where the action was taken."""
-    return P(refusal_text(e.data or e.detail) or str(e.detail), cls="cell-error")
+    return P(_refusal_message(e), cls="cell-error")
 
 
 async def _check_permission(
@@ -277,21 +284,14 @@ def _register_tax_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, r
                     ),
                     cls="cell cell--editing",
                 )
-            val = str(tax.get(field, "") or "")
-            input_type = "number" if field == "rate" else "text"
-            return Td(
-                Input(
-                    type=input_type, name="value", value=val,
-                    hx_patch=f"/settings/{pfx}/{idx}/{field}",
-                    hx_target="closest td", hx_swap="outerHTML", hx_include="this",
-                    hx_trigger="blur delay:200ms",
-                    cls="cell-input" + (" cell-input--number" if input_type == "number" else ""),
-                    autofocus=True,
-                    onkeydown=esc_js,
-                    **({"step": "0.01"} if field == "rate" else {}),
-                ),
-                cls="cell cell--editing",
-            )
+            # Typed fields use the shared cell editor: Enter saves, Escape restores, and an
+            # untouched editor puts the shown cell back without a write.
+            val = tax.get(field)
+            if field == "rate" and val not in (None, ""):
+                val = plain_number(float(val))
+            return editable_cell(str(idx), field, val, cell_type="rate" if field == "rate" else "text",
+                                 patch_url=f"/settings/{pfx}/{idx}/{field}", restore_url=restore_url,
+                                 cls_extra="cell--number" if field == "rate" else "")
         return tax_field_edit
 
     def _make_display(pfx, gname):
@@ -596,7 +596,7 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
                     pl = price_lists[idx] if idx < len(price_lists) else {}
                 except APIError:
                     pl = {}
-                return _pl_cell_error(idx, field, pl, pfx, str(e.detail))
+                return _pl_cell_error(idx, field, pl, pfx, _refusal_message(e))
             pl = price_lists[idx] if idx < len(price_lists) else {}
             cell = _price_list_display_cell(idx, field, pl, prefix=pfx)
             if field == "name":
@@ -636,7 +636,7 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
                 price_lists.append({"name": name, "description": ""})
                 await getattr(api, pname)(token, price_lists)
             except APIError as e:
-                return _action_error(str(e.detail))
+                return _action_error(_refusal_message(e))
             return _R("", status_code=204, headers={"HX-Redirect": redir})
         return create_price_list
 
@@ -663,7 +663,7 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
                     price_lists.pop(idx)
                     await getattr(api, pname)(token, price_lists)
             except APIError as e:
-                return _action_error(str(e.detail))
+                return _action_error(_refusal_message(e))
             return _R("", status_code=204, headers={"HX-Redirect": redir})
         return delete_price_list
 
@@ -1365,7 +1365,7 @@ def setup_routes(app):
         try:
             await api.patch_default_price_list(token, name)
         except APIError as e:
-            return _status_error("default-price-list-status", str(e.detail))
+            return _status_error("default-price-list-status", _refusal_message(e))
         return Span(t("settings._saved"), id="default-price-list-status", cls="flash flash--success")
 
     @app.post("/settings/base-price-list")
@@ -1391,7 +1391,7 @@ def setup_routes(app):
                                  [pl.get("name", "") for pl in price_lists], base_name, oob=True)
             except APIError:
                 pass
-            return _status_error("base-price-list-status", str(e.detail), oob)
+            return _status_error("base-price-list-status", _refusal_message(e), oob)
         return Span(t("settings._saved"), id="base-price-list-status", cls="flash flash--success")
 
     # ── Terms & Conditions CRUD endpoints ────────────────────────────
@@ -1685,7 +1685,19 @@ def setup_routes(app):
         except APIError as e:
             return P(e.detail, cls="cell-error")
         loc = next((l for l in locations if l.get("id") == location_id), {})
-        val = str(loc.get(field, "") or "")
+        if field == "country":
+            from ui.routes.setup import tax_country_options
+            return Td(
+                searchable_select(
+                    "value", tax_country_options(), value=_location_country(loc.get("address")),
+                    aria_label=t("label.country"), autofocus=True,
+                    hx_patch=f"/settings/locations/{location_id}/{field}",
+                    hx_target="closest td", hx_swap="outerHTML", hx_trigger="change",
+                ),
+                cls="cell cell--editing",
+            )
+        val = (_location_address_text(loc.get("address")) if field == "address"
+               else str(loc.get(field, "") or ""))
 
         if field == "type":
             return Td(
@@ -1724,8 +1736,17 @@ def setup_routes(app):
         patch_val: str | bool | dict = value
         if field == "is_default":
             patch_val = value.strip().lower() in {"true", "1", "yes"}
-        elif field == "address":
-            patch_val = {"text": value} if value.strip() else {}
+        elif field in ("address", "country"):
+            if field == "country" and value and not tax_country(value):
+                return P(t("setup.invalid_country", value=repr(value)), cls="cell-error")
+            try:
+                current = next((l for l in (await api.get_locations(token)).get("items", [])
+                                if l.get("id") == location_id), {})
+            except APIError as e:
+                return P(str(e.detail), cls="cell-error")
+            # Address and country live in one address record: each keeps the other.
+            changes = {"text": value} if field == "address" else {"country": tax_country(value)}
+            patch_val = location_address(current.get("address"), **changes)
         if field == "is_default":
             # The default badge moves between rows, so the whole list is drawn again.
             from starlette.responses import Response as _R
@@ -1734,13 +1755,19 @@ def setup_routes(app):
             except APIError as e:
                 return api.refusal_response(e)
             return _R("", status_code=204, headers={"HX-Redirect": "/settings/inventory?tab=locations"})
+        stored = "address" if field == "country" else field
         try:
-            await api.patch_location(token, location_id, {field: patch_val})
-            locations = (await api.get_locations(token)).get("items", [])
+            saved = await api.patch_location(token, location_id, {stored: patch_val})
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        loc = next((l for l in locations if l.get("id") == location_id), {})
-        return _location_display_cell(location_id, field, loc.get(field))
+        cell = _location_display_cell(location_id, field, saved.get(stored))
+        if not saved.get("taxes_from"):
+            return cell
+        # Naming the country replaced the company's starting taxes: say so, with the way to them.
+        from starlette.responses import HTMLResponse as _HR
+        return _HR(to_xml(cell), headers=toast_header(
+            t("settings.taxes_set_from_country", country=country_name(saved["taxes_from"])), persist=True,
+            action={"href": "/settings/sales?tab=taxes", "label": t("settings.review_taxes")}))
 
     @app.delete("/settings/locations/{location_id}")
     async def delete_location(request: Request, location_id: str):
@@ -2902,7 +2929,7 @@ def _user_display_cell(user_id: str, field: str, value) -> FT:
 def _tax_display_cell(idx: int, field: str, tax: dict, prefix: str = "taxes") -> FT:
     val = tax.get(field, "")
     if field == "rate":
-        display = f"{val}%" if val else EMPTY
+        display = f"{plain_number(float(val))}%" if val not in (None, "") else EMPTY
     elif field in _TAX_BOOL_FIELDS:
         display = t("settings.yes") if val else t("settings.no")
     else:
@@ -3067,9 +3094,28 @@ _LOC_TYPE_VALUES: frozenset[str] = frozenset(v for v, _ in _LOC_TYPES)
 _LOC_TYPE_LABELS: dict[str, str] = {v: lbl for v, lbl in _LOC_TYPES}
 
 
+def location_address(address, **changes) -> dict:
+    """A location's address record with ``changes`` applied; an empty value removes its key."""
+    record = dict(address) if isinstance(address, dict) else ({"text": str(address)} if address else {})
+    record.update(changes)
+    return {k: v for k, v in record.items() if v}
+
+
+def _location_country(address) -> str:
+    return tax_country(address.get("country")) if isinstance(address, dict) else ""
+
+
+def _location_address_text(address) -> str:
+    """The address as typed, without the country, which has its own column."""
+    return unwrap_address(location_address(address, country=""))
+
+
 def _location_display_cell(location_id: str, field: str, value) -> FT:
     if field == "address":
-        display = unwrap_address(value)
+        display = _location_address_text(value)
+    elif field == "country":
+        code = _location_country(value)
+        display = country_name(code) if code else t("setup.country_other")
     elif field == "type":
         if value:
             _lk = _LOC_TYPE_LABELS.get(str(value))
@@ -3283,7 +3329,7 @@ def _company_tab(company: dict, lang: str = "en", is_owner: bool = False) -> FT:
                             Button(t("settings.uninstall_delete_data"),
                                 cls="btn btn--danger",
                                 data_confirm=t("settings.uninstall_confirm_js"),
-                                onclick="if(confirm(this.dataset.confirm)){window.celerp?.uninstallDeleteData()}"),
+                                onclick="celerpConfirm(this.dataset.confirm).then(function(yes){if(yes)window.celerp?.uninstallDeleteData();})"),
                             cls="settings-card settings-card--danger",
                         ),
                     ]
@@ -3445,7 +3491,7 @@ def _role_matrix_row(perm, settings: dict | None, is_owner: bool) -> FT:
 
     reason = _FIXED_ROW_REASON.get(perm.key) if not perm.grantable else None
     label = Td(
-        perm.label,
+        t(perm.label_key),
         Span(reason, cls="role-ref-reason") if reason else "",
         cls="text-left",
     )
@@ -3514,8 +3560,10 @@ def _taxes_tab(taxes: list[dict], lang: str = "en", prefix: str = "taxes", impor
         )
 
     actions = [
+        # Sent a moment after the click, behind the save an editor fires as it blurs (the card
+        # queues its requests), so a rate typed just before the click is kept.
         Button(t("btn.new_tax"), cls="btn btn--primary",
-               hx_post=f"/settings/{prefix}/new", hx_swap="none"),
+               hx_post=f"/settings/{prefix}/new", hx_swap="none", hx_trigger="click delay:250ms"),
     ]
     if import_path:
         actions.append(A(import_icon(), t("btn.import_taxes_csv"), href=import_path, cls="btn btn--secondary ml-sm"))
@@ -3527,7 +3575,7 @@ def _taxes_tab(taxes: list[dict], lang: str = "en", prefix: str = "taxes", impor
             Tbody(*[_row(i, tax) for i, tax in enumerate(taxes)]),
             cls="data-table",
         ),
-        cls="settings-card",
+        cls="settings-card", hx_sync="this:queue all",
     )
 
 
@@ -3913,6 +3961,7 @@ def _locations_tab(locations: list[dict], lang: str = "en") -> FT:
             _location_display_cell(lid, "name", loc.get("name")),
             _location_display_cell(lid, "type", loc.get("type")),
             _location_display_cell(lid, "address", loc.get("address")),
+            _location_display_cell(lid, "country", loc.get("address")),
             Td(
                 Button(
                     t("settings.is_default_badge") if is_default else t("settings.set_default"),
@@ -3942,10 +3991,12 @@ def _locations_tab(locations: list[dict], lang: str = "en") -> FT:
             cls="page-actions mb-md",
         ),
         Table(
-            Thead(Tr(Th(t("th.name")), Th(t("th.doc_type")), Th(t("th.address")), Th(t("th.default")), Th(""))),
-            Tbody(*[_row(l) for l in locations]) if locations else Tbody(Tr(Td(t("settings.no_locations_yet"), colspan="5", cls="empty-state-msg"))),
+            Thead(Tr(Th(t("th.name")), Th(t("th.doc_type")), Th(t("th.address")), Th(t("label.country")),
+                     Th(t("th.default")), Th(""))),
+            Tbody(*[_row(l) for l in locations]) if locations else Tbody(Tr(Td(t("settings.no_locations_yet"), colspan="6", cls="empty-state-msg"))),
             cls="data-table sticky-head",
         ),
+        P(t("settings.location_country_hint"), cls="form-hint mt-sm"),
         cls="settings-card",
     )
 

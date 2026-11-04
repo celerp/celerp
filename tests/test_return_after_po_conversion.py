@@ -23,6 +23,7 @@ from test_receipt_accounting import _OPENING, _books, _doc, _finalize
 from test_receive_selected_lines import _post, _stamp_line_ids
 from test_return_selected_lines import _qty, _return_lines
 from stock_books import assert_books_carry_stock
+from ui.i18n import refusal_text
 
 pytestmark = pytest.mark.asyncio
 
@@ -543,7 +544,7 @@ async def test_receipts_cannot_be_written_by_an_edit(client, session, auth):
         r = await client.patch(f"/docs/{po}", headers=auth["headers"],
                                json={"fields_changed": {field: {"old": None, "new": value}}})
         assert r.status_code == 422, (field, r.text)
-        assert field in r.json()["detail"]
+        assert field in refusal_text(r.json()["detail"])
     doc = await _state(session, auth, po)
     assert (doc["status"], doc.get("received_items"), doc.get("received_item_ids")) == ("draft", None, None)
 
@@ -615,7 +616,7 @@ async def test_bill_holding_goods_it_received_still_reverts_and_voids_only_once_
                                   "in stock. Select those lines and use Return Goods first, then revert.")
     r = await client.post(f"/docs/{po}/void", headers=auth["headers"], json={})
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == "This document can't be voided: it still holds received goods. Return them with Return Goods, then void it."
+    assert refusal_text(r.json()["detail"]) == "This document can't be voided: it still holds received goods. Return them with Return Goods, then void it."
 
 
 async def _receive_on(client, auth, doc_id: str, line_id: str, lot: str, qty: float):

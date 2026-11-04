@@ -72,7 +72,7 @@ def expand_recipe(item_state: dict, build_qty: float, lookup: ItemLookup) -> lis
     recipe = (item_state or {}).get("recipe") or {}
     components = recipe.get("components") or []
     if not components:
-        raise RecipeError("item has no recipe to expand")
+        raise RecipeError("This item has no recipe to make it from.", "no_recipe")
     factor = float(build_qty) / output_quantity(recipe)
     return merge_inputs(
         {"item_id": c["item_id"], "quantity": round(component_quantity(c, lookup) * factor, 6)}

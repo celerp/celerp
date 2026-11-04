@@ -21,7 +21,7 @@ from celerp.models.projections import Projection
 from test_money_stock_and_contact_invariants import _auth_company
 from test_ui import _authed, _mock_get_company, _mock_get_modules, ui_client  # noqa: F401  (fixtures)
 from test_tax_refusal_draft_route import route
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 from test_helpers import doc_version
 
 pytestmark = pytest.mark.asyncio
@@ -32,7 +32,7 @@ _TAX = [{"code": "VAT", "rate": 7.0, "amount": 0, "order": 0, "is_compound": Fal
 
 
 def _refused(r, named: str, key: str = "documents.err_tax_unreadable", steps: tuple = ()) -> bool:
-    return r.status_code == 422 and r.json().get("detail") == t(key, tax=named, route=route(*steps))
+    return r.status_code == 422 and refusal_text(r.json().get("detail")) == t(key, tax=named, route=route(*steps))
 
 
 async def _draft(client, auth) -> tuple[str, dict]:
@@ -309,7 +309,7 @@ async def test_the_editor_shows_a_tax_it_cannot_read_and_sends_it_back_as_it_is(
     assert json.loads(soup.select_one("#doc-taxes-state")["value"]) == [_VAT_7, _LEVY]
     assert [json.loads(x["value"]) for x in soup.select('[data-name="taxes_json"]')] == [[_VAT_7, _LEVY]]
     chosen = [o for o in soup.select('[data-name="tax_select"] option[selected]') if o["value"] != "|0"]
-    assert [(o["value"], o.text) for o in chosen] == [("|stored", "VAT (7.0%) + Levy 5%")]
+    assert [(o["value"], o.text) for o in chosen] == [("|stored", "VAT (7%) + Levy 5%")]
     assert [row.select_one(".total-label").text for row in soup.select("#doc-stored-tax-rows [data-doc-tax-index]")] \
         == ["VAT:", "Levy 5%:"]
 

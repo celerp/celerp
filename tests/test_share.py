@@ -11,7 +11,7 @@ import pytest
 from httpx import AsyncClient
 
 from celerp_docs.doc_constants import SHAREABLE_DOC_TYPES
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 
 # ---------------------------------------------------------------------------
@@ -786,7 +786,7 @@ async def test_import_refuses_a_tax_it_cannot_read_naming_it(client: AsyncClient
     (doc if where == "doc_taxes" else line)[where] = [_VAT_7, levy]
     r = await _import(client, tok, doc)
     assert r.status_code == 422, r.text
-    assert r.json()["detail"] == t("documents.err_tax_unreadable_shared", tax="Levy 5%")
+    assert refusal_text(r.json()["detail"]) == t("documents.err_tax_unreadable_shared", tax="Levy 5%")
 
 
 @pytest.mark.asyncio

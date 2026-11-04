@@ -15,7 +15,7 @@ from sqlalchemy import func, select
 from company_backup_support import company, member, owner, token
 from migration_support import auth, load_run, maker, multipart, real_client, real_engine, scan_upload  # noqa: F401
 from test_migration_firm_template import runner  # noqa: F401
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 pytestmark = pytest.mark.asyncio
 
@@ -143,10 +143,10 @@ async def test_bulk_migration_refuses_what_is_not_one_company(real_client, real_
     assert row["error"] == t("migration.several_export_set", source="Xero"), row
 
     r = await real_client.post(BASE, headers=headers, data={"prepared_by": "x"})
-    assert r.status_code == 422 and r.json()["detail"] == t("migration.choose_file"), r.text
+    assert r.status_code == 422 and refusal_text(r.json()["detail"]) == t("migration.choose_file"), r.text
     many = [(f"c{i}.manager", _manager("basic")[1]) for i in range(store.MAX_ARTIFACTS + 1)]
     r = await _upload(real_client, headers, *many)
-    assert r.status_code == 422 and r.json()["detail"] == t(
+    assert r.status_code == 422 and refusal_text(r.json()["detail"]) == t(
         "migration.several_too_many", count=store.MAX_ARTIFACTS), r.text
     assert len(await _rows(real_client, headers)) == 1
 
@@ -174,7 +174,7 @@ async def test_bulk_migration_remove_and_expiry(real_client, real_engine, monkey
     [row] = await _rows(real_client, headers)
     assert row["state"] == "gone" and row["run_id"] is None
     r = await real_client.post(f"{BASE}/{basic}/open", headers=headers)
-    assert r.status_code == 410 and r.json()["detail"] == t("migration.several_gone"), r.text
+    assert r.status_code == 410 and refusal_text(r.json()["detail"]) == t("migration.several_gone"), r.text
 
 
 async def test_bulk_migration_lasts_longer_than_one_upload(real_client, real_engine, monkeypatch):

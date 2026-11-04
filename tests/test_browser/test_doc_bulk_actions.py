@@ -16,6 +16,8 @@ import time
 
 import pytest
 
+from .conftest import answer_in_app, answer_confirms
+
 pytestmark = pytest.mark.browser
 
 
@@ -112,9 +114,9 @@ def test_bulk_delete_removes_draft(page, ui_server, api):
 
     # Accept the hx-confirm dialog; the delete runs via htmx and returns
     # HX-Refresh, so the page reloads only once the docs are actually gone.
-    page.once("dialog", lambda d: d.accept())
     with page.expect_navigation(wait_until="load", timeout=8000):
         page.locator("#doc-bulk-delete-btn").click()
+        answer_in_app(page)
     _no_crash(page, "BULK-DOC-03")
 
     # Verify the doc is gone from API
@@ -144,9 +146,9 @@ def test_select_all_then_delete(page, ui_server, api):
     page.wait_for_selector("#doc-bulk-delete-btn:not([style*='none'])", timeout=2000)
 
     # htmx delete + HX-Refresh: the page reloads only after the docs are gone.
-    page.once("dialog", lambda d: d.accept())
     with page.expect_navigation(wait_until="load", timeout=8000):
         page.locator("#doc-bulk-delete-btn").click()
+        answer_in_app(page)
     _no_crash(page, "BULK-DOC-03b")
 
     # Both docs deleted
@@ -182,17 +184,15 @@ def test_bulk_ship_mixed_customers_confirms_first(page, ui_server, api):
     page.wait_for_selector("#doc-bulk-ship-btn:not([style*='none'])", timeout=2000)
 
     # Cancel first: the dialog explains the blank consignee; dismissing aborts.
-    seen = {}
-    page.once("dialog", lambda d: (seen.update(message=d.message), d.dismiss()))
     page.locator("#doc-bulk-ship-btn").click()
+    assert "more than one customer" in answer_in_app(page, accept=False)
     page.wait_for_timeout(500)
-    assert "more than one customer" in seen.get("message", ""), f"dialog text: {seen}"
     assert "/docs" in page.url, "Cancel must stay on the invoice list"
 
     # Accept: one shipping document, consignee left blank for manual entry.
-    page.once("dialog", lambda d: d.accept())
     with page.expect_navigation(wait_until="load", timeout=8000):
         page.locator("#doc-bulk-ship-btn").click()
+        answer_in_app(page)
     _no_crash(page, "BULK-DOC-06")
     assert "/lists/" in page.url, f"Expected the new shipping document, got {page.url}"
     ship_id = page.url.split("/lists/")[1].split("?")[0]
@@ -214,7 +214,7 @@ def test_bulk_ship_single_customer_needs_no_confirm(page, ui_server, api):
     page.locator("#doc-bulk-select").select_option("doc-ship")
     page.wait_for_selector("#doc-bulk-ship-btn:not([style*='none'])", timeout=2000)
     dialogs = []
-    page.on("dialog", lambda d: (dialogs.append(d.message), d.accept()))
+    answer_confirms(page, lambda question: dialogs.append(question) or True)
     with page.expect_navigation(wait_until="load", timeout=8000):
         page.locator("#doc-bulk-ship-btn").click()
     _no_crash(page, "BULK-DOC-07")

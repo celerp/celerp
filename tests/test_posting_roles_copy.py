@@ -134,7 +134,12 @@ async def test_a_restored_copy_keeps_posting_accounts_and_every_origin(real_engi
     assert str(copy) != str(source)
     after = (await _settings(real_engine, copy), await _journal(real_engine, copy),
              await _lots(real_engine, copy), await _accounts(real_engine, copy))
-    assert after == before
+    # The copy runs Accounting, so the lot that never recorded its account is placed as it
+    # comes in, the one way older stock is placed; everything else is the source's.
+    placed = {k: v for k, v in after[1].items() if k.startswith("je:auto:older-stock-placed:")}
+    assert list(placed.values()) == [[("1130-OB", ("inventory_opening",), 0, 25.0),
+                                      ("1130-P", ("inventory_purchased",), 25.0, 0)]]
+    assert after == (before[0], {**before[1], **placed}, {**before[2], "LOT-OLDER": "1130-P"}, before[3])
 
     # The copy settles and sells on the accounts each balance was booked into.
     for doc, total in ((old_invoice, 100.0), (new_invoice, 40.0)):
@@ -151,11 +156,13 @@ async def test_a_restored_copy_keeps_posting_accounts_and_every_origin(real_engi
     assert {code: amounts[1] for code, amounts in sold.items() if code.startswith("113")} == {
         "1130-OB": 30.0, "1131": 20.0}
     assert sold["1122"] == (100.0, 0)
-    # A lot with no recorded account stays that way in the copy, and still waits for its account.
+    # The lot placed on restore sells from the account it was placed on.
     doc = await _post(real_client, copy_tok, "/docs", {"doc_type": "invoice", "total": 50.0, "line_items": [
         {"entity_id": lot_ids["LOT-OLDER"], "name": "Lot", "quantity": 1, "unit_price": 50.0, "sell_by": "piece"}]})
     r = await real_client.post(f"/docs/{doc['id']}/finalize", headers=auth(copy_tok))
-    assert r.status_code == 409 and "Stock LOT-OLDER has no inventory account yet" in r.json()["detail"]["message"]
+    assert r.status_code == 200, r.text
+    sold = await _entry(real_engine, copy, f"je:auto:{doc['id']}:fin")
+    assert {code: amounts[1] for code, amounts in sold.items() if code.startswith("113")} == {"1130-P": 25.0}
     await _lot(real_client, copy_tok, "LOT-COPY", 5.0)
     assert (await _lots(real_engine, copy))["LOT-COPY"] == "1131"
 

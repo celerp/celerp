@@ -26,7 +26,7 @@ from celerp.models.projections import Projection
 from test_helpers import doc_version
 from test_money_stock_and_contact_invariants import _auth_company
 from test_tax_refusal_draft_route import route
-from ui.i18n import t
+from ui.i18n import t, refusal_text
 
 _UNSET = "documents.err_line_tax_unset"
 _UNSET_RECEIVE = "documents.err_line_tax_unset_receive"
@@ -158,7 +158,7 @@ async def test_a_draft_step_that_cannot_be_undone_refuses_the_unset_line_and_cha
     op = uuid.uuid4().hex
     for _attempt in range(2):  # the same request again: refused the same way
         r = await _ENTRIES[entry](client, auth, doc, op)
-        assert r.status_code == 422 and r.json()["detail"] == t(key, line=2), r.text
+        assert r.status_code == 422 and refusal_text(r.json()["detail"]) == t(key, line=2), r.text
         assert await _footprint(session, auth) == before
 
     await _choose_no_tax(client, session, auth, doc)
@@ -179,7 +179,7 @@ async def test_an_issued_document_holding_an_unset_line_is_refused_with_the_way_
     op = uuid.uuid4().hex
     for _attempt in range(2):
         r = await _ENTRIES[entry](client, auth, doc, op)
-        assert r.status_code == 422 and r.json()["detail"] == t(_UNSET_ISSUED, line=2, route=route(*steps)), r.text
+        assert r.status_code == 422 and refusal_text(r.json()["detail"]) == t(_UNSET_ISSUED, line=2, route=route(*steps)), r.text
         assert await _footprint(session, auth) == before
 
 
@@ -189,7 +189,7 @@ async def test_a_type_that_is_never_sent_says_so_before_any_tax(client, session,
     doc = await _draft(client, auth, doc_type)
     before = await _footprint(session, auth)
     r = await _send(client, auth, doc, uuid.uuid4().hex)
-    assert r.status_code == 409 and r.json()["detail"] == t("documents.err_send_type"), r.text
+    assert r.status_code == 409 and refusal_text(r.json()["detail"]) == t("documents.err_send_type"), r.text
     assert await _footprint(session, auth) == before
 
 
@@ -208,7 +208,7 @@ async def test_a_finalized_list_holding_an_unset_line_keeps_its_type_and_names_t
     for _attempt in range(2):
         r = await client.post(f"/lists/{doc['id']}/change-type", headers=auth["headers"],
                               json={"list_type": "quotation"})
-        assert r.status_code == 422 and r.json()["detail"] == t(_UNSET_ISSUED, line=2, route=route("revert")), r.text
+        assert r.status_code == 422 and refusal_text(r.json()["detail"]) == t(_UNSET_ISSUED, line=2, route=route("revert")), r.text
         assert await _footprint(session, auth) == before
 
     r = await client.post(f"/lists/{doc['id']}/revert-to-draft", headers=auth["headers"])
@@ -230,7 +230,7 @@ async def test_a_conversion_into_a_draft_carries_the_unset_line_to_the_draft_tha
     assert state["status"] == "draft" and state["line_items"][1]["taxes"] is None
     before = await _footprint(session, auth)
     r = await _finalize(client, auth, target, None)
-    assert r.status_code == 422 and r.json()["detail"] == t(_UNSET, line=2), r.text
+    assert r.status_code == 422 and refusal_text(r.json()["detail"]) == t(_UNSET, line=2), r.text
     assert await _footprint(session, auth) == before
 
 
@@ -268,7 +268,7 @@ async def test_an_import_of_an_issued_record_refuses_the_unset_line_and_its_retr
     before = await _footprint(session, auth)
     for _attempt in range(2):
         r = await client.post("/docs/import", headers=auth["headers"], json=body)
-        assert r.status_code == 422 and r.json()["detail"] == t(_UNSET, line=2), r.text
+        assert r.status_code == 422 and refusal_text(r.json()["detail"]) == t(_UNSET, line=2), r.text
         assert await _footprint(session, auth) == before
     body["data"]["line_items"][1]["taxes"] = []
     r = await client.post("/docs/import", headers=auth["headers"], json=body)

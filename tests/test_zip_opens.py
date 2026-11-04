@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from company_backup_support import repacked
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 ROOT = Path(__file__).resolve().parent.parent
 ATTACHMENTS = "default_modules/celerp-inventory/celerp_inventory/routes_attachments.py"
@@ -147,7 +147,7 @@ async def _refusal(way: str, data: bytes, client, monkeypatch, tmp_path) -> str:
         monkeypatch.setattr(settings, "data_dir", tmp_path)
         r = await scan_upload(client, data, name="books.zip", source=way.partition(":")[2] or None)
     assert r.status_code == 422, r.text
-    return r.json()["detail"]
+    return refusal_text(r.json()["detail"])
 
 
 def _unreadable(way: str) -> tuple[str, ...]:
@@ -350,7 +350,7 @@ async def test_a_file_packed_with_another_method_or_a_password_is_refused_before
             return None
         if way == "files/bulk":
             r = await _bulk(client, data, token)
-            return r.json()["detail"] if r.status_code == 422 else None
+            return refusal_text(r.json()["detail"]) if r.status_code == 422 else None
         try:
             tabular.read_table(data, "items.xlsx") if way == "read_table" else importer.install_from_zip(data)
         except (tabular.TabularError, importer.ModuleImportError) as exc:

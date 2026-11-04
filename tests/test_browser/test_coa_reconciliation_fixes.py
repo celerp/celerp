@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 pytestmark = pytest.mark.browser
 
@@ -307,7 +307,9 @@ def test_match_endpoint_validates_book_entry(api, bank_account):
     r = api.post(f"/accounting/reconciliation/{sid}/lines/{lines[1]['id']}/match",
                  json={"je_id": je_id})
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == t("acct.err_recon_book_entry_matched", "en")
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "acct.err_recon_book_entry_matched"
+    assert refusal_text(detail) == t("acct.err_recon_book_entry_matched", "en")
 
     # Re-matching the same line to its own entry stays idempotent.
     r = api.post(f"/accounting/reconciliation/{sid}/lines/{lines[0]['id']}/match",

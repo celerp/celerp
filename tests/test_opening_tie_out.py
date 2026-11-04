@@ -211,13 +211,14 @@ async def test_tie_out_page_shows_error_without_figures(client, session):
     """A role the API refuses sees the refusal on the page, never a table of figures."""
     from html import escape
 
+    from celerp.services.permissions import missing_permission_text
     from test_helpers import perm_setup, ui_get
     from ui.i18n import t
 
     ctx = await perm_setup(client, session)
     page = await ui_get(ctx["operator_h"], "/reports/opening-tie-out")
     assert page.status_code == 200
-    assert t("acct.not_authorized") in page.text
+    assert escape(missing_permission_text("view_financial_reports"), quote=False) in page.text
     assert '<table class="data-table"' not in page.text
     manager = await ui_get(ctx["manager_h"], "/reports/opening-tie-out")
     assert escape(t("opening_tie_out.no_date")) in manager.text

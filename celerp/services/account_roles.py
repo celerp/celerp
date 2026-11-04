@@ -214,14 +214,14 @@ class LotOriginError(HTTPException):
 class AmbiguousOriginError(HTTPException):
     """An older entry's account cannot be told apart, so it is reported, not guessed."""
 
-    def __init__(self, role: str, what: str, codes):
+    def __init__(self, role: str, doc_id: str, codes):
         label = ROLE_LABELS[AccountRole(role)].lower()
-        super().__init__(
-            status_code=409,
-            detail=(f"{what} was recorded against more than one {label} account "
-                    f"({', '.join(sorted(codes))}), so Celerp cannot tell which one to use. "
-                    "The books check lists it for correction."),
-        )
+        codes = ", ".join(sorted(codes))
+        super().__init__(status_code=409, detail=refusal(
+            "error.origin_ambiguous",
+            f"Document {doc_id} was recorded against more than one {label} account ({codes}), so Celerp "
+            "cannot tell which one to use. The books check lists it for correction.",
+            doc=doc_id, role=role, codes=codes))
 
 
 class NotOwnedError(HTTPException):

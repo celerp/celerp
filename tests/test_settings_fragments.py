@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+from ui.i18n import refusal_text
 import celerp.gateway.state as gw_state
 
 
@@ -265,7 +266,7 @@ async def test_billing_portal_unavailable_is_an_error(client, owner_h):
         r = await client.post("/settings/cloud/billing-portal", headers=owner_h)
     assert r.status_code == 502
     from ui.i18n import t
-    assert r.json()["detail"] == t("error.billing_portal_failed", "en")
+    assert refusal_text(r.json()["detail"]) == t("error.billing_portal_failed", "en")
 
 
 # ---------------------------------------------------------------------------

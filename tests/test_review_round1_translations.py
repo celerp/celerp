@@ -114,7 +114,7 @@ async def test_undoing_a_merge_of_an_unknown_item_is_refused_in_the_users_langua
     client.cookies.set("celerp_lang", "en")
     r = await client.post(f"/items/{missing_id}/undo-merge", headers=auth["headers"])
     assert r.status_code == 404, r.text
-    en_text = r.json()["detail"]
+    en_text = refusal_text(r.json()["detail"])
     assert "Select Try again" in en_text
 
     client.cookies.set("celerp_lang", "th")

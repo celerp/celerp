@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""Company setup: the business type, currency and timezone a company needs.
+"""Company setup: the business type, currency, tax country and timezone a company needs.
 
 Flow:
     /setup              -> the workspace form (ui/routes/auth.py); one POST creates the
@@ -31,6 +31,7 @@ from celerp.services.currencies import CURRENCY_CODES
 from ui.config import COOKIE_NAME
 from ui.i18n import t, get_lang
 from celerp.services.vertical_presets import list_presets, load_preset
+from celerp.tax_regimes import TAX_COUNTRIES, country_name, tax_country
 
 logger = logging.getLogger(__name__)
 
@@ -70,8 +71,9 @@ def setup_timezone(value: str) -> str:
         return business_timezone(None).key
 
 
-def company_setup_error(currency: str, vertical: str) -> tuple[str, str] | None:
-    """(field, message) for the first invalid choice, or None when both are valid."""
+def company_setup_error(currency: str, vertical: str, country: str) -> tuple[str, str] | None:
+    """(field, message) for the first invalid choice, or None when all are valid. The
+    country is optional: none means Other country."""
     if not currency:
         return "currency", t("setup.currency_required")
     if currency not in CURRENCY_CODES:
@@ -80,15 +82,38 @@ def company_setup_error(currency: str, vertical: str) -> tuple[str, str] | None:
         return "vertical", t("setup.business_type_required")
     if vertical not in {value for value, _ in business_type_options()}:
         return "vertical", t("setup.unknown_business_type", value=repr(vertical))
+    if country and not tax_country(country):
+        return "country", t("setup.invalid_country", value=repr(country))
     return None
 
 
-async def apply_company_setup(token: str, currency: str, timezone: str, vertical: str) -> str:
-    """Store the currency and timezone, then apply the business type, and return
-    where the user goes next. Raises APIError when a step fails; the business type
-    is applied last, so a company without one has not finished setup, and applying
-    it again is safe."""
+def tax_country_options() -> list[tuple[str, str]]:
+    """The countries Celerp has tax rates for, by name, then Other country (no country)."""
+    named = sorted(((code, country_name(code)) for code in TAX_COUNTRIES), key=lambda o: o[1])
+    return named + [("", t("setup.country_other"))]
+
+
+async def set_tax_country(token: str, country: str) -> None:
+    """Name ``country`` on the company's default location, which starts the company
+    with the tax rates in force there (the server keeps taxes the company set itself)."""
+    from ui.routes.settings import location_address
+    locations = (await api.get_locations(token)).get("items", [])
+    default = next((loc for loc in locations if loc.get("is_default")), None)
+    if default is not None:
+        await api.patch_location(token, default["id"],
+                                 {"address": location_address(default.get("address"), country=country)})
+
+
+async def apply_company_setup(token: str, currency: str, timezone: str, vertical: str,
+                              country: str) -> str:
+    """Store the currency and timezone, name the tax country, then apply the business
+    type, and return where the user goes next. Raises APIError when a step fails; the
+    business type is applied last, so a company without one has not finished setup,
+    and applying it again is safe. The currency is stored first, so the one chosen
+    stays the books' currency whatever the country's usual one is."""
     await api.patch_company(token, {"currency": currency, "timezone": setup_timezone(timezone)})
+    if country:
+        await set_tax_country(token, tax_country(country))
     result = await api.set_business_type(token, vertical)
     if not result.get("restart_required"):
         return "/dashboard"
@@ -110,9 +135,10 @@ def has_business_type(company: dict) -> bool:
     return bool(company.get("vertical") or (company.get("settings") or {}).get("vertical"))
 
 
-def company_choice_fields(currency: str = "", vertical: str = "") -> list:
-    """Business type and currency, both searchable and required, plus the timezone
-    the browser fills in. Shared by the workspace form and /setup/company."""
+def company_choice_fields(currency: str, vertical: str, country: str) -> list:
+    """Business type and currency, both searchable and required, the tax country,
+    searchable and optional, plus the timezone the browser fills in. Shared by the
+    workspace form and /setup/company."""
     options = business_type_options()
     offered = {val for val, _ in options}
     return [
@@ -136,6 +162,13 @@ def company_choice_fields(currency: str = "", vertical: str = "") -> list:
             P(t("setup.currency_hint"), cls="form-hint"),
             cls="form-group",
         ),
+        Div(
+            Label(t("label.country"), cls="form-label"),
+            searchable_select("country", tax_country_options(), value=tax_country(country),
+                              aria_label=t("label.country")),
+            P(t("setup.country_hint"), cls="form-hint"),
+            cls="form-group",
+        ),
         browser_timezone_field(),
     ]
 
@@ -147,10 +180,12 @@ def browser_timezone_field() -> FT:
 
 
 def company_choice_script() -> FT:
-    """Fills the hidden timezone from the browser and suggests a currency from where
-    the browser is, before the dropdowns initialise so the suggestion is the shown
-    choice. A choice already made is never replaced. Without JavaScript the server
-    default timezone applies and the currency is simply required."""
+    """Fills the hidden timezone from the browser and suggests a currency and a tax
+    country from where the browser is, before the dropdowns initialise so the
+    suggestion is the shown choice. A choice already made is never replaced, and a
+    suggested currency follows the country the owner then chooses. Without
+    JavaScript the server default timezone applies, the currency is simply required
+    and the country stays Other country."""
     return (
         Script(src="/static/currency-guess.js"),
         Script("""
@@ -159,14 +194,35 @@ def company_choice_script() -> FT:
   try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (e) {}
   if (window.celerpCurrentZone) tz = window.celerpCurrentZone(tz);
   document.querySelectorAll('input[name="timezone"]').forEach(function (el) { el.value = tz; });
-  var hidden = document.querySelector('input[type="hidden"][name="currency"]');
-  if (!hidden || hidden.value || !window.celerpGuessCurrency) return;
-  var code = window.celerpGuessCurrency(tz, navigator.languages || [navigator.language]);
-  var wrap = hidden.closest('.combobox-wrap');
-  var opt = code && wrap && wrap.querySelector('.combobox-option[data-value="' + code + '"]');
-  if (!opt) return;
-  hidden.value = code;
-  wrap.querySelector('.combobox-input').value = opt.textContent;
+  var langs = navigator.languages || [navigator.language];
+  function suggest(name, code) {
+    var hidden = document.querySelector('input[type="hidden"][name="' + name + '"]');
+    if (!hidden || hidden.value || !code) return;
+    var wrap = hidden.closest('.combobox-wrap');
+    var opt = wrap && wrap.querySelector('.combobox-option[data-value="' + code + '"]');
+    if (!opt) return;
+    hidden.value = code;
+    wrap.querySelector('.combobox-input').value = opt.textContent;
+  }
+  if (!window.celerpGuessCountry) return;
+  var currency = document.querySelector('input[type="hidden"][name="currency"]');
+  var country = document.querySelector('input[type="hidden"][name="country"]');
+  // A currency the form came back with was chosen; only a suggestion may move.
+  var suggested = currency && currency.value ? null : '';
+  suggest('currency', window.celerpGuessCurrency(tz, langs));
+  suggest('country', window.celerpGuessCountry(tz, langs));
+  // A suggested currency follows the country the owner chooses; one the owner chose stays.
+  if (!currency || !country) return;
+  if (suggested !== null) suggested = currency.value;
+  currency.addEventListener('change', function () { suggested = null; });
+  country.addEventListener('change', function () {
+    if (suggested === null || currency.value !== suggested) return;
+    var code = window.celerpCountryCurrency(country.value);
+    if (!code) return;
+    currency.value = '';
+    suggest('currency', code);
+    suggested = currency.value;
+  });
 })();
 """),
     )
@@ -212,12 +268,13 @@ def setup_routes(app):
         values = {
             "currency": str(form.get("currency", "")).strip(),
             "vertical": str(form.get("vertical", "")).strip(),
+            "country": str(form.get("country", "")).strip(),
         }
-        if invalid := company_setup_error(values["currency"], values["vertical"]):
+        if invalid := company_setup_error(values["currency"], values["vertical"], values["country"]):
             return _company_page(request, values, error=invalid[1])
         try:
             nxt = await apply_company_setup(token, values["currency"], str(form.get("timezone", "")),
-                                            values["vertical"])
+                                            values["vertical"], values["country"])
         except APIError as e:
             return _company_page(request, values, error=e.detail)
         return RedirectResponse(nxt, status_code=302)
@@ -376,7 +433,8 @@ def _company_setup_form(values: dict, error: str | None = None) -> FT:
         ),
         flash(error) if error else "",
         Form(
-            *company_choice_fields(values.get("currency", ""), values.get("vertical", "")),
+            *company_choice_fields(values.get("currency", ""), values.get("vertical", ""),
+                                   values.get("country", "")),
             Button(t("btn.continue"), type="submit", cls="btn btn--primary btn--full"),
             P(A(t("setup.finish_later"), href="/dashboard", cls="auth-link"), cls="auth-alt-action"),
             method="post", action="/setup/company", cls="auth-form",
