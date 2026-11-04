@@ -3670,7 +3670,10 @@ celerpUpdateBulkAlloc();
             also = (e.data.get("also") or []) if isinstance(e.data, dict) else []
             msg = error_message(e)
             return _action_error(f"{msg} {t('documents.draw_also')} {refusal_text(also)}" if also else msg)
-        return _R("", status_code=204, headers={"HX-Redirect": doc_href(result.get("target_doc_id"))})
+        skipped = result.get("skipped_notice")
+        return _R("", status_code=204, headers={
+            "HX-Redirect": doc_href(result.get("target_doc_id")),
+            **(toast_header(refusal_text(skipped), "info", persist=True) if skipped else {})})
 
     @app.post("/docs/{entity_id}/invoice-lines/preview")
     async def invoice_lines_preview_route(request: Request, entity_id: str):
@@ -7151,8 +7154,8 @@ def _draw_panel(entity_id: str, doc: dict, targets: list | None, unit_map: dict)
 def _draw_panel_preview(memo: dict, preview: dict) -> FT:
     """What Invoice selected would do, from the server's dry run: the reason it cannot, or the
     fixed amounts the invoice takes from the memo, its total after the draw and what stays on
-    the memo. Carries the preview's binding, which the confirm sends so the draw is refused
-    unless it is exactly the one shown."""
+    the memo, with a note naming the chosen lines it leaves on the memo. Carries the preview's
+    binding, which the confirm sends so the draw is refused unless it is exactly the one shown."""
     currency = memo.get("currency") or ""
     binding = binding_input(preview)
     if preview.get("problems"):
@@ -7163,7 +7166,8 @@ def _draw_panel_preview(memo: dict, preview: dict) -> FT:
     return Div(*binding,
                P(t("documents.draw_takes_fixed", amounts=taken)) if taken else "",
                P(t("documents.draw_preview_totals", total=fmt_money(total, currency))),
-               P(t("documents.draw_preview_left", left=fmt_money(left, currency)), cls="text-muted"))
+               P(t("documents.draw_preview_left", left=fmt_money(left, currency)), cls="text-muted"),
+               P(refusal_text(preview["skipped_notice"]), cls="text-muted") if preview.get("skipped_notice") else "")
 
 
 def _header_discount_row(doc: dict, discount: float, currency: str):

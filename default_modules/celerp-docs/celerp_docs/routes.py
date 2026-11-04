@@ -11615,9 +11615,10 @@ def _terms_text(terms: dict, currency: str | None) -> str:
 
 
 def draw_problems(snap: _DrawSnapshot, body: InvoiceLinesRequest, *,
-                  everything: bool = False) -> tuple[list[dict], list[tuple[int, float]]]:
+                  everything: bool = False) -> tuple[list[dict], list[tuple[int, float]], list[dict]]:
     """Everything that stops this draw, in the one order the preview and the write report it,
-    and the chosen (memo line index, units) picks. A memo in a status goods cannot be invoiced
+    the chosen (memo line index, units) picks, and the chosen lines with no item, which the
+    draw leaves on the memo and names (refused when every chosen line is one). A memo in a status goods cannot be invoiced
     from stops the check there: nothing else about it means anything. ``everything``: the draw
     is Invoice all, so no line chosen means nothing is out."""
     memo, target = snap.memo.state, snap.target
@@ -11630,7 +11631,7 @@ def draw_problems(snap: _DrawSnapshot, body: InvoiceLinesRequest, *,
             "Check the new preview, then confirm again.", memo=memo_ref))
     if memo.get("status") not in MEMO_DRAW_STATUSES:
         key = "documents.err_memo_nothing_out" if memo.get("status") == "converted" else "documents.err_memo_issue_first"
-        return [*problems, refusal(key, t(key))], []
+        return [*problems, refusal(key, t(key))], [], []
     if paid := _memo_payment_refusal(snap.memo, "docs.draw_memo_has_payment", "invoice its products"):
         problems.append(paid)
 
@@ -11638,6 +11639,7 @@ def draw_problems(snap: _DrawSnapshot, body: InvoiceLinesRequest, *,
     index_of = {li.get("line_id"): i for i, li in enumerate(lines) if li.get("line_id")}
     quantities = body.quantities or {}
     picks: list[tuple[int, float]] = []
+    no_item: list[int] = []
     if not body.line_ids:
         key = "documents.err_memo_nothing_out" if everything else "lines.none_selected"
         problems.append(refusal(key, t(key) if everything else "Choose at least one line."))
@@ -11647,6 +11649,9 @@ def draw_problems(snap: _DrawSnapshot, body: InvoiceLinesRequest, *,
                                     "A line you chose is no longer on this record. Select Try again, then choose again."))
             continue
         i = index_of[lid]
+        if not line_item_id(lines[i]):
+            no_item.append(i)
+            continue
         name = lines[i].get("sku") or lines[i].get("description") or i + 1
         out = snap.out(i)
         qty = float(quantities.get(lid, out))
@@ -11663,6 +11668,9 @@ def draw_problems(snap: _DrawSnapshot, body: InvoiceLinesRequest, *,
                                     f"{name}: {qty:g} chosen, but {out:g} is out on memo {memo_ref}.",
                                     name=name, qty=f"{qty:g}", out=f"{out:g}", memo=memo_ref))
         picks.append((i, qty))
+    skipped = _skipped_lines(lines, no_item, "no_item")
+    if skipped and len(no_item) == len(body.line_ids):
+        problems.extend(_skip_messages(skipped, refuse=True))
     chosen = [lines[i] for i, _ in picks]
     chosen_skus = {str(li.get("sku") or "").strip() for li in chosen} - {""}
     chosen_items = {str(line_item_id(li) or "") for li in chosen} - {""}
@@ -11721,7 +11729,7 @@ def draw_problems(snap: _DrawSnapshot, body: InvoiceLinesRequest, *,
                 f"Memo {memo_ref} has a tax amount of {amount} with no rate, so it can't be added to {_ref(target)}, "
                 f"which already has products. Invoice these products onto a new invoice, or set a tax rate in the "
                 f"memo's totals that matches {_ref(target)}.", memo=memo_ref, amount=amount, target=_ref(target)))
-    return problems, picks
+    return problems, picks, skipped
 
 
 @dataclass(frozen=True)
@@ -11789,7 +11797,7 @@ async def _draw_preview(session, company_id, memo_id: str, body: InvoiceLinesReq
     _refuse_not_memo(memo.state)
     target = await _get_doc(session, company_id, body.target_doc_id) if body.target_doc_id else None
     snap = await _draw_snapshot(session, company_id, memo, target, lock=False)
-    problems, picks = draw_problems(snap, body)
+    problems, picks, skipped = draw_problems(snap, body)
     if target is None:
         company = await session.get(Company, company_id)
         invoice_id, doc_number = None, peek_draft_ref(company, "invoice")
@@ -11797,7 +11805,7 @@ async def _draw_preview(session, company_id, memo_id: str, body: InvoiceLinesReq
         invoice_id, doc_number = target.entity_id, _ref(target)
     preview = {"target": {"id": invoice_id, "ref_id": doc_number},
                "binding": preview_binding([snap.memo, snap.target], body), "problems": problems,
-               "lines": [], "fixed_taken": {}, "tax": None, "totals_after": {}, "left_on_memo": {}}
+               "skipped_notice": _skip_messages(skipped, refuse=False), "lines": [], "fixed_taken": {}, "tax": None, "totals_after": {}, "left_on_memo": {}}
     if problems:
         return preview
     bill = _draw_bill(snap, picks, "preview", invoice_id or f"doc:{doc_number}", doc_number)
@@ -11937,10 +11945,11 @@ async def _draw_from_memo(session, company_id, role: str, settings: dict, user, 
         if operation:
             lines = memo_row.state.get("line_items") or []
             request = body.model_copy(update={"line_ids": [lines[i]["line_id"] for i in sorted(snap.lots)]})
-        problems, picks = draw_problems(snap, request, everything=bool(operation))
+        problems, picks, skipped = draw_problems(snap, request, everything=bool(operation))
         if problems:
             raise HTTPException(status_code=409, detail={**problems[0], "also": problems[1:]})
-        return await _write_draw(session, company_id, role, settings, user, company, key, snap, picks, request)
+        written = await _write_draw(session, company_id, role, settings, user, company, key, snap, picks, request)
+        return {**written, "skipped": skipped}
 
     def chosen(line_items: list[dict], request: FulfillLinesRequest) -> list[int]:
         # Unknown lines are reported with every other problem of the draw (draw_problems).
@@ -11964,7 +11973,8 @@ async def back_to_memo(
 ) -> dict:
     """Send chosen lines of a draft invoice back to the memos they were invoiced from: their
     goods go back on their memo lines, the lines leave the invoice, and the fixed amounts of a
-    memo none of whose lines stay come off the invoice's header (released_header_money)."""
+    memo none of whose lines stay come off the invoice's header (released_header_money). A
+    chosen line of the invoice's own with no item stays on it and is named."""
     # Company, invoice, memos, lots: the order every writer of these rows takes.
     await locked_company(session, company_id)
     row = await _get_doc(session, company_id, entity_id, for_update=True)
@@ -11979,10 +11989,12 @@ async def back_to_memo(
                 "Revert it to Draft first, or void it to send all its products back to their memos.",
                 invoice=_ref(row)))
         lines = state.get("line_items") or []
-        chosen = [lines[i] for i in indices]
-        own = [line_label(li) for li in chosen if not li.get("drawn_from")]
-        if own or not chosen:
-            names = ", ".join(own)
+        own = [i for i in indices if not lines[i].get("drawn_from")]
+        chosen = [lines[i] for i in indices if i not in own]
+        refused = [i for i in own if line_item_id(lines[i])] if chosen else own
+        left = _skipped_lines(lines, [i for i in own if i not in refused], "no_item")
+        if refused or not chosen:
+            names = ", ".join(line_label(lines[i]) for i in refused)
             raise HTTPException(status_code=409, detail=refusal(
                 "docs.back_to_memo_not_drawn",
                 f"{names} did not come from a memo, so there is no memo to send it back to. "
@@ -11997,7 +12009,7 @@ async def back_to_memo(
                               DocPatch(fields_changed=fields, expected_version=row.version,
                                        idempotency_key=_step_key(key, "invoice")),
                               memo_draw=MemoReturn(removed))
-        return {"removed": sorted(removed), "reopened_memos": reopened}
+        return {"removed": sorted(removed), "reopened_memos": reopened, "skipped": left}
 
     return await _line_action(session, company_id, user, row, "back_to_memo", body, run)
 
