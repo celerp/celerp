@@ -38,7 +38,7 @@ from celerp.services.terms import resolve_document_terms
 from celerp.services.units import require_moving_fits_units
 from celerp_docs.doc_money import HEADER_MONEY_FIELDS, document_money
 from celerp_docs.periodic import OperationReport
-from celerp_subscriptions.periods import BILLED, Schedule
+from celerp_subscriptions.periods import BILLED, RELEASED, SKIPPED, UNRESOLVED, Schedule
 from celerp_subscriptions.search import SUBSCRIPTION_DOC_TYPES
 from ui.i18n import t
 
@@ -171,7 +171,7 @@ async def _result(session, company_id, doc_id: str, k: int, schedule: Schedule, 
     """A billing answer. ``already_billed``: the document was billed before this request, so
     the answer bills nothing and a count of what was billed leaves it out."""
     nxt = schedule.next_bill_date(floor=review_floor(state))
-    return {"doc_id": doc_id, "ref_id": await doc_ref(session, company_id, doc_id), "period_index": k,
+    return {"doc_id": doc_id, "ref_id": await doc_ref(session, company_id, doc_id), **period_row(schedule, k),
             "next_bill_date": nxt.isoformat() if nxt else None, "already_billed": already_billed}
 
 
@@ -327,10 +327,36 @@ def period_row(schedule: Schedule, k: int) -> dict:
             "service_end": schedule.service_end(k).isoformat(), "bill_date": schedule.bill_date(k).isoformat()}
 
 
+# What the Periods table says of a period: its claim, else where its bill date stands today.
+PERIOD_STATUSES = ("billed", "voided", "skipped", "unresolved", "overdue", "due", "upcoming")
+
+
+def period_status(state: str | None, doc_status: str | None, bill_date: date, today: date) -> str:
+    """One of PERIOD_STATUSES. A billed period whose document is void reads "voided", so it
+    is never shown as billed; an open or reopened one reads by its bill date."""
+    if state == BILLED:
+        return "voided" if doc_status == "void" else "billed"
+    if state in (SKIPPED, UNRESOLVED):
+        return state
+    return "overdue" if bill_date < today else "due" if bill_date == today else "upcoming"
+
+
+async def _listed_row(session, company_id, schedule: Schedule, k: int, today: date) -> dict:
+    """Period ``k`` as the Periods table lists it: dates, claim, status, document, send state."""
+    entry = schedule.periods.get(k) or {}
+    doc_id = entry.get("doc_id")
+    doc = ((await doc_state(session, company_id, doc_id)) or {}) if doc_id else {}
+    return {**period_row(schedule, k), "state": entry.get("state"), "reopened": entry.get("state") == RELEASED,
+            "status": period_status(entry.get("state"), doc.get("status"), schedule.bill_date(k), today),
+            "doc_id": doc_id, "ref_id": (doc.get("ref_id") or doc_id) if doc_id else None,
+            "reason": entry.get("reason"), "history": bool(entry.get("history")),
+            "send": (entry.get("send") or {}).get("state")}
+
+
 async def period_list(session: AsyncSession, company_id, state: dict, today: date, *,
                       limit: int = 24, before: int | None = None) -> dict:
     """An agreement's periods from its lowest to the one after today (and any claimed later),
-    newest first, at most ``limit``, with each claim's state, document and email send state; its next bill date;
+    newest first, at most ``limit``, with each claim's state, status, document and email send state; its next bill date;
     the earlier documents waiting for history review, each with its candidate periods; and the
     ones set aside as billing no period of their own. A template not yet on a schedule has
     none of these, and ``not_moved`` says why."""
@@ -351,23 +377,14 @@ async def period_list(session: AsyncSession, company_id, state: dict, today: dat
         k = min(top, before - 1) if before is not None else top
         while k >= first and len(rows) < limit:
             if schedule.exists(k):
-                entry = schedule.periods.get(k) or {}
-                doc_id = entry.get("doc_id")
-                rows.append({**period_row(schedule, k), "state": entry.get("state"), "doc_id": doc_id,
-                             "ref_id": await doc_ref(session, company_id, doc_id) if doc_id else None,
-                             "reason": entry.get("reason"), "history": bool(entry.get("history")),
-                             "send": (entry.get("send") or {}).get("state")})
+                rows.append(await _listed_row(session, company_id, schedule, k, today))
             k -= 1
     older_before = rows[-1]["period_index"] if rows and first is not None and k >= first else None
     oldest_open = schedule.oldest_open(floor=review_floor(state))
     oldest_due_row = None
     if (before is None and oldest_open is not None and oldest_open not in
             {r["period_index"] for r in rows} and schedule.bill_date(oldest_open) <= today):
-        entry = schedule.periods.get(oldest_open) or {}
-        oldest_due_row = {**period_row(schedule, oldest_open), "state": entry.get("state"),
-                          "doc_id": entry.get("doc_id"), "ref_id": None,
-                          "reason": entry.get("reason"), "history": bool(entry.get("history")),
-                          "send": (entry.get("send") or {}).get("state")}
+        oldest_due_row = await _listed_row(session, company_id, schedule, oldest_open, today)
     review = [{"doc_id": r.get("doc_id"), "ref_id": await doc_ref(session, company_id, r.get("doc_id")),
                "candidates": [period_row(schedule, c) for c in r.get("candidates") or []]}
               for r in state.get("history_review") or []]
