@@ -316,7 +316,7 @@ def _build_router() -> APIRouter:
     @router.get("/{entity_id}/periods")
     async def list_periods(
         entity_id: str,
-        before: int | None = None,
+        before: int | None = Query(None, description="Return periods before this period index."),
         company_id: uuid.UUID = Depends(get_current_company_id),
         _: None = require_permission("view_subscriptions"),
         session: AsyncSession = Depends(get_session),
