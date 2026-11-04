@@ -7181,5 +7181,9 @@
   "subscriptions.err_send_purchase": "لا يُرسل Celerp أوامر الشراء عبر البريد الإلكتروني، لذا لا يمكن لاتفاقية الشراء إرسالها تلقائياً.",
   "perm.name.automate_billing": "تفعيل الفوترة التلقائية",
   "perm.name.automate_sending": "تفعيل الإرسال التلقائي",
-  "perm.name.automate_collection": "تفعيل التحصيل التلقائي"
+  "perm.name.automate_collection": "تفعيل التحصيل التلقائي",
+  "subscriptions.err_period_void": "The document for this period, {ref}, is void. To bill the period again, use Reopen on its row in the periods list, then Generate due.",
+  "subscriptions.period_already_billed": "Already billed on",
+  "subscriptions.due_already": "Already billed before this run, so not billed again: {n}.",
+  "subscriptions.err_early_due": "A period is already due (bill date {date}). Use Generate due to bill it. Bill early only bills a period whose bill date has not come yet."
 }

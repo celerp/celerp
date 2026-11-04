@@ -421,7 +421,8 @@ def _due_results(result: dict, subs: dict[str, dict], request_key: str) -> FT:
         eid = r["entity_id"]
         name = template_label(subs[eid], eid) if eid in subs else eid
         if r.get("ok"):
-            outcome = Td(t("subscriptions.period_billed"), " ", A(r.get("ref_id") or r["doc_id"], href=f"/docs/{r['doc_id']}"))
+            label = t("subscriptions.period_already_billed" if r.get("already_billed") else "subscriptions.period_billed")
+            outcome = Td(label, " ", A(r.get("ref_id") or r["doc_id"], href=f"/docs/{r['doc_id']}"))
             action = Td("")
         else:
             outcome = Td(r.get("error") or "")
@@ -432,6 +433,7 @@ def _due_results(result: dict, subs: dict[str, dict], request_key: str) -> FT:
 
     return Div(
         P(t("subscriptions.due_result", billed=result.get("billed", 0), refused=result.get("refused", 0))),
+        P(t("subscriptions.due_already", n=result["already_billed"]), cls="text-muted") if result.get("already_billed") else "",
         Table(Thead(Tr(Th(t("th.name")), Th(t("th.status")), Th(""))),
               Tbody(*[_row(r) for r in result.get("results") or []]), cls="data-table"),
         Div(Button(t("btn.close"), type="button", cls="btn btn--ghost btn--sm",

@@ -7181,5 +7181,9 @@
   "subscriptions.err_send_purchase": "Celerpから発注書をメール送信することはできないため、購買契約で自動送信はできません。",
   "perm.name.automate_billing": "自動請求を有効にする",
   "perm.name.automate_sending": "自動送信を有効にする",
-  "perm.name.automate_collection": "自動回収を有効にする"
+  "perm.name.automate_collection": "自動回収を有効にする",
+  "subscriptions.err_period_void": "The document for this period, {ref}, is void. To bill the period again, use Reopen on its row in the periods list, then Generate due.",
+  "subscriptions.period_already_billed": "Already billed on",
+  "subscriptions.due_already": "Already billed before this run, so not billed again: {n}.",
+  "subscriptions.err_early_due": "A period is already due (bill date {date}). Use Generate due to bill it. Bill early only bills a period whose bill date has not come yet."
 }

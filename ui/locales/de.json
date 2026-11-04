@@ -7181,5 +7181,9 @@
   "subscriptions.err_send_purchase": "Bestellungen werden von Celerp nicht per E-Mail versendet. Daher kann eine Einkaufsvereinbarung sie nicht automatisch versenden.",
   "perm.name.automate_billing": "Automatische Abrechnung aktivieren",
   "perm.name.automate_sending": "Automatischen Versand aktivieren",
-  "perm.name.automate_collection": "Automatischen Zahlungseinzug aktivieren"
+  "perm.name.automate_collection": "Automatischen Zahlungseinzug aktivieren",
+  "subscriptions.err_period_void": "The document for this period, {ref}, is void. To bill the period again, use Reopen on its row in the periods list, then Generate due.",
+  "subscriptions.period_already_billed": "Already billed on",
+  "subscriptions.due_already": "Already billed before this run, so not billed again: {n}.",
+  "subscriptions.err_early_due": "A period is already due (bill date {date}). Use Generate due to bill it. Bill early only bills a period whose bill date has not come yet."
 }

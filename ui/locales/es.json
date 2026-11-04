@@ -7181,5 +7181,9 @@
   "subscriptions.err_send_purchase": "Celerp no envía órdenes de compra por correo electrónico, por lo que un acuerdo de compra no puede enviarlas automáticamente.",
   "perm.name.automate_billing": "Activar la facturación automática",
   "perm.name.automate_sending": "Activar el envío automático",
-  "perm.name.automate_collection": "Activar el cobro automático"
+  "perm.name.automate_collection": "Activar el cobro automático",
+  "subscriptions.err_period_void": "The document for this period, {ref}, is void. To bill the period again, use Reopen on its row in the periods list, then Generate due.",
+  "subscriptions.period_already_billed": "Already billed on",
+  "subscriptions.due_already": "Already billed before this run, so not billed again: {n}.",
+  "subscriptions.err_early_due": "A period is already due (bill date {date}). Use Generate due to bill it. Bill early only bills a period whose bill date has not come yet."
 }

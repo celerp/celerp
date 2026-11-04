@@ -7181,5 +7181,9 @@
   "subscriptions.err_send_purchase": "Celerp ไม่ส่งใบสั่งซื้อทางอีเมล จึงไม่สามารถตั้งให้ข้อตกลงการซื้อส่งเอกสารอัตโนมัติได้",
   "perm.name.automate_billing": "เปิดใช้งานการออกใบแจ้งหนี้อัตโนมัติ",
   "perm.name.automate_sending": "เปิดใช้งานการส่งอีเมลอัตโนมัติ",
-  "perm.name.automate_collection": "เปิดใช้งานการเรียกเก็บเงินอัตโนมัติ"
+  "perm.name.automate_collection": "เปิดใช้งานการเรียกเก็บเงินอัตโนมัติ",
+  "subscriptions.err_period_void": "The document for this period, {ref}, is void. To bill the period again, use Reopen on its row in the periods list, then Generate due.",
+  "subscriptions.period_already_billed": "Already billed on",
+  "subscriptions.due_already": "Already billed before this run, so not billed again: {n}.",
+  "subscriptions.err_early_due": "A period is already due (bill date {date}). Use Generate due to bill it. Bill early only bills a period whose bill date has not come yet."
 }

@@ -190,7 +190,8 @@ def _build_router() -> APIRouter:
         session: AsyncSession = Depends(get_session),
     ) -> dict:
         """Bill the oldest due period of each listed agreement, each on its own: one
-        refusal never stops the rest."""
+        refusal never stops the rest. A period billed before this request counts as
+        already billed, never as billed."""
         results = []
         for item in body.items:
             eid = item.entity_id
@@ -204,8 +205,10 @@ def _build_router() -> APIRouter:
                 detail = "Not found" if exc.status_code == 404 else str(exc.detail)
                 results.append({"entity_id": eid, "period_index": item.period_index, "ok": False, "error": detail})
         await session.commit()
-        billed = sum(1 for r in results if r["ok"])
-        return {"results": results, "billed": billed, "refused": len(results) - billed}
+        answered = [r for r in results if r["ok"]]
+        already = sum(1 for r in answered if r["already_billed"])
+        return {"results": results, "billed": len(answered) - already, "already_billed": already,
+                "refused": len(results) - len(answered)}
 
     @router.get("/catch-up")
     async def catch_up(

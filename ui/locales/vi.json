@@ -7181,5 +7181,9 @@
   "subscriptions.err_send_purchase": "Celerp không gửi đơn đặt hàng qua email, nên thỏa thuận mua hàng không thể tự gửi đơn.",
   "perm.name.automate_billing": "Bật lập hóa đơn tự động",
   "perm.name.automate_sending": "Bật gửi tự động",
-  "perm.name.automate_collection": "Bật thu tiền tự động"
+  "perm.name.automate_collection": "Bật thu tiền tự động",
+  "subscriptions.err_period_void": "The document for this period, {ref}, is void. To bill the period again, use Reopen on its row in the periods list, then Generate due.",
+  "subscriptions.period_already_billed": "Already billed on",
+  "subscriptions.due_already": "Already billed before this run, so not billed again: {n}.",
+  "subscriptions.err_early_due": "A period is already due (bill date {date}). Use Generate due to bill it. Bill early only bills a period whose bill date has not come yet."
 }

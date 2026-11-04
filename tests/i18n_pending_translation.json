@@ -12,5 +12,28 @@
     "th",
     "vi"
   ],
-  "keys": {}
+  "keys": {
+    "subscriptions.err_period_void": {
+      "en": "The document for this period, {ref}, is void. To bill the period again, use Reopen on its row in the periods list, then Generate due.",
+      "params": [
+        "ref"
+      ]
+    },
+    "subscriptions.period_already_billed": {
+      "en": "Already billed on",
+      "params": []
+    },
+    "subscriptions.due_already": {
+      "en": "Already billed before this run, so not billed again: {n}.",
+      "params": [
+        "n"
+      ]
+    },
+    "subscriptions.err_early_due": {
+      "en": "A period is already due (bill date {date}). Use Generate due to bill it. Bill early only bills a period whose bill date has not come yet.",
+      "params": [
+        "date"
+      ]
+    }
+  }
 }

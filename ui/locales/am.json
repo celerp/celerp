@@ -7181,5 +7181,9 @@
   "subscriptions.err_send_purchase": "የግዢ ትዕዛዞች ከCelerp በኢሜይል አይላኩም፣ ስለዚህ የግዢ ስምምነት በራሱ ሊልካቸው አይችልም።",
   "perm.name.automate_billing": "ራስ-ሰር የክፍያ ሂሳብ ማውጣትን አንቃ",
   "perm.name.automate_sending": "ራስ-ሰር መላክን አንቃ",
-  "perm.name.automate_collection": "ራስ-ሰር ክፍያ መሰብሰብን አንቃ"
+  "perm.name.automate_collection": "ራስ-ሰር ክፍያ መሰብሰብን አንቃ",
+  "subscriptions.err_period_void": "The document for this period, {ref}, is void. To bill the period again, use Reopen on its row in the periods list, then Generate due.",
+  "subscriptions.period_already_billed": "Already billed on",
+  "subscriptions.due_already": "Already billed before this run, so not billed again: {n}.",
+  "subscriptions.err_early_due": "A period is already due (bill date {date}). Use Generate due to bill it. Bill early only bills a period whose bill date has not come yet."
 }

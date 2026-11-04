@@ -36,7 +36,7 @@ from celerp.services.permissions import role_has_permission
 from celerp.services.record_quantities import template_label
 from celerp.services.terms import resolve_document_terms
 from celerp.services.units import require_moving_fits_units
-from celerp_docs.doc_money import document_money
+from celerp_docs.doc_money import HEADER_MONEY_FIELDS, document_money
 from celerp_docs.periodic import OperationReport
 from celerp_subscriptions.periods import BILLED, Schedule
 from celerp_subscriptions.search import SUBSCRIPTION_DOC_TYPES
@@ -141,10 +141,24 @@ async def replay_result(session, company_id, template_id: str, request_key: str,
     return event.metadata_["result"]
 
 
-async def _result(session, company_id, doc_id: str, k: int, schedule: Schedule, state: dict) -> dict:
+async def _result(session, company_id, doc_id: str, k: int, schedule: Schedule, state: dict, *,
+                  already_billed: bool) -> dict:
+    """A billing answer. ``already_billed``: the document was billed before this request, so
+    the answer bills nothing and a count of what was billed leaves it out."""
     nxt = schedule.next_bill_date(floor=review_floor(state))
     return {"doc_id": doc_id, "ref_id": await doc_ref(session, company_id, doc_id), "period_index": k,
-            "next_bill_date": nxt.isoformat() if nxt else None}
+            "next_bill_date": nxt.isoformat() if nxt else None, "already_billed": already_billed}
+
+
+async def _billed_answer(session, company_id, k: int, schedule: Schedule, state: dict) -> dict:
+    """The answer for period ``k``, billed before this request: its document, or, when that
+    document is void, a refusal saying the period needs Reopen before it bills again."""
+    doc_id = schedule.periods[k]["doc_id"]
+    doc = await doc_state(session, company_id, doc_id)
+    if doc is None or doc.get("status") == "void":
+        raise HTTPException(status_code=409, detail=t(
+            "subscriptions.err_period_void", ref=(doc or {}).get("ref_id") or doc_id))
+    return await _result(session, company_id, doc_id, k, schedule, state, already_billed=True)
 
 
 async def _bill(session, company, company_id, tid: str, state: dict, schedule: Schedule, k: int, actor,
@@ -169,17 +183,15 @@ async def _bill(session, company, company_id, tid: str, state: dict, schedule: S
     template_name = template_label(state, tid)
     auto_note = f"Auto-created from subscription template {template_name}"
     notes = f"{state['notes']}\n{auto_note}".strip() if state.get("notes") else auto_note
-    currency = state.get("currency") or (company.settings or {}).get("currency", "USD")
-    money_inputs = {f: state[f] for f in ("discount", "discount_type", "shipping", "tax", "tax_rate", "doc_taxes")
-                    if f in state}
+    money_inputs = {f: state[f] for f in HEADER_MONEY_FIELDS if f in state}
+    currency = money_inputs["currency"] = state.get("currency") or (company.settings or {}).get("currency", "USD")
     money = document_money(money_inputs, lines, currency, keep_unrated_tax=True)
     ref = next_draft_ref(company, kind)
     doc_id = f"doc:{ref}"
     doc = {
         "doc_type": kind, "ref_id": ref, "contact_id": contact_id,
         "contact_name": contact_state.get("name") or "", "contact_company_name": contact_state.get("company_name") or "",
-        "line_items": lines, "payment_terms": state.get("payment_terms"), "currency": currency,
-        **money_inputs, **money, "amount_outstanding": money["total"], "issue_date": today.isoformat(),
+        "line_items": lines, "payment_terms": state.get("payment_terms"), **money_inputs, **money, "amount_outstanding": money["total"], "issue_date": today.isoformat(),
         "notes": notes, **service,
     }
     if due := compute_due_date(today, state.get("payment_terms"), company):
@@ -206,9 +218,10 @@ async def _bill(session, company, company_id, tid: str, state: dict, schedule: S
 async def claim_period(session: AsyncSession, company_id, template_id: str, *, actor, early: bool = False,
                        period_index: int | None = None, request_key: str | None = None) -> dict:
     """Bill the agreement's oldest open period: due (its bill date has come) or, with
-    ``early``, the next one ahead of its date. With nothing due, the latest due period's
-    document when it is billed; otherwise a refusal naming why. A ``request_key`` repeats
-    the first answer to the same request. Caller commits."""
+    ``early``, the next one ahead of its date (refused while a period is due). With nothing
+    due, the latest due period's document when it is billed and not void, marked
+    ``already_billed``; otherwise a refusal naming why. A ``request_key`` repeats the first
+    answer to the same request. Caller commits."""
     company = await locked_company(session, company_id)
     req = f"subreq:{template_id}:{request_key}" if request_key else None
     request = {"early": early, "period_index": period_index}
@@ -223,30 +236,29 @@ async def claim_period(session: AsyncSession, company_id, template_id: str, *, a
     k = schedule.oldest_open(floor=review_floor(state))
     if period_index is not None and period_index != k:
         # A stale preview or repeated batch must never advance to a different period.
-        entry = schedule.periods.get(period_index) or {}
-        if entry.get("state") == BILLED and not early:
-            doc = await doc_state(session, company_id, entry["doc_id"])
-            if doc is not None and doc.get("status") != "void":
-                return await _result(session, company_id, entry["doc_id"], period_index, schedule, state)
+        if schedule.state(period_index) == BILLED and not early:
+            return await _billed_answer(session, company_id, period_index, schedule, state)
         raise HTTPException(status_code=409, detail=t("subscriptions.err_early_not_next"))
     if early:
         if k is None:
             raise HTTPException(status_code=409, detail=t("subscriptions.err_no_period_left"))
-        if period_index is not None and period_index != k:
-            raise HTTPException(status_code=409, detail=t("subscriptions.err_early_not_next"))
+        if schedule.bill_date(k) <= today:
+            # Bill early bills ahead of the bill date; a due period is Generate due's.
+            raise HTTPException(status_code=409, detail=t(
+                "subscriptions.err_early_due", date=schedule.bill_date(k).isoformat()))
     elif k is None or schedule.bill_date(k) > today:
         if schedule.ended(today):
             raise HTTPException(status_code=409, detail=t("subscriptions.err_bill_ended"))
         latest = schedule.latest_due(today)
         if latest is not None and schedule.state(latest) == BILLED:
-            return await _result(session, company_id, schedule.periods[latest]["doc_id"], latest, schedule, state)
+            return await _billed_answer(session, company_id, latest, schedule, state)
         nxt = schedule.next_bill_date(floor=review_floor(state))
         raise HTTPException(status_code=409, detail=(
             t("subscriptions.err_nothing_due", date=nxt.isoformat()) if nxt
             else t("subscriptions.err_no_period_left")))
     doc_id = await _bill(session, company, company_id, template_id, state, schedule, k, actor, auto=False, send=False)
     state = (await session.get(Projection, {"company_id": company_id, "entity_id": template_id})).state
-    result = await _result(session, company_id, doc_id, k, Schedule.from_state(state), state)
+    result = await _result(session, company_id, doc_id, k, Schedule.from_state(state), state, already_billed=False)
     if req:
         await emit_event(session, company_id=company_id, entity_id=template_id, entity_type="doc",
                          event_type="doc.updated", data={"fields_changed": {}}, actor_id=actor.id, location_id=None,
