@@ -3347,7 +3347,6 @@
   "subscriptions.err_resume_not_paused": "Seul un abonnement en pause peut être repris. Celui-ci n'est pas en pause.",
   "subscriptions.err_already_cancelled": "Cet abonnement est déjà annulé. Il n'y a rien d'autre à faire.",
   "subscriptions.err_activate_not_draft": "Seul un abonnement en brouillon peut être activé. Celui-ci est déjà actif, en pause ou annulé.",
-  "subscriptions.err_frequency_required": "Choisissez la fréquence de répétition de cet abonnement, puis activez-le.",
   "subscriptions_import.hdr_import": "Importer des abonnements",
   "subscriptions_import.upsert_label": "nom + date de début",
   "accounting_import.header_chart": "Importer le plan comptable",

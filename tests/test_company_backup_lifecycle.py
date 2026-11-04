@@ -104,8 +104,10 @@ async def test_restoration_runs_module_reconciliation_before_activation(real_cli
     assert seen == [response.json()["company_id"]]
 
 
-@pytest.mark.parametrize("invalid", [False, True], ids=["migrates", "refuses-unmigratable"])
+@pytest.mark.parametrize("invalid", [False, True], ids=["migrates", "keeps-unmigratable-unmoved"])
 async def test_restored_legacy_subscription_is_upgraded_before_activation(real_client, real_engine, monkeypatch, invalid):
+    """A restored template is moved onto a schedule as a start moves it; one that cannot move
+    does not stop the restore: it stays unmoved, refused by name until fixed from its page."""
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import AsyncSession
     from celerp.events.engine import emit_event
@@ -147,27 +149,31 @@ async def test_restored_legacy_subscription_is_upgraded_before_activation(real_c
     monkeypatch.setattr(loader, "_loaded", [*(m for m in loader._loaded if m["name"] != module), manifest])
     assert requirements.plan_requirements({module: manifest["version"]}).ready
 
-    before = await _companies(real_engine)
     response = await restore(real_client, tok, await download(real_client, tok))
-    if invalid:
-        assert response.status_code == 422, response.text
-        assert await _companies(real_engine) == before
-        return
     assert response.status_code == 201, response.text
     new_id = uuid.UUID(response.json()["company_id"])
     async with AsyncSession(real_engine) as session:
         rows = (await session.execute(select(Projection).where(Projection.company_id == new_id))).scalars().all()
     states = [row.state for row in rows if row.state.get("doc_type") == "subscription_invoice"]
     assert len(states) == 1
+    if invalid:
+        assert "anchor_date" not in states[0] and states[0]["next_run_date"] == ""
+        r = await real_client.get(f"/subscriptions/{eid}/periods", headers=auth(await token(real_engine, uid, new_id)))
+        assert r.status_code == 200 and r.json()["not_moved"], r.text
+        return
     assert states[0]["anchor_date"] == "2026-04-01"
     assert "next_run_date" not in states[0]
 
 
-@pytest.mark.parametrize("invalid", [False, True], ids=["reconciled", "rollback-on-failure"])
+@pytest.mark.parametrize("case", ["reconciled", "unmigratable-stays-unmoved", "rollback-on-failure"])
 @pytest.mark.parametrize("activation", ["direct", "business_type", "preset"])
 async def test_enabling_subscriptions_reconciles_existing_company_atomically(
-    real_client, real_engine, monkeypatch, invalid, activation,
+    real_client, real_engine, monkeypatch, case, activation,
 ):
+    """Turning Subscriptions on moves existing templates as a start does; a template that
+    cannot move stays unmoved without stopping the rest, and a move that fails undoes the
+    whole change."""
+    invalid = case == "unmigratable-stays-unmoved"
     from sqlalchemy import func, select
     from sqlalchemy.ext.asyncio import AsyncSession
     from celerp.events.engine import emit_event
@@ -238,12 +244,21 @@ async def test_enabling_subscriptions_reconciles_existing_company_atomically(
         return await real_client.post("/companies/me/modules/celerp-subscriptions/enable",
                                       headers=auth(tok))
 
+    if case == "rollback-on-failure":
+        import celerp_subscriptions.migration as migration
+
+        async def fails(*args, **kwargs):
+            raise RuntimeError("move failed")
+        monkeypatch.setattr(migration, "migrate_company", fails)
     response = await enable()
     modules, agreement, count = await state()
-    if invalid:
+    if case == "rollback-on-failure":
         assert response.status_code == 409, response.text
         assert modules == before_modules and agreement == before_state
         assert count == before_count
+    elif invalid:
+        assert response.status_code == 200, response.text
+        assert "celerp-subscriptions" in modules and agreement == before_state
     else:
         assert response.status_code == 200, response.text
         if activation == "preset":

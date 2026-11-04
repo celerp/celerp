@@ -3346,7 +3346,6 @@
   "subscriptions.err_resume_not_paused": "กลับมาใช้ต่อได้เฉพาะการสมัครสมาชิกที่หยุดชั่วคราว รายการนี้ไม่ได้หยุดชั่วคราว",
   "subscriptions.err_already_cancelled": "การสมัครสมาชิกนี้ถูกยกเลิกไปแล้ว ไม่ต้องทำอะไรเพิ่ม",
   "subscriptions.err_activate_not_draft": "เปิดใช้งานได้เฉพาะการสมัครสมาชิกที่เป็นฉบับร่าง รายการนี้ใช้งานอยู่ หยุดชั่วคราว หรือยกเลิกแล้ว",
-  "subscriptions.err_frequency_required": "เลือกความถี่ที่การสมัครสมาชิกนี้จะเกิดซ้ำ แล้วเปิดใช้งาน",
   "subscriptions_import.hdr_import": "นำเข้าการสมัครสมาชิก",
   "subscriptions_import.upsert_label": "ชื่อ + วันที่เริ่มต้น",
   "accounting_import.header_chart": "นำเข้าผังบัญชี",

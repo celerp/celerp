@@ -3347,7 +3347,6 @@
   "subscriptions.err_resume_not_paused": "Nur ein pausiertes Abonnement kann fortgesetzt werden. Dieses ist nicht pausiert.",
   "subscriptions.err_already_cancelled": "Dieses Abonnement ist bereits gekündigt. Es ist nichts weiter zu tun.",
   "subscriptions.err_activate_not_draft": "Nur ein Abonnement im Entwurf kann aktiviert werden. Dieses ist bereits aktiv, pausiert oder gekündigt.",
-  "subscriptions.err_frequency_required": "Wählen Sie, wie oft sich dieses Abonnement wiederholt (die Häufigkeit), und aktivieren Sie es dann.",
   "subscriptions_import.hdr_import": "Abonnements importieren",
   "subscriptions_import.upsert_label": "Name + Startdatum",
   "accounting_import.header_chart": "Kontenplan importieren",

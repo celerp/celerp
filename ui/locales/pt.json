@@ -3346,7 +3346,6 @@
   "subscriptions.err_resume_not_paused": "Só uma assinatura pausada pode ser retomada. Esta não está pausada.",
   "subscriptions.err_already_cancelled": "Esta assinatura já está cancelada. Não há mais nada a fazer.",
   "subscriptions.err_activate_not_draft": "Só uma assinatura em rascunho pode ser ativada. Esta já está ativa, pausada ou cancelada.",
-  "subscriptions.err_frequency_required": "Escolha com que frequência esta assinatura se repete e depois ative-a.",
   "subscriptions_import.hdr_import": "Importar assinaturas",
   "subscriptions_import.upsert_label": "nome + data de início",
   "accounting_import.header_chart": "Importar plano de contas",

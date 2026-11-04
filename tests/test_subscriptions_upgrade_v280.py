@@ -200,3 +200,117 @@ async def test_the_upgrade_tells_once_which_templates_have_more_than_one_period_
     assert _OLD["month_end"]["ref_id"] in notices[0] and _OLD["clean_monthly"]["ref_id"] not in notices[0], notices
     await pre366.start()
     assert len([n for n in await _notices(session, old) if _OLD["weekly_late"]["ref_id"] in n]) == 1
+
+
+async def _set(session, old, name, **fields) -> None:
+    # A 2.8.0 template edited the way 2.8.0's generic field save stored it.
+    await emit_event(session, company_id=old["company_id"], entity_id=old["runs"][name],
+                     entity_type="doc", event_type="doc.updated",
+                     data={"fields_changed": {f: {"new": v} for f, v in fields.items()}},
+                     actor_id=None, location_id=None, source="import", idempotency_key=str(uuid.uuid4()))
+    await session.commit()
+
+
+# Every way 2.8.0 templates come into this release, by the lifecycle slot that moves them.
+_WAYS_IN = {"startup": "on_modules_ready", "restore": "on_company_restored",
+            "module_enable": "on_company_module_enabled"}
+
+
+@pytest.mark.parametrize("way", list(_WAYS_IN))
+async def test_every_way_in_moves_what_it_can_and_names_what_it_cannot(client, session, monkeypatch, way):
+    """Starting this release, restoring a 2.8.0 backup and turning Subscriptions on all move
+    the company the same way: every template that can move does, and one that cannot is
+    refused by name and why, named in a notice, and fixable from its page."""
+    from celerp.modules.slots import fire_lifecycle
+
+    _on(monkeypatch, "2026-11-04")
+    old = await pre366.load(session, "demo", FIXTURE)
+    await _unreadable_interval(session, old)
+    if way == "startup":
+        await pre366.last_started_on_older_release(session, "2.8.0", semantics=2)
+        await pre366.start()
+    else:
+        assert not await fire_lifecycle(_WAYS_IN[way], session=session, company_id=old["company_id"])
+        await session.commit()
+    h, ref = old["headers"], _OLD["custom_no_days"]["ref_id"]
+    for name, before in _OLD.items():
+        if name != "custom_no_days" and before.get("next_run_date"):
+            assert (await _state(session, old, name))["anchor_date"] == before["next_run_date"], (way, name)
+    r = await _generate(client, old, "custom_no_days")
+    assert r.status_code == 409 and ref in r.text and "two weeks" in r.text, (way, r.status_code, r.text)
+    assert any(ref in n and "two weeks" in n for n in await _notices(session, old)), way
+    r = await client.patch(_url(old, "custom_no_days", "/schedule"), headers=h, json={"custom_interval_days": 30})
+    assert r.status_code == 200 and r.json()["next_bill_date"] == "2026-10-31", (way, r.text)
+
+
+async def test_only_the_one_mover_moves_templates_and_only_the_one_reader_reads_2_8_0_fields():
+    """Each primitive's callers, by name: a new path that moves templates, reconciles them or
+    reads a template not yet on a schedule without the primitive fails here first."""
+    import ast
+    from importlib import import_module
+
+    pkg = Path(import_module("celerp_subscriptions").__file__).parent
+    callers: dict[str, set[str]] = {}
+
+    def visit(node, fn=None):
+        # Each call is credited to the innermost function it is written in.
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            fn = node.name
+        if isinstance(node, ast.Call):
+            f = node.func
+            callers.setdefault(f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", None), set()).add(fn)
+        for child in ast.iter_child_nodes(node):
+            visit(child, fn)
+
+    for path in pkg.glob("*.py"):
+        visit(ast.parse(path.read_text()))
+    assert callers["_migrate_template"] == {"migrate_company", "move_template"}
+    assert callers["migrate_company"] == {"migrate_schedules_hook", "reconcile_company_schedules"}
+    assert callers["move_template"] == {"_move_with"}
+    assert callers["legacy_schedule"] == {"_migrate_template", "not_moved", "activate_subscription"}
+    # Every lifecycle slot that reaches the mover is one test_every_way_in_moves_... runs.
+    from celerp.modules import loader
+
+    slots = loader.read_manifest(loader.resolve_runtime_module_path(
+        "celerp-subscriptions", loader.module_search_path()))["slots"]
+    movers = {s for s, entries in slots.items() if isinstance(entries, list)
+              for e in entries if str(e.get("handler")).startswith("celerp_subscriptions.migration:")}
+    assert movers == set(_WAYS_IN.values()), movers
+
+
+async def test_a_2_8_0_draft_activates_with_the_interval_it_holds(client, session, monkeypatch):
+    """2.8.0's page stored a typed interval as text: the draft holding "14" activates every 14
+    days; with the interval emptied, activation names the interval, not the frequency."""
+    from ui.i18n import t
+
+    old = await _upgrade(session, monkeypatch, "2026-11-04")
+    r = await client.post(_url(old, "custom_typed", "/activate"), headers=old["headers"], json={})
+    assert r.status_code == 200, r.text
+    state = await _state(session, old, "custom_typed")
+    assert (state["anchor_date"], state["custom_interval_days"]) == ("2026-10-01", 14), state
+    starts = [row["service_start"] for row in (await _periods(client, old, "custom_typed"))["rows"]]
+    assert "2026-10-15" in starts and "2026-10-29" in starts, starts
+
+    await _set(session, old, "draft", frequency="custom", custom_interval_days="")
+    r = await client.post(_url(old, "draft", "/activate"), headers=old["headers"], json={})
+    assert r.status_code == 422 and r.json()["detail"]["message"] == t("subscriptions.err_custom_interval"), r.text
+
+
+async def test_fixing_a_template_from_its_page_sends_a_shared_document_to_history_review(
+        client, session, monkeypatch):
+    """Two 2.8.0 templates that both name one document: when one is fixed from its page, that
+    document waits for history review instead of being placed as billed in both."""
+    async def two_unreadable_sharing_a_document(session, old):
+        await _unreadable_interval(session, old)
+        shared = _OLD["custom_no_days"]["generated_doc_ids"][0]
+        await _set(session, old, "custom_10", custom_interval_days="ten days",
+                   generated_doc_ids=[*_OLD["custom_10"]["generated_doc_ids"], shared])
+
+    old = await _upgrade(session, monkeypatch, "2026-11-04", two_unreadable_sharing_a_document)
+    shared = _OLD["custom_no_days"]["generated_doc_ids"][0]
+    r = await client.patch(_url(old, "custom_no_days", "/schedule"), headers=old["headers"],
+                           json={"custom_interval_days": 30})
+    assert r.status_code == 200, r.text
+    state = await _state(session, old, "custom_no_days")
+    assert [e["doc_id"] for e in state.get("history_review") or []] == [shared], state
+    assert not [e for e in state["periods"].values() if e.get("doc_id") == shared], state["periods"]

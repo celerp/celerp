@@ -3346,7 +3346,6 @@
   "subscriptions.err_resume_not_paused": "Hanya langganan yang dijeda yang bisa dilanjutkan. Langganan ini tidak sedang dijeda.",
   "subscriptions.err_already_cancelled": "Langganan ini sudah dibatalkan. Tidak ada lagi yang perlu dilakukan.",
   "subscriptions.err_activate_not_draft": "Hanya langganan draf yang bisa diaktifkan. Langganan ini sudah aktif, dijeda, atau dibatalkan.",
-  "subscriptions.err_frequency_required": "Pilih seberapa sering langganan ini berulang (frekuensinya), lalu aktifkan.",
   "subscriptions_import.hdr_import": "Impor Langganan",
   "subscriptions_import.upsert_label": "nama + tanggal mulai",
   "accounting_import.header_chart": "Impor Bagan Akun",

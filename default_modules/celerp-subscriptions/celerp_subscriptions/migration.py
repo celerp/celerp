@@ -14,7 +14,8 @@ template paused at the move is marked to restart from its resume day, as the ear
 resumed, and the company is told once which active templates come out with more than one
 period due.
 
-Runs at startup per company, gated by a marker. A company staged for a migration, or that
+Runs at startup per company, gated by a marker, and again (whatever the marker says) when a
+company is restored or turns Subscriptions on, with the same per-template rules. A company staged for a migration, or that
 has Subscriptions turned off, is skipped and waits for a later start. Each template moves in
 its own savepoint: one that fails is rolled back alone, logged and named in a notice with
 why, and the marker stays unset so the next start tries it again; correcting its schedule
@@ -52,19 +53,26 @@ def is_legacy(state: dict) -> bool:
 
 
 def legacy_schedule(state: dict) -> dict:
-    """The schedule fields an earlier release's template meant, read as that release read
-    them: anchored on its next run date (or start date), and a custom interval left empty
-    is the 30 days it billed on. ScheduleError saying why when they describe no schedule."""
-    anchor = state.get("next_run_date") or state.get("start_date")
+    """The schedule fields an agreement not yet on a schedule means (a template an earlier
+    release ran, or a draft from either release), read as the earlier release read them: an
+    interval typed as text ("14") is that many days. A template it ran is anchored on its
+    next run date (or start date), is billed by hand from here on, and with a custom interval
+    left empty bills the 30 days it billed on; a draft is anchored on its start date and keeps
+    its own settings. ScheduleError saying why when they describe no schedule."""
+    ran = is_legacy(state)
+    anchor = state.get("anchor_date") or state.get("next_run_date") or state.get("start_date")
     if not anchor:
         raise ScheduleError("subscriptions.not_moved_no_date")
-    fields = {"anchor_date": anchor, "generation_mode": "manual_due", "billing_timing": "advance"}
+    fields = {"anchor_date": anchor}
+    if ran:
+        fields.update(generation_mode="manual_due", billing_timing="advance")
     if (state.get("frequency") or "monthly") == "custom":
         days = state.get("custom_interval_days")
         days = int(days) if isinstance(days, str) and days.strip().isdigit() else days
         if days and type(days) is not int:
-            raise ScheduleError("subscriptions.not_moved_custom_days", days=days)
-        fields["custom_interval_days"] = days or 30
+            raise ScheduleError("subscriptions.not_moved_custom_days" if ran else "subscriptions.err_custom_days",
+                                days=days)
+        fields["custom_interval_days"] = days or (30 if ran else None)
     Schedule.from_state({**state, **fields, "periods": {}})
     return fields
 
@@ -273,20 +281,20 @@ def _ref(proj: Projection) -> str:
 
 
 async def reconcile_company_schedules(*, session: AsyncSession, company_id) -> None:
-    """Upgrade existing schedules before a restored or newly enabled company is usable."""
-    result = await migrate_company(session, company_id, force=True)
-    if result is not None and not result["marked"]:
-        raise ValueError("Restored subscription schedules need repair before activation")
+    """on_company_module_enabled: move the company's templates as a start does, before it is
+    usable; one that cannot move stays refused by name and the rest bill."""
+    await migrate_company(session, company_id, force=True)
 
 
 async def reconcile_restored_company_schedules(*, session: AsyncSession, company_id) -> None:
-    """Restored agreements require fresh consent before unattended operations resume."""
+    """on_company_restored: move the templates as a start does; restored agreements require
+    fresh consent before unattended operations resume."""
     await reconcile_company_schedules(session=session, company_id=company_id)
     for agreement in await billing.agreements(session, company_id):
         state = agreement.state
         if (state.get("generation_mode") in billing.AUTO_MODES or state.get("auto_send")
                 or state.get("consents")):
-            await billing.locked_agreement(session, company_id, agreement.entity_id)
+            await billing.locked_agreement(session, company_id, agreement.entity_id, scheduled=False)
             await billing.write_agreement(
                 session, company_id, agreement.entity_id,
                 {"generation_mode": "manual_due", "auto_send": False},

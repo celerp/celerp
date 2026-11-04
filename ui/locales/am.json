@@ -3588,7 +3588,6 @@
   "subscriptions.err_resume_not_paused": "እንደገና መቀጠል የሚቻለው ለጊዜው የቆመ የደንበኝነት ምዝገባን ብቻ ነው። ይህ አልቆመም።",
   "subscriptions.err_already_cancelled": "ይህ የደንበኝነት ምዝገባ አስቀድሞ ተሰርዟል። ሌላ ምንም ማድረግ አያስፈልግም።",
   "subscriptions.err_activate_not_draft": "ማንቃት የሚቻለው ረቂቅ የደንበኝነት ምዝገባን ብቻ ነው። ይህ አስቀድሞ ንቁ፣ ለጊዜው የቆመ ወይም የተሰረዘ ነው።",
-  "subscriptions.err_frequency_required": "ይህ የደንበኝነት ምዝገባ ምን ያህል ጊዜ እንደሚደገም (ድግግሞሹን) ይምረጡ፣ ከዚያ ያንቁት።",
   "subscriptions_import.hdr_import": "አስመጣ የደንበኝነት ምዝገባዎች",
   "subscriptions_import.upsert_label": "ስም + የመጀመሪያ ቀን",
   "accounting_import.header_chart": "የመለያዎች ማስመጣት ገበታ",

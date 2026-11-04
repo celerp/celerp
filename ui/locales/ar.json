@@ -3346,7 +3346,6 @@
   "subscriptions.err_resume_not_paused": "لا يمكن استئناف إلا الاشتراك الموقوف مؤقتاً. هذا الاشتراك ليس موقوفاً.",
   "subscriptions.err_already_cancelled": "هذا الاشتراك ملغى بالفعل. لا حاجة لأي إجراء آخر.",
   "subscriptions.err_activate_not_draft": "لا يمكن تفعيل إلا الاشتراك المسودة. هذا الاشتراك نشط أو موقوف مؤقتاً أو ملغى بالفعل.",
-  "subscriptions.err_frequency_required": "اختر عدد مرات تكرار هذا الاشتراك (تكراره)، ثم فعّله.",
   "subscriptions_import.hdr_import": "استيراد الاشتراكات",
   "subscriptions_import.upsert_label": "الاسم + تاريخ البدء",
   "accounting_import.header_chart": "استيراد مخطط الحسابات",

@@ -3346,7 +3346,6 @@
   "subscriptions.err_resume_not_paused": "Solo se puede reanudar una suscripción en pausa. Esta no está en pausa.",
   "subscriptions.err_already_cancelled": "Esta suscripción ya está cancelada. No hace falta hacer nada más.",
   "subscriptions.err_activate_not_draft": "Solo se puede activar una suscripción en borrador. Esta ya está activa, en pausa o cancelada.",
-  "subscriptions.err_frequency_required": "Elija cada cuánto se repite esta suscripción (su frecuencia) y luego actívela.",
   "subscriptions_import.hdr_import": "Importar suscripciones",
   "subscriptions_import.upsert_label": "nombre + fecha de inicio",
   "accounting_import.header_chart": "Importar plan de cuentas",

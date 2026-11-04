@@ -3347,7 +3347,6 @@
   "subscriptions.err_resume_not_paused": "Solo un abbonamento in pausa può essere ripreso. Questo non è in pausa.",
   "subscriptions.err_already_cancelled": "Questo abbonamento è già annullato. Non serve fare altro.",
   "subscriptions.err_activate_not_draft": "Solo un abbonamento in bozza può essere attivato. Questo è già attivo, in pausa o annullato.",
-  "subscriptions.err_frequency_required": "Scegli ogni quanto si ripete questo abbonamento (la frequenza), poi attivalo.",
   "subscriptions_import.hdr_import": "Importa abbonamenti",
   "subscriptions_import.upsert_label": "nome + data di inizio",
   "accounting_import.header_chart": "Importa piano dei conti",

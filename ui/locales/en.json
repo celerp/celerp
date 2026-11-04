@@ -3685,7 +3685,6 @@
   "subscriptions.err_resume_not_paused": "Only a paused subscription can be resumed. This one is not paused.",
   "subscriptions.err_already_cancelled": "This subscription is already cancelled. Nothing more to do.",
   "subscriptions.err_activate_not_draft": "Only a draft subscription can be activated. This one is already active, paused or cancelled.",
-  "subscriptions.err_frequency_required": "Choose how often this subscription repeats (its frequency), then activate it.",
   "subscriptions_import.hdr_import": "Import Subscriptions",
   "subscriptions_import.upsert_label": "name + start date",
   "accounting_import.header_chart": "Import Chart of Accounts",

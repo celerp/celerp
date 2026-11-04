@@ -3346,7 +3346,6 @@
   "subscriptions.err_resume_not_paused": "再開できるのは一時停止中のサブスクリプションだけです。このサブスクリプションは一時停止していません。",
   "subscriptions.err_already_cancelled": "このサブスクリプションはすでにキャンセルされています。これ以上の操作は不要です。",
   "subscriptions.err_activate_not_draft": "有効化できるのは下書きのサブスクリプションだけです。このサブスクリプションはすでに有効、一時停止中、またはキャンセル済みです。",
-  "subscriptions.err_frequency_required": "このサブスクリプションを繰り返す頻度を選んでから、有効化してください。",
   "subscriptions_import.hdr_import": "サブスクリプションのインポート",
   "subscriptions_import.upsert_label": "名称 + 開始日",
   "accounting_import.header_chart": "勘定科目表のインポート",

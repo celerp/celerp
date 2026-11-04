@@ -689,13 +689,12 @@ def _build_router() -> APIRouter:
         if proj.state.get("status") != "draft":
             raise HTTPException(status_code=409, detail=t("subscriptions.err_activate_not_draft"))
         start = proj.state.get("start_date") or (await company_today(session, company_id)).isoformat()
-        changes = {"status": "active", "start_date": start,
-                   "anchor_date": proj.state.get("anchor_date") or start}
-        merged = {**proj.state, **changes}
         try:
-            Schedule.from_state(merged)
+            schedule = migration.legacy_schedule({**proj.state, "start_date": start})
         except ScheduleError as exc:
-            raise HTTPException(status_code=422, detail=t("subscriptions.err_frequency_required")) from exc
+            raise HTTPException(status_code=422, detail=t(exc.key, **exc.params)) from exc
+        changes = {"status": "active", "start_date": start, **schedule}
+        merged = {**proj.state, **changes}
         await _write(session, company_id, entity_id, changes, user)
         return {"ok": True, "next_bill_date": next_bill_date(merged)}
 

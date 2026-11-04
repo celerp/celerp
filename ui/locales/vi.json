@@ -3346,7 +3346,6 @@
   "subscriptions.err_resume_not_paused": "Chỉ có thể tiếp tục gói đăng ký đang tạm dừng. Gói này không tạm dừng.",
   "subscriptions.err_already_cancelled": "Gói đăng ký này đã bị hủy. Bạn không cần làm gì thêm.",
   "subscriptions.err_activate_not_draft": "Chỉ có thể kích hoạt gói đăng ký nháp. Gói này đã hoạt động, tạm dừng hoặc bị hủy.",
-  "subscriptions.err_frequency_required": "Hãy chọn tần suất lặp lại của gói đăng ký này, rồi kích hoạt nó.",
   "subscriptions_import.hdr_import": "Nhập đăng ký",
   "subscriptions_import.upsert_label": "tên + ngày bắt đầu",
   "accounting_import.header_chart": "Nhập bảng tài khoản",
