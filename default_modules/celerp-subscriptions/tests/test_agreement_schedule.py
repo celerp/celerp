@@ -299,7 +299,6 @@ async def test_po_template_uses_period_engine_without_collection_or_deferral(cli
         LedgerEntry.idempotency_key.like(f"collect:{doc['entity_id']}:%")))).scalar_one()
     assert collect == 0
     assert (await claim_events(session, eid)) == [f"sub:{eid}:p0:purchase_order:r0"]
-    assert (await schedule(client, hd, eid, generation_mode="auto_invoice_collect")).status_code == 422
 
 
 async def test_schedule_validation_and_mode_permissions(client, session, monkeypatch):
@@ -314,18 +313,15 @@ async def test_schedule_validation_and_mode_permissions(client, session, monkeyp
     operator, _ = await member(client, session, hd, "operator")
     manager, manager_id = await member(client, session, hd, "manager")
     assert (await schedule(client, operator, eid, generation_mode="auto_invoice")).status_code == 403
-    assert (await schedule(client, operator, eid, auto_send=True)).status_code == 403
     ok = await schedule(client, manager, eid, generation_mode="auto_invoice")
     assert ok.status_code == 200, ok.text
+    assert (await schedule(client, operator, eid, auto_send=True)).status_code == 403
     state = await template(client, hd, eid)
     assert state["generation_mode"] == "auto_invoice"
     assert state["consents"]["generation"]["by"] == manager_id and state["consents"]["generation"]["at"]
     assert "sending" not in state["consents"]
     assert (await schedule(client, manager, eid, auto_send=True)).status_code == 200
     assert (await template(client, hd, eid))["consents"]["sending"]["by"] == manager_id
-    assert (await schedule(client, manager, eid, generation_mode="auto_invoice_collect")).status_code == 403
-    # Collection stays closed until the Connect service offers it.
-    assert (await schedule(client, hd, eid, generation_mode="auto_invoice_collect")).status_code == 422
 
 
 async def test_generate_requires_finalize_permission(client, session, monkeypatch):

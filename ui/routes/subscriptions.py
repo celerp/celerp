@@ -65,11 +65,10 @@ _SCHEDULE_EDITS = {"frequency": str, "anchor_date": str, "custom_interval_days":
                    "generation_mode": str, "auto_send": lambda v: v == "true", "catchup_periods": int}
 # Edits that change what the Billing section and the header badge show, so both are drawn again.
 _BILLING_FIELDS = ("generation_mode", "auto_send", "catchup_periods")
-# The billing modes offered here; collecting a payment is offered where collection is available.
 _MODES = ("manual_due", "auto_invoice")
-_MODE_BADGE = {"auto_invoice": "subscriptions.bills_automatically",
-               "auto_invoice_collect": "subscriptions.bills_and_collects_automatically"}
-_CONSENTS = ("generation", "sending", "collection")
+_MODE_BADGE = {"auto_invoice": "subscriptions.bills_automatically"}
+# The agreement keeps a consent only for a mode that runs, so each one kept is shown.
+_CONSENTS = ("generation", "sending")
 # Escape clears an inline preview or result panel (GDR 2j).
 _PANEL_ESC_JS = Script("""
 document.addEventListener('keydown', function(e) {
@@ -552,13 +551,12 @@ def _billing_section(entity_id: str, sub: dict) -> FT:
     attrs = {"hx_swap": "outerHTML", "hx_target": "#sub-billing", "hx_trigger": "change",
              "cls": "form-input form-input--inline"}
     mode = sub.get("generation_mode") or "manual_due"
-    modes = _MODES if mode in _MODES else (*_MODES, mode)
     consents = sub.get("consents") or {}
     return Div(
         H3(t("subscriptions.billing_heading")),
         Div(
             Label(t("subscriptions.billing_mode"),
-                  Select(*[Option(t(f"subscriptions.mode_{m}"), value=m, selected=(m == mode)) for m in modes],
+                  Select(*[Option(t(f"subscriptions.mode_{m}"), value=m, selected=(m == mode)) for m in _MODES],
                          name="value", hx_patch=f"{base}/generation_mode", **attrs)),
             Label(t("subscriptions.auto_send"),
                   Select(Option(t("settings.no"), value="false", selected=not sub.get("auto_send")),

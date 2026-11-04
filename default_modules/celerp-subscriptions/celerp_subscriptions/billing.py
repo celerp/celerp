@@ -44,12 +44,12 @@ from ui.i18n import t
 
 log = logging.getLogger(__name__)
 
-AUTO_MODES = frozenset({"auto_invoice", "auto_invoice_collect"})
+AUTO_MODES = frozenset({"auto_invoice"})
 # Each unattended mode and the permission its authorizer must keep holding.
-MODE_PERMISSION = {"generation": "automate_billing", "sending": "automate_sending",
-                   "collection": "automate_collection"}
-MODE_DOCUMENT_PERMISSION = {"generation": "finalize_documents", "sending": "edit_documents",
-                            "collection": "record_payments"}
+MODE_PERMISSION = {"generation": "automate_billing", "sending": "automate_sending"}
+MODE_DOCUMENT_PERMISSION = {"generation": "finalize_documents", "sending": "edit_documents"}
+# The settings each mode's consent covers: changing one while the mode runs is a new consent.
+CONSENT_TERMS = {"generation": ("generation_mode", "catchup_periods"), "sending": ("auto_send",)}
 CATCHUP_CAP = 12
 MAX_EMAIL_PAYLOAD_BYTES = 2 * 1024 * 1024
 EMAIL_ATTEMPT_RETENTION = timedelta(days=2)
@@ -467,14 +467,13 @@ async def authorizer(session, company_id, settings: dict, state: dict, mode: str
     return SimpleNamespace(id=uuid.UUID(str(by)))
 
 
-def lapsed_modes(state: dict) -> list[str]:
-    """The unattended modes an agreement is set to, by their consent key."""
-    modes = []
-    if state.get("generation_mode") in AUTO_MODES:
-        modes.append("generation")
-    if state.get("auto_send"):
-        modes.append("sending")
-    return modes
+def modes_in_force(state: dict) -> list[str]:
+    """The unattended modes that run for an agreement, by their consent key. Sending runs
+    only on what automatic billing makes, so Send automatically on a manual agreement is not
+    one of them."""
+    if state.get("generation_mode") not in AUTO_MODES:
+        return []
+    return ["generation", *(["sending"] if state.get("auto_send") else [])]
 
 
 async def run_due(*, session: AsyncSession, company_id, today: date, budget: int) -> OperationReport:

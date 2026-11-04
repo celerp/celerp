@@ -355,7 +355,7 @@ def _build_router() -> APIRouter:
         k: int,
         body: SkipBody,
         company_id: uuid.UUID = Depends(get_current_company_id),
-        _: None = require_permission("edit_documents"),
+        _: None = require_permission("finalize_documents"),
         user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
@@ -399,7 +399,7 @@ def _build_router() -> APIRouter:
         entity_id: str,
         k: int,
         company_id: uuid.UUID = Depends(get_current_company_id),
-        _: None = require_permission("edit_documents"),
+        _: None = require_permission("finalize_documents"),
         user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
@@ -441,8 +441,9 @@ def _build_router() -> APIRouter:
         user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
-        """Change the agreement's schedule terms and unattended modes. Turning a mode on
-        needs its permission and records the consent of the person who did."""
+        """Change the agreement's schedule terms and unattended modes. Bringing a mode into
+        force, or changing the terms of one that runs, needs its permission and records the
+        consent of the person who did; a mode that stops running loses its consent."""
         sent = body.model_dump(include=body.model_fields_set)
         company = await locked_company(session, company_id)
         settings = company.settings or {}
@@ -450,20 +451,14 @@ def _build_router() -> APIRouter:
         if migration.is_legacy(proj.state):
             return await _move_with(session, company_id, proj, sent, user)
         state = proj.state
-        needed = []
-        if sent.get("generation_mode") in billing.AUTO_MODES:
-            needed.append("generation")
-        if sent.get("generation_mode") == "auto_invoice_collect":
-            needed.append("collection")
-        if sent.get("auto_send"):
-            needed.append("sending")
+        running = billing.modes_in_force(state)
+        in_force = billing.modes_in_force({**state, **sent})
+        needed = [m for m in in_force
+                  if m not in running or any(f in sent for f in billing.CONSENT_TERMS[m])]
         for mode in needed:
             for permission in (billing.MODE_PERMISSION[mode], billing.MODE_DOCUMENT_PERMISSION[mode]):
                 if not role_has_permission(settings, role, permission):
                     raise missing_permission(permission)
-        if "collection" in needed:
-            # Collection runs through the Connect service; until it offers it, no agreement collects.
-            raise HTTPException(status_code=422, detail=t("subscriptions.err_collect_unavailable"))
         changes = {f: (v.isoformat() if isinstance(v, date) else v) for f, v in sent.items()}
         recorded = [int(k) for k in (state.get("periods") or {})]
         claimed = [int(k) for k, e in (state.get("periods") or {}).items() if e.get("state") in CLAIMED_STATES]
@@ -494,10 +489,12 @@ def _build_router() -> APIRouter:
             previous = Schedule.from_state(state)
             if any(schedule.service_end(k) != previous.service_end(k) for k in claimed):
                 raise HTTPException(status_code=409, detail=t("subscriptions.err_term_cuts_claimed"))
-        if needed:
-            stamp = {"by": str(user.id), "at": billing.now_stamp()}
-            changes["consents"] = {**(state.get("consents") or {}), **{m: stamp for m in needed}}
-        await _write(session, company_id, entity_id, changes, user)
+        stamp = {"by": str(user.id), "at": billing.now_stamp()}
+        kept = state.get("consents") or {}
+        consents = {**{m: kept[m] for m in in_force if m in kept}, **{m: stamp for m in needed}}
+        if consents and consents != kept:
+            changes["consents"] = consents
+        await _write(session, company_id, entity_id, changes, user, drop=("consents",) if kept and not consents else ())
         return {"ok": True, "next_bill_date": next_bill_date(merged)}
 
     @router.post("/{entity_id}/history/{doc_id}/confirm")
@@ -506,7 +503,7 @@ def _build_router() -> APIRouter:
         doc_id: str,
         body: ConfirmBody,
         company_id: uuid.UUID = Depends(get_current_company_id),
-        _: None = require_permission("edit_documents"),
+        _: None = require_permission("finalize_documents"),
         user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
@@ -539,7 +536,7 @@ def _build_router() -> APIRouter:
         entity_id: str,
         doc_id: str,
         company_id: uuid.UUID = Depends(get_current_company_id),
-        _: None = require_permission("edit_documents"),
+        _: None = require_permission("finalize_documents"),
         user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
@@ -568,7 +565,7 @@ def _build_router() -> APIRouter:
         entity_id: str,
         doc_id: str,
         company_id: uuid.UUID = Depends(get_current_company_id),
-        _: None = require_permission("edit_documents"),
+        _: None = require_permission("finalize_documents"),
         user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
