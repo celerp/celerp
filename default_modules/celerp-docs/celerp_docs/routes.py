@@ -7072,17 +7072,10 @@ class ReturnItem(_StatedMeasures):
 
 
 class ReturnLine(_StatedMeasures):
-    """A document line to send goods back from, by its id (or its position when it has none),
-    and the stock units to send back. The server finds the lots."""
-    line_id: str | None = None
-    line_index: int | None = None
+    """A document line to send goods back from, by its id, and the stock units to send back.
+    The server finds the lots."""
+    line_id: str
     quantity_returned: FiniteFloat = Field(gt=0)
-
-    @model_validator(mode="after")
-    def _names_one_line(self):
-        if (self.line_id is None) == (self.line_index is None):
-            raise ValueError("Name each line by its line_id, or by line_index when it has no id.")
-        return self
 
 
 class ReturnBody(BaseModel):
@@ -7292,12 +7285,8 @@ async def _return_lines_as_lots(session: AsyncSession, company_id, doc_id: str, 
     doc_lines = doc.get("line_items") or []
     picked: list[int] = []
     for ln in lines:
-        if ln.line_id is not None:
-            found = [i for i, li in enumerate(doc_lines) if li.get("line_id") == ln.line_id]
-            index = found[0] if len(found) == 1 else None
-        else:
-            index = (ln.line_index if 0 <= ln.line_index < len(doc_lines)
-                     and not doc_lines[ln.line_index].get("line_id") else None)
+        found = [i for i, li in enumerate(doc_lines) if li.get("line_id") == ln.line_id]
+        index = found[0] if len(found) == 1 else None
         if index is None:
             raise HTTPException(status_code=422, detail=refusal(
                 "docs.return_line_unknown",
@@ -10368,16 +10357,70 @@ async def _line_stock(
     return locked, by_line
 
 
+def _line_lot(line_items: list[dict], index: int, locked: dict[str, Projection]) -> Projection | None:
+    """The locked lot line ``index`` binds, or None when it binds no item that exists."""
+    return locked.get(str(line_item_id(line_items[index]) or ""))
+
+
 def _stock_line(line_items: list[dict], index: int, locked: dict[str, Projection]) -> Projection | None:
-    """The lot line ``index`` binds, or None for a non-stock line (a service or charge).
-    A line that binds no item has nothing to reserve or ship and is refused."""
-    proj = locked.get(str(line_item_id(line_items[index]) or ""))
-    if proj is None:
-        raise HTTPException(status_code=422, detail=refusal(
-            "lines.no_item", f"Line {index + 1} names no inventory item.", line=index + 1))
-    if is_non_stock_line(proj.state.get("inventory_type"), proj.state.get("sell_by")):
+    """The lot line ``index`` binds, or None for a line with no stock to act on (no item, or a
+    service or charge item)."""
+    proj = _line_lot(line_items, index, locked)
+    if proj is None or is_non_stock_line(proj.state.get("inventory_type"), proj.state.get("sell_by")):
         return None
     return proj
+
+
+def _skipped_lines(line_items: list[dict], indices: list[int], kind: str) -> list[dict]:
+    """The lines at ``indices`` a stock action leaves as they are, each named by its number
+    and label; ``kind`` is ``no_item`` (no inventory item) or ``service`` (an item that is not
+    stock)."""
+    return [{"line": i + 1, "name": line_label(line_items[i]), "kind": kind} for i in indices]
+
+
+# Per skip kind: (key of the notice that names the lines left as they are, key of the
+# refusal when every chosen line is of that kind).
+_SKIP_KEYS = {"no_item": ("documents.lines_skipped", "lines.no_stock"),
+              "service": ("documents.service_lines_skipped", "lines.service_no_stock")}
+
+
+def _skip_messages(skipped: list[dict], *, refuse: bool) -> list[dict]:
+    """One message per kind in ``skipped`` naming its lines, as ``6 "GIA Certificate"``: the
+    notice that they were left as they are, or with ``refuse`` the refusal that none of the
+    chosen lines has stock to act on."""
+    messages = []
+    for kind, keys in _SKIP_KEYS.items():
+        named = [f'{s["line"]} "{s["name"]}"' if s["name"] else str(s["line"]) for s in skipped if s["kind"] == kind]
+        if named:
+            key = f"{keys[refuse]}_{'one' if len(named) == 1 else 'many'}"
+            messages.append(catalog_refusal(key, lines=", ".join(named)))
+    return messages
+
+
+def _acting_lines(line_items: list[dict], indices: list[int], locked: dict[str, Projection], *,
+                  count_service: bool) -> tuple[list[int], list[int], list[dict]]:
+    """Which chosen lines a bulk line action acts on: ``(acting, counted, skipped)``.
+
+    A line with stock acts. A line whose item is not stock is counted when ``count_service``
+    (Ship counts it shipped) and otherwise skipped; a line with no item, or whose item no longer
+    exists, is skipped. A choice of lines none of which acts or counts is refused, naming them.
+    With no ``indices`` (lots chosen by item) nothing is skipped or refused."""
+    acting: list[int] = []
+    counted: list[int] = []
+    no_item: list[int] = []
+    service: list[int] = []
+    for i in indices:
+        if _stock_line(line_items, i, locked) is not None:
+            acting.append(i)
+        elif _line_lot(line_items, i, locked) is None:
+            no_item.append(i)
+        else:
+            (counted if count_service else service).append(i)
+    skipped = _skipped_lines(line_items, no_item, "no_item") + _skipped_lines(line_items, service, "service")
+    if indices and not acting and not counted:
+        msgs = _skip_messages(skipped, refuse=True)
+        raise HTTPException(status_code=422, detail={**msgs[0], "also": msgs[1:]})
+    return acting, counted, skipped
 
 
 def _line_plan(
@@ -10759,6 +10802,8 @@ async def _fulfill_lines_impl(
 
     line_items = state.get("line_items", [])
     locked, by_line = await _line_stock(session, company_id, entity_id, line_items, indices)
+    indices, counted, left = _acting_lines(line_items, indices, locked, count_service=True)
+    service_lines = set(counted)
     unit_map = await _get_unit_map(session, company_id)
     company = await session.get(Company, company_id)
     company_settings = (company.settings or {}) if company else {}
@@ -10766,7 +10811,6 @@ async def _fulfill_lines_impl(
 
     blocked: list[str] = []
     unavailable: list[dict] = []
-    service_lines: set[int] = set()
     remaining: dict[str, float] = {}
     # (line index, lot, quantity taken, whole lot) in plan order.
     shipments: list[tuple[int, Projection, float, bool]] = []
@@ -10777,9 +10821,6 @@ async def _fulfill_lines_impl(
     plan_items = list(line_items)
     for idx in indices:
         bound = _stock_line(line_items, idx, locked)
-        if bound is None:
-            service_lines.add(idx)
-            continue
         line = line_items[idx]
         sku = bound.state.get("sku", "")
         line_qty = invoiced = float(line.get("quantity") or 0)
@@ -10978,7 +11019,8 @@ async def _fulfill_lines_impl(
 
     if commit:
         await session.commit()
-    return {"fulfillment_status": doc_fulfillment_status, "fulfilled": shipped, "taken_from": taken_from}
+    return {"fulfillment_status": doc_fulfillment_status, "fulfilled": shipped, "taken_from": taken_from,
+            "skipped": left}
 
 
 async def _line_action(session, company_id, user, owner: Projection, action: str,
@@ -11003,10 +11045,13 @@ async def _line_action(session, company_id, user, owner: Projection, action: str
         numbers = await _current_doc_numbers(session, company_id, {t["invoice_id"] for t in memo_draws(owner.state)})
         refuse_drawn_memo_line_action(owner.state, indices, {i: n for i, (n, _) in numbers.items()})
     result = await run(indices)
+    if result.get("skipped"):
+        result["skipped_notice"] = _skip_messages(result["skipped"], refuse=False)
     # Read after the action; Back to memo takes its lines off, and only drawn lines go back.
     if not removes:
         line_items = owner.state.get("line_items", [])
-    chosen = [str(line_items[i].get("line_id")) for i in indices if line_items[i].get("line_id")]
+    left = {s["line"] - 1 for s in result.get("skipped") or []}
+    chosen = [str(line_items[i].get("line_id")) for i in indices if i not in left and line_items[i].get("line_id")]
     await emit_event(
         session, company_id=uuid.UUID(str(company_id)), entity_id=record_id,
         entity_type="line_action", event_type="line_action.recorded",
@@ -11251,7 +11296,7 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
     """Take back what this document shipped, whole or in part, without committing.
 
     ``indices`` are the chosen lines: each gives back every lot it shipped. With none, the
-    legacy body names the lots. Every lot is proved before anything changes: it is out
+    body picks lines by the item they bind and names the lots. Every lot is proved before anything changes: it is out
     (sold or on memo) for this document and its shipment's line can be told. Any line or
     lot that fails refuses the whole request. ``holding`` is given when the user chose Set as
     available, and the refusal names that action: a line in it gives back a hold elsewhere,
@@ -11285,7 +11330,9 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
         Projection.entity_id.in_(named),
     ))).scalars().all()) if named else set()
     owned = {p.entity_id for p in await _memo_allocation_items(session, company_id, entity_id)}
-    locked = await _lock_item_sku_lots(session, company_id, owned | present)
+    chosen_items = {str(line_item_id(line_items[i]) or "") for i in indices} - {""}
+    locked = await _lock_item_sku_lots(session, company_id, owned | present | chosen_items)
+    indices, _counted, left = _acting_lines(line_items, indices, locked, count_service=False)
     out, line_of = await _lots_out(session, company_id, entity_id, state, locked.values())
 
     def _sku(eid: str) -> str:
@@ -11301,7 +11348,6 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
     groups: list[tuple[str, list[Projection], str | None]] = []
     if indices:
         chosen_skus = {str(line_items[i].get("sku") or "").strip() for i in indices} - {""}
-        chosen_items = {str(line_item_id(line_items[i]) or "") for i in indices} - {""}
         for eid, idx in line_of.items():
             if idx is None and (eid in chosen_items or _sku(eid).strip() in chosen_skus):
                 errors.append(_unattributed(eid))
@@ -11383,7 +11429,8 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
             refusal("lines.cannot_revert", f"Cannot take back: {reasons}", reasons=errors))
     if set_available:
         if not groups:
-            return {"fulfillment_status": state.get("fulfillment_status"), "reverted": [], "partially_returned": []}
+            return {"fulfillment_status": state.get("fulfillment_status"), "reverted": [], "partially_returned": [],
+                    "skipped": left}
         _check_revert_status(state)
 
     cid = uuid.UUID(str(company_id))
@@ -11428,6 +11475,7 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
         "reverted": to_revert,
         # Lots that came back in part: the new in-stock parcel per part-returned line.
         "partially_returned": returned_brief,
+        "skipped": left,
     }
 
 
@@ -11974,6 +12022,7 @@ async def _reserve_lines_impl(
     state = row.state
     line_items = state.get("line_items", [])
     locked, by_line = await _line_stock(session, company_id, entity_id, line_items, indices)
+    indices, _counted, left = _acting_lines(line_items, indices, locked, count_service=False)
     uid = user.id
 
     if new_status == "available":
@@ -11987,9 +12036,8 @@ async def _reserve_lines_impl(
             await _set_lot_status(session, company_id=company_id, uid=uid, owner=row, lot_id=eid, line_id=None)
         if commit:
             await session.commit()
-        return {"new_status": new_status, "reserved": [], "released": released}
+        return {"new_status": new_status, "reserved": [], "released": released, "skipped": left}
 
-    line_items = state.get("line_items", [])
     unit_map = await _get_unit_map(session, company_id)
     company = await session.get(Company, company_id)
     company_settings = (company.settings or {}) if company else {}
@@ -12031,10 +12079,7 @@ async def _reserve_lines_impl(
     changes: list[tuple[str, int, Projection, float]] = []
     for idx in indices:
         bound = _stock_line(line_items, idx, locked)
-        sku = str((bound.state if bound else {}).get("sku") or line_items[idx].get("sku") or f"Line {idx + 1}")
-        if bound is None:
-            raise HTTPException(status_code=422, detail=refusal(
-                "lines.not_stock", f"{sku} is not a stock item, so nothing can be reserved.", sku=sku))
+        sku = str(bound.state.get("sku") or line_items[idx].get("sku") or f"Line {idx + 1}")
         if idx in shipped:
             if not may_acquire:
                 needs_status.append(sku)
@@ -12157,7 +12202,7 @@ async def _reserve_lines_impl(
 
     if commit:
         await session.commit()
-    return {"new_status": new_status, "reserved": held, "released": released}
+    return {"new_status": new_status, "reserved": held, "released": released, "skipped": left}
 
 
 @router.post("/{entity_id}/reserve-lines")
@@ -12193,15 +12238,16 @@ async def _set_available_impl(row: Projection, body: SetAvailableRequest, indice
     """Give back holds and take back shipments on the chosen lines, without committing.
     Every line is proved before anything changes, so the lines come back together or not
     at all."""
-    _locked, by_line = await _line_stock(session, row.company_id, row.entity_id,
-                                         row.state.get("line_items", []), indices)
+    line_items = row.state.get("line_items", [])
+    locked, by_line = await _line_stock(session, row.company_id, row.entity_id, line_items, indices)
+    indices, _counted, left = _acting_lines(line_items, indices, locked, count_service=False)
     holding = frozenset(i for i in indices if by_line.get(i))
     taken = await _revert_lines_impl(row, body, indices, user, session, holding=holding)
     released: list[str] = []
     if holding:
         released = (await _reserve_lines_impl(row, row.entity_id, "available", sorted(holding), user, session,
                                               may_acquire=False, commit=False))["released"]
-    return {**taken, "released": released}
+    return {**taken, "released": released, "skipped": left}
 
 
 @router.post("/{entity_id}/set-available")

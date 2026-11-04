@@ -3733,8 +3733,7 @@ celerpUpdateBulkAlloc();
                 measures = _return_measures(form, str(idx))
                 if isinstance(measures, str):
                     return _action_error(measures)
-                lines.append({**({"line_id": line_id} if line_id else {"line_index": idx}),
-                              "quantity_returned": qty, **measures})
+                lines.append({"line_id": line_id, "quantity_returned": qty, **measures})
             for idx, key, qty in picked_lots:
                 if qty is None:
                     return _action_error(t("documents.return_lot_pick_quantity"))
@@ -8683,7 +8682,7 @@ window._L = {_json.dumps({
     "keep_lines": t("documents.keep_lines"),
     "remove_from_draft": t("documents.remove_from_draft"),
     "rows_selected": t("documents.rows_selected"),
-    "no_inventory_status": t("documents.no_inventory_items_status"),
+    "no_lines_selected": t("documents.no_lines_selected"),
     "no_inventory_labels": t("documents.no_inventory_items_labels"),
     "confirm_set_reserved": _count_forms("documents.confirm_set_reserved"),
     "confirm_set_available": _count_forms("documents.confirm_set_available"),
@@ -10336,10 +10335,9 @@ async function celerpCsvImport(input, entityId) {{
     }}
   }};
   async function _liDraftSetStatus(target){{
-    var rows=table?Array.prototype.slice.call(table.querySelectorAll('tbody .li-select:checked'))
-      .filter(function(cb){{return cb.value;}}):[];
+    var rows=table?Array.prototype.slice.call(table.querySelectorAll('tbody .li-select:checked')):[];
     if(!rows.length){{
-      if(window.celerpToast)celerpToast(_L.no_inventory_status,'error');
+      if(window.celerpToast)celerpToast(_L.no_lines_selected,'error');
       return;
     }}
     var _confirm=(target==='reserved'?_L.confirm_set_reserved:_L.confirm_set_available);

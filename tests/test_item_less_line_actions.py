@@ -254,9 +254,10 @@ async def test_fulfill_impl_skips_item_less_lines_for_every_caller(client, sessi
     user_id = (await session.execute(select(User.id).where(User.email == g.email))).scalar_one()
     result = await _fulfill_lines_impl(d, [0, 1, 2], str(g.company_id), SimpleNamespace(id=user_id), session)
     assert await _status(client, g, "DEMO-SAP-001") == "sold"
-    assert g.items[SVC]["id"] in {fi.get("item_id") for fi in result["fulfilled_items"]}
     assert result["skipped"] == [{"line": 3, "name": "GIA Certificate", "kind": "no_item"}]
-    assert (await _state(client, g, d))["fulfillment_status"] == "fulfilled"
+    state = await _state(client, g, d)
+    assert g.items[SVC]["id"] in {fi.get("item_id") for fi in state["fulfilled_items"]}
+    assert state["fulfillment_status"] == "fulfilled"
 
 
 async def test_completed_woo_order_with_a_service_line_still_reaches_fulfilled(connector_session, client, auth):
@@ -336,7 +337,7 @@ async def test_return_goods_names_lines_by_id_only(client, session, ui_client):
     sent = AsyncMock(return_value={})
     ui_client.cookies.update({"celerp_token": make_test_token(role="owner")})
     with patch("ui.api_client.return_goods", new=sent):
-        await ui_client.post("/docs/doc:any/return-items", data={
+        await ui_client.post("/docs/doc:any/return-goods", data={
             "qty_0": "1", "line_id_0": "11111111-1111-4111-8111-111111111111", "qty_1": "2", "line_id_1": ""})
     [lines] = [a[2]["lines"] for a in [sent.await_args.args]]
     assert [ln["line_id"] for ln in lines] == ["11111111-1111-4111-8111-111111111111", ""]

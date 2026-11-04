@@ -2,7 +2,8 @@
 
 A document whose lines are all services has nothing to ship, hold or take back, so its line
 action menu carries none of those options. A document with at least one stocked line keeps
-them all; a service line among them is refused by the action itself, with its message.
+them all; a service line among them is counted fulfilled on Ship and skipped by the other
+stock actions.
 """
 from __future__ import annotations
 
