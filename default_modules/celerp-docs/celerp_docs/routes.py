@@ -2160,8 +2160,6 @@ def assert_finalized_edit(state: dict, fields_changed: dict) -> None:
             if k in _LI_FINALIZED_EDITABLE:
                 continue
             orig_v = original.get(k)
-            if k == "line_id" and not orig_v:
-                continue  # a legacy line is given its id on its first save
             if v != orig_v:
                 raise HTTPException(
                     status_code=409,
@@ -10527,26 +10525,6 @@ async def _apply_split_plan(
     return children
 
 
-async def _give_lines_ids(session, *, company_id, uid, owner: Projection, source: str) -> None:
-    """Give each line of ``owner`` that has no line id (a record from an older version) its
-    id, through the owner's own update event, so a hold or a shipment names its line the
-    way it does on a newer record. A record whose lines all have ids is left alone."""
-    state = owner.state
-    lines = state.get("line_items") or []
-    if all(li.get("line_id") for li in lines if isinstance(li, dict)):
-        return
-    new_lines = [dict(li) if isinstance(li, dict) else li for li in lines]
-    # emit_event gives every id-less line of the new set its id, in place.
-    await emit_event(
-        session, company_id=uuid.UUID(str(company_id)), entity_id=owner.entity_id,
-        entity_type=owner.entity_type, event_type=f"{owner.entity_type}.updated",
-        data={"fields_changed": {"line_items": {"old": lines, "new": new_lines}}},
-        actor_id=uid, location_id=None, source=source,
-        idempotency_key=str(uuid.uuid4()), metadata_={},
-    )
-    state["line_items"] = new_lines
-
-
 async def _set_lot_status(session, *, company_id, uid, owner: Projection, lot_id: str,
                           line_id: str | None) -> None:
     """Hold ``lot_id`` for the owner's line ``line_id``, or with no line free it."""
@@ -10779,7 +10757,6 @@ async def _fulfill_lines_impl(
             "lines.fulfil_status", f"Lines cannot be fulfilled while this record's status is {state.get('status')}.",
             doc_status=state.get("status")))
 
-    await _give_lines_ids(session, company_id=company_id, uid=user.id, owner=row, source="fulfillment")
     line_items = state.get("line_items", [])
     locked, by_line = await _line_stock(session, company_id, entity_id, line_items, indices)
     unit_map = await _get_unit_map(session, company_id)
@@ -11026,8 +11003,7 @@ async def _line_action(session, company_id, user, owner: Projection, action: str
         numbers = await _current_doc_numbers(session, company_id, {t["invoice_id"] for t in memo_draws(owner.state)})
         refuse_drawn_memo_line_action(owner.state, indices, {i: n for i, (n, _) in numbers.items()})
     result = await run(indices)
-    # Read after the action, which gives lines from an older version their ids; Back to memo
-    # takes its lines off, and only drawn lines, which always have ids, go back.
+    # Read after the action; Back to memo takes its lines off, and only drawn lines go back.
     if not removes:
         line_items = owner.state.get("line_items", [])
     chosen = [str(line_items[i].get("line_id")) for i in indices if line_items[i].get("line_id")]
@@ -11908,8 +11884,6 @@ async def _draw_from_memo(session, company_id, role: str, settings: dict, user, 
         if target_id and (target is None or target.entity_type != "doc"):
             raise HTTPException(status_code=404, detail=t("documents.document_not_found"))
         request = body
-        if operation:
-            await _give_lines_ids(session, company_id=company_id, uid=user.id, owner=memo_row, source="memo_draw")
         snap = await _draw_snapshot(session, company_id, memo_row, target, lock=True)
         if operation:
             lines = memo_row.state.get("line_items") or []
@@ -12015,7 +11989,6 @@ async def _reserve_lines_impl(
             await session.commit()
         return {"new_status": new_status, "reserved": [], "released": released}
 
-    await _give_lines_ids(session, company_id=company_id, uid=uid, owner=row, source="reservation")
     line_items = state.get("line_items", [])
     unit_map = await _get_unit_map(session, company_id)
     company = await session.get(Company, company_id)
