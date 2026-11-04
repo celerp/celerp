@@ -13,6 +13,7 @@ from agreement_kit import (
     agreement, bill_early, billed_docs, claim_events, freeze_day, generate_due, member,
     next_bill_date, register, schedule, template,
 )
+from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio
 
@@ -398,7 +399,7 @@ async def test_generate_all_due_rejects_over_cap_and_foreign_ids(client, session
                            json={"items": [_bulk_item(eid, 0) for eid in [mine, foreign, "doc:SUB-NOPE"]]})).json()
     rows = {x["entity_id"]: x for x in r["results"]}
     assert rows[mine]["ok"] and r["billed"] == 1
-    assert rows[foreign]["error"] == rows["doc:SUB-NOPE"]["error"] == "Not found"
+    assert rows[foreign]["error"] == rows["doc:SUB-NOPE"]["error"] == t("subscriptions.err_not_found")
     assert await billed_docs(session, foreign) == []
 
 

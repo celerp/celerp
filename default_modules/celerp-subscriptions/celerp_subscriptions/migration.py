@@ -34,7 +34,7 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.business_time import company_today
 from celerp_subscriptions import billing
-from celerp_subscriptions.periods import BILLED, RELEASED, UNRESOLVED, Schedule
+from celerp_subscriptions.periods import BILLED, RELEASED, UNRESOLVED, Schedule, ScheduleError
 
 log = logging.getLogger(__name__)
 
@@ -54,16 +54,16 @@ def is_legacy(state: dict) -> bool:
 def legacy_schedule(state: dict) -> dict:
     """The schedule fields an earlier release's template meant, read as that release read
     them: anchored on its next run date (or start date), and a custom interval left empty
-    is the 30 days it billed on. ValueError saying why when they describe no schedule."""
+    is the 30 days it billed on. ScheduleError saying why when they describe no schedule."""
     anchor = state.get("next_run_date") or state.get("start_date")
     if not anchor:
-        raise ValueError("it has no next run date or start date")
+        raise ScheduleError("subscriptions.not_moved_no_date")
     fields = {"anchor_date": anchor, "generation_mode": "manual_due", "billing_timing": "advance"}
     if (state.get("frequency") or "monthly") == "custom":
         days = state.get("custom_interval_days")
         days = int(days) if isinstance(days, str) and days.strip().isdigit() else days
         if days and type(days) is not int:
-            raise ValueError(f'its custom interval "{days}" is not a number of days')
+            raise ScheduleError("subscriptions.not_moved_custom_days", days=days)
         fields["custom_interval_days"] = days or 30
     Schedule.from_state({**state, **fields, "periods": {}})
     return fields
@@ -162,7 +162,7 @@ def _shared_documents(agreements: list[Projection]) -> set[str]:
 
 
 async def move_template(session: AsyncSession, company_id, entity_id: str) -> None:
-    """Move one template onto a schedule now, as the startup pass would; ValueError saying
+    """Move one template onto a schedule now, as the startup pass would; ScheduleError saying
     why when its fields describe no schedule. Caller holds the savepoint and commits."""
     agreements = await billing.agreements(session, company_id)
     proj = next(a for a in agreements if a.entity_id == entity_id)

@@ -38,7 +38,7 @@ from celerp.services.terms import resolve_document_terms
 from celerp.services.units import require_moving_fits_units
 from celerp_docs.doc_money import HEADER_MONEY_FIELDS, document_money
 from celerp_docs.periodic import OperationReport
-from celerp_subscriptions.periods import BILLED, RELEASED, SKIPPED, UNRESOLVED, Schedule
+from celerp_subscriptions.periods import BILLED, RELEASED, SCHEDULE_FIELDS, SKIPPED, UNRESOLVED, Schedule, ScheduleError
 from celerp_subscriptions.search import SUBSCRIPTION_DOC_TYPES
 from ui.i18n import t
 
@@ -49,7 +49,8 @@ AUTO_MODES = frozenset({"auto_invoice"})
 MODE_PERMISSION = {"generation": "automate_billing", "sending": "automate_sending"}
 MODE_DOCUMENT_PERMISSION = {"generation": "finalize_documents", "sending": "edit_documents"}
 # The settings each mode's consent covers: changing one while the mode runs is a new consent.
-CONSENT_TERMS = {"generation": ("generation_mode", "catchup_periods"), "sending": ("auto_send",)}
+# Automatic billing covers every setting its decision reads (unattended_due, outside_window).
+CONSENT_TERMS = {"generation": ("generation_mode", "catchup_periods", *SCHEDULE_FIELDS), "sending": ("auto_send",)}
 CATCHUP_CAP = 12
 MAX_EMAIL_PAYLOAD_BYTES = 2 * 1024 * 1024
 EMAIL_ATTEMPT_RETENTION = timedelta(days=2)
@@ -122,8 +123,8 @@ def not_moved(state: dict) -> str | None:
         return None
     try:
         migration.legacy_schedule(state)
-    except ValueError as exc:
-        return str(exc)
+    except ScheduleError as exc:
+        return t(exc.key, **exc.params)
     return t("subscriptions.not_moved_pending")
 
 
@@ -500,7 +501,7 @@ def waiting_sends(state: dict, today: date) -> list[int]:
     that far back waits for the catch-up preview."""
     waiting = sorted(int(k) for k, entry in (state.get("periods") or {}).items()
                      if (entry.get("send") or {}).get("state") == "pending")
-    if not waiting or not state.get("anchor_date"):
+    if not waiting or not state.get("anchor_date") or not sends_itself(state):
         return []
     schedule = Schedule.from_state(state)
     return [k for k in waiting if not outside_window(state, schedule, [k], today)]
@@ -546,6 +547,12 @@ async def authorizer(session, company_id, settings: dict, state: dict, mode: str
             or not role_has_permission(settings, role, MODE_DOCUMENT_PERMISSION[mode])):
         return None
     return SimpleNamespace(id=uuid.UUID(str(by)))
+
+
+def sends_itself(state: dict) -> bool:
+    """Whether a billed period's waiting email goes out on its own: the agreement is active
+    and automatic sending is in force. Otherwise it waits only for someone to send it."""
+    return state.get("status") == "active" and "sending" in modes_in_force(state)
 
 
 def modes_in_force(state: dict) -> list[str]:
@@ -664,9 +671,7 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
         if retry_by is None:
             if (company is None or not company.is_active
                     or not uses_module(company.settings, "celerp-subscriptions")
-                    or proj.state.get("status") != "active"
-                    or not proj.state.get("auto_send")
-                    or proj.state.get("generation_mode") not in AUTO_MODES
+                    or not sends_itself(proj.state)
                     or await authorizer(session, company_id, company.settings or {}, proj.state, "sending") is None):
                 return {"state": "pending"}
         periods = periods_of(proj.state)

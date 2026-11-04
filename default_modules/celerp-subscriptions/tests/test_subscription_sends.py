@@ -93,18 +93,71 @@ async def test_a_reused_request_key_is_refused_by_key(client, monkeypatch):
     assert other.json()["detail"]["message_key"] == "subscriptions.err_request_key_reused"
 
 
+def _caught_text(handler: ast.ExceptHandler) -> list[ast.AST]:
+    """Where an except block turns the exception it caught into words: str(exc), str(exc.x),
+    or exc inside an f-string."""
+    def names_exc(node) -> bool:
+        while isinstance(node, ast.Attribute):
+            node = node.value
+        return isinstance(node, ast.Name) and node.id == handler.name
+
+    found = []
+    for node in (n for stmt in handler.body for n in ast.walk(stmt)):
+        if (isinstance(node, ast.Call) and getattr(node.func, "id", None) == "str"
+                and node.args and names_exc(node.args[0])):
+            found.append(node)
+        if isinstance(node, ast.FormattedValue) and names_exc(node.value):
+            found.append(node)
+    return found
+
+
+def _is_catalog_text(node: ast.AST) -> bool:
+    if isinstance(node, ast.IfExp):
+        return _is_catalog_text(node.body) and _is_catalog_text(node.orelse)
+    return isinstance(node, ast.Call) and getattr(node.func, "id", None) == "t"
+
+
 def test_every_subscription_refusal_is_a_catalog_text():
-    """Class guard: no HTTPException in the module carries a sentence written in place (a
-    string literal or f-string), so every refusal reads in the reader's language."""
+    """Class guard: every HTTPException the module raises carries a catalog text (t(...)), and
+    no except block words the exception it caught (str(exc), an f-string), so every refusal and
+    every reason inside one reads in the reader's language, whichever rule refused."""
     root = Path(__file__).resolve().parents[1] / "celerp_subscriptions"
     written = []
     for path in sorted(root.glob("*.py")):
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "HTTPException":
                 for kw in node.keywords:
-                    if kw.arg == "detail" and isinstance(kw.value, (ast.Constant, ast.JoinedStr)):
+                    if kw.arg == "detail" and not _is_catalog_text(kw.value):
                         written.append(f"{path.name}:{node.lineno}")
+            if isinstance(node, ast.ExceptHandler) and node.name:
+                written += [f"{path.name}:{n.lineno}" for n in _caught_text(node)]
     assert written == []
+
+
+@pytest.mark.parametrize("change", [{"term_end": "2026-06-01"}, {"frequency": "custom"},
+                                    {"frequency": "custom", "custom_interval_days": None}])
+async def test_a_schedule_the_rules_refuse_is_refused_in_the_readers_language(client, monkeypatch, change):
+    """A term that ends before the first period, or a custom frequency with no days, is refused
+    with a catalog text, so a Thai reader reads it in Thai."""
+    freeze_day(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    eid = await agreement(client, hd, start="2026-07-01")
+    r = await client.patch(f"/subscriptions/{eid}/schedule", headers={**hd, "Accept-Language": "th"}, json=change)
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert isinstance(detail, dict) and detail["message_key"].startswith("subscriptions."), detail
+    assert detail["message"] == t(detail["message_key"], "en", **detail.get("params", {}))
+
+
+def test_why_an_earlier_template_is_not_on_a_schedule_reads_in_the_readers_language():
+    """The reason an earlier release's template cannot move onto a schedule is a catalog text."""
+    from celerp_subscriptions import billing
+
+    for state in ({"generated_doc_ids": []}, {"next_run_date": "2026-07-01", "frequency": "custom",
+                                              "custom_interval_days": "ten", "generated_doc_ids": []},
+                  {"next_run_date": "soon", "generated_doc_ids": []}):
+        reason = billing.not_moved(state)
+        assert getattr(reason, "key", "").startswith("subscriptions."), (state, reason)
 
 
 @pytest.mark.parametrize("cause", ["no email service", "no contact email", "preparation"])
@@ -217,3 +270,4 @@ async def test_a_send_to_check_is_a_warning_on_the_list(owner_ui, session, monke
     assert banner in listing
     start = listing.rindex("<div", 0, listing.index(banner))
     assert 'class="flash flash--warning"' in listing[start:listing.index(banner)]
+

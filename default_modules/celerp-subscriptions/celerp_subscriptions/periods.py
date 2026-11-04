@@ -39,8 +39,29 @@ def add_months(d: date, months: int) -> date:
     return date(year, month, min(d.day, _days_in_month(year, month)))
 
 
+# The agreement's stored settings a schedule is read from, and nothing else of it but its periods.
+SCHEDULE_FIELDS = ("anchor_date", "frequency", "custom_interval_days", "billing_timing", "term_start", "term_end",
+                   "cancel_at_period_end")
+
+
+class ScheduleError(ValueError):
+    """Why settings describe no schedule, as a catalog key and its params, so whoever refuses
+    on it words it in the reader's language."""
+
+    def __init__(self, key: str, **params) -> None:
+        super().__init__(key)
+        self.key, self.params = key, params
+
+
+def _date(value) -> date:
+    try:
+        return date.fromisoformat(value)
+    except (TypeError, ValueError) as exc:
+        raise ScheduleError("subscriptions.err_schedule_date", day=value) from exc
+
+
 def _opt_date(value) -> date | None:
-    return date.fromisoformat(value) if value else None
+    return _date(value) if value else None
 
 
 @dataclass(frozen=True)
@@ -56,25 +77,26 @@ class Schedule:
 
     def __post_init__(self) -> None:
         if self.frequency not in FREQUENCIES:
-            raise ValueError(f"Unknown frequency {self.frequency!r}")
+            raise ScheduleError("subscriptions.err_schedule_frequency")
         if self.frequency == "custom" and not (
                 type(self.custom_days) is int and 0 < self.custom_days <= 36500):
-            raise ValueError("Custom billing intervals must be 1 to 36500 days")
+            raise ScheduleError("subscriptions.err_custom_interval")
         if self.timing not in TIMINGS:
-            raise ValueError(f"Unknown billing timing {self.timing!r}")
+            raise ScheduleError("subscriptions.err_schedule_timing")
         if self.term_end is not None and self.term_end <= self.anchor:
-            raise ValueError("The term must end after the first billing period starts")
+            raise ScheduleError("subscriptions.err_term_before_first_period")
         try:
             self.start(1)
             self.start(2)
         except (ValueError, OverflowError) as exc:
-            raise ValueError("The billing interval exceeds the supported calendar") from exc
+            raise ScheduleError("subscriptions.err_interval_calendar") from exc
 
     @classmethod
     def from_state(cls, state: dict) -> Schedule:
-        """The schedule an agreement's stored state describes."""
+        """The schedule an agreement's stored state describes (its SCHEDULE_FIELDS and periods);
+        ScheduleError saying why when they describe none."""
         return cls(
-            anchor=date.fromisoformat(state["anchor_date"]),
+            anchor=_date(state["anchor_date"]),
             frequency=state.get("frequency") or "monthly",
             custom_days=state.get("custom_interval_days"),
             timing=state.get("billing_timing") or "advance",

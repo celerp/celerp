@@ -7234,5 +7234,13 @@
   "subscriptions.err_bill_rebilled": "{ref} can't bill again. It was taken off {agreement} for {start} to {end}, and that period is now billed on {newer}. Issuing {ref} as well would bill the period twice.",
   "subscriptions.err_bill_reopened": "{ref} can't bill again. Its period on {agreement}, {start} to {end}, was reopened, so the next document for that period bills it. Use Generate due on the agreement to bill the period.",
   "subscriptions.err_period_draft": "The document for this period, {ref}, is back in draft. Finalize {ref} to bill the period, or use Reopen on its row in the periods list to bill it on a new document.",
-  "subscriptions.period_draft": "Document in draft"
+  "subscriptions.period_draft": "Document in draft",
+  "subscriptions.err_schedule_date": "{day} is not a date Celerp can read. Enter it as a date.",
+  "subscriptions.err_schedule_frequency": "Choose how often this agreement bills.",
+  "subscriptions.err_custom_interval": "Enter a custom interval of 1 to 36500 days.",
+  "subscriptions.err_schedule_timing": "Choose whether this agreement bills at the start or the end of each period.",
+  "subscriptions.err_term_before_first_period": "The term must end after the first billing period starts.",
+  "subscriptions.err_interval_calendar": "This billing interval runs past the dates Celerp can count. Choose a shorter one.",
+  "subscriptions.not_moved_no_date": "it has no next run date or start date",
+  "subscriptions.not_moved_custom_days": "its custom interval \"{days}\" is not a number of days"
 }

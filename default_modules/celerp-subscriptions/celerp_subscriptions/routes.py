@@ -24,7 +24,9 @@ from celerp.services.company_lock import locked_company
 from celerp.services.permissions import missing_permission, require_permission, role_has_permission
 from celerp_docs.doc_constants import NO_SEND_DOC_TYPES
 from celerp_subscriptions import billing, migration, summary
-from celerp_subscriptions.periods import BILLED, CLAIMED_STATES, FREQUENCIES, RELEASED, SKIPPED, TIMINGS, Schedule, UNRESOLVED
+from celerp_subscriptions.periods import (
+    BILLED, CLAIMED_STATES, FREQUENCIES, RELEASED, SKIPPED, TIMINGS, Schedule, ScheduleError, UNRESOLVED,
+)
 from celerp_subscriptions.search import SUBSCRIPTION_DOC_TYPES, search_subscription_templates
 from ui.i18n import t
 
@@ -159,8 +161,8 @@ async def _move_with(session, company_id, proj: Projection, sent: dict, user) ->
         async with session.begin_nested():
             await billing.write_agreement(session, company_id, proj.entity_id, sent, user.id)
             await migration.move_template(session, company_id, proj.entity_id)
-    except ValueError as exc:
-        raise billing.not_moved_refusal(proj.state, proj.entity_id, str(exc)) from exc
+    except ScheduleError as exc:
+        raise billing.not_moved_refusal(proj.state, proj.entity_id, t(exc.key, **exc.params)) from exc
     moved = await billing.locked_agreement(session, company_id, proj.entity_id)
     await session.commit()
     return {"ok": True, "next_bill_date": next_bill_date(moved.state)}
@@ -218,7 +220,7 @@ def _build_router() -> APIRouter:
                         request_key=item.request_key)
                 results.append({"entity_id": eid, "period_index": item.period_index, "ok": True, **found})
             except HTTPException as exc:
-                detail = "Not found" if exc.status_code == 404 else str(exc.detail)
+                detail = t("subscriptions.err_not_found") if exc.status_code == 404 else exc.detail
                 results.append({"entity_id": eid, "period_index": item.period_index, "ok": False, "error": detail})
         await session.commit()
         answered = [r for r in results if r["ok"]]
@@ -275,7 +277,7 @@ def _build_router() -> APIRouter:
                         request_key=item.request_key)
                 results.append({**row, "ok": True, **found})
             except HTTPException as exc:
-                results.append({**row, "ok": False, "error": str(exc.detail)})
+                results.append({**row, "ok": False, "error": exc.detail})
         await session.commit()
         return {"results": results}
 
@@ -491,8 +493,8 @@ def _build_router() -> APIRouter:
         merged = {**state, **changes}
         try:
             schedule = Schedule.from_state(merged) if merged.get("anchor_date") else None
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except ScheduleError as exc:
+            raise HTTPException(status_code=422, detail=t(exc.key, **exc.params)) from exc
         if merged.get("term_start") and merged.get("term_end") and merged["term_start"] >= merged["term_end"]:
             raise HTTPException(status_code=422, detail=t("subscriptions.err_term_order"))
         if schedule is not None and any(not schedule.exists(k) for k in recorded):
@@ -692,7 +694,7 @@ def _build_router() -> APIRouter:
         merged = {**proj.state, **changes}
         try:
             Schedule.from_state(merged)
-        except ValueError as exc:
+        except ScheduleError as exc:
             raise HTTPException(status_code=422, detail=t("subscriptions.err_frequency_required")) from exc
         await _write(session, company_id, entity_id, changes, user)
         return {"ok": True, "next_bill_date": next_bill_date(merged)}

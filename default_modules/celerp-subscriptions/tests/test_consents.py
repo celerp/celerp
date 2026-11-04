@@ -118,3 +118,87 @@ async def test_collection_is_not_a_billing_mode(client, session, monkeypatch, ro
     assert r.status_code == 422 and "Unknown generation mode" in r.text
     html = to_xml(_billing_section(eid, await template(client, hd, eid)))
     assert "collect" not in html.lower()
+
+
+# One value for each schedule setting that differs from what a running automatic agreement starting
+# 2026-07-01 holds; every ScheduleBody field is listed, so a new setting has to be classified here.
+_CHANGED_TERM = {"anchor_date": "2026-07-05", "frequency": "weekly", "custom_interval_days": 10,
+                 "billing_timing": "arrears", "term_start": "2026-07-01", "term_end": "2027-07-01",
+                 "cancel_at_period_end": True, "catchup_periods": 3, "generation_mode": "auto_invoice",
+                 "auto_send": True}
+
+
+async def test_every_setting_unattended_billing_reads_is_covered_by_its_consent():
+    """Class guard: the consent to a mode covers every setting the mode's own decision reads.
+    The decision is read through a state that records each field asked for, so a setting a
+    later change makes it read, and that the consent does not cover, fails here."""
+    from datetime import date
+    from celerp_subscriptions import billing
+    from celerp_subscriptions.routes import ScheduleBody
+
+    class Recorded(dict):
+        read: set = set()
+
+        def get(self, key, default=None):
+            self.read.add(key)
+            return super().get(key, default)
+
+        def __getitem__(self, key):
+            self.read.add(key)
+            return super().__getitem__(key)
+
+        def __contains__(self, key):
+            self.read.add(key)
+            return super().__contains__(key)
+
+    assert set(_CHANGED_TERM) == set(ScheduleBody.model_fields)
+    settings = set(ScheduleBody.model_fields)
+    for frequency, timing in (("monthly", "advance"), ("custom", "arrears")):
+        state = Recorded({"status": "active", "anchor_date": "2026-01-01", "frequency": frequency,
+                          "custom_interval_days": 10, "billing_timing": timing, "term_start": "2026-01-01",
+                          "term_end": "2027-01-01", "cancel_at_period_end": 30, "generation_mode": "auto_invoice",
+                          "catchup_periods": 1, "auto_send": True, "periods": {}})
+        Recorded.read = set()
+        found = billing.unattended_due(state, date(2026, 6, 1))
+        assert found
+        billing.outside_window(state, *found, date(2026, 6, 1))
+        assert Recorded.read & settings <= set(billing.CONSENT_TERMS["generation"]), Recorded.read
+        Recorded.read = set()
+        billing.waiting_sends(state, date(2026, 6, 1))
+        assert billing.sends_itself(state)
+        assert Recorded.read & settings <= {t for m in billing.CONSENT_TERMS.values() for t in m}, Recorded.read
+
+
+@pytest.mark.parametrize("field", sorted(_CHANGED_TERM))
+async def test_a_role_without_the_permission_cannot_change_a_consented_setting(client, session, monkeypatch, field):
+    """Every schedule setting of a running automatic agreement is covered by its consent, so a
+    role that may not run the mode is refused it, before the first period is recorded too, and
+    the setting stays as it was."""
+    freeze_day(monkeypatch, "2026-06-15")
+    hd = await register(client)
+    eid = await agreement(client, hd, start="2026-07-01")
+    assert (await schedule(client, hd, eid, generation_mode="auto_invoice", catchup_periods=0)).status_code == 200
+    operator, _ = await member(client, session, hd, "operator")
+    before = await template(client, hd, eid)
+    r = await schedule(client, operator, eid, **{field: _CHANGED_TERM[field]})
+    assert r.status_code == 403, (field, r.text)
+    after = await template(client, hd, eid)
+    assert after.get(field) == before.get(field) and after["consents"] == before["consents"]
+
+
+async def test_an_operator_cannot_make_running_billing_weekly(client, session, monkeypatch):
+    """Billing consented as monthly does not bill weekly because a role that may neither bill
+    nor automate changed the frequency before the first bill."""
+    freeze_day(monkeypatch, "2026-06-15")
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    eid = await agreement(client, hd, start="2026-07-01")
+    assert (await schedule(client, hd, eid, generation_mode="auto_invoice", catchup_periods=0)).status_code == 200
+    await revoke(client, hd, "finalize_documents", "operator")
+    operator, _ = await member(client, session, hd, "operator")
+    weekly = await schedule(client, operator, eid, frequency="weekly")
+    assert weekly.status_code == 403, weekly.text
+    for day in ("2026-07-01", "2026-07-08", "2026-07-15", "2026-07-22", "2026-07-29"):
+        freeze_day(monkeypatch, day)
+        await tick(session, cid, day)
+    assert len(await billed_docs(session, eid)) == 1

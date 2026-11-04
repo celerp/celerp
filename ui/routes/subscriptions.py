@@ -31,7 +31,7 @@ from ui.config import get_token as _token, get_role as _get_role
 from ui.routes.documents import _action_error
 from ui.routes.reports import _get_company
 from ui.routes.settings import _check_permission
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 logger = logging.getLogger(__name__)
 
@@ -565,7 +565,7 @@ def _due_results(result: dict, subs: dict[str, dict], request_key: str) -> FT:
             outcome = Td(label, " ", A(r.get("ref_id") or r["doc_id"], href=f"/docs/{r['doc_id']}"))
             action = Td("")
         else:
-            outcome = Td(r.get("error") or "")
+            outcome = Td(refusal_text(r.get("error")))
             action = Td(Button(t("btn.retry"), cls="btn btn--secondary btn--sm", hx_post="/subscriptions/generate-due",
                                hx_vals={"item": f"{eid}|{r['period_index']}", FIELD: request_key},
                                hx_target="#sub-due-panel", hx_swap="innerHTML"))

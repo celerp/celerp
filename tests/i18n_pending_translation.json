@@ -41,6 +41,42 @@
     "subscriptions.period_draft": {
       "en": "Document in draft",
       "params": []
+    },
+    "subscriptions.err_schedule_date": {
+      "en": "{day} is not a date Celerp can read. Enter it as a date.",
+      "params": [
+        "day"
+      ]
+    },
+    "subscriptions.err_schedule_frequency": {
+      "en": "Choose how often this agreement bills.",
+      "params": []
+    },
+    "subscriptions.err_custom_interval": {
+      "en": "Enter a custom interval of 1 to 36500 days.",
+      "params": []
+    },
+    "subscriptions.err_schedule_timing": {
+      "en": "Choose whether this agreement bills at the start or the end of each period.",
+      "params": []
+    },
+    "subscriptions.err_term_before_first_period": {
+      "en": "The term must end after the first billing period starts.",
+      "params": []
+    },
+    "subscriptions.err_interval_calendar": {
+      "en": "This billing interval runs past the dates Celerp can count. Choose a shorter one.",
+      "params": []
+    },
+    "subscriptions.not_moved_no_date": {
+      "en": "it has no next run date or start date",
+      "params": []
+    },
+    "subscriptions.not_moved_custom_days": {
+      "en": "its custom interval \"{days}\" is not a number of days",
+      "params": [
+        "days"
+      ]
     }
   }
 }
