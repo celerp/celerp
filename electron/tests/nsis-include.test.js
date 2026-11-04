@@ -416,17 +416,35 @@ test("the uninstaller build stops without a log or a relaunch",
     const nsh = include();
     const [, uninstaller] = nsh.split("!ifdef BUILD_UNINSTALLER\n  !macro celerpUpdateExit REASON");
     expect(uninstaller.split("!macroend")[0].trim().split(/\s*\n\s*/)).toEqual(["SetErrorLevel 2", "Quit"]);
-    // the functions and variables of an update exist in the installer build only
-    const functions = macro(nsh, "celerpInstallerFunctions");
-    expect(functions).toContain("Function celerpCloseReopenedApp");
-    expect(functions).toContain("Function celerpWriteUpdateLog");
-    expect(functions).toContain("Function .onInstFailed");
-    expect(nsh.split(/^\s*Function /m).length).toBe(4);
+    // the variables of an update exist in the installer build only
     const installerOnly = nsh.split("!ifndef BUILD_UNINSTALLER\n  ; swap:")[1].split("!endif")[0];
     for (const name of ["celerpFound", "celerpSetupMutex"]) expect(installerOnly).toContain(`Var ${name}`);
     expect(nsh.match(/^\s*Var /gm).length).toBe(installerOnly.match(/^\s*Var /gm).length);
-    // inserted after the install section, where every stock variable and macro they use is defined
+  });
+
+test("the update functions compile after every symbol they use, in the installer build only",
+  function test_new_functions_compile_after_their_symbols() {
+    const nsh = include();
+    // each Function is defined once, inside the installer-only macro, never at the top level
+    const functions = macro(nsh, "celerpInstallerFunctions");
+    const names = ["celerpWriteUpdateLog", "celerpCloseReopenedApp", ".onInstFailed"];
+    for (const name of names) expect(functions).toContain(`Function ${name}\n`);
+    expect(nsh.match(/^\s*Function /gm).length).toBe(names.length);
+    expect(functions.match(/^\s*Function /gm).length).toBe(names.length);
+    const guarded = nsh.split("!ifndef BUILD_UNINSTALLER\n  !macro celerpUpdateExit REASON")[1].split(/^!endif/m)[0];
+    expect(guarded).toContain("!macro celerpInstallerFunctions");
+    // inserted once, after the install section and after the includes that define
+    // FIND_PROCESS, $installMode, GetTime, LogicLib and APP_EXECUTABLE_FILENAME
     const nsi = template("installer.nsi");
+    expect(nsi.match(/!insertmacro celerpInstallerFunctions/g).length).toBe(1);
+    const at = (text) => {
+      const i = nsi.indexOf(text);
+      expect(i).toBeGreaterThanOrEqual(0);
+      return i;
+    };
+    const insert = at("!insertmacro celerpInstallerFunctions");
+    for (const header of ['!include "common.nsh"', '!include "multiUser.nsh"', '!include "allowOnlyOneInstallerInstance.nsh"',
+      '!include "installSection.nsh"']) expect(at(header)).toBeLessThan(insert);
     const after = nsi.split('Section "install" INSTALL_SECTION_ID')[1].split("SectionEnd")[1];
     expect(after.trimStart().split(/\s*\n\s*/).slice(0, 3))
       .toEqual(["!ifndef BUILD_UNINSTALLER", "!insertmacro celerpInstallerFunctions", "!endif"]);
