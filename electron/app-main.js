@@ -1039,7 +1039,6 @@ function setupAutoUpdater() {
   startPeriodicChecks();
 }
 
-// Periodic re-check every 4 hours in case a new release ships while app is open.
 // electron-updater's own account of its checks, downloads and installs, in
 // LOG_DIR/update.log. Opened on its first line; a log that cannot be written never
 // stops the updater.
@@ -1052,6 +1051,7 @@ const updateLogger = Object.fromEntries(["info", "warn", "error"].map((level) =>
   updateLog?.write(`${new Date().toISOString()} ${level} ${message}\n`);
 }]));
 
+// Periodic re-check every 4 hours in case a new release ships while app is open.
 function startPeriodicChecks() {
   setInterval(() => {
     autoUpdater.checkForUpdates().catch(() => {});

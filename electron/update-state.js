@@ -80,8 +80,8 @@ function toPercent(value) {
  */
 function nextUpdateState(state, event) {
   if (event.type === "install-failed") {
-    return failedState(state, event.failure || "install", { version: event.version || state.version,
-                                                             message: event.message || "", downloadFailed: true });
+    return failedState(state, event.failure, { version: event.version || state.version,
+                                                 message: event.message || "", downloadFailed: true });
   }
   if (state.status === "downloaded") return null;
   const failedDownload = state.status === "error" && state.downloadFailed;
@@ -133,7 +133,7 @@ function nextUpdateState(state, event) {
  * @param {(channel: string, state: object) => void} send
  * @param {(state: object) => void} [onFailure]
  * @returns {{getUpdateState: () => object, dismissError: () => void, userChecks: () => void,
- *            installFailed: (version: string, message: string, failure?: "install"|"stopped") => void}}
+ *            installFailed: (version: string, message: string, failure: "install"|"stopped") => void}}
  *   getUpdateState returns a copy with its log and revision; dismissError clears a failed
  *   download, at the user's request; userChecks marks the next check as the user's;
  *   installFailed records an installer that did not start, or with "stopped" a setup
@@ -202,7 +202,7 @@ function trackUpdater(updater, send, onFailure = () => {}) {
     getUpdateState: snapshot,
     dismissError: () => apply("update-log", { type: "dismiss" }, () => ""),
     userChecks: () => { userAsked = true; },
-    installFailed: (version, message, failure = "install") =>
+    installFailed: (version, message, failure) =>
       apply("update-error", { type: "install-failed", version, message, failure }, () => errorLine(message)),
   };
 }

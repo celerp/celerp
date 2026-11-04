@@ -399,7 +399,7 @@ test("an installer that could not start moves a downloaded update to a failed in
     const { installFailed, getUpdateState } = trackUpdater(updater, (channel, s) => sent.push(channel));
     updater.emit("update-available", { version: "2.6.1" });
     updater.emit("update-downloaded", { version: "2.6.1" });
-    installFailed("2.6.1", "spawn UNKNOWN");
+    installFailed("2.6.1", "spawn UNKNOWN", "install");
     const state = getUpdateState();
     expect(stateOf(state)).toEqual({ ...IDLE, status: "error", version: "2.6.1", message: "spawn UNKNOWN",
       downloadFailed: true, failure: "install", releaseUrl: "https://github.com/celerp/celerp/releases/tag/v2.6.1" });
@@ -416,8 +416,4 @@ test("a setup that started and then stopped keeps its own failure kind, so the a
     installFailed("2.8.1", "", "stopped");
     const state = getUpdateState();
     expect([state.status, state.failure, state.version]).toEqual(["error", "stopped", "2.8.1"]);
-    // without a kind it is still an installer that could not start
-    const other = trackUpdater(new EventEmitter(), () => {});
-    other.installFailed("2.8.1", "spawn UNKNOWN");
-    expect(other.getUpdateState().failure).toBe("install");
   });
