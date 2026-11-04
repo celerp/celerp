@@ -489,3 +489,47 @@ async def test_a_choice_of_only_item_less_lines_changes_nothing_and_is_refused(c
     assert _detail(r)["message_key"] in ("lines.no_stock_one", "docs.back_to_memo_not_drawn")
     after = await _state(client, g, owner)
     assert after["version"] == before["version"] and after["line_items"] == before["line_items"]
+
+
+# ── Class guard: every line table's checkbox names its line the same way ─────
+
+def _boxes(html: str, scope: str = "") -> list:
+    from bs4 import BeautifulSoup
+    return BeautifulSoup(html, "html.parser").select(f"{scope} .li-select".strip())
+
+
+async def test_every_line_renderer_gives_its_checkbox_the_line_id_and_label(client, session):
+    """The draft rows and the empty row a draft adds, the finalized rows, the audit's rows and
+    the audit tbody a scan swaps in: each checkbox carries the line id an action sends and the
+    label a notice names it by, and the swapped audit row has a cell under every heading."""
+    from bs4 import BeautifulSoup
+    from test_helpers import ui_signed_in
+    g = await _gems(client)
+    lines = [*(_line(g, s) for s in STONES[:2]), GIA]
+    draft = (await _ok(await client.post("/docs", headers=g.h, json={"doc_type": "invoice", "line_items": lines})))["id"]
+    final = await _doc(client, g, lines)
+    audit = await _audit_with_certificate(client, g)
+    async with ui_signed_in(g.h["Authorization"].split()[1]) as ui:
+        pages = {k: (await ui.get(f"/{p}/{e}")).text
+                 for k, p, e in (("draft", "docs", draft), ("final", "docs", final), ("audit", "lists", audit))}
+        swap = await ui.post(f"/lists/{audit}/set-scanned", data={
+            "scanned": "1", "line_id": (await _ids(client, g, audit))[0], "offset": "0", "limit": "100"})
+        assert swap.status_code == 200, swap.text
+        pages["audit swap"] = swap.text
+    for name, html in pages.items():
+        state = await _state(client, g, {"draft": draft, "final": final}.get(name, audit))
+        want = {(li["line_id"], line_label(li)) for li in state["line_items"]}
+        got = {(b.get("data-line-id"), b.get("data-label")) for b in _boxes(html, "tbody")
+               if b.get("data-line-id")}
+        assert got == want, name
+        assert all(b.has_attr("data-line-id") and b.has_attr("data-label") for b in _boxes(html)), name
+    heads = BeautifulSoup(pages["audit"], "html.parser").select("table:has(#line-body) thead tr")[0].find_all("th")
+    assert heads
+    for tr in BeautifulSoup(pages["audit swap"], "html.parser").select("tr"):
+        assert len(tr.find_all("td")) == len(heads)
+
+
+def line_label(li: dict) -> str:
+    from celerp.services.line_measures import line_label as _label
+    return _label(li)
+

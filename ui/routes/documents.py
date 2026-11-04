@@ -905,6 +905,27 @@ def _badge_cell(*content, cls: str) -> FT:
     return Td(*content, cls=f"{cls} cell-badges")
 
 
+def _line_select_box(li: dict, item_status: str = "", index: int | None = None) -> FT:
+    """The checkbox that ticks a line for a bulk action, the same on every line table: it
+    carries the line's id (how an action names it), its label (how a notice names it), its
+    item, the item's status and, on the finalized table, its position."""
+    eid = str(li.get("entity_id") or li.get("item_id") or "")
+    attrs = {"data-item-status": item_status, "data-line-id": str(li.get("line_id") or ""),
+             "data-label": line_label(li) if li else "", "data-sku": str(li.get("sku") or "")}
+    if index is not None:
+        attrs["data-line-index"] = str(index)
+    return Input(type="checkbox", cls="li-select", value=eid, **attrs)
+
+
+def _line_held(li: dict, status_doc: tuple[str, str] | None, owner_id: str,
+               holds: dict | None) -> tuple[float, float] | None:
+    """(held, quantity) of a line whose item ``owner_id`` reserves, for its status badge;
+    ``holds`` is the owner's held quantity by line id, None when the page carries none."""
+    if holds is None or not status_doc or status_doc[0] != owner_id or not li.get("line_id"):
+        return None
+    return float(holds.get(str(li["line_id"])) or 0), float(li.get("quantity") or 0)
+
+
 def _item_status_badge_cell(status_val: str, eid: str, status_doc: tuple[str, str] | None = None,
                             held: tuple[float, float] | None = None) -> FT:
     """Status column cell for a document line: linked badge when the item's status is
@@ -5199,21 +5220,25 @@ celerpUpdateBulkAlloc();
         line_items = resp.get("items", []) or []
         # On-hand comes from the page's own item_meta (quantity), so no extra metadata round-trip is
         # made; if the server omits item_meta the map stays empty and On-hand shows "--".
-        item_meta_map, _status_map, _status_doc_map = _enrich_line_meta(
+        item_meta_map, status_map, status_doc_map = _enrich_line_meta(
             line_items, resp.get("item_meta"), {})
+        holds = resp.get("line_holds") or {}
 
         # This fast tbody swap only runs for a finalized audit (the locked counting manifest); a draft
         # audit reloads instead. Counts are editable only while finalized.
         _counted_editable = lst.get("status") == _LF
         _ident_mode = await _line_identifier_mode(token)
-        rows = [_audit_editable_row(entity_id, li, item_meta_map, _counted_editable, _ident_mode) for li in line_items]
+        rows = [_audit_editable_row(entity_id, li, item_meta_map, status_map, status_doc_map, holds,
+                                    _counted_editable, _ident_mode) for li in line_items]
         if not rows:
             rows = [Tr(Td(t("documents.no_items_scan"), colspan="4", cls="empty-row"))]
         return Tbody(*rows, id="line-body")
 
-    def _audit_editable_row(audit_id: str, li: dict, item_meta_map: dict, counted_editable: bool = True, line_identifier_mode: str = "sku") -> FT:
+    def _audit_editable_row(audit_id: str, li: dict, item_meta_map: dict, status_map: dict, status_doc_map: dict,
+                            holds: dict, counted_editable: bool = True, line_identifier_mode: str = "sku") -> FT:
         """Shared audit row builder for the finalized-audit scan re-render. On-hand prefers the
-        snapshot frozen at Finalize (else live); Counted is click-to-edit only while counting."""
+        snapshot frozen at Finalize (else live); Counted is click-to-edit only while counting.
+        The status cell reads ``status_map``/``status_doc_map`` and the audit's ``holds``."""
         from ui.components.table import EMPTY as _EMPTY
         item_key = li.get("item_id") or li.get("entity_id") or ""
         audited = li.get("audited_at") is not None
@@ -5248,7 +5273,10 @@ celerpUpdateBulkAlloc();
         # money/total cells are empty placeholders hidden by the doc-lines--no-money CSS.
         _ident_1st, _ident_2nd = line_identifier(li, line_identifier_mode)
         return Tr(
-            Td(Input(type="checkbox", cls="li-select", value=item_key), cls="col-checkbox li-checkbox-cell"),
+            Td(_line_select_box(li, str(status_map.get(item_key, ""))), cls="col-checkbox li-checkbox-cell"),
+            _item_status_badge_cell(status_map.get(item_key, ""), item_key,
+                                    status_doc=_line_status_doc(li, item_key, status_doc_map, status_map.get(item_key, "")),
+                                    held=_line_held(li, status_doc_map.get(item_key), audit_id, holds)),
             Td(_ident_1st or _EMPTY,
                Div(_ident_2nd, cls="li-ident-2nd", title=_ident_2nd) if _ident_2nd else None,
                cls="col-sku"),
@@ -7219,11 +7247,6 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     is_draft = status == "draft"
     _holds = doc.get("line_holds")
 
-    def _line_held(li: dict, status_doc: tuple[str, str] | None) -> tuple[float, float] | None:
-        """(held, quantity) of a line whose item this record reserves, for its status badge."""
-        if _holds is None or not status_doc or status_doc[0] != entity_id or not li.get("line_id"):
-            return None
-        return float(_holds.get(str(li["line_id"])) or 0), float(li.get("quantity") or 0)
     # Remaining balance (net of applied payments/credits) - what a Pay button
     # would charge; all payment hints/labels use this, never the face total.
     _pay_due = float(outstanding_balance(doc) or 0)
@@ -8175,9 +8198,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             if pol["counting"]:
                 _desc_cell = Td(li.get("description") or li.get("name") or "--", cls="col-desc")
             cells = [
-                Td(Input(type="checkbox", cls="li-select", value=li_entity_id,
-                         **{"data-item-status": str((item_status_map or {}).get(li_entity_id, "")),
-                            "data-line-id": str(li.get("line_id") or ""), "data-label": line_label(li)}),
+                Td(_line_select_box(li, str((item_status_map or {}).get(li_entity_id, ""))),
                    cls="col-checkbox li-checkbox-cell"),
                 Td(_static_ident_cell_content(li) if pol["counting"]
                    else _sku_input(li.get("sku", "") or "", li_entity_id, li.get("barcode", "") or ""),
@@ -8190,7 +8211,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     (item_status_map or {}).get(li_entity_id, ""), li_entity_id,
                     status_doc=_line_status_doc(li, li_entity_id, item_status_doc_map,
                                                (item_status_map or {}).get(li_entity_id, ""), _memo_self),
-                    held=_line_held(li, (item_status_doc_map or {}).get(li_entity_id))))
+                    held=_line_held(li, (item_status_doc_map or {}).get(li_entity_id), entity_id, _holds)))
             if category_cell:
                 cells.append(category_cell)
             if receive_as_cell:
@@ -8340,7 +8361,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             else:
                 _e_desc_cell = Td(_desc_input(), cls="col-desc")
             cells = [
-                Td(Input(type="checkbox", cls="li-select", value=""), cls="col-checkbox li-checkbox-cell"),
+                Td(_line_select_box({}), cls="col-checkbox li-checkbox-cell"),
                 Td(_sku_input(), cls="col-sku"), _e_desc_cell,
             ]
             if _draft_show_item_status:
@@ -10512,12 +10533,9 @@ async function celerpCsvImport(input, entityId) {{
             li_eid = li.get("entity_id") or li.get("item_id") or ""
             cells = []
             if _fin_show_bulk:
-                li_sku = li.get("sku") or ""
                 _li_status = item_status_map.get(li_eid, "") if item_status_map else ""
                 cells.append(Td(
-                    Input(type="checkbox", cls="li-select", value=li_eid, data_sku=li_sku,
-                          data_item_status=_li_status, data_line_id=str(li.get("line_id") or ""),
-                          data_line_index=str(idx), data_label=line_label(li)),
+                    _line_select_box(li, _li_status, idx),
                     Input(type="hidden", value=li_eid, data_name="entity_id"),
                     cls="col-checkbox li-checkbox-cell",
                 ))
@@ -10532,7 +10550,7 @@ async function celerpCsvImport(input, entityId) {{
                     cells.append(_item_status_badge_cell(
                         status_val, li_eid,
                         status_doc=_line_status_doc(li, li_eid, item_status_doc_map, status_val, _memo_self),
-                        held=_line_held(li, (item_status_doc_map or {}).get(li_eid))))
+                        held=_line_held(li, (item_status_doc_map or {}).get(li_eid), entity_id, _holds)))
             if _show_shipped_label:
                 _lbl = li.get("shipped_label")
                 _key = SHIPPED_LABEL_KEYS.get(_lbl) if _lbl else None
