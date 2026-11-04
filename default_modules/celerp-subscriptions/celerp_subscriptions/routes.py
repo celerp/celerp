@@ -393,7 +393,9 @@ def _build_router() -> APIRouter:
             written["released_bills"] = {**(proj.state.get("released_bills") or {}), entry["doc_id"]: k}
         elif entry.get("state") != SKIPPED:
             return _period_answer(proj.state, k)
-        periods[str(k)] = {"state": RELEASED, "release_count": release, "by": str(user.id), "at": billing.now_stamp()}
+        # Reopened: the period's document was let go; an un-skipped period is only open again.
+        periods[str(k)] = {"state": RELEASED, "release_count": release, "by": str(user.id), "at": billing.now_stamp(),
+                           **({"reopened": True} if written else {})}
         await billing.write_agreement(session, company_id, entity_id, {"periods": periods, **written}, user.id)
         if entry.get("state") == BILLED:
             await billing.discard_email_attempts(session, company_id, entry["doc_id"])

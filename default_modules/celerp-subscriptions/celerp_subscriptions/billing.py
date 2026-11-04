@@ -423,7 +423,7 @@ async def _listed_row(session, company_id, state: dict, schedule: Schedule, k: i
     entry = schedule.periods.get(k) or {}
     doc_id = entry.get("doc_id")
     doc = (await doc_state(session, company_id, doc_id)) if doc_id else None
-    return {**period_row(schedule, k), "state": entry.get("state"), "reopened": entry.get("state") == RELEASED,
+    return {**period_row(schedule, k), "state": entry.get("state"), "reopened": entry.get("state") == RELEASED and bool(entry.get("reopened")),
             "status": period_status(entry.get("state"), doc, schedule.bill_date(k), today),
             "doc_id": doc_id, "ref_id": ((doc or {}).get("ref_id") or doc_id) if doc_id else None,
             "reason": entry.get("reason"), "history": bool(entry.get("history")),
