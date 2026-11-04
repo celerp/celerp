@@ -18,9 +18,12 @@ const errorLine = (message) => (message ? "Update error: " + message : "Update e
 
 const RELEASES = "https://github.com/celerp/celerp/releases";
 
+// A release number such as 2.8.1 or 2.8.1-beta.2, so the link stays on a release page.
+const RELEASE_VERSION = /^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$/;
+
 // The release page with the installer for `version`, or the latest release.
 function releasePageUrl(version) {
-  return version ? `${RELEASES}/tag/v${version}` : `${RELEASES}/latest`;
+  return RELEASE_VERSION.test(version || "") ? `${RELEASES}/tag/v${version}` : `${RELEASES}/latest`;
 }
 
 function initialUpdateState() {
@@ -137,7 +140,7 @@ function nextUpdateState(state, event) {
  *   getUpdateState returns a copy with its log and revision; dismissError clears a failed
  *   download, at the user's request; userChecks marks the next check as the user's;
  *   installFailed records an installer that did not start, or with "stopped" a setup
- *   that started and then stopped.
+ *   that started and then stopped; with no message it adds no log line.
  */
 function trackUpdater(updater, send, onFailure = () => {}) {
   let state = initialUpdateState();
@@ -203,7 +206,7 @@ function trackUpdater(updater, send, onFailure = () => {}) {
     dismissError: () => apply("update-log", { type: "dismiss" }, () => ""),
     userChecks: () => { userAsked = true; },
     installFailed: (version, message, failure) =>
-      apply("update-error", { type: "install-failed", version, message, failure }, () => errorLine(message)),
+      apply("update-error", { type: "install-failed", version, message, failure }, () => (message ? errorLine(message) : "")),
   };
 }
 

@@ -416,4 +416,16 @@ test("a setup that started and then stopped keeps its own failure kind, so the a
     installFailed("2.8.1", "", "stopped");
     const state = getUpdateState();
     expect([state.status, state.failure, state.version]).toEqual(["error", "stopped", "2.8.1"]);
+    // with no message there is no log line: the card's own text says what happened
+    expect(state.log).toEqual([]);
+  });
+
+test("a version that is not a release number links the latest release, never a page it names",
+  function test_release_url_needs_a_version() {
+    const updater = new EventEmitter();
+    const { installFailed, getUpdateState } = trackUpdater(updater, () => {});
+    installFailed("2.8.1/../../../other/repo/releases/tag/v1", "", "stopped");
+    expect(getUpdateState().releaseUrl).toBe(LATEST);
+    installFailed("2.8.1-beta.2", "", "stopped");
+    expect(getUpdateState().releaseUrl).toBe("https://github.com/celerp/celerp/releases/tag/v2.8.1-beta.2");
   });
