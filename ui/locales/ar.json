@@ -7139,7 +7139,6 @@
   "subscriptions.catchup_empty": "لا توجد فواتير تنتظر المراجعة.",
   "subscriptions.catchup_bill": "فوترة المحدد",
   "subscriptions.catchup_skip": "تخطي المحدد",
-  "subscriptions.catchup_result": "اكتمل {done}، ورُفض {refused}.",
   "subscriptions.summary_banner": "منذ آخر مراجعة: أُنشئ {generated}، وأُرسل {sent}، وهناك {failed} عمليات إرسال تحتاج إلى فحص.",
   "subscriptions.summary_open": "فتح الملخص",
   "subscriptions.summary_title": "ملخص الفوترة التلقائية",

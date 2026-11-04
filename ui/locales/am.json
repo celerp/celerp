@@ -7139,7 +7139,6 @@
   "subscriptions.catchup_empty": "ግምገማ የሚጠብቅ የደረሰኝ ወቅት የለም።",
   "subscriptions.catchup_bill": "ለተመረጡት ደረሰኝ አውጣ",
   "subscriptions.catchup_skip": "የተመረጡትን ዝለል",
-  "subscriptions.catchup_result": "የተጠናቀቁ {done}፣ የተከለከሉ {refused}።",
   "subscriptions.summary_banner": "ከመጨረሻ እይታዎ ጀምሮ፦ የተፈጠሩ {generated}፣ የተላኩ {sent}፣ ለምርመራ የቀሩ መላኪያዎች {failed}።",
   "subscriptions.summary_open": "ማጠቃለያ ክፈት",
   "subscriptions.summary_title": "የራስ-ሰር ክፍያ ማጠቃለያ",

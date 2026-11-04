@@ -12,7 +12,7 @@ from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, patch
 
 from test_helpers import make_test_token
-from ui.i18n import t
+from ui.i18n import sentence, t
 
 
 def _authed(role: str = "owner") -> dict:
@@ -272,7 +272,7 @@ class TestBillingPages:
         page = (await owner_ui.get("/subscriptions/catch-up")).text
         assert f'value="{eid}|0"' in page and f'value="{eid}|2"' in page
         r = await owner_ui.post("/subscriptions/catch-up/run", data={"item": [f"{eid}|0", f"{eid}|1", f"{eid}|2"], "idempotency_key": "catchup-click"})
-        assert t("subscriptions.catchup_result", "en", done=3, refused=0) in r.text
+        assert len(BeautifulSoup(r.text, "html.parser").select("#catchup-card td a[href^='/docs/']")) == 3
         assert t("subscriptions.catchup_empty", "en") in r.text
 
     async def test_catch_up_skip_needs_a_reason_per_period(self, owner_ui, monkeypatch):
@@ -282,9 +282,9 @@ class TestBillingPages:
         assert (await schedule(owner_ui.api, {}, eid, generation_mode="auto_invoice")).status_code == 200
         freeze_day(monkeypatch, "2026-03-15")
         r = await owner_ui.post("/subscriptions/catch-up/skip", data={"item": [f"{eid}|0"], "reason": ""})
-        assert t("subscriptions.catchup_result", "en", done=0, refused=1) in r.text
+        assert t("subscriptions.err_skip_reason", "en") in r.text
         r = await owner_ui.post("/subscriptions/catch-up/skip", data={"item": [f"{eid}|0"], "reason": "Closed"})
-        assert t("subscriptions.catchup_result", "en", done=1, refused=0) in r.text
+        assert sentence("subscriptions.done_skipped", "en", start="2026-01-01", end="2026-01-31") in r.text
         sub = (await owner_ui.api.get(f"/docs/{eid}")).json()
         assert sub["periods"]["0"]["state"] == "skipped"
 

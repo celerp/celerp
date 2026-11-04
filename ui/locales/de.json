@@ -7139,7 +7139,6 @@
   "subscriptions.catchup_empty": "Keine Abrechnungen warten auf Prüfung.",
   "subscriptions.catchup_bill": "Auswahl abrechnen",
   "subscriptions.catchup_skip": "Auswahl überspringen",
-  "subscriptions.catchup_result": "Erledigt: {done}, abgelehnt: {refused}.",
   "subscriptions.summary_banner": "Seit Ihrem letzten Besuch: {generated} erstellt, {sent} versendet, {failed} Sendungen zu prüfen.",
   "subscriptions.summary_open": "Übersicht öffnen",
   "subscriptions.summary_title": "Übersicht der automatischen Abrechnung",

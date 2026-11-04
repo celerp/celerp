@@ -7139,7 +7139,6 @@
   "subscriptions.catchup_empty": "Aucune facturation en attente de vérification.",
   "subscriptions.catchup_bill": "Facturer la sélection",
   "subscriptions.catchup_skip": "Ignorer la sélection",
-  "subscriptions.catchup_result": "Terminées : {done} ; refusées : {refused}.",
   "subscriptions.summary_banner": "Depuis votre dernière consultation : {generated} générés, {sent} envoyés, {failed} envois à vérifier.",
   "subscriptions.summary_open": "Ouvrir le récapitulatif",
   "subscriptions.summary_title": "Récapitulatif de facturation automatique",

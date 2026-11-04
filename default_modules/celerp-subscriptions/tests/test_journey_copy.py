@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import uuid
 
+import pytest
 from bs4 import BeautifulSoup
 
 from agreement_kit import agreement, freeze_day, generate_due
@@ -132,6 +133,57 @@ async def test_billing_by_hand_again_turns_sending_off_and_says_so(owner_ui, mon
     assert (await owner_ui.api.get(f"/docs/{eid}")).json().get("auto_send") is False
     page = BeautifulSoup(r.text, "html.parser")
     assert page.select_one('#sub-billing select[hx-patch$="/auto_send"] option[selected]')["value"] == "false"
+
+
+# Every UI route that acts on several agreements at once, and how it is set up: the guard
+# below fails when a new one is added without being listed here.
+_BULK_ROUTES = {"/subscriptions/generate-due": "manual_due", "/subscriptions/catch-up/run": "auto_invoice",
+                "/subscriptions/catch-up/skip": "auto_invoice"}
+
+
+def test_every_bulk_route_is_checked_for_what_it_says():
+    """Class guard: every UI handler that reads ticked rows (_catch_up_items) is in _BULK_ROUTES."""
+    import ast
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[3] / "ui/routes/subscriptions.py"
+    routes = set()
+    for fn in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(fn, ast.AsyncFunctionDef) and any(
+                isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_catch_up_items" for n in ast.walk(fn)):
+            path_arg = fn.decorator_list[0].args[0].value
+            routes |= ({path_arg.replace("{action}", a) for a in ("run", "skip")} if "{action}" in path_arg else {path_arg})
+    assert routes == set(_BULK_ROUTES)
+
+
+@pytest.mark.parametrize("route", sorted(_BULK_ROUTES))
+async def test_a_bulk_run_names_each_agreement_document_and_period_it_acted_on(owner_ui, monkeypatch, route):
+    """What a bulk run did reads row by row: each agreement, the document billed (or the period
+    skipped) and its dates, never only a count."""
+    from celerp.services.record_quantities import template_label
+    from ui.i18n import sentence
+
+    freeze_day(monkeypatch, "2026-06-15")
+    ids = [await agreement(owner_ui.api, {}, start="2026-01-01") for _ in range(2)]
+    for eid in ids:
+        r = await owner_ui.api.patch(f"/subscriptions/{eid}/schedule",
+                                     json={"generation_mode": _BULK_ROUTES[route], "catchup_periods": 1})
+        assert r.status_code == 200, r.text
+    r = await owner_ui.post(route, data={"item": [f"{eid}|0" for eid in ids], "reason": "closed", **_key()})
+    assert r.status_code == 200, r.text
+    text = BeautifulSoup(r.text, "html.parser").get_text(" ", strip=True)
+    for eid in ids:
+        sub = (await owner_ui.api.get(f"/docs/{eid}")).json()
+        period = next(p for p in (await owner_ui.api.get(f"/subscriptions/{eid}/periods")).json()["rows"]
+                      if p["period_index"] == 0)
+        if route.endswith("skip"):
+            said = sentence("subscriptions.done_skipped", start=period["service_start"], end=period["service_end"])
+        else:
+            doc_id = sub["periods"]["0"]["doc_id"]
+            ref = (await owner_ui.api.get(f"/docs/{doc_id}")).json()["ref_id"]
+            said = sentence("subscriptions.done_billed", ref=ref, start=period["service_start"], end=period["service_end"])
+        assert said in text, (said, text)
+        assert template_label(sub, eid) in text
 
 
 _CHANGED = {"anchor_date": "2026-04-05", "frequency": "weekly", "custom_interval_days": "10", "billing_timing": "arrears",

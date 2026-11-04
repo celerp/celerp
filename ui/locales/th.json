@@ -7139,7 +7139,6 @@
   "subscriptions.catchup_empty": "ไม่มีรายการออกใบแจ้งหนี้ที่รอตรวจสอบ",
   "subscriptions.catchup_bill": "ออกใบแจ้งหนี้รายการที่เลือก",
   "subscriptions.catchup_skip": "ข้ามรายการที่เลือก",
-  "subscriptions.catchup_result": "สำเร็จ {done} รายการ ปฏิเสธ {refused} รายการ",
   "subscriptions.summary_banner": "นับจากที่ตรวจสอบครั้งล่าสุด: สร้าง {generated} รายการ ส่ง {sent} รายการ และมีการส่งที่ต้องตรวจสอบ {failed} รายการ",
   "subscriptions.summary_open": "เปิดสรุป",
   "subscriptions.summary_title": "สรุปการออกใบแจ้งหนี้อัตโนมัติ",

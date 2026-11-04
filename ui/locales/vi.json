@@ -7139,7 +7139,6 @@
   "subscriptions.catchup_empty": "Không có kỳ lập hóa đơn nào đang chờ rà soát.",
   "subscriptions.catchup_bill": "Lập hóa đơn cho mục đã chọn",
   "subscriptions.catchup_skip": "Bỏ qua mục đã chọn",
-  "subscriptions.catchup_result": "Hoàn thành: {done}, bị từ chối: {refused}.",
   "subscriptions.summary_banner": "Từ lần xem trước: đã tạo {generated}, đã gửi {sent}, cần kiểm tra {failed} lần gửi.",
   "subscriptions.summary_open": "Mở bản tổng hợp",
   "subscriptions.summary_title": "Tổng hợp lập hóa đơn tự động",

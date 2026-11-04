@@ -7139,7 +7139,6 @@
   "subscriptions.catchup_empty": "No hay facturas pendientes de revisión.",
   "subscriptions.catchup_bill": "Facturar seleccionados",
   "subscriptions.catchup_skip": "Omitir seleccionados",
-  "subscriptions.catchup_result": "Completados: {done}; rechazados: {refused}.",
   "subscriptions.summary_banner": "Desde su última consulta: {generated} generados, {sent} enviados y {failed} envíos por revisar.",
   "subscriptions.summary_open": "Abrir resumen",
   "subscriptions.summary_title": "Resumen de facturación automática",

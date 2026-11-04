@@ -7139,7 +7139,6 @@
   "subscriptions.catchup_empty": "確認待ちの請求はありません。",
   "subscriptions.catchup_bill": "選択した期間を請求",
   "subscriptions.catchup_skip": "選択した期間をスキップ",
-  "subscriptions.catchup_result": "完了：{done}件、拒否：{refused}件。",
   "subscriptions.summary_banner": "前回の確認以降：作成{generated}件、送信{sent}件、要確認の送信{failed}件。",
   "subscriptions.summary_open": "概要を開く",
   "subscriptions.summary_title": "自動請求の概要",

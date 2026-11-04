@@ -7139,7 +7139,6 @@
   "subscriptions.catchup_empty": "Não há faturação a aguardar revisão.",
   "subscriptions.catchup_bill": "Faturar selecionados",
   "subscriptions.catchup_skip": "Ignorar selecionados",
-  "subscriptions.catchup_result": "Concluídos: {done}; recusados: {refused}.",
   "subscriptions.summary_banner": "Desde a última consulta: {generated} gerados, {sent} enviados e {failed} envios por verificar.",
   "subscriptions.summary_open": "Abrir resumo",
   "subscriptions.summary_title": "Resumo da faturação automática",

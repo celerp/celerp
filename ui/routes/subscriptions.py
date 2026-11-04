@@ -541,9 +541,10 @@ def _period_text(p: dict) -> str:
     return f"{p['service_start']} - {p['service_end']}"
 
 
-def _row_box(value: str) -> FT:
-    """A ticked row checkbox of a table that bills several agreements at once."""
-    return Td(Input(type="checkbox", name="item", value=value, checked=True, cls="bulk-select"), cls="col-checkbox")
+def _row_box(value: str, checked: bool = True) -> FT:
+    """A row checkbox of a table that bills several agreements at once, ticked until a run has
+    acted on the table, so the next click never bills rows nobody chose."""
+    return Td(Input(type="checkbox", name="item", value=value, checked=checked, cls="bulk-select"), cls="col-checkbox")
 
 
 def _due_panel(preview: dict, subs: dict[str, dict]) -> FT:
@@ -590,28 +591,42 @@ def _due_panel(preview: dict, subs: dict[str, dict]) -> FT:
     )
 
 
-def _due_results(result: dict, subs: dict[str, dict], request_key: str) -> FT:
-    """One row per agreement: the document it billed, or why it was refused with Retry.
-    The list stays until it is closed."""
+def _billed_text(done: dict) -> str:
+    """What billing a period did: the document and the dates it bills."""
+    return sentence("subscriptions.done_already_billed" if done.get("already_billed") else "subscriptions.done_billed",
+                    ref=done.get("ref_id") or done.get("doc_id") or "", start=done["service_start"], end=done["service_end"])
+
+
+def _outcome_table(results: list[dict], subs: dict[str, dict], retry_key: str | None = None) -> FT:
+    """What a bulk run did, one row per item: the agreement, then the document it billed or the
+    period it skipped with the dates, or why it was refused. With *retry_key* (Generate all due)
+    a refused row offers Retry."""
     def _row(r: dict) -> FT:
         eid = r["entity_id"]
         name = template_label(subs[eid], eid) if eid in subs else eid
-        if r.get("ok"):
-            label = t("subscriptions.period_already_billed" if r.get("already_billed") else "subscriptions.period_billed")
-            outcome = Td(label, " ", A(r.get("ref_id") or r["doc_id"], href=f"/docs/{r['doc_id']}"))
-            action = Td("")
+        action = Td("")
+        if not r.get("ok"):
+            outcome = Td(refusal_text(r.get("error")), cls="text-danger")
+            if retry_key is not None:
+                action = Td(Button(t("btn.retry"), cls="btn btn--secondary btn--sm", hx_post="/subscriptions/generate-due",
+                                   hx_vals={"item": f"{eid}|{r['period_index']}", FIELD: retry_key},
+                                   hx_target="#sub-due-panel", hx_swap="innerHTML"))
+        elif r.get("skipped"):
+            outcome = Td(sentence("subscriptions.done_skipped", start=r["service_start"], end=r["service_end"]))
         else:
-            outcome = Td(refusal_text(r.get("error")))
-            action = Td(Button(t("btn.retry"), cls="btn btn--secondary btn--sm", hx_post="/subscriptions/generate-due",
-                               hx_vals={"item": f"{eid}|{r['period_index']}", FIELD: request_key},
-                               hx_target="#sub-due-panel", hx_swap="innerHTML"))
+            outcome = Td(A(_billed_text(r), href=f"/docs/{r['doc_id']}"))
         return Tr(Td(A(name, href=f"/subscriptions/{eid}")), outcome, action)
 
+    return _data_table(Thead(Tr(Th(t("th.name")), Th(t("th.status")), Th(""))), Tbody(*[_row(r) for r in results]))
+
+
+def _due_results(result: dict, subs: dict[str, dict], request_key: str) -> FT:
+    """Generate all due's answer: the count, then what it did for each agreement. The list
+    stays until it is closed."""
     return Div(
         P(t("subscriptions.due_result", billed=result.get("billed", 0), refused=result.get("refused", 0))),
         P(t("subscriptions.due_already", n=result["already_billed"]), cls="text-muted") if result.get("already_billed") else "",
-        _data_table(Thead(Tr(Th(t("th.name")), Th(t("th.status")), Th(""))),
-              Tbody(*[_row(r) for r in result.get("results") or []])),
+        _outcome_table(result.get("results") or [], subs, request_key),
         Div(Button(t("btn.close"), type="button", cls="btn btn--ghost btn--sm",
                    onclick="document.getElementById('sub-due-panel').innerHTML=''"), cls="form-actions"),
         cls="settings-card",
@@ -622,15 +637,7 @@ def _catch_up_card(items: list[dict], subs: dict[str, dict], results: list[dict]
     """The periods automatic billing held back, each agreement's oldest first: they bill in
     that order, so the top row of an agreement is the one billed next. Bill the chosen
     periods, or skip them with a reason; a refused one says why and the rest go ahead."""
-    refused = [r for r in results or [] if not r.get("ok")]
-    done = len(results or []) - len(refused)
-    notes = []
-    if results is not None:
-        notes.append(Div(t("subscriptions.catchup_result", done=done, refused=len(refused)),
-                         cls=f"flash flash--{'warning' if refused else 'success'}"))
-        for r in refused:
-            sub = subs.get(r["entity_id"]) or {}
-            notes.append(P(f"{template_label(sub, r['entity_id'])}: {r.get('error') or ''}", cls="text-danger"))
+    notes = [_outcome_table(results, subs)] if results else []
     if not items:
         return Div(*notes, empty_state_cta(t("subscriptions.catchup_empty"), t("subscriptions.review_all"),
                                            "/subscriptions?direction=sales"), id="catchup-card")
@@ -641,7 +648,7 @@ def _catch_up_card(items: list[dict], subs: dict[str, dict], results: list[dict]
         sub = subs.get(eid) or {}
         for p in i["periods"]:
             rows.append(Tr(
-                _row_box(f"{eid}|{p['period_index']}"),
+                _row_box(f"{eid}|{p['period_index']}", checked=results is None),
                 Td(A(template_label(sub, eid), href=f"/subscriptions/{eid}")),
                 Td(_period_text(p)),
                 Td(p["bill_date"]),
@@ -912,9 +919,9 @@ def setup_routes(app) -> None:
                 results = []
                 for item in chosen:
                     try:
-                        await api.subscription_period_action(token, item["entity_id"], item["period_index"], "skip",
-                                                             {"reason": reason})
-                        results.append({**item, "ok": True})
+                        done = await api.subscription_period_action(token, item["entity_id"], item["period_index"],
+                                                                    "skip", {"reason": reason})
+                        results.append({**item, "ok": True, "skipped": True, **done["period"]})
                     except APIError as e:
                         _signed_out(e)
                         results.append({**item, "ok": False, "error": error_message(e)})
@@ -1207,8 +1214,7 @@ def setup_routes(app) -> None:
         except APIError as e:
             return _refused(e)
         if action in _BILLING_ACTIONS:
-            message = sentence("subscriptions.done_already_billed" if done.get("already_billed") else "subscriptions.done_billed",
-                        ref=done.get("ref_id") or "", start=done["service_start"], end=done["service_end"])
+            message = _billed_text(done)
         else:
             message = t(_ACTION_DONE[action])
         return _done(f"/subscriptions/{entity_id}", message)

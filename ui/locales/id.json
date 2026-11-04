@@ -7139,7 +7139,6 @@
   "subscriptions.catchup_empty": "Tidak ada penagihan yang menunggu peninjauan.",
   "subscriptions.catchup_bill": "Tagih yang dipilih",
   "subscriptions.catchup_skip": "Lewati yang dipilih",
-  "subscriptions.catchup_result": "Selesai: {done}, ditolak: {refused}.",
   "subscriptions.summary_banner": "Sejak terakhir Anda melihat: {generated} dibuat, {sent} dikirim, {failed} pengiriman perlu diperiksa.",
   "subscriptions.summary_open": "Buka ringkasan",
   "subscriptions.summary_title": "Ringkasan penagihan otomatis",

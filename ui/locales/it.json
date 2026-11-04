@@ -7139,7 +7139,6 @@
   "subscriptions.catchup_empty": "Nessuna fatturazione in attesa di revisione.",
   "subscriptions.catchup_bill": "Fattura i selezionati",
   "subscriptions.catchup_skip": "Salta i selezionati",
-  "subscriptions.catchup_result": "Completati: {done}; rifiutati: {refused}.",
   "subscriptions.summary_banner": "Dall'ultima visita: {generated} generati, {sent} inviati, {failed} invii da verificare.",
   "subscriptions.summary_open": "Apri il riepilogo",
   "subscriptions.summary_title": "Riepilogo della fatturazione automatica",

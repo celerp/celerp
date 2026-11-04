@@ -7139,7 +7139,6 @@
   "subscriptions.catchup_empty": "No billing is waiting for review.",
   "subscriptions.catchup_bill": "Bill selected",
   "subscriptions.catchup_skip": "Skip selected",
-  "subscriptions.catchup_result": "Done {done}, refused {refused}.",
   "subscriptions.summary_banner": "Since you last looked: generated {generated}, sent {sent}, sends to check {failed}.",
   "subscriptions.summary_open": "Open the summary",
   "subscriptions.summary_title": "Automatic billing summary",
