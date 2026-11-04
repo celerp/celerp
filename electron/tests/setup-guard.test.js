@@ -81,6 +81,22 @@ test("a hint is followed only while the setup that wrote it runs",
     expect(probes.length).toBe(1);
   });
 
+test("a pid file that cannot be read counts as a hint and does not end the scan",
+  function test_setup_hint_survives_an_unreadable_file() {
+    const dir = temp(String(process.pid));
+    fs.mkdirSync(path.join(dir, "ns0000.tmp", "celerp-setup.pid"), { recursive: true });   // reading it fails (EISDIR)
+    const probes = [];
+    const running = setupRunning({ platform: "win32", argv: ["Celerp.exe"], tempDir: dir, log: () => {},
+      spawnSync: () => { probes.push(true); return { status: 0 }; } });
+    expect(fs.readdirSync(dir).sort()[0]).toBe("ns0000.tmp");
+    expect(running).toBe(true);
+    expect(probes.length).toBe(1);
+    fs.rmSync(path.join(dir, "nsA1B2.tmp"), { recursive: true });
+    expect(setupRunning({ platform: "win32", argv: ["Celerp.exe"], tempDir: dir, log: () => {},
+      spawnSync: () => { probes.push(true); return { status: 0 }; } })).toBe(true);
+    expect(probes.length).toBe(2);
+  });
+
 test("the app asks for the same mutex setup creates",
   function test_setup_mutex_name_matches_installer() {
     const nsh = fs.readFileSync(path.join(__dirname, "..", "build", "installer.nsh"), "utf8");

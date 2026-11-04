@@ -43,19 +43,27 @@ function processAlive(pid) {
   }
 }
 
-// A file that names no process (cut short as setup wrote it) still counts: the probe decides.
+// A file that names no process (cut short as setup wrote it) or cannot be read (held by a
+// scanner, or written by an elevated setup) still counts: the probe decides.
 function setupHint(fs, tempDir, alive) {
+  let names;
   try {
-    return fs.readdirSync(tempDir).some((name) => {
-      if (!/^ns.*\.tmp$/i.test(name)) return false;
-      const file = path.join(tempDir, name, "celerp-setup.pid");
-      if (!fs.existsSync(file)) return false;
-      const text = fs.readFileSync(file, "utf8").trim();
-      return !/^\d+$/.test(text) || alive(Number(text));
-    });
+    names = fs.readdirSync(tempDir);
   } catch {
     return false;
   }
+  return names.some((name) => {
+    if (!/^ns.*\.tmp$/i.test(name)) return false;
+    const file = path.join(tempDir, name, "celerp-setup.pid");
+    if (!fs.existsSync(file)) return false;
+    let text;
+    try {
+      text = fs.readFileSync(file, "utf8").trim();
+    } catch {
+      return true;
+    }
+    return !/^\d+$/.test(text) || alive(Number(text));
+  });
 }
 
 // True only for a start by hand while setup runs. Setup's own starts (its relaunch
