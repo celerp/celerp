@@ -259,6 +259,10 @@ def _index_exists(
     for item in indexes:
         if unique_only and not item.get("unique"):
             continue
+        # A cancelled CREATE INDEX CONCURRENTLY leaves the index invalid: it is not there,
+        # and the revision that builds it must still run to drop and rebuild it.
+        if (item.get("dialect_options") or {}).get("postgresql_invalid"):
+            continue
         if index_name and item.get("name") == index_name:
             return True
         if wanted and tuple(item.get("column_names") or ()) == wanted:
