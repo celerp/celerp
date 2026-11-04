@@ -234,6 +234,12 @@ def _sub_status_cards(items: list[dict], active_status: str, direction: str) -> 
     return status_cards(cards, base, active_status or None, currency=None, show_all_card=False)
 
 
+def _data_table(*parts) -> FT:
+    """A data table in the scroll box every data table has, so a wide row scrolls inside it
+    instead of pushing the page wider than the screen."""
+    return Div(Table(*parts, cls="data-table"), cls="table-scroll-wrap")
+
+
 def _sub_table(subs: list[dict], direction: str, review: bool = False) -> FT:
     if not subs and review:
         return Div(empty_state_cta(t("subscriptions.review_empty"), t("subscriptions.review_all"),
@@ -258,10 +264,9 @@ def _sub_table(subs: list[dict], direction: str, review: bool = False) -> FT:
         )
 
     return Div(
-        Table(
+        _data_table(
             Thead(Tr(Th(t("th.name")), Th(t("th.contact")), Th(t("th.frequency")), Th(t("th.next_due")), Th(t("th.status"), style="text-align:center"))),
             Tbody(*[_row(s) for s in subs]),
-            cls="data-table",
         ),
         id="sub-table",
     )
@@ -469,11 +474,10 @@ def _periods_table(entity_id: str, schedule: dict, *, historical_page: bool = Fa
     return Div(
         H3(t("subscriptions.periods_heading")),
         Div(P(t("th.next_due"), cls="text-muted"),
-            Table(Tbody(_row(oldest_due_row)), cls="data-table")) if oldest_due_row else "",
-        Table(
+            _data_table(Tbody(_row(oldest_due_row)))) if oldest_due_row else "",
+        _data_table(
             Thead(Tr(Th(t("th.period")), Th(t("th.bill_date")), Th(t("th.status")), Th(t("th.document")), Th(""))),
             Tbody(*[_row(r) for r in rows]),
-            cls="data-table",
         ),
         Div(*([A(t("btn.back"), href=f"/subscriptions/{entity_id}")]
                if historical_page else []),
@@ -548,9 +552,9 @@ def _due_panel(preview: dict, subs: dict[str, dict]) -> FT:
     return Form(
         operation_key_input(),
         P(t("subscriptions.due_hint", n=len(items)), cls="text-muted"),
-        Table(Thead(Tr(select_all_th(), Th(t("th.name")), Th(t("th.contact")), Th(t("th.period")), Th(t("th.bill_date")),
+        _data_table(Thead(Tr(select_all_th(), Th(t("th.name")), Th(t("th.contact")), Th(t("th.period")), Th(t("th.bill_date")),
                        Th(t("subscriptions.th_more_due"), cls="cell--number"), Th(t("th.total"), cls="cell--number"))),
-              Tbody(*[_row(i) for i in items]), cls="data-table"),
+              Tbody(*[_row(i) for i in items])),
         Div(Button(t("btn.generate_due"), type="submit", cls="btn btn--primary btn--sm"),
             Button(t("btn.close"), type="button", cls="btn btn--ghost btn--sm",
                    onclick="document.getElementById('sub-due-panel').innerHTML=''"),
@@ -580,8 +584,8 @@ def _due_results(result: dict, subs: dict[str, dict], request_key: str) -> FT:
     return Div(
         P(t("subscriptions.due_result", billed=result.get("billed", 0), refused=result.get("refused", 0))),
         P(t("subscriptions.due_already", n=result["already_billed"]), cls="text-muted") if result.get("already_billed") else "",
-        Table(Thead(Tr(Th(t("th.name")), Th(t("th.status")), Th(""))),
-              Tbody(*[_row(r) for r in result.get("results") or []]), cls="data-table"),
+        _data_table(Thead(Tr(Th(t("th.name")), Th(t("th.status")), Th(""))),
+              Tbody(*[_row(r) for r in result.get("results") or []])),
         Div(Button(t("btn.close"), type="button", cls="btn btn--ghost btn--sm",
                    onclick="document.getElementById('sub-due-panel').innerHTML=''"), cls="form-actions"),
         cls="settings-card",
@@ -623,9 +627,9 @@ def _catch_up_card(items: list[dict], subs: dict[str, dict], results: list[dict]
         P(t("subscriptions.catchup_hint"), cls="text-muted"),
         Form(
             operation_key_input(),
-            Table(Thead(Tr(select_all_th(), Th(t("th.name")), Th(t("th.period")), Th(t("th.bill_date")),
+            _data_table(Thead(Tr(select_all_th(), Th(t("th.name")), Th(t("th.period")), Th(t("th.bill_date")),
                            Th(t("th.total"), cls="cell--number"))),
-                  Tbody(*rows), cls="data-table"),
+                  Tbody(*rows)),
             Div(Button(t("subscriptions.catchup_bill"), type="submit", cls="btn btn--primary btn--sm",
                        hx_post="/subscriptions/catch-up/run"),
                 Input(type="text", name="reason", placeholder=t("label.reason"), cls="form-input form-input--inline",
@@ -659,8 +663,8 @@ def _summary_table(rows: list[dict], subs: dict[str, dict]) -> FT:
                   Td(A(template_label(subs.get(eid) or {}, eid), href=f"/subscriptions/{eid}")),
                   Td(r.get("message") or "", " " if fix else "", fix), Td(doc), Td(retry))
 
-    return Table(Thead(Tr(Th(t("th.date")), Th(t("th.name")), Th(t("th.description")), Th(t("th.document")), Th(""))),
-                 Tbody(*[_row(r) for r in rows]), cls="data-table")
+    return _data_table(Thead(Tr(Th(t("th.date")), Th(t("th.name")), Th(t("th.description")), Th(t("th.document")), Th(""))),
+                 Tbody(*[_row(r) for r in rows]))
 
 
 def _auto_badge(sub: dict, oob: bool = False) -> FT:
@@ -733,8 +737,8 @@ def _history_review(entity_id: str, review: list[dict], set_aside: list[dict]) -
     return Div(
         H3(t("subscriptions.history_heading")),
         P(t("subscriptions.history_hint"), cls="text-muted"),
-        Table(Thead(Tr(Th(t("th.document")), Th(t("th.period")))),
-              Tbody(*[_row(r) for r in review], *[_aside_row(r) for r in set_aside]), cls="data-table"),
+        _data_table(Thead(Tr(Th(t("th.document")), Th(t("th.period")))),
+              Tbody(*[_row(r) for r in review], *[_aside_row(r) for r in set_aside])),
         id="history-review", cls="mt-lg",
     )
 
