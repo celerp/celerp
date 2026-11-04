@@ -247,8 +247,9 @@
         SetDetailsPrint none
       ${EndIf}
       ${If} $celerpFound == 0
-        !insertmacro installStage "Closed the Celerp that was opened during the update. It opens again when the update is done."
-        !insertmacro celerpUpdateLog "Closed the Celerp that was opened during the update. It opens again when the update is done."
+        StrCpy $R0 "Closed the Celerp that was opened during the update. It opens again when the update is done."
+        !insertmacro installStage "$R0"
+        !insertmacro celerpUpdateLog "$R0"
       ${EndIf}
       Pop $4
       Pop $3

@@ -588,10 +588,13 @@ test("before the swap, setup closes a Celerp the user opened during the update a
       "${IfNot} ${Silent}", "SetDetailsPrint textonly", "${EndIf}", "!insertmacro CHECK_APP_RUNNING",
       "${IfNot} ${Silent}", "SetDetailsPrint none", "${EndIf}"]);
     const closed = "Closed the Celerp that was opened during the update. It opens again when the update is done.";
-    const said = at(`!insertmacro installStage "${closed}"`);
-    const logged = at(`!insertmacro celerpUpdateLog "${closed}"`);
-    expect(fn[said - 1]).toBe("${If} $celerpFound == 0");
-    expect(find < check && check < said && said < logged).toBe(true);
+    // the notice is written once and both the progress line and the update log read it
+    expect(fn.filter((line) => line.includes(closed))).toEqual([`StrCpy $R0 "${closed}"`]);
+    const set = at(`StrCpy $R0 "${closed}"`);
+    const said = at('!insertmacro installStage "$R0"');
+    const logged = at('!insertmacro celerpUpdateLog "$R0"');
+    expect(fn[set - 1]).toBe("${If} $celerpFound == 0");
+    expect(find < check && check < set && set < said && said < logged).toBe(true);
     // the registers the stock check uses are the caller's again afterwards
     const pushed = fn.filter((line) => line.startsWith("Push "));
     expect(pushed.length).toBeGreaterThan(0);
