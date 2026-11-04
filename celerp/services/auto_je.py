@@ -3591,12 +3591,17 @@ async def _recognized_by_account(
         return line_of_lot(doc_state.get("line_items", []), lot.entity_id, lot.state or {}, recorded, line_id)
 
     # Every lot shipped or returned must be on exactly one line; the refusal names them all.
+    # Returned goods leave a new issue behind, so the refusal sends the user to Revert to Draft
+    # and Issue Invoice; goods still out keep the invoice from going back to draft, so it asks
+    # for a report.
     out = [(lot, _line(lot)) for lot in books.shipments.out.get(doc_id, [])]
     back = [(lot, qty, _line(lot)) for lot, qty in books.shipments.back.get(doc_id, [])]
-    unknown = [lot for lot, idx in out if idx is None] + [lot for lot, _qty, idx in back if idx is None]
+    unknown_out = [lot for lot, idx in out if idx is None]
+    unknown = unknown_out + [lot for lot, _qty, idx in back if idx is None]
     if unknown:
-        raise Refused("error.cogs_line_unknown", doc=_doc_number(doc_id, doc_state), items=", ".join(
-            str((lot.state or {}).get("sku") or lot.entity_id) for lot in unknown))
+        raise Refused("error.cogs_line_unknown_out" if unknown_out else "error.cogs_line_unknown",
+                      doc=_doc_number(doc_id, doc_state), items=", ".join(
+                          str((lot.state or {}).get("sku") or lot.entity_id) for lot in unknown))
     shipped_qty: dict[int, float] = {}
     back_qty: dict[int, float] = {}
     for lot, idx in out:

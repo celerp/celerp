@@ -195,12 +195,45 @@ async def test_unmatched_out_lot_still_refused_with_new_message(client, session,
     assert r.status_code == 409, r.text
     detail = r.json()["detail"]
     number = await _doc_number(session, auth, doc)
-    assert detail["message_key"] == "error.cogs_line_unknown"
+    assert detail["message_key"] == "error.cogs_line_unknown_out"
     assert detail["params"] == {"doc": number, "items": stones[0][1]}
     assert detail["message"] == (
         f"Celerp can't tell which line of invoice {number} the goods {stones[0][1]} were shipped on, "
         "so their cost can't be booked and nothing was changed. "
         "Report it on GitHub Issues with this message so it can be put right.")
+
+
+async def test_returned_lot_with_no_line_names_revert_and_reissue(client, session, auth):
+    """Goods that came back and whose line was then removed from the issued invoice leave a
+    refusal that names the way out, and that way out works: Revert to Draft, then Issue
+    Invoice, and the other lines ship."""
+    stones = (await _stones(client, auth))[:2]
+    doc = await _invoice(client, auth, stones)
+    first, second = await _line_ids(client, auth, doc)
+    r = await _ship(client, auth, doc, [second])
+    assert r.status_code == 200, r.text
+    await _ok(client, auth, f"/docs/{doc}/set-available", {"line_ids": [second]})
+    st = await _state(client, auth, doc)
+    r = await client.patch(f"/docs/{doc}", headers=auth["headers"], json={
+        "fields_changed": {"line_items": {"old": st["line_items"], "new": st["line_items"][:1]}},
+        "expected_version": st["version"]})
+    assert r.status_code == 200, r.text
+    before = await _per_doc(session, auth)
+    r = await _ship(client, auth, doc, [first])
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    number = await _doc_number(session, auth, doc)
+    assert detail["message_key"] == "error.cogs_line_unknown"
+    assert detail["params"] == {"doc": number, "items": stones[1][1]}
+    assert detail["message"] == (
+        f"Celerp can't tell which line of invoice {number} the goods {stones[1][1]} were shipped on, "
+        "so their cost can't be booked and nothing was changed. To put it right, select Revert to "
+        "Draft, then Issue Invoice, and the invoice can be shipped as usual.")
+    assert await _per_doc(session, auth) == before
+    await _ok(client, auth, f"/docs/{doc}/revert-to-draft")
+    await _ok(client, auth, f"/docs/{doc}/finalize")
+    r = await _ship(client, auth, doc, [first])
+    assert r.status_code == 200, r.text
 
 
 async def test_ambiguous_back_lot_still_refused(client, session, auth):
@@ -281,7 +314,7 @@ async def test_lot_still_out_across_a_revert_is_still_refused(client, session, a
     r = await _ship(client, auth, doc, await _line_ids(client, auth, doc))
     assert r.status_code == 409, r.text
     detail = r.json()["detail"]
-    assert detail["message_key"] == "error.cogs_line_unknown"
+    assert detail["message_key"] == "error.cogs_line_unknown_out"
     assert detail["params"] == {"doc": await _doc_number(session, auth, doc), "items": stones[1][1]}
     assert (await _per_doc(session, auth), await _account_net(session, auth["company_id"], COGS)) == before
     assert (await client.get(f"/items/{stones[1][0]}", headers=auth["headers"])).json()["status"] == "sold"
