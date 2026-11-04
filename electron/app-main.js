@@ -672,6 +672,9 @@ function serverEnv(dbUrl, cfg) {
     CELERP_DATA_DIR: DATA_DIR,
     CELERP_CONFIG: PYTHON_CONFIG_PATH,
     CELERP_MODE: "desktop",
+    // The install channel: the API refuses a pip self-update in the desktop app, and the UI
+    // server picks the desktop's update texts and Settings cards by it.
+    CELERP_INSTALL_CHANNEL: "electron",
     CELERP_API_PORT: String(apiPort),
     CELERP_UI_PORT: String(uiPort),
     CELERP_PG_BIN_DIR: pgBinDir(),
@@ -712,7 +715,6 @@ function startApi(dbUrl, cfg) {
     } catch { /* non-fatal: the command then says it cannot reach the database */ }
     const env = {
       ...serverEnv(dbUrl, cfg),
-      CELERP_INSTALL_CHANNEL: "electron",
       // C2: make the desktop app version authoritative everywhere. The PC-browser/relay
       // path reads the version from /health (it has no window.celerp), so pass the Electron
       // app version through to the API; /health reports it instead of the Python package

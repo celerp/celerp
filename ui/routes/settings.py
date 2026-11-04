@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import zoneinfo as _zi
 from typing import Any
 
@@ -3316,7 +3317,9 @@ def _company_tab(company: dict, lang: str = "en", is_owner: bool = False) -> FT:
                             ),
                             Button(t("settings.uninstall_keep_data"),
                                 cls="btn btn--outline btn--danger",
-                                onclick="window.celerp?.uninstallKeepData()"),
+                                data_desktop_only=t("settings.uninstall_desktop_only"),
+                                onclick="if(!window.celerp){celerpToast(this.dataset.desktopOnly,'info');return;}"
+                                        "window.celerp.uninstallKeepData();"),
                             cls="settings-card settings-card--danger",
                         ),
                         Div(
@@ -3329,11 +3332,14 @@ def _company_tab(company: dict, lang: str = "en", is_owner: bool = False) -> FT:
                             Button(t("settings.uninstall_delete_data"),
                                 cls="btn btn--danger",
                                 data_confirm=t("settings.uninstall_confirm_js"),
-                                onclick="celerpConfirm(this.dataset.confirm).then(function(yes){if(yes)window.celerp?.uninstallDeleteData();})"),
+                                data_desktop_only=t("settings.uninstall_desktop_only"),
+                                onclick="if(!window.celerp){celerpToast(this.dataset.desktopOnly,'info');return;}"
+                                        "celerpConfirm(this.dataset.confirm).then(function(yes){if(yes)window.celerp.uninstallDeleteData();})"),
                             cls="settings-card settings-card--danger",
                         ),
                     ]
-                    if os.environ.get("CELERP_INSTALL_CHANNEL") == "electron" else []
+                    # The cards give the macOS steps, so only the macOS desktop app shows them.
+                    if os.environ.get("CELERP_INSTALL_CHANNEL") == "electron" and sys.platform == "darwin" else []
                 ),
             ]
             if is_owner else []

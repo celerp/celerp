@@ -193,7 +193,8 @@ async def test_unmatched_out_lot_still_refused_with_new_message(client, session,
     assert detail["params"] == {"doc": number, "items": stones[0][1]}
     assert detail["message"] == (
         f"Celerp can't tell which line of invoice {number} the goods {stones[0][1]} were shipped on, "
-        "so their cost can't be booked. Set those goods back to available on the invoice, or void the invoice.")
+        "so their cost can't be booked and nothing was changed. "
+        "Report it on GitHub Issues with this message so it can be put right.")
 
 
 async def test_ambiguous_back_lot_still_refused(client, session, auth):

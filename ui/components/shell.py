@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from fasthtml.common import *
@@ -1450,6 +1451,8 @@ document.addEventListener('DOMContentLoaded', function() {
       // downloading, downloaded, or a download that then failed.
       // A state older than the one already shown (the page's replay answered
       // after a live event) is ignored; the revision outlives a Back restore.
+      // readyVersion is the version the downloaded state offers, for the installing notice.
+      var readyVersion = '';
       function renderUpdateState(s) {
         if (s.revision < (window._celerpUpdateRevision || 0)) return;
         window._celerpUpdateRevision = s.revision;
@@ -1461,6 +1464,7 @@ document.addEventListener('DOMContentLoaded', function() {
           setCheckBtn(false);
           setProgress(s.percent);
         } else if (s.status === 'downloaded') {
+          readyVersion = s.version || '';
           setState(s.version ? i18n.versionReady.replace('{version}', s.version) : i18n.updateReady, true);
           setCheckBtn(false);
           setProgress(100);
@@ -1514,10 +1518,16 @@ document.addEventListener('DOMContentLoaded', function() {
       }
 
       if (restartBtn) {
+        // The same question the pip path asks, before anything closes; then the notice
+        // for the version the card offered, while the servers stop.
         restartBtn.addEventListener('click', function() {
-          restartBtn.disabled = true;
-          restartBtn.textContent = window.__shellI18n.restarting;
-          window.celerp.installUpdate();
+          celerpConfirm(restartBtn.dataset.confirm).then(function(yes) {
+            if (!yes) return;
+            restartBtn.disabled = true;
+            restartBtn.textContent = window.__shellI18n.restarting;
+            if (readyVersion) setState(window.__shellI18n.updateInstalling.replace('{version}', readyVersion), true);
+            window.celerp.installUpdate();
+          });
         });
       }
     } else {
@@ -2145,6 +2155,15 @@ def page_title(label_key: str) -> str:
     return t(label_key) + " - Celerp"
 
 
+def _update_text_key(key: str) -> str:
+    """The key of an update text for this server: ``key + "_windows"`` in the Windows desktop
+    app, whose update runs in a setup window and reopens Celerp by itself, else ``key`` (the
+    macOS and Linux desktop app, and every pip install, on any system)."""
+    if os.environ.get("CELERP_INSTALL_CHANNEL") == "electron" and sys.platform == "win32":
+        return key + "_windows"
+    return key
+
+
 def _shell_js_i18n(lang: str = "en") -> dict:
     """Translated strings the static JS bundle needs (R2): resolved here at render
     time and handed to the client as a single config object, never spliced into
@@ -2173,7 +2192,7 @@ def _shell_js_i18n(lang: str = "en") -> dict:
         "restarting": t("shell.restarting", lang),
         "updateAvailablePrefix": t("shell.update_available_prefix", lang),
         "updateNotChecked": t("shell.update_not_checked", lang),
-        "updateInstalling": t("shell.update_installing", lang),
+        "updateInstalling": t(_update_text_key("shell.update_installing"), lang),
         "updateStillRestarting": t("shell.update_still_restarting", lang),
         "updateResultOk": t("shell.update_result_ok", lang),
         "updateResultFailed": t("shell.update_result_failed", lang),
@@ -2636,7 +2655,8 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
                         Button(t("btn.check_for_updates"), cls="update-card__check-btn", type="button"),
                         Span("", cls="update-card__release"),
                         Button(t("btn.restart_to_install"), cls="update-card__restart-btn", type="button",
-                               data_confirm=t("shell.update_restart_confirm"), style="display:none;"),
+                               data_confirm=t(_update_text_key("shell.update_restart_confirm")),
+                               style="display:none;"),
                         Label(
                             Input(type="checkbox", cls="update-card__auto-input"),
                             Span(t("shell.update_auto_label")),
