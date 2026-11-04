@@ -745,7 +745,7 @@ async def query_in_conversation(
                 )
                 await session.commit()
             except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc))
+                raise HTTPException(status_code=400, detail=getattr(exc, "detail", str(exc)))
             except IntegrityError:
                 await session.rollback()
                 raise _conflict("question_in_progress", "ai.err_question_in_progress")

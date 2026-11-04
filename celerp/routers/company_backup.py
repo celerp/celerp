@@ -113,7 +113,7 @@ async def send_handoff(payload: SendCompanyHandoff, ctx: AuthContext = Depends(u
     try:
         secret = sender.decode_key(payload.key)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from None
+        raise HTTPException(status_code=422, detail=getattr(exc, "detail", str(exc))) from None
     await session.rollback()  # snapshot uses its own consistent transaction
     async def export(destination: Path):
         # The copy names its firm, shown as Prepared by before it is opened.

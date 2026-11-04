@@ -341,7 +341,7 @@ async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company
             try:
                 business_timezone(payload.settings.get("timezone"))
             except ValueError as exc:
-                raise HTTPException(status_code=422, detail=str(exc)) from exc
+                raise HTTPException(status_code=422, detail=getattr(exc, "detail", str(exc))) from exc
         require_phone(payload.settings.get("phone"))
         company.settings = merged
     await session.commit()

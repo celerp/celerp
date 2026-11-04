@@ -72,7 +72,7 @@ async def store_file(session, company_id, user_id, asset_id: str, file: UploadFi
         try:
             meta = await store.upload(file)
         except ValueError as exc:
-            raise HTTPException(status_code=413, detail=str(exc)) from None
+            raise HTTPException(status_code=413, detail=getattr(exc, "detail", str(exc))) from None
         ((_, state),) = await _locked_assets(session, company_id, [asset_id])
         if also is not None:
             await also(state, meta)
@@ -92,7 +92,7 @@ async def store_on_assets(session, company_id, user_id, asset_ids: list[str], fi
             try:
                 meta = await store.upload(file)
             except ValueError as exc:
-                raise HTTPException(status_code=413, detail=str(exc)) from None
+                raise HTTPException(status_code=413, detail=getattr(exc, "detail", str(exc))) from None
             await attach_file(session, company_id, ENTITY_TYPE, asset_id, meta, user_id, source="fixed_assets",
                               document_tag=tag)
             stored.append({"asset_id": asset_id, "file_id": meta["id"]})

@@ -20,7 +20,7 @@ from urllib.parse import quote_plus, urlencode
 
 import ui.api_client as api
 from ui.components.icons import import_icon
-from ui.api_client import APIError, error_message
+from ui.api_client import APIError, error_code, error_message
 from celerp.accounting_roles import account_label
 from celerp.downloads import content_disposition
 from celerp.services.units import (
@@ -3391,7 +3391,7 @@ celerpUpdateBulkAlloc();
             if e.status == 401:
                 raise
             # Saved from an older copy: the page keeps the user's rows and offers Try again.
-            if isinstance(e.data, dict) and e.data.get("code") == "stale_version":
+            if error_code(e) == "stale_version":
                 return JSONResponse({"code": "stale_version", "error": error_message(e)}, status_code=409)
             payload = {"error": error_message(e)}
             # Foreign-reserved rejection: pass the structured conflict list through
@@ -5095,7 +5095,7 @@ celerpUpdateBulkAlloc();
                 raise
             # A stale expected_version means someone else saved this list first; surface it
             # structurally (code, not English text) so the page can prompt a reload.
-            if e.status == 409:
+            if error_code(e) == "stale_version":
                 return JSONResponse({"code": "stale_version", "error": error_message(e)}, status_code=409)
             return JSONResponse({"error": error_message(e)}, status_code=e.status)
         saved = {"ok": True, "version": result.get("version")}

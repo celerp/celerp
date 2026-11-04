@@ -131,7 +131,7 @@ async def upload_attachment(
         try:
             att = await store.upload(file, attachment_type=attachment_type)  # type: ignore[arg-type]
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            raise HTTPException(status_code=422, detail=getattr(exc, "detail", str(exc))) from exc
 
         row = await _locked_item(session, company_id, entity_id)
         existing: list[dict] = row.state.get("attachments") or []
@@ -399,7 +399,7 @@ async def upload_item_file(
         try:
             meta = await store.upload(file)
         except ValueError as exc:
-            raise HTTPException(status_code=413, detail=str(exc)) from exc
+            raise HTTPException(status_code=413, detail=getattr(exc, "detail", str(exc))) from exc
 
         is_hero, document_tag = item_file_role(
             row.state.get("files", []), meta.get("mime", ""), as_hero=as_hero, document_tag=document_tag,

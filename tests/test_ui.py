@@ -4687,7 +4687,9 @@ class TestListsCreateBlank:
         {code: stale_version} body with status 409, so the page branches on the code, never on
         English message text."""
         from ui.api_client import APIError
-        mock = AsyncMock(side_effect=APIError(409, "This list was changed by someone else. Select Try again to get the latest before saving."))
+        message = "This list was changed by someone else. Select Try again to get the latest before saving."
+        mock = AsyncMock(side_effect=APIError(409, message, {"message_key": "documents.err_list_changed", "message": message,
+                                                              "params": {}, "code": "stale_version"}))
         ui_client.cookies.update(_authed())
         with patch("ui.api_client.patch_list_line_page", create=True, new=mock):
             r = await ui_client.post(
@@ -4696,6 +4698,24 @@ class TestListsCreateBlank:
             )
         assert r.status_code == 409
         assert r.json()["code"] == "stale_version"
+
+    @pytest.mark.asyncio
+    async def test_save_list_lines_other_refusal_is_not_stale(self, ui_client):
+        """A 409 that is not a stale save (a keyed refusal) reads as an ordinary refusal, so the
+        page restores the rows instead of asking to open the latest copy."""
+        from ui.api_client import APIError
+        message = "This list is no longer a draft."
+        mock = AsyncMock(side_effect=APIError(409, message, {"message_key": "documents.err_list_not_draft", "message": message,
+                                                              "params": {}}))
+        ui_client.cookies.update(_authed())
+        with patch("ui.api_client.patch_list_line_page", create=True, new=mock):
+            r = await ui_client.post(
+                "/lists/list:WO-1/lines",
+                json={"line_items": [], "subtotal": 0, "tax": 0, "total": 0, "expected_version": 1},
+            )
+        assert r.status_code == 409
+        assert "code" not in r.json()
+        assert r.json()["error"]
 
     @pytest.mark.asyncio
     async def test_line_confirms_read_right_for_one_line(self, ui_client):

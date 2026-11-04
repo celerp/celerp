@@ -352,7 +352,7 @@ async def import_backup_bootstrap(
         try:
             validate_archive(tmp_path)
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(status_code=400, detail=getattr(exc, "detail", str(exc))) from exc
 
         async with bootstrap.bootstrap_restore_lock():
             existing = (

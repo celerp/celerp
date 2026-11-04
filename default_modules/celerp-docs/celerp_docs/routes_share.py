@@ -124,7 +124,7 @@ async def _validate_share_link(link: str) -> str:
     try:
         page = await validate_public_base_url(link, reject_query=True, reject_fragment=True)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=getattr(exc, "detail", str(exc))) from exc
     token = urlsplit(page).path.rsplit("/", 1)[-1]
     if not token:
         raise HTTPException(status_code=400, detail=t("docs_import.invalid_share_link"))

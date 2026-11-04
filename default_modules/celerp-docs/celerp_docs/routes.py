@@ -329,7 +329,7 @@ def _refuse_protected_fields(fields_changed: dict) -> None:
 
 
 def _stale_doc(key: str) -> HTTPException:
-    """A document edit refused because it was made from an older copy; the code lets the page
+    """A document or list edit refused because it was made from an older copy; the code lets the page
     keep the user's rows and offer Try again instead of an ordinary error."""
     return HTTPException(status_code=409, detail={**refusal(key, t(key)), "code": "stale_version"})
 
@@ -1521,7 +1521,7 @@ async def patch_sequence(doc_type: str, payload: SequencePatch, company_id: str 
     try:
         result = update_sequence(company, doc_type, prefix=payload.prefix, pattern=payload.pattern, next_num=payload.next)
     except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=422, detail=getattr(e, "detail", str(e)))
     await session.commit()
     return result
 
@@ -3036,7 +3036,7 @@ async def _settle_moved_cost(session, company_id, user_id, doc_id: str, state: d
         await auto_je.reconcile_doc_cogs(session, company_id=company_id, user_id=user_id, doc_id=doc_id,
                                          cycle_tag=tag, ts=None, trigger=trigger)
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=getattr(exc, "detail", str(exc))) from exc
 
 
 async def _credit_note_owed(session, company_id, user_id, cn_id: str, cn_state: dict, invoice: Projection,
@@ -5544,7 +5544,7 @@ async def record_receipt(session: AsyncSession, company_id, row: Projection, pay
             try:
                 rate_known = doc_rate(row.state, base_currency) is not None
             except ValueError as exc:
-                raise HTTPException(status_code=422, detail=str(exc)) from exc
+                raise HTTPException(status_code=422, detail=getattr(exc, "detail", str(exc))) from exc
             if rate_known:
                 cost = await _received_goods_cost(session, company_id, row.state, it.model_copy(update={"cost_price": None}), stock_qty,
                                                   before)
@@ -9107,9 +9107,9 @@ async def write_list_patch(session: AsyncSession, company_id, role: str, setting
     # touch independent fields and stay backward compatible without a version.
     _new_lines = (fields_changed.get("line_items") or {}).get("new")
     if isinstance(_new_lines, list) and payload.expected_version is None:
-        raise HTTPException(status_code=409, detail=t("documents.err_list_stale"))
+        raise _stale_doc("documents.err_list_stale")
     if payload.expected_version is not None and row.version != payload.expected_version:
-        raise HTTPException(status_code=409, detail=t("documents.err_list_changed"))
+        raise _stale_doc("documents.err_list_changed")
     _new_values = {f: (c or {}).get("new") for f, c in fields_changed.items()}
     if selecting:
         # Lines a selection reprices are computed from the locked List, so they cannot
@@ -9124,7 +9124,7 @@ async def write_list_patch(session: AsyncSession, company_id, role: str, setting
     try:
         _validate_shipment_values(_new_values)
     except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=422, detail=getattr(e, "detail", str(e)))
     if "discount" in _new_values and discount_from_inputs(_new_values, 0, row.state.get("currency")) is None:
         raise HTTPException(status_code=422, detail=t("documents.err_discount_number"))
     if isinstance(_new_lines, list):
@@ -9611,9 +9611,9 @@ async def patch_list_line_page(
     if row.state.get("status") != "draft":
         raise HTTPException(status_code=409, detail=t("documents.err_list_not_draft"))
     if payload.expected_version is None:
-        raise HTTPException(status_code=409, detail=t("documents.err_list_stale"))
+        raise _stale_doc("documents.err_list_stale")
     if row.version != payload.expected_version:
-        raise HTTPException(status_code=409, detail=t("documents.err_list_changed"))
+        raise _stale_doc("documents.err_list_changed")
 
     page = payload.line_items
     if len(page) > _PAGE_LIMIT_MAX:
@@ -9649,9 +9649,7 @@ async def patch_list_line_page(
     # The optimistic version guard above already pins `stored` to exactly what the client loaded, so
     # any window outside it means the client's view is stale: reject and reload rather than mutate.
     if offset > len(stored) or offset + original_count > len(stored):
-        raise HTTPException(
-            status_code=409,
-            detail=t("documents.err_list_changed"))
+        raise _stale_doc("documents.err_list_changed")
     # No positional id comparison: the page replaces the WHOLE window [offset:offset+original_count],
     # so a delete or insert legitimately shifts the surviving rows out of id-for-id alignment with
     # `stored`. Concurrency is guarded by the version pin (every save bumps the list version), not by
@@ -13141,7 +13139,7 @@ async def upload_doc_file(
         try:
             meta = await store.upload(file)
         except ValueError as exc:
-            raise HTTPException(status_code=413, detail=str(exc))
+            raise HTTPException(status_code=413, detail=getattr(exc, "detail", str(exc)))
         # Read after the upload so a document deleted meanwhile, or an uploader who has
         # lost access, leaves no file behind.
         await _get_doc(session, company_id, entity_id, for_update=True)

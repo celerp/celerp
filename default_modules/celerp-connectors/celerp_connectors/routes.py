@@ -248,7 +248,7 @@ async def trigger_sync(
     except HTTPException:
         raise
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=getattr(exc, "detail", str(exc)))
     except Exception as exc:
         log.exception("connector sync error: %s/%s", connector_name, payload.entity)
         raise HTTPException(status_code=502, detail=t("error.connector_sync_error", service=connector.display_name, detail=exc))
@@ -811,7 +811,7 @@ async def _set_order_reconciled(
         raise HTTPException(status_code=409, detail=_order_changed()) from exc
     except ValueError as exc:
         await session.rollback()
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail=getattr(exc, "detail", str(exc))) from exc
     await session.commit()
     return {"entry": entry}
 

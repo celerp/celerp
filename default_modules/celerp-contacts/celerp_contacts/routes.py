@@ -296,7 +296,7 @@ async def upload_contact_file(
         try:
             meta = await store.upload(file)
         except ValueError as exc:
-            raise HTTPException(status_code=413, detail=str(exc))
+            raise HTTPException(status_code=413, detail=getattr(exc, "detail", str(exc)))
         # Read after the upload so a contact deleted meanwhile, or an uploader who has
         # lost access, leaves no file behind.
         await _locked_contact(session, company_id, contact_id)

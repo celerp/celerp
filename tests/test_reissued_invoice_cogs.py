@@ -319,3 +319,30 @@ async def test_lot_still_out_across_a_revert_is_still_refused(client, session, a
     assert (await _per_doc(session, auth), await _account_net(session, auth["company_id"], COGS)) == before
     assert (await client.get(f"/items/{stones[1][0]}", headers=auth["headers"])).json()["status"] == "sold"
     assert (await client.get(f"/items/{stones[0][0]}", headers=auth["headers"])).json()["status"] == "available"
+
+
+async def test_credit_note_on_the_refused_invoice_keeps_the_refusal_keyed(client, session, auth):
+    """A credit note whose cost booking meets the same refusal answers it keyed, so it reads in
+    the reader's language and names the same way out."""
+    stones = (await _stones(client, auth))[:2]
+    doc = await _invoice(client, auth, stones)
+    first, second = await _line_ids(client, auth, doc)
+    r = await _ship(client, auth, doc, [second])
+    assert r.status_code == 200, r.text
+    await _ok(client, auth, f"/docs/{doc}/set-available", {"line_ids": [second]})
+    st = await _state(client, auth, doc)
+    r = await client.patch(f"/docs/{doc}", headers=auth["headers"], json={
+        "fields_changed": {"line_items": {"old": st["line_items"], "new": st["line_items"][:1]}},
+        "expected_version": st["version"]})
+    assert r.status_code == 200, r.text
+    lot, sku, _ = stones[0]
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "credit_note", "original_doc_id": doc, "total": 1.0,
+        "line_items": [{"name": "Lot", "sku": sku, "entity_id": lot, "quantity": 1, "unit_price": 1.0,
+                        "line_total": 1.0, "sell_by": "piece"}]})
+    assert r.status_code == 200, r.text
+    r = await client.post(f"/docs/{r.json()['id']}/finalize", headers=auth["headers"], json={})
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "error.cogs_line_unknown"
+    assert detail["params"] == {"doc": await _doc_number(session, auth, doc), "items": stones[1][1]}
