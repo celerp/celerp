@@ -229,6 +229,20 @@ async def reconcile_company_schedules(*, session: AsyncSession, company_id) -> N
         raise ValueError("Restored subscription schedules need repair before activation")
 
 
+async def reconcile_restored_company_schedules(*, session: AsyncSession, company_id) -> None:
+    """Restored agreements require fresh consent before unattended operations resume."""
+    await reconcile_company_schedules(session=session, company_id=company_id)
+    for agreement in await billing.agreements(session, company_id):
+        state = agreement.state
+        if (state.get("generation_mode") in billing.AUTO_MODES or state.get("auto_send")
+                or state.get("consents")):
+            await billing.locked_agreement(session, company_id, agreement.entity_id)
+            await billing.write_agreement(
+                session, company_id, agreement.entity_id,
+                {"generation_mode": "manual_due", "auto_send": False},
+                None, drop=("consents",))
+
+
 async def migrate_schedules_hook(*, session: AsyncSession) -> None:
     """on_modules_ready: move every company's templates onto schedules."""
     from celerp.models.company import Company
