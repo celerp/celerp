@@ -452,21 +452,13 @@ def _build_router() -> APIRouter:
         force, or changing the terms of one that runs, needs its permission and records the
         consent of the person who did; a mode that stops running loses its consent."""
         sent = body.model_dump(include=body.model_fields_set)
+        changes = {f: (v.isoformat() if isinstance(v, date) else v) for f, v in sent.items()}
         company = await locked_company(session, company_id)
         settings = company.settings or {}
         proj = await billing.locked_agreement(session, company_id, entity_id, scheduled=False)
         if migration.is_legacy(proj.state):
             return await _move_with(session, company_id, proj, sent, user)
         state = proj.state
-        running = billing.modes_in_force(state)
-        in_force = billing.modes_in_force({**state, **sent})
-        needed = [m for m in in_force
-                  if m not in running or any(f in sent for f in billing.CONSENT_TERMS[m])]
-        for mode in needed:
-            for permission in (billing.MODE_PERMISSION[mode], billing.MODE_DOCUMENT_PERMISSION[mode]):
-                if not role_has_permission(settings, role, permission):
-                    raise missing_permission(permission)
-        changes = {f: (v.isoformat() if isinstance(v, date) else v) for f, v in sent.items()}
         if "catchup_periods" in changes and not 0 <= changes["catchup_periods"] <= billing.CATCHUP_CAP:
             raise HTTPException(status_code=422, detail=t("subscriptions.err_catchup_window"))
         recorded = [int(k) for k in (state.get("periods") or {})]
@@ -490,6 +482,14 @@ def _build_router() -> APIRouter:
             changes["cancel_at_period_end"] = chosen
         elif "cancel_at_period_end" in changes:
             changes["cancel_at_period_end"] = None
+        running = billing.modes_in_force(state)
+        in_force = billing.modes_in_force({**state, **changes})
+        needed = [m for m in in_force if m not in running or any(
+            f in changes and changes[f] != state.get(f) for f in billing.CONSENT_TERMS[m])]
+        for mode in needed:
+            for permission in (billing.MODE_PERMISSION[mode], billing.MODE_DOCUMENT_PERMISSION[mode]):
+                if not role_has_permission(settings, role, permission):
+                    raise missing_permission(permission)
         merged = {**state, **changes}
         try:
             schedule = Schedule.from_state(merged) if merged.get("anchor_date") else None

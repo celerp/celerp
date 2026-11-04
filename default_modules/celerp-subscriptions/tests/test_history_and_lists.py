@@ -178,3 +178,90 @@ def test_every_select_all_box_is_the_shared_one():
             if "bulk-select-all" in line:
                 hits.append(f"{path.relative_to(REPO)}:{n}")
     assert not hits, hits
+
+
+# --- No History row for a change that changed nothing (P4b-10) -------------------
+
+async def _agreement_events(ui, eid: str) -> list[dict]:
+    """Every doc.updated the agreement's ledger holds, with its fields_changed."""
+    r = await ui.api.get("/ledger", params={"entity_id": eid, "limit": 500})
+    assert r.status_code == 200, r.text
+    items = r.json()["items"] if isinstance(r.json(), dict) else r.json()
+    return [e for e in items if e.get("event_type") == "doc.updated"]
+
+
+def _said_nothing(event: dict) -> bool:
+    fields = (event.get("data") or {}).get("fields_changed") or {}
+    return not fields or all(isinstance(v, dict) and not v.get("drop") and v.get("old") == v.get("new")
+                             for v in fields.values())
+
+
+async def test_saving_a_setting_with_its_current_value_records_nothing(owner_ui, monkeypatch):
+    """Class guard: every schedule and billing setting the page saves, saved again with the
+    value it holds, leaves no ledger event and no History row."""
+    from celerp_subscriptions.routes import ScheduleBody
+
+    freeze_day(monkeypatch, "2026-03-15")
+    eid = await agreement(owner_ui.api, {}, start="2026-01-01")
+    assert (await schedule(owner_ui.api, {}, eid, generation_mode="auto_invoice", auto_send=True,
+                           catchup_periods=2, term_end="2026-12-31", term_start="2026-01-01")).status_code == 200
+    state = (await owner_ui.api.get(f"/docs/{eid}")).json()
+    before = len(await _agreement_events(owner_ui, eid))
+    for field in ScheduleBody.model_fields:
+        value = state.get(field)
+        if field == "cancel_at_period_end":
+            value = value is not None  # the page's Yes/No; the stored period is kept
+        text = "" if value is None else str(value).lower() if isinstance(value, bool) else str(value)
+        r = await owner_ui.patch(f"/subscriptions/{eid}/schedule/{field}", data={"value": text})
+        assert r.status_code == 200, (field, r.text[:300])
+    events = await _agreement_events(owner_ui, eid)
+    assert len(events) == before, [e["data"] for e in events[:len(events) - before]]
+
+
+async def test_every_bill_path_records_only_what_changed(owner_ui, session, monkeypatch):
+    """Class guard: Generate due, Bill early, Generate all due and the catch-up run each
+    record the bill and nothing that reads as an empty History row."""
+    freeze_day(monkeypatch, "2026-03-15")
+    manual = await agreement(owner_ui.api, {}, start="2026-03-01")
+    assert (await generate_due(owner_ui.api, {}, manual)).status_code == 200
+    early = await owner_ui.api.post(f"/subscriptions/{manual}/bill-early", json={"request_key": "early-1"})
+    assert early.status_code == 200, early.text
+    bulk = await agreement(owner_ui.api, {}, start="2026-03-01")
+    r = await owner_ui.api.post("/subscriptions/generate-due",
+                                json={"items": [{"entity_id": bulk, "period_index": 0, "request_key": "all-1"}]})
+    assert r.json()["billed"] == 1, r.text
+    freeze_day(monkeypatch, "2026-01-01")
+    held = await agreement(owner_ui.api, {}, start="2026-01-01")
+    assert (await schedule(owner_ui.api, {}, held, generation_mode="auto_invoice")).status_code == 200
+    freeze_day(monkeypatch, "2026-03-15")
+    r = await owner_ui.api.post("/subscriptions/catch-up/run",
+                                json={"items": [{"entity_id": held, "period_index": 0, "request_key": "cu-1"}]})
+    assert r.json()["results"][0]["ok"], r.text
+    for eid in (manual, bulk, held):
+        events = await _agreement_events(owner_ui, eid)
+        assert not [e for e in events if _said_nothing(e)], (eid, [e["data"] for e in events if _said_nothing(e)])
+        assert "--" not in (await _history(owner_ui, eid)).split(), eid
+    # The receipt still answers a repeated request with the first answer.
+    again = await owner_ui.api.post(f"/subscriptions/{manual}/bill-early", json={"request_key": "early-1"})
+    assert again.status_code == 200 and again.json() == early.json(), again.text
+
+
+def test_only_the_one_writer_records_an_agreement_change():
+    """Class guard: inside celerp_subscriptions an agreement's doc.updated event is written
+    only by billing.write_agreement (which drops what did not change), and by the one-off
+    move of an earlier release's template."""
+    import ast
+
+    allowed = {("billing.py", "write_agreement"), ("migration.py", "_migrate_template")}
+    found = set()
+    for path in (REPO / "default_modules/celerp-subscriptions/celerp_subscriptions").glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for node in ast.walk(fn):
+                if (isinstance(node, ast.Call) and getattr(node.func, "id", getattr(node.func, "attr", "")) == "emit_event"
+                        and any(k.arg == "event_type" and getattr(k.value, "value", None) == "doc.updated"
+                                for k in node.keywords)):
+                    found.add((path.name, fn.name))
+    assert found == allowed, found

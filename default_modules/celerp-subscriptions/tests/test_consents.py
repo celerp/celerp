@@ -44,7 +44,7 @@ async def test_a_role_without_the_automation_permission_cannot_widen_the_catch_u
     assert await billed_docs(session, eid) == []
 
 
-@pytest.mark.parametrize("terms", [{"catchup_periods": 3}, {"generation_mode": "auto_invoice"}])
+@pytest.mark.parametrize("terms", [{"catchup_periods": 3}, {"frequency": "weekly"}])
 async def test_changing_the_terms_of_running_billing_is_a_new_consent(client, session, monkeypatch, terms):
     freeze_day(monkeypatch, "2026-03-15")
     hd = await register(client)
@@ -181,7 +181,8 @@ async def test_a_role_without_the_permission_cannot_change_a_consented_setting(c
     operator, _ = await member(client, session, hd, "operator")
     before = await template(client, hd, eid)
     r = await schedule(client, operator, eid, **{field: _CHANGED_TERM[field]})
-    assert r.status_code == 403, (field, r.text)
+    # The one automatic mode chosen again changes nothing, so it needs no consent.
+    assert r.status_code == (200 if before.get(field) == _CHANGED_TERM[field] else 403), (field, r.text)
     after = await template(client, hd, eid)
     assert after.get(field) == before.get(field) and after["consents"] == before["consents"]
 

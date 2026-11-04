@@ -131,12 +131,19 @@ def not_moved(state: dict) -> str | None:
 
 
 async def write_agreement(session: AsyncSession, company_id, entity_id: str, changes: dict, actor_id, *,
-                          drop: tuple[str, ...] = (), key: str | None = None, result: dict | None = None) -> None:
+                          drop: tuple[str, ...] = (), key: str | None = None, metadata: dict | None = None) -> None:
     """Record a change to the agreement's own fields (``{field: new value}``); ``drop``
-    removes fields from its state. Each field keeps its value before the change, and a
-    change to periods keeps the dates of each period it touched, so History can name them."""
+    removes fields from its state. Only what changes is recorded: a field given the value it
+    holds, or dropped while absent, is left out, and with nothing left no event is written,
+    so History never shows a row that says nothing. Each field keeps its value before the
+    change, and a change to periods keeps the dates of each period it touched, so History can
+    name them. Every agreement change in this module goes through here."""
     before = (await session.execute(select(Projection.state).where(
         Projection.company_id == company_id, Projection.entity_id == entity_id))).scalar_one_or_none() or {}
+    changes = {k: v for k, v in changes.items() if before.get(k) != v}
+    drop = tuple(k for k in drop if k in before and k not in changes)
+    if not changes and not drop:
+        return
     after = {**{k: v for k, v in before.items() if k not in drop}, **changes}
     fields = {**{k: {"old": before.get(k), "new": v} for k, v in changes.items()},
               **{k: {"old": before.get(k), "drop": True} for k in drop}}
@@ -157,7 +164,7 @@ async def write_agreement(session: AsyncSession, company_id, entity_id: str, cha
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.updated",
         data={"fields_changed": fields},
         actor_id=actor_id, location_id=None, source="subscription",
-        idempotency_key=key or str(uuid.uuid4()), metadata_={"result": result} if result is not None else None,
+        idempotency_key=key or str(uuid.uuid4()), metadata_=metadata,
     )
 
 
@@ -253,8 +260,10 @@ async def _billed_answer(session, company_id, k: int, schedule: Schedule, state:
 
 
 async def _bill(session, company, company_id, tid: str, state: dict, schedule: Schedule, k: int, actor,
-                *, auto: bool, send: bool) -> str:
-    """Create, finalize and claim period ``k``'s document. Caller holds the locks and commits."""
+                *, auto: bool, send: bool, request: dict | None = None, key: str | None = None) -> str:
+    """Create, finalize and claim period ``k``'s document. Caller holds the locks and commits.
+    A billing ``request`` under its idempotency ``key`` keeps its answer on the claim's own
+    event, for replay_result to repeat."""
     from celerp_docs.routes import finalize_document
     from celerp_docs.sequences import next_draft_ref
 
@@ -301,8 +310,13 @@ async def _bill(session, company, company_id, tid: str, state: dict, schedule: S
     periods[str(k)] = {"state": BILLED, "doc_id": doc_id, "release_count": release, "at": now_stamp(),
                        "by": str(actor.id) if actor.id else None, "auto": auto,
                        **({"send": {"state": "pending", "n": 0, "at": now_stamp()}} if send else {})}
-    await write_agreement(session, company_id, tid, {"periods": periods}, actor.id,
-                          drop=("billing_failure",) if state.get("billing_failure") else ())
+    drop = ("billing_failure",) if state.get("billing_failure") else ()
+    metadata = None
+    if key:
+        after = {**{f: v for f, v in state.items() if f not in drop}, "periods": periods}
+        metadata = {"request": request, "result": await _result(
+            session, company_id, doc_id, k, Schedule.from_state(after), after, already_billed=False)}
+    await write_agreement(session, company_id, tid, {"periods": periods}, actor.id, drop=drop, key=key, metadata=metadata)
     return doc_id
 
 
@@ -347,14 +361,10 @@ async def claim_period(session: AsyncSession, company_id, template_id: str, *, a
         raise HTTPException(status_code=409, detail=(
             t("subscriptions.err_nothing_due", date=nxt.isoformat()) if nxt
             else t("subscriptions.err_no_period_left")))
-    doc_id = await _bill(session, company, company_id, template_id, state, schedule, k, actor, auto=False, send=False)
+    doc_id = await _bill(session, company, company_id, template_id, state, schedule, k, actor, auto=False, send=False,
+                         request=request, key=req)
     state = (await session.get(Projection, {"company_id": company_id, "entity_id": template_id})).state
-    result = await _result(session, company_id, doc_id, k, Schedule.from_state(state), state, already_billed=False)
-    if req:
-        await emit_event(session, company_id=company_id, entity_id=template_id, entity_type="doc",
-                         event_type="doc.updated", data={"fields_changed": {}}, actor_id=actor.id, location_id=None,
-                         source="subscription", idempotency_key=req, metadata_={"request": request, "result": result})
-    return result
+    return await _result(session, company_id, doc_id, k, Schedule.from_state(state), state, already_billed=False)
 
 
 async def agreements(session: AsyncSession, company_id) -> list[Projection]:
