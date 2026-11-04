@@ -429,3 +429,19 @@ def test_country_picker_list_is_usable():
     assert COUNTRIES == tuple(sorted(COUNTRIES))  # datalist stays alphabetical
     for c in ("Thailand", "Germany", "United States", "Vietnam"):
         assert c in COUNTRIES
+
+
+@pytest.mark.asyncio
+async def test_a_shipment_never_takes_another_lists_number(client):
+    """The shipment's counter reaching a number a transfer already took draws the next free
+    one rather than writing the shipment over that transfer."""
+    tok = await _token(client)
+    r = await client.patch("/docs/sequences/transfer", headers=_h(tok), json={"prefix": "SHIP"})
+    assert r.status_code == 200, r.text
+    transfer = (await _make_list(client, tok, "transfer"))["id"]
+    invoice = await _issued_doc(client, tok, "invoice")
+    r = await _ship_docs(client, tok, [invoice])
+    assert r.status_code == 200, r.text
+    assert r.json()["id"] != transfer
+    state = (await client.get(f"/lists/{transfer}", headers=_h(tok))).json()
+    assert state["list_type"] == "transfer"

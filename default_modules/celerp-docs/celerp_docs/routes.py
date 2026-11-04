@@ -7933,7 +7933,7 @@ async def create_shipment_from_docs(
     _ship_to = next((s.get("contact_shipping_address") for s in states
                      if s.get("contact_shipping_address")), None)
     _attn = next((s.get("shipping_attn") for s in states if s.get("shipping_attn")), None)
-    ref_id = next_doc_ref(company, list_sequence_key("shipping_doc", company.settings))
+    ref_id = await _next_free_list_ref(session, company, company_id, "shipping_doc")
     new_entity_id = f"list:{ref_id}"
     data = {k: v for k, v in {
         "list_type": "shipping_doc",
@@ -8619,6 +8619,18 @@ async def _get_list(session: AsyncSession, company_id, entity_id: str) -> Projec
     return row
 
 
+async def _next_free_list_ref(session: AsyncSession, company, company_id, list_type: str | None) -> str:
+    """The next number of this List type's counter that no List holds yet. Every type has its
+    own counter but all share the list: ids, so a counter can reach a number another type (or
+    an import) already took: that number is skipped, never reused, and nothing is renumbered.
+    ``company`` comes from locked_company(), as for next_doc_ref()."""
+    key = list_sequence_key(list_type, company.settings)
+    while True:
+        ref_id = next_doc_ref(company, key)
+        if await session.get(Projection, {"company_id": company_id, "entity_id": f"list:{ref_id}"}) is None:
+            return ref_id
+
+
 async def _get_list_for_update(session: AsyncSession, company_id, entity_id: str) -> Projection:
     """Load a list row under a write lock (SELECT ... FOR UPDATE) so a read-modify-write over its
     line_items is serialized against concurrent writers. Scan check-off and counting read the whole
@@ -9068,7 +9080,7 @@ async def create_list_record(payload: ListCreatePayload, company_id, role: str, 
     company = await locked_company(session, company_id)
     if (done := await _replay()) is not None:
         return done
-    ref_id = payload.ref_id or next_doc_ref(company, list_sequence_key(payload.list_type, company.settings))
+    ref_id = payload.ref_id or await _next_free_list_ref(session, company, company_id, payload.list_type)
     entity_id = f"list:{ref_id}"
 
     # Uniqueness check
@@ -10042,7 +10054,7 @@ async def duplicate_list(
     row = await _get_list_for_update(session, company_id, entity_id)
     _assert_contacts_unchanged(named, [row])
     state = row.state
-    ref_id = next_doc_ref(company, list_sequence_key(state.get("list_type"), company.settings))
+    ref_id = await _next_free_list_ref(session, company, company_id, state.get("list_type"))
     new_entity_id = f"list:{ref_id}"
     new_data = {k: v for k, v in state.items()
                 if k not in {"status", "entity_type", "ref_id", "share_token", SCAN_RUNS_FIELD, RESTORE_POINT}}
@@ -13527,7 +13539,7 @@ async def create_audit_list_record(payload: AuditCreateBody, company_id: str, us
             continue
         lines.append({"item_id": r.entity_id, "sku": st.get("sku"), "name": st.get("name"),
                       "barcode": st.get("barcode"), "quantity": float(st.get("quantity") or 0)})
-    ref_id = next_doc_ref(company, list_sequence_key("audit", company.settings))
+    ref_id = await _next_free_list_ref(session, company, company_id, "audit")
     entity_id = entity_id_override or f"list:{ref_id}"
     if await session.get(Projection, {"company_id": company_id, "entity_id": entity_id}) is not None:
         raise HTTPException(status_code=409, detail=t("documents.err_audit_number_taken", number=ref_id))
@@ -14353,7 +14365,7 @@ async def create_writeoff_list(
         lines.append(_writeoff_seed_line(item, company.settings or {}))
     if not lines:
         raise HTTPException(status_code=422, detail=t("documents.err_writeoff_no_items"))
-    ref_id = next_doc_ref(company, list_sequence_key("writeoff", company.settings))
+    ref_id = await _next_free_list_ref(session, company, company_id, "writeoff")
     entity_id = f"list:{ref_id}"
     if await session.get(Projection, {"company_id": company_id, "entity_id": entity_id}) is not None:
         raise HTTPException(status_code=409, detail=t("documents.err_writeoff_number_taken", number=ref_id))

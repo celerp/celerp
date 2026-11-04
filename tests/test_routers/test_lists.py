@@ -661,6 +661,33 @@ class TestListPrefixes:
         assert split.startswith("list:QUO-") and split.endswith("-0002")
 
     @pytest.mark.asyncio
+    async def test_a_number_another_list_type_took_is_skipped_not_refused(self, client):
+        """Every List type has its own counter but all share the list: ids. A type whose
+        counter reaches a number another type already took draws the next free one."""
+        token = await _register(client)
+        r = await client.patch("/docs/sequences/transfer", headers=_h(token), json={"prefix": "QUO"})
+        assert r.status_code == 200, r.text
+        transfer = await _create_list(client, token, list_type="transfer")
+        quote = await _create_list(client, token, list_type="quotation")
+        assert transfer.endswith("-0001") and quote.endswith("-0002") and quote != transfer
+        state = (await client.get(f"/lists/{transfer}", headers=_h(token))).json()
+        assert state["list_type"] == "transfer"
+
+    @pytest.mark.asyncio
+    async def test_a_duplicate_never_takes_another_lists_number(self, client):
+        token = await _register(client)
+        r = await client.patch("/docs/sequences/transfer", headers=_h(token), json={"prefix": "QUO", "next": 2})
+        assert r.status_code == 200, r.text
+        transfer = await _create_list(client, token, list_type="transfer")
+        quote = await _create_list(client, token, list_type="quotation")
+        assert transfer.endswith("-0002") and quote.endswith("-0001")
+        r = await client.post(f"/lists/{quote}/duplicate", headers=_h(token))
+        assert r.status_code == 200, r.text
+        assert r.json()["id"] not in {quote, transfer}
+        state = (await client.get(f"/lists/{transfer}", headers=_h(token))).json()
+        assert state["list_type"] == "transfer"
+
+    @pytest.mark.asyncio
     async def test_the_old_list_counter_is_still_in_the_api(self, client):
         token = await _register(client)
         rows = (await client.get("/docs/sequences", headers=_h(token))).json()
