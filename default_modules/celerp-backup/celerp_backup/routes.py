@@ -27,6 +27,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from fastapi.responses import FileResponse, Response
 from starlette.background import BackgroundTask
 
+from celerp.accounting_roles import refusal_detail
 from celerp.db import get_session
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -352,7 +353,7 @@ async def import_backup_bootstrap(
         try:
             validate_archive(tmp_path)
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=getattr(exc, "detail", str(exc))) from exc
+            raise HTTPException(status_code=400, detail=refusal_detail(exc)) from exc
 
         async with bootstrap.bootstrap_restore_lock():
             existing = (

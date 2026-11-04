@@ -18,7 +18,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import FileResponse
 
-from celerp.accounting_roles import CONSIGNOR_FIELD, catalog_refusal, refusal
+from celerp.accounting_roles import CONSIGNOR_FIELD, catalog_refusal, refusal, refusal_detail
 from celerp.db import get_session
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.models.ledger import LedgerEntry
@@ -296,7 +296,7 @@ async def upload_contact_file(
         try:
             meta = await store.upload(file)
         except ValueError as exc:
-            raise HTTPException(status_code=413, detail=getattr(exc, "detail", str(exc)))
+            raise HTTPException(status_code=413, detail=refusal_detail(exc))
         # Read after the upload so a contact deleted meanwhile, or an uploader who has
         # lost access, leaves no file behind.
         await _locked_contact(session, company_id, contact_id)

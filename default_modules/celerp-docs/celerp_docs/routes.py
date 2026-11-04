@@ -41,7 +41,7 @@ from celerp_docs.doc_projections import RESTORE_POINT, UNISSUED_STATUSES, list_l
 from celerp_docs.taxes import TaxApplication
 from celerp.services.field_schema import reject_system_item_fields
 from celerp.services.locations import require_company_location, require_ship_from
-from celerp.accounting_roles import CONSIGNOR_FIELD, CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, VALUED_FROM_KEY, AccountRole, Refused, catalog_refusal, refusal
+from celerp.accounting_roles import CONSIGNOR_FIELD, CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, VALUED_FROM_KEY, AccountRole, Refused, catalog_refusal, refusal, refusal_detail
 from celerp.services.account_roles import current_settings, is_consigned, lineage, lot_account, new_lot_account, role_map
 from celerp.services.background import spawn_background
 from celerp.services.company_lock import lock_company, lock_projections, locked_company, locked_state
@@ -1521,7 +1521,7 @@ async def patch_sequence(doc_type: str, payload: SequencePatch, company_id: str 
     try:
         result = update_sequence(company, doc_type, prefix=payload.prefix, pattern=payload.pattern, next_num=payload.next)
     except ValueError as e:
-        raise HTTPException(status_code=422, detail=getattr(e, "detail", str(e)))
+        raise HTTPException(status_code=422, detail=refusal_detail(e))
     await session.commit()
     return result
 
@@ -3038,7 +3038,7 @@ async def _settle_moved_cost(session, company_id, user_id, doc_id: str, state: d
         await auto_je.reconcile_doc_cogs(session, company_id=company_id, user_id=user_id, doc_id=doc_id,
                                          cycle_tag=tag, ts=None, trigger=trigger)
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=getattr(exc, "detail", str(exc))) from exc
+        raise HTTPException(status_code=409, detail=refusal_detail(exc)) from exc
 
 
 async def _credit_note_owed(session, company_id, user_id, cn_id: str, cn_state: dict, invoice: Projection,
@@ -5584,7 +5584,7 @@ async def record_receipt(session: AsyncSession, company_id, row: Projection, pay
             try:
                 rate_known = doc_rate(row.state, base_currency) is not None
             except ValueError as exc:
-                raise HTTPException(status_code=422, detail=getattr(exc, "detail", str(exc))) from exc
+                raise HTTPException(status_code=422, detail=refusal_detail(exc)) from exc
             if rate_known:
                 cost = await _received_goods_cost(session, company_id, row.state, it.model_copy(update={"cost_price": None}), stock_qty,
                                                   before)
@@ -9164,7 +9164,7 @@ async def write_list_patch(session: AsyncSession, company_id, role: str, setting
     try:
         _validate_shipment_values(_new_values)
     except ValueError as e:
-        raise HTTPException(status_code=422, detail=getattr(e, "detail", str(e)))
+        raise HTTPException(status_code=422, detail=refusal_detail(e))
     if "discount" in _new_values and discount_from_inputs(_new_values, 0, row.state.get("currency")) is None:
         raise HTTPException(status_code=422, detail=t("documents.err_discount_number"))
     if isinstance(_new_lines, list):
@@ -13179,7 +13179,7 @@ async def upload_doc_file(
         try:
             meta = await store.upload(file)
         except ValueError as exc:
-            raise HTTPException(status_code=413, detail=getattr(exc, "detail", str(exc)))
+            raise HTTPException(status_code=413, detail=refusal_detail(exc))
         # Read after the upload so a document deleted meanwhile, or an uploader who has
         # lost access, leaves no file behind.
         await _get_doc(session, company_id, entity_id, for_update=True)

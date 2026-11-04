@@ -32,6 +32,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.accounting_roles import refusal_detail
 from celerp.db import get_session
 from celerp.events.engine import emit_event
 from celerp.importers.tabular import ZIP_ERRORS, check_zip_member, read_zip_member, zip_directory_fits
@@ -131,7 +132,7 @@ async def upload_attachment(
         try:
             att = await store.upload(file, attachment_type=attachment_type)  # type: ignore[arg-type]
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=getattr(exc, "detail", str(exc))) from exc
+            raise HTTPException(status_code=422, detail=refusal_detail(exc)) from exc
 
         row = await _locked_item(session, company_id, entity_id)
         existing: list[dict] = row.state.get("attachments") or []
@@ -399,7 +400,7 @@ async def upload_item_file(
         try:
             meta = await store.upload(file)
         except ValueError as exc:
-            raise HTTPException(status_code=413, detail=getattr(exc, "detail", str(exc))) from exc
+            raise HTTPException(status_code=413, detail=refusal_detail(exc)) from exc
 
         is_hero, document_tag = item_file_role(
             row.state.get("files", []), meta.get("mime", ""), as_hero=as_hero, document_tag=document_tag,

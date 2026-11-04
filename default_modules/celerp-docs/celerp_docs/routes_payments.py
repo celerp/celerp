@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import AccountRole, refusal
+from celerp.accounting_roles import AccountRole, refusal, refusal_detail
 from celerp.db import get_session
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company
@@ -134,7 +134,7 @@ async def _checked_books(session: AsyncSession, company_id, books) -> tuple[str,
     try:
         timezone, rate = business_timezone(books["timezone"]).key, checked_exchange_rate(books["rate"])
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=getattr(exc, "detail", str(exc))) from exc
+        raise HTTPException(status_code=422, detail=refusal_detail(exc)) from exc
     return books["deposit_account"], timezone, books["base_currency"].upper(), rate
 
 
@@ -171,7 +171,7 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
         try:
             context = await payment_books(session, company_id, doc_state)
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=getattr(exc, "detail", str(exc))) from exc
+            raise HTTPException(status_code=422, detail=refusal_detail(exc)) from exc
         paid_at = paid_at or datetime.datetime.now(datetime.timezone.utc)
     account, timezone, base, rate = await _checked_books(session, company_id, context)
     if paid_at is None:
@@ -180,7 +180,7 @@ async def record_stripe_payment(session, company_id, entity_id, doc_state, *,
     try:
         amount = pay.from_stripe_amount(amount_minor, currency)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=getattr(exc, "detail", str(exc))) from exc
+        raise HTTPException(status_code=422, detail=refusal_detail(exc)) from exc
     from celerp_docs.routes import apply_doc_payment
     body = {"amount": float(amount), "payment_date": business_date_at(paid_at, timezone),
             "currency": currency.upper(), "bank_account": account, "conversion_rate": float(rate),
@@ -299,7 +299,7 @@ async def record_stripe_refund(session, company_id, row: Projection, *, refund_i
     try:
         amount = pay.from_stripe_amount(amount_minor, currency)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=getattr(exc, "detail", str(exc))) from exc
+        raise HTTPException(status_code=422, detail=refusal_detail(exc)) from exc
     await books_currency_still(session, company_id, base)
     day = business_date_at(occurred_at, timezone)
     actor = await _company_owner_id(session, company_id)
@@ -379,7 +379,7 @@ async def start_payment(token: str, session: AsyncSession = Depends(get_session)
     try:
         amount = pay.to_stripe_amount(_outstanding(state), currency)
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=getattr(exc, "detail", str(exc))) from exc
+        raise HTTPException(status_code=409, detail=refusal_detail(exc)) from exc
     try:
         await require_online_deposit_account(session, company_id, books["deposit_account"])
     except HTTPException as exc:
