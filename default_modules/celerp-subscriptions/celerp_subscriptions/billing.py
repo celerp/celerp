@@ -417,10 +417,6 @@ def lapsed_modes(state: dict) -> list[str]:
 
 async def run_due(*, session: AsyncSession, company_id, today: date, budget: int) -> OperationReport:
     """The dispatcher's billing pass for one company (the ``periodic_operation`` slot)."""
-    await locked_company(session, company_id)
-    await session.execute(delete(SubscriptionEmailAttempt).where(
-        SubscriptionEmailAttempt.company_id == company_id,
-        SubscriptionEmailAttempt.created_at < datetime.now(timezone.utc) - EMAIL_ATTEMPT_RETENTION))
     report = OperationReport()
     from celerp.modules.registry import uses_module
 
@@ -483,7 +479,20 @@ async def run_due(*, session: AsyncSession, company_id, today: date, budget: int
         await _notify(session, company_id, "notice_billed", "/subscriptions/summary", day=today.isoformat())
     if held:
         await _notify(session, company_id, "notice_catchup", "/subscriptions/catch-up", n=len(held), m=sum(held))
+    report.after_commit.append(_expire_attempts_for(company_id))
     return report
+
+
+def _expire_attempts_for(company_id):
+    async def _run(factory) -> None:
+        async with factory() as session:
+            if await locked_company(session, company_id) is None:
+                return
+            await session.execute(delete(SubscriptionEmailAttempt).where(
+                SubscriptionEmailAttempt.company_id == company_id,
+                SubscriptionEmailAttempt.created_at < datetime.now(timezone.utc) - EMAIL_ATTEMPT_RETENTION))
+            await session.commit()
+    return _run
 
 
 async def _notify(session, company_id, notice: str, url: str, **params) -> None:
@@ -587,14 +596,14 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
 
             operation_id = str(uuid.uuid5(
                 uuid.NAMESPACE_URL, f"subscription-email:{company_id}:{doc_id}:{n}"))
-            session.add(SubscriptionEmailAttempt(
-                company_id=company_id, operation_id=uuid.UUID(operation_id), doc_id=doc_id,
-                attempt_number=n, payload_json=payload_json))
             digest = hashlib.sha256(payload_json.encode()).hexdigest()
             periods[str(k)]["send"] = {
                 "state": "sending", "n": n, "at": now_stamp(), "operation_id": operation_id,
                 "deduplicated": relay_idempotent, "payload_digest": digest}
             await write_agreement(session, company_id, template_id, {"periods": periods}, actor.id)
+            session.add(SubscriptionEmailAttempt(
+                company_id=company_id, operation_id=uuid.UUID(operation_id), doc_id=doc_id,
+                attempt_number=n, payload_json=payload_json))
             await session.commit()
 
     try:

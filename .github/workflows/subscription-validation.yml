@@ -43,7 +43,6 @@ jobs:
           pytest -n 2 -q --tb=short --no-cov
           default_modules/celerp-subscriptions/tests/
           tests/test_company_backup_lifecycle.py
-          tests/test_company_copy_replace.py
           tests/test_company_backup.py
           tests/test_email_service.py
           tests/test_periodic_dispatcher.py

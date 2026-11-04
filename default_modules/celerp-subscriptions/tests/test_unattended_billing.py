@@ -284,7 +284,7 @@ async def test_an_interrupted_send_is_shown_with_a_retry(client, session, monkey
     unconfirmed = [r for r in (await summary(client, hd))["rows"] if r["kind"] == "send_unconfirmed"]
     assert raising in [r["entity_id"] for r in unconfirmed]
     state = await template(client, hd, raising)
-    assert "relay unreachable" in state["periods"]["0"]["send"]["error"]
+    assert "delivery outcome unknown" in state["periods"]["0"]["send"]["error"]
 
 
 async def test_a_retried_send_is_recorded_as_the_person_who_retried(client, session, monkeypatch, mail):
