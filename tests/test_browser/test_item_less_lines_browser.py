@@ -113,7 +113,8 @@ def test_select_all_is_tri_state_and_untick_works(page, ui_server, api, finalize
 
 
 def test_set_available_sends_held_and_item_less_rows(page, ui_server, api):
-    answer_confirms(page)
+    asked: list[str] = []
+    answer_confirms(page, lambda question: asked.append(question) or True)
 
     # A finalized invoice: a reserved stone, an available stone and a certificate, all ticked.
     held, free = _stone(api), _stone(api)
@@ -126,9 +127,13 @@ def test_set_available_sends_held_and_item_less_rows(page, ui_server, api):
     page.locator("#li-bulk-select").select_option(value="li-revert")
     with page.expect_request(lambda q: q.method == "POST" and q.url.endswith("/set-available")) as sent:
         page.locator("#li-bulk-revert-btn").click()
-    assert _posted(sent.value, "line_id") == [held_id, gia_id]
+    # The confirm counts the one line it acts on and names the two it leaves up front.
+    assert asked[-1] == (f'Set 1 line as available? Lines 2 "{free["sku"]}", 3 "GIA Certificate" '
+                         'will be left as they are.')
+    assert _posted(sent.value, "line_id") == [held_id, free_id, gia_id]
     assert _posted(sent.value, "selected") == []
     assert '3 "GIA Certificate"' in _persistent_toast(page, "GIA Certificate")
+    assert f'2 "{free["sku"]}"' in _persistent_toast(page, "nothing held or out")
     assert _status(api, held) == "available" and _status(api, free) == "available"
 
     # Reserve on the finalized invoice posts every ticked row, the certificate included.
@@ -136,6 +141,7 @@ def test_set_available_sends_held_and_item_less_rows(page, ui_server, api):
     page.locator("#li-bulk-select").select_option(value="li-reserve")
     with page.expect_request(lambda q: q.method == "POST" and q.url.endswith("/reserve-lines")) as sent:
         page.evaluate("liBulkReserveConfirmed()")
+    assert asked[-1] == 'Set 2 lines as reserved? Line 3 "GIA Certificate" will be left as it is.'
     assert _posted(sent.value, "line_id") == [held_id, free_id, gia_id]
 
     # A List: a reserved stone and a certificate. Set as available releases the stone.
@@ -149,6 +155,7 @@ def test_set_available_sends_held_and_item_less_rows(page, ui_server, api):
     page.check("#li-select-all")
     with page.expect_request(lambda q: q.method == "POST" and q.url.endswith("/set-available")) as sent:
         page.evaluate("liBulkAvailableConfirmed()")
+    assert asked[-1] == 'Set 1 line as available? Line 2 "GIA Certificate" will be left as it is.'
     assert _posted(sent.value, "line_id") == [stone_line, gia_line]
     assert '2 "GIA Certificate"' in _persistent_toast(page, "GIA Certificate")
     assert _status(api, stone) == "available"

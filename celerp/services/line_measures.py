@@ -22,7 +22,7 @@ from decimal import ROUND_DOWN, Decimal, InvalidOperation
 from fastapi import HTTPException
 
 from celerp.accounting_roles import refusal
-from celerp.services.units import exceeds_precision, is_pieces_unit, is_weight_unit, validate_quantity
+from celerp.services.units import exceeds_precision, is_non_stock_line, is_pieces_unit, is_weight_unit, validate_quantity
 from ui.i18n import t
 
 
@@ -148,6 +148,7 @@ def item_measure_meta(item: dict, unit_map: dict) -> dict:
         "pieces": item.get("pieces"),
         "qty_is_weight": is_weight_unit(sell_by, unit_map),
         "qty_is_pieces": is_pieces_unit(sell_by, unit_map),
+        "non_stock": is_non_stock_line(item.get("inventory_type"), sell_by),
     }
 
 

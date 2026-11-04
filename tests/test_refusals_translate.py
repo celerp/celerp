@@ -112,12 +112,12 @@ async def test_each_take_back_reason_is_translated(client, h):
     b = await lot(client, h, "RT-TWO-B", 1)
     memo = await doc(client, h, [line(a, 1, sku="RT-TWO-A"), line(b, 1, sku="RT-TWO-B")], doc_type="memo")
     l0, l1 = await line_ids(client, h, memo)
-    await _ok(await client.post(f"/docs/{memo}/fulfill-lines", headers=h, json={"line_ids": [l0]}))
+    await _ok(await client.post(f"/docs/{memo}/fulfill-lines", headers=h, json={"line_ids": [l0, l1]}))
     r = await client.post(f"/docs/{memo}/set-available", headers=h,
-                          json={"line_ids": [l0, l1], "quantities": {l0: 0}})
+                          json={"line_ids": [l0, l1], "quantities": {l0: 0, l1: 2}})
     assert _in_spanish(r, 422) == ("No se puede marcar como disponible: "
-                                   "RT-TWO-B: no hay nada reservado ni fuera en esta línea; "
-                                   "RT-TWO-A: la cantidad devuelta debe ser mayor que cero")
+                                   "RT-TWO-A: la cantidad devuelta debe ser mayor que cero; "
+                                   "RT-TWO-B: no se pueden devolver 2 de 1 que salieron")
 
 
 async def test_a_due_date_before_the_issue_date_is_refused_in_plain_words(client, owner):

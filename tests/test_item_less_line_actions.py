@@ -211,6 +211,27 @@ async def test_stock_line_actions_refuse_when_only_item_less_lines(client, sessi
     assert after["version"] == before["version"] and after["line_items"] == before["line_items"]
 
 
+# ── Set as available names a stocked line it leaves as it is ─────────────────
+
+@pytest.mark.parametrize("kind", ["invoice", "list"])
+async def test_set_available_names_a_line_with_nothing_held_or_out(client, session, kind):
+    g = await _gems(client)
+    lines = [_line(g, "DEMO-SAP-001"), _line(g, "DEMO-EMR-001"), GIA]
+    owner = await (_list(client, g, lines) if kind == "list" else _doc(client, g, lines))
+    lids = await _ids(client, g, owner)
+    await _reserve(client, g, owner, lids[:1])
+    answer = await _ok(await _act(client, g, owner, "set-available", lids))
+    assert [await _status(client, g, s) for s in ("DEMO-SAP-001", "DEMO-EMR-001")] == ["available"] * 2
+    assert _notice(answer) == [("documents.lines_skipped_one", {"lines": '3 "GIA Certificate"'}),
+                               ("documents.idle_lines_skipped_one", {"lines": '2 "DEMO-EMR-001"'})]
+    before = await _state(client, g, owner)
+    r = await _act(client, g, owner, "set-available", lids[1:2])
+    assert r.status_code == 422, r.text
+    assert (_detail(r)["message_key"], _detail(r)["params"]) == ("documents.idle_lines_skipped_one", {"lines": '2 "DEMO-EMR-001"'})
+    after = await _state(client, g, owner)
+    assert after["version"] == before["version"] and after["line_items"] == before["line_items"]
+
+
 async def test_service_lines_get_their_own_wording(client, session, ui_client):
     import ui.api_client as api
     from test_helpers import make_test_token
@@ -508,11 +529,12 @@ def _boxes(html: str, scope: str = "") -> list:
 async def test_every_line_renderer_gives_its_checkbox_the_line_id_and_label(client, session):
     """The draft rows and the empty row a draft adds, the finalized rows, the audit's rows and
     the audit tbody a scan swaps in: each checkbox carries the line id an action sends and the
-    label a notice names it by, and the swapped audit row has a cell under every heading."""
+    label a notice names it by, a row a stock action leaves as it is says why (no item, or a
+    service), and the swapped audit row has a cell under every heading."""
     from bs4 import BeautifulSoup
     from test_helpers import ui_signed_in
     g = await _gems(client)
-    lines = [*(_line(g, s) for s in STONES[:2]), GIA]
+    lines = [*(_line(g, s) for s in STONES[:2]), GIA, _line(g, SVC, 200.0)]
     draft = (await _ok(await client.post("/docs", headers=g.h, json={"doc_type": "invoice", "line_items": lines})))["id"]
     final = await _doc(client, g, lines)
     audit = await _audit_with_certificate(client, g)
@@ -529,6 +551,10 @@ async def test_every_line_renderer_gives_its_checkbox_the_line_id_and_label(clie
         got = {(b.get("data-line-id"), b.get("data-label")) for b in _boxes(html, "tbody")
                if b.get("data-line-id")}
         assert got == want, name
+        skips = {li["line_id"]: None if li.get("item_id") and li.get("sku") != SVC
+                 else "service" if li.get("item_id") else "no_item" for li in state["line_items"]}
+        assert {b["data-line-id"]: b.get("data-skip") for b in _boxes(html, "tbody")
+                if b.get("data-line-id")} == skips, name
         assert all(b.has_attr("data-line-id") and b.has_attr("data-label") for b in _boxes(html)), name
     heads = BeautifulSoup(pages["audit"], "html.parser").select("table:has(#line-body) thead tr")[0].find_all("th")
     assert heads

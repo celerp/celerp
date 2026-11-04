@@ -9756,7 +9756,8 @@ async def set_list_lines_available(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Give back what chosen List lines hold. A List never ships, so a line whose goods are
-    sold or out on memo is refused: they are taken back on the document that shipped them."""
+    sold or out on memo is refused: they are taken back on the document that shipped them.
+    A line holding nothing is left as it is and named, as on a document."""
     row = await _get_list_for_update(session, company_id, entity_id)
 
     async def run(indices: list[int]) -> dict:
@@ -9770,8 +9771,14 @@ async def set_list_lines_available(
                 shipped.setdefault(by, []).append(str(line_items[i].get("sku") or i + 1))
         if shipped:
             raise HTTPException(status_code=422, detail=shipped_elsewhere(shipped))
-        return await _reserve_lines_impl(row, entity_id, "available", indices, user, session,
-                                         may_acquire=False, commit=False)
+        acting, _counted, left = _acting_lines(line_items, indices, locked, count_service=False)
+        idle = [i for i in acting if not by_line.get(i)]
+        skipped = left + _skipped_lines(line_items, idle, "idle")
+        if len(idle) == len(acting):
+            _refuse_skipped(skipped)
+        result = await _reserve_lines_impl(row, entity_id, "available", [i for i in acting if i not in idle],
+                                           user, session, may_acquire=False, commit=False)
+        return {**result, "skipped": skipped}
 
     return await _line_action(session, company_id, user, row, "set-available", body, run)
 
@@ -10382,9 +10389,12 @@ def _skipped_lines(line_items: list[dict], indices: list[int], kind: str) -> lis
 # Per skip kind: (key of the notice that names the lines left as they are, key of the
 # refusal when every chosen line is of that kind). ``memo_no_item`` is a memo line with no
 # item that Invoice selected leaves on the memo; its notice is read on the new invoice.
+# ``idle`` is a stock line with nothing held or out, which Set as available leaves as it is;
+# its notice reads as the refusal too.
 _SKIP_KEYS = {"no_item": ("documents.lines_skipped", "lines.no_stock"),
               "service": ("documents.service_lines_skipped", "lines.service_no_stock"),
-              "memo_no_item": ("documents.memo_lines_skipped", "lines.no_stock")}
+              "memo_no_item": ("documents.memo_lines_skipped", "lines.no_stock"),
+              "idle": ("documents.idle_lines_skipped", "documents.idle_lines_skipped")}
 
 
 def _skip_messages(skipped: list[dict], *, refuse: bool) -> list[dict]:
@@ -11309,8 +11319,8 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
     (sold or on memo) for this document and its shipment's line can be told. Any line or
     lot that fails refuses the whole request. ``holding`` is given when the user chose Set as
     available, and the refusal names that action: a line in it gives back a hold elsewhere,
-    so having nothing out is not an error for it; the status is checked only when something
-    is to come back."""
+    so having nothing out is not an error for it, and a line outside it with nothing out is
+    left as it is and named; the status is checked only when something is to come back."""
     set_available = holding is not None
     company_id = row.company_id
     entity_id = row.entity_id
@@ -11353,6 +11363,7 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
                        sku=_sku(eid))
 
     errors: list[dict] = []
+    idle: list[int] = []
     # (key the request names it by, lots it covers) per chosen line or legacy lot.
     groups: list[tuple[str, list[Projection], str | None]] = []
     if indices:
@@ -11365,8 +11376,7 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
             name = line_items[i].get('sku') or line_items[i].get('description') or i + 1
             if not lots:
                 if set_available and i not in holding:
-                    errors.append(refusal("lines.available_nothing_held",
-                                          f"{name}: nothing is held or out on this line", name=name))
+                    idle.append(i)
                 elif not set_available:
                     errors.append(refusal("lines.revert_nothing_out", f"{name}: nothing is out on this line",
                                           name=name))
@@ -11394,6 +11404,7 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
             else:
                 groups.append((eid, [proj], eid))
 
+    skipped = left + _skipped_lines(line_items, idle, "idle")
     to_revert: list[str] = []
     # lot -> quantity coming back, for lots where only part of it returns.
     partial_plan: dict[str, tuple[float, str]] = {}
@@ -11439,7 +11450,7 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
     if set_available:
         if not groups:
             return {"fulfillment_status": state.get("fulfillment_status"), "reverted": [], "partially_returned": [],
-                    "skipped": left}
+                    "skipped": skipped}
         _check_revert_status(state)
 
     cid = uuid.UUID(str(company_id))
@@ -11484,7 +11495,7 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
         "reverted": to_revert,
         # Lots that came back in part: the new in-stock parcel per part-returned line.
         "partially_returned": returned_brief,
-        "skipped": left,
+        "skipped": skipped,
     }
 
 
@@ -12261,17 +12272,21 @@ class SetAvailableRequest(RevertLinesRequest):
 async def _set_available_impl(row: Projection, body: SetAvailableRequest, indices: list[int], user, session) -> dict:
     """Give back holds and take back shipments on the chosen lines, without committing.
     Every line is proved before anything changes, so the lines come back together or not
-    at all."""
+    at all. A line with nothing held or out is left as it is and named; a choice of only such
+    lines is refused, naming them."""
     line_items = row.state.get("line_items", [])
     locked, by_line = await _line_stock(session, row.company_id, row.entity_id, line_items, indices)
     indices, _counted, left = _acting_lines(line_items, indices, locked, count_service=False)
     holding = frozenset(i for i in indices if by_line.get(i))
     taken = await _revert_lines_impl(row, body, indices, user, session, holding=holding)
+    skipped = left + taken["skipped"]
+    if not holding and not (taken["reverted"] or taken["partially_returned"]):
+        _refuse_skipped(skipped)
     released: list[str] = []
     if holding:
         released = (await _reserve_lines_impl(row, row.entity_id, "available", sorted(holding), user, session,
                                               may_acquire=False, commit=False))["released"]
-    return {**taken, "released": released, "skipped": left}
+    return {**taken, "released": released, "skipped": skipped}
 
 
 @router.post("/{entity_id}/set-available")

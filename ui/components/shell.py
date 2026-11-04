@@ -188,12 +188,11 @@ function liSelectAll(table, sa, onChange) {
   });
   new MutationObserver(sync).observe(table, {childList: true, subtree: true});
 }
-// Name the ticked rows an action left out, as 6 "GIA Certificate", in a notice that stays. rows
-// are their checkboxes; forms is {one, many}, each with {lines}. A row is numbered by its
-// position plus the page's line offset and named by its SKU, description or name, as the
-// server names a line (line_label), else by the label its checkbox carries.
-function liSkipNotice(rows, forms) {
-  if (!rows.length || !window.celerpToast) return;
+// The ticked rows named as 6 "GIA Certificate", in forms {one, many}, each with {lines}. rows
+// are their checkboxes. A row is numbered by its position plus the page's line offset and
+// named by its SKU, description or name, as the server names a line (line_label), else by
+// the label its checkbox carries.
+function liNameLines(rows, forms) {
   var named = rows.map(function(cb) {
     var row = cb.closest('tr'), all = Array.prototype.slice.call(cb.closest('tbody').querySelectorAll('.li-select'));
     var name = '';
@@ -206,7 +205,25 @@ function liSkipNotice(rows, forms) {
     var n = all.indexOf(cb) + 1 + (window._CELERP_LINE_OFFSET || 0);
     return name ? n + ' "' + name + '"' : String(n);
   });
-  celerpToast(forms[named.length === 1 ? 'one' : 'many'].replace('{lines}', named.join(', ')), 'info', true);
+  return forms[named.length === 1 ? 'one' : 'many'].replace('{lines}', named.join(', '));
+}
+// Name the ticked rows an action left out in a notice that stays.
+function liSkipNotice(rows, forms) {
+  if (rows.length && window.celerpToast) celerpToast(liNameLines(rows, forms), 'info', true);
+}
+// The confirm for a stock line action: it counts the rows the action acts on (countForms,
+// each with {n}) and names up front the rows it will leave as they are (skipForms): a row
+// with no item or a service (data-skip), and with ``idle`` (Set as available) a row with
+// nothing held or out. Empty when no row acts: the request goes without a confirm and the
+// server's refusal names the rows.
+function liLineConfirm(rows, countForms, skipForms, idle) {
+  var left = rows.filter(function(cb) {
+    var st = cb.getAttribute('data-item-status') || '';
+    return cb.getAttribute('data-skip') || (idle && st !== 'reserved' && st !== 'sold' && st !== 'memo_out');
+  });
+  if (left.length === rows.length) return '';
+  var msg = celerpCount(countForms, rows.length - left.length);
+  return left.length ? msg + ' ' + liNameLines(left, skipForms) : msg;
 }
 // A count message in the form that reads right for n: forms is {one, many}, each with {n}.
 function celerpCount(forms, n) {
