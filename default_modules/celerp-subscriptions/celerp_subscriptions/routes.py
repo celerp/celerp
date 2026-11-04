@@ -316,6 +316,7 @@ def _build_router() -> APIRouter:
     @router.get("/{entity_id}/periods")
     async def list_periods(
         entity_id: str,
+        before: int | None = None,
         company_id: uuid.UUID = Depends(get_current_company_id),
         _: None = require_permission("view_subscriptions"),
         session: AsyncSession = Depends(get_session),
@@ -324,7 +325,8 @@ def _build_router() -> APIRouter:
         proj = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
         if proj is None or proj.state.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
             raise HTTPException(status_code=404, detail=t("subscriptions.err_not_found"))
-        return await billing.period_list(session, company_id, proj.state, await company_today(session, company_id))
+        return await billing.period_list(session, company_id, proj.state, await company_today(session, company_id),
+                                         before=before)
 
     @router.post("/{entity_id}/periods/{k}/skip")
     async def skip_period(
@@ -365,7 +367,10 @@ def _build_router() -> APIRouter:
         elif entry.get("state") != SKIPPED:
             return {"ok": True}
         periods[str(k)] = {"state": RELEASED, "release_count": release, "by": str(user.id), "at": billing.now_stamp()}
-        await _write(session, company_id, entity_id, {"periods": periods}, user)
+        await billing.write_agreement(session, company_id, entity_id, {"periods": periods}, user.id)
+        if entry.get("state") == BILLED:
+            await billing.discard_email_attempts(session, company_id, entry["doc_id"])
+        await session.commit()
         return {"ok": True}
 
     @router.post("/{entity_id}/periods/{k}/unskip")

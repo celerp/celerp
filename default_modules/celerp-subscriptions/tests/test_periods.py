@@ -115,3 +115,44 @@ def test_term_end_truncates_displayed_and_issued_service_end():
     assert _period_row(schedule, 1)["service_end"] == "2026-02-14"
     assert schedule.bill_date(1) == date(2026, 2, 1)
     assert not schedule.exists(2)
+
+
+def test_future_skip_does_not_hide_earlier_periods():
+    anchor = date(2026, 1, 1)
+    schedule = _s(anchor, periods={5: {"state": "skipped"}})
+    assert schedule.lowest == 0
+    assert schedule.first() == 0
+    assert schedule.oldest_open() == 0
+    assert schedule.due(date(2026, 2, 1)) == [0, 1]
+    assert schedule.next_bill_date() == anchor
+
+    # Imported claims before the anchor still define negative historical periods.
+    historical = _s(anchor, periods={-3: {"state": "billed"}, -2: {"state": "billed"}})
+    assert historical.lowest == -3
+    assert historical.oldest_open() == -1
+    assert historical.due(anchor) == [-1, 0]
+
+
+@pytest.mark.asyncio
+async def test_period_history_can_reach_oldest_open_without_unbounded_rows():
+    from celerp_subscriptions.billing import period_list
+
+    state = {"anchor_date": "2020-01-01", "frequency": "monthly", "status": "active"}
+    today = date(2026, 7, 1)
+    first = await period_list(None, None, state, today)
+    assert len(first["rows"]) == 24
+    assert first["oldest_due_row"]["period_index"] == 0
+    assert first["older_before"] == first["rows"][-1]["period_index"]
+
+    seen = [r["period_index"] for r in first["rows"]]
+    cursor = first["older_before"]
+    while cursor is not None:
+        page = await period_list(None, None, state, today, before=cursor)
+        assert len(page["rows"]) <= 24
+        assert all(r["period_index"] < cursor for r in page["rows"])
+        assert page["oldest_due_row"] is None
+        seen.extend(r["period_index"] for r in page["rows"])
+        cursor = page["older_before"]
+    assert len(seen) == len(set(seen))
+    assert min(seen) == 0
+    assert max(seen) > 24

@@ -59,7 +59,7 @@ _BK_MODULE = "zz-widgets"
 _BK_PREFIX = "zz_"
 _BK_CODE_MARKER = "zz-widget-code-body-7f3a"
 _BK_DROPPED_SETTINGS = ("role_grants", "ai_memory", "lock_date_set_by", "reorder_alert_email", "column_prefs",
-                        "pay_tip_shown", "reorder_last_scan_at", "restored_backup")
+                        "pay_tip_shown", "reorder_last_scan_at", "restored_backup", "subscription_summary_ack")
 
 
 # ── Shared helpers (module level, distinct names) ─────────────────────────────
@@ -601,7 +601,7 @@ async def test_backup_carries_portable_state_only(real_engine, real_client, tmp_
     settings = {"currency": "THB", "role_grants": {"clerk": ["grant-x"]}, "ai_memory": ["memory-x"],
                 "lock_date_set_by": "someone", "reorder_alert_email": "alerts@example.com",
                 "column_prefs": {"items": ["name"]}, "pay_tip_shown": True, "reorder_last_scan_at": "2026-01-01",
-                "restored_backup": {"backup_id": "older"}}
+                "restored_backup": {"backup_id": "older"}, "subscription_summary_ack": {"ack-marker": "2026-01-01"}}
     user, cid, tok = await _bk_setup(real_engine, settings=settings)
     await _bk_seed_portable(real_engine, cid, "alpha-marker")
     url = _bk_local_file(tmp_path, cid, "photo.png", b"alpha-photo")
@@ -619,7 +619,7 @@ async def test_backup_carries_portable_state_only(real_engine, real_client, tmp_
     for t in portable:
         lines = [line for line in parts[f"tables/{t}.jsonl"].split(b"\n") if line.strip()]
         assert len(lines) == m["tables"][t]["rows"] >= 1, t
-    for secret in ("grant-x", "memory-x", "alerts@example.com"):
+    for secret in ("grant-x", "memory-x", "alerts@example.com", "ack-marker"):
         assert secret.encode() not in b"".join(parts.values()), secret
 
 
@@ -761,10 +761,20 @@ async def _bk_add_membership(engine, cid, user, marker):
     await member(engine, clerk, cid, role="manager")
 
 
+async def _bk_add_subscription_email_attempt(engine, cid, user, marker):
+    from celerp.models.subscription_email import SubscriptionEmailAttempt
+    async with maker(engine)() as s:
+        s.add(SubscriptionEmailAttempt(
+            company_id=cid, operation_id=uuid.uuid4(), doc_id="doc:testing", attempt_number=1,
+            payload_json=json.dumps({"to": "test@example.test", "body_html": marker})))
+        await s.commit()
+
+
 _BK_CATEGORIES = {
     "connector_configs": _bk_add_connector,
     "outbound_queue": _bk_add_outbound,
     "doc_share_tokens": _bk_add_share,
+    "subscription_email_attempts": _bk_add_subscription_email_attempt,
     "notifications": _bk_add_notification,
     "ai_conversations": _bk_add_conversation,
     "ai_batch_jobs": _bk_add_ai_job,

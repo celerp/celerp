@@ -102,7 +102,7 @@ class Schedule:
 
     @property
     def lowest(self) -> int:
-        return min(self.periods) if self.periods else 0
+        return min((0, *self.periods))
 
     def exists(self, k: int) -> bool:
         if k < self.lowest or (self.last is not None and k > self.last):

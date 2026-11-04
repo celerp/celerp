@@ -2130,10 +2130,11 @@ async def subscription_action(token: str, entity_id: str, action: str, body: dic
         return _raise(await c.post(f"/subscriptions/{entity_id}/{action}", json=body)).json()
 
 
-async def get_subscription_periods(token: str, entity_id: str) -> dict:
-    """Returns {next_bill_date, rows: [...]}, newest period first."""
+async def get_subscription_periods(token: str, entity_id: str, *, before: int | None = None) -> dict:
+    """Returns one bounded page, newest period first, with an older-page cursor."""
     async with _api_client(token) as c:
-        return _raise(await c.get(f"/subscriptions/{entity_id}/periods")).json()
+        return _raise(await c.get(f"/subscriptions/{entity_id}/periods",
+                                  params={"before": before} if before is not None else None)).json()
 
 
 async def subscription_period_action(token: str, entity_id: str, k: int, action: str, body: dict | None = None) -> dict:

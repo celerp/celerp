@@ -284,7 +284,7 @@ async def test_an_interrupted_send_is_shown_with_a_retry(client, session, monkey
     unconfirmed = [r for r in (await summary(client, hd))["rows"] if r["kind"] == "send_unconfirmed"]
     assert raising in [r["entity_id"] for r in unconfirmed]
     state = await template(client, hd, raising)
-    assert "relay unreachable" in state["periods"]["0"]["send"]["error"]
+    assert "delivery outcome unknown" in state["periods"]["0"]["send"]["error"]
 
 
 async def test_a_retried_send_is_recorded_as_the_person_who_retried(client, session, monkeypatch, mail):
@@ -371,6 +371,7 @@ async def test_relay_retry_keeps_original_transport_identity(client, session, mo
     monkeypatch.setattr(email, "send_email", rejected)
     assert (await client.post(row["retry_url"], headers=hd)).status_code == 200
     assert (await template(client, hd, eid))["periods"]["0"]["send"]["state"] == "sending"
+    assert (await template(client, hd, eid))["periods"]["0"]["send"]["n"] == 1
 
     async def verified(*args, **kw):
         keys.append(kw["operation_id"])
@@ -402,7 +403,7 @@ async def test_inactive_company_is_not_billed(client, session, monkeypatch):
     assert await billed_docs(session, eid) == []
 
 
-async def test_uncertain_email_cannot_replay_with_changed_payload(client, session, monkeypatch, mail):
+async def test_uncertain_email_reuses_original_payload_without_recomposition(client, session, monkeypatch, mail):
     import asyncio
     from celerp.services import email
     from celerp_docs import routes as docs_routes
@@ -423,15 +424,110 @@ async def test_uncertain_email_cannot_replay_with_changed_payload(client, sessio
     row = next(r for r in (await summary(client, hd))["rows"] if r["kind"] == "send_unconfirmed")
     assert row["retry_url"]
 
+    async def should_not_recompose(*args, **kwargs):
+        raise AssertionError("Uncertain retries must reuse the original email")
+
+    monkeypatch.setattr(docs_routes, "doc_email", should_not_recompose)
+    monkeypatch.setattr(email, "send_email", mail)
+    retried = await client.post(row["retry_url"], headers=hd)
+    assert retried.status_code == 200, retried.text
+    assert mail.sent == ["member@example.test"]
+    assert (await template(client, hd, eid))["periods"]["0"]["send"]["n"] == 1
+
+
+async def test_email_preparation_failure_is_visible_and_retryable(client, session, monkeypatch, mail):
+    from celerp_docs import routes as docs_routes
+
+    freeze_day(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    eid = await _auto(client, hd, start="2026-07-01", send=True,
+                      contact_id=await contact(client, hd, "member@example.test"))
     original = docs_routes.doc_email
 
-    async def changed_message(*args, **kwargs):
-        message = await original(*args, **kwargs)
-        return {**message, "subject": message["subject"] + " changed"}
+    async def bad(*args, **kwargs):
+        raise RuntimeError("synthetic preparation failure")
 
-    monkeypatch.setattr(docs_routes, "doc_email", changed_message)
+    monkeypatch.setattr(docs_routes, "doc_email", bad)
+    await tick(session, cid, "2026-07-01")
+    [doc] = await billed_docs(session, eid)
+    assert doc["status"] == "final"
+    report = await summary(client, hd)
+    assert report["counts"]["send_failed"] == 1
+    row = next(r for r in report["rows"] if r["kind"] == "send_failed")
+    assert row["retry_url"] and "preparation failed" in row["message"]
+    assert mail.sent == []
+
+    monkeypatch.setattr(docs_routes, "doc_email", original)
+    retry = await client.post(row["retry_url"], headers=hd)
+    assert retry.status_code == 200, retry.text
+    assert mail.sent == ["member@example.test"]
+    assert [d["status"] for d in await billed_docs(session, eid)] == ["sent"]
+
+
+async def test_missing_private_payload_refuses_uncertain_retry(client, session, monkeypatch):
+    import asyncio
+    import uuid
+    from sqlalchemy import delete
+    from celerp.models.subscription_email import SubscriptionEmailAttempt
+    from celerp.services import email
+
+    monkeypatch.setattr(email, "relay_send_is_idempotent", lambda: True)
+    freeze_day(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    eid = await _auto(client, hd, start="2026-07-01", send=True,
+                      contact_id=await contact(client, hd, "member@example.test"))
+
+    async def interrupted(*args, **kwargs):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(email, "send_email", interrupted)
+    with pytest.raises(asyncio.CancelledError):
+        await tick(session, cid, "2026-07-01")
+    state = await template(client, hd, eid)
+    attempt_id = uuid.UUID(state["periods"]["0"]["send"]["operation_id"])
+    await session.execute(delete(SubscriptionEmailAttempt).where(
+        SubscriptionEmailAttempt.company_id == uuid.UUID(cid),
+        SubscriptionEmailAttempt.operation_id == attempt_id))
+    await session.commit()
+    row = next(r for r in (await summary(client, hd))["rows"] if r["kind"] == "send_unconfirmed")
+    assert row["retry_url"] is None
+    assert (await client.post(f"/subscriptions/{eid}/periods/0/send", headers=hd)).status_code == 409
+
+
+async def test_uncertain_send_replay_window_enforced_at_api(client, session, monkeypatch, mail):
+    import asyncio
+    import uuid
+    from datetime import datetime, timedelta, timezone
+    from celerp.services import email
+    from celerp.models.subscription_email import SubscriptionEmailAttempt
+    from celerp_subscriptions import billing
+
+    monkeypatch.setattr(email, "relay_send_is_idempotent", lambda: True)
+    freeze_day(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    eid = await _auto(client, hd, start="2026-07-01", send=True,
+                      contact_id=await contact(client, hd, "member@example.test"))
+
+    async def cut_off(*args, **kwargs):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(email, "send_email", cut_off)
+    with pytest.raises(asyncio.CancelledError):
+        await tick(session, cid, "2026-07-01")
+    state = await template(client, hd, eid)
+    operation_id = uuid.UUID(state["periods"]["0"]["send"]["operation_id"])
+    attempt = await session.get(
+        SubscriptionEmailAttempt, {"company_id": uuid.UUID(cid), "operation_id": operation_id})
+    attempt.created_at = datetime.now(timezone.utc) - billing.RECOVERY_RETRY_AGE - timedelta(seconds=1)
+    await session.commit()
+
+    row = next(r for r in (await summary(client, hd))["rows"] if r["kind"] == "send_unconfirmed")
+    assert row["retry_url"] is None
     monkeypatch.setattr(email, "send_email", mail)
-    refused = await client.post(row["retry_url"], headers=hd)
+    refused = await client.post(f"/subscriptions/{eid}/periods/0/send", headers=hd)
     assert refused.status_code == 409
     assert mail.sent == []
 

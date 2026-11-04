@@ -113,6 +113,7 @@ EXCLUDED_TABLES = {
     "connector_execution_heartbeats": "connector sync runs in progress",
     "outbound_queue": "messages waiting to leave this installation",
     "doc_share_tokens": "share links issued by this installation",
+    "subscription_email_attempts": "in-flight email messages belong to this installation",
     "connector_media_tokens": "image links issued by this installation",
     "notifications": "per-user notices",
     "ai_conversations": "per-user assistant history",
@@ -128,6 +129,7 @@ EXCLUDED_TABLES = {
 DROPPED_SETTINGS = frozenset({
     "ai_memory", "reorder_alert_email", "column_prefs",
     "pay_tip_shown", "reorder_last_scan_at", "restored_backup", "lineage_id", "firm_locks",
+    "subscription_summary_ack",
 }) | SET_BY_KEYS
 
 # The company a restored company descends from, carried in the manifest, never remapped.
