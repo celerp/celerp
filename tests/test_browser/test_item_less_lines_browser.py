@@ -196,7 +196,8 @@ def test_set_scanned_and_print_labels_name_skipped_rows(page, ui_server, api):
     gia_row = _row_number(page, "GIA Certificate")
     with page.expect_request(lambda q: q.method == "POST" and q.url.endswith("/set-scanned")) as sent:
         page.evaluate("liBulkSetScanned(true)")
-    assert sorted(_posted(sent.value, "selected")) == sorted(s["entity_id"] for s in stones)
+    lids = [li["line_id"] for li in api.get(f"/lists/{audit_id}").json()["line_items"]]
+    assert sorted(_posted(sent.value, "line_id")) == sorted(lids)
     assert f'{gia_row} "GIA Certificate"' in _persistent_toast(page, "GIA Certificate")
     scanned = [li for li in api.get(f"/lists/{audit_id}").json()["line_items"] if li.get("audited_at")]
     assert sorted(li["item_id"] for li in scanned) == sorted(s["entity_id"] for s in stones)

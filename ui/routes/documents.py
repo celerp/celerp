@@ -5334,21 +5334,23 @@ celerpUpdateBulkAlloc();
 
     @app.post("/lists/{entity_id}/set-scanned")
     async def list_set_scanned(request: Request, entity_id: str):
-        """Bulk action: mark or clear the scanned highlight on the selected rows (all rows if none
-        selected). Returns the re-rendered audit tbody for the same smooth #line-body swap scanning uses."""
+        """Bulk action: mark or clear the scanned highlight on the chosen rows (``line_id`` each).
+        Returns the re-rendered audit tbody for the same smooth #line-body swap scanning uses, with
+        a notice naming the rows it left as they are."""
         from starlette.responses import Response as _R
         from fasthtml.common import to_xml
         token = _token(request)
         if not token:
             return _R(t("error.session_expired"), status_code=401)
         form = await request.form()
-        ids = [s for s in form.getlist("selected") if s]
         scanned = str(form.get("scanned", "1")).strip() not in ("0", "false", "")
         try:
-            await api.set_scanned(token, entity_id, ids or None, scanned)
+            result = await api.set_scanned(token, entity_id, list(form.getlist("line_id")), scanned)
         except APIError as e:
             return api.refusal_response(e)
-        return HTMLResponse(to_xml(await _audit_line_tbody(token, entity_id, *_line_window(form))))
+        skipped = result.get("skipped_notice")
+        return HTMLResponse(to_xml(await _audit_line_tbody(token, entity_id, *_line_window(form))),
+                            headers=toast_header(refusal_text(skipped), "info", persist=True) if skipped else None)
 
     @app.post("/lists/{entity_id}/line/{item_id}")
     async def list_audit_set_count(request: Request, entity_id: str, item_id: str):
@@ -8702,7 +8704,6 @@ window._L = {_json.dumps({
     "rows_selected": t("documents.rows_selected"),
     "no_lines_selected": t("documents.no_lines_selected"),
     "no_inventory_labels": t("documents.no_inventory_items_labels"),
-    "lines_skipped": _count_forms("documents.lines_skipped"),
     "labels_skipped": _count_forms("documents.labels_skipped"),
     "confirm_set_reserved": _count_forms("documents.confirm_set_reserved"),
     "confirm_set_available": _count_forms("documents.confirm_set_available"),
@@ -10394,12 +10395,11 @@ async function celerpCsvImport(input, entityId) {{
     return ok;
   }}); }};
   window.liBulkSetScanned=async function(scanned){{
-    var ids=[], left=[];
-    if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{ if(cb.value) ids.push(cb.value); else left.push(cb); }});
+    var rows=table?Array.prototype.slice.call(table.querySelectorAll('tbody .li-select:checked')):[];
     var fd=new URLSearchParams();
     fd.append('scanned', scanned?'1':'0');
     fd.append('offset', window._CELERP_LINE_OFFSET); fd.append('limit', window._CELERP_LINE_LIMIT);
-    ids.forEach(function(id){{ fd.append('selected', id); }});
+    celerpLineSelection(rows).forEach(function(kv){{ fd.append(kv[0], kv[1]); }});
     try{{
       var resp=await celerpFetch('/lists/{entity_id}/set-scanned', {{method:'POST', body:fd}});
       var html=await resp.text();
@@ -10407,7 +10407,9 @@ async function celerpCsvImport(input, entityId) {{
         var tbody=document.getElementById('{line_body_id}');
         if(tbody&&html) tbody.outerHTML=html;
         htmx.process(document.getElementById('{line_body_id}'));
-        liSkipNotice(left, _L.lines_skipped);
+        var tr=null;
+        try{{ tr=JSON.parse(resp.headers.get('HX-Trigger')||'null'); }}catch(e){{}}
+        if(tr&&tr.celerpToast&&window.celerpToast) celerpToast(tr.celerpToast.message, tr.celerpToast.type, tr.celerpToast.persist);
       }} else if(window.celerpToast) celerpToast(html||_L.unexpected_error,'error');
     }}catch(err){{
       if(window.celerpToast) celerpToast(_L.unexpected_error,'error');
@@ -10670,7 +10672,6 @@ async function celerpCsvImport(input, entityId) {{
   const _L = {_json.dumps({
     "rows_selected": t("documents.rows_selected"),
     "no_inventory_labels": t("documents.no_inventory_items_labels"),
-    "lines_skipped": _count_forms("documents.lines_skipped"),
     "labels_skipped": _count_forms("documents.labels_skipped"),
     "no_lines_selected": t("documents.no_lines_selected"),
     "none_can_available": t("documents.none_can_available"),

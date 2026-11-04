@@ -245,7 +245,7 @@ async def test_set_scanned_tbody_never_requests_unbounded_list(ui_app):
                                base_url="http://ui", follow_redirects=False) as c:
             c.cookies.update(_cookies())
             r = await c.post("/lists/list:big/set-scanned",
-                             data={"scanned": "1"})
+                             data={"scanned": "1", "line_id": "ln-1"})
 
     assert r.status_code == 200, r.text
 

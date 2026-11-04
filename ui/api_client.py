@@ -2565,9 +2565,9 @@ async def move_transfer(token: str, entity_id: str, to_location_id: str) -> dict
         return _raise(await c.post(f"/lists/{entity_id}/move", json={"to_location_id": to_location_id})).json()
 
 
-async def set_scanned(token: str, entity_id: str, item_ids: list[str] | None = None, scanned: bool = True) -> dict:
+async def set_scanned(token: str, entity_id: str, line_ids: list[str], scanned: bool = True) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/lists/{entity_id}/set-scanned", json={"item_ids": item_ids or [], "scanned": scanned})).json()
+        return _raise(await c.post(f"/lists/{entity_id}/set-scanned", json={"line_ids": line_ids, "scanned": scanned})).json()
 
 
 async def change_list_type(token: str, entity_id: str, list_type: str) -> dict:

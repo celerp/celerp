@@ -127,8 +127,7 @@ function celerpFetch(url, opts) {
   });
 }
 // Post one line action for the chosen rows (their .li-select checkboxes) as ONE request.
-// Each row is named by its line id; a page whose rows do not all carry one names them by
-// item instead, never a mix. ``fields`` are extra [name, value] pairs. The request carries
+// Each row is named by its line id. ``fields`` are extra [name, value] pairs. The request carries
 // the operation key the page was rendered with, so the same action sent again after a lost
 // answer is recorded once. Resolves true on success, keeping the server's toast for the
 // page the caller opens next; otherwise the reason is shown.

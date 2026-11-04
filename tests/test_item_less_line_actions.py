@@ -406,3 +406,86 @@ async def test_back_to_memo_refuses_when_only_own_item_less_lines(client, sessio
     assert r.status_code == 409, r.text
     assert _detail(r)["message_key"] == "docs.back_to_memo_not_drawn"
     assert (await _state(client, g, invoice))["line_items"] == before["line_items"]
+
+
+# ── Class guard: no bulk line action reads an all-skipped choice as "every line" ─
+
+async def _audit_with_certificate(client, g) -> str:
+    """A finalized audit of the demo stock location, with a "GIA Certificate" row added while
+    it was a draft."""
+    loc = next(i["location_id"] for i in g.items.values() if i.get("location_id"))
+    a = (await _ok(await client.post("/lists/audit", headers=g.h, json={"location_id": loc})))["id"]
+    st = await _state(client, g, a)
+    await _ok(await client.patch(f"/lists/{a}", headers=g.h, json={
+        "fields_changed": {"line_items": {"new": [*st["line_items"], GIA]}}, "expected_version": st["version"]}))
+    await _ok(await client.post(f"/lists/{a}/finalize", headers=g.h))
+    return a
+
+
+def _line_selection_routes() -> set[tuple[str, str]]:
+    """Every document and list route whose body names lines by ``line_ids``: the bulk line actions."""
+    from typing import get_type_hints
+
+    from fastapi.routing import APIRoute
+    from pydantic import BaseModel
+
+    from celerp_docs.routes import lists_router, router
+    found = set()
+    for prefix, rt in (("/docs", router), ("/lists", lists_router)):
+        for r in rt.routes:
+            if not isinstance(r, APIRoute):
+                continue
+            for hint in get_type_hints(r.endpoint).values():
+                if isinstance(hint, type) and issubclass(hint, BaseModel) and "line_ids" in hint.model_fields:
+                    found |= {(m, prefix + r.path) for m in r.methods}
+    return found
+
+
+async def _scan(client, g, audit, lids, scanned):
+    return await client.post(f"/lists/{audit}/set-scanned", headers=g.h, json={"line_ids": lids, "scanned": scanned})
+
+
+# route -> (owner kind, request); the request gets (client, g, owner, the item-less line ids).
+_ALL_SKIPPED = {
+    ("POST", "/docs/{entity_id}/fulfill-lines"): ("invoice", lambda c, g, o, l: _act(c, g, o, "fulfill-lines", l)),
+    ("POST", "/docs/{entity_id}/reserve-lines"): ("invoice", lambda c, g, o, l: _act(
+        c, g, o, "reserve-lines", l, new_status="reserved")),
+    ("POST", "/docs/{entity_id}/set-available"): ("invoice", lambda c, g, o, l: _act(c, g, o, "set-available", l)),
+    ("POST", "/docs/{entity_id}/revert-lines"): ("invoice", lambda c, g, o, l: _act(c, g, o, "revert-lines", l)),
+    ("POST", "/lists/{entity_id}/reserve-lines"): ("list", lambda c, g, o, l: _act(
+        c, g, o, "reserve-lines", l, new_status="reserved")),
+    ("POST", "/lists/{entity_id}/set-available"): ("list", lambda c, g, o, l: _act(c, g, o, "set-available", l)),
+    ("POST", "/docs/{entity_id}/invoice-lines"): ("memo", lambda c, g, o, l: draw(c, g.h, o, line_ids=l)),
+    ("POST", "/docs/{entity_id}/back-to-memo"): ("drawn", lambda c, g, o, l: back_to_memo(c, g.h, o, l)),
+    ("POST", "/lists/{entity_id}/set-scanned"): ("audit", lambda c, g, o, l: _scan(c, g, o, l, True)),
+}
+
+
+async def test_every_bulk_line_action_is_covered_by_the_all_skipped_guard(client):
+    assert _line_selection_routes() == set(_ALL_SKIPPED)
+
+
+@pytest.mark.parametrize("route", [r[1] for r in _ALL_SKIPPED], ids=lambda p: p.split("/", 2)[1] + p.rsplit("/", 1)[1])
+async def test_a_choice_of_only_item_less_lines_changes_nothing_and_is_refused(client, session, route):
+    kind, send = next(v for k, v in _ALL_SKIPPED.items() if k[1] == route)
+    g = await _gems(client)
+    lines = [*(_line(g, s) for s in STONES), GIA]
+    if kind == "audit":
+        owner = await _audit_with_certificate(client, g)
+        await _ok(await _scan(client, g, owner, (await _ids(client, g, owner))[:1], False))
+    elif kind == "drawn":
+        owner = (await _drawn_invoice_with_own_certificate(client, g))[1]
+    elif kind == "list":
+        owner = await _list(client, g, lines)
+    else:
+        owner = await _doc(client, g, lines, doc_type="memo" if kind == "memo" else "invoice")
+        if kind == "memo":
+            await _ship(client, g, owner, (await _ids(client, g, owner))[:5])
+    before = await _state(client, g, owner)
+    item_less = [li["line_id"] for li in before["line_items"] if not (li.get("item_id") or li.get("entity_id"))]
+    assert item_less
+    r = await send(client, g, owner, item_less)
+    assert r.status_code in (409, 422), r.text
+    assert _detail(r)["message_key"] in ("lines.no_stock_one", "docs.back_to_memo_not_drawn")
+    after = await _state(client, g, owner)
+    assert after["version"] == before["version"] and after["line_items"] == before["line_items"]

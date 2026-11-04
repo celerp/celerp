@@ -10419,9 +10419,14 @@ def _acting_lines(line_items: list[dict], indices: list[int], locked: dict[str, 
             (counted if count_service else service).append(i)
     skipped = _skipped_lines(line_items, no_item, "no_item") + _skipped_lines(line_items, service, "service")
     if indices and not acting and not counted:
-        msgs = _skip_messages(skipped, refuse=True)
-        raise HTTPException(status_code=422, detail={**msgs[0], "also": msgs[1:]})
+        _refuse_skipped(skipped)
     return acting, counted, skipped
+
+
+def _refuse_skipped(skipped: list[dict]) -> None:
+    """Refuse a choice every line of which an action leaves as it is, naming them."""
+    msgs = _skip_messages(skipped, refuse=True)
+    raise HTTPException(status_code=422, detail={**msgs[0], "also": msgs[1:]})
 
 
 def _line_plan(
@@ -13998,28 +14003,33 @@ async def set_audit_count(
 
 
 class SetScannedBody(BaseModel):
-    item_ids: list[str] = Field(default_factory=list)
+    line_ids: list[str] = Field(default_factory=list)
     scanned: bool = True
 
 
 @lists_router.post("/{entity_id}/set-scanned")
 async def set_scanned(
-    entity_id: str, payload: SetScannedBody = SetScannedBody(),
+    entity_id: str, payload: SetScannedBody,
     company_id=Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Toggle the scanned/accounted-for highlight (audited_at) on audit lines. scanned=True marks the
-    rows as scanned (stamps audited_at), scanned=False clears it. Pass item_ids to target specific
-    rows, or none for every line. The highlight otherwise persists indefinitely."""
+    """Toggle the scanned/accounted-for highlight (audited_at) on the audit lines ``line_ids``
+    names. scanned=True marks the rows as scanned (stamps audited_at), scanned=False clears it.
+    A line with no inventory item is left as it is and named; a choice of only such lines is
+    refused. The highlight otherwise persists indefinitely."""
     row = await _get_audit(session, company_id, entity_id, for_update=True)
     if row.state.get("status") != FINALIZED:
         raise HTTPException(status_code=409, detail=t("documents.err_count_finalize_first"))
-    targets = set(payload.item_ids)
-    stamp = datetime.now(timezone.utc).isoformat() if payload.scanned else None
     lines = [dict(l) for l in (row.state.get("line_items") or [])]
+    indices = _selected_line_indices(lines, FulfillLinesRequest(line_ids=payload.line_ids))
+    skipped = _skipped_lines(lines, [i for i in indices if not line_item_id(lines[i])], "no_item")
+    if len(skipped) == len(indices):
+        _refuse_skipped(skipped)
+    stamp = datetime.now(timezone.utc).isoformat() if payload.scanned else None
     changed = 0
-    for l in lines:
-        if targets and l.get("item_id") not in targets:
+    for i in indices:
+        l = lines[i]
+        if not line_item_id(l):
             continue
         already = l.get("audited_at") is not None
         if payload.scanned and not already:
@@ -14031,7 +14041,10 @@ async def set_scanned(
     if changed:
         await _set_list_fields(session, company_id, entity_id, user, {"line_items": lines})
         await session.commit()
-    return {"changed": changed}
+    result = {"changed": changed, "skipped": skipped}
+    if skipped:
+        result["skipped_notice"] = _skip_messages(skipped, refuse=False)
+    return result
 
 
 @lists_router.post("/{entity_id}/adjust")
