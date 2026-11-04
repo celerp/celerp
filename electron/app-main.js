@@ -1011,9 +1011,7 @@ function setupAutoUpdater() {
       const { version } = updateState.getUpdateState();
       updateState.installFailed(version, message, "install");
       showUpdateFailure(updateState.getUpdateState()).finally(() => {
-        app.relaunch({ args: [...process.argv.slice(1).filter((arg) => arg !== UPDATED_ARG
-                                && !arg.startsWith(INSTALL_FAILED_ARG)), INSTALL_FAILED_ARG + version] });
-        app.quit();
+        fullRelaunch(app, process.argv, [INSTALL_FAILED_ARG + version]);
       });
     }
   });
@@ -1070,7 +1068,7 @@ function setLoadingStatus(msg) {
 
 // Restart the way the in-app "Restart" button does: drop the sentinel and let
 // the API process exit so watchForRestart respawns API + UI, leaving the embedded
-// Postgres running, which is quicker than a full app.relaunch()/quit() that stops
+// Postgres running, which is quicker than a full relaunch that stops
 // and starts everything. Falls back to a full relaunch only if the sentinel can't
 // be written or no API process is running.
 function requestServerRestart() {
@@ -1086,8 +1084,7 @@ function requestServerRestart() {
   } catch (e) {
     console.error("[restart] sentinel write failed; falling back to full relaunch:", e);
   }
-  app.relaunch();
-  app.quit();
+  fullRelaunch(app, process.argv);
 }
 
 function setupAppMenu() {
@@ -1403,7 +1400,7 @@ ipcMain.on("install-update", async () => {
 // resolveDatabaseConfig(readConfig()) against the newly-saved celerp-config.json,
 // which is the only path that opens the new database - the sentinel-recycle path
 // reuses the boot-bound dbUrl and would not apply it.
-ipcMain.on("restart-app", () => fullRelaunch(app));
+ipcMain.on("restart-app", () => fullRelaunch(app, process.argv));
 
 // get-version: renderer fetches the current app version
 ipcMain.handle("get-version", () => app.getVersion());
