@@ -7524,23 +7524,14 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cls="void-section",
             )
         )
-    # "Revert to Draft" button - only from final/sent (and "fulfilled" for inbound docs) with no payments and no received items,
-    # or from paid/partial when an issued credit note alone settled it (the API's settled_by_credit_only).
-    # Never on an invoice an issued credit note settled part of: the API refuses it until that credit note is undone.
-    amount_paid_for_revert = float(doc.get("amount_paid") or 0)
-    has_received_items = bool(doc.get("received_items"))
-    _is_inbound_doc = doc_type in ("bill", "consignment_in")
-    _revertable_statuses = (
-        {"finalized"}  # lists: revert from finalized (before a terminal close), same UI as docs
-        if is_list
-        else {"final", "sent", "awaiting_payment", "received", "partially_received", "fulfilled"}
-        if _is_inbound_doc
-        else {"final", "sent"}
-    )
-    _credited = float(doc.get("credited") or 0) > 0
-    _settled_by_credit_only = not is_list and status in ("partial", "paid") and _credited and doc_type != "invoice"
-    if ((status in _revertable_statuses or _settled_by_credit_only) and amount_paid_for_revert == 0
-            and not (doc_type == "invoice" and _credited)
+    # "Revert to Draft" button: offered from the reasons the API's revert rule gives
+    # (revert_refused), unless one is a status, a payment or a credit note (REVERT_HIDDEN_BY).
+    # A list goes back from finalized, through the lists API.
+    from celerp_docs.doc_constants import REVERT_HIDDEN_BY
+    _revert_refused = doc.get("revert_refused")
+    _revert_offered = (status == "finalized" if is_list
+                       else _revert_refused is not None and not REVERT_HIDDEN_BY & set(_revert_refused))
+    if (_revert_offered
             and _can_finalize and not suppress_doc_actions):
         action_btns_right.insert(0,
             Details(

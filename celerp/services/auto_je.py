@@ -3569,6 +3569,23 @@ async def _sold_key(session, company_id, lot_id: str, state: dict, books: _Books
     return await sold_lot_key(session, company_id, lot_id, state)
 
 
+async def _cogs_line_unknown_key(session, company_id, doc_id: str, doc_state: dict, still_out: bool) -> str:
+    """The refusal for goods no line of the invoice holds, by the way out the app takes: a new
+    issue (Revert to Draft, then Issue Invoice) places goods that came back, so its advice
+    follows the revert rule (celerp_docs.routes.revert_check), read as the invoice stands once
+    this refusal undoes the action. Nothing refused names the revert; payments alone name
+    voiding them first. Anything else, or goods still out, which no revert takes back, leaves
+    no step to take, so it asks for a report."""
+    from celerp_docs.routes import revert_check
+
+    reasons = (await revert_check(session, company_id, doc_id, doc_state, as_locked=True)).reasons
+    if still_out:
+        reasons.append("out")
+    if not reasons:
+        return "error.cogs_line_unknown"
+    return "error.cogs_line_unknown_paid" if reasons == ["payments"] else "error.cogs_line_unknown_out"
+
+
 async def _recognized_by_account(
     session, company_id, doc_id: str, doc_state: dict, books: _Books,
 ) -> tuple[dict[str, float], dict[int, dict[str, float]], dict[int, float]]:
@@ -3591,15 +3608,12 @@ async def _recognized_by_account(
         return line_of_lot(doc_state.get("line_items", []), lot.entity_id, lot.state or {}, recorded, line_id)
 
     # Every lot shipped or returned must be on exactly one line; the refusal names them all.
-    # Returned goods leave a new issue behind, so the refusal sends the user to Revert to Draft
-    # and Issue Invoice; goods still out keep the invoice from going back to draft, so it asks
-    # for a report.
     out = [(lot, _line(lot)) for lot in books.shipments.out.get(doc_id, [])]
     back = [(lot, qty, _line(lot)) for lot, qty in books.shipments.back.get(doc_id, [])]
     unknown_out = [lot for lot, idx in out if idx is None]
     unknown = unknown_out + [lot for lot, _qty, idx in back if idx is None]
     if unknown:
-        raise Refused("error.cogs_line_unknown_out" if unknown_out else "error.cogs_line_unknown",
+        raise Refused(await _cogs_line_unknown_key(session, company_id, doc_id, doc_state, bool(unknown_out)),
                       doc=_doc_number(doc_id, doc_state), items=", ".join(
                           str((lot.state or {}).get("sku") or lot.entity_id) for lot in unknown))
     shipped_qty: dict[int, float] = {}

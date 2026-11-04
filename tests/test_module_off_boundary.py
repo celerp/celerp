@@ -907,6 +907,10 @@ _REVIEWED: dict[tuple[str, str], str] = {
     ("celerp/services/auto_je.py", "doc_lot_pool"):
         "costs a document line from its lots: reached from Documents, which needs Inventory, and "
         "from the boot COGS backfill, which fails without writing and retries at a later boot",
+    ("celerp/services/auto_je.py", "_cogs_line_unknown_key"):
+        "words a refusal of an invoice's shipped goods by the Documents revert rule: an invoice "
+        "line exists only where Documents wrote it, and the boot COGS backfill that may meet one "
+        "fails without writing and retries at a later boot",
     ("celerp/services/auto_je.py", "create_for_online_fees"): _PAYMENT_STEP,
     ("celerp/services/document_lines.py", "_memo_takes_by_line"):
         "reads what invoices took from a memo, and imports Documents only for a memo, which only "

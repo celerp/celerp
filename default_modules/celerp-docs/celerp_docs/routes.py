@@ -44,7 +44,7 @@ from celerp.services.locations import require_company_location, require_ship_fro
 from celerp.accounting_roles import CONSIGNOR_FIELD, CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, VALUED_FROM_KEY, AccountRole, Refused, catalog_refusal, refusal
 from celerp.services.account_roles import current_settings, is_consigned, lineage, lot_account, new_lot_account, role_map
 from celerp.services.background import spawn_background
-from celerp.services.company_lock import lock_company, lock_projections, locked_company
+from celerp.services.company_lock import lock_company, lock_projections, locked_company, locked_state
 from celerp.services.goods_cost import GOODS_COST_UNKNOWN, negative_cost_error
 from celerp.services.journal_accounts import require_destinations, require_line_destinations, require_settlement_account
 from celerp.services.lot_origin import in_stock, is_stock_type, rerun_after_placing
@@ -1835,6 +1835,7 @@ async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_
             # The note degrades to nothing, as the memo labels do; the stored totals stand.
             doc.pop("memo_fixed_taken", None)
     doc["line_holds"] = await _line_holds(session, company_id, entity_id)
+    doc["revert_refused"] = (await revert_check(session, company_id, entity_id, row.state)).reasons
     returnable = doc.get("status") in SUPPLIER_RETURN_STATUSES.get(doc.get("doc_type"), ())
     if doc.get("doc_type") in ("bill", "consignment_in", "purchase_order") and (
             returnable or doc.get("returned_items")):
@@ -2920,7 +2921,8 @@ async def void_document(entity_id: str, payload: DocVoidBody, company_id: str, u
         await refuse_on_void_invoice(session, company_id, row.state)
     if row.state.get("doc_type") == "debit_note":
         await _refuse_void_under_supplier_credit(session, company_id, row.state)
-    await _refuse_undo_under_credit_note(session, company_id, row.state, entity_id, "void")
+    if (refused := await _undo_under_credit_note(session, company_id, row.state, entity_id, "void")) is not None:
+        raise refused
     current_status = row.state.get("status")
     if current_status in ("paid", "partial") and not settled_by_credit_only(row.state):
         raise HTTPException(status_code=409, detail="Cannot void a document with payments; void the payments first")
@@ -3235,7 +3237,7 @@ async def refuse_on_void_invoice(session, company_id, cn: dict) -> None:
     """A credit note reverses part of its invoice's sale. Once that invoice is void the
     sale no longer exists, so nothing is refunded, applied or restored against the
     credit note (409). A supplier credit note's bill is never voided while the note is
-    issued (_refuse_undo_under_credit_note), so it has no such case."""
+    issued (_undo_under_credit_note), so it has no such case."""
     original = str(cn.get("original_doc_id") or "") if cn.get("doc_type") == "credit_note" else ""
     invoice = await session.get(Projection, {"company_id": company_id, "entity_id": original}) if original else None
     if invoice is None or (invoice.state or {}).get("status") != "void":
@@ -3250,21 +3252,25 @@ async def refuse_on_void_invoice(session, company_id, cn: dict) -> None:
 
 
 async def _issued_credit_note_rows(session, company_id, invoice_id: str,
-                                   note_type: str = "credit_note") -> list[Projection]:
+                                   note_type: str = "credit_note", as_locked: bool = False) -> list[Projection]:
     """The issued (not draft, not void) credit notes against an invoice, or with ``note_type``
-    debit_note the supplier credit notes against a bill or purchase order."""
+    debit_note the supplier credit notes against a bill or purchase order. ``as_locked`` judges
+    each note as this transaction first locked it (company_lock.locked_state): as a refusal
+    leaves it."""
     rows = (await session.execute(select(Projection).where(
         Projection.company_id == company_id, Projection.entity_type == "doc",
         Projection.state["doc_type"].as_string() == note_type,
         Projection.state["original_doc_id"].as_string() == invoice_id,
     ).order_by(Projection.entity_id))).scalars().all()
-    return [r for r in rows if (r.state or {}).get("status") not in (None, "draft", "void")]
+    return [r for r in rows if ((as_locked and locked_state(session, r.entity_id)) or r.state or {}).get("status")
+            not in (None, "draft", "void")]
 
 
-async def issued_credit_notes(session, company_id, invoice_id: str, note_type: str = "credit_note") -> list[str]:
+async def issued_credit_notes(session, company_id, invoice_id: str, note_type: str = "credit_note",
+                              as_locked: bool = False) -> list[str]:
     """The numbers of the issued notes of ``note_type`` against a document."""
     return sorted(str(r.state.get("doc_number") or r.state.get("ref_id") or r.entity_id)
-                  for r in await _issued_credit_note_rows(session, company_id, invoice_id, note_type))
+                  for r in await _issued_credit_note_rows(session, company_id, invoice_id, note_type, as_locked))
 
 
 def imported_settlement_free(data: dict) -> dict:
@@ -3414,25 +3420,27 @@ async def settle_imported_credit(session, company_id, user_id, entity_id: str, d
         await auto_je.void_imported_used(session, company_id=company_id, user_id=user_id, doc_id=cn_id)
 
 
-async def _refuse_undo_under_credit_note(session, company_id, state: dict, invoice_id: str, action: str) -> None:
+async def _undo_under_credit_note(session, company_id, state: dict, invoice_id: str, action: str,
+                                  as_locked: bool = False) -> HTTPException | None:
     """An invoice is undone only after the credit notes issued against it, as its payments are,
-    and a bill or purchase order only after the supplier credit notes issued against it."""
+    and a bill or purchase order only after the supplier credit notes issued against it: the
+    refusal while any is issued, else None."""
     doc_type = state.get("doc_type")
     if doc_type not in ("invoice", *_NOTE_APPLICATIONS["debit_note"].targets):
-        return
+        return None
     supplier = doc_type != "invoice"
     numbers = await issued_credit_notes(session, company_id, invoice_id,
-                                        "debit_note" if supplier else "credit_note")
+                                        "debit_note" if supplier else "credit_note", as_locked)
     if not numbers:
-        return
+        return None
     listed = ", ".join(numbers)
     undone = "voided" if action == "void" else "reverted to draft"
     if supplier:
-        raise HTTPException(status_code=409, detail=refusal(
+        return HTTPException(status_code=409, detail=refusal(
             f"docs.{action}_under_supplier_credit_note",
             f"This document cannot be {undone}: supplier credit notes {listed} are issued against it. "
             f"Void those supplier credit notes first, then try again.", numbers=listed))
-    raise HTTPException(status_code=409, detail=refusal(
+    return HTTPException(status_code=409, detail=refusal(
         f"docs.{action}_under_credit_note",
         f"This invoice cannot be {undone}: credit notes {listed} are issued against it. Void those "
         f"credit notes first, then try again.", numbers=listed))
@@ -3598,6 +3606,103 @@ async def set_memo_tax_rate(
     return {"event_id": entry.id, "version": entry.id, **result}
 
 
+@dataclass(frozen=True)
+class RevertCheck:
+    """Every reason a document cannot go back to draft now, as (reason, refusal) in the order
+    Revert to Draft answers them, and how it goes back once nothing is refused: to its
+    purchase order (``to_order``), or having sent back all it received (``emptied``)."""
+    refusals: tuple[tuple[str, HTTPException], ...]
+    to_order: bool = False
+    emptied: bool = False
+
+    @property
+    def reasons(self) -> list[str]:
+        return [reason for reason, _ in self.refusals]
+
+
+async def revert_check(session, company_id, entity_id: str, state: dict, as_locked: bool = False) -> RevertCheck:
+    """The one rule for Revert to Draft. The route answers the first refusal, GET /docs/{id}
+    lists the reasons (``revert_refused``) and the document page offers the button from them
+    (REVERT_HIDDEN_BY), and a refusal that would send the user to Revert to Draft picks its
+    advice from them (auto_je._recognized_by_account). Only the freight a returned bill folded
+    into its lots is judged later, as it goes back, under the locks on those lots. ``as_locked``
+    judges the document and its credit notes as this transaction first locked them: as they
+    stand again once a refusal undoes it."""
+    if as_locked:
+        state = locked_state(session, entity_id) or state
+    refusals: list[tuple[str, HTTPException]] = []
+
+    def refuse(reason: str, detail, status_code: int = 409) -> None:
+        refusals.append((reason, HTTPException(status_code=status_code, detail=detail)))
+
+    if (under_note := await _undo_under_credit_note(session, company_id, state, entity_id, "revert",
+                                                    as_locked)) is not None:
+        refusals.append(("credit_note", under_note))
+    # A note a return raised holds the return's credit, so a draft of it could be edited or
+    # deleted while the bill stays settled by it. Voiding it takes the return back instead.
+    if state.get("doc_type") == "debit_note" and state.get("source_return"):
+        refuse("return_note", refusal(
+            "debit_note.revert_return",
+            "This supplier credit note was raised by a return, so it cannot go back to draft. To undo "
+            "the return, void the credit note: the goods go back into stock and the bill owes them again."))
+    # Inbound docs (bill, consignment_in) can also revert from received/fulfilled statuses.
+    _is_inbound = state.get("doc_type", "") in INBOUND_DOC_TYPES
+    revertable = INBOUND_DRAFT_REVERT_STATUSES if _is_inbound else DRAFT_REVERT_STATUSES
+    to_order = False
+    # A document that sent back everything it received reverts too: a bill whose goods all came
+    # in on the purchase order it was made from goes back to the order, which keeps them, and
+    # any other reverses its receipts and returns with it. A bill that received goods itself
+    # after it was made from an order has no draft to go back to that holds them, so it is voided.
+    # Goods the document was imported with are opening stock, which no revert takes back.
+    if state.get("received_items") and await _imported_receipt_held(session, company_id, entity_id):
+        refuse("imported_receipt", refusal(
+            "docs.revert_imported_receipt",
+            "This document cannot go back to draft: it was imported holding goods already in stock, which "
+            "the opening balances carry. Send back any goods it still holds with Return Goods, then settle "
+            "what it still owes with a payment."))
+    emptied = _is_inbound and await _sent_all_back(session, company_id, entity_id, state)
+    if emptied and state.get("doc_type") == "bill":
+        on_order = await _order_receipts_only(session, company_id, entity_id)
+        if on_order is False:
+            refuse("returned_bill", refusal(
+                "docs.revert_returned_bill",
+                "This bill cannot go back to draft: goods were received on it after it was made from its "
+                "purchase order. To cancel the bill, void it."))
+        to_order = on_order is True
+    if to_order or emptied:
+        revertable = revertable | DRAFT_REVERT_RETURNED
+    # Payments make a document paid or partial, so they alone refuse it there: once they are
+    # voided it is back in a status that reverts.
+    paid = float(state.get("amount_paid", 0) or 0) != 0
+    status = state.get("status")
+    if status not in revertable and not settled_by_credit_only(state) and not (paid and status in ("partial", "paid")):
+        refuse("status", t("documents.err_revert_status"))
+    if paid:
+        refuse("payments", t("documents.err_revert_has_payments"))
+    # Both blocks below name the button on the document's lines that clears them, so the
+    # user is sent to the action rather than left to guess where goods are returned.
+    if state.get("received_items") and not (to_order or emptied):
+        refuse("received", "Cannot revert to draft while goods received on this document are still in stock. "
+                           "Select those lines and use Return Goods first, then revert.")
+    if drawn := await _drawn_on(session, company_id, state):
+        memo = str(state.get("ref_id") or state.get("doc_number") or entity_id)
+        refuse("drawn", refusal(
+            "docs.memo_revert_while_drawn",
+            f"Memo {memo} can't go back to Draft while its products are on invoice {drawn[0][0]}. Send them "
+            "back to the memo or void that invoice first. To finish a memo whose products sold, close it instead.",
+            memo=memo, invoice=drawn[0][0]))
+    # Fulfilled items are tracked in state["fulfilled_items"]; each entry with a non-null
+    # item_id is an inventory item that is now out on memo or sold.
+    if any(fi.get("item_id") is not None for fi in state.get("fulfilled_items") or []):
+        refuse("out", "Cannot revert to draft while lines are still out on memo or sold. "
+                      "Select those lines and use Set as available first, then revert.")
+    try:
+        await require_moving_fits_units(session, company_id, entity_id, "doc", {**state, "status": "draft"})
+    except HTTPException as exc:
+        refusals.append(("units", exc))
+    return RevertCheck(tuple(refusals), to_order=to_order, emptied=emptied)
+
+
 @router.post("/{entity_id}/revert-to-draft")
 async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     from celerp.services import auto_je
@@ -3609,75 +3714,10 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
         return done
     state = row.state
     previous_status = state.get("status")
-    await _refuse_undo_under_credit_note(session, company_id, state, entity_id, "revert")
-    # A note a return raised holds the return's credit, so a draft of it could be edited or
-    # deleted while the bill stays settled by it. Voiding it takes the return back instead.
-    if state.get("doc_type") == "debit_note" and state.get("source_return"):
-        raise HTTPException(status_code=409, detail=refusal(
-            "debit_note.revert_return",
-            "This supplier credit note was raised by a return, so it cannot go back to draft. To undo "
-            "the return, void the credit note: the goods go back into stock and the bill owes them again."))
-    # Inbound docs (bill, consignment_in) can also revert from received/fulfilled statuses.
-    _doc_type = state.get("doc_type", "")
-    _is_inbound = _doc_type in INBOUND_DOC_TYPES
-    _REVERTABLE = INBOUND_DRAFT_REVERT_STATUSES if _is_inbound else DRAFT_REVERT_STATUSES
-    to_order = False
-    # A document that sent back everything it received reverts too: a bill whose goods all came
-    # in on the purchase order it was made from goes back to the order, which keeps them, and
-    # any other reverses its receipts and returns with it. A bill that received goods itself
-    # after it was made from an order has no draft to go back to that holds them, so it is voided.
-    # Goods the document was imported with are opening stock, which no revert takes back.
-    if state.get("received_items") and await _imported_receipt_held(session, company_id, entity_id):
-        raise HTTPException(status_code=409, detail=refusal(
-            "docs.revert_imported_receipt",
-            "This document cannot go back to draft: it was imported holding goods already in stock, which "
-            "the opening balances carry. Send back any goods it still holds with Return Goods, then settle "
-            "what it still owes with a payment."))
-    emptied = _is_inbound and await _sent_all_back(session, company_id, entity_id, state)
-    if emptied and state.get("doc_type") == "bill":
-        on_order = await _order_receipts_only(session, company_id, entity_id)
-        if on_order is False:
-            raise HTTPException(status_code=409, detail=refusal(
-                "docs.revert_returned_bill",
-                "This bill cannot go back to draft: goods were received on it after it was made from its "
-                "purchase order. To cancel the bill, void it."))
-        to_order = on_order is True
-    if to_order or emptied:
-        _REVERTABLE = _REVERTABLE | DRAFT_REVERT_RETURNED
-    if previous_status not in _REVERTABLE and not settled_by_credit_only(state):
-        raise HTTPException(status_code=409, detail=t("documents.err_revert_status"))
-    if float(state.get("amount_paid", 0) or 0) != 0:
-        raise HTTPException(status_code=409, detail=t("documents.err_revert_has_payments"))
-    # Both blocks below name the button on the document's lines that clears them, so the
-    # user is sent to the action rather than left to guess where goods are returned.
-    if state.get("received_items") and not (to_order or emptied):
-        raise HTTPException(
-            status_code=409,
-            detail="Cannot revert to draft while goods received on this document are still in stock. "
-                   "Select those lines and use Return Goods first, then revert.",
-        )
-
-    # Block revert when any line item has been fulfilled. Fulfilled items are tracked in
-    # state["fulfilled_items"]; each entry with a non-null item_id is an inventory item that is
-    # now out on memo or sold.
-    if drawn := await _drawn_on(session, company_id, state):
-        memo = _ref(row)
-        raise HTTPException(status_code=409, detail=refusal(
-            "docs.memo_revert_while_drawn",
-            f"Memo {memo} can't go back to Draft while its products are on invoice {drawn[0][0]}. Send them "
-            "back to the memo or void that invoice first. To finish a memo whose products sold, close it instead.",
-            memo=memo, invoice=drawn[0][0]))
-    fulfilled_items = [
-        fi for fi in (state.get("fulfilled_items") or [])
-        if fi.get("item_id") is not None
-    ]
-    if fulfilled_items:
-        raise HTTPException(
-            status_code=409,
-            detail="Cannot revert to draft while lines are still out on memo or sold. "
-                   "Select those lines and use Set as available first, then revert.",
-        )
-    await require_moving_fits_units(session, company_id, entity_id, "doc", {**state, "status": "draft"})
+    check = await revert_check(session, company_id, entity_id, state)
+    if check.refusals:
+        raise check.refusals[0][1]
+    to_order, emptied = check.to_order, check.emptied
 
     event_data: dict = {"reverted_by": str(user.id), "previous_status": previous_status}
     if payload.reason:

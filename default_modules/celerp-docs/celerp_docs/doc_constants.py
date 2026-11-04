@@ -34,6 +34,12 @@ INBOUND_DOC_TYPES: frozenset[str] = frozenset({"consignment_in", "bill"})
 DRAFT_REVERT_STATUSES = frozenset({"final", "sent", "awaiting_payment"})
 INBOUND_DRAFT_REVERT_STATUSES = DRAFT_REVERT_STATUSES | {"received", "partially_received", "fulfilled"}
 DRAFT_REVERT_RETURNED = frozenset({"partial_returned", "returned"})
+# The reasons POST /revert-to-draft refuses a document for (routes.revert_check, listed as
+# GET /docs/{id} revert_refused) that keep the document page from offering Revert to Draft:
+# a document in no status to go back from, and one whose payments or credit notes are undone
+# first, each from its own place on the page. Every other refusal names the step that clears
+# it, so the button stays and answers with that refusal.
+REVERT_HIDDEN_BY = frozenset({"status", "payments", "credit_note"})
 
 # Statuses each document type sends goods back to its supplier in (POST /return-items): once
 # goods have come in on it, and until all of them have gone back. A bill or purchase order

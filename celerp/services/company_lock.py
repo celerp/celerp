@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import json
+
 from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
@@ -209,7 +211,17 @@ async def lock_projections(session: AsyncSession, company_id, entity_ids) -> dic
         .with_for_update()
         .execution_options(populate_existing=True)
     )).scalars().all()
+    for r in rows:
+        if r.entity_type == "doc":
+            note(session, "locked_state", (r.entity_id, json.dumps(r.state or {}, default=str)))
     return {r.entity_id: r for r in rows}
+
+
+def locked_state(session, entity_id: str) -> dict | None:
+    """The state a document had when this transaction first locked it (lock_projections): what
+    it stands at again once a refusal rolls the transaction back. None when it was not locked."""
+    first = next((state for eid, state in noted(session, "locked_state") if eid == entity_id), None)
+    return None if first is None else json.loads(first)
 
 
 async def locked_company(session: AsyncSession, company_id) -> Company | None:
