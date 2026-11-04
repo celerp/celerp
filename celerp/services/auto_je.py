@@ -3578,7 +3578,10 @@ async def _cogs_line_unknown_key(session, company_id, doc_id: str, doc_state: di
     no step to take, so it asks for a report."""
     from celerp_docs.routes import revert_check
 
-    reasons = (await revert_check(session, company_id, doc_id, doc_state, as_locked=True)).reasons
+    from celerp.services.units import read_company_units
+
+    reasons = (await revert_check(session, company_id, doc_id, doc_state, await read_company_units(session, company_id),
+                                  as_locked=True)).reasons
     if still_out:
         reasons.append("out")
     if not reasons:

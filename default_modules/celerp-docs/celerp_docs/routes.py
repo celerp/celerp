@@ -69,7 +69,7 @@ from celerp.services.auth import AuthContext, get_auth_context, get_current_comp
 from celerp.services.permissions import assert_role_permission, get_current_company_settings, locked_authority, reject_price_change, require_permission, role_has_permission
 from celerp_docs.sequences import next_doc_ref, next_draft_ref, peek_draft_ref, require_doc_type, get_all_sequences, update_sequence, list_sequence_key
 from celerp_docs.search import doc_q_clause
-from celerp.services.units import build_unit_map, default_receive_as, get_company_units, is_non_stock_line, is_pieces_unit, is_weight_unit, line_receive_kind, require_moving_fits_units, sum_quantities, unit_decimals, validate_line_quantity
+from celerp.services.units import build_unit_map, default_receive_as, get_company_units, is_non_stock_line, is_pieces_unit, is_weight_unit, line_receive_kind, read_company_units, require_moving_fits, require_moving_fits_units, sum_quantities, unit_decimals, validate_line_quantity
 from celerp.services.money import allocate_pro_rata, books_currency, checked_exchange_rate, discount_from_inputs, doc_rate, document_line_amount, document_line_unit, require_doc_rate, received_share, round_basis, round_money, round_rate, to_base, to_decimal, to_stored_float
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, line_price_list, price_keys_in, resolve_price
 from celerp.services.terms import resolve_document_terms
@@ -1835,7 +1835,8 @@ async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_
             # The note degrades to nothing, as the memo labels do; the stored totals stand.
             doc.pop("memo_fixed_taken", None)
     doc["line_holds"] = await _line_holds(session, company_id, entity_id)
-    doc["revert_refused"] = (await revert_check(session, company_id, entity_id, row.state)).reasons
+    doc["revert_refused"] = (await revert_check(session, company_id, entity_id, row.state,
+                                                await read_company_units(session, company_id))).reasons
     returnable = doc.get("status") in SUPPLIER_RETURN_STATUSES.get(doc.get("doc_type"), ())
     if doc.get("doc_type") in ("bill", "consignment_in", "purchase_order") and (
             returnable or doc.get("returned_items")):
@@ -3620,14 +3621,16 @@ class RevertCheck:
         return [reason for reason, _ in self.refusals]
 
 
-async def revert_check(session, company_id, entity_id: str, state: dict, as_locked: bool = False) -> RevertCheck:
+async def revert_check(session, company_id, entity_id: str, state: dict, units: list[dict],
+                       as_locked: bool = False) -> RevertCheck:
     """The one rule for Revert to Draft. The route answers the first refusal, GET /docs/{id}
     lists the reasons (``revert_refused``) and the document page offers the button from them
     (REVERT_HIDDEN_BY), and a refusal that would send the user to Revert to Draft picks its
     advice from them (auto_je._recognized_by_account). Only the freight a returned bill folded
     into its lots is judged later, as it goes back, under the locks on those lots. ``as_locked``
     judges the document and its credit notes as this transaction first locked them: as they
-    stand again once a refusal undoes it."""
+    stand again once a refusal undoes it. ``units`` are the company's units as the caller
+    reads them (units.require_moving_fits), so only the revert itself takes the company lock."""
     if as_locked:
         state = locked_state(session, entity_id) or state
     refusals: list[tuple[str, HTTPException]] = []
@@ -3697,7 +3700,7 @@ async def revert_check(session, company_id, entity_id: str, state: dict, as_lock
         refuse("out", "Cannot revert to draft while lines are still out on memo or sold. "
                       "Select those lines and use Set as available first, then revert.")
     try:
-        await require_moving_fits_units(session, company_id, entity_id, "doc", {**state, "status": "draft"})
+        await require_moving_fits(session, company_id, entity_id, "doc", {**state, "status": "draft"}, units)
     except HTTPException as exc:
         refusals.append(("units", exc))
     return RevertCheck(tuple(refusals), to_order=to_order, emptied=emptied)
@@ -3714,7 +3717,7 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
         return done
     state = row.state
     previous_status = state.get("status")
-    check = await revert_check(session, company_id, entity_id, state)
+    check = await revert_check(session, company_id, entity_id, state, await get_company_units(session, company_id))
     if check.refusals:
         raise check.refusals[0][1]
     to_order, emptied = check.to_order, check.emptied

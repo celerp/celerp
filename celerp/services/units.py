@@ -231,6 +231,15 @@ async def require_moving_fits_units(session, company_id, entity_id: str, entity_
     them, under the company lock. ``state`` is the state it is about to take. A quantity finer
     than its unit allows, or in its item's unit once that is no longer one of the company's units,
     is refused 422 naming the line, the unit and the way out, before anything is written; a document a subscription makes names that subscription (``template``)."""
+    await require_moving_fits(session, company_id, entity_id, entity_type, state,
+                              await get_company_units(session, company_id), also, template)
+
+
+async def require_moving_fits(session, company_id, entity_id: str, entity_type: str, state: dict, units: list[dict],
+                              also: list[tuple[dict, float]] = (), template: str | None = None) -> None:
+    """require_moving_fits_units against ``units``, read by the caller: a write reads them under
+    the company lock (get_company_units), a page or an advice that only reads takes the
+    display copy (read_company_units)."""
     from sqlalchemy import or_, select
 
     from celerp.models.projections import Projection
@@ -246,7 +255,7 @@ async def require_moving_fits_units(session, company_id, entity_id: str, entity_
         or_(Projection.entity_id.in_(keys), Projection.state["sku"].as_string().in_(keys))))).all()) if keys else {}
     lines = [*_still_moving(entity_id, entity_type, state, items), *also]
     item_unit = _item_units(items)
-    unit_map = build_unit_map(await get_company_units(session, company_id))
+    unit_map = build_unit_map(units)
     for line, qty in lines:
         unit = _line_unit(line, item_unit)
         item = items.get(line.get("item_id")) or {}
