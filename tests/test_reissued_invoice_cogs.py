@@ -198,7 +198,7 @@ async def test_unmatched_out_lot_still_refused_with_new_message(client, session,
 
 async def test_ambiguous_back_lot_still_refused(client, session, auth):
     """A lot that came back in this issue and now fits two lines of its SKU, binding neither,
-    is never dropped: Celerp cannot tell which line's share it lowers."""
+    is still refused: Celerp cannot tell which line's share it lowers."""
     stones = (await _stones(client, auth))[:2]
     doc = await _invoice(client, auth, stones)
     first, second = await _line_ids(client, auth, doc)
