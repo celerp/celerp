@@ -6933,10 +6933,12 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
         else:
             if show_fulfill:
                 # A plain button, as Set as reserved is, so it confirms the same way: the count
-                # and the lines it will leave as they are.
+                # and the lines it will leave as they are. It carries its own address, as the
+                # inbound Receive form does, so the page script names no shipping route.
                 children.append(
                     Button(_fulfill_label, type="button", id="li-bulk-fulfill-btn",
                            cls="btn btn--primary btn--sm", style="display:none",
+                           data_url=f"/docs/{entity_id}/fulfill-lines",
                            onclick="liBulkFulfillConfirmed(event)"),
                 )
             if show_reserve:
@@ -10818,7 +10820,7 @@ async function celerpCsvImport(input, entityId) {{
     if(!rows.length){{ if(window.celerpToast)celerpToast(_L.no_lines_selected,'error'); return; }}
     var msg=liLineConfirm(rows, _L.confirm_set_shipped, _L.will_skip, _L.skip_kinds['fulfill']);
     if(msg&&!(await celerpConfirm(msg))) return;
-    if(!(await celerpLineAction('/docs/'+_liEid+'/fulfill-lines', rows, [], _liKey(), _L.could_not_set_shipped)))
+    if(!(await celerpLineAction(document.getElementById('li-bulk-fulfill-btn').dataset.url, rows, [], _liKey(), _L.could_not_set_shipped)))
       return false;
     window.location.reload();
     return true;

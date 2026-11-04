@@ -2672,7 +2672,7 @@
   "documents.confirm_return_selected": "Renvoyer ces quantités des lignes sélectionnées au fournisseur ? Les marchandises sortent du stock.",
   "documents.confirm_set_shipped_one": "Set 1 line as shipped?",
   "documents.confirm_set_shipped_many": "Set {n} lines as shipped?",
-  "documents.could_not_set_shipped": "The selected lines couldn't be set as shipped. Select Try again.",
+  "documents.could_not_set_shipped": "Les lignes sélectionnées n'ont pas pu être marquées comme expédiées. Sélectionnez « Réessayer ».",
   "documents.nothing_to_return": "Rien à renvoyer",
   "documents.return_held_reserved": "{qty} réservé",
   "documents.return_held_sold": "{qty} vendu",

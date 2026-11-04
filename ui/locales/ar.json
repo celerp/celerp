@@ -2671,7 +2671,7 @@
   "documents.confirm_return_selected": "إرجاع هذه الكميات من البنود المحددة إلى المورد؟ تخرج البضائع من المخزون.",
   "documents.confirm_set_shipped_one": "Set 1 line as shipped?",
   "documents.confirm_set_shipped_many": "Set {n} lines as shipped?",
-  "documents.could_not_set_shipped": "The selected lines couldn't be set as shipped. Select Try again.",
+  "documents.could_not_set_shipped": "تعذّر تعيين الأسطر المحددة كـ «مشحون». اختر إعادة المحاولة.",
   "documents.nothing_to_return": "لا شيء للإرجاع",
   "documents.return_held_reserved": "{qty} محجوز",
   "documents.return_held_sold": "{qty} مُباع",

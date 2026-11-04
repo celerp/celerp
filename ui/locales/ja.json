@@ -2671,7 +2671,7 @@
   "documents.confirm_return_selected": "選択した明細のこの数量を仕入先に返品しますか?商品は在庫から外れます。",
   "documents.confirm_set_shipped_one": "Set 1 line as shipped?",
   "documents.confirm_set_shipped_many": "Set {n} lines as shipped?",
-  "documents.could_not_set_shipped": "The selected lines couldn't be set as shipped. Select Try again.",
+  "documents.could_not_set_shipped": "選択した行を「出荷済み」に設定できませんでした。「再試行」を選んでください。",
   "documents.nothing_to_return": "返品できるものはありません",
   "documents.return_held_reserved": "{qty} 予約済み",
   "documents.return_held_sold": "{qty} 販売済み",

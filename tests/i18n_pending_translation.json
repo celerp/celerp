@@ -96,10 +96,6 @@
       "params": [
         "n"
       ]
-    },
-    "documents.could_not_set_shipped": {
-      "en": "The selected lines couldn't be set as shipped. Select Try again.",
-      "params": []
     }
   }
 }

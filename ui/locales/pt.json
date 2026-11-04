@@ -2671,7 +2671,7 @@
   "documents.confirm_return_selected": "Devolver estas quantidades das linhas selecionadas ao fornecedor? As mercadorias saem do estoque.",
   "documents.confirm_set_shipped_one": "Set 1 line as shipped?",
   "documents.confirm_set_shipped_many": "Set {n} lines as shipped?",
-  "documents.could_not_set_shipped": "The selected lines couldn't be set as shipped. Select Try again.",
+  "documents.could_not_set_shipped": "As linhas selecionadas não puderam ser marcadas como enviadas. Selecione Tentar novamente.",
   "documents.nothing_to_return": "Nada a devolver",
   "documents.return_held_reserved": "{qty} reservado",
   "documents.return_held_sold": "{qty} vendido",

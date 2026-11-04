@@ -2671,7 +2671,7 @@
   "documents.confirm_return_selected": "Kembalikan jumlah ini dari baris yang dipilih ke pemasok? Barangnya keluar dari stok.",
   "documents.confirm_set_shipped_one": "Set 1 line as shipped?",
   "documents.confirm_set_shipped_many": "Set {n} lines as shipped?",
-  "documents.could_not_set_shipped": "The selected lines couldn't be set as shipped. Select Try again.",
+  "documents.could_not_set_shipped": "Baris yang dipilih tidak bisa ditetapkan sebagai telah dikirim. Pilih Coba lagi.",
   "documents.nothing_to_return": "Tidak ada yang dikembalikan",
   "documents.return_held_reserved": "{qty} dipesan",
   "documents.return_held_sold": "{qty} terjual",

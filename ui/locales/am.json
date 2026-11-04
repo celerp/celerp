@@ -2900,7 +2900,7 @@
   "documents.confirm_return_selected": "የተመረጡትን መስመሮች እነዚህን መጠኖች ለአቅራቢው ይመልሱ? እቃዎቹ ከክምችት ይወጣሉ።",
   "documents.confirm_set_shipped_one": "Set 1 line as shipped?",
   "documents.confirm_set_shipped_many": "Set {n} lines as shipped?",
-  "documents.could_not_set_shipped": "The selected lines couldn't be set as shipped. Select Try again.",
+  "documents.could_not_set_shipped": "የተመረጡት መስመሮች እንደ ተልኳል ሊቀመጡ አልቻሉም። እንደገና ሞክር ይምረጡ።",
   "documents.nothing_to_return": "የሚመለስ የለም",
   "documents.return_held_reserved": "{qty} የተያዘ",
   "documents.return_held_sold": "{qty} የተሸጠ",

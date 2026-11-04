@@ -2671,7 +2671,7 @@
   "documents.confirm_return_selected": "Trả lại nhà cung cấp số lượng này của các dòng đã chọn? Hàng sẽ rời khỏi kho.",
   "documents.confirm_set_shipped_one": "Set 1 line as shipped?",
   "documents.confirm_set_shipped_many": "Set {n} lines as shipped?",
-  "documents.could_not_set_shipped": "The selected lines couldn't be set as shipped. Select Try again.",
+  "documents.could_not_set_shipped": "Không thể đặt các dòng đã chọn thành đã giao hàng. Hãy chọn Thử lại.",
   "documents.nothing_to_return": "Không có gì để trả lại",
   "documents.return_held_reserved": "{qty} đã giữ chỗ",
   "documents.return_held_sold": "{qty} đã bán",
