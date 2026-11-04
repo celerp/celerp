@@ -7116,6 +7116,7 @@
   "subscriptions.first_bill_on": "أول فوترة بتاريخ {date}",
   "subscriptions.next_bill_on": "الفوترة التالية بتاريخ {date}",
   "subscriptions.periods_heading": "الفترات",
+  "subscriptions.period_billed": "تمت الفوترة",
   "subscriptions.period_skipped": "تم التخطي",
   "subscriptions.period_unresolved": "تحتاج إلى مراجعة",
   "subscriptions.reopen_title": "بعد إلغاء مستند هذه الفترة، أعد فتح الفترة لتتمكن من فوترتها مجدداً",

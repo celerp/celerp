@@ -7116,6 +7116,7 @@
   "subscriptions.first_bill_on": "የመጀመሪያ ደረሰኝ በ{date}",
   "subscriptions.next_bill_on": "ቀጣዩ ደረሰኝ በ{date}",
   "subscriptions.periods_heading": "ወቅቶች",
+  "subscriptions.period_billed": "ደረሰኝ ወጥቷል",
   "subscriptions.period_skipped": "ታልፏል",
   "subscriptions.period_unresolved": "ግምገማ ያስፈልጋል",
   "subscriptions.reopen_title": "የዚህን ወቅት ሰነድ ከሰረዙ በኋላ ደረሰኝ እንደገና እንዲወጣለት ወቅቱን ይክፈቱ",

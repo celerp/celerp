@@ -7116,6 +7116,7 @@
   "subscriptions.first_bill_on": "ออกใบแจ้งหนี้ครั้งแรกวันที่ {date}",
   "subscriptions.next_bill_on": "ออกใบแจ้งหนี้ครั้งถัดไปวันที่ {date}",
   "subscriptions.periods_heading": "รอบ",
+  "subscriptions.period_billed": "ออกใบแจ้งหนี้แล้ว",
   "subscriptions.period_skipped": "ข้ามแล้ว",
   "subscriptions.period_unresolved": "ต้องตรวจสอบ",
   "subscriptions.reopen_title": "หลังจากยกเลิกเอกสารของรอบนี้แล้ว ให้เปิดรอบนี้อีกครั้งเพื่อออกใบแจ้งหนี้ใหม่",

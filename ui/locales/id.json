@@ -7116,6 +7116,7 @@
   "subscriptions.first_bill_on": "Tagihan pertama pada {date}",
   "subscriptions.next_bill_on": "Tagihan berikutnya pada {date}",
   "subscriptions.periods_heading": "Periode",
+  "subscriptions.period_billed": "Sudah ditagih",
   "subscriptions.period_skipped": "Dilewati",
   "subscriptions.period_unresolved": "Perlu ditinjau",
   "subscriptions.reopen_title": "Setelah membatalkan dokumen periode ini, buka kembali periodenya agar dapat ditagih lagi",

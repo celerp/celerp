@@ -7116,6 +7116,7 @@
   "subscriptions.first_bill_on": "初回請求日：{date}",
   "subscriptions.next_bill_on": "次回請求日：{date}",
   "subscriptions.periods_heading": "期間",
+  "subscriptions.period_billed": "請求済み",
   "subscriptions.period_skipped": "スキップ済み",
   "subscriptions.period_unresolved": "要確認",
   "subscriptions.reopen_title": "この期間の書類を無効化した後、再度請求できるように期間を開き直す",

@@ -7116,6 +7116,7 @@
   "subscriptions.first_bill_on": "First bill on {date}",
   "subscriptions.next_bill_on": "Next bill on {date}",
   "subscriptions.periods_heading": "Periods",
+  "subscriptions.period_billed": "Billed",
   "subscriptions.period_skipped": "Skipped",
   "subscriptions.period_unresolved": "Needs review",
   "subscriptions.reopen_title": "After voiding this period's document, reopen the period so it can be billed again",

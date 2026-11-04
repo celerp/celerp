@@ -7116,6 +7116,7 @@
   "subscriptions.first_bill_on": "Lập hóa đơn đầu tiên vào {date}",
   "subscriptions.next_bill_on": "Lập hóa đơn tiếp theo vào {date}",
   "subscriptions.periods_heading": "Các kỳ",
+  "subscriptions.period_billed": "Đã lập hóa đơn",
   "subscriptions.period_skipped": "Đã bỏ qua",
   "subscriptions.period_unresolved": "Cần rà soát",
   "subscriptions.reopen_title": "Sau khi hủy chứng từ của kỳ này, hãy mở lại kỳ để có thể lập hóa đơn lần nữa",

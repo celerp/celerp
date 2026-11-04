@@ -7116,6 +7116,7 @@
   "subscriptions.first_bill_on": "Primeira faturação em {date}",
   "subscriptions.next_bill_on": "Próxima faturação em {date}",
   "subscriptions.periods_heading": "Períodos",
+  "subscriptions.period_billed": "Faturado",
   "subscriptions.period_skipped": "Ignorado",
   "subscriptions.period_unresolved": "Precisa de revisão",
   "subscriptions.reopen_title": "Depois de anular o documento deste período, reabra o período para o poder faturar novamente",

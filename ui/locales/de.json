@@ -7116,6 +7116,7 @@
   "subscriptions.first_bill_on": "Erste Abrechnung am {date}",
   "subscriptions.next_bill_on": "Nächste Abrechnung am {date}",
   "subscriptions.periods_heading": "Zeiträume",
+  "subscriptions.period_billed": "Abgerechnet",
   "subscriptions.period_skipped": "Übersprungen",
   "subscriptions.period_unresolved": "Prüfung erforderlich",
   "subscriptions.reopen_title": "Nach der Stornierung des Belegs für diesen Zeitraum den Zeitraum wieder öffnen, damit er erneut abgerechnet werden kann",

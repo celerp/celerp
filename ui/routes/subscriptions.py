@@ -478,7 +478,7 @@ def _period_actions(entity_id: str, row: dict) -> FT:
 def _periods_table(entity_id: str, schedule: dict, *, historical_page: bool = False) -> FT:
     """The agreement's periods (``schedule`` is the API's period list), newest first: dates,
     status (with a reopened period and an email not sent, failed or unconfirmed marked), the document
-    that billed it. ``oob`` redraws the one already on the page."""
+    that billed it."""
     rows, oldest_due_row = schedule.get("rows") or [], schedule.get("oldest_due_row")
     older_before = schedule.get("older_before")
     attrs = {"id": "sub-periods", "cls": "mt-lg"}
@@ -702,8 +702,7 @@ def _summary_table(rows: list[dict], subs: dict[str, dict]) -> FT:
 
 
 def _auto_badge(sub: dict) -> FT:
-    """The header badge naming an agreement that bills on its own; empty otherwise. ``oob``
-    redraws the one already in the header."""
+    """The header badge naming an agreement that bills on its own; empty otherwise."""
     key = _MODE_BADGE.get(sub.get("generation_mode") or "")
     attrs = {"id": "sub-auto-badge"}
     return Span(t(key), cls="badge badge--active", **attrs) if key else Span(**attrs)
