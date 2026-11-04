@@ -96,6 +96,10 @@
         "end",
         "start"
       ]
+    },
+    "subscriptions.set_schedule": {
+      "en": "Set the schedule",
+      "params": []
     }
   }
 }

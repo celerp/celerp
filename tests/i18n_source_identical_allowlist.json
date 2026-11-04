@@ -58,6 +58,7 @@
     "subscriptions.period_send_failed",
     "subscriptions.period_send_not_sent",
     "subscriptions.period_send_unconfirmed",
+    "subscriptions.set_schedule",
     "th.position",
     "th.sku"
   ],
@@ -108,6 +109,7 @@
     "subscriptions.period_send_failed",
     "subscriptions.period_send_not_sent",
     "subscriptions.period_send_unconfirmed",
+    "subscriptions.set_schedule",
     "th.position",
     "th.sku"
   ],
@@ -226,6 +228,7 @@
     "subscriptions.period_send_failed",
     "subscriptions.period_send_not_sent",
     "subscriptions.period_send_unconfirmed",
+    "subscriptions.set_schedule",
     "th.barcode",
     "th.code",
     "th.detail",
@@ -330,6 +333,7 @@
     "subscriptions.period_send_failed",
     "subscriptions.period_send_not_sent",
     "subscriptions.period_send_unconfirmed",
+    "subscriptions.set_schedule",
     "th.color",
     "th.editable",
     "th.factor",
@@ -468,6 +472,7 @@
     "subscriptions.period_send_failed",
     "subscriptions.period_send_not_sent",
     "subscriptions.period_send_unconfirmed",
+    "subscriptions.set_schedule",
     "th.actions",
     "th.code",
     "th.contact",
@@ -601,6 +606,7 @@
     "subscriptions.period_send_failed",
     "subscriptions.period_send_not_sent",
     "subscriptions.period_send_unconfirmed",
+    "subscriptions.set_schedule",
     "th.label",
     "th.memo",
     "th.position",
@@ -701,6 +707,7 @@
     "subscriptions.period_send_failed",
     "subscriptions.period_send_not_sent",
     "subscriptions.period_send_unconfirmed",
+    "subscriptions.set_schedule",
     "th.email",
     "th.file",
     "th.memo",
@@ -764,6 +771,7 @@
     "subscriptions.period_send_failed",
     "subscriptions.period_send_not_sent",
     "subscriptions.period_send_unconfirmed",
+    "subscriptions.set_schedule",
     "th.position",
     "th.sku"
   ],
@@ -866,6 +874,7 @@
     "subscriptions.period_send_failed",
     "subscriptions.period_send_not_sent",
     "subscriptions.period_send_unconfirmed",
+    "subscriptions.set_schedule",
     "th.item",
     "th.position",
     "th.sku",
@@ -929,6 +938,7 @@
     "subscriptions.period_send_failed",
     "subscriptions.period_send_not_sent",
     "subscriptions.period_send_unconfirmed",
+    "subscriptions.set_schedule",
     "th.position",
     "th.sku"
   ],
@@ -999,6 +1009,7 @@
     "subscriptions.period_send_failed",
     "subscriptions.period_send_not_sent",
     "subscriptions.period_send_unconfirmed",
+    "subscriptions.set_schedule",
     "th.position",
     "th.sku"
   ]

@@ -385,6 +385,7 @@ def _sub_action_controls(entity_id: str, sub: dict, next_bill: str | None = None
 
     if status == "draft":
         return [
+            A(t("subscriptions.set_schedule"), href="#sub-schedule", cls="btn btn--secondary"),
             Button(t("btn.activate"), cls="btn btn--primary", hx_post=f"/subscriptions/{entity_id}/activate",
                    hx_swap="none", title=t("subscriptions.activate_title")),
             note,
