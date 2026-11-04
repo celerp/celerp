@@ -7193,5 +7193,15 @@
   "subscriptions.notice_back_periods_title": "Some subscriptions have more than one period to bill",
   "subscriptions.notice_back_periods_body": "The earlier release billed one overdue run at a time. This release bills each missed period separately, so these templates have more than one period due (count in brackets): {templates}. Skip any period you do not want to bill.",
   "subscriptions.skip_reason_paused_before_upgrade": "Missed while paused before the upgrade",
-  "subscriptions.resume_restarts_note": "This was paused before the upgrade. Resume restarts it from today, as the earlier release did: the periods missed while paused are skipped, and each can be un-skipped."
+  "subscriptions.resume_restarts_note": "This was paused before the upgrade. Resume restarts it from today, as the earlier release did: the periods missed while paused are skipped, and each can be un-skipped.",
+  "email.err_no_transport": "No email service is set up. Connect Web Access, or set up SMTP in the server settings, then retry.",
+  "email.err_relay_refused": "Web Access refused this email. Check the connection in Web Access, then retry.",
+  "email.err_smtp_unreachable": "Celerp could not connect to the SMTP server. Check the SMTP settings, then retry.",
+  "email.err_smtp_login": "The SMTP server refused the sign-in. Check the SMTP user name and password, then retry.",
+  "email.err_smtp_refused": "The SMTP server refused this email. Check the sender and recipient addresses, then retry.",
+  "subscriptions.err_send_unverified": "The last attempt to send this email may have arrived. Check with the customer before sending it again.",
+  "subscriptions.err_request_key_reused": "This request was already used for a different billing action. Reload the page and try again.",
+  "subscriptions.err_send_preparation": "The email could not be prepared. Check the document, then retry.",
+  "subscriptions.summary_send_pending": "{ref} is billed and its email has not been sent yet.",
+  "subscriptions.period_send_pending": "Email not sent yet"
 }

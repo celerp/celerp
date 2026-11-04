@@ -73,6 +73,48 @@
     "subscriptions.resume_restarts_note": {
       "en": "This was paused before the upgrade. Resume restarts it from today, as the earlier release did: the periods missed while paused are skipped, and each can be un-skipped.",
       "params": []
+    },
+    "email.err_no_transport": {
+      "en": "No email service is set up. Connect Web Access, or set up SMTP in the server settings, then retry.",
+      "params": []
+    },
+    "email.err_relay_refused": {
+      "en": "Web Access refused this email. Check the connection in Web Access, then retry.",
+      "params": []
+    },
+    "email.err_smtp_unreachable": {
+      "en": "Celerp could not connect to the SMTP server. Check the SMTP settings, then retry.",
+      "params": []
+    },
+    "email.err_smtp_login": {
+      "en": "The SMTP server refused the sign-in. Check the SMTP user name and password, then retry.",
+      "params": []
+    },
+    "email.err_smtp_refused": {
+      "en": "The SMTP server refused this email. Check the sender and recipient addresses, then retry.",
+      "params": []
+    },
+    "subscriptions.err_send_unverified": {
+      "en": "The last attempt to send this email may have arrived. Check with the customer before sending it again.",
+      "params": []
+    },
+    "subscriptions.err_request_key_reused": {
+      "en": "This request was already used for a different billing action. Reload the page and try again.",
+      "params": []
+    },
+    "subscriptions.err_send_preparation": {
+      "en": "The email could not be prepared. Check the document, then retry.",
+      "params": []
+    },
+    "subscriptions.summary_send_pending": {
+      "en": "{ref} is billed and its email has not been sent yet.",
+      "params": [
+        "ref"
+      ]
+    },
+    "subscriptions.period_send_pending": {
+      "en": "Email not sent yet",
+      "params": []
     }
   }
 }

@@ -332,13 +332,16 @@ def _period_actions(entity_id: str, row: dict) -> FT:
 
 def _periods_table(entity_id: str, rows: list[dict], *, oldest_due_row: dict | None = None,
                    older_before: int | None = None, historical_page: bool = False) -> FT:
-    """The agreement's periods, newest first: dates, state, the document that billed it."""
+    """The agreement's periods, newest first: dates, state (with an email still waiting to go
+    out), the document that billed it."""
     if not rows and oldest_due_row is None and not historical_page:
         return ""
 
     def _row(r: dict) -> FT:
         state = r.get("state")
         label = t(f"subscriptions.period_{_PERIOD_STATE_KEY.get(state, 'open')}")
+        if r.get("send") == "pending":
+            label = Span(label, " ", Span(t("subscriptions.period_send_pending"), cls="badge badge--warning"))
         doc = A(r["ref_id"], href=f"/docs/{r['doc_id']}") if r.get("doc_id") else (r.get("reason") or "--")
         return Tr(Td(f"{r['service_start']} - {r['service_end']}"), Td(r["bill_date"]), Td(label), Td(doc),
                   Td(_period_actions(entity_id, r)))
@@ -376,7 +379,7 @@ def _list_banners(catch_up: list[dict], summary: dict) -> list:
         banners.append(Div(t("subscriptions.summary_banner", generated=counts.get("generated", 0),
                              sent=counts.get("sent", 0), failed=_sends_to_check(counts)), " ",
                            A(t("subscriptions.summary_open"), href="/subscriptions/summary"),
-                           cls="flash flash--info"))
+                           cls="flash flash--warning" if _sends_to_check(counts) else "flash flash--info"))
     return banners
 
 
@@ -509,17 +512,25 @@ def _catch_up_card(items: list[dict], subs: dict[str, dict], results: list[dict]
     )
 
 
+# Send failures fixed on the Web Access page: no email service at all, or Celerp Cloud refusing it.
+_FIXED_IN_WEB_ACCESS = ("email.err_no_transport", "email.err_relay_refused")
+
+
 def _summary_table(rows: list[dict], subs: dict[str, dict]) -> FT:
     """What ran unattended, newest first, each row linked to its agreement and document;
-    a failed send offers Retry, which sends once."""
+    a failed send offers Retry and an email still waiting offers Send, each sending once.
+    A failure the email settings fix links to that page."""
     def _row(r: dict) -> FT:
         eid = r["entity_id"]
         doc = A(r.get("ref_id") or r["doc_id"], href=f"/docs/{r['doc_id']}") if r.get("doc_id") else "--"
-        retry = (Button(t("btn.retry"), cls="btn btn--secondary btn--sm", hx_post=r["retry_url"],
+        label = t("btn.send") if r.get("kind") == "send_pending" else t("btn.retry")
+        retry = (Button(label, cls="btn btn--secondary btn--sm", hx_post=r["retry_url"],
                         hx_vals={"back": "summary"}, hx_swap="none") if r.get("retry_url") else "")
+        fix = (A(t("doc.send_relay_error_link"), href="/settings/cloud")
+               if r.get("error_key") in _FIXED_IN_WEB_ACCESS else "")
         return Tr(Td(format_timestamp(r.get("at") or "") or "--"),
                   Td(A(template_label(subs.get(eid) or {}, eid), href=f"/subscriptions/{eid}")),
-                  Td(r.get("message") or ""), Td(doc), Td(retry))
+                  Td(r.get("message") or "", " " if fix else "", fix), Td(doc), Td(retry))
 
     return Table(Thead(Tr(Th(t("th.date")), Th(t("th.name")), Th(t("th.description")), Th(t("th.document")), Th(""))),
                  Tbody(*[_row(r) for r in rows]), cls="data-table")
@@ -607,8 +618,8 @@ def _history_review(entity_id: str, review: list[dict], set_aside: list[dict]) -
 # ---------------------------------------------------------------------------
 
 def _sends_to_check(counts: dict) -> int:
-    """Sends that failed or were cut off: each has a retry on the summary."""
-    return counts.get("send_failed", 0) + counts.get("send_unconfirmed", 0)
+    """Sends that failed, were cut off or still wait to go out: each is listed on the summary."""
+    return counts.get("send_failed", 0) + counts.get("send_unconfirmed", 0) + counts.get("send_pending", 0)
 
 
 async def _held_and_unread(token: str) -> tuple[list[dict], dict, list[str]]:

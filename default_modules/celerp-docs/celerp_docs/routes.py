@@ -2414,11 +2414,11 @@ def _email_with_receipt(company_id, doc_label: str, sent_to: str, action_url: st
         from celerp.db import SessionLocal
         from celerp.notifications import service as notif_service
         from celerp.services.email import send_email
-        ok, detail = await send_email(**send_kwargs)
+        result = await send_email(**send_kwargs)
         cid = company_id if isinstance(company_id, _uuid_mod.UUID) else _uuid_mod.UUID(str(company_id))
         try:
             async with SessionLocal() as s:
-                if ok:
+                if result.ok:
                     tip = await _payments_tip_suffix(s, cid) if payable else ""
                     await notif_service.create(
                         s, cid, "email", f"Email delivered to {sent_to}",
@@ -2427,7 +2427,7 @@ def _email_with_receipt(company_id, doc_label: str, sent_to: str, action_url: st
                 else:
                     await notif_service.create(
                         s, cid, "email", f"Email to {sent_to} failed",
-                        f"{doc_label} could not be delivered: {detail}",
+                        f"{doc_label} could not be delivered: {result.detail}",
                         action_url=action_url, priority="high")
                 await s.commit()
         except Exception:

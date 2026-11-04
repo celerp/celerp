@@ -162,7 +162,7 @@ async def replay_result(session, company_id, template_id: str, request_key: str,
     if event is None:
         return None
     if (event.metadata_ or {}).get("request") != {"early": early, "period_index": period_index}:
-        raise HTTPException(status_code=409, detail="This billing request key was used for a different operation")
+        raise HTTPException(status_code=409, detail=t("subscriptions.err_request_key_reused"))
     return event.metadata_["result"]
 
 
@@ -234,7 +234,7 @@ async def _bill(session, company, company_id, tid: str, state: dict, schedule: S
     periods = periods_of(state)
     periods[str(k)] = {"state": BILLED, "doc_id": doc_id, "release_count": release, "at": now_stamp(),
                        "by": str(actor.id) if actor.id else None, "auto": auto,
-                       **({"send": {"state": "pending", "n": 0}} if send else {})}
+                       **({"send": {"state": "pending", "n": 0, "at": now_stamp()}} if send else {})}
     await write_agreement(session, company_id, tid, {"periods": periods}, actor.id,
                           drop=("billing_failure",) if state.get("billing_failure") else ())
     return doc_id
@@ -330,7 +330,7 @@ def period_row(schedule: Schedule, k: int) -> dict:
 async def period_list(session: AsyncSession, company_id, state: dict, today: date, *,
                       limit: int = 24, before: int | None = None) -> dict:
     """An agreement's periods from its lowest to the one after today (and any claimed later),
-    newest first, at most ``limit``, with each claim's state and document; its next bill date;
+    newest first, at most ``limit``, with each claim's state, document and email send state; its next bill date;
     the earlier documents waiting for history review, each with its candidate periods; and the
     ones set aside as billing no period of their own. A template not yet on a schedule has
     none of these, and ``not_moved`` says why."""
@@ -355,7 +355,8 @@ async def period_list(session: AsyncSession, company_id, state: dict, today: dat
                 doc_id = entry.get("doc_id")
                 rows.append({**period_row(schedule, k), "state": entry.get("state"), "doc_id": doc_id,
                              "ref_id": await doc_ref(session, company_id, doc_id) if doc_id else None,
-                             "reason": entry.get("reason"), "history": bool(entry.get("history"))})
+                             "reason": entry.get("reason"), "history": bool(entry.get("history")),
+                             "send": (entry.get("send") or {}).get("state")})
             k -= 1
     older_before = rows[-1]["period_index"] if rows and first is not None and k >= first else None
     oldest_open = schedule.oldest_open(floor=review_floor(state))
@@ -365,7 +366,8 @@ async def period_list(session: AsyncSession, company_id, state: dict, today: dat
         entry = schedule.periods.get(oldest_open) or {}
         oldest_due_row = {**period_row(schedule, oldest_open), "state": entry.get("state"),
                           "doc_id": entry.get("doc_id"), "ref_id": None,
-                          "reason": entry.get("reason"), "history": bool(entry.get("history"))}
+                          "reason": entry.get("reason"), "history": bool(entry.get("history")),
+                          "send": (entry.get("send") or {}).get("state")}
     review = [{"doc_id": r.get("doc_id"), "ref_id": await doc_ref(session, company_id, r.get("doc_id")),
                "candidates": [period_row(schedule, c) for c in r.get("candidates") or []]}
               for r in state.get("history_review") or []]
@@ -408,6 +410,19 @@ def outside_window(state: dict, schedule: Schedule, due: list[int], today: date)
     bill_index = schedule.current(today) - int(schedule.timing == "arrears")
     age = max(bill_index, latest if latest is not None else bill_index) - due[0]
     return bool(due) and age > int(state.get("catchup_periods") or 0)
+
+
+def waiting_sends(state: dict, today: date) -> list[int]:
+    """The periods whose email waits to go out on the next pass: billed with Send on, never
+    sent (the app stopped first, or sending was off), and inside the catch-up window. One
+    further back waits for the user to send it from the summary, as an unbilled period
+    that far back waits for the catch-up preview."""
+    waiting = sorted(int(k) for k, entry in (state.get("periods") or {}).items()
+                     if (entry.get("send") or {}).get("state") == "pending")
+    if not waiting or not state.get("anchor_date"):
+        return []
+    schedule = Schedule.from_state(state)
+    return [k for k in waiting if not outside_window(state, schedule, [k], today)]
 
 
 def unattended_due(state: dict, today: date) -> tuple[Schedule, list[int]] | None:
@@ -471,10 +486,9 @@ async def run_due(*, session: AsyncSession, company_id, today: date, budget: int
     queued_sends = 0
     for row in await agreements(session, company_id):
         state = row.state
-        for k, entry in (state.get("periods") or {}).items():
-            if ((entry.get("send") or {}).get("state")) == "pending" and queued_sends < budget:
-                report.after_commit.append(_deliverer(company_id, row.entity_id, int(k)))
-                queued_sends += 1
+        for k in waiting_sends(state, today)[:max(budget - queued_sends, 0)]:
+            report.after_commit.append(_deliverer(company_id, row.entity_id, k))
+            queued_sends += 1
         found = unattended_due(state, today)
         if found is None:
             continue
@@ -585,11 +599,11 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
 
         uncertain = send.get("state") == "sending"
         if uncertain and not (relay_idempotent and send.get("deduplicated")):
-            raise HTTPException(status_code=409, detail="Verify the previous email before sending another")
+            raise HTTPException(status_code=409, detail=t("subscriptions.err_send_unverified"))
         doc_id = entry["doc_id"]
         doc = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
         if uncertain and (doc is None or (doc.state or {}).get("status") == "void"):
-            raise HTTPException(status_code=409, detail="Verify the previous email before sending another")
+            raise HTTPException(status_code=409, detail=t("subscriptions.err_send_unverified"))
         by = retry_by or ((proj.state.get("consents") or {}).get("sending") or {}).get("by") or entry.get("by")
         actor = SimpleNamespace(id=uuid.UUID(str(by)) if by else None)
 
@@ -605,11 +619,11 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
                 attempt = None
             if (attempt is None or attempt.doc_id != doc_id or attempt.attempt_number != n
                     or not retryable_attempt_time(attempt.created_at)):
-                raise HTTPException(status_code=409, detail="Verify the previous email before sending another")
+                raise HTTPException(status_code=409, detail=t("subscriptions.err_send_unverified"))
             message = json.loads(attempt.payload_json)
             digest = hashlib.sha256(json.dumps(message, sort_keys=True).encode()).hexdigest()
             if digest != send.get("payload_digest"):
-                raise HTTPException(status_code=409, detail="Verify the previous email before sending another")
+                raise HTTPException(status_code=409, detail=t("subscriptions.err_send_unverified"))
         else:
             n = int(send.get("n") or 0) + 1
             contact_id = proj.state.get("contact_id")
@@ -619,8 +633,8 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
             if (doc is None or (doc.state or {}).get("status") == "void" or
                     (doc.state or {}).get("doc_type") in NO_SEND_DOC_TYPES or not to):
                 send = {"state": "failed", "n": n, "at": now_stamp(),
-                        "error": t("subscriptions.err_send_no_email") if doc is not None and not to
-                        else t("subscriptions.err_send_void")}
+                        "error_key": "subscriptions.err_send_no_email" if doc is not None and not to
+                        else "subscriptions.err_send_void"}
                 periods[str(k)]["send"] = send
                 await write_agreement(session, company_id, template_id, {"periods": periods}, actor.id)
                 await session.commit()
@@ -636,7 +650,7 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
             except Exception as exc:
                 log.warning("Preparing subscription email failed (%s)", type(exc).__name__)
                 send = {"state": "failed", "n": n, "at": now_stamp(),
-                        "error": "Email preparation failed. Check the document and connection before retrying."}
+                        "error_key": "subscriptions.err_send_preparation"}
                 periods[str(k)]["send"] = send
                 await write_agreement(session, company_id, template_id, {"periods": periods}, actor.id)
                 await session.commit()
@@ -655,12 +669,10 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
             await session.commit()
 
     try:
-        ok, detail = await email.send_email(**message, operation_id=operation_id,
-                                            fail_closed_on_uncertain=True)
+        result = await email.send_email(**message, operation_id=operation_id, fail_closed_on_uncertain=True)
     except Exception as exc:
         log.warning("Sending subscription email failed (%s)", type(exc).__name__)
-        ok, detail = False, "unconfirmed: delivery outcome unknown"
-    detail = str(detail or "")
+        result = email.EmailResult(False, "delivery outcome unknown", unconfirmed=True)
     async with factory() as session:
         proj = await locked_agreement(session, company_id, template_id)
         periods = periods_of(proj.state)
@@ -676,13 +688,13 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
             await session.commit()
             return sending
 
-        outcome = "sent" if ok else ("sending" if uncertain or detail.startswith("unconfirmed: ") else "failed")
+        outcome = "sent" if result.ok else ("sending" if uncertain or result.unconfirmed else "failed")
         send = {"state": outcome, "n": n, "at": now_stamp(), "operation_id": operation_id,
                 "deduplicated": relay_idempotent, "payload_digest": digest,
-                **({} if ok else {"error": detail})}
+                **({"error_key": result.reason} if outcome == "failed" else {})}
         periods[str(k)]["send"] = send
         await write_agreement(session, company_id, template_id, {"periods": periods}, actor.id)
-        if ok:
+        if result.ok:
             try:
                 async with session.begin_nested():
                     await mark_doc_sent(session, company_id, doc_id, actor, DocSendBody(

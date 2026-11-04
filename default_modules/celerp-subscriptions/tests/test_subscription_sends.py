@@ -21,8 +21,6 @@ from agreement_kit import (
 from smtp_support import SmtpStub, smtp_settings
 from ui.i18n import t
 
-pytestmark = pytest.mark.asyncio
-
 
 async def _sending(client, hd, *, start="2026-07-01", catchup=0) -> str:
     eid = await agreement(client, hd, start=start, contact_id=await contact(client, hd, "member@example.test"))

@@ -5,7 +5,9 @@
 Nothing is copied: a billed period records when and whether it was billed unattended,
 and its send records each attempt. A user's acknowledgment is a wall-clock time kept in
 the company settings per user; the summary shows what was recorded after it. An
-unattended mode whose authorizer no longer holds its permission is shown while it lasts.
+unattended mode whose authorizer no longer holds its permission, and an email still waiting
+to go out, are shown while they last. A failed send keeps its reason as a catalog key, worded
+in the reader's language when read.
 """
 from __future__ import annotations
 
@@ -21,9 +23,10 @@ from celerp_subscriptions import billing
 from ui.i18n import t
 
 ACK_SETTING = "subscription_summary_ack"
-KINDS = ("generated", "generation_failed", "sent", "send_failed", "send_unconfirmed", "billing_lapsed", "sending_lapsed")
+KINDS = ("generated", "generation_failed", "sent", "send_failed", "send_unconfirmed", "send_pending",
+         "billing_lapsed", "sending_lapsed")
 # A send recorded as going out with no outcome after it was cut off mid-send: it may or may not have arrived.
-_SEND_KINDS = {"sent": "sent", "failed": "send_failed", "sending": "send_unconfirmed"}
+_SEND_KINDS = {"sent": "sent", "failed": "send_failed", "sending": "send_unconfirmed", "pending": "send_pending"}
 _LAPSED = {"generation": "billing_lapsed", "sending": "sending_lapsed"}
 
 
@@ -65,11 +68,11 @@ async def report(session: AsyncSession, company_id, user_id, *, everything: bool
             if entry.get("state") == billing.BILLED and entry.get("auto") and (entry.get("at") or "") > since:
                 found.append({**base, "kind": "generated", "at": entry["at"]})
             send = entry.get("send") or {}
-            if send.get("state") in _SEND_KINDS and (send.get("at") or "") > since:
-                kind = _SEND_KINDS[send["state"]]
-                found.append({**base, "kind": kind, "at": send["at"], "error": send.get("error"),
+            kind = _SEND_KINDS.get(send.get("state"))
+            if kind and (kind == "send_pending" or (send.get("at") or "") > since):
+                found.append({**base, "kind": kind, "at": send.get("at"), "error_key": send.get("error_key"),
                               "retry_url": (f"/subscriptions/{row.entity_id}/periods/{k}/send"
-                                            if kind == "send_failed" or (
+                                            if kind in ("send_failed", "send_pending") or (
                                                 kind == "send_unconfirmed" and send.get("deduplicated")
                                                 and billing.email.relay_send_is_idempotent()
                                                 and send.get("operation_id") in retryable)
@@ -88,7 +91,8 @@ async def report(session: AsyncSession, company_id, user_id, *, everything: bool
     refs = await _refs(session, company_id, {r["doc_id"] for r in found if r["doc_id"]})
     rows = []
     for r in found:
-        params = {"ref": refs.get(r["doc_id"], r["doc_id"]), "error": r.pop("error", None) or ""}
+        params = {"ref": refs.get(r["doc_id"], r["doc_id"]),
+                  "error": t(r["error_key"]) if r.get("error_key") else ""}
         rows.append({"retry_url": None, **r, "ref_id": params["ref"] if r["doc_id"] else None,
                      "message": t(f"subscriptions.summary_{r['kind']}", **params)})
     rows.sort(key=lambda r: r["at"] or "", reverse=True)
