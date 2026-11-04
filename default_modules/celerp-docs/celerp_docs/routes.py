@@ -10415,8 +10415,8 @@ def _acting_lines(line_items: list[dict], indices: list[int], locked: dict[str, 
     """Which chosen lines a bulk line action acts on: ``(acting, counted, skipped)``.
 
     A line with stock acts. A line whose item is not stock is counted when ``count_service``
-    (Ship counts it shipped) and otherwise skipped; a line with no item, or whose item no longer
-    exists, is skipped. A choice of lines none of which acts or counts is refused, naming them.
+    (Ship counts it shipped) and otherwise skipped; a line with no item is skipped (one whose
+    item no longer exists never gets here: _lock_item_sku_lots refuses it as stock changed). A choice of lines none of which acts or counts is refused, naming them.
     With no ``indices`` (lots chosen by item) nothing is skipped or refused."""
     acting: list[int] = []
     counted: list[int] = []
