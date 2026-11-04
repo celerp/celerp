@@ -51,6 +51,8 @@ MODE_DOCUMENT_PERMISSION = {"generation": "finalize_documents", "sending": "edit
 # The settings each mode's consent covers: changing one while the mode runs is a new consent.
 # Automatic billing covers every setting its decision reads (unattended_due, outside_window).
 CONSENT_TERMS = {"generation": ("generation_mode", "catchup_periods", *SCHEDULE_FIELDS), "sending": ("auto_send",)}
+# A send handed over with no answer ("unconfirmed"), or cut off before one was recorded ("sending").
+UNCONFIRMED = ("sending", "unconfirmed")
 CATCHUP_CAP = 12
 MAX_EMAIL_PAYLOAD_BYTES = 2 * 1024 * 1024
 EMAIL_ATTEMPT_RETENTION = timedelta(days=2)
@@ -406,7 +408,7 @@ def period_status(state: str | None, doc: dict | None, bill_date: date, today: d
     return "overdue" if bill_date < today else "due" if bill_date == today else "upcoming"
 
 
-async def _listed_row(session, company_id, schedule: Schedule, k: int, today: date) -> dict:
+async def _listed_row(session, company_id, state: dict, schedule: Schedule, k: int, today: date) -> dict:
     """Period ``k`` as the Periods table lists it: dates, claim, status, document, send state."""
     entry = schedule.periods.get(k) or {}
     doc_id = entry.get("doc_id")
@@ -415,7 +417,7 @@ async def _listed_row(session, company_id, schedule: Schedule, k: int, today: da
             "status": period_status(entry.get("state"), doc, schedule.bill_date(k), today),
             "doc_id": doc_id, "ref_id": ((doc or {}).get("ref_id") or doc_id) if doc_id else None,
             "reason": entry.get("reason"), "history": bool(entry.get("history")),
-            "send": (entry.get("send") or {}).get("state")}
+            "send": send_status(state, entry.get("send"))}
 
 
 async def period_list(session: AsyncSession, company_id, state: dict, today: date, *,
@@ -442,14 +444,14 @@ async def period_list(session: AsyncSession, company_id, state: dict, today: dat
         k = min(top, before - 1) if before is not None else top
         while k >= first and len(rows) < limit:
             if schedule.exists(k):
-                rows.append(await _listed_row(session, company_id, schedule, k, today))
+                rows.append(await _listed_row(session, company_id, state, schedule, k, today))
             k -= 1
     older_before = rows[-1]["period_index"] if rows and first is not None and k >= first else None
     oldest_open = schedule.oldest_open(floor=review_floor(state))
     oldest_due_row = None
     if (before is None and oldest_open is not None and oldest_open not in
             {r["period_index"] for r in rows} and schedule.bill_date(oldest_open) <= today):
-        oldest_due_row = await _listed_row(session, company_id, schedule, oldest_open, today)
+        oldest_due_row = await _listed_row(session, company_id, state, schedule, oldest_open, today)
     review = [{"doc_id": r.get("doc_id"), "ref_id": await doc_ref(session, company_id, r.get("doc_id")),
                "candidates": [period_row(schedule, c) for c in r.get("candidates") or []]}
               for r in state.get("history_review") or []]
@@ -553,6 +555,17 @@ def sends_itself(state: dict) -> bool:
     """Whether a billed period's waiting email goes out on its own: the agreement is active
     and automatic sending is in force. Otherwise it waits only for someone to send it."""
     return state.get("status") == "active" and "sending" in modes_in_force(state)
+
+
+def send_status(state: dict, send: dict | None) -> str | None:
+    """How a period's email reads, for the summary and the Periods table alike: "waiting"
+    while Send is in force (it goes on the next pass inside the catch-up window), "not_sent"
+    (Send is off, so it waits only for someone to send it), "sent", "failed",
+    or "unconfirmed" (it may not have arrived). None when the period has no email."""
+    recorded = (send or {}).get("state")
+    if recorded == "pending":
+        return "waiting" if sends_itself(state) else "not_sent"
+    return "unconfirmed" if recorded in UNCONFIRMED else recorded
 
 
 def modes_in_force(state: dict) -> list[str]:
@@ -679,10 +692,10 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
         send = dict(entry.get("send") or {})
         if entry.get("state") != BILLED:
             raise HTTPException(status_code=409, detail=t("subscriptions.err_send_not_billed"))
-        if send.get("state") not in (("pending", "failed", "sending") if retry_by else ("pending",)):
+        if send.get("state") not in (("pending", "failed", *UNCONFIRMED) if retry_by else ("pending",)):
             return send
 
-        uncertain = send.get("state") == "sending"
+        uncertain = send.get("state") in UNCONFIRMED
         if uncertain and not (relay_idempotent and send.get("deduplicated")):
             raise HTTPException(status_code=409, detail=t("subscriptions.err_send_unverified"))
         doc_id = entry["doc_id"]
@@ -765,7 +778,7 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
         sending = current.get("send") or {}
         operation_uuid = uuid.UUID(operation_id)
         if (current.get("state") != BILLED or current.get("doc_id") != doc_id
-                or sending.get("n") != n or sending.get("state") != "sending"
+                or sending.get("n") != n or sending.get("state") not in UNCONFIRMED
                 or sending.get("operation_id") != operation_id):
             await session.execute(delete(SubscriptionEmailAttempt).where(
                 SubscriptionEmailAttempt.company_id == company_id,
@@ -773,7 +786,7 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
             await session.commit()
             return sending
 
-        outcome = "sent" if result.ok else ("sending" if uncertain or result.unconfirmed else "failed")
+        outcome = "sent" if result.ok else ("unconfirmed" if uncertain or result.unconfirmed else "failed")
         send = {"state": outcome, "n": n, "at": now_stamp(), "operation_id": operation_id,
                 "deduplicated": relay_idempotent, "payload_digest": digest,
                 **({"error_key": result.reason} if outcome == "failed" else {})}
@@ -787,7 +800,7 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
                         idempotency_key=f"send:{doc_id}:{n}"), source="subscription")
             except HTTPException as exc:
                 log.warning("Document was emailed but could not be marked sent (%s)", exc.status_code)
-        if outcome != "sending":
+        if outcome != "unconfirmed":
             await session.execute(delete(SubscriptionEmailAttempt).where(
                 SubscriptionEmailAttempt.company_id == company_id,
                 SubscriptionEmailAttempt.operation_id == operation_uuid))

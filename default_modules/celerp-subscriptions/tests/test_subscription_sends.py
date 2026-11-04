@@ -74,7 +74,7 @@ async def test_a_send_cut_off_after_the_hand_over_may_have_arrived_and_is_not_re
             cid = await company_id(client, hd)
             eid = await _sending(client, hd)
             await tick(session, cid, "2026-07-01")
-            assert (await template(client, hd, eid))["periods"]["0"]["send"]["state"] == "sending"
+            assert (await template(client, hd, eid))["periods"]["0"]["send"]["state"] == "unconfirmed"
             row = await _send_row(client, hd, eid)
             assert row["kind"] == "send_unconfirmed" and row["retry_url"] is None
             refused = await client.post(f"/subscriptions/{eid}/periods/0/send", headers=hd)
@@ -218,7 +218,7 @@ async def test_an_email_waiting_after_the_app_stopped_is_shown_and_never_sent_la
             row = await _send_row(client, hd, eid)
             assert row["kind"] == "send_pending" and row["retry_url"] == f"/subscriptions/{eid}/periods/0/send"
             periods = (await client.get(f"/subscriptions/{eid}/periods", headers=hd)).json()["rows"]
-            assert next(p for p in periods if p["period_index"] == 0)["send"] == "pending"
+            assert next(p for p in periods if p["period_index"] == 0)["send"] == "waiting"
             assert (await schedule(client, hd, eid, auto_send=False)).status_code == 200
             freeze_day(monkeypatch, "2026-12-01")
             assert (await schedule(client, hd, eid, auto_send=True)).status_code == 200
@@ -271,3 +271,84 @@ async def test_a_send_to_check_is_a_warning_on_the_list(owner_ui, session, monke
     start = listing.rindex("<div", 0, listing.index(banner))
     assert 'class="flash flash--warning"' in listing[start:listing.index(banner)]
 
+
+
+
+
+def _period_status(html: str, bill_date: str) -> str:
+    from bs4 import BeautifulSoup
+    table = BeautifulSoup(html, "html.parser").select_one("#sub-periods")
+    return next(tds[2].get_text(" ", strip=True) for tds in (tr.find_all("td") for tr in table.select("tr"))
+                if len(tds) > 2 and tds[1].get_text(strip=True) == bill_date)
+
+
+@pytest.mark.parametrize("stop", [{"auto_send": False}, {"generation_mode": "manual_due"}])
+async def test_an_email_the_user_stopped_reads_as_not_sent_and_is_acknowledged_like_any_row(
+        owner_ui, session, monkeypatch, stop):
+    """Billed with Send on, the app stopped before the email went, then the user stopped
+    sending. The email will not go on its own, so it is no longer a warning that only sending
+    it clears: the summary lists it until it is acknowledged, and its period reads "Email not sent"."""
+    from celerp_subscriptions import billing
+    api = owner_ui.api
+    monkeypatch.setattr("celerp.config.settings.gateway_token", "")
+    monkeypatch.setattr("celerp.config.settings.smtp_host", "")
+    freeze_day(monkeypatch, "2026-07-01")
+    cid = await company_id(api, {})
+    eid = await _sending(api, {})
+    await billing.run_due(session=session, company_id=uuid.UUID(cid), today=date(2026, 7, 1), budget=10)
+    await session.commit()  # the after-commit send never ran: the app stopped first
+    assert (await _send_row(api, {}, eid))["kind"] == "send_pending"
+    assert (await schedule(api, {}, eid, **stop)).status_code == 200
+    assert (await _send_row(api, {}, eid))["kind"] == "send_pending"  # listed until it is read
+    assert (await api.post("/subscriptions/summary/ack")).status_code == 200
+    freeze_day(monkeypatch, "2026-12-01")
+    await tick(session, cid, "2026-12-01")
+    sm = await summary(api, {})
+    assert sm["counts"]["send_pending"] == 0 and not [r for r in sm["rows"] if r["entity_id"] == eid]
+    status = _period_status((await owner_ui.get(f"/subscriptions/{eid}")).text, "2026-07-01")
+    assert t("subscriptions.period_send_not_sent") in status
+    assert t("subscriptions.period_send_pending") not in status
+
+
+@pytest.mark.parametrize("server", ["cut off", "closed port"])
+async def test_the_agreement_page_says_when_an_email_failed_or_may_not_have_arrived(owner_ui, session, monkeypatch, server):
+    """A send cut off after the hand-over is recorded as unconfirmed, not as still going out:
+    History and the Periods row say it may not have arrived and what to do. A failed send is
+    named on its period too."""
+    api = owner_ui.api
+    freeze_day(monkeypatch, "2026-07-01")
+    async with SmtpStub(drop_after_message=True) as stub:
+        with smtp_settings(_closed_port() if server == "closed port" else stub.port):
+            cid = await company_id(api, {})
+            eid = await _sending(api, {})
+            await tick(session, cid, "2026-07-01")
+    state = {"cut off": "unconfirmed", "closed port": "failed"}[server]
+    assert (await template(api, {}, eid))["periods"]["0"]["send"]["state"] == state
+    status = _period_status((await owner_ui.get(f"/subscriptions/{eid}")).text, "2026-07-01")
+    assert t(f"subscriptions.period_send_{state}") in status
+    from bs4 import BeautifulSoup
+    history = BeautifulSoup((await owner_ui.get(f"/docs/{eid}/history?per_page=100")).text,
+                            "html.parser").get_text(" ", strip=True)
+    assert t(f"subscriptions.history_send_{state}", start="2026-07-01", end="2026-07-31") in history
+
+
+def test_every_recorded_send_state_reads_the_same_on_the_summary_the_periods_and_history():
+    """Each state billing records a send in (read from its own source: the written literals
+    and the outcome of an attempt) reads through one send_status, with Send in force or not:
+    a summary kind, a mark on its period unless sent, and a History line."""
+    import json
+    import re
+    from celerp_subscriptions import billing, summary as summary_module
+    from ui.routes.subscriptions import _SEND_BADGE
+    source = Path(billing.__file__).read_text()
+    outcome = re.search(r"^\s*outcome = (.*)$", source, re.M).group(1)
+    recorded = set(re.findall(r'"state": "(\w+)"', source)) | set(re.findall(r'"(\w+)"', outcome))
+    assert recorded == {"pending", "sending", "unconfirmed", "sent", "failed"}
+    en = json.loads((Path(__file__).parents[3] / "ui/locales/en.json").read_text())
+    sending_on = {"status": "active", "generation_mode": "auto_invoice", "auto_send": True}
+    for state in recorded:
+        assert f"subscriptions.history_send_{state}" in en, state
+        for agreement_state in (sending_on, {**sending_on, "auto_send": False}):
+            status = billing.send_status(agreement_state, {"state": state})
+            assert status in summary_module._SEND_KINDS, (state, status)
+            assert status == "sent" or _SEND_BADGE[status][0] in en, (state, status)

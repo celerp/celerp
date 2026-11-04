@@ -7242,5 +7242,9 @@
   "subscriptions.err_term_before_first_period": "The term must end after the first billing period starts.",
   "subscriptions.err_interval_calendar": "This billing interval runs past the dates Celerp can count. Choose a shorter one.",
   "subscriptions.not_moved_no_date": "it has no next run date or start date",
-  "subscriptions.not_moved_custom_days": "its custom interval \"{days}\" is not a number of days"
+  "subscriptions.not_moved_custom_days": "its custom interval \"{days}\" is not a number of days",
+  "subscriptions.period_send_not_sent": "Email not sent",
+  "subscriptions.period_send_failed": "Email could not be sent",
+  "subscriptions.period_send_unconfirmed": "Email may not have arrived",
+  "subscriptions.history_send_unconfirmed": "Emailing the bill for {start} to {end} was cut off, so it may not have arrived. Check with the customer before sending it again."
 }

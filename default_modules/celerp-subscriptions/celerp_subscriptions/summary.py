@@ -5,8 +5,9 @@
 Nothing is copied: a billed period records when and whether it was billed unattended,
 and its send records each attempt. A user's acknowledgment is a wall-clock time kept in
 the company settings per user; the summary shows what was recorded after it. An
-unattended mode whose authorizer no longer holds its permission, and an email still waiting
-to go out, are shown while they last. A failed send keeps its reason as a catalog key, worded
+unattended mode whose authorizer no longer holds its permission, and an email waiting to go
+out on its own, are shown while they last; an email that will not go on its own is a row like
+any other. A failed send keeps its reason as a catalog key, worded
 in the reader's language when read.
 """
 from __future__ import annotations
@@ -25,8 +26,10 @@ from ui.i18n import t
 ACK_SETTING = "subscription_summary_ack"
 KINDS = ("generated", "generation_failed", "sent", "send_failed", "send_unconfirmed", "send_pending",
          "billing_lapsed", "sending_lapsed")
-# A send recorded as going out with no outcome after it was cut off mid-send: it may or may not have arrived.
-_SEND_KINDS = {"sent": "sent", "failed": "send_failed", "sending": "send_unconfirmed", "pending": "send_pending"}
+# Each billing.send_status and its summary kind. An email that waits to go out on its own is
+# shown until it goes; every other row is shown until it is acknowledged.
+_SEND_KINDS = {"sent": "sent", "failed": "send_failed", "unconfirmed": "send_unconfirmed",
+               "waiting": "send_pending", "not_sent": "send_pending"}
 _LAPSED = {"generation": "billing_lapsed", "sending": "sending_lapsed"}
 
 
@@ -68,8 +71,9 @@ async def report(session: AsyncSession, company_id, user_id, *, everything: bool
             if entry.get("state") == billing.BILLED and entry.get("auto") and (entry.get("at") or "") > since:
                 found.append({**base, "kind": "generated", "at": entry["at"]})
             send = entry.get("send") or {}
-            kind = _SEND_KINDS.get(send.get("state"))
-            if kind and (kind == "send_pending" or (send.get("at") or "") > since):
+            status = billing.send_status(state, send)
+            kind = _SEND_KINDS.get(status)
+            if kind and (status == "waiting" or (send.get("at") or "") > since):
                 found.append({**base, "kind": kind, "at": send.get("at"), "error_key": send.get("error_key"),
                               "retry_url": (f"/subscriptions/{row.entity_id}/periods/{k}/send"
                                             if kind in ("send_failed", "send_pending") or (

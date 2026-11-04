@@ -77,6 +77,25 @@
       "params": [
         "days"
       ]
+    },
+    "subscriptions.period_send_not_sent": {
+      "en": "Email not sent",
+      "params": []
+    },
+    "subscriptions.period_send_failed": {
+      "en": "Email could not be sent",
+      "params": []
+    },
+    "subscriptions.period_send_unconfirmed": {
+      "en": "Email may not have arrived",
+      "params": []
+    },
+    "subscriptions.history_send_unconfirmed": {
+      "en": "Emailing the bill for {start} to {end} was cut off, so it may not have arrived. Check with the customer before sending it again.",
+      "params": [
+        "end",
+        "start"
+      ]
     }
   }
 }

@@ -82,6 +82,11 @@ _PERIOD_DONE = {"skip": "subscriptions.done_skipped", "unskip": "subscriptions.d
                 "reopen": "subscriptions.done_reopened"}
 # How the Periods table marks each period status; one not listed is plain text.
 _PERIOD_BADGE = {"overdue": "badge--overdue", "due": "badge--warning", "draft": "badge--draft", "voided": "badge--void"}
+# A period's email by billing.send_status; a sent one needs no mark.
+_SEND_BADGE = {"waiting": ("subscriptions.period_send_pending", "badge--warning"),
+               "not_sent": ("subscriptions.period_send_not_sent", "badge--draft"),
+               "failed": ("subscriptions.period_send_failed", "badge--overdue"),
+               "unconfirmed": ("subscriptions.period_send_unconfirmed", "badge--warning")}
 # Edits that change what the Billing section and the header badge show, so both are drawn again.
 _BILLING_FIELDS = ("generation_mode", "auto_send", "catchup_periods")
 _MODES = ("manual_due", "auto_invoice")
@@ -440,7 +445,7 @@ def _period_actions(entity_id: str, row: dict) -> FT:
 
 def _periods_table(entity_id: str, schedule: dict, *, historical_page: bool = False, oob: bool = False) -> FT:
     """The agreement's periods (``schedule`` is the API's period list), newest first: dates,
-    status (with a reopened period and an email still waiting to go out marked), the document
+    status (with a reopened period and an email not sent, failed or unconfirmed marked), the document
     that billed it. ``oob`` redraws the one already on the page."""
     rows, oldest_due_row = schedule.get("rows") or [], schedule.get("oldest_due_row")
     older_before = schedule.get("older_before")
@@ -454,8 +459,9 @@ def _periods_table(entity_id: str, schedule: dict, *, historical_page: bool = Fa
         label = Span(Span(text, cls=f"badge {_PERIOD_BADGE[status]}") if status in _PERIOD_BADGE else text)
         if r.get("reopened"):
             label = Span(label, " ", Span(t("subscriptions.period_reopened"), cls="badge badge--draft"))
-        if r.get("send") == "pending":
-            label = Span(label, " ", Span(t("subscriptions.period_send_pending"), cls="badge badge--warning"))
+        if r.get("send") in _SEND_BADGE:
+            key, badge = _SEND_BADGE[r["send"]]
+            label = Span(label, " ", Span(t(key), cls=f"badge {badge}"))
         doc = A(r["ref_id"], href=f"/docs/{r['doc_id']}") if r.get("doc_id") else (r.get("reason") or "--")
         return Tr(Td(f"{r['service_start']} - {r['service_end']}"), Td(r["bill_date"]), Td(label), Td(doc),
                   Td(_period_actions(entity_id, r)))

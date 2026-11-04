@@ -290,7 +290,7 @@ async def test_an_interrupted_send_is_shown_with_a_retry(client, session, monkey
     unconfirmed = [r for r in (await summary(client, hd))["rows"] if r["kind"] == "send_unconfirmed"]
     assert raising in [r["entity_id"] for r in unconfirmed]
     send = (await template(client, hd, raising))["periods"]["0"]["send"]
-    assert send["state"] == "sending" and "error_key" not in send
+    assert send["state"] == "unconfirmed" and "error_key" not in send
 
 
 async def test_a_retried_send_is_recorded_as_the_person_who_retried(client, session, monkeypatch, mail):
@@ -377,7 +377,7 @@ async def test_relay_retry_keeps_original_transport_identity(client, session, mo
 
     monkeypatch.setattr(email, "send_email", rejected)
     assert (await client.post(row["retry_url"], headers=hd)).status_code == 200
-    assert (await template(client, hd, eid))["periods"]["0"]["send"]["state"] == "sending"
+    assert (await template(client, hd, eid))["periods"]["0"]["send"]["state"] == "unconfirmed"
     assert (await template(client, hd, eid))["periods"]["0"]["send"]["n"] == 1
 
     async def verified(*args, **kw):
