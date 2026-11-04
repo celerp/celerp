@@ -174,15 +174,62 @@ async def doc_ref(session, company_id, doc_id: str) -> str:
     return ((await doc_state(session, company_id, doc_id)) or {}).get("ref_id") or doc_id
 
 
+# The one rule for "is this period billed": its claimed document bills it only while the
+# document is issued. A draft posts nothing; a void, cancelled or deleted one bills nothing.
+NOT_BILLING = frozenset({"draft", "void", "cancelled"})
+
+
+def bills(doc: dict | None) -> bool:
+    return doc is not None and (doc.get("status") or "draft") not in NOT_BILLING
+
+
+async def billing_doc(session, company_id, doc_id: str) -> dict:
+    """The document a period claims, refused (409) when it does not bill the period: back in
+    draft (finalize it, or Reopen), or void or gone (Reopen)."""
+    doc = await doc_state(session, company_id, doc_id)
+    if not bills(doc):
+        key = "subscriptions.err_period_draft" if (doc or {}).get("status") == "draft" else "subscriptions.err_period_void"
+        raise HTTPException(status_code=409, detail=t(key, ref=(doc or {}).get("ref_id") or doc_id))
+    return doc
+
+
+async def guard_bill_status(*, session, entry, transition) -> None:
+    """doc_status_guard: a document an agreement period let go (Reopen records it in
+    ``released_bills``) never bills again, whichever writer issues it (unvoid, finalize,
+    send). Refused (409) naming the bill the period has now, or saying it was reopened."""
+    if bills(transition.before) or not bills(transition.after):
+        return
+    doc_id = entry.entity_id
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == entry.company_id, Projection.entity_type == "doc",
+        Projection.state["doc_type"].as_string().in_(SUBSCRIPTION_DOC_TYPES),
+        Projection.state["released_bills"][doc_id].as_string().is_not(None),
+    ).order_by(Projection.entity_id))).scalars().all()
+    for agreement in rows:
+        k = int(agreement.state["released_bills"][doc_id])
+        schedule = Schedule.from_state(agreement.state)
+        newer = (schedule.periods.get(k) or {}).get("doc_id") if schedule.state(k) == BILLED else None
+        newer_doc = await doc_state(session, entry.company_id, newer) if newer else None
+        params = {"ref": transition.after.get("ref_id") or doc_id, "agreement": template_label(agreement.state, agreement.entity_id),
+                  "start": schedule.start(k).isoformat(), "end": schedule.service_end(k).isoformat()}
+        if bills(newer_doc):
+            raise HTTPException(status_code=409, detail=t(
+                "subscriptions.err_bill_rebilled", newer=newer_doc.get("ref_id") or newer, **params))
+        raise HTTPException(status_code=409, detail=t("subscriptions.err_bill_reopened", **params))
+
+
 async def replay_result(session, company_id, template_id: str, request_key: str,
                         *, early: bool = False, period_index: int | None = None) -> dict | None:
-    """Return the committed receipt for precisely this billing request, without claiming a new period."""
+    """Return the committed receipt for precisely this billing request, without claiming a new
+    period, while its document still bills the period (billing_doc refuses one that stopped)."""
     event = await find_event_by_idempotency(session, company_id, f"subreq:{template_id}:{request_key}")
     if event is None:
         return None
     if (event.metadata_ or {}).get("request") != {"early": early, "period_index": period_index}:
         raise HTTPException(status_code=409, detail=t("subscriptions.err_request_key_reused"))
-    return event.metadata_["result"]
+    result = event.metadata_["result"]
+    await billing_doc(session, company_id, result["doc_id"])
+    return result
 
 
 async def _result(session, company_id, doc_id: str, k: int, schedule: Schedule, state: dict, *,
@@ -196,12 +243,9 @@ async def _result(session, company_id, doc_id: str, k: int, schedule: Schedule, 
 
 async def _billed_answer(session, company_id, k: int, schedule: Schedule, state: dict) -> dict:
     """The answer for period ``k``, billed before this request: its document, or, when that
-    document is void, a refusal saying the period needs Reopen before it bills again."""
+    document no longer bills it, billing_doc's refusal saying what to do."""
     doc_id = schedule.periods[k]["doc_id"]
-    doc = await doc_state(session, company_id, doc_id)
-    if doc is None or doc.get("status") == "void":
-        raise HTTPException(status_code=409, detail=t(
-            "subscriptions.err_period_void", ref=(doc or {}).get("ref_id") or doc_id))
+    await billing_doc(session, company_id, doc_id)
     return await _result(session, company_id, doc_id, k, schedule, state, already_billed=True)
 
 
@@ -331,7 +375,7 @@ async def require_history_document(session: AsyncSession, company_id, template_i
     doc = await doc_state(session, company_id, doc_id)
     allowed = {"invoice"} if doc_kind(state) == "invoice" else {"purchase_order", "bill"}
     if (doc is None or doc.get("doc_type") not in allowed
-            or doc.get("status") in ("draft", "void", "cancelled")
+            or not bills(doc)
             or any(doc.get(field) and doc[field] != template_id
                    for field in ("source_agreement", "subscription_id"))):
         raise HTTPException(status_code=409, detail=t("subscriptions.err_history_not_candidate"))
@@ -347,14 +391,15 @@ def period_row(schedule: Schedule, k: int) -> dict:
 
 
 # What the Periods table says of a period: its claim, else where its bill date stands today.
-PERIOD_STATUSES = ("billed", "voided", "skipped", "unresolved", "overdue", "due", "upcoming")
+PERIOD_STATUSES = ("billed", "draft", "voided", "skipped", "unresolved", "overdue", "due", "upcoming")
 
 
-def period_status(state: str | None, doc_status: str | None, bill_date: date, today: date) -> str:
-    """One of PERIOD_STATUSES. A billed period whose document is void reads "voided", so it
-    is never shown as billed; an open or reopened one reads by its bill date."""
+def period_status(state: str | None, doc: dict | None, bill_date: date, today: date) -> str:
+    """One of PERIOD_STATUSES. A billed period reads "billed" only while its document bills
+    it: back in draft it reads "draft", void or gone "voided"; an open or reopened one reads
+    by its bill date."""
     if state == BILLED:
-        return "voided" if doc_status == "void" else "billed"
+        return "billed" if bills(doc) else "draft" if (doc or {}).get("status") == "draft" else "voided"
     if state in (SKIPPED, UNRESOLVED):
         return state
     return "overdue" if bill_date < today else "due" if bill_date == today else "upcoming"
@@ -364,10 +409,10 @@ async def _listed_row(session, company_id, schedule: Schedule, k: int, today: da
     """Period ``k`` as the Periods table lists it: dates, claim, status, document, send state."""
     entry = schedule.periods.get(k) or {}
     doc_id = entry.get("doc_id")
-    doc = ((await doc_state(session, company_id, doc_id)) or {}) if doc_id else {}
+    doc = (await doc_state(session, company_id, doc_id)) if doc_id else None
     return {**period_row(schedule, k), "state": entry.get("state"), "reopened": entry.get("state") == RELEASED,
-            "status": period_status(entry.get("state"), doc.get("status"), schedule.bill_date(k), today),
-            "doc_id": doc_id, "ref_id": (doc.get("ref_id") or doc_id) if doc_id else None,
+            "status": period_status(entry.get("state"), doc, schedule.bill_date(k), today),
+            "doc_id": doc_id, "ref_id": ((doc or {}).get("ref_id") or doc_id) if doc_id else None,
             "reason": entry.get("reason"), "history": bool(entry.get("history")),
             "send": (entry.get("send") or {}).get("state")}
 
