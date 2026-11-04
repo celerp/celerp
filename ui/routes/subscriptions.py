@@ -1265,9 +1265,12 @@ def setup_routes(app) -> None:
         # The days box is the custom frequency: entering days chooses it.
         changes = {field: value, **({"frequency": "custom"} if field == "custom_interval_days" else {})}
         try:
-            await api.update_subscription_schedule(token, entity_id, changes)
+            saved = await api.update_subscription_schedule(token, entity_id, changes)
             sub = await api.get_subscription(token, entity_id)
             schedule = await api.get_subscription_periods(token, entity_id)
         except APIError as e:
             return _refused(e)
-        return tuple(v(hx_swap_oob="true") for v in _schedule_views(entity_id, sub, schedule) if v != "")
+        views = tuple(v(hx_swap_oob="true") for v in _schedule_views(entity_id, sub, schedule) if v != "")
+        if saved.get("sending_off"):
+            return HTMLResponse(to_xml(views), headers=toast_header(t("subscriptions.sending_off_manual"), "success"))
+        return views

@@ -100,6 +100,14 @@
     "subscriptions.set_schedule": {
       "en": "Set the schedule",
       "params": []
+    },
+    "subscriptions.err_send_manual": {
+      "en": "Send automatically works only with Bill automatically. Choose Bill automatically first, or send each bill from its page.",
+      "params": []
+    },
+    "subscriptions.sending_off_manual": {
+      "en": "Bills are made by hand now, so Send automatically is off too.",
+      "params": []
     }
   }
 }

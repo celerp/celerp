@@ -85,23 +85,24 @@ async def test_turning_a_mode_off_undoes_its_consent_and_the_page_says_so(client
     assert set(sub["consents"]) == _shown(eid, sub) == {"generation", "sending"}
     sub = await step(generation_mode="manual_due")
     assert not sub.get("consents") and _shown(eid, sub) == set()
-    assert sub["auto_send"] is True  # the setting stays; nothing sends while billing is by hand
+    assert sub["auto_send"] is False  # sending runs only under automatic billing, so it goes off too
     sub = await step(generation_mode="auto_invoice")
-    assert {m: c["by"] for m, c in sub["consents"].items()} == {"generation": manager_id, "sending": manager_id}
+    assert {m: c["by"] for m, c in sub["consents"].items()} == {"generation": manager_id}
+    sub = await step(auto_send=True)
+    assert set(sub["consents"]) == _shown(eid, sub) == {"generation", "sending"}
     sub = await step(auto_send=False)
     assert set(sub["consents"]) == _shown(eid, sub) == {"generation"}
 
 
 async def test_turning_on_billing_that_would_send_needs_the_sending_permission(client, session, monkeypatch):
-    """Send automatically set on a manual agreement starts sending once billing turns automatic,
-    so the person who turns billing on must also be allowed to send."""
+    """Turning billing on together with Send automatically starts sending, so the person who
+    does it must also be allowed to send; nothing is saved when they are not."""
     freeze_day(monkeypatch, "2026-03-15")
     hd = await register(client)
     eid = await agreement(client, hd, start="2026-04-01")
-    assert (await schedule(client, hd, eid, auto_send=True)).status_code == 200
     await revoke(client, hd, "automate_sending", "manager")
     manager, _ = await member(client, session, hd, "manager")
-    r = await schedule(client, manager, eid, generation_mode="auto_invoice")
+    r = await schedule(client, manager, eid, generation_mode="auto_invoice", auto_send=True)
     assert r.status_code == 403 and r.json()["detail"]["params"]["label"]["message_key"] == "perm.name.automate_sending"
     assert (await template(client, hd, eid)).get("generation_mode", "manual_due") == "manual_due"
 

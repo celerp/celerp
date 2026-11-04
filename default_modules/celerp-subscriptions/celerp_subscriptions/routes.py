@@ -484,6 +484,15 @@ def _build_router() -> APIRouter:
             changes["cancel_at_period_end"] = chosen
         elif "cancel_at_period_end" in changes:
             changes["cancel_at_period_end"] = None
+        # Sending runs only on what automatic billing makes: choosing it under billing by hand
+        # is refused, and going back to billing by hand turns it off (the answer says so).
+        terms = {**state, **changes}
+        sending_off = bool(terms.get("auto_send")) and terms.get("generation_mode") not in billing.AUTO_MODES
+        if sending_off and "auto_send" in changes:
+            raise HTTPException(status_code=422, detail=t("subscriptions.err_send_manual"))
+        sending_off = sending_off and "generation_mode" in changes
+        if sending_off:
+            changes["auto_send"] = False
         running = billing.modes_in_force(state)
         in_force = billing.modes_in_force({**state, **changes})
         needed = [m for m in in_force if m not in running or any(
@@ -511,7 +520,7 @@ def _build_router() -> APIRouter:
         if consents and consents != kept:
             changes["consents"] = consents
         await _write(session, company_id, entity_id, changes, user, drop=("consents",) if kept and not consents else ())
-        return {"ok": True, "next_bill_date": next_bill_date(merged)}
+        return {"ok": True, "next_bill_date": next_bill_date(merged), "sending_off": sending_off}
 
     @router.post("/{entity_id}/history/{doc_id}/confirm")
     async def confirm_history(

@@ -106,6 +106,34 @@ def test_every_subscriptions_sentence_naming_a_day_reads_it_as_a_date():
     assert not raw, raw
 
 
+
+
+async def test_send_automatically_under_billing_by_hand_is_refused_saying_why(owner_ui, monkeypatch):
+    """Sending runs only on what automatic billing makes, so on an agreement billed by hand
+    Send automatically would do nothing: the save is refused with a message saying so."""
+    from ui.i18n import t
+
+    freeze_day(monkeypatch, "2026-03-15")
+    eid = await agreement(owner_ui.api, {}, start="2026-03-01")
+    r = await owner_ui.patch(f"/subscriptions/{eid}/schedule/auto_send", data={"value": "true"})
+    assert _toast(r) == {**_toast(r), "type": "error", "message": t("subscriptions.err_send_manual")}
+    assert not (await owner_ui.api.get(f"/docs/{eid}")).json().get("auto_send")
+
+
+async def test_billing_by_hand_again_turns_sending_off_and_says_so(owner_ui, monkeypatch):
+    from ui.i18n import t
+
+    freeze_day(monkeypatch, "2026-03-15")
+    eid = await agreement(owner_ui.api, {}, start="2026-03-01")
+    r = await owner_ui.api.patch(f"/subscriptions/{eid}/schedule", json={"generation_mode": "auto_invoice", "auto_send": True})
+    assert r.status_code == 200, r.text
+    r = await owner_ui.patch(f"/subscriptions/{eid}/schedule/generation_mode", data={"value": "manual_due"})
+    assert _toast(r) == {**_toast(r), "type": "success", "message": t("subscriptions.sending_off_manual")}
+    assert (await owner_ui.api.get(f"/docs/{eid}")).json().get("auto_send") is False
+    page = BeautifulSoup(r.text, "html.parser")
+    assert page.select_one('#sub-billing select[hx-patch$="/auto_send"] option[selected]')["value"] == "false"
+
+
 _CHANGED = {"anchor_date": "2026-04-05", "frequency": "weekly", "custom_interval_days": "10", "billing_timing": "arrears",
             "term_start": "2026-04-01", "term_end": "2027-04-01", "cancel_at_period_end": "true",
             "catchup_periods": "3", "generation_mode": "manual_due", "auto_send": "true"}
