@@ -5370,7 +5370,7 @@ celerpUpdateBulkAlloc();
     async def list_set_scanned(request: Request, entity_id: str):
         """Bulk action: mark or clear the scanned highlight on the chosen rows (``line_id`` each).
         Returns the re-rendered audit tbody for the same smooth #line-body swap scanning uses, with
-        a notice naming the rows it left as they are."""
+        a notice counting the rows it changed, then naming the rows it left as they are."""
         from starlette.responses import Response as _R
         from fasthtml.common import to_xml
         token = _token(request)
@@ -5382,9 +5382,12 @@ celerpUpdateBulkAlloc();
             result = await api.set_scanned(token, entity_id, list(form.getlist("line_id")), scanned)
         except APIError as e:
             return api.refusal_response(e)
-        skipped = result.get("skipped_notice")
+        line_ids = form.getlist("line_id")
+        n = len(line_ids) - len(result.get("skipped") or [])
+        verb = "lines_scanned" if scanned else "lines_unscanned"
+        message, persist = _with_skipped(t(f"documents.{verb}_{'one' if n == 1 else 'many'}", n=n), result)
         return HTMLResponse(to_xml(await _audit_line_tbody(token, entity_id, *_line_window(form))),
-                            headers=toast_header(refusal_text(skipped), "info", persist=True) if skipped else None)
+                            headers=toast_header(message, "info", persist=persist))
 
     @app.post("/lists/{entity_id}/line/{item_id}")
     async def list_audit_set_count(request: Request, entity_id: str, item_id: str):

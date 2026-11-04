@@ -18,6 +18,74 @@
       "params": [
         "lines"
       ]
+    },
+    "lines.memo_no_stock_one": {
+      "en": "Line {lines} isn't an inventory item, so it stays on the memo. Choose the inventory lines instead.",
+      "params": [
+        "lines"
+      ]
+    },
+    "lines.memo_no_stock_many": {
+      "en": "Lines {lines} aren't inventory items, so they stay on the memo. Choose the inventory lines instead.",
+      "params": [
+        "lines"
+      ]
+    },
+    "lines.scan_no_stock_one": {
+      "en": "Line {lines} isn't an inventory item, so there is nothing to scan. Choose the inventory lines instead.",
+      "params": [
+        "lines"
+      ]
+    },
+    "lines.scan_no_stock_many": {
+      "en": "Lines {lines} aren't inventory items, so there is nothing to scan. Choose the inventory lines instead.",
+      "params": [
+        "lines"
+      ]
+    },
+    "documents.own_lines_skipped_one": {
+      "en": "Line {lines} did not come from a memo, so it stays on this invoice.",
+      "params": [
+        "lines"
+      ]
+    },
+    "documents.own_lines_skipped_many": {
+      "en": "Lines {lines} did not come from a memo, so they stay on this invoice.",
+      "params": [
+        "lines"
+      ]
+    },
+    "documents.scan_lines_skipped_one": {
+      "en": "Line {lines} isn't an inventory item, so there is nothing to scan and it was left as it is.",
+      "params": [
+        "lines"
+      ]
+    },
+    "documents.scan_lines_skipped_many": {
+      "en": "Lines {lines} aren't inventory items, so there is nothing to scan and they were left as they are.",
+      "params": [
+        "lines"
+      ]
+    },
+    "documents.lines_scanned_one": {
+      "en": "1 line marked as scanned.",
+      "params": []
+    },
+    "documents.lines_scanned_many": {
+      "en": "{n} lines marked as scanned.",
+      "params": [
+        "n"
+      ]
+    },
+    "documents.lines_unscanned_one": {
+      "en": "1 line no longer marked as scanned.",
+      "params": []
+    },
+    "documents.lines_unscanned_many": {
+      "en": "{n} lines no longer marked as scanned.",
+      "params": [
+        "n"
+      ]
     }
   }
 }

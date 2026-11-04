@@ -79,7 +79,7 @@ from celerp_contacts.references import (
 )
 from celerp.output.document_context import prepare_document_output
 from celerp.output.doc_print import fmt_money
-from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, DRAFT_REVERT_RETURNED, DRAFT_REVERT_STATUSES, INBOUND_DRAFT_REVERT_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, CREDIT_APPLICATION_METHODS, CONVERTIBLE_STATUSES
+from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, DRAFT_REVERT_RETURNED, DRAFT_REVERT_STATUSES, INBOUND_DRAFT_REVERT_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, LINE_SKIP_REASONS, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, CREDIT_APPLICATION_METHODS, CONVERTIBLE_STATUSES
 from celerp.services.record_quantities import FULFILLABLE_STATUSES, QUOTATION_SPENT_STATUSES, RECEIVABLE_STATUSES, sent_out_by
 from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, MEMO_DRAW_STATUSES, doc_value, is_awaiting_payment, is_open_credit, is_overdue_document, is_owed, is_paid_document, outstanding_balance
 from celerp.services.list_behavior import (
@@ -9771,11 +9771,11 @@ async def set_list_lines_available(
                 shipped.setdefault(by, []).append(str(line_items[i].get("sku") or i + 1))
         if shipped:
             raise HTTPException(status_code=422, detail=shipped_elsewhere(shipped))
-        acting, _counted, left = _acting_lines(line_items, indices, locked, count_service=False)
+        acting, _counted, left = _acting_lines(line_items, indices, locked, "set-available")
         idle = [i for i in acting if not by_line.get(i)]
         skipped = left + _skipped_lines(line_items, idle, "idle")
         if len(idle) == len(acting):
-            _refuse_skipped(skipped)
+            _refuse_skipped("set-available", skipped)
         result = await _reserve_lines_impl(row, entity_id, "available", [i for i in acting if i not in idle],
                                            user, session, may_acquire=False, commit=False)
         return {**result, "skipped": skipped}
@@ -10380,21 +10380,10 @@ def _stock_line(line_items: list[dict], index: int, locked: dict[str, Projection
 
 
 def _skipped_lines(line_items: list[dict], indices: list[int], kind: str) -> list[dict]:
-    """The lines at ``indices`` a stock action leaves as they are, each named by its number
-    and label and carrying its line id; ``kind`` is a key of _SKIP_KEYS."""
+    """The lines at ``indices`` a line action leaves as they are, each named by its number
+    and label and carrying its line id; ``kind`` is a kind of LINE_SKIP_REASONS."""
     return [{"line": i + 1, "name": line_label(line_items[i]), "kind": kind, "line_id": line_items[i].get("line_id")}
             for i in indices]
-
-
-# Per skip kind: (key of the notice that names the lines left as they are, key of the
-# refusal when every chosen line is of that kind). ``memo_no_item`` is a memo line with no
-# item that Invoice selected leaves on the memo; its notice is read on the new invoice.
-# ``idle`` is a stock line with nothing held or out, which Set as available leaves as it is;
-# its notice reads as the refusal too.
-_SKIP_KEYS = {"no_item": ("documents.lines_skipped", "lines.no_stock"),
-              "service": ("documents.service_lines_skipped", "lines.service_no_stock"),
-              "memo_no_item": ("documents.memo_lines_skipped", "lines.no_stock"),
-              "idle": ("documents.idle_lines_skipped", "documents.idle_lines_skipped")}
 
 
 def _line_name(number: int, label: str) -> str:
@@ -10402,12 +10391,17 @@ def _line_name(number: int, label: str) -> str:
     return f'{number} "{label}"' if label else str(number)
 
 
-def _skip_messages(skipped: list[dict], *, refuse: bool) -> list[dict]:
-    """One message per kind in ``skipped`` naming its lines, as ``6 "GIA Certificate"``: the
-    notice that they were left as they are, or with ``refuse`` the refusal that none of the
-    chosen lines has stock to act on."""
+def _skip_messages(action: str, skipped: list[dict], *, refuse: bool = False) -> list[dict]:
+    """One message per kind in ``skipped`` naming its lines, as ``6 "GIA Certificate"``, in
+    ``action``'s own words (LINE_SKIP_REASONS): the notice that they were left as they are, or
+    with ``refuse`` the refusal that none of the chosen lines is one the action acts on. A
+    kind the action has no reason for is a KeyError, never another action's wording."""
+    reasons = LINE_SKIP_REASONS[action]
+    unknown = {s["kind"] for s in skipped} - set(reasons)
+    if unknown:
+        raise KeyError(f"{action} has no skip reason for {sorted(unknown)}")
     messages = []
-    for kind, keys in _SKIP_KEYS.items():
+    for kind, keys in reasons.items():
         named = [_line_name(s["line"], s["name"]) for s in skipped if s["kind"] == kind]
         if named:
             key = f"{keys[refuse]}_{'one' if len(named) == 1 else 'many'}"
@@ -10415,14 +10409,16 @@ def _skip_messages(skipped: list[dict], *, refuse: bool) -> list[dict]:
     return messages
 
 
-def _acting_lines(line_items: list[dict], indices: list[int], locked: dict[str, Projection], *,
-                  count_service: bool) -> tuple[list[int], list[int], list[dict]]:
-    """Which chosen lines a bulk line action acts on: ``(acting, counted, skipped)``.
+def _acting_lines(line_items: list[dict], indices: list[int], locked: dict[str, Projection],
+                  action: str) -> tuple[list[int], list[int], list[dict]]:
+    """Which chosen lines the bulk line action ``action`` acts on: ``(acting, counted, skipped)``.
 
-    A line with stock acts. A line whose item is not stock is counted when ``count_service``
-    (Ship counts it shipped) and otherwise skipped; a line with no item is skipped (one whose
+    A line with stock acts. A line whose item is not stock is skipped when the action has a
+    reason for leaving a service (LINE_SKIP_REASONS) and otherwise counted (Ship counts it
+    shipped); a line with no item is skipped (one whose
     item no longer exists never gets here: _lock_item_sku_lots refuses it as stock changed). A choice of lines none of which acts or counts is refused, naming them.
     With no ``indices`` (lots chosen by item) nothing is skipped or refused."""
+    count_service = "service" not in LINE_SKIP_REASONS[action]
     acting: list[int] = []
     counted: list[int] = []
     no_item: list[int] = []
@@ -10436,14 +10432,17 @@ def _acting_lines(line_items: list[dict], indices: list[int], locked: dict[str, 
             (counted if count_service else service).append(i)
     skipped = _skipped_lines(line_items, no_item, "no_item") + _skipped_lines(line_items, service, "service")
     if indices and not acting and not counted:
-        _refuse_skipped(skipped)
+        _refuse_skipped(action, skipped)
     return acting, counted, skipped
 
 
-def _refuse_skipped(skipped: list[dict]) -> None:
-    """Refuse a choice every line of which an action leaves as it is, naming them."""
-    msgs = _skip_messages(skipped, refuse=True)
-    raise HTTPException(status_code=422, detail={**msgs[0], "also": msgs[1:]})
+def _refuse_skipped(action: str, skipped: list[dict], status_code: int = 422) -> None:
+    """Refuse a choice every line of which ``action`` leaves as it is, naming them: with the
+    action's refusal, which says to choose the inventory lines, when no chosen line was one;
+    otherwise with its notices, as there was nothing to change."""
+    reasons = LINE_SKIP_REASONS[action]
+    msgs = _skip_messages(action, skipped, refuse=all(reasons[s["kind"]][1] for s in skipped))
+    raise HTTPException(status_code=status_code, detail={**msgs[0], "also": msgs[1:]})
 
 
 def _line_plan(
@@ -10825,7 +10824,7 @@ async def _fulfill_lines_impl(
 
     line_items = state.get("line_items", [])
     locked, by_line = await _line_stock(session, company_id, entity_id, line_items, indices)
-    indices, counted, left = _acting_lines(line_items, indices, locked, count_service=True)
+    indices, counted, left = _acting_lines(line_items, indices, locked, "fulfill")
     service_lines = set(counted)
     unit_map = await _get_unit_map(session, company_id)
     company = await session.get(Company, company_id)
@@ -11069,7 +11068,7 @@ async def _line_action(session, company_id, user, owner: Projection, action: str
         refuse_drawn_memo_line_action(owner.state, indices, {i: n for i, (n, _) in numbers.items()})
     result = await run(indices)
     if result.get("skipped"):
-        result["skipped_notice"] = _skip_messages(result["skipped"], refuse=False)
+        result["skipped_notice"] = _skip_messages(action, result["skipped"])
     # Read after the action; Back to memo takes its lines off, and only drawn lines go back.
     if not removes:
         line_items = owner.state.get("line_items", [])
@@ -11356,7 +11355,7 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
     owned = {p.entity_id for p in await _memo_allocation_items(session, company_id, entity_id)}
     chosen_items = {str(line_item_id(line_items[i]) or "") for i in indices} - {""}
     locked = await _lock_item_sku_lots(session, company_id, owned | present | chosen_items)
-    indices, _counted, left = _acting_lines(line_items, indices, locked, count_service=False)
+    indices, _counted, left = _acting_lines(line_items, indices, locked, "revert")
     out, line_of = await _lots_out(session, company_id, entity_id, state, locked.values())
 
     def _sku(eid: str) -> str:
@@ -11694,7 +11693,7 @@ def draw_problems(snap: _DrawSnapshot, body: InvoiceLinesRequest, *,
         picks.append((i, qty))
     skipped = _skipped_lines(lines, no_item, "memo_no_item")
     if skipped and len(no_item) == len(body.line_ids):
-        problems.extend(_skip_messages(skipped, refuse=True))
+        problems.extend(_skip_messages("invoice", skipped, refuse=True))
     chosen = [lines[i] for i, _ in picks]
     chosen_skus = {str(li.get("sku") or "").strip() for li in chosen} - {""}
     chosen_items = {str(line_item_id(li) or "") for li in chosen} - {""}
@@ -11829,7 +11828,7 @@ async def _draw_preview(session, company_id, memo_id: str, body: InvoiceLinesReq
         invoice_id, doc_number = target.entity_id, _ref(target)
     preview = {"target": {"id": invoice_id, "ref_id": doc_number},
                "binding": preview_binding([snap.memo, snap.target], body), "problems": problems,
-               "skipped_notice": _skip_messages(skipped, refuse=False), "lines": [], "fixed_taken": {}, "tax": None, "totals_after": {}, "left_on_memo": {}}
+               "skipped_notice": _skip_messages("invoice", skipped), "lines": [], "fixed_taken": {}, "tax": None, "totals_after": {}, "left_on_memo": {}}
     if problems:
         return preview
     bill = _draw_bill(snap, picks, "preview", invoice_id or f"doc:{doc_number}", doc_number)
@@ -11998,7 +11997,8 @@ async def back_to_memo(
     """Send chosen lines of a draft invoice back to the memos they were invoiced from: their
     goods go back on their memo lines, the lines leave the invoice, and the fixed amounts of a
     memo none of whose lines stay come off the invoice's header (released_header_money). A
-    chosen line of the invoice's own with no item stays on it and is named."""
+    chosen line of the invoice's own did not come from a memo, so it stays on the invoice and
+    is named in ``skipped``; a choice of only such lines is refused."""
     # Company, invoice, memos, lots: the order every writer of these rows takes.
     await locked_company(session, company_id)
     row = await _get_doc(session, company_id, entity_id, for_update=True)
@@ -12015,16 +12015,13 @@ async def back_to_memo(
         lines = state.get("line_items") or []
         own = [i for i in indices if not lines[i].get("drawn_from")]
         chosen = [lines[i] for i in indices if i not in own]
-        refused = [i for i in own if line_item_id(lines[i])] if chosen else own
-        if refused or not chosen:
-            names = ", ".join(_line_name(i + 1, line_label(lines[i])) for i in refused)
-            raise HTTPException(status_code=409, detail=catalog_refusal(
-                f"docs.back_to_memo_not_drawn_{'one' if len(refused) == 1 else 'many'}", lines=names))
+        if not chosen:
+            _refuse_skipped("back_to_memo", _skipped_lines(lines, own, "own"), status_code=409)
         removed = frozenset(li["line_id"] for li in chosen)
         kept = [li for li in lines if li.get("line_id") not in removed]
         # Numbered as the invoice stands once the drawn lines have gone back.
         stays = {lines[i]["line_id"] for i in own}
-        left = _skipped_lines(kept, [i for i, li in enumerate(kept) if li["line_id"] in stays], "no_item")
+        left = _skipped_lines(kept, [i for i, li in enumerate(kept) if li["line_id"] in stays], "own")
         reopened, released = await _return_to_source_memo(
             session, company_id=company_id, uid=user.id, owner=row, line_ids=set(removed))
         fields = {k: {"new": v} for k, v in released_header_money(
@@ -12060,7 +12057,7 @@ async def _reserve_lines_impl(
     state = row.state
     line_items = state.get("line_items", [])
     locked, by_line = await _line_stock(session, company_id, entity_id, line_items, indices)
-    indices, _counted, left = _acting_lines(line_items, indices, locked, count_service=False)
+    indices, _counted, left = _acting_lines(line_items, indices, locked, "reserve")
     uid = user.id
 
     if new_status == "available":
@@ -12279,12 +12276,12 @@ async def _set_available_impl(row: Projection, body: SetAvailableRequest, indice
     lines is refused, naming them."""
     line_items = row.state.get("line_items", [])
     locked, by_line = await _line_stock(session, row.company_id, row.entity_id, line_items, indices)
-    indices, _counted, left = _acting_lines(line_items, indices, locked, count_service=False)
+    indices, _counted, left = _acting_lines(line_items, indices, locked, "set-available")
     holding = frozenset(i for i in indices if by_line.get(i))
     taken = await _revert_lines_impl(row, body, indices, user, session, holding=holding)
     skipped = left + taken["skipped"]
     if not holding and not (taken["reverted"] or taken["partially_returned"]):
-        _refuse_skipped(skipped)
+        _refuse_skipped("set-available", skipped)
     released: list[str] = []
     if holding:
         released = (await _reserve_lines_impl(row, row.entity_id, "available", sorted(holding), user, session,
@@ -14047,7 +14044,7 @@ async def set_scanned(
     indices = _selected_line_indices(lines, FulfillLinesRequest(line_ids=payload.line_ids))
     skipped = _skipped_lines(lines, [i for i in indices if not line_item_id(lines[i])], "no_item")
     if len(skipped) == len(indices):
-        _refuse_skipped(skipped)
+        _refuse_skipped("set-scanned", skipped)
     stamp = datetime.now(timezone.utc).isoformat() if payload.scanned else None
     changed = 0
     for i in indices:
@@ -14066,7 +14063,7 @@ async def set_scanned(
         await session.commit()
     result = {"changed": changed, "skipped": skipped}
     if skipped:
-        result["skipped_notice"] = _skip_messages(skipped, refuse=False)
+        result["skipped_notice"] = _skip_messages("set-scanned", skipped)
     return result
 
 

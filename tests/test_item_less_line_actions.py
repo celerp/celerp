@@ -6,7 +6,9 @@ A line with no inventory item (a certificate, a free-text charge) has no status,
 Reserve, Set as available and Take back act on the stock lines chosen with it and name it
 in a notice. A service line is counted fulfilled on Ship and skipped by the other stock
 actions, in its own words. A choice of only such lines is refused with the same words.
-Memo Invoice selected and Back to memo skip and name a line with no item the same way.
+Memo Invoice selected, Back to memo and Set as scanned skip and name such lines too, each with
+its own reason (it stays on the memo; it did not come from a memo; there is nothing to scan),
+read from the one table of skip reasons (LINE_SKIP_REASONS).
 
 The documents are the gemstones demo company's: five demo stones and a "GIA Certificate"."""
 from __future__ import annotations
@@ -202,11 +204,13 @@ async def test_stock_line_actions_refuse_when_only_item_less_lines(client, sessi
                else _act(client, g, owner, path, chosen, **extra))
     assert r.status_code == (409 if kind == "memo" else 422), r.text
     detail = _detail(r)
+    # Invoice selected says the line stays on the memo; the status actions, that it has no status.
+    key = "lines.memo_no_stock" if kind == "memo" else "lines.no_stock"
     if many:
         assert (detail["message_key"], detail["params"]) == (
-            "lines.no_stock_many", {"lines": '6 "GIA Certificate", 7 "Engraving"'})
+            f"{key}_many", {"lines": '6 "GIA Certificate", 7 "Engraving"'})
     else:
-        assert (detail["message_key"], detail["params"]) == ("lines.no_stock_one", {"lines": '6 "GIA Certificate"'})
+        assert (detail["message_key"], detail["params"]) == (f"{key}_one", {"lines": '6 "GIA Certificate"'})
     after = await _state(client, g, owner)
     assert after["version"] == before["version"] and after["line_items"] == before["line_items"]
 
@@ -228,6 +232,15 @@ async def test_set_available_names_a_line_with_nothing_held_or_out(client, sessi
     r = await _act(client, g, owner, "set-available", lids[1:2])
     assert r.status_code == 422, r.text
     assert (_detail(r)["message_key"], _detail(r)["params"]) == ("documents.idle_lines_skipped_one", {"lines": '2 "DEMO-EMR-001"'})
+    # A stone with nothing held and the certificate: an inventory line was chosen, so the
+    # refusal says there was nothing to change rather than to choose the inventory lines.
+    r = await _act(client, g, owner, "set-available", lids[1:])
+    assert r.status_code == 422, r.text
+    detail = _detail(r)
+    assert [(m["message_key"], m["params"]) for m in [detail, *detail["also"]]] == [
+        ("documents.lines_skipped_one", {"lines": '3 "GIA Certificate"'}),
+        ("documents.idle_lines_skipped_one", {"lines": '2 "DEMO-EMR-001"'})]
+    assert "Choose the inventory lines" not in " ".join(m["message"] for m in [detail, *detail["also"]])
     after = await _state(client, g, owner)
     assert after["version"] == before["version"] and after["line_items"] == before["line_items"]
 
@@ -415,14 +428,24 @@ async def _drawn_invoice_with_own_certificate(client, g) -> tuple[str, str, str,
     return memo, invoice, drawn, own
 
 
-async def test_back_to_memo_skips_own_item_less_line_and_names_it(client, session):
+async def test_back_to_memo_leaves_every_line_of_the_invoices_own_and_says_why(client, session):
+    """Back to memo leaves a line that did not come from a memo, with or without an item, and
+    gives that reason, never a status action's."""
     g = await _gems(client)
     memo, invoice, drawn, own = await _drawn_invoice_with_own_certificate(client, g)
-    answer = await _ok(await back_to_memo(client, g.h, invoice, [drawn, own]))
-    # Numbered as the invoice stands once the stone has gone back: the certificate is line 1.
-    assert _notice(answer) == [("documents.lines_skipped_one", {"lines": '1 "GIA Certificate"'})]
+    st = await _state(client, g, invoice)
+    await _ok(await client.patch(f"/docs/{invoice}", headers=g.h, json={
+        "expected_version": st["version"],
+        "fields_changed": {"line_items": {"new": [*st["line_items"], _line(g, "DEMO-EMR-001")]}}}))
+    stone = (await _ids(client, g, invoice))[2]
+    answer = await _ok(await back_to_memo(client, g.h, invoice, [drawn, own, stone]))
+    # Numbered as the invoice stands once the drawn stone has gone back.
+    assert _notice(answer) == [("documents.own_lines_skipped_many",
+                                {"lines": '1 "GIA Certificate", 2 "DEMO-EMR-001"'})]
+    assert answer["skipped_notice"][0]["message"] == (
+        'Lines 1 "GIA Certificate", 2 "DEMO-EMR-001" did not come from a memo, so they stay on this invoice.')
     left = (await _state(client, g, invoice))["line_items"]
-    assert [li.get("description") for li in left] == ["GIA Certificate"]
+    assert [li.get("description") or li.get("sku") for li in left] == ["GIA Certificate", g.items["DEMO-EMR-001"]["name"]]
     assert await _status(client, g, "DEMO-SAP-001") == "memo_out"
 
 
@@ -439,7 +462,7 @@ async def test_back_to_memo_refuses_when_only_own_item_less_lines(client, sessio
     assert (await _state(client, g, invoice))["line_items"] == before["line_items"]
 
 
-# ── Class guard: no bulk line action reads an all-skipped choice as "every line" ─
+# ── Class guard: each bulk line action counts and names what it leaves, in its own words ─
 
 async def _audit_with_certificate(client, g) -> str:
     """A finalized audit of the demo stock location, with a "GIA Certificate" row added while
@@ -476,48 +499,125 @@ async def _scan(client, g, audit, lids, scanned):
     return await client.post(f"/lists/{audit}/set-scanned", headers=g.h, json={"line_ids": lids, "scanned": scanned})
 
 
-# route -> (owner kind, request); the request gets (client, g, owner, the item-less line ids).
-_ALL_SKIPPED = {
-    ("POST", "/docs/{entity_id}/fulfill-lines"): ("invoice", lambda c, g, o, l: _act(c, g, o, "fulfill-lines", l)),
-    ("POST", "/docs/{entity_id}/reserve-lines"): ("invoice", lambda c, g, o, l: _act(
-        c, g, o, "reserve-lines", l, new_status="reserved")),
-    ("POST", "/docs/{entity_id}/set-available"): ("invoice", lambda c, g, o, l: _act(c, g, o, "set-available", l)),
-    ("POST", "/docs/{entity_id}/revert-lines"): ("invoice", lambda c, g, o, l: _act(c, g, o, "revert-lines", l)),
-    ("POST", "/lists/{entity_id}/reserve-lines"): ("list", lambda c, g, o, l: _act(
-        c, g, o, "reserve-lines", l, new_status="reserved")),
-    ("POST", "/lists/{entity_id}/set-available"): ("list", lambda c, g, o, l: _act(c, g, o, "set-available", l)),
-    ("POST", "/docs/{entity_id}/invoice-lines"): ("memo", lambda c, g, o, l: draw(c, g.h, o, line_ids=l)),
-    ("POST", "/docs/{entity_id}/back-to-memo"): ("drawn", lambda c, g, o, l: back_to_memo(c, g.h, o, l)),
-    ("POST", "/lists/{entity_id}/set-scanned"): ("audit", lambda c, g, o, l: _scan(c, g, o, l, True)),
-}
+async def _draw(client, g, memo, lids):
+    """Invoice selected, confirmed as the page confirms it: after its preview."""
+    preview = await draw(client, g.h, memo, line_ids=lids, dry_run=True)
+    if preview.status_code != 200 or preview.json().get("problems"):
+        return await draw(client, g.h, memo, line_ids=lids)
+    return await draw(client, g.h, memo, line_ids=lids, binding=preview.json()["binding"])
 
 
-async def test_every_bulk_line_action_is_covered_by_the_all_skipped_guard(client):
-    assert _line_selection_routes() == set(_ALL_SKIPPED)
-
-
-@pytest.mark.parametrize("route", [r[1] for r in _ALL_SKIPPED], ids=lambda p: p.split("/", 2)[1] + p.rsplit("/", 1)[1])
-async def test_a_choice_of_only_item_less_lines_changes_nothing_and_is_refused(client, session, route):
-    kind, send = next(v for k, v in _ALL_SKIPPED.items() if k[1] == route)
-    g = await _gems(client)
-    lines = [*(_line(g, s) for s in STONES), GIA]
+async def _owner_for(client, g, kind: str) -> tuple[str, str]:
+    """A record of ``kind`` holding demo stones and a "GIA Certificate", with the first stone
+    in the state the action acts on; returns it and that stone's line id."""
+    lines = [*(_line(g, s) for s in STONES[:2]), GIA]
     if kind == "audit":
         owner = await _audit_with_certificate(client, g)
-        await _ok(await _scan(client, g, owner, (await _ids(client, g, owner))[:1], False))
-    elif kind == "drawn":
-        owner = (await _drawn_invoice_with_own_certificate(client, g))[1]
-    elif kind == "list":
-        owner = await _list(client, g, lines)
-    else:
-        owner = await _doc(client, g, lines, doc_type="memo" if kind == "memo" else "invoice")
-        if kind == "memo":
-            await _ship(client, g, owner, (await _ids(client, g, owner))[:5])
+        lids = await _ids(client, g, owner)
+        await _ok(await _scan(client, g, owner, lids, False))
+        return owner, lids[0]
+    if kind == "drawn":
+        _memo, owner, drawn_id, _own = await _drawn_invoice_with_own_certificate(client, g)
+        return owner, drawn_id
+    owner = await (_list(client, g, lines) if kind.startswith("list") else
+                   _doc(client, g, lines, doc_type="memo" if kind == "memo" else "invoice"))
+    lids = await _ids(client, g, owner)
+    if kind in ("memo", "invoice-shipped"):
+        await _ship(client, g, owner, lids[:1])
+    elif kind in ("invoice-held", "list-held"):
+        await _reserve(client, g, owner, lids[:1])
+    return owner, lids[0]
+
+
+# route -> (record it acts on, action, request, UI route and API call it goes through or None,
+# key of the UI notice's count); the request gets (client, g, owner, line ids).
+_ALL_SKIPPED = {
+    ("POST", "/docs/{entity_id}/fulfill-lines"): ("invoice", "fulfill", lambda c, g, o, l: _act(
+        c, g, o, "fulfill-lines", l), ("fulfill-lines", "fulfill_lines"), "documents.lines_shipped"),
+    ("POST", "/docs/{entity_id}/reserve-lines"): ("invoice", "reserve", lambda c, g, o, l: _act(
+        c, g, o, "reserve-lines", l, new_status="reserved"), ("reserve-lines", "reserve_lines"), "documents.lines_reserved"),
+    ("POST", "/docs/{entity_id}/set-available"): ("invoice-held", "set-available", lambda c, g, o, l: _act(
+        c, g, o, "set-available", l), ("set-available", "set_lines_available"), "documents.lines_available"),
+    ("POST", "/docs/{entity_id}/revert-lines"): ("invoice-shipped", "revert", lambda c, g, o, l: _act(
+        c, g, o, "revert-lines", l), None, None),
+    ("POST", "/lists/{entity_id}/reserve-lines"): ("list", "reserve", lambda c, g, o, l: _act(
+        c, g, o, "reserve-lines", l, new_status="reserved"), ("reserve-lines", "reserve_lines"), "documents.lines_reserved"),
+    ("POST", "/lists/{entity_id}/set-available"): ("list-held", "set-available", lambda c, g, o, l: _act(
+        c, g, o, "set-available", l), ("set-available", "set_lines_available"), "documents.lines_available"),
+    ("POST", "/docs/{entity_id}/invoice-lines"): ("memo", "invoice", _draw, ("invoice-lines", "invoice_lines"),
+                                                  "documents.lines_invoiced"),
+    ("POST", "/docs/{entity_id}/back-to-memo"): ("drawn", "back_to_memo", lambda c, g, o, l: back_to_memo(
+        c, g.h, o, l), ("back-to-memo", "back_to_memo"), "documents.lines_back_to_memo"),
+    ("POST", "/lists/{entity_id}/set-scanned"): ("audit", "set-scanned", lambda c, g, o, l: _scan(
+        c, g, o, l, True), ("set-scanned", "set_scanned"), "documents.lines_scanned"),
+}
+_ROUTES = [r[1] for r in _ALL_SKIPPED]
+
+
+def _case(route: str) -> tuple:
+    return next(v for k, v in _ALL_SKIPPED.items() if k[1] == route)
+
+
+def _route_id(route: str) -> str:
+    return route.split("/", 2)[1] + route.rsplit("/", 1)[1]
+
+
+async def test_every_bulk_line_action_is_covered_by_the_guard_and_has_its_own_reasons(client):
+    from celerp_docs.doc_constants import LINE_SKIP_REASONS
+    assert _line_selection_routes() == set(_ALL_SKIPPED)
+    assert {v[1] for v in _ALL_SKIPPED.values()} <= set(LINE_SKIP_REASONS)
+
+
+async def _page_notice(ui_client, route: str, owner: str, lids: list[str], answer: dict) -> str:
+    """The notice the page shows for ``answer`` to the action ``route`` names, sent for ``lids``."""
+    from test_helpers import make_test_token
+    from ui.components.preview_confirm import BINDING
+    path, call = _case(route)[3]
+    data = {"line_id": lids, "idempotency_key": "k-guard", "new_status": "reserved", "scanned": "1"}
+    if call == "invoice_lines":
+        data = {**{f"pick_{i}": lid for i, lid in enumerate(lids)}, BINDING: "b", "idempotency_key": "k-guard"}
+    page = {"list": {"status": "finalized"}, "items": [], "total": 0, "version": 1}
+    ui_client.cookies.update({"celerp_token": make_test_token(role="owner")})
+    with patch(f"ui.api_client.{call}", new=AsyncMock(return_value=answer)), \
+            patch("ui.api_client.get_list_page", new=AsyncMock(return_value=page)):
+        r = await ui_client.post(f"/{'lists' if owner.startswith('list:') else 'docs'}/{owner}/{path}", data=data)
+    assert r.status_code in (200, 204), r.text
+    return json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"]
+
+
+@pytest.mark.parametrize("route", _ROUTES, ids=_route_id)
+async def test_a_mixed_choice_is_counted_then_named_in_the_actions_own_words(client, session, ui_client, route):
+    from celerp_docs.doc_constants import LINE_SKIP_REASONS
+    from ui.i18n import refusal_text, t
+    kind, action, send, ui, done = _case(route)
+    g = await _gems(client)
+    owner, acting = await _owner_for(client, g, kind)
+    item_less = [li["line_id"] for li in (await _state(client, g, owner))["line_items"]
+                 if not (li.get("item_id") or li.get("entity_id"))]
+    answer = await _ok(await send(client, g, owner, [acting, *item_less]))
+    reasons = LINE_SKIP_REASONS[action]
+    assert {s["kind"] for s in answer["skipped"]} <= set(reasons)
+    assert [k for k, _ in _notice(answer)] == [f"{reasons[s['kind']][0]}_one" for s in answer["skipped"]]
+    if ui:
+        said = t(f"{done}_one", n=1, memo=answer.get("memo_ref") or "")
+        assert await _page_notice(ui_client, route, owner, [acting, *item_less], answer) == (
+            f"{said} {refusal_text(answer['skipped_notice'])}")
+
+
+@pytest.mark.parametrize("route", _ROUTES, ids=_route_id)
+async def test_a_choice_of_only_item_less_lines_changes_nothing_and_is_refused(client, session, route):
+    from celerp_docs.doc_constants import LINE_SKIP_REASONS
+    kind, action, send, _ui, _done = _case(route)
+    g = await _gems(client)
+    owner, _acting = await _owner_for(client, g, kind)
     before = await _state(client, g, owner)
     item_less = [li["line_id"] for li in before["line_items"] if not (li.get("item_id") or li.get("entity_id"))]
     assert item_less
     r = await send(client, g, owner, item_less)
     assert r.status_code in (409, 422), r.text
-    assert _detail(r)["message_key"] in ("lines.no_stock_one", "docs.back_to_memo_not_drawn_one")
+    # The kind an item-less line is to this action: a line of the invoice's own to Back to memo.
+    skip_kind = {"back_to_memo": "own", "invoice": "memo_no_item"}.get(action, "no_item")
+    assert _detail(r)["message_key"] == f"{LINE_SKIP_REASONS[action][skip_kind][1]}_one"
     after = await _state(client, g, owner)
     assert after["version"] == before["version"] and after["line_items"] == before["line_items"]
 
