@@ -11,8 +11,11 @@
         Waits until the updater has downloaded the update and sends the same
         install-update message Restart to install sends. Exits 1, printing the
         update state, if the download fails or does not finish in time.
+    python scripts/ci_update_drive.py card <debugging port> <seconds> <text>
+        Waits until a signed-in page's update card says <text>. Exits 1, printing
+        what the card says, if it does not within the time.
 
-Both connect to Celerp's window over the Chrome DevTools Protocol (Celerp started
+All connect to Celerp's window over the Chrome DevTools Protocol (Celerp started
 with --remote-debugging-port).
 """
 
@@ -87,7 +90,24 @@ def install(browser, end: float) -> int:
     return 1
 
 
-def main(command: str, port: int, seconds: int) -> int:
+def card(browser, end: float, text: str) -> int:
+    said = None
+    while time.monotonic() < end:
+        page = celerp_page(browser)
+        try:
+            said = page.evaluate(
+                "(document.querySelector('.update-card__state') || {}).textContent") if page else None
+        except Error:
+            said = None   # the window is between pages
+        if said == text:
+            print(f"the update card says '{said}'")
+            return 0
+        time.sleep(2)
+    print(f"the update card says '{said}' (want '{text}')")
+    return 1
+
+
+def main(command: str, port: int, seconds: int, *args: str) -> int:
     end = time.monotonic() + seconds
     with sync_playwright() as pw:
         while True:
@@ -99,8 +119,8 @@ def main(command: str, port: int, seconds: int) -> int:
                     print(f"no Celerp window on port {port} in {seconds} s")
                     return 1
                 time.sleep(2)
-        return {"sign-in": sign_in, "install": install}[command](browser, end)
+        return {"sign-in": sign_in, "install": install, "card": card}[command](browser, end, *args)
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1], int(sys.argv[2]), int(sys.argv[3])))
+    sys.exit(main(sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), *sys.argv[4:]))

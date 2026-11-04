@@ -393,7 +393,8 @@ jobs:
           python scripts/ci_update_drive.py sign-in 9223 300
           if ($LASTEXITCODE -ne 0) { Fail "could not set up the company on the previous release $old" }
           $en = Get-Content (Join-Path (InstallDir) "resources\app\ui\locales\en.json") -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
-          $failedText = $en["shell.update_install_failed"]
+          # Setup reopens Celerp with --updated: a release that knows a stopped update says so.
+          $failedText = if ($en.ContainsKey("shell.update_stopped_failed")) { $en["shell.update_stopped_failed"] } else { $en["shell.update_install_failed"] }
           $held = Join-Path (InstallDir) "celerp-ci-held.txt"
           Set-Content -Encoding Ascii $held "held"
           $holder = Start-Process pwsh -PassThru -WindowStyle Hidden -ArgumentList "-NoProfile", "-Command",
@@ -421,36 +422,18 @@ jobs:
           }
           if ((Installed) -ne $old) { Fail "after Cancel the entry is $(Installed) (want $old)" }
           if ((InstallLog) -notmatch "stopped: ") { Fail "install.log has no line for the stop" }
-          # The update card says the update failed, read from the page in Celerp's window.
-          # The card is in the notification panel, which the bell button opens.
-          $pages = [Windows.Automation.PropertyCondition]::new($AE::ClassNameProperty, "Chrome_RenderWidgetHostHWND")
-          $buttons = [Windows.Automation.PropertyCondition]::new($AE::ControlTypeProperty, [Windows.Automation.ControlType]::Button)
-          $text = [Windows.Automation.PropertyCondition]::new($AE::NameProperty, $failedText)
-          $bellName = [char]::ConvertFromUtf32(0x1F514)
-          $seen = @()
-          $opened = $false
-          $found = $false
-          $end = (Get-Date).AddSeconds(180)
-          while (-not $found -and (Get-Date) -lt $end) {
-            $seen = @()
-            foreach ($p in (Running)) {
-              $window = $AE::RootElement.FindFirst($scope::Children,
-                [Windows.Automation.PropertyCondition]::new($AE::ProcessIdProperty, [int]$p.ProcessId))
-              if (-not $window) { continue }
-              foreach ($page in $window.FindAll($scope::Descendants, $pages)) {
-                if ($page.FindFirst($scope::Descendants, $text)) { $found = $true; continue }
-                $bell = $page.FindAll($scope::Descendants, $buttons) | Where-Object { $_.Current.Name -like "$bellName*" } | Select-Object -First 1
-                if ($bell -and -not $opened) {
-                  $bell.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
-                  $opened = $true
-                }
-                $seen += @($page.FindAll($scope::Descendants, [Windows.Automation.Condition]::TrueCondition) |
-                  ForEach-Object { $_.Current.Name } | Where-Object { $_ } | Select-Object -First 40)
-              }
-            }
-            if (-not $found) { Start-Sleep 3 }
-          }
-          if (-not $found) { Fail "the update card does not say '$failedText'; the page reads: $($seen -join ' | ')" }
+          # The update card says the update failed. UI Automation cannot read inside the page
+          # (Celerp's page tree is off without a screen reader), so the reopened Celerp is
+          # started again with its own command line and a debugging port, and the card is
+          # read over CDP.
+          $reopened = (Running) | Where-Object { $_.CommandLine -match "--update-install-failed=" } | Select-Object -First 1
+          $reopenedArgs = $reopened.CommandLine -replace '^("[^"]*"|\S+)\s*', ''
+          # Closed as a user closes it, so its database stops before the second start.
+          Get-Process Celerp | Where-Object MainWindowHandle -ne 0 | ForEach-Object { $null = $_.CloseMainWindow() }
+          WaitFor "the reopened Celerp to close" 120 { -not (Get-Process Celerp -ErrorAction SilentlyContinue) }
+          Start-Process (Join-Path (InstallDir) "Celerp.exe") -ArgumentList "$reopenedArgs --remote-debugging-port=9223"
+          python scripts/ci_update_drive.py card 9223 180 $failedText
+          if ($LASTEXITCODE -ne 0) { Fail "the update card of the reopened $old does not say '$failedText'" }
           Stop-Process $holder -Force
           Write-Host "check_update_with_held_file_reopens_old_version: Cancel kept $old, which reopened and says '$failedText'"
           Stop-Process $server -Force
