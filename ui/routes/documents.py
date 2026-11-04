@@ -3438,7 +3438,7 @@ celerpUpdateBulkAlloc();
             if isinstance(e.data, dict) and e.data.get("conflicts"):
                 payload["reserved_conflicts"] = e.data["conflicts"]
             return JSONResponse(payload, status_code=e.status)
-        saved = {"ok": True, "version": result.get("version")}
+        saved = {"ok": True, "version": result.get("version"), "line_ids": _sent_line_ids(patch_data["line_items"])}
         # The page shows the taxes, subtotal, discount, total and outstanding the API just computed,
         # never its own copy.
         try:
@@ -3447,8 +3447,7 @@ celerpUpdateBulkAlloc();
             if e.status == 401:
                 raise
             return JSONResponse({**saved, "error": error_message(e)})
-        return JSONResponse({**saved, "money": _doc_money(doc),
-                             "line_ids": [li.get("line_id") for li in doc.get("line_items") or []]})
+        return JSONResponse({**saved, "money": _doc_money(doc)})
 
     async def _proxy_reprice(request: Request, entity_id: str, reprice_fn):
         """Transport-only Web UI adapter; all repricing semantics live in celerp-docs."""
@@ -5141,7 +5140,7 @@ celerpUpdateBulkAlloc();
             if e.status == 409:
                 return JSONResponse({"code": "stale_version", "error": error_message(e)}, status_code=409)
             return JSONResponse({"error": error_message(e)}, status_code=e.status)
-        saved = {"ok": True, "version": result.get("version")}
+        saved = {"ok": True, "version": result.get("version"), "line_ids": _sent_line_ids(page)}
         # As on a document: the page shows the money the API just computed, never its own copy.
         try:
             lst = await api.get_list(token, entity_id)
@@ -5149,9 +5148,7 @@ celerpUpdateBulkAlloc();
             if e.status == 401:
                 raise
             return JSONResponse({**saved, "error": error_message(e)})
-        return JSONResponse({**saved, "money": _doc_money({"doc_type": "list", **lst}),
-                             "line_ids": [li.get("line_id") for li in
-                                          (lst.get("line_items") or [])[offset:offset + len(page)]]})
+        return JSONResponse({**saved, "money": _doc_money({"doc_type": "list", **lst})})
 
     @app.post("/lists/{entity_id}/action/{action}")
     async def list_action(request: Request, entity_id: str, action: str):
@@ -7224,6 +7221,15 @@ def _header_discount_row(doc: dict, discount: float, currency: str):
     return Div(Span(label, cls="total-label"),
                Span(f"-{fmt_money(discount, currency)}", id="doc-header-discount", cls="total-value"),
                id="doc-header-discount-row", cls="total-row")
+
+
+def _sent_line_ids(lines: list) -> list[str]:
+    """The line ids a line save hands back to its page, one per line it sent.
+
+    The API keeps a well-formed line id as sent and refuses any other, so these are the ids
+    the saved lines carry, whatever another writer does after the save. They are taken from
+    the request, never from a later read, which could see that writer's lines."""
+    return [str(li.get("line_id") or "") if isinstance(li, dict) else "" for li in lines]
 
 
 def _doc_money(doc: dict) -> dict:

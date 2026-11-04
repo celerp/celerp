@@ -112,7 +112,7 @@ async def test_draft_save_returns_line_ids(ui_client):
     doc = {"doc_type": "invoice", "status": "draft", "currency": "USD", "line_items": [dict(_STOCK), dict(_GIA)]}
     with patch("ui.api_client.patch_doc", new=AsyncMock(return_value={"version": 3})), \
             patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)):
-        r = await ui_client.post("/docs/doc:1/lines", json={"line_items": [{}, {}], "expected_version": 2})
+        r = await ui_client.post("/docs/doc:1/lines", json={"line_items": [dict(_STOCK), dict(_GIA)], "expected_version": 2})
     assert r.status_code == 200, r.text
     assert r.json()["line_ids"] == [_L0, _L1]
 
@@ -120,7 +120,7 @@ async def test_draft_save_returns_line_ids(ui_client):
     with patch("ui.api_client.patch_list_line_page", new=AsyncMock(return_value={"version": 5})), \
             patch("ui.api_client.get_list", new=AsyncMock(return_value=lst)):
         r = await ui_client.post("/lists/list:1/lines", json={
-            "line_items": [{}, {}], "offset": 1, "original_count": 2, "expected_version": 4})
+            "line_items": [dict(_STOCK), dict(_GIA)], "offset": 1, "original_count": 2, "expected_version": 4})
     assert r.status_code == 200, r.text
     assert r.json()["line_ids"] == [_L0, _L1]
 
@@ -181,3 +181,27 @@ def test_draw_panel_row_of_a_line_with_no_item_says_it_stays_on_the_memo():
     assert t("documents.line_label_not_shipped") in said["0"]
     assert t("documents.draw_row_stays_on_memo") in said["1"]
     assert t("documents.line_label_not_shipped") not in said["1"]
+
+
+@pytest.mark.asyncio
+async def test_save_hands_back_the_ids_it_wrote_not_a_later_read(ui_client):
+    """A writer that commits between the save and the read that follows it, or a read that
+    fails, never puts other ids on the page's rows: the ids handed back are the ones sent."""
+    other = {"doc_type": "invoice", "status": "draft", "currency": "USD",
+             "line_items": [dict(_GIA), dict(_STOCK)]}
+    sent = [{"line_id": _L0, "sku": "S-1"}, {"line_id": _L1, "description": "GIA Certificate"}]
+    with patch("ui.api_client.patch_doc", new=AsyncMock(return_value={"version": 3})), \
+            patch("ui.api_client.get_doc", new=AsyncMock(return_value=other)):
+        r = await ui_client.post("/docs/doc:1/lines", json={"line_items": sent, "expected_version": 2})
+    assert r.json()["line_ids"] == [_L0, _L1]
+    from ui.api_client import APIError
+    with patch("ui.api_client.patch_doc", new=AsyncMock(return_value={"version": 3})), \
+            patch("ui.api_client.get_doc", new=AsyncMock(side_effect=APIError(500, "down"))):
+        r = await ui_client.post("/docs/doc:1/lines", json={"line_items": sent, "expected_version": 2})
+    assert r.json()["line_ids"] == [_L0, _L1] and r.json()["error"]
+
+    with patch("ui.api_client.patch_list_line_page", new=AsyncMock(return_value={"version": 5})), \
+            patch("ui.api_client.get_list", new=AsyncMock(side_effect=APIError(500, "down"))):
+        r = await ui_client.post("/lists/list:1/lines", json={
+            "line_items": sent, "offset": 1, "original_count": 2, "expected_version": 4})
+    assert r.json()["line_ids"] == [_L0, _L1]
