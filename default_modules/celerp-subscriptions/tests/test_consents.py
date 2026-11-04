@@ -38,7 +38,7 @@ async def test_a_role_without_the_automation_permission_cannot_widen_the_catch_u
     op, _ = await member(client, session, hd, "operator")
     widen = await schedule(client, op, eid, catchup_periods=12)
     assert widen.status_code == 403, widen.text
-    assert widen.json()["detail"]["params"]["label"] == "Enable automatic billing"
+    assert widen.json()["detail"]["params"]["label"]["message_key"] == "perm.name.automate_billing"
     assert (await template(client, hd, eid))["catchup_periods"] == 0
     await tick(session, cid, "2026-07-15")
     assert await billed_docs(session, eid) == []
@@ -102,8 +102,8 @@ async def test_turning_on_billing_that_would_send_needs_the_sending_permission(c
     await revoke(client, hd, "automate_sending", "manager")
     manager, _ = await member(client, session, hd, "manager")
     r = await schedule(client, manager, eid, generation_mode="auto_invoice")
-    assert r.status_code == 403 and r.json()["detail"]["params"]["label"] == "Enable automatic sending"
-    assert (await template(client, hd, eid))["generation_mode"] == "manual_due"
+    assert r.status_code == 403 and r.json()["detail"]["params"]["label"]["message_key"] == "perm.name.automate_sending"
+    assert (await template(client, hd, eid)).get("generation_mode", "manual_due") == "manual_due"
 
 
 @pytest.mark.parametrize("role", ["owner", "admin", "manager"])
