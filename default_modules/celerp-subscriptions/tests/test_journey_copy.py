@@ -72,3 +72,35 @@ async def test_a_draft_points_from_its_action_bar_to_the_schedule(owner_ui, monk
     link = activate.parent.find("a", href="#sub-schedule")
     assert link is not None and page.find(id="sub-schedule") is not None, activate.parent
     assert link.get_text(strip=True) == "Set the schedule"
+
+
+def _toast(r) -> dict:
+    import json
+    return json.loads(r.headers["HX-Trigger"])["celerpToast"]
+
+
+async def test_every_message_in_a_billing_journey_reads_a_day_one_way(owner_ui, monkeypatch):
+    """Bill early while a period is due is refused naming its bill date; Generate due then
+    names the period it billed. Both read their days the one way running text reads a day."""
+    freeze_day(monkeypatch, "2026-08-15")
+    eid = await agreement(owner_ui.api, {}, start="2026-08-04")
+    early = _toast(await owner_ui.post(f"/subscriptions/{eid}/bill-early",
+                                       data={"idempotency_key": "e-1", "period_index": "0"}))["message"]
+    billed = _toast(await owner_ui.post(f"/subscriptions/{eid}/generate-due", data={"idempotency_key": "g-1"}))["message"]
+    assert "4 Aug 2026" in early, early
+    assert "4 Aug 2026" in billed and "3 Sep 2026" in billed, billed
+    assert "2026-08-04" not in early + billed
+
+
+def test_every_subscriptions_sentence_naming_a_day_reads_it_as_a_date():
+    """Class guard: a subscriptions sentence that takes a day (date, start, end, day, or a
+    spread of them) is built by sentence(), which reads each ISO day the way refusals do,
+    never by t() with the raw day."""
+    import ast
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[3] / "ui/routes/subscriptions.py"
+    raw = [f"{n.lineno}" for n in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+           if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "t"
+           and any(k.arg in (None, "date", "start", "end", "day") for k in n.keywords)]
+    assert not raw, raw

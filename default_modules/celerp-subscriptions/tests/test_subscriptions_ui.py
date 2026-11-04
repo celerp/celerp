@@ -243,7 +243,7 @@ class TestBillingPages:
         freeze_day(monkeypatch, "2026-03-15")
         eid = await agreement(owner_ui.api, {}, start="2026-04-01")
         panel = (await owner_ui.get("/subscriptions/due?direction=sales")).text
-        assert "Nothing is due. The next bill date is 2026-04-01" in panel
+        assert "Nothing is due. The next bill date is 1 Apr 2026" in panel
         assert f'href="/subscriptions/{eid}"' in panel
 
     async def test_billing_mode_records_consent_and_shows_the_badge(self, owner_ui):

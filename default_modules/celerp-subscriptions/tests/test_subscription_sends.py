@@ -19,7 +19,7 @@ from agreement_kit import (
     agreement, billed_docs, company_id, contact, freeze_day, register, schedule, summary, template, tick,
 )
 from smtp_support import SmtpStub, smtp_settings
-from ui.i18n import t
+from ui.i18n import sentence, t
 
 
 async def _sending(client, hd, *, start="2026-07-01", catchup=0) -> str:
@@ -329,7 +329,7 @@ async def test_the_agreement_page_says_when_an_email_failed_or_may_not_have_arri
     from bs4 import BeautifulSoup
     history = BeautifulSoup((await owner_ui.get(f"/docs/{eid}/history?per_page=100")).text,
                             "html.parser").get_text(" ", strip=True)
-    assert t(f"subscriptions.history_send_{state}", start="2026-07-01", end="2026-07-31") in history
+    assert sentence(f"subscriptions.history_send_{state}", start="2026-07-01", end="2026-07-31") in history
 
 
 def test_every_recorded_send_state_reads_the_same_on_the_summary_the_periods_and_history():

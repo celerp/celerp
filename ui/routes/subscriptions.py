@@ -31,7 +31,7 @@ from ui.config import get_token as _token, get_role as _get_role
 from ui.routes.documents import _action_error
 from ui.routes.reports import _get_company
 from ui.routes.settings import _check_permission
-from ui.i18n import refusal_text, t
+from ui.i18n import refusal_text, sentence, t
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +131,7 @@ def _term_change(field: str):
 def _consents_change(c: dict) -> str:
     old, new = c.get("old") or {}, c.get("new") or {}
     return ", ".join(
-        [t(f"subscriptions.consent_{m}", date=format_timestamp((new[m] or {}).get("at") or ""))
+        [sentence(f"subscriptions.consent_{m}", date=format_timestamp((new[m] or {}).get("at") or ""))
          for m in _CONSENTS if m in new and new[m] != old.get(m)]
         + [t(f"subscriptions.consent_{m}_withdrawn") for m in _CONSENTS if m in old and m not in new])
 
@@ -141,16 +141,16 @@ def _period_change(old: dict, new: dict, start: str, end: str) -> str | None:
     was, now = old.get("state"), new.get("state")
     dates = {"start": start, "end": end}
     if now == "billed" and was != "billed":
-        return t("subscriptions.history_billed", **dates)
+        return sentence("subscriptions.history_billed", **dates)
     if now == "skipped" and was != "skipped":
-        return t("subscriptions.history_skipped", reason=new.get("reason") or "", **dates)
+        return sentence("subscriptions.history_skipped", reason=new.get("reason") or "", **dates)
     if now == "released" and was in ("billed", "skipped"):
-        return t("subscriptions.done_reopened" if was == "billed" else "subscriptions.done_unskipped", **dates)
+        return sentence("subscriptions.done_reopened" if was == "billed" else "subscriptions.done_unskipped", **dates)
     if now == "unresolved" and was != "unresolved":
-        return t("subscriptions.history_unresolved", **dates)
+        return sentence("subscriptions.history_unresolved", **dates)
     send = (new.get("send") or {}).get("state")
     if send and new.get("send") != old.get("send"):
-        return t(f"subscriptions.history_send_{send}", **dates)
+        return sentence(f"subscriptions.history_send_{send}", **dates)
     return None
 
 
@@ -166,7 +166,7 @@ def _billing_failure_change(c: dict) -> str | None:
     if c.get("drop"):
         return None
     span = (c.get("dates") or {}).get(str((c.get("new") or {}).get("period_index")))
-    return t("subscriptions.history_billing_failed", start=span[0], end=span[1]) if span \
+    return sentence("subscriptions.history_billing_failed", start=span[0], end=span[1]) if span \
         else t("subscriptions.notice_billing_failed_title")
 
 
@@ -341,9 +341,9 @@ def _bill_date_note(sub: dict, next_bill: str | None, oob: bool = False) -> FT:
     attrs = {"id": "sub-bill-note", "cls": "text-muted", "style": "font-size:.85em",
              **({"hx_swap_oob": "true"} if oob else {})}
     if not billed and (first := next_bill or sub.get("anchor_date")):
-        return Span(t("subscriptions.first_bill_on", date=first), **attrs)
+        return Span(sentence("subscriptions.first_bill_on", date=first), **attrs)
     if next_bill:
-        return Span(t("subscriptions.next_bill_on", date=next_bill), **attrs)
+        return Span(sentence("subscriptions.next_bill_on", date=next_bill), **attrs)
     return Span(**attrs)
 
 
@@ -532,7 +532,7 @@ def _due_panel(preview: dict, subs: dict[str, dict]) -> FT:
         if not upcoming:
             return Div(P(t("subscriptions.due_none"), cls="hint"), cls="settings-card")
         day, eid = upcoming[0]
-        return Div(P(A(t("subscriptions.due_empty", date=day, name=template_label(subs[eid], eid)),
+        return Div(P(A(sentence("subscriptions.due_empty", date=day, name=template_label(subs[eid], eid)),
                        href=f"/subscriptions/{eid}"), cls="hint"), cls="settings-card")
     items.sort(key=lambda i: i["periods"][0]["bill_date"])
 
@@ -701,7 +701,7 @@ def _billing_section(entity_id: str, sub: dict) -> FT:
                   title=t("subscriptions.catchup_window_title")),
             style="display:flex;gap:1rem;flex-wrap:wrap;align-items:center",
         ),
-        *[P(t(f"subscriptions.consent_{c}", date=format_timestamp(consents[c].get("at") or "")), cls="text-muted")
+        *[P(sentence(f"subscriptions.consent_{c}", date=format_timestamp(consents[c].get("at") or "")), cls="text-muted")
           for c in _CONSENTS if (consents.get(c) or {}).get("at")],
         id="sub-billing", cls="mt-lg",
     )
@@ -1183,7 +1183,7 @@ def setup_routes(app) -> None:
         except APIError as e:
             return _refused(e)
         if action in _BILLING_ACTIONS:
-            message = t("subscriptions.done_already_billed" if done.get("already_billed") else "subscriptions.done_billed",
+            message = sentence("subscriptions.done_already_billed" if done.get("already_billed") else "subscriptions.done_billed",
                         ref=done.get("ref_id") or "", start=done["service_start"], end=done["service_end"])
         else:
             message = t(_ACTION_DONE[action])
@@ -1207,7 +1207,7 @@ def setup_routes(app) -> None:
         if action not in _PERIOD_DONE:
             return Response(status_code=204, headers={"HX-Redirect": back})
         period = done["period"]
-        return _done(back, t(_PERIOD_DONE[action], start=period["service_start"], end=period["service_end"]))
+        return _done(back, sentence(_PERIOD_DONE[action], start=period["service_start"], end=period["service_end"]))
 
     @app.post("/subscriptions/{entity_id}/history/{doc_id}/{action}")
     async def subscription_history_ui(request: Request, entity_id: str, doc_id: str, action: str):

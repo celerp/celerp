@@ -12,7 +12,7 @@ import pytest
 from bs4 import BeautifulSoup
 
 from agreement_kit import agreement, bill_early, freeze_day, generate_due, schedule, template
-from ui.i18n import t
+from ui.i18n import sentence, t
 
 REPO = Path(__file__).resolve().parents[3]
 
@@ -85,7 +85,7 @@ async def test_a_saved_first_bill_date_shows_at_once(owner_ui, monkeypatch):
     eid = await agreement(owner_ui.api, {}, start="2026-03-01", activate=False)
     r = await owner_ui.patch(f"/subscriptions/{eid}/schedule/anchor_date", data={"value": "2026-05-01"})
     assert r.status_code == 200
-    assert t("subscriptions.first_bill_on", "en", date="2026-05-01") in r.text
+    assert sentence("subscriptions.first_bill_on", "en", date="2026-05-01") in r.text
     assert 'value="2026-05-01"' in r.text
 
 
@@ -141,10 +141,10 @@ async def test_billing_names_the_document_and_its_period(owner_ui, monkeypatch):
     assert r.headers["HX-Redirect"] == f"/subscriptions/{eid}"
     ref = next(iter((await template(owner_ui.api, {}, eid))["periods"].values()))["doc_id"]
     ref = (await owner_ui.api.get(f"/docs/{ref}")).json()["ref_id"]
-    assert _toast(r) == {**_toast(r), "type": "success", "message": t(
+    assert _toast(r) == {**_toast(r), "type": "success", "message": sentence(
         "subscriptions.done_billed", "en", ref=ref, start="2026-01-01", end="2026-01-31")}
     r = await owner_ui.post(f"/subscriptions/{eid}/bill-early", data={"idempotency_key": "bill-1", "period_index": "1"})
-    assert "2026-02-01" in _toast(r)["message"] and _toast(r)["type"] == "success"
+    assert "1 Feb 2026" in _toast(r)["message"] and _toast(r)["type"] == "success"
 
 
 @pytest.mark.parametrize("action", ["activate", "pause", "resume", "cancel", "generate-due", "bill-early",
@@ -174,7 +174,7 @@ async def test_every_agreement_action_says_what_it_did(owner_ui, monkeypatch, ac
     toast = _toast(r)
     assert toast.get("type") == "success" and toast.get("message"), r.headers
     if action in api.PERIOD_ACTIONS:
-        assert "2026-01-01" in toast["message"] and "2026-01-31" in toast["message"]
+        assert "1 Jan 2026" in toast["message"] and "31 Jan 2026" in toast["message"]
 
 
 # --- Refusals are never empty ------------------------------------------------

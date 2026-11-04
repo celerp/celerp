@@ -11,7 +11,7 @@ from pathlib import Path
 from bs4 import BeautifulSoup
 
 from agreement_kit import agreement, company_id, freeze_day, generate_due, schedule, tick
-from ui.i18n import t
+from ui.i18n import sentence, t
 
 REPO = Path(__file__).resolve().parents[3]
 
@@ -68,10 +68,10 @@ async def test_history_names_each_change_as_the_agreement_page_does(owner_ui, mo
 async def test_history_names_the_period_billed_skipped_and_opened_again(owner_ui, monkeypatch):
     eid = await _changed_agreement(owner_ui, monkeypatch)
     text = await _history(owner_ui, eid)
-    assert t("subscriptions.history_billed", "en", start="2026-01-01", end="2026-01-31") in text
-    assert t("subscriptions.history_skipped", "en", start="2026-02-01", end="2026-02-28",
+    assert sentence("subscriptions.history_billed", "en", start="2026-01-01", end="2026-01-31") in text
+    assert sentence("subscriptions.history_skipped", "en", start="2026-02-01", end="2026-02-28",
              reason="Closed for the holiday") in text
-    assert t("subscriptions.done_unskipped", "en", start="2026-02-01", end="2026-02-28") in text
+    assert sentence("subscriptions.done_unskipped", "en", start="2026-02-01", end="2026-02-28") in text
 
 
 async def test_every_field_an_agreement_records_reads_by_its_label(owner_ui, monkeypatch):
