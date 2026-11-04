@@ -54,7 +54,7 @@ from celerp.migrations._auto_stamp import (
 
 
 @contextlib.contextmanager
-def _pg_inspector_for_models(drop_tables=()):
+def _pg_inspector_for_models(drop_tables=(), drop_indexes=()):
     """create_all the full model schema into an isolated Postgres schema and
     yield an inspector over it. Mirrors the production dev-startup path
     (create_all on Postgres), so the stamp walker is tested against real
@@ -79,6 +79,8 @@ def _pg_inspector_for_models(drop_tables=()):
         with engine.begin() as conn:
             for table in drop_tables:
                 conn.execute(text(f'DROP TABLE IF EXISTS "{table}" CASCADE'))
+            for index in drop_indexes:
+                conn.execute(text(f'DROP INDEX IF EXISTS "{index}"'))
         yield inspect(engine)
     finally:
         engine.dispose()
@@ -791,3 +793,20 @@ def test_journal_ref_index_is_recognized_as_schema_ddl_not_data_backfill():
     assert [(sig.kind, sig.table, sig.extra) for sig in signatures] == [
         ("create_index", "ledger", "ix_ledger_je_doc_refs_gin")
     ]
+
+
+@pytest.mark.parametrize(("drop_indexes", "expected"), [
+    (("ix_ledger_je_doc_refs_gin",), "m8a9b0c1d2e3"),
+    ((), "p9q0r1s2t3u4"),
+])
+def test_an_upgraded_database_without_the_journal_ref_index_is_stamped_below_it(drop_indexes, expected):
+    """A database upgraded to m8a9b0c1d2e3 has every table but not the GIN index: the restamp
+    before an upgrade must leave p9q0r1s2t3u4 to run, never claim it from the rest of the
+    schema; once the index is there, the revision is proven."""
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(build_alembic_config())
+    with _pg_inspector_for_models(drop_indexes=drop_indexes) as inspector:
+        stamp = find_safe_stamp(list(script.walk_revisions()), _real_sigs_by_rev(), inspector,
+                                expected_metadata=load_kernel_metadata())
+    assert stamp == expected
