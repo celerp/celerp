@@ -251,11 +251,15 @@ test("Celerp reopened by a setup that stopped says the update stopped and where 
     expect(t.shown[0].message).toBe("The update stopped before it finished, so Celerp is still on the version you had.");
     expect(t.shown[0].detail).toContain(path.join(t.userData, "celerp-data", "logs"));
     expect(t.checks).toEqual([]);
+    await t.answer(1);
     // when a setup that stopped reopens Celerp and it then fails again, the new restart is not one by setup
     t.updater.emit("update-available", { version: "2.8.1" });
     t.updater.emit("update-downloaded", { version: "2.8.1" });
     useInstallStep(t.updater, t.app, 1);
     await t.listeners["install-update"]();
+    await until(() => t.shown.length === 2);
+    expect(t.shown[1].message).toBe("Celerp could not start the installer.");
+    await t.answer(1);
     await until(() => t.relaunched.length > 0);
     expect(t.relaunched[0].args).toContain("--update-install-failed=2.8.1");
     expect(t.relaunched[0].args).not.toContain("--updated");
