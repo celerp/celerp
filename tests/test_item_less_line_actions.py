@@ -533,3 +533,18 @@ def line_label(li: dict) -> str:
     from celerp.services.line_measures import line_label as _label
     return _label(li)
 
+
+async def test_a_finalized_edit_that_changes_a_line_id_is_refused(client, session):
+    """Holds and shipments are keyed by line id, so a finalized document's line ids are as fixed
+    as its quantities: a PATCH that rewrites one is refused and leaves the document as it was."""
+    g = await _gems(client)
+    d = await _doc(client, g, [_line(g, "DEMO-SAP-001"), GIA])
+    before = await _state(client, g, d)
+    moved = [dict(li) for li in before["line_items"]]
+    moved[1]["line_id"] = str(uuid.uuid4())
+    r = await client.patch(f"/docs/{d}", headers=g.h, json={
+        "fields_changed": {"line_items": {"new": moved}}, "expected_version": before["version"]})
+    assert r.status_code == 409, r.text
+    assert (_detail(r)["message_key"], _detail(r)["params"]) == (
+        "documents.err_line_field_finalized", {"field": "line_id", "line": 2})
+    assert (await _state(client, g, d))["line_items"] == before["line_items"]
