@@ -31,6 +31,7 @@ from ui.components.shell import base_shell, page_header, refusal_fix, toast_head
 from ui.security import not_permitted_redirect
 from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, period_all_time_link, period_empty_text, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum, display_unit, doc_href, doc_status_badge, doc_status_shown
 from celerp.services.background import spawn_background
+from celerp.services.document_lines import line_item_id
 from celerp.services.business_time import business_today
 from celerp.services.doc_balance import MEMO_DRAW_STATUSES, doc_tax, doc_value, is_awaiting_payment, is_owed, outstanding_balance
 from celerp.services.record_quantities import FULFILLABLE_STATUSES, RECEIVABLE_STATUSES
@@ -7158,10 +7159,12 @@ def _draw_panel(entity_id: str, doc: dict, targets: list | None, unit_map: dict)
     the server's preview of what that invoice bills and what stays on the memo."""
     lines = doc.get("line_items") or []
     # A line with nothing out says where its goods are and still asks the preview, which says
-    # what to do (set it as shipped first) rather than leaving nothing to confirm.
+    # what to do (set it as shipped first) rather than leaving nothing to confirm. A line with
+    # no item has no goods: it stays on the memo, as the preview's note says.
     rows = _line_action_rows(lines, lambda li: float(li.get("out_quantity") or 0),
                              lambda li: li.get("unit") or "", t("documents.line_label_not_shipped"), unit_map,
-                             note=lambda li, has_some: "" if has_some else _shipped_label(li),
+                             note=lambda li, has_some: "" if has_some else (
+                                 _shipped_label(li) if line_item_id(li) else t("documents.draw_row_stays_on_memo")),
                              refusable=True)
     options = [("", t("documents.invoice_target_new")), *((tid, ref) for tid, ref in targets or [])]
     return Form(

@@ -2519,6 +2519,7 @@
   "documents.lines_skipped_many": "الأسطر {lines} ليست أصناف مخزون، لذا لا حالة لها وقد تُركت كما هي.",
   "documents.memo_lines_skipped_one": "سطر المذكرة {lines} ليس صنف مخزون، لذا يبقى على المذكرة.",
   "documents.memo_lines_skipped_many": "أسطر المذكرة {lines} ليست أصناف مخزون، لذا تبقى على المذكرة.",
+  "documents.draw_row_stays_on_memo": "يبقى على المذكرة",
   "documents.lines_invoiced_one": "تمت فوترة {n} سطر من المذكرة {memo}.",
   "documents.lines_invoiced_many": "تمت فوترة {n} أسطر من المذكرة {memo}.",
   "documents.service_lines_skipped_one": "السطر {lines} خدمة وليس مخزونًا، لذا لا حالة له وقد تُرك كما هو.",

@@ -2519,6 +2519,7 @@
   "documents.lines_skipped_many": "บรรทัด {lines} ไม่ใช่สินค้าคงคลัง จึงไม่มีสถานะและคงไว้ตามเดิม",
   "documents.memo_lines_skipped_one": "บรรทัด {lines} ของใบเมโมไม่ใช่สินค้าคงคลัง จึงยังอยู่ในใบเมโม",
   "documents.memo_lines_skipped_many": "บรรทัด {lines} ของใบเมโมไม่ใช่สินค้าคงคลัง จึงยังอยู่ในใบเมโม",
+  "documents.draw_row_stays_on_memo": "ยังอยู่ในใบเมโม",
   "documents.lines_invoiced_one": "ออกใบแจ้งหนี้ {n} บรรทัดจากใบเมโม {memo} แล้ว",
   "documents.lines_invoiced_many": "ออกใบแจ้งหนี้ {n} บรรทัดจากใบเมโม {memo} แล้ว",
   "documents.service_lines_skipped_one": "บรรทัด {lines} เป็นบริการ ไม่ใช่สต็อก จึงไม่มีสถานะและคงไว้ตามเดิม",

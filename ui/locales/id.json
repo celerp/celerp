@@ -2519,6 +2519,7 @@
   "documents.lines_skipped_many": "Baris {lines} bukan barang persediaan, jadi tidak punya status dan dibiarkan apa adanya.",
   "documents.memo_lines_skipped_one": "Baris memo {lines} bukan barang persediaan, jadi tetap di memo.",
   "documents.memo_lines_skipped_many": "Baris memo {lines} bukan barang persediaan, jadi tetap di memo.",
+  "documents.draw_row_stays_on_memo": "Tetap di memo",
   "documents.lines_invoiced_one": "{n} baris ditagihkan dari memo {memo}.",
   "documents.lines_invoiced_many": "{n} baris ditagihkan dari memo {memo}.",
   "documents.service_lines_skipped_one": "Baris {lines} adalah jasa, bukan stok, jadi tidak punya status dan dibiarkan apa adanya.",

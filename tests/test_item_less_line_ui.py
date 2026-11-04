@@ -28,7 +28,7 @@ _STOCK = {"line_id": _L0, "sku": "S-1", "item_id": "item:1", "entity_id": "item:
 _GIA = {"line_id": _L1, "description": "GIA Certificate", "quantity": 1, "unit_price": 150}
 _NOTICE = [{"message": 'Line 2 "GIA Certificate" was left as it is.', "message_key": "documents.lines_skipped_one",
             "params": {"lines": '2 "GIA Certificate"'}}]
-_SKIPPED = [{"line": 2, "name": "GIA Certificate", "kind": "no_item"}]
+_SKIPPED = [{"line": 2, "name": "GIA Certificate", "kind": "no_item", "line_id": _L1}]
 _LOCALES = Path(__file__).resolve().parents[1] / "ui" / "locales"
 
 
@@ -167,3 +167,17 @@ def test_removed_line_keys_absent_from_catalogs():
         assert added <= set(catalog), (path.name, added - set(catalog))
         for key in added:
             assert "{lines}" in catalog[key], (path.name, key)
+
+
+def test_draw_panel_row_of_a_line_with_no_item_says_it_stays_on_the_memo():
+    """Invoice selected leaves a line with no item on the memo, so its row in the panel says
+    that, as the preview's note does, and never "Not shipped", which points at shipping it."""
+    from ui.i18n import t
+    from ui.routes.documents import _draw_panel
+    lines = [{**_STOCK, "shipped_label": "Not shipped"}, {**_GIA, "shipped_label": "Not shipped"}]
+    html = to_xml(_draw_panel("doc:m", {"doc_type": "memo", "line_items": lines}, [], {}))
+    rows = re.findall(r'<fieldset[^>]*data-line-index="(\d)"[^>]*>(.*?)</fieldset>', html, re.S)
+    said = {i: body for i, body in rows}
+    assert t("documents.line_label_not_shipped") in said["0"]
+    assert t("documents.draw_row_stays_on_memo") in said["1"]
+    assert t("documents.line_label_not_shipped") not in said["1"]

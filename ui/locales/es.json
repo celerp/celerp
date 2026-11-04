@@ -2519,6 +2519,7 @@
   "documents.lines_skipped_many": "Las líneas {lines} no son artículos de inventario, así que no tienen estado y se dejaron como estaban.",
   "documents.memo_lines_skipped_one": "La línea {lines} del memo no es un artículo de inventario, así que se queda en el memo.",
   "documents.memo_lines_skipped_many": "Las líneas {lines} del memo no son artículos de inventario, así que se quedan en el memo.",
+  "documents.draw_row_stays_on_memo": "Se queda en el memo",
   "documents.lines_invoiced_one": "{n} línea facturada desde el memo {memo}.",
   "documents.lines_invoiced_many": "{n} líneas facturadas desde el memo {memo}.",
   "documents.service_lines_skipped_one": "La línea {lines} es un servicio, no existencias, así que no tiene estado y se dejó como estaba.",

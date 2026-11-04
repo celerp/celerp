@@ -2830,6 +2830,7 @@
   "documents.lines_skipped_many": "Lines {lines} aren't inventory items, so they have no status and were left as they are.",
   "documents.memo_lines_skipped_one": "Memo line {lines} isn't an inventory item, so it stays on the memo.",
   "documents.memo_lines_skipped_many": "Memo lines {lines} aren't inventory items, so they stay on the memo.",
+  "documents.draw_row_stays_on_memo": "Stays on the memo",
   "documents.lines_invoiced_one": "{n} line invoiced from memo {memo}.",
   "documents.lines_invoiced_many": "{n} lines invoiced from memo {memo}.",
   "documents.service_lines_skipped_one": "Line {lines} is a service, not stock, so it has no status and was left as it is.",

@@ -2519,6 +2519,7 @@
   "documents.lines_skipped_many": "Các dòng {lines} không phải mặt hàng tồn kho nên không có trạng thái và được giữ nguyên.",
   "documents.memo_lines_skipped_one": "Dòng {lines} của phiếu memo không phải mặt hàng tồn kho nên vẫn ở trên phiếu memo.",
   "documents.memo_lines_skipped_many": "Các dòng {lines} của phiếu memo không phải mặt hàng tồn kho nên vẫn ở trên phiếu memo.",
+  "documents.draw_row_stays_on_memo": "Vẫn ở trên phiếu memo",
   "documents.lines_invoiced_one": "Đã lập hóa đơn {n} dòng từ phiếu memo {memo}.",
   "documents.lines_invoiced_many": "Đã lập hóa đơn {n} dòng từ phiếu memo {memo}.",
   "documents.service_lines_skipped_one": "Dòng {lines} là dịch vụ, không phải hàng tồn kho, nên không có trạng thái và được giữ nguyên.",

@@ -2519,6 +2519,7 @@
   "documents.lines_skipped_many": "As linhas {lines} não são itens de estoque, então não têm status e ficaram como estavam.",
   "documents.memo_lines_skipped_one": "A linha {lines} do memo não é um item de estoque, então fica no memo.",
   "documents.memo_lines_skipped_many": "As linhas {lines} do memo não são itens de estoque, então ficam no memo.",
+  "documents.draw_row_stays_on_memo": "Fica no memo",
   "documents.lines_invoiced_one": "{n} linha faturada a partir do memo {memo}.",
   "documents.lines_invoiced_many": "{n} linhas faturadas a partir do memo {memo}.",
   "documents.service_lines_skipped_one": "A linha {lines} é um serviço, não estoque, então não tem status e ficou como estava.",

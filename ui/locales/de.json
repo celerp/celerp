@@ -2520,6 +2520,7 @@
   "documents.lines_skipped_many": "Die Zeilen {lines} sind keine Lagerartikel, haben daher keinen Status und wurden unverändert gelassen.",
   "documents.memo_lines_skipped_one": "Memozeile {lines} ist kein Lagerartikel und bleibt daher auf dem Memo.",
   "documents.memo_lines_skipped_many": "Memozeilen {lines} sind keine Lagerartikel und bleiben daher auf dem Memo.",
+  "documents.draw_row_stays_on_memo": "Bleibt auf dem Memo",
   "documents.lines_invoiced_one": "{n} Zeile aus Memo {memo} in Rechnung gestellt.",
   "documents.lines_invoiced_many": "{n} Zeilen aus Memo {memo} in Rechnung gestellt.",
   "documents.service_lines_skipped_one": "Zeile {lines} ist eine Dienstleistung, kein Lagerbestand, hat daher keinen Status und wurde unverändert gelassen.",

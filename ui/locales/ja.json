@@ -2519,6 +2519,7 @@
   "documents.lines_skipped_many": "{lines} 行目は在庫品目ではないためステータスがなく、そのままにしました。",
   "documents.memo_lines_skipped_one": "メモの {lines} 行目は在庫品目ではないため、メモに残ります。",
   "documents.memo_lines_skipped_many": "メモの {lines} 行目は在庫品目ではないため、メモに残ります。",
+  "documents.draw_row_stays_on_memo": "メモに残ります",
   "documents.lines_invoiced_one": "メモ {memo} から {n} 行を請求しました。",
   "documents.lines_invoiced_many": "メモ {memo} から {n} 行を請求しました。",
   "documents.service_lines_skipped_one": "{lines} 行目は在庫ではなくサービスのためステータスがなく、そのままにしました。",

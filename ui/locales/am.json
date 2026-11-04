@@ -2748,6 +2748,7 @@
   "documents.lines_skipped_many": "መስመሮች {lines} የክምችት እቃዎች አይደሉም፣ ስለዚህ ሁኔታ የላቸውም እና እንዳሉ ተትተዋል።",
   "documents.memo_lines_skipped_one": "የሜሞ መስመር {lines} የክምችት እቃ አይደለም፣ ስለዚህ በሜሞው ላይ ይቆያል።",
   "documents.memo_lines_skipped_many": "የሜሞ መስመሮች {lines} የክምችት እቃዎች አይደሉም፣ ስለዚህ በሜሞው ላይ ይቆያሉ።",
+  "documents.draw_row_stays_on_memo": "በሜሞው ላይ ይቆያል",
   "documents.lines_invoiced_one": "{n} መስመር ከሜሞ {memo} ደረሰኝ ተደርጓል።",
   "documents.lines_invoiced_many": "{n} መስመሮች ከሜሞ {memo} ደረሰኝ ተደርገዋል።",
   "documents.service_lines_skipped_one": "መስመር {lines} አገልግሎት ነው እንጂ ክምችት አይደለም፣ ስለዚህ ሁኔታ የለውም እና እንዳለ ተትቷል።",
