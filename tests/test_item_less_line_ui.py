@@ -205,3 +205,17 @@ async def test_save_hands_back_the_ids_it_wrote_not_a_later_read(ui_client):
         r = await ui_client.post("/lists/list:1/lines", json={
             "line_items": sent, "offset": 1, "original_count": 2, "expected_version": 4})
     assert r.json()["line_ids"] == [_L0, _L1]
+
+
+def test_a_list_of_sentence_reasons_reads_as_sentences():
+    """Reasons that are whole sentences (Set as shipped again: each lot "has status Sold.")
+    follow one another as sentences; reasons that are not keep their semicolons."""
+    from ui.i18n import refusal_text
+    sold = [{"message": f"{s} has status Sold.", "message_key": "lines.lot_status",
+             "params": {"sku": s, "status": "sold"}} for s in ("EMR-1", "SAP-1")]
+    text = refusal_text({"message": "Not available", "message_key": "lines.unavailable", "params": {"reasons": sold}})
+    assert ".;" not in text and text.endswith("EMR-1 has status Sold. SAP-1 has status Sold."), text
+    parts = [{"message": f"{s}: only goods out on memo can be part-returned, this one is sold",
+              "message_key": "lines.revert_part_not_memo", "params": {"name": s, "status": "sold"}} for s in ("A", "B")]
+    text = refusal_text({"message": "Cannot take back", "message_key": "lines.cannot_revert", "params": {"reasons": parts}})
+    assert "this one is sold; B:" in text.replace("Sold", "sold"), text
