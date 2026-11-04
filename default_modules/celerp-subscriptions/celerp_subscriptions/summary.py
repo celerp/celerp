@@ -76,7 +76,7 @@ async def report(session: AsyncSession, company_id, user_id, *, everything: bool
                                             if kind == "send_failed" or (
                                                 kind == "send_unconfirmed" and send.get("deduplicated")
                                                 and billing.email.relay_send_is_idempotent()
-                                                and send.get("operation_id") in retryable))
+                                                and send.get("operation_id") in retryable)
                                             else None)})
         failure = state.get("billing_failure") or {}
         if failure.get("at") and failure["at"] > since:
