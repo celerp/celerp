@@ -487,7 +487,7 @@ async def test_f05_the_same_key_at_once_posts_one_journal(committed_engine, regi
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from celerp.models.ledger import LedgerEntry
-    from test_fresh_authority_races_pg import _seed
+    from race_support import _seed
     from test_helpers import provision_company_books
 
     factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)

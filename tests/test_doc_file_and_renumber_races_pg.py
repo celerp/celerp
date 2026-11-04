@@ -21,7 +21,7 @@ from celerp.events.engine import emit_event
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.attachments import attach_file
-from test_fresh_authority_races_pg import _app_client, _direct, _http, _ok, _race, _refused, _revoke, _seed
+from race_support import _app_client, _direct, _http, _ok, _race, _refused, _revoke, _seed
 
 pytestmark = pytest.mark.asyncio
 

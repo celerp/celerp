@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
-from test_fresh_authority_races_pg import _app_client, _direct, _http, _ok, _race, _refused, _revoke, _seed
+from race_support import _app_client, _direct, _http, _ok, _race, _refused, _revoke, _seed
 
 pytestmark = pytest.mark.asyncio
 

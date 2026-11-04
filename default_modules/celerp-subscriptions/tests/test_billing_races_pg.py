@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 """One document per period under real concurrency: two requests, two dispatchers, a
 crash between the claim and its commit. Runs on real PostgreSQL across connections,
-in the steps of tests/test_fresh_authority_races_pg."""
+with the shared race helpers in race_support."""
 from __future__ import annotations
 
 import asyncio
@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from agreement_kit import agreement, freeze_day, generate_due, schedule
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
-from test_fresh_authority_races_pg import _Held, _app_client, _race, _seed, _until_waiting_or_done
+from race_support import _Held, _app_client, _race, _seed, _until_waiting_or_done
 
 pytestmark = [pytest.mark.process, pytest.mark.asyncio]
 

@@ -59,7 +59,7 @@ def ops(monkeypatch):
 
 
 async def _companies(factory):
-    from test_fresh_authority_races_pg import _seed
+    from race_support import _seed
 
     subs = await _seed(factory, modules=["celerp-subscriptions"])
     books = await _seed(factory, modules=["celerp-accounting"])
@@ -98,7 +98,7 @@ async def test_dispatcher_one_company_failure_isolated(committed_engine, ops):
     from celerp_docs import periodic
 
     factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
-    from test_fresh_authority_races_pg import _seed
+    from race_support import _seed
 
     failing, healthy = (await _seed(factory))["company_id"], (await _seed(factory))["company_id"]
     _FAIL_FOR.add(failing)
@@ -115,7 +115,7 @@ async def test_dispatcher_skips_company_staged_for_migration(committed_engine, o
     from celerp_docs import periodic
 
     factory = async_sessionmaker(bind=committed_engine, class_=AsyncSession, expire_on_commit=False)
-    from test_fresh_authority_races_pg import _seed
+    from race_support import _seed
 
     staged, live = (await _seed(factory))["company_id"], (await _seed(factory))["company_id"]
 
