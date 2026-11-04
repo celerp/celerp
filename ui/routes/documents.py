@@ -10500,8 +10500,8 @@ async function celerpCsvImport(input, entityId) {{
         from celerp.modules.slots import get as _get_slot_labels_fin
         _fin_labels_active = any(a.get("_module") == "celerp-labels" for a in _get_slot_labels_fin("bulk_action"))
         _line_acts = _doc_line_actions(doc_type, status)
-        # Shipping and holding act on stock, so they are offered only when a line holds an item
-        # (the same rule that disables the checkbox of a line without one).
+        # Shipping and holding act on stock, so they are offered only when a line holds an item;
+        # on a document with none they could act on no line.
         _stocked_lines = any(li.get("entity_id") or li.get("item_id") for li in line_items)
         # Set as shipped and Set as available share the toolbar's shipping options.
         _fulfillable_status = (_line_acts.fulfil or _line_acts.revert) and _stocked_lines
