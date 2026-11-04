@@ -226,17 +226,36 @@ def _bill_date_note(sub: dict, next_bill: str | None) -> FT | str:
     return ""
 
 
+def _pause_button(entity_id: str):
+    return Button(t("btn.pause"), cls="btn btn--warning btn--sm", hx_post=f"/subscriptions/{entity_id}/pause", hx_swap="none")
+
+
+def _cancel_button(entity_id: str):
+    return Button(t("btn.cancel"), cls="btn btn--danger btn--sm", hx_post=f"/subscriptions/{entity_id}/cancel", hx_swap="none")
+
+
 def _sub_action_controls(entity_id: str, sub: dict, next_bill: str | None = None,
                          period_index: int | None = None) -> tuple[list, list]:
     """Return (left_actions, right_actions) for the subscription detail page.
 
     Draft:   left=[Frequency, FirstBill, CustomDays, Activate, note]      right=[]
     Active:  left=[badge, GenerateDue, BillEarly, note]                   right=[Pause, Cancel]
-    Paused:  left=[badge, Frequency, FirstBill, CustomDays, note]         right=[Resume, Cancel]
+    Paused:  left=[badge, Frequency, FirstBill, CustomDays, note]         right=[restart note, Resume, Cancel]
     Cancelled: left=[badge]                                               right=[]
+    Not on a schedule yet: left=[badge, why, Frequency, CustomDays]       right=[Pause, Cancel]
     """
     status = sub.get("status", "draft")
     note = _bill_date_note(sub, next_bill)
+    if sub.get("not_moved") and status != "draft":
+        # A template from an earlier release that is not on a schedule yet: say why, and offer
+        # the frequency and interval that move it onto one.
+        freq, _, custom, toggle = _schedule_inputs(entity_id, sub)
+        warning = Span(t("subscriptions.err_not_moved", ref=sub.get("ref_id") or entity_id, reason=sub["not_moved"]),
+                       cls="flash flash--warning")
+        stops = [_pause_button(entity_id)] if status == "active" else []
+        if status != "cancelled":
+            stops.append(_cancel_button(entity_id))
+        return [_status_badge(status), warning, freq, custom, toggle], stops
 
     def _bill_vals():
         fields = {"period_index": period_index} if period_index is not None else {}
@@ -259,20 +278,18 @@ def _sub_action_controls(entity_id: str, sub: dict, next_bill: str | None = None
             Button(t("btn.bill_early"), cls="btn btn--secondary btn--sm", hx_post=f"/subscriptions/{entity_id}/bill-early",
                    hx_swap="none", hx_vals=_bill_vals()),
         ])
-        right.append(
-            Button(t("btn.pause"), cls="btn btn--warning btn--sm", hx_post=f"/subscriptions/{entity_id}/pause", hx_swap="none")
-        )
+        right.append(_pause_button(entity_id))
     elif status == "paused":
         # Allow editing schedule while paused
         left.extend(_schedule_inputs(entity_id, sub))
+        if sub.get("resume_restarts"):
+            right.append(Span(t("subscriptions.resume_restarts_note"), cls="text-muted", style="font-size:.85em"))
         right.append(
             Button(t("btn.resume"), cls="btn btn--success btn--sm", hx_post=f"/subscriptions/{entity_id}/resume", hx_swap="none")
         )
 
     if status not in ("cancelled", "draft"):
-        right.append(
-            Button(t("btn.cancel"), cls="btn btn--danger btn--sm", hx_post=f"/subscriptions/{entity_id}/cancel", hx_swap="none")
-        )
+        right.append(_cancel_button(entity_id))
 
     if status != "cancelled":
         left.append(note)
@@ -967,7 +984,7 @@ def setup_routes(app) -> None:
         status_label = display_enum(status, "subscription_status")
         list_url = f"/subscriptions?direction={direction}"
 
-        doc = {**doc, "next_bill_date": schedule.get("next_bill_date")}
+        doc = {**doc, "next_bill_date": schedule.get("next_bill_date"), "not_moved": schedule.get("not_moved")}
         _sub_left_actions, _sub_right_actions = _sub_action_controls(entity_id, doc, doc["next_bill_date"], schedule.get("oldest_open_index"))
 
         return await base_shell(

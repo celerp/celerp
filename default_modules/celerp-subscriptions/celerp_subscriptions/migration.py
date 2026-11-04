@@ -9,12 +9,16 @@ anchor that contains its date. A clean history (one document per period, contigu
 from the anchor) gets its claims; anything else (two documents in one period, a gap, a
 document dated on or after the old next date or before the start date, a document that no
 longer exists) leaves every document waiting in history review with its candidate period,
-and nothing is guessed. Every template is billed by hand afterwards (``manual_due``).
+and nothing is guessed. Every template is billed by hand afterwards (``manual_due``). A
+template paused at the move is marked to restart from its resume day, as the earlier release
+resumed, and the company is told once which active templates come out with more than one
+period due.
 
 Runs at startup per company, gated by a marker. A company staged for a migration, or that
 has Subscriptions turned off, is skipped and waits for a later start. Each template moves in
-its own savepoint: one that fails is rolled back alone and logged, and the marker stays
-unset so the next start tries it again. The integrity check runs after every pass; a
+its own savepoint: one that fails is rolled back alone, logged and named in a notice with
+why, and the marker stays unset so the next start tries it again; correcting its schedule
+moves it at once (``move_template``). The integrity check runs after every pass; a
 problem is logged and notified once and also keeps the marker unset. The hook never raises.
 """
 from __future__ import annotations
@@ -28,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.events.engine import emit_event
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
+from celerp.services.business_time import company_today
 from celerp_subscriptions import billing
 from celerp_subscriptions.periods import BILLED, RELEASED, UNRESOLVED, Schedule
 
@@ -128,6 +133,8 @@ async def _migrate_template(session: AsyncSession, company_id, proj: Projection,
     else:
         periods = {str(ks[0]): {"state": BILLED, "doc_id": d, "release_count": 0} for d, ks in placed.items()}
     changes["periods"] = periods
+    if state.get("status") == "paused":
+        changes["resume_restarts"] = True
     if review:
         changes["history_review"] = review
     await emit_event(
@@ -138,6 +145,28 @@ async def _migrate_template(session: AsyncSession, company_id, proj: Projection,
         metadata_={"next_run_date": old_next},
     )
     return bool(review)
+
+
+def _shared_documents(agreements: list[Projection]) -> set[str]:
+    """The documents more than one agreement names, by its old ids or its claims."""
+    owners: dict[str, str] = {}
+    shared: set[str] = set()
+    for agreement in agreements:
+        doc_ids = list(agreement.state.get("generated_doc_ids") or [])
+        doc_ids.extend(e["doc_id"] for e in (agreement.state.get("periods") or {}).values()
+                       if e.get("state") == BILLED and e.get("doc_id"))
+        for doc_id in doc_ids:
+            if owners.setdefault(doc_id, agreement.entity_id) != agreement.entity_id:
+                shared.add(doc_id)
+    return shared
+
+
+async def move_template(session: AsyncSession, company_id, entity_id: str) -> None:
+    """Move one template onto a schedule now, as the startup pass would; ValueError saying
+    why when its fields describe no schedule. Caller holds the savepoint and commits."""
+    agreements = await billing.agreements(session, company_id)
+    proj = next(a for a in agreements if a.entity_id == entity_id)
+    await _migrate_template(session, company_id, proj, _shared_documents(agreements))
 
 
 async def _old_next_dates(session, company_id) -> dict[str, str]:
@@ -200,16 +229,8 @@ async def migrate_company(session: AsyncSession, company_id, *, force: bool = Fa
     if not force and await conn.run_sync(lambda c: get_meta(c, marker)):
         return result
     agreements = await billing.agreements(session, company_id)
-    owners: dict[str, str] = {}
-    conflicts: set[str] = set()
-    for agreement in agreements:
-        doc_ids = list(agreement.state.get("generated_doc_ids") or [])
-        doc_ids.extend(e["doc_id"] for e in (agreement.state.get("periods") or {}).values()
-                       if e.get("state") == BILLED and e.get("doc_id"))
-        for doc_id in doc_ids:
-            owner = owners.setdefault(doc_id, agreement.entity_id)
-            if owner != agreement.entity_id:
-                conflicts.add(doc_id)
+    conflicts = _shared_documents(agreements)
+    failed, moved = [], []
     for proj in agreements:
         if not is_legacy(proj.state):
             continue
@@ -217,23 +238,38 @@ async def migrate_company(session: AsyncSession, company_id, *, force: bool = Fa
             async with session.begin_nested():
                 review = await _migrate_template(session, company_id, proj, conflicts)
         except Exception:
-            result["failed"] += 1
+            failed.append(f"{_ref(proj)}: {billing.not_moved(proj.state)}")
             log.exception("Could not move template %s onto a schedule", proj.entity_id)
             continue
         if review is not None:
-            result["migrated"] += 1
+            moved.append(proj.entity_id)
             result["review"] += int(review)
+    result["migrated"], result["failed"] = len(moved), len(failed)
+    if failed:
+        await billing.notify(session, company_id, "notice_schedule_not_moved", "/subscriptions?direction=sales",
+                              templates="; ".join(failed))
+    today = await company_today(session, company_id)
+    now = {p.entity_id: p for p in await billing.agreements(session, company_id)}
+    behind = [f"{_ref(now[eid])} ({len(due[1])})" for eid in moved
+              if (due := billing.due_periods(now[eid].state, today)) and len(due[1]) > 1]
+    if behind:
+        await billing.notify(session, company_id, "notice_back_periods", "/subscriptions?direction=sales",
+                              templates="; ".join(behind))
     problems = await check_template_schedule_integrity(session, company_id)
     for line in problems:
         log.error("Subscription schedule check: %s", line)
-    if result["failed"] or problems:
+    if problems:
         await notify_once(session, company_id, "system", t(f"{_NOTICE}_title", "en"), t(f"{_NOTICE}_body", "en"),
                           action_url="/subscriptions?direction=sales",
                           i18n={"title": f"{_NOTICE}_title", "body": f"{_NOTICE}_body"})
-    result["marked"] = not result["failed"] and not problems
+    result["marked"] = not failed and not problems
     if result["marked"] and not force:
         await conn.run_sync(lambda c: set_meta(c, marker, "done"))
     return result
+
+
+def _ref(proj: Projection) -> str:
+    return proj.state.get("ref_id") or proj.entity_id
 
 
 async def reconcile_company_schedules(*, session: AsyncSession, company_id) -> None:

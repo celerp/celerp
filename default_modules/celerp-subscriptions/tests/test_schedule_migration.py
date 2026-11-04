@@ -301,16 +301,16 @@ async def test_migration_missing_anchor_keeps_legacy_state_for_repair(session, a
 
     from celerp.models.notification import Notification
     from ui.i18n import t
-    title = t("subscriptions.notice_schedule_check_title", "en")
+    title = t("subscriptions.notice_schedule_not_moved_title", "en")
 
     async def notices():
-        return await session.scalar(select(func.count()).select_from(Notification).where(
+        return (await session.scalars(select(Notification.body).where(
             Notification.company_id == auth["company_id"], Notification.title == title,
-        ))
+        ))).all()
 
-    assert await notices() == 1
+    assert len(bodies := await notices()) == 1 and "no next run date or start date" in bodies[0], bodies
     await _migrate(session, auth["company_id"])
-    assert await notices() == 1
+    assert len(await notices()) == 1
 
 async def test_history_confirmation_refuses_another_agreements_document(client, session, auth, monkeypatch):
     _today(monkeypatch, "2026-03-15")

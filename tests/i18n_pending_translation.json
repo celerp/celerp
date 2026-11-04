@@ -34,6 +34,45 @@
       "params": [
         "date"
       ]
+    },
+    "subscriptions.err_not_moved": {
+      "en": "{ref} is not on a schedule yet, so it cannot bill: {reason}. Correct its schedule on this page and it moves onto one at once.",
+      "params": [
+        "reason",
+        "ref"
+      ]
+    },
+    "subscriptions.not_moved_pending": {
+      "en": "it moves onto a schedule the next time Celerp starts",
+      "params": []
+    },
+    "subscriptions.notice_schedule_not_moved_title": {
+      "en": "Some subscription templates are not on a schedule",
+      "params": []
+    },
+    "subscriptions.notice_schedule_not_moved_body": {
+      "en": "These templates could not be moved onto a schedule and do not bill until you correct their schedule on their page: {templates}.",
+      "params": [
+        "templates"
+      ]
+    },
+    "subscriptions.notice_back_periods_title": {
+      "en": "Some subscriptions have more than one period to bill",
+      "params": []
+    },
+    "subscriptions.notice_back_periods_body": {
+      "en": "The earlier release billed one overdue run at a time. This release bills each missed period separately, so these templates have more than one period due (count in brackets): {templates}. Skip any period you do not want to bill.",
+      "params": [
+        "templates"
+      ]
+    },
+    "subscriptions.skip_reason_paused_before_upgrade": {
+      "en": "Missed while paused before the upgrade",
+      "params": []
+    },
+    "subscriptions.resume_restarts_note": {
+      "en": "This was paused before the upgrade. Resume restarts it from today, as the earlier release did: the periods missed while paused are skipped, and each can be un-skipped.",
+      "params": []
     }
   }
 }

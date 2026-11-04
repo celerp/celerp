@@ -97,15 +97,20 @@ async def locked_agreement(session: AsyncSession, company_id, entity_id: str, *,
                            scheduled: bool = True) -> Projection:
     """The agreement under the company lock and its own row lock, as the previous writer
     committed it: every schedule operation reads and writes it under this lock. With
-    ``scheduled`` (every operation that reads the schedule), a template not yet moved onto
-    one is refused with a 409 naming it and why."""
+    ``scheduled`` (every operation that reads the schedule; pause and cancel do not), a
+    template not yet moved onto one is refused with a 409 naming it and why."""
     proj = (await lock_projections(session, company_id, [entity_id])).get(entity_id)
     if not proj or proj.state.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
         raise HTTPException(status_code=404, detail=t("subscriptions.err_not_found"))
     if scheduled and (reason := not_moved(proj.state)) is not None:
-        raise HTTPException(status_code=409, detail=t(
-            "subscriptions.err_not_moved", ref=proj.state.get("ref_id") or entity_id, reason=reason))
+        raise not_moved_refusal(proj.state, entity_id, reason)
     return proj
+
+
+def not_moved_refusal(state: dict, entity_id: str, reason: str) -> HTTPException:
+    """The 409 for a template not yet on a schedule, naming it and why."""
+    return HTTPException(status_code=409, detail=t(
+        "subscriptions.err_not_moved", ref=state.get("ref_id") or entity_id, reason=reason))
 
 
 def not_moved(state: dict) -> str | None:
@@ -317,7 +322,7 @@ async def require_history_document(session: AsyncSession, company_id, template_i
             raise HTTPException(status_code=409, detail=t("subscriptions.err_history_not_candidate"))
 
 
-def _period_row(schedule: Schedule, k: int) -> dict:
+def period_row(schedule: Schedule, k: int) -> dict:
     return {"period_index": k, "service_start": schedule.start(k).isoformat(),
             "service_end": schedule.service_end(k).isoformat(), "bill_date": schedule.bill_date(k).isoformat()}
 
@@ -348,7 +353,7 @@ async def period_list(session: AsyncSession, company_id, state: dict, today: dat
             if schedule.exists(k):
                 entry = schedule.periods.get(k) or {}
                 doc_id = entry.get("doc_id")
-                rows.append({**_period_row(schedule, k), "state": entry.get("state"), "doc_id": doc_id,
+                rows.append({**period_row(schedule, k), "state": entry.get("state"), "doc_id": doc_id,
                              "ref_id": await doc_ref(session, company_id, doc_id) if doc_id else None,
                              "reason": entry.get("reason"), "history": bool(entry.get("history"))})
             k -= 1
@@ -358,11 +363,11 @@ async def period_list(session: AsyncSession, company_id, state: dict, today: dat
     if (before is None and oldest_open is not None and oldest_open not in
             {r["period_index"] for r in rows} and schedule.bill_date(oldest_open) <= today):
         entry = schedule.periods.get(oldest_open) or {}
-        oldest_due_row = {**_period_row(schedule, oldest_open), "state": entry.get("state"),
+        oldest_due_row = {**period_row(schedule, oldest_open), "state": entry.get("state"),
                           "doc_id": entry.get("doc_id"), "ref_id": None,
                           "reason": entry.get("reason"), "history": bool(entry.get("history"))}
     review = [{"doc_id": r.get("doc_id"), "ref_id": await doc_ref(session, company_id, r.get("doc_id")),
-               "candidates": [_period_row(schedule, c) for c in r.get("candidates") or []]}
+               "candidates": [period_row(schedule, c) for c in r.get("candidates") or []]}
               for r in state.get("history_review") or []]
     set_aside = [{"doc_id": r.get("doc_id"), "ref_id": await doc_ref(session, company_id, r.get("doc_id"))}
                  for r in state.get("history_set_aside") or []]
@@ -388,7 +393,7 @@ async def due_preview(session: AsyncSession, company_id, today: date) -> dict:
             continue
         schedule, due = found
         if due:
-            items.append({"entity_id": row.entity_id, "periods": [_period_row(schedule, k) for k in due]})
+            items.append({"entity_id": row.entity_id, "periods": [period_row(schedule, k) for k in due]})
         elif (nxt := schedule.next_bill_date(floor=review_floor(row.state))) is not None:
             upcoming.append(nxt)
     return {"items": items, "total": len(items),
@@ -421,7 +426,7 @@ async def catch_up_preview(session: AsyncSession, company_id, today: date) -> li
         found = unattended_due(row.state, today)
         if found and outside_window(row.state, *found, today):
             schedule, due = found
-            items.append({"entity_id": row.entity_id, "periods": [_period_row(schedule, k) for k in due]})
+            items.append({"entity_id": row.entity_id, "periods": [period_row(schedule, k) for k in due]})
     return items
 
 
@@ -509,7 +514,7 @@ async def run_due(*, session: AsyncSession, company_id, today: date, budget: int
                             await write_agreement(session, company_id, row.entity_id, {
                                 "billing_failure": {"period_index": failed_period, "at": now_stamp()},
                             }, None)
-                            await _notify(session, company_id, "notice_billing_failed",
+                            await notify(session, company_id, "notice_billing_failed",
                                           "/subscriptions/summary")
                     except Exception:
                         log.exception("Recording failed billing of %s failed", row.entity_id)
@@ -518,9 +523,9 @@ async def run_due(*, session: AsyncSession, company_id, today: date, budget: int
             if send:
                 report.after_commit.append(_deliverer(company_id, row.entity_id, k))
     if report.done:
-        await _notify(session, company_id, "notice_billed", "/subscriptions/summary", day=today.isoformat())
+        await notify(session, company_id, "notice_billed", "/subscriptions/summary", day=today.isoformat())
     if held:
-        await _notify(session, company_id, "notice_catchup", "/subscriptions/catch-up", n=len(held), m=sum(held))
+        await notify(session, company_id, "notice_catchup", "/subscriptions/catch-up", n=len(held), m=sum(held))
     report.after_commit.append(_expire_attempts_for(company_id))
     return report
 
@@ -537,7 +542,7 @@ def _expire_attempts_for(company_id):
     return _run
 
 
-async def _notify(session, company_id, notice: str, url: str, **params) -> None:
+async def notify(session, company_id, notice: str, url: str, **params) -> None:
     """Tell the company once about ``notice`` with these figures; new figures tell it again."""
     from celerp.notifications.service import notify_once
 

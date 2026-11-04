@@ -140,14 +140,16 @@ async def test_a_template_that_cannot_move_is_refused_by_name_and_says_why(clien
     for path, body in (("/generate-due", {"request_key": str(uuid.uuid4())}),
                        ("/bill-early", {"request_key": str(uuid.uuid4())}),
                        ("/periods/0/skip", {"reason": "x"}), ("/periods/0/unskip", {}),
-                       ("/periods/-1/reopen", {}), ("/pause", {})):
+                       ("/periods/-1/reopen", {})):
         r = await client.post(_url(old, "custom_no_days", path), headers=h, json=body)
         assert r.status_code == 409 and ref in r.text and "two weeks" in r.text, (path, r.status_code, r.text)
+    # Pause and cancel need no schedule, so they stay open; anything else on the schedule waits.
     r = await client.patch(_url(old, "custom_no_days", "/schedule"), headers=h, json={"cancel_at_period_end": True})
     assert r.status_code == 409 and ref in r.text, r.text
     periods = await _periods(client, old, "custom_no_days")
     assert "two weeks" in periods["not_moved"], periods
-    assert "two weeks" in await _page(monkeypatch, old, "custom_no_days")
+    page = await _page(monkeypatch, old, "custom_no_days")
+    assert "two weeks" in page and "/schedule/custom_interval_days" in page and "/generate-due" not in page
     notices = await _notices(session, old)
     assert any(ref in n and "two weeks" in n for n in notices), notices
 
@@ -163,7 +165,9 @@ async def test_a_template_paused_on_2_8_0_restarts_from_the_resume_day(client, s
     on this release keeps its missed periods due."""
     old = await _upgrade(session, monkeypatch, "2026-11-04")
     h = old["headers"]
-    assert "2026-06-01" in await _page(monkeypatch, old, "paused_now"), "no note by Resume naming the skip"
+    from ui.i18n import t
+
+    assert t("subscriptions.resume_restarts_note") in await _page(monkeypatch, old, "paused_now")
     r = await client.post(_url(old, "paused_now", "/resume"), headers=h, json={})
     assert r.status_code == 200, r.text
     body = r.json()

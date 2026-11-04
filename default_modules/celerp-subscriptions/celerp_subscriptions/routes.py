@@ -23,7 +23,7 @@ from celerp.services.business_time import company_today
 from celerp.services.company_lock import locked_company
 from celerp.services.permissions import missing_permission, require_permission, role_has_permission
 from celerp_docs.doc_constants import NO_SEND_DOC_TYPES
-from celerp_subscriptions import billing, summary
+from celerp_subscriptions import billing, migration, summary
 from celerp_subscriptions.periods import BILLED, CLAIMED_STATES, FREQUENCIES, RELEASED, SKIPPED, TIMINGS, Schedule, UNRESOLVED
 from celerp_subscriptions.search import SUBSCRIPTION_DOC_TYPES, search_subscription_templates
 from ui.i18n import t
@@ -32,6 +32,8 @@ BATCH_CAP = 50
 GENERATION_MODES = frozenset({"manual_due"}) | billing.AUTO_MODES
 # Schedule terms that place the periods: fixed once any period is claimed.
 PLACING_FIELDS = ("anchor_date", "frequency", "custom_interval_days", "billing_timing")
+# What a template not yet on a schedule may change: the terms that let it move onto one.
+_MOVING_FIELDS = {"frequency", "custom_interval_days"}
 
 
 def next_bill_date(state: dict) -> str | None:
@@ -148,6 +150,22 @@ def _review_change(review: list[dict]) -> dict:
 async def _write(session, company_id, entity_id, changes: dict, user, *, drop: tuple[str, ...] = ()) -> None:
     await billing.write_agreement(session, company_id, entity_id, changes, user.id, drop=drop)
     await session.commit()
+
+
+async def _move_with(session, company_id, proj: Projection, sent: dict, user) -> dict:
+    """A template not yet on a schedule takes only its frequency and interval, and moves onto
+    a schedule with them at once; 409 naming it and why while it still cannot."""
+    if set(sent) - _MOVING_FIELDS:
+        raise billing.not_moved_refusal(proj.state, proj.entity_id, billing.not_moved(proj.state))
+    try:
+        async with session.begin_nested():
+            await billing.write_agreement(session, company_id, proj.entity_id, sent, user.id)
+            await migration.move_template(session, company_id, proj.entity_id)
+    except ValueError as exc:
+        raise billing.not_moved_refusal(proj.state, proj.entity_id, str(exc)) from exc
+    moved = await billing.locked_agreement(session, company_id, proj.entity_id)
+    await session.commit()
+    return {"ok": True, "next_bill_date": next_bill_date(moved.state)}
 
 
 def _build_router() -> APIRouter:
@@ -428,7 +446,9 @@ def _build_router() -> APIRouter:
         sent = body.model_dump(include=body.model_fields_set)
         company = await locked_company(session, company_id)
         settings = company.settings or {}
-        proj = await billing.locked_agreement(session, company_id, entity_id)
+        proj = await billing.locked_agreement(session, company_id, entity_id, scheduled=False)
+        if migration.is_legacy(proj.state):
+            return await _move_with(session, company_id, proj, sent, user)
         state = proj.state
         needed = []
         if sent.get("generation_mode") in billing.AUTO_MODES:
@@ -589,7 +609,7 @@ def _build_router() -> APIRouter:
         user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
-        proj = await billing.locked_agreement(session, company_id, entity_id)
+        proj = await billing.locked_agreement(session, company_id, entity_id, scheduled=False)
         if proj.state.get("status") != "active":
             raise HTTPException(status_code=409, detail=t("subscriptions.err_pause_not_active"))
         await _write(session, company_id, entity_id, {"status": "paused"}, user)
@@ -603,12 +623,32 @@ def _build_router() -> APIRouter:
         user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
-        """Resume billing. Periods missed while paused stay due: none is skipped."""
+        """Resume billing. Periods missed while paused stay due: none is skipped, unless the
+        template was paused on an earlier release, which restarted it from the resume day. Then
+        every open period that started on or before today is skipped with that reason (each
+        can be un-skipped), once."""
         proj = await billing.locked_agreement(session, company_id, entity_id)
-        if proj.state.get("status") != "paused":
+        state = proj.state
+        if state.get("status") != "paused":
             raise HTTPException(status_code=409, detail=t("subscriptions.err_resume_not_paused"))
-        await _write(session, company_id, entity_id, {"status": "active"}, user)
-        return {"ok": True, "next_bill_date": next_bill_date({**proj.state, "status": "active"})}
+        changes: dict = {"status": "active"}
+        skipped = []
+        if state.get("resume_restarts"):
+            schedule = Schedule.from_state(state)
+            today = await company_today(session, company_id)
+            periods = _periods(state)
+            k = schedule.oldest_open(floor=billing.review_floor(state))
+            while k is not None and schedule.exists(k) and schedule.start(k) <= today:
+                if schedule.is_open(k):
+                    periods[str(k)] = {"state": SKIPPED, "reason": t("subscriptions.skip_reason_paused_before_upgrade"),
+                                       "by": str(user.id), "at": billing.now_stamp(),
+                                       "release_count": (periods.get(str(k)) or {}).get("release_count", 0)}
+                    skipped.append(billing.period_row(schedule, k))
+                k += 1
+            changes["periods"] = periods
+        await _write(session, company_id, entity_id, changes, user,
+                     drop=("resume_restarts",) if "resume_restarts" in state else ())
+        return {"ok": True, "next_bill_date": next_bill_date({**state, **changes}), "skipped": skipped}
 
     @router.post("/{entity_id}/cancel")
     async def cancel_subscription(
@@ -618,7 +658,7 @@ def _build_router() -> APIRouter:
         user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
-        proj = await billing.locked_agreement(session, company_id, entity_id)
+        proj = await billing.locked_agreement(session, company_id, entity_id, scheduled=False)
         if proj.state.get("status") == "cancelled":
             raise HTTPException(status_code=409, detail=t("subscriptions.err_already_cancelled"))
         await _write(session, company_id, entity_id, {"status": "cancelled"}, user)

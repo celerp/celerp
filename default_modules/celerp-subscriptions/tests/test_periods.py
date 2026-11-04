@@ -107,12 +107,12 @@ def test_partial_final_period_preserves_exact_service_end_without_prorating():
 
 
 def test_term_end_truncates_displayed_and_issued_service_end():
-    from celerp_subscriptions.billing import _period_row
+    from celerp_subscriptions.billing import period_row
 
     schedule = _s(date(2026, 1, 1), term_end=date(2026, 2, 15))
     assert schedule.service_end(0) == date(2026, 1, 31)
     assert schedule.service_end(1) == date(2026, 2, 14)
-    assert _period_row(schedule, 1)["service_end"] == "2026-02-14"
+    assert period_row(schedule, 1)["service_end"] == "2026-02-14"
     assert schedule.bill_date(1) == date(2026, 2, 1)
     assert not schedule.exists(2)
 

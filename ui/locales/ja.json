@@ -7185,5 +7185,13 @@
   "subscriptions.err_period_void": "The document for this period, {ref}, is void. To bill the period again, use Reopen on its row in the periods list, then Generate due.",
   "subscriptions.period_already_billed": "Already billed on",
   "subscriptions.due_already": "Already billed before this run, so not billed again: {n}.",
-  "subscriptions.err_early_due": "A period is already due (bill date {date}). Use Generate due to bill it. Bill early only bills a period whose bill date has not come yet."
+  "subscriptions.err_early_due": "A period is already due (bill date {date}). Use Generate due to bill it. Bill early only bills a period whose bill date has not come yet.",
+  "subscriptions.err_not_moved": "{ref} is not on a schedule yet, so it cannot bill: {reason}. Correct its schedule on this page and it moves onto one at once.",
+  "subscriptions.not_moved_pending": "it moves onto a schedule the next time Celerp starts",
+  "subscriptions.notice_schedule_not_moved_title": "Some subscription templates are not on a schedule",
+  "subscriptions.notice_schedule_not_moved_body": "These templates could not be moved onto a schedule and do not bill until you correct their schedule on their page: {templates}.",
+  "subscriptions.notice_back_periods_title": "Some subscriptions have more than one period to bill",
+  "subscriptions.notice_back_periods_body": "The earlier release billed one overdue run at a time. This release bills each missed period separately, so these templates have more than one period due (count in brackets): {templates}. Skip any period you do not want to bill.",
+  "subscriptions.skip_reason_paused_before_upgrade": "Missed while paused before the upgrade",
+  "subscriptions.resume_restarts_note": "This was paused before the upgrade. Resume restarts it from today, as the earlier release did: the periods missed while paused are skipped, and each can be un-skipped."
 }
