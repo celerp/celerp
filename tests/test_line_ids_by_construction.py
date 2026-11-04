@@ -37,11 +37,12 @@ def _without_ids(value):
 async def _make_legacy(session, company_id, entity_id: str) -> None:
     """Store the record and the events behind it without line ids, as an older version wrote them."""
     session.expire_all()
+    proj = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    proj.state = _without_ids(proj.state)
+    await session.commit()
     for row in (await session.execute(select(LedgerEntry).where(
             LedgerEntry.company_id == company_id, LedgerEntry.entity_id == entity_id))).scalars():
         row.data = _without_ids(row.data)
-    proj = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    proj.state = _without_ids(proj.state)
     await session.commit()
 
 

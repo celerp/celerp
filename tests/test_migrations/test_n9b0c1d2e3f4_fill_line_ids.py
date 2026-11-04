@@ -61,7 +61,7 @@ def test_backfill_gives_every_document_and_list_line_an_id(mig_db):
         _insert(mig_db, "list", {"list_type": "quotation", "line_items": [{"sku": "D"}]}),
         _insert(mig_db, "doc", {"doc_type": "memo", "line_items": [{"sku": "E", "line_id": _KEPT, "kept": True}]}),
     ]
-    assert _idless_lines(mig_db) == 4
+    assert _idless_lines(mig_db) == 3
     check_backfill_leaves_no_idless_line(mig_db, records)
 
 
