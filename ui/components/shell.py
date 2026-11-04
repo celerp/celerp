@@ -167,7 +167,8 @@ function celerpLineSelection(rows) {
   return rows.map(function(cb) { return ['line_id', cb.getAttribute('data-line-id') || '']; });
 }
 // Select all for a line table: ticks or unticks every row, then calls ``onChange``. It shows
-// all, none or some (indeterminate) as rows are ticked one by one.
+// all, none or some (indeterminate) as rows are ticked one by one, and again when the rows
+// themselves are swapped (a scan re-renders the tbody unticked).
 function liSelectAll(table, sa, onChange) {
   if (!table || !sa) return;
   function boxes() { return table.querySelectorAll('tbody .li-select'); }
@@ -185,6 +186,7 @@ function liSelectAll(table, sa, onChange) {
   table.addEventListener('change', function(e) {
     if (e.target && e.target.classList.contains('li-select')) sync();
   });
+  new MutationObserver(sync).observe(table, {childList: true, subtree: true});
 }
 // Name the ticked rows an action left out, as 6 "GIA Certificate", in a notice that stays. rows
 // are their checkboxes; forms is {one, many}, each with {lines}. A row is numbered by its

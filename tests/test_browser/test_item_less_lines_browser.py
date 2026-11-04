@@ -199,6 +199,9 @@ def test_set_scanned_and_print_labels_name_skipped_rows(page, ui_server, api):
     lids = [li["line_id"] for li in api.get(f"/lists/{audit_id}").json()["line_items"]]
     assert sorted(_posted(sent.value, "line_id")) == sorted(lids)
     assert f'{gia_row} "GIA Certificate"' in _persistent_toast(page, "GIA Certificate")
+    # The rows come back unticked, and so does Select all.
+    assert page.evaluate("[...document.querySelectorAll('#line-body .li-select')].some(c => c.checked)") is False
+    assert page.evaluate("(s => [s.checked, s.indeterminate])(document.getElementById('li-select-all'))") == [False, False]
     scanned = [li for li in api.get(f"/lists/{audit_id}").json()["line_items"] if li.get("audited_at")]
     assert sorted(li["item_id"] for li in scanned) == sorted(s["entity_id"] for s in stones)
 
