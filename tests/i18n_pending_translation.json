@@ -115,6 +115,115 @@
     "subscriptions.period_send_pending": {
       "en": "Email not sent yet",
       "params": []
+    },
+    "subscriptions.schedule_heading": {
+      "en": "Schedule",
+      "params": []
+    },
+    "subscriptions.billing_timing": {
+      "en": "Bills",
+      "params": []
+    },
+    "subscriptions.timing_advance": {
+      "en": "In advance, at the start of each period",
+      "params": []
+    },
+    "subscriptions.timing_arrears": {
+      "en": "In arrears, after each period ends",
+      "params": []
+    },
+    "subscriptions.term_start": {
+      "en": "Start of term",
+      "params": []
+    },
+    "subscriptions.term_end": {
+      "en": "End of term",
+      "params": []
+    },
+    "subscriptions.stop_at_period_end": {
+      "en": "Stop at the end of the current period",
+      "params": []
+    },
+    "subscriptions.period_overdue": {
+      "en": "Overdue",
+      "params": []
+    },
+    "subscriptions.period_due": {
+      "en": "Due today",
+      "params": []
+    },
+    "subscriptions.period_upcoming": {
+      "en": "Upcoming",
+      "params": []
+    },
+    "subscriptions.period_voided": {
+      "en": "Document voided",
+      "params": []
+    },
+    "subscriptions.period_reopened": {
+      "en": "Reopened",
+      "params": []
+    },
+    "subscriptions.done_billed": {
+      "en": "Billed {ref} for {start} to {end}.",
+      "params": [
+        "end",
+        "ref",
+        "start"
+      ]
+    },
+    "subscriptions.done_already_billed": {
+      "en": "{ref} already bills {start} to {end}, so nothing new was billed.",
+      "params": [
+        "end",
+        "ref",
+        "start"
+      ]
+    },
+    "subscriptions.done_activated": {
+      "en": "Agreement activated.",
+      "params": []
+    },
+    "subscriptions.done_paused": {
+      "en": "Agreement paused. Nothing bills until you resume it.",
+      "params": []
+    },
+    "subscriptions.done_resumed": {
+      "en": "Agreement resumed.",
+      "params": []
+    },
+    "subscriptions.done_cancelled": {
+      "en": "Agreement cancelled. Nothing more bills.",
+      "params": []
+    },
+    "subscriptions.done_skipped": {
+      "en": "Skipped {start} to {end}.",
+      "params": [
+        "end",
+        "start"
+      ]
+    },
+    "subscriptions.done_unskipped": {
+      "en": "{start} to {end} is open to bill again.",
+      "params": [
+        "end",
+        "start"
+      ]
+    },
+    "subscriptions.done_reopened": {
+      "en": "Reopened {start} to {end}. It can be billed again.",
+      "params": [
+        "end",
+        "start"
+      ]
+    },
+    "subscriptions.err_skip_reason": {
+      "en": "Enter a reason for skipping this period.",
+      "params": []
+    },
+    "subscriptions.err_stop_draft": {
+      "en": "A draft has no current period yet. Activate it first, or set an end of term.",
+      "params": []
     }
   }
 }

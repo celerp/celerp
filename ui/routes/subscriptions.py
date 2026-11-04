@@ -24,14 +24,14 @@ from celerp.services.record_quantities import template_label
 from ui.components.activity import format_timestamp
 from ui.components.icons import import_icon
 from ui.components.operation_key import FIELD, operation_key_vals, operation_key_input, required_operation_key, submitted_operation_key
-from ui.api_client import APIError
-from ui.components.shell import base_shell, page_header
+from ui.api_client import APIError, error_message
+from ui.components.shell import base_shell, page_header, toast_header
 from ui.components.table import breadcrumbs, display_enum, empty_state_cta, fmt_money, pagination, per_page_value, search_bar, status_cards
 from ui.config import get_token as _token, get_role as _get_role
 from ui.routes.documents import _action_error
 from ui.routes.reports import _get_company
 from ui.routes.settings import _check_permission
-from ui.i18n import refusal_text, t
+from ui.i18n import t
 
 logger = logging.getLogger(__name__)
 
@@ -47,9 +47,15 @@ def _signed_out(e: APIError) -> None:
 def _refused(e: APIError):
     """The API's refusal of an action, shown where the user is."""
     _signed_out(e)
-    return _action_error(refusal_text(e.data or e.detail))
+    return _action_error(e)
+
+
+def _done(back: str, message: str) -> Response:
+    """An action that worked: go back to *back* and say what it did there."""
+    return Response(status_code=204, headers={"HX-Redirect": back, **toast_header(message, "success")})
 
 _FREQUENCIES = ["weekly", "biweekly", "monthly", "quarterly", "annually", "custom"]
+_TIMINGS = ("advance", "arrears")
 
 _STATUS_CSS = {
     "active": "badge--active",
@@ -61,8 +67,21 @@ _STATUS_CSS = {
 # Billing actions carry the operation key as the request key, so a repeated click bills once.
 _BILLING_ACTIONS = ("generate-due", "bill-early")
 # The schedule fields the detail page edits, each with how its submitted text is read.
-_SCHEDULE_EDITS = {"frequency": str, "anchor_date": str, "custom_interval_days": int,
+_SCHEDULE_EDITS = {"frequency": str, "anchor_date": str, "custom_interval_days": int, "billing_timing": str,
+                   "term_start": str, "term_end": str, "cancel_at_period_end": lambda v: v == "true",
                    "generation_mode": str, "auto_send": lambda v: v == "true", "catchup_periods": int}
+# What a schedule value that does not read as its type is told.
+_FIELD_ERRORS = {"custom_interval_days": "subscriptions.err_custom_days",
+                 "catchup_periods": "subscriptions.err_catchup_window"}
+# What each lifecycle action says it did; a billing action names its document and period.
+_ACTION_DONE = {"activate": "subscriptions.done_activated", "pause": "subscriptions.done_paused",
+                "resume": "subscriptions.done_resumed", "cancel": "subscriptions.done_cancelled"}
+# What each period action says it did, naming the period's dates. Send goes back to the
+# summary, whose outcome row says how the send went.
+_PERIOD_DONE = {"skip": "subscriptions.done_skipped", "unskip": "subscriptions.done_unskipped",
+                "reopen": "subscriptions.done_reopened"}
+# How the Periods table marks each period status; one not listed is plain text.
+_PERIOD_BADGE = {"overdue": "badge--overdue", "due": "badge--warning", "voided": "badge--void"}
 # Edits that change what the Billing section and the header badge show, so both are drawn again.
 _BILLING_FIELDS = ("generation_mode", "auto_send", "catchup_periods")
 _MODES = ("manual_due", "auto_invoice")
@@ -166,63 +185,65 @@ def _review_banner(items: list[dict], direction: str, review: bool) -> FT | str:
 # Subscription action bar (replaces standard doc Finalize/Send/Mark-as-Sent)
 # ---------------------------------------------------------------------------
 
-def _schedule_inputs(entity_id: str, sub: dict):
-    """Frequency and first bill date controls, shared between draft and paused states. Each
-    change goes through the agreement's schedule, which refuses one that would move a
-    period already billed or skipped."""
+def _schedule_section(entity_id: str, sub: dict) -> FT:
+    """When the agreement bills: its frequency, first bill date, timing, term and whether it
+    stops at the end of the current period. Each change goes through the agreement's schedule,
+    which refuses one that would move a period already billed or skipped, and answers with the
+    section as saved."""
+    base = f"/subscriptions/{entity_id}/schedule"
+    attrs = {"hx_swap": "outerHTML", "hx_target": "#sub-schedule", "hx_trigger": "change",
+             "cls": "form-input form-input--inline"}
     freq = sub.get("frequency") or "monthly"
-    first_bill = sub.get("anchor_date") or ""
-    interval = sub.get("custom_interval_days") or ""
-    freq_select = Select(
-        *[Option(display_enum(f, "subscription_frequency"), value=f, selected=(f == freq)) for f in _FREQUENCIES],
-        name="value",
-        hx_patch=f"/subscriptions/{entity_id}/schedule/frequency",
-        hx_swap="none",
-        hx_trigger="change",
-        title=t("th.frequency"),
-        cls="form-input form-input--inline",
-        style="width:130px",
+    interval = str(sub.get("custom_interval_days") or "")
+    timing = sub.get("billing_timing") or "advance"
+    stops = sub.get("cancel_at_period_end") is not None
+
+    def _date(label: str, field: str) -> FT:
+        return Label(t(label), Input(type="date", name="value", value=sub.get(field) or "",
+                                     hx_patch=f"{base}/{field}", **attrs))
+
+    return Div(
+        H3(t("subscriptions.schedule_heading")),
+        Div(
+            # Choosing Custom shows the days box; the days entered choose it.
+            Label(t("th.frequency"),
+                  Select(*[Option(display_enum(f, "subscription_frequency"), value=f, selected=(f == freq))
+                           for f in _FREQUENCIES],
+                         name="value", hx_patch=f"{base}/frequency", data_days=interval,
+                         onchange="document.getElementById('sub-custom-days').style.display ="
+                                  " this.value === 'custom' ? '' : 'none'",
+                         **{**attrs, "hx_trigger": "change[this.value!=='custom' || this.dataset.days]"})),
+            Label(t("subscriptions.custom_interval_title"),
+                  Input(type="number", name="value", value=interval, min="1", hx_patch=f"{base}/custom_interval_days",
+                        style="width:80px", **attrs),
+                  id="sub-custom-days", style="" if freq == "custom" else "display:none"),
+            _date("label.first_bill_date", "anchor_date"),
+            Label(t("subscriptions.billing_timing"),
+                  Select(*[Option(t(f"subscriptions.timing_{m}"), value=m, selected=(m == timing)) for m in _TIMINGS],
+                         name="value", hx_patch=f"{base}/billing_timing", **attrs)),
+            _date("subscriptions.term_start", "term_start"),
+            _date("subscriptions.term_end", "term_end"),
+            Label(t("subscriptions.stop_at_period_end"),
+                  Select(Option(t("settings.no"), value="false", selected=not stops),
+                         Option(t("settings.yes"), value="true", selected=stops),
+                         name="value", hx_patch=f"{base}/cancel_at_period_end", **attrs)),
+            style="display:flex;gap:1rem;flex-wrap:wrap;align-items:center",
+        ),
+        id="sub-schedule", cls="mt-lg",
     )
-    start_input = Input(
-        type="date", name="value", value=first_bill,
-        hx_patch=f"/subscriptions/{entity_id}/schedule/anchor_date",
-        hx_swap="none",
-        hx_trigger="change",
-        title=t("label.first_bill_date"),
-        cls="form-input form-input--inline",
-        style="width:145px",
-    )
-    custom_input = Input(
-        type="number", name="value", value=str(interval) if interval else "",
-        placeholder=t("label.days"), min="1",
-        hx_patch=f"/subscriptions/{entity_id}/schedule/custom_interval_days",
-        hx_swap="none",
-        hx_trigger="change",
-        title=t("subscriptions.custom_interval_title"),
-        cls="form-input form-input--inline",
-        style=f"width:80px;{'display:none' if freq != 'custom' else ''}",
-        id="sub-custom-days",
-    )
-    toggle_js = Script("""
-(function(){
-  var sel = document.querySelector('select[hx-patch$="/schedule/frequency"]');
-  var inp = document.getElementById('sub-custom-days');
-  if (sel && inp) {
-    sel.addEventListener('change', function(){ inp.style.display = sel.value === 'custom' ? '' : 'none'; });
-  }
-})();
-""")
-    return [freq_select, start_input, custom_input, toggle_js]
 
 
-def _bill_date_note(sub: dict, next_bill: str | None) -> FT | str:
-    """Shows the first bill date until a period is billed, then the next bill date."""
+def _bill_date_note(sub: dict, next_bill: str | None, oob: bool = False) -> FT:
+    """Shows the first bill date until a period is billed, then the next bill date. ``oob``
+    redraws the one already in the header."""
     billed = any((e or {}).get("state") == "billed" for e in (sub.get("periods") or {}).values())
+    attrs = {"id": "sub-bill-note", "cls": "text-muted", "style": "font-size:.85em",
+             **({"hx_swap_oob": "true"} if oob else {})}
     if not billed and (first := next_bill or sub.get("anchor_date")):
-        return Span(t("subscriptions.first_bill_on", date=first), cls="text-muted", style="font-size:.85em")
+        return Span(t("subscriptions.first_bill_on", date=first), **attrs)
     if next_bill:
-        return Span(t("subscriptions.next_bill_on", date=next_bill), cls="text-muted", style="font-size:.85em")
-    return ""
+        return Span(t("subscriptions.next_bill_on", date=next_bill), **attrs)
+    return Span(**attrs)
 
 
 def _pause_button(entity_id: str):
@@ -237,31 +258,32 @@ def _sub_action_controls(entity_id: str, sub: dict, next_bill: str | None = None
                          period_index: int | None = None) -> tuple[list, list]:
     """Return (left_actions, right_actions) for the subscription detail page.
 
-    Draft:   left=[Frequency, FirstBill, CustomDays, Activate, note]      right=[]
+    Draft:   left=[Activate, note]                                        right=[]
     Active:  left=[badge, GenerateDue, BillEarly, note]                   right=[Pause, Cancel]
-    Paused:  left=[badge, Frequency, FirstBill, CustomDays, note]         right=[restart note, Resume, Cancel]
+    Paused:  left=[badge, note]                                           right=[restart note, Resume, Cancel]
     Cancelled: left=[badge]                                               right=[]
-    Not on a schedule yet: left=[badge, why, Frequency, CustomDays]       right=[Pause, Cancel]
+    Not on a schedule yet: left=[badge, why]                              right=[Pause, Cancel]
+
+    The schedule itself is set in the Schedule section below the document.
     """
     status = sub.get("status", "draft")
     note = _bill_date_note(sub, next_bill)
     if sub.get("not_moved") and status != "draft":
-        # A template from an earlier release that is not on a schedule yet: say why, and offer
-        # the frequency and interval that move it onto one.
-        freq, _, custom, toggle = _schedule_inputs(entity_id, sub)
+        # A template from an earlier release that is not on a schedule yet: say why. The
+        # Schedule section's frequency and interval move it onto one.
         warning = Span(t("subscriptions.err_not_moved", ref=sub.get("ref_id") or entity_id, reason=sub["not_moved"]),
                        cls="flash flash--warning")
         stops = [_pause_button(entity_id)] if status == "active" else []
         if status != "cancelled":
             stops.append(_cancel_button(entity_id))
-        return [_status_badge(status), warning, freq, custom, toggle], stops
+        return [_status_badge(status), warning], stops
 
     def _bill_vals():
         fields = {"period_index": period_index} if period_index is not None else {}
         return operation_key_vals(**fields)
 
     if status == "draft":
-        return _schedule_inputs(entity_id, sub) + [
+        return [
             Button(t("btn.activate"), cls="btn btn--primary", hx_post=f"/subscriptions/{entity_id}/activate",
                    hx_swap="none", title=t("subscriptions.activate_title")),
             note,
@@ -279,8 +301,6 @@ def _sub_action_controls(entity_id: str, sub: dict, next_bill: str | None = None
         ])
         right.append(_pause_button(entity_id))
     elif status == "paused":
-        # Allow editing schedule while paused
-        left.extend(_schedule_inputs(entity_id, sub))
         if sub.get("resume_restarts"):
             right.append(Span(t("subscriptions.resume_restarts_note"), cls="text-muted", style="font-size:.85em"))
         right.append(
@@ -299,9 +319,6 @@ def _sub_action_controls(entity_id: str, sub: dict, next_bill: str | None = None
         )
 
     return left, right
-
-
-_PERIOD_STATE_KEY = {"billed": "billed", "skipped": "skipped", "unresolved": "unresolved"}
 
 
 def _period_actions(entity_id: str, row: dict) -> FT:
@@ -329,16 +346,22 @@ def _period_actions(entity_id: str, row: dict) -> FT:
     )
 
 
-def _periods_table(entity_id: str, rows: list[dict], *, oldest_due_row: dict | None = None,
-                   older_before: int | None = None, historical_page: bool = False) -> FT:
-    """The agreement's periods, newest first: dates, state (with an email still waiting to go
-    out), the document that billed it."""
+def _periods_table(entity_id: str, schedule: dict, *, historical_page: bool = False, oob: bool = False) -> FT:
+    """The agreement's periods (``schedule`` is the API's period list), newest first: dates,
+    status (with a reopened period and an email still waiting to go out marked), the document
+    that billed it. ``oob`` redraws the one already on the page."""
+    rows, oldest_due_row = schedule.get("rows") or [], schedule.get("oldest_due_row")
+    older_before = schedule.get("older_before")
+    attrs = {"id": "sub-periods", "cls": "mt-lg", **({"hx_swap_oob": "true"} if oob else {})}
     if not rows and oldest_due_row is None and not historical_page:
-        return ""
+        return Div(**attrs)
 
     def _row(r: dict) -> FT:
-        state = r.get("state")
-        label = t(f"subscriptions.period_{_PERIOD_STATE_KEY.get(state, 'open')}")
+        status = r["status"]
+        text = t(f"subscriptions.period_{status}")
+        label = Span(Span(text, cls=f"badge {_PERIOD_BADGE[status]}") if status in _PERIOD_BADGE else text)
+        if r.get("reopened"):
+            label = Span(label, " ", Span(t("subscriptions.period_reopened"), cls="badge badge--draft"))
         if r.get("send") == "pending":
             label = Span(label, " ", Span(t("subscriptions.period_send_pending"), cls="badge badge--warning"))
         doc = A(r["ref_id"], href=f"/docs/{r['doc_id']}") if r.get("doc_id") else (r.get("reason") or "--")
@@ -360,7 +383,7 @@ def _periods_table(entity_id: str, rows: list[dict], *, oldest_due_row: dict | N
                  href=f"/subscriptions/{entity_id}?period_before={older_before}")]
               if older_before is not None else []),
             cls="form-actions"),
-        id="sub-periods", cls="mt-lg",
+        **attrs,
     )
 
 
@@ -628,13 +651,13 @@ async def _held_and_unread(token: str) -> tuple[list[dict], dict, list[str]]:
     except APIError as exc:
         _signed_out(exc)
         catch_up = []
-        errors.append(refusal_text(exc.data or exc.detail))
+        errors.append(error_message(exc))
     try:
         summary = await api.subscriptions_summary(token)
     except APIError as exc:
         _signed_out(exc)
         summary = {}
-        errors.append(refusal_text(exc.data or exc.detail))
+        errors.append(error_message(exc))
     return catch_up, summary, errors
 
 
@@ -674,7 +697,7 @@ async def _load_error_page(request: Request, title: str, exc: APIError, nav: str
     _signed_out(exc)
     return await base_shell(
         page_header(title),
-        Div(P(refusal_text(exc.data or exc.detail), cls="text-danger"), cls="settings-card"),
+        Div(P(error_message(exc), cls="text-danger"), cls="settings-card"),
         title=title, request=request, nav_active=nav,
     )
 
@@ -760,7 +783,7 @@ def setup_routes(app) -> None:
                         results.append({**item, "ok": True})
                     except APIError as e:
                         _signed_out(e)
-                        results.append({**item, "ok": False, "error": refusal_text(e.data or e.detail)})
+                        results.append({**item, "ok": False, "error": error_message(e)})
             items = (await api.subscriptions_catch_up(token)).get("items") or []
             subs = await _agreements(token)
         except APIError as e:
@@ -888,7 +911,7 @@ def setup_routes(app) -> None:
             items = await _all_agreements(token, direction, review=review)
         except APIError as exc:
             _signed_out(exc)
-            return Div(refusal_text(exc.data or exc.detail), id="sub-table", cls="flash flash--warning")
+            return Div(error_message(exc), id="sub-table", cls="flash flash--warning")
         if status:
             items = [i for i in items if i.get("status") == status]
         else:
@@ -1019,11 +1042,10 @@ def setup_routes(app) -> None:
                 extra_right_actions=_sub_right_actions,
                 suppress_pdf=True,
             ),
+            _schedule_section(entity_id, doc) if status != "cancelled" else "",
             _billing_section(entity_id, doc),
             _history_review(entity_id, schedule.get("review") or [], schedule.get("set_aside") or []),
-            _periods_table(entity_id, schedule.get("rows") or [],
-                           oldest_due_row=schedule.get("oldest_due_row"),
-                           older_before=schedule.get("older_before"), historical_page=period_before is not None),
+            _periods_table(entity_id, schedule, historical_page=period_before is not None),
             title=f"{type_label} {ref} - Celerp",
             nav_active="subscriptions_sales" if direction == "sales" else "subscriptions_purchasing",
             request=request,
@@ -1047,10 +1069,15 @@ def setup_routes(app) -> None:
             except ValueError:
                 return _action_error(t("subscriptions.err_early_not_next"))
         try:
-            await api.subscription_action(token, entity_id, action, body)
+            done = await api.subscription_action(token, entity_id, action, body)
         except APIError as e:
             return _refused(e)
-        return Response(status_code=204, headers={"HX-Redirect": f"/subscriptions/{entity_id}"})
+        if action in _BILLING_ACTIONS:
+            message = t("subscriptions.done_already_billed" if done.get("already_billed") else "subscriptions.done_billed",
+                        ref=done.get("ref_id") or "", start=done["service_start"], end=done["service_end"])
+        else:
+            message = t(_ACTION_DONE[action])
+        return _done(f"/subscriptions/{entity_id}", message)
 
     @app.post("/subscriptions/{entity_id}/periods/{k}/{action}")
     async def subscription_period_ui(request: Request, entity_id: str, k: int, action: str):
@@ -1062,12 +1089,15 @@ def setup_routes(app) -> None:
         form = await request.form()
         reason = str(form.get("reason", "")).strip()
         try:
-            await api.subscription_period_action(token, entity_id, k, action,
-                                                 {"reason": reason} if action == "skip" else None)
+            done = await api.subscription_period_action(token, entity_id, k, action,
+                                                        {"reason": reason} if action == "skip" else None)
         except APIError as e:
             return _refused(e)
         back = "/subscriptions/summary" if form.get("back") == "summary" else f"/subscriptions/{entity_id}"
-        return Response(status_code=204, headers={"HX-Redirect": back})
+        if action not in _PERIOD_DONE:
+            return Response(status_code=204, headers={"HX-Redirect": back})
+        period = done["period"]
+        return _done(back, t(_PERIOD_DONE[action], start=period["service_start"], end=period["service_end"]))
 
     @app.post("/subscriptions/{entity_id}/history/{doc_id}/{action}")
     async def subscription_history_ui(request: Request, entity_id: str, doc_id: str, action: str):
@@ -1096,16 +1126,17 @@ def setup_routes(app) -> None:
         raw = str((await request.form()).get("value", "")).strip()
         try:
             value = _SCHEDULE_EDITS[field](raw) if raw else None
-            await api.update_subscription_schedule(token, entity_id, {field: value})
         except ValueError:
-            return _action_error(t("subscriptions.err_custom_days" if field == "custom_interval_days"
-                                   else "subscriptions.err_catchup_window"))
-        except APIError as e:
-            return _refused(e)
-        if field not in _BILLING_FIELDS:
-            return Response(status_code=204)
+            return _action_error(t(_FIELD_ERRORS[field]))
+        # The days box is the custom frequency: entering days chooses it.
+        changes = {field: value, **({"frequency": "custom"} if field == "custom_interval_days" else {})}
         try:
+            await api.update_subscription_schedule(token, entity_id, changes)
             sub = await api.get_subscription(token, entity_id)
+            if field in _BILLING_FIELDS:
+                return _billing_section(entity_id, sub), _auto_badge(sub, oob=True)
+            schedule = await api.get_subscription_periods(token, entity_id)
         except APIError as e:
             return _refused(e)
-        return _billing_section(entity_id, sub), _auto_badge(sub, oob=True)
+        return (_schedule_section(entity_id, sub), _bill_date_note(sub, schedule.get("next_bill_date"), oob=True),
+                _periods_table(entity_id, schedule, oob=True))

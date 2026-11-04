@@ -65,14 +65,7 @@ class BulkBody(BaseModel):
 
 
 class SkipBody(BaseModel):
-    reason: str = Field(..., max_length=500)
-
-    @field_validator("reason")
-    @classmethod
-    def _stated(cls, v: str) -> str:
-        if not v.strip():
-            raise ValueError("A reason is required")
-        return v.strip()
+    reason: str = Field("", max_length=500)
 
 
 class ConfirmBody(BaseModel):
@@ -91,7 +84,7 @@ class ScheduleBody(BaseModel):
     term_start: date | None = None
     term_end: date | None = None
     cancel_at_period_end: bool | None = None
-    catchup_periods: int | None = Field(None, ge=0, le=billing.CATCHUP_CAP)
+    catchup_periods: int | None = None
     generation_mode: str | None = None
     auto_send: bool | None = None
 
@@ -126,6 +119,11 @@ class ScheduleBody(BaseModel):
 
 def _periods(state: dict) -> dict[str, dict]:
     return billing.periods_of(state)
+
+
+def _period_answer(state: dict, k: int) -> dict:
+    """What a period action answers: the period's dates, so the caller can name them."""
+    return {"ok": True, "period": billing.period_row(Schedule.from_state(state), k)}
 
 
 async def _refuse_claimed(session, company_id, entry: dict) -> None:
@@ -360,20 +358,23 @@ def _build_router() -> APIRouter:
         session: AsyncSession = Depends(get_session),
     ) -> dict:
         """Record that period ``k`` is not billed, and why."""
+        reason = body.reason.strip()
+        if not reason:
+            raise HTTPException(status_code=422, detail=t("subscriptions.err_skip_reason"))
         proj = await billing.locked_agreement(session, company_id, entity_id)
         periods = _periods(proj.state)
         entry = periods.get(str(k)) or {}
         await _refuse_claimed(session, company_id, entry)
         if entry.get("state") == SKIPPED:
-            return {"ok": True}
+            return _period_answer(proj.state, k)
         if entry.get("state") == UNRESOLVED:
             raise HTTPException(status_code=409, detail=t("subscriptions.err_period_in_review"))
         if not Schedule.from_state(proj.state).exists(k):
             raise HTTPException(status_code=409, detail=t("subscriptions.err_period_missing"))
-        periods[str(k)] = {"state": SKIPPED, "reason": body.reason, "by": str(user.id), "at": billing.now_stamp(),
+        periods[str(k)] = {"state": SKIPPED, "reason": reason, "by": str(user.id), "at": billing.now_stamp(),
                            "release_count": entry.get("release_count", 0)}
         await _write(session, company_id, entity_id, {"periods": periods}, user)
-        return {"ok": True}
+        return _period_answer(proj.state, k)
 
     async def _hand_back(entity_id: str, k: int, company_id, user, session, *, after_void: bool) -> dict:
         proj = await billing.locked_agreement(session, company_id, entity_id)
@@ -386,13 +387,13 @@ def _build_router() -> APIRouter:
                 await _refuse_claimed(session, company_id, entry)
             release += 1  # the next document for this period takes a new claim key
         elif entry.get("state") != SKIPPED:
-            return {"ok": True}
+            return _period_answer(proj.state, k)
         periods[str(k)] = {"state": RELEASED, "release_count": release, "by": str(user.id), "at": billing.now_stamp()}
         await billing.write_agreement(session, company_id, entity_id, {"periods": periods}, user.id)
         if entry.get("state") == BILLED:
             await billing.discard_email_attempts(session, company_id, entry["doc_id"])
         await session.commit()
-        return {"ok": True}
+        return _period_answer(proj.state, k)
 
     @router.post("/{entity_id}/periods/{k}/unskip")
     async def unskip_period(
@@ -460,6 +461,8 @@ def _build_router() -> APIRouter:
                 if not role_has_permission(settings, role, permission):
                     raise missing_permission(permission)
         changes = {f: (v.isoformat() if isinstance(v, date) else v) for f, v in sent.items()}
+        if "catchup_periods" in changes and not 0 <= changes["catchup_periods"] <= billing.CATCHUP_CAP:
+            raise HTTPException(status_code=422, detail=t("subscriptions.err_catchup_window"))
         recorded = [int(k) for k in (state.get("periods") or {})]
         claimed = [int(k) for k, e in (state.get("periods") or {}).items() if e.get("state") in CLAIMED_STATES]
         if (recorded or state.get("history_review") or state.get("history_set_aside")) and any(
@@ -468,14 +471,19 @@ def _build_router() -> APIRouter:
             raise HTTPException(status_code=409, detail=t("subscriptions.err_schedule_claimed"))
         if sent.get("auto_send") and billing.doc_kind(state) in NO_SEND_DOC_TYPES:
             raise HTTPException(status_code=422, detail=t("subscriptions.err_send_purchase"))
-        if "cancel_at_period_end" in changes:
-            # Stored as the last period kept, so the end is fixed when it is first chosen (choosing
-            # it again keeps it) and undone by clearing it.
+        if changes.get("cancel_at_period_end"):
+            # Stored as the last period kept: the current one, or a later one already billed or
+            # skipped, so nothing recorded falls outside it. Fixed when first chosen (choosing it
+            # again keeps it) and undone by clearing it. A draft has no current period to stop at.
+            if state.get("status") == "draft":
+                raise HTTPException(status_code=409, detail=t("subscriptions.err_stop_draft"))
             chosen = state.get("cancel_at_period_end")
-            changes["cancel_at_period_end"] = (
-                (chosen if chosen is not None
-                 else Schedule.from_state(state).current(await company_today(session, company_id)))
-                if changes["cancel_at_period_end"] else None)
+            if chosen is None:
+                today = await company_today(session, company_id)
+                chosen = max([Schedule.from_state(state).current(today), *recorded])
+            changes["cancel_at_period_end"] = chosen
+        elif "cancel_at_period_end" in changes:
+            changes["cancel_at_period_end"] = None
         merged = {**state, **changes}
         try:
             schedule = Schedule.from_state(merged) if merged.get("anchor_date") else None

@@ -109,9 +109,9 @@ class TestSubscriptionsUI:
         ui_client.cookies.update(_authed())
         due = {"period_index": 0, "service_start": "2026-01-01",
                "service_end": "2026-01-31", "bill_date": "2026-01-01",
-               "state": None, "doc_id": None}
+               "state": None, "doc_id": None, "status": "overdue", "reopened": False}
         recent = {**due, "period_index": 74, "service_start": "2032-03-01",
-                  "service_end": "2032-03-31", "bill_date": "2032-03-01"}
+                  "service_end": "2032-03-31", "bill_date": "2032-03-01", "status": "upcoming"}
         schedule = {"next_bill_date": "2026-01-01", "oldest_open_index": 0,
                     "rows": [recent], "oldest_due_row": due, "older_before": 74}
         periods = AsyncMock(return_value=schedule)
@@ -407,7 +407,9 @@ async def test_api_client_batches_large_due_selection(monkeypatch):
 @pytest.mark.asyncio
 async def test_ui_posts_the_original_period_with_a_request_key(ui_client):
     ui_client.cookies.update(_authed())
-    with patch("ui.api_client.subscription_action", new=AsyncMock(return_value={})) as action:
+    billed = {"doc_id": "doc:1", "ref_id": "INV-1", "period_index": 0, "service_start": "2026-01-01",
+              "service_end": "2026-01-31", "bill_date": "2026-01-01", "already_billed": False}
+    with patch("ui.api_client.subscription_action", new=AsyncMock(return_value=billed)) as action:
         r = await ui_client.post("/subscriptions/sub-001/generate-due",
                                  data={"idempotency_key": "user-click", "period_index": "0"})
     assert r.status_code == 204

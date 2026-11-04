@@ -11,7 +11,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse
 
 import ui.api_client as api
-from ui.api_client import APIError
+from ui.api_client import APIError, error_message
 import uuid
 
 from ui.components.operation_key import (
@@ -869,7 +869,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return P(t("error.session_expired"), cls="cell-error")
-            refusal, key = refusal_text(e.data or e.detail), kept_operation_key(form, e) or uuid.uuid4().hex
+            refusal, key = error_message(e), kept_operation_key(form, e) or uuid.uuid4().hex
         try:
             needs, accounts = await _reconcile_context(token, run_id)
         except APIError:
@@ -891,7 +891,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return P(t("error.session_expired"), cls="cell-error")
-            refusal, kind = refusal_text(e.data or e.detail), "error"
+            refusal, kind = error_message(e), "error"
             key = kept_operation_key(form, e) or uuid.uuid4().hex
         try:
             needs, accounts = await _reconcile_context(token, run_id)
@@ -952,7 +952,7 @@ def setup_routes(app):
             except APIError as e:
                 if e.status == 401:
                     return P(t("error.session_expired"), cls="cell-error")
-                refused = refusal_text(e.data or e.detail)  # e.g. the run closed meanwhile: say so
+                refused = error_message(e)  # e.g. the run closed meanwhile: say so
         table = await _incomplete_runs_table(token)
         return HTMLResponse(to_xml(table), headers=toast_header(refused, "error")) if refused else table
 
