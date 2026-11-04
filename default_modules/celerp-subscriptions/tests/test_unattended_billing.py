@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import pytest
 
+from celerp.services.email import EmailResult
+from ui.i18n import t
+
 from agreement_kit import (
     agreement, billed_docs, company_id, contact, freeze_day, member, register, revoke, schedule,
     summary, template, tick,
@@ -18,10 +21,13 @@ from agreement_kit import (
 pytestmark = pytest.mark.asyncio
 
 
+_REFUSED = EmailResult(False, "550 mailbox unavailable", reason="email.err_smtp_refused")
+
+
 class _Mail:
     """Stands in for the email transport: records each send and answers ``result``."""
 
-    def __init__(self, result=(True, "accepted")):
+    def __init__(self, result=EmailResult(True, "accepted")):
         self.result, self.sent, self.operation_ids = result, [], []
 
     async def __call__(self, to, subject, body_html, body_text="", **kwargs):
@@ -130,17 +136,17 @@ async def test_email_failure_keeps_invoice_and_shows_retry(client, session, monk
     cid = await company_id(client, hd)
     eid = await _auto(client, hd, start="2026-07-01", send=True,
                       contact_id=await contact(client, hd, "member@example.test"))
-    mail.result = (False, "mailbox unavailable")
+    mail.result = _REFUSED
     await tick(session, cid, "2026-07-01")
     [doc] = await billed_docs(session, eid)
     assert doc["status"] == "final"
     report = await summary(client, hd)
     assert report["counts"]["generated"] == 1 and report["counts"]["send_failed"] == 1
     row = next(r for r in report["rows"] if r["kind"] == "send_failed")
-    assert row["doc_id"] == doc["entity_id"] and "mailbox unavailable" in row["message"]
+    assert row["doc_id"] == doc["entity_id"] and t("email.err_smtp_refused") in row["message"]
     await tick(session, cid, "2026-07-02")
     assert len(mail.sent) == 1  # a failed send waits for the operator's retry
-    mail.result = (True, "accepted")
+    mail.result = EmailResult(True, "accepted")
     retried = await client.post(row["retry_url"], headers=hd)
     assert retried.status_code == 200, retried.text
     again = await client.post(row["retry_url"], headers=hd)
@@ -283,8 +289,8 @@ async def test_an_interrupted_send_is_shown_with_a_retry(client, session, monkey
     await tick(session, cid, "2026-07-01")
     unconfirmed = [r for r in (await summary(client, hd))["rows"] if r["kind"] == "send_unconfirmed"]
     assert raising in [r["entity_id"] for r in unconfirmed]
-    state = await template(client, hd, raising)
-    assert "delivery outcome unknown" in state["periods"]["0"]["send"]["error"]
+    send = (await template(client, hd, raising))["periods"]["0"]["send"]
+    assert send["state"] == "sending" and "error_key" not in send
 
 
 async def test_a_retried_send_is_recorded_as_the_person_who_retried(client, session, monkeypatch, mail):
@@ -297,10 +303,10 @@ async def test_a_retried_send_is_recorded_as_the_person_who_retried(client, sess
     manager, manager_id = await member(client, session, hd, "manager")
     eid = await _auto(client, hd, start="2026-07-01", send=True,
                       contact_id=await contact(client, hd, "member@example.test"))
-    mail.result = (False, "mailbox unavailable")
+    mail.result = _REFUSED
     await tick(session, cid, "2026-07-01")
     row = next(r for r in (await summary(client, hd))["rows"] if r["kind"] == "send_failed")
-    mail.result = (True, "accepted")
+    mail.result = EmailResult(True, "accepted")
     assert (await client.post(row["retry_url"], headers=manager)).status_code == 200
     actors = (await session.execute(select(LedgerEntry.actor_id).where(
         LedgerEntry.entity_id == row["doc_id"], LedgerEntry.event_type == "doc.sent"))).scalars().all()
@@ -366,7 +372,8 @@ async def test_relay_retry_keeps_original_transport_identity(client, session, mo
 
     async def rejected(*args, **kw):
         keys.append(kw["operation_id"])
-        return False, "This operation id belongs to a different email"
+        return email.EmailResult(False, "This operation id belongs to a different email",
+                                 reason="email.err_relay_refused")
 
     monkeypatch.setattr(email, "send_email", rejected)
     assert (await client.post(row["retry_url"], headers=hd)).status_code == 200
@@ -455,7 +462,7 @@ async def test_email_preparation_failure_is_visible_and_retryable(client, sessio
     report = await summary(client, hd)
     assert report["counts"]["send_failed"] == 1
     row = next(r for r in report["rows"] if r["kind"] == "send_failed")
-    assert row["retry_url"] and "preparation failed" in row["message"]
+    assert row["retry_url"] and t("subscriptions.err_send_preparation") in row["message"]
     assert mail.sent == []
 
     monkeypatch.setattr(docs_routes, "doc_email", original)

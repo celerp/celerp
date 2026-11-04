@@ -197,7 +197,7 @@ async def test_concurrent_email_delivery_only_claims_one_send(committed_engine, 
         calls.append((operation_id, kwargs["to"]))
         started.set()
         await release.wait()
-        return True, "accepted"
+        return email.EmailResult(True, "accepted")
 
     monkeypatch.setattr(email, "send_email", send_once)
     first = asyncio.create_task(billing.deliver(factory, cid, eid, 0))
