@@ -10374,15 +10374,17 @@ def _stock_line(line_items: list[dict], index: int, locked: dict[str, Projection
 
 def _skipped_lines(line_items: list[dict], indices: list[int], kind: str) -> list[dict]:
     """The lines at ``indices`` a stock action leaves as they are, each named by its number
-    and label; ``kind`` is ``no_item`` (no inventory item) or ``service`` (an item that is not
-    stock)."""
-    return [{"line": i + 1, "name": line_label(line_items[i]), "kind": kind} for i in indices]
+    and label and carrying its line id; ``kind`` is a key of _SKIP_KEYS."""
+    return [{"line": i + 1, "name": line_label(line_items[i]), "kind": kind, "line_id": line_items[i].get("line_id")}
+            for i in indices]
 
 
 # Per skip kind: (key of the notice that names the lines left as they are, key of the
-# refusal when every chosen line is of that kind).
+# refusal when every chosen line is of that kind). ``memo_no_item`` is a memo line with no
+# item that Invoice selected leaves on the memo; its notice is read on the new invoice.
 _SKIP_KEYS = {"no_item": ("documents.lines_skipped", "lines.no_stock"),
-              "service": ("documents.service_lines_skipped", "lines.service_no_stock")}
+              "service": ("documents.service_lines_skipped", "lines.service_no_stock"),
+              "memo_no_item": ("documents.memo_lines_skipped", "lines.no_stock")}
 
 
 def _skip_messages(skipped: list[dict], *, refuse: bool) -> list[dict]:
@@ -11056,8 +11058,8 @@ async def _line_action(session, company_id, user, owner: Projection, action: str
     # Read after the action; Back to memo takes its lines off, and only drawn lines go back.
     if not removes:
         line_items = owner.state.get("line_items", [])
-    left = {s["line"] - 1 for s in result.get("skipped") or []}
-    chosen = [str(line_items[i].get("line_id")) for i in indices if i not in left and line_items[i].get("line_id")]
+    left = {s["line_id"] for s in result.get("skipped") or []}
+    chosen = [str(lid) for i in indices if (lid := line_items[i].get("line_id")) and lid not in left]
     await emit_event(
         session, company_id=uuid.UUID(str(company_id)), entity_id=record_id,
         entity_type="line_action", event_type="line_action.recorded",
@@ -11674,7 +11676,7 @@ def draw_problems(snap: _DrawSnapshot, body: InvoiceLinesRequest, *,
                                     f"{name}: {qty:g} chosen, but {out:g} is out on memo {memo_ref}.",
                                     name=name, qty=f"{qty:g}", out=f"{out:g}", memo=memo_ref))
         picks.append((i, qty))
-    skipped = _skipped_lines(lines, no_item, "no_item")
+    skipped = _skipped_lines(lines, no_item, "memo_no_item")
     if skipped and len(no_item) == len(body.line_ids):
         problems.extend(_skip_messages(skipped, refuse=True))
     chosen = [lines[i] for i, _ in picks]
@@ -11955,7 +11957,7 @@ async def _draw_from_memo(session, company_id, role: str, settings: dict, user, 
         if problems:
             raise HTTPException(status_code=409, detail={**problems[0], "also": problems[1:]})
         written = await _write_draw(session, company_id, role, settings, user, company, key, snap, picks, request)
-        return {**written, "skipped": skipped}
+        return {**written, "skipped": skipped, "invoiced": len(picks), "memo_ref": _ref(memo_row)}
 
     def chosen(line_items: list[dict], request: FulfillLinesRequest) -> list[int]:
         # Unknown lines are reported with every other problem of the draw (draw_problems).
@@ -11998,7 +12000,6 @@ async def back_to_memo(
         own = [i for i in indices if not lines[i].get("drawn_from")]
         chosen = [lines[i] for i in indices if i not in own]
         refused = [i for i in own if line_item_id(lines[i])] if chosen else own
-        left = _skipped_lines(lines, [i for i in own if i not in refused], "no_item")
         if refused or not chosen:
             names = ", ".join(line_label(lines[i]) for i in refused)
             raise HTTPException(status_code=409, detail=refusal(
@@ -12006,11 +12007,15 @@ async def back_to_memo(
                 f"{names} did not come from a memo, so there is no memo to send it back to. "
                 "Delete the line instead.", lines=names))
         removed = frozenset(li["line_id"] for li in chosen)
+        kept = [li for li in lines if li.get("line_id") not in removed]
+        # Numbered as the invoice stands once the drawn lines have gone back.
+        stays = {lines[i]["line_id"] for i in own}
+        left = _skipped_lines(kept, [i for i, li in enumerate(kept) if li["line_id"] in stays], "no_item")
         reopened, released = await _return_to_source_memo(
             session, company_id=company_id, uid=user.id, owner=row, line_ids=set(removed))
         fields = {k: {"new": v} for k, v in released_header_money(
             state, [t for takes in released.values() for t in takes]).items()}
-        fields["line_items"] = {"new": [li for li in lines if li.get("line_id") not in removed]}
+        fields["line_items"] = {"new": kept}
         await write_doc_patch(session, company_id, role, settings, user, entity_id,
                               DocPatch(fields_changed=fields, expected_version=row.version,
                                        idempotency_key=_step_key(key, "invoice")),

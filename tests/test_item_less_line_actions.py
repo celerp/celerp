@@ -115,9 +115,10 @@ def _notice(answer: dict) -> list[tuple[str, dict]]:
 async def test_select_all_ship_on_mixed_invoice_ships_stock_and_reports_item_less_line(client, session):
     g = await _gems(client)
     d = await _doc(client, g, [*(_line(g, s) for s in STONES), GIA])
-    answer = await _ok(await _act(client, g, d, "fulfill-lines", await _ids(client, g, d)))
+    lids = await _ids(client, g, d)
+    answer = await _ok(await _act(client, g, d, "fulfill-lines", lids))
     assert [await _status(client, g, s) for s in STONES] == ["sold"] * 5
-    assert answer["skipped"] == [{"line": 6, "name": "GIA Certificate", "kind": "no_item"}]
+    assert answer["skipped"] == [{"line": 6, "name": "GIA Certificate", "kind": "no_item", "line_id": lids[5]}]
     assert _notice(answer) == [("documents.lines_skipped_one", {"lines": '6 "GIA Certificate"'})]
     assert await _doc_cogs(session, {"company_id": g.company_id}, d) == sum(g.items[s]["cost_total"] for s in STONES)
     assert (await _state(client, g, d))["fulfillment_status"] == "fulfilled"
@@ -157,10 +158,10 @@ async def test_stock_line_actions_skip_item_less_lines(client, session, case):
         await setup(client, g, owner, lids[:1])
     answer = await _ok(await _act(client, g, owner, path, lids, **extra))
     assert await _status(client, g, "DEMO-SAP-001") == after
-    expected = [{"line": 2, "name": "GIA Certificate", "kind": "no_item"}]
+    expected = [{"line": 2, "name": "GIA Certificate", "kind": "no_item", "line_id": lids[1]}]
     notice = [("documents.lines_skipped_one", {"lines": '2 "GIA Certificate"'})]
     if service_skipped:
-        expected.append({"line": 3, "name": SVC, "kind": "service"})
+        expected.append({"line": 3, "name": SVC, "kind": "service", "line_id": lids[2]})
         notice.append(("documents.service_lines_skipped_one", {"lines": f'3 "{SVC}"'}))
     assert answer["skipped"] == expected
     assert _notice(answer) == notice
@@ -254,7 +255,8 @@ async def test_fulfill_impl_skips_item_less_lines_for_every_caller(client, sessi
     user_id = (await session.execute(select(User.id).where(User.email == g.email))).scalar_one()
     result = await _fulfill_lines_impl(d, [0, 1, 2], str(g.company_id), SimpleNamespace(id=user_id), session)
     assert await _status(client, g, "DEMO-SAP-001") == "sold"
-    assert result["skipped"] == [{"line": 3, "name": "GIA Certificate", "kind": "no_item"}]
+    assert result["skipped"] == [{"line": 3, "name": "GIA Certificate", "kind": "no_item",
+                                  "line_id": (await _ids(client, g, d))[2]}]
     state = await _state(client, g, d)
     assert g.items[SVC]["id"] in {fi.get("item_id") for fi in state["fulfilled_items"]}
     assert state["fulfillment_status"] == "fulfilled"
@@ -323,7 +325,7 @@ async def test_by_item_selector_skips_service_item(client, session):
     answer = await _ok(await client.post(f"/docs/{d}/reserve-lines", headers=g.h, json={
         "line_entity_ids": [g.items["DEMO-SAP-001"]["id"], g.items[SVC]["id"]], "new_status": "reserved"}))
     assert await _status(client, g, "DEMO-SAP-001") == "reserved"
-    assert answer["skipped"] == [{"line": 2, "name": SVC, "kind": "service"}]
+    assert answer["skipped"] == [{"line": 2, "name": SVC, "kind": "service", "line_id": (await _ids(client, g, d))[1]}]
 
 
 # ── Return goods names lines by id ───────────────────────────────────────────
@@ -349,17 +351,20 @@ async def test_return_goods_names_lines_by_id_only(client, session, ui_client):
 async def test_invoice_selected_skips_item_less_memo_line_and_names_it(client, session, ui_client):
     from test_helpers import make_test_token
     from ui.components.preview_confirm import BINDING
-    from ui.i18n import refusal_text
+    from ui.i18n import refusal_text, t
     g = await _gems(client)
     memo = await _doc(client, g, [_line(g, "DEMO-SAP-001"), _line(g, "DEMO-EMR-001"), GIA], doc_type="memo")
     lids = await _ids(client, g, memo)
     await _ship(client, g, memo, lids[:2])
     preview = await _ok(await draw(client, g.h, memo, line_ids=lids, dry_run=True))
     assert len(preview["lines"]) == 2
-    notice = [("documents.lines_skipped_one", {"lines": '3 "GIA Certificate"'})]
+    # The draw opens the new invoice, so the notice says the line is the memo's and stays there.
+    notice = [("documents.memo_lines_skipped_one", {"lines": '3 "GIA Certificate"'})]
     assert _notice(preview) == notice
     done = await _ok(await draw(client, g.h, memo, line_ids=lids, binding=preview["binding"]))
     assert _notice(done) == notice
+    memo_ref = (await _state(client, g, memo))["ref_id"]
+    assert (done["invoiced"], done["memo_ref"]) == (2, memo_ref)
     invoice = await _state(client, g, done["target_doc_id"])
     assert sorted(li["sku"] for li in drawn_lines(invoice, memo)) == ["DEMO-EMR-001", "DEMO-SAP-001"]
     assert [li.get("description") for li in (await _state(client, g, memo))["line_items"]][2] == "GIA Certificate"
@@ -371,7 +376,8 @@ async def test_invoice_selected_skips_item_less_memo_line_and_names_it(client, s
             "pick_0": lids[0], "pick_1": lids[1], "pick_2": lids[2], BINDING: "b", "idempotency_key": "k-draw"})
     assert page.headers.get("HX-Redirect")
     toast = json.loads(page.headers["HX-Trigger"])["celerpToast"]
-    assert toast["message"] == refusal_text(done["skipped_notice"]) and toast.get("persist") is True
+    said = t("documents.lines_invoiced_many", n=2, memo=memo_ref)
+    assert toast["message"] == f'{said} {refusal_text(done["skipped_notice"])}' and toast.get("persist") is True
 
 
 async def _drawn_invoice_with_own_certificate(client, g) -> tuple[str, str, str, str]:
@@ -392,7 +398,8 @@ async def test_back_to_memo_skips_own_item_less_line_and_names_it(client, sessio
     g = await _gems(client)
     memo, invoice, drawn, own = await _drawn_invoice_with_own_certificate(client, g)
     answer = await _ok(await back_to_memo(client, g.h, invoice, [drawn, own]))
-    assert _notice(answer) == [("documents.lines_skipped_one", {"lines": '2 "GIA Certificate"'})]
+    # Numbered as the invoice stands once the stone has gone back: the certificate is line 1.
+    assert _notice(answer) == [("documents.lines_skipped_one", {"lines": '1 "GIA Certificate"'})]
     left = (await _state(client, g, invoice))["line_items"]
     assert [li.get("description") for li in left] == ["GIA Certificate"]
     assert await _status(client, g, "DEMO-SAP-001") == "memo_out"

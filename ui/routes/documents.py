@@ -3691,10 +3691,12 @@ celerpUpdateBulkAlloc();
             also = (e.data.get("also") or []) if isinstance(e.data, dict) else []
             msg = error_message(e)
             return _action_error(f"{msg} {t('documents.draw_also')} {refusal_text(also)}" if also else msg)
-        skipped = result.get("skipped_notice")
+        # Read on the new invoice: say what came over from which memo, and what stayed there.
+        n = result.get("invoiced") or 0
+        message, persist = _with_skipped(
+            t(f"documents.lines_invoiced_{'one' if n == 1 else 'many'}", n=n, memo=result.get("memo_ref") or ""), result)
         return _R("", status_code=204, headers={
-            "HX-Redirect": doc_href(result.get("target_doc_id")),
-            **(toast_header(refusal_text(skipped), "info", persist=True) if skipped else {})})
+            "HX-Redirect": doc_href(result.get("target_doc_id")), **toast_header(message, "info", persist=persist)})
 
     @app.post("/docs/{entity_id}/invoice-lines/preview")
     async def invoice_lines_preview_route(request: Request, entity_id: str):
