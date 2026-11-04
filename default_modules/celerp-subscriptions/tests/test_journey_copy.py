@@ -104,3 +104,42 @@ def test_every_subscriptions_sentence_naming_a_day_reads_it_as_a_date():
            if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "t"
            and any(k.arg in (None, "date", "start", "end", "day") for k in n.keywords)]
     assert not raw, raw
+
+
+_CHANGED = {"anchor_date": "2026-04-05", "frequency": "weekly", "custom_interval_days": "10", "billing_timing": "arrears",
+            "term_start": "2026-04-01", "term_end": "2027-04-01", "cancel_at_period_end": "true",
+            "catchup_periods": "3", "generation_mode": "manual_due", "auto_send": "true"}
+
+
+def _comparable(soup) -> str:
+    """The page body without what a save is expected to change elsewhere (History, the
+    per-render request keys)."""
+    import re
+    for el in soup.select("#doc-activity, .activity-section, [id^=activity], script"):
+        el.decompose()
+    html = re.sub(r"\s+", " ", str(soup.body)).replace("> <", "><")
+    return re.sub(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", "KEY", html)
+
+
+async def test_a_schedule_save_redraws_every_element_that_shows_the_schedule(owner_ui, monkeypatch):
+    """Class guard: for every schedule and billing setting, the page with the save's answer
+    swapped in (each element by its id) reads as the page does on reload. An element showing
+    the schedule that the answer leaves out fails, whatever its id."""
+    from celerp_subscriptions.routes import ScheduleBody
+
+    assert set(_CHANGED) == set(ScheduleBody.model_fields)
+    freeze_day(monkeypatch, "2026-03-15")
+    for field, value in _CHANGED.items():
+        eid = await agreement(owner_ui.api, {}, start="2026-04-01")
+        r = await owner_ui.api.patch(f"/subscriptions/{eid}/schedule", json={"generation_mode": "auto_invoice"})
+        assert r.status_code == 200, r.text
+        page = BeautifulSoup((await owner_ui.get(f"/subscriptions/{eid}")).text, "html.parser")
+        r = await owner_ui.patch(f"/subscriptions/{eid}/schedule/{field}", data={"value": value})
+        assert r.status_code == 200 and "error" not in r.headers.get("HX-Trigger", ""), (field, r.headers, r.text[:300])
+        for el in BeautifulSoup(r.text, "html.parser").find_all(attrs={"hx-swap-oob": True}):
+            del el["hx-swap-oob"]
+            old = page.find(id=el["id"])
+            assert old is not None, (field, el["id"])
+            old.replace_with(el)
+        fresh = BeautifulSoup((await owner_ui.get(f"/subscriptions/{eid}")).text, "html.parser")
+        assert _comparable(page) == _comparable(fresh), field

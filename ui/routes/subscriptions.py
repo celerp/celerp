@@ -87,12 +87,15 @@ _SEND_BADGE = {"waiting": ("subscriptions.period_send_pending", "badge--warning"
                "not_sent": ("subscriptions.period_send_not_sent", "badge--draft"),
                "failed": ("subscriptions.period_send_failed", "badge--overdue"),
                "unconfirmed": ("subscriptions.period_send_unconfirmed", "badge--warning")}
-# Edits that change what the Billing section and the header badge show, so both are drawn again.
-_BILLING_FIELDS = ("generation_mode", "auto_send", "catchup_periods")
 _MODES = ("manual_due", "auto_invoice")
 _MODE_BADGE = {"auto_invoice": "subscriptions.bills_automatically"}
 # The agreement keeps a consent only for a mode that runs, so each one kept is shown.
 _CONSENTS = ("generation", "sending")
+
+
+# A schedule or billing control saves on change; its answer is every element of the page
+# that shows the schedule, each swapped by its id (_schedule_views), the control's own section included.
+_SCHEDULE_CONTROL = {"hx_swap": "none", "hx_trigger": "change"}
 
 
 def _yes_no(on) -> str:
@@ -289,11 +292,10 @@ def _review_banner(items: list[dict], direction: str, review: bool) -> FT | str:
 def _schedule_section(entity_id: str, sub: dict) -> FT:
     """When the agreement bills: its frequency, first bill date, timing, term and whether it
     stops at the end of the current period. Each change goes through the agreement's schedule,
-    which refuses one that would move a period already billed or skipped, and answers with the
-    section as saved."""
+    which refuses one that would move a period already billed or skipped; the answer draws
+    every element showing the schedule again (_schedule_views)."""
     base = f"/subscriptions/{entity_id}/schedule"
-    attrs = {"hx_swap": "outerHTML", "hx_target": "#sub-schedule", "hx_trigger": "change",
-             "cls": "form-input form-input--inline"}
+    attrs = {**_SCHEDULE_CONTROL, "cls": "form-input form-input--inline"}
     freq = sub.get("frequency") or "monthly"
     interval = str(sub.get("custom_interval_days") or "")
     timing = sub.get("billing_timing") or "advance"
@@ -334,17 +336,40 @@ def _schedule_section(entity_id: str, sub: dict) -> FT:
     )
 
 
-def _bill_date_note(sub: dict, next_bill: str | None, oob: bool = False) -> FT:
-    """Shows the first bill date until a period is billed, then the next bill date. ``oob``
-    redraws the one already in the header."""
+def _bill_date_note(sub: dict, next_bill: str | None) -> FT:
+    """Shows the first bill date until a period is billed, then the next bill date."""
     billed = any((e or {}).get("state") == "billed" for e in (sub.get("periods") or {}).values())
-    attrs = {"id": "sub-bill-note", "cls": "text-muted", "style": "font-size:.85em",
-             **({"hx_swap_oob": "true"} if oob else {})}
+    attrs = {"id": "sub-bill-note", "cls": "text-muted", "style": "font-size:.85em"}
     if not billed and (first := next_bill or sub.get("anchor_date")):
         return Span(sentence("subscriptions.first_bill_on", date=first), **attrs)
     if next_bill:
         return Span(sentence("subscriptions.next_bill_on", date=next_bill), **attrs)
     return Span(**attrs)
+
+
+def _with_schedule(sub: dict, schedule: dict) -> dict:
+    """The agreement as its page shows it: its own fields and its periods' next bill date."""
+    return {**sub, "next_bill_date": schedule.get("next_bill_date"), "not_moved": schedule.get("not_moved")}
+
+
+def _action_groups(entity_id: str, sub: dict, schedule: dict) -> tuple[FT, FT]:
+    """The agreement's actions beside the document's own, each side in a box with its id."""
+    left, right = _sub_action_controls(entity_id, sub, sub["next_bill_date"], schedule.get("oldest_open_index"))
+    return (Span(*left, id="sub-actions-left", style="display:contents"),
+            Span(*right, id="sub-actions-right", style="display:contents"))
+
+
+def _schedule_views(entity_id: str, sub: dict, schedule: dict) -> list[FT]:
+    """Every element of the agreement page that shows its schedule or billing settings: the
+    actions with the bill date note and badge, the header's frequency and next bill date, the
+    Schedule and Billing sections and the Periods table. The page draws each in its place and a
+    schedule save answers with all of them, so none goes on showing the schedule as it was."""
+    from ui.routes.documents import subscription_meta_cells
+
+    sub = _with_schedule(sub, schedule)
+    return [*_action_groups(entity_id, sub, schedule), *subscription_meta_cells(sub),
+            _schedule_section(entity_id, sub) if sub.get("status") != "cancelled" else "",
+            _billing_section(entity_id, sub), _periods_table(entity_id, schedule)]
 
 
 def _pause_button(entity_id: str):
@@ -449,13 +474,13 @@ def _period_actions(entity_id: str, row: dict) -> FT:
     )
 
 
-def _periods_table(entity_id: str, schedule: dict, *, historical_page: bool = False, oob: bool = False) -> FT:
+def _periods_table(entity_id: str, schedule: dict, *, historical_page: bool = False) -> FT:
     """The agreement's periods (``schedule`` is the API's period list), newest first: dates,
     status (with a reopened period and an email not sent, failed or unconfirmed marked), the document
     that billed it. ``oob`` redraws the one already on the page."""
     rows, oldest_due_row = schedule.get("rows") or [], schedule.get("oldest_due_row")
     older_before = schedule.get("older_before")
-    attrs = {"id": "sub-periods", "cls": "mt-lg", **({"hx_swap_oob": "true"} if oob else {})}
+    attrs = {"id": "sub-periods", "cls": "mt-lg"}
     if not rows and oldest_due_row is None and not historical_page:
         return Div(**attrs)
 
@@ -668,11 +693,11 @@ def _summary_table(rows: list[dict], subs: dict[str, dict]) -> FT:
                  Tbody(*[_row(r) for r in rows]))
 
 
-def _auto_badge(sub: dict, oob: bool = False) -> FT:
+def _auto_badge(sub: dict) -> FT:
     """The header badge naming an agreement that bills on its own; empty otherwise. ``oob``
     redraws the one already in the header."""
     key = _MODE_BADGE.get(sub.get("generation_mode") or "")
-    attrs = {"id": "sub-auto-badge", **({"hx_swap_oob": "true"} if oob else {})}
+    attrs = {"id": "sub-auto-badge"}
     return Span(t(key), cls="badge badge--active", **attrs) if key else Span(**attrs)
 
 
@@ -681,8 +706,7 @@ def _billing_section(entity_id: str, sub: dict) -> FT:
     how many past periods automatic billing may still bill after a gap. Each automatic
     mode names when it was authorized; setting it back to manual undoes it."""
     base = f"/subscriptions/{entity_id}/schedule"
-    attrs = {"hx_swap": "outerHTML", "hx_target": "#sub-billing", "hx_trigger": "change",
-             "cls": "form-input form-input--inline"}
+    attrs = {**_SCHEDULE_CONTROL, "cls": "form-input form-input--inline"}
     mode = sub.get("generation_mode") or "manual_due"
     consents = sub.get("consents") or {}
     return Div(
@@ -1126,8 +1150,8 @@ def setup_routes(app) -> None:
         status_label = display_enum(status, "subscription_status")
         list_url = f"/subscriptions?direction={direction}"
 
-        doc = {**doc, "next_bill_date": schedule.get("next_bill_date"), "not_moved": schedule.get("not_moved")}
-        _sub_left_actions, _sub_right_actions = _sub_action_controls(entity_id, doc, doc["next_bill_date"], schedule.get("oldest_open_index"))
+        doc = _with_schedule(doc, schedule)
+        actions_left, actions_right = _action_groups(entity_id, doc, schedule)
 
         return await base_shell(
             breadcrumbs([
@@ -1148,8 +1172,8 @@ def setup_routes(app) -> None:
                 connected_connectors=co_connectors,
                 notes=doc_notes,
                 suppress_doc_actions=True,
-                extra_left_actions=_sub_left_actions,
-                extra_right_actions=_sub_right_actions,
+                extra_left_actions=[actions_left],
+                extra_right_actions=[actions_right],
                 suppress_pdf=True,
             ),
             _schedule_section(entity_id, doc) if status != "cancelled" else "",
@@ -1243,10 +1267,7 @@ def setup_routes(app) -> None:
         try:
             await api.update_subscription_schedule(token, entity_id, changes)
             sub = await api.get_subscription(token, entity_id)
-            if field in _BILLING_FIELDS:
-                return _billing_section(entity_id, sub), _auto_badge(sub, oob=True)
             schedule = await api.get_subscription_periods(token, entity_id)
         except APIError as e:
             return _refused(e)
-        return (_schedule_section(entity_id, sub), _bill_date_note(sub, schedule.get("next_bill_date"), oob=True),
-                _periods_table(entity_id, schedule, oob=True))
+        return tuple(v(hx_swap_oob="true") for v in _schedule_views(entity_id, sub, schedule) if v != "")

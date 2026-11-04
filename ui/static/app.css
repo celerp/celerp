@@ -1956,6 +1956,9 @@ form:has(> #fa-preview:not(:empty)) ~ .empty-state-cta { display: none; }
 .doc-actions-right { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .doc-actions-print { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .doc-actions-sep { color: var(--color-border, #ccc); font-size: 1.2rem; line-height: 1; padding: 0 2px; user-select: none; }
+/* An agreement with no actions on its right side (a draft, a cancelled one) shows no separator. */
+.doc-actions-right:has(> #sub-actions-right:empty:only-child),
+.doc-actions-right:has(> #sub-actions-right:empty:only-child) + .doc-actions-sep { display: none; }
 .doc-actions-right details { display: inline-flex; align-items: center; }
 /* Header actions behind a confirm (Close, Revert to Draft, Void) line up with plain buttons. */
 .doc-actions .void-section { margin-top: 0; }

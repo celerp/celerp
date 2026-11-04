@@ -7184,6 +7184,19 @@ def _doc_money(doc: dict) -> dict:
             "outstanding": fmt_money(float(doc_value(doc, "amount_outstanding") or 0), currency)}
 
 
+def subscription_meta_cells(doc: dict) -> tuple:
+    """An agreement's frequency and next bill date in the document header. Its schedule changes
+    only through its own controls, which check it against the periods already billed, so here
+    it is shown, not edited; a schedule save draws these again by their ids."""
+    return (
+        Div(Div(t("th.frequency"), cls="meta-label"),
+            Div(display_enum(doc["frequency"], "subscription_frequency") if doc.get("frequency") else "--"),
+            id="sub-frequency", cls="meta-cell"),
+        Div(Div(t("doc.next_issue_date"), cls="meta-label"), Div(doc.get("next_bill_date") or "--"),
+            id="sub-next-bill", cls="meta-cell"),
+    )
+
+
 def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: dict | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, free_send_offer: bool = False, email_used: int = 0, email_quota: int = 0, email_resets_on: str | None = None, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_status_doc_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku", relay_error: bool = False, line_offset: int = 0, line_total: int | None = None, line_limit: int = 100,
                 connected_connectors: set[str] | None = None, note_targets: list | None = None, original: dict | None = None,
                 draw_targets: list | None = None) -> FT:
@@ -10998,16 +11011,10 @@ async function celerpCsvImport(input, entityId) {{
                  A(original.get("ref_id") or original.get("doc_number") or doc["original_doc_id"],
                    href=doc_href(doc["original_doc_id"])),
                  cls="meta-cell") if original else ""),
-            # An agreement's schedule changes only through its own controls, which check it
-            # against the periods already billed, so here it is shown, not edited.
-            Div(Div(t("th.frequency") if _is_sub_template else t("doc.issue_date"), cls="meta-label"),
-                Div(display_enum(doc["frequency"], "subscription_frequency") if doc.get("frequency") else "--")
-                if _is_sub_template else _cell("issue_date", issue_date_value),
-                cls="meta-cell"),
-            (Div(Div(t("doc.next_issue_date"), cls="meta-label"),
-                 Div(doc.get("next_bill_date") or "--"),
-                 cls="meta-cell") if _is_sub_template else
-             (Div(Div(t("doc.due_date"), cls="meta-label"), _cell("due_date", due_date_value), cls="meta-cell") if not is_list else "")),
+            *(subscription_meta_cells(doc) if _is_sub_template else (
+                Div(Div(t("doc.issue_date"), cls="meta-label"), _cell("issue_date", issue_date_value), cls="meta-cell"),
+                Div(Div(t("doc.due_date"), cls="meta-label"), _cell("due_date", due_date_value), cls="meta-cell")
+                if not is_list else "")),
             cls="doc-meta-bar",
         ),
         # Company (left) + Contact/Ship To (right, stacked)
