@@ -21,13 +21,14 @@ from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company
 from celerp.models.projections import Projection
+from celerp.models.subscription_email import SubscriptionEmailAttempt
 from celerp.services import email
 from celerp.services.business_time import business_today
 from celerp.services.company_lock import lock_projections, locked_company
@@ -50,6 +51,8 @@ MODE_PERMISSION = {"generation": "automate_billing", "sending": "automate_sendin
 MODE_DOCUMENT_PERMISSION = {"generation": "finalize_documents", "sending": "edit_documents",
                             "collection": "record_payments"}
 CATCHUP_CAP = 12
+MAX_EMAIL_PAYLOAD_BYTES = 2 * 1024 * 1024
+EMAIL_ATTEMPT_RETENTION = timedelta(days=2)
 
 
 def now_stamp() -> str:
@@ -250,6 +253,13 @@ async def agreements(session: AsyncSession, company_id) -> list[Projection]:
     return list(rows)
 
 
+async def discard_email_attempts(session: AsyncSession, company_id, doc_id: str) -> None:
+    """Discard obsolete in-flight attempts when their billed document is released."""
+    await session.execute(delete(SubscriptionEmailAttempt).where(
+        SubscriptionEmailAttempt.company_id == company_id,
+        SubscriptionEmailAttempt.doc_id == doc_id))
+
+
 async def require_history_document(session: AsyncSession, company_id, template_id: str,
                                    state: dict, doc_id: str) -> None:
     """A historical placement must reference an eligible, unclaimed company document."""
@@ -407,6 +417,10 @@ def lapsed_modes(state: dict) -> list[str]:
 
 async def run_due(*, session: AsyncSession, company_id, today: date, budget: int) -> OperationReport:
     """The dispatcher's billing pass for one company (the ``periodic_operation`` slot)."""
+    await locked_company(session, company_id)
+    await session.execute(delete(SubscriptionEmailAttempt).where(
+        SubscriptionEmailAttempt.company_id == company_id,
+        SubscriptionEmailAttempt.created_at < datetime.now(timezone.utc) - EMAIL_ATTEMPT_RETENTION))
     report = OperationReport()
     from celerp.modules.registry import uses_module
 
@@ -488,11 +502,7 @@ def _deliverer(company_id, template_id: str, k: int):
 
 
 async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=None) -> dict:
-    """Email period ``k``'s document to the agreement's contact, once. The attempt is
-    recorded and committed before the email goes, so two passes never both send it; the
-    outcome is recorded after, and a sent email marks the document sent through its own
-    send transition. Only a pending send goes, or, retried by the member ``retry_by``, a
-    failed one or one cut off before its outcome was recorded."""
+    """Send a period's document using one immutable message per transport attempt."""
     from celerp.modules.registry import uses_module
     from celerp_docs.doc_constants import NO_SEND_DOC_TYPES
     from celerp_docs.routes import DocSendBody, doc_email, mark_doc_sent
@@ -516,69 +526,117 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
             raise HTTPException(status_code=409, detail=t("subscriptions.err_send_not_billed"))
         if send.get("state") not in (("pending", "failed", "sending") if retry_by else ("pending",)):
             return send
-        if send.get("state") == "sending" and not (relay_idempotent and send.get("deduplicated")):
-            raise HTTPException(status_code=409, detail="Email outcome is unconfirmed; verify receipt before retrying")
-        doc = await session.get(Projection, {"company_id": company_id, "entity_id": entry["doc_id"]})
-        contact_id = proj.state.get("contact_id")
-        contact = (await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})) if contact_id else None
-        to = ((contact.state or {}).get("email") if contact is not None else None) or ""
+
+        uncertain = send.get("state") == "sending"
+        if uncertain and not (relay_idempotent and send.get("deduplicated")):
+            raise HTTPException(status_code=409, detail="Verify the previous email before sending another")
+        doc_id = entry["doc_id"]
+        doc = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
+        if uncertain and (doc is None or (doc.state or {}).get("status") == "void"):
+            raise HTTPException(status_code=409, detail="Verify the previous email before sending another")
         by = retry_by or ((proj.state.get("consents") or {}).get("sending") or {}).get("by") or entry.get("by")
         actor = SimpleNamespace(id=uuid.UUID(str(by)) if by else None)
-        n = int(send.get("n") or 0) + 1
-        if doc is None or (doc.state or {}).get("status") == "void" or (
-            doc.state or {}).get("doc_type") in NO_SEND_DOC_TYPES or not to:
-            send = {"state": "failed", "n": n, "at": now_stamp(),
-                    "error": t("subscriptions.err_send_no_email") if doc is not None and not to
-                    else t("subscriptions.err_send_void")}
-            periods[str(k)]["send"] = send
+
+        if uncertain:
+            # A retry is the SAME attempt, never a new attempt with a reused key.
+            n = int(send.get("n") or 0)
+            operation_id = send.get("operation_id") or ""
+            try:
+                attempt = await session.get(
+                    SubscriptionEmailAttempt,
+                    {"company_id": company_id, "operation_id": uuid.UUID(operation_id)})
+            except ValueError:
+                attempt = None
+            if (attempt is None or attempt.doc_id != doc_id or attempt.attempt_number != n):
+                raise HTTPException(status_code=409, detail="Verify the previous email before sending another")
+            message = json.loads(attempt.payload_json)
+            digest = hashlib.sha256(json.dumps(message, sort_keys=True).encode()).hexdigest()
+            if digest != send.get("payload_digest"):
+                raise HTTPException(status_code=409, detail="Verify the previous email before sending another")
+        else:
+            n = int(send.get("n") or 0) + 1
+            contact_id = proj.state.get("contact_id")
+            contact = (await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
+                       if contact_id else None)
+            to = ((contact.state or {}).get("email") if contact is not None else None) or ""
+            if (doc is None or (doc.state or {}).get("status") == "void" or
+                    (doc.state or {}).get("doc_type") in NO_SEND_DOC_TYPES or not to):
+                send = {"state": "failed", "n": n, "at": now_stamp(),
+                        "error": t("subscriptions.err_send_no_email") if doc is not None and not to
+                        else t("subscriptions.err_send_void")}
+                periods[str(k)]["send"] = send
+                await write_agreement(session, company_id, template_id, {"periods": periods}, actor.id)
+                await session.commit()
+                return send
+            try:
+                async with session.begin_nested():
+                    message = await doc_email(session, company_id, doc_id, doc.state, to, actor)
+                    html, body = email._with_footer(message["body_html"], message["body_text"])
+                    message = {**message, "body_html": html, "body_text": body, "branded": False}
+                    payload_json = json.dumps(message, sort_keys=True)
+                    if len(payload_json.encode()) > MAX_EMAIL_PAYLOAD_BYTES:
+                        raise ValueError("email too large")
+            except Exception as exc:
+                log.warning("Preparing subscription email failed (%s)", type(exc).__name__)
+                send = {"state": "failed", "n": n, "at": now_stamp(),
+                        "error": "Email preparation failed. Check the document and connection before retrying."}
+                periods[str(k)]["send"] = send
+                await write_agreement(session, company_id, template_id, {"periods": periods}, actor.id)
+                await session.commit()
+                return send
+
+            operation_id = str(uuid.uuid5(
+                uuid.NAMESPACE_URL, f"subscription-email:{company_id}:{doc_id}:{n}"))
+            session.add(SubscriptionEmailAttempt(
+                company_id=company_id, operation_id=uuid.UUID(operation_id), doc_id=doc_id,
+                attempt_number=n, payload_json=payload_json))
+            digest = hashlib.sha256(payload_json.encode()).hexdigest()
+            periods[str(k)]["send"] = {
+                "state": "sending", "n": n, "at": now_stamp(), "operation_id": operation_id,
+                "deduplicated": relay_idempotent, "payload_digest": digest}
             await write_agreement(session, company_id, template_id, {"periods": periods}, actor.id)
             await session.commit()
-            return send
-        message = await doc_email(session, company_id, entry["doc_id"], doc.state, to, actor)
-        payload_digest = hashlib.sha256(json.dumps(message, sort_keys=True).encode()).hexdigest()
-        if send.get("state") == "sending" and send.get("payload_digest") != payload_digest:
-            raise HTTPException(status_code=409, detail="The unconfirmed email changed; verify the prior delivery first")
-        # A confirmed failed attempt may use a new identity; an uncertain attempt
-        # must reuse its original identity to preserve transport deduplication.
-        operation_id = (send.get("operation_id") if send.get("state") == "sending"
-                        else str(uuid.uuid5(uuid.NAMESPACE_URL,
-                                           f"subscription-email:{company_id}:{entry['doc_id']}:{n}")))
-        periods[str(k)]["send"] = {"state": "sending", "n": n, "at": now_stamp(),
-                                  "operation_id": operation_id, "deduplicated": relay_idempotent,
-                                  "payload_digest": payload_digest}
-        await write_agreement(session, company_id, template_id, {"periods": periods}, actor.id)
-        await session.commit()
+
     try:
         ok, detail = await email.send_email(**message, operation_id=operation_id,
                                             fail_closed_on_uncertain=True)
     except Exception as exc:
-        log.exception("Sending period %s of %s failed", k, template_id)
-        ok, detail = False, "unconfirmed: " + str(exc)
+        log.warning("Sending subscription email failed (%s)", type(exc).__name__)
+        ok, detail = False, "unconfirmed: delivery outcome unknown"
+    detail = str(detail or "")
     async with factory() as session:
         proj = await locked_agreement(session, company_id, template_id)
         periods = periods_of(proj.state)
         current = periods.get(str(k)) or {}
         sending = current.get("send") or {}
-        if (current.get("state") != BILLED or current.get("doc_id") != entry["doc_id"]
+        operation_uuid = uuid.UUID(operation_id)
+        if (current.get("state") != BILLED or current.get("doc_id") != doc_id
                 or sending.get("n") != n or sending.get("state") != "sending"
                 or sending.get("operation_id") != operation_id):
+            await session.execute(delete(SubscriptionEmailAttempt).where(
+                SubscriptionEmailAttempt.company_id == company_id,
+                SubscriptionEmailAttempt.operation_id == operation_uuid))
+            await session.commit()
             return sending
-        previously_uncertain = send.get("state") == "sending"
-        outcome = "sent" if ok else ("sending" if previously_uncertain or detail.startswith("unconfirmed: ") else "failed")
+
+        outcome = "sent" if ok else ("sending" if uncertain or detail.startswith("unconfirmed: ") else "failed")
         send = {"state": outcome, "n": n, "at": now_stamp(), "operation_id": operation_id,
-                "deduplicated": relay_idempotent, "payload_digest": payload_digest,
+                "deduplicated": relay_idempotent, "payload_digest": digest,
                 **({} if ok else {"error": detail})}
         periods[str(k)]["send"] = send
         await write_agreement(session, company_id, template_id, {"periods": periods}, actor.id)
         if ok:
             try:
                 async with session.begin_nested():
-                    await mark_doc_sent(session, company_id, entry["doc_id"], actor, DocSendBody(
-                        sent_via="email", sent_to=to, idempotency_key=f"send:{entry['doc_id']}:{n}"),
-                        source="subscription")
+                    await mark_doc_sent(session, company_id, doc_id, actor, DocSendBody(
+                        sent_via="email", sent_to=message["to"],
+                        idempotency_key=f"send:{doc_id}:{n}"), source="subscription")
             except HTTPException as exc:
-                # Voided or closed while the email was on its way: the email went, the document keeps its state.
-                log.warning("Period %s of %s was emailed but not marked sent: %s", k, template_id, exc.detail)
+                log.warning("Document was emailed but could not be marked sent (%s)", exc.status_code)
+        if outcome != "sending":
+            await session.execute(delete(SubscriptionEmailAttempt).where(
+                SubscriptionEmailAttempt.company_id == company_id,
+                SubscriptionEmailAttempt.operation_id == operation_uuid))
         await session.commit()
     return send
 

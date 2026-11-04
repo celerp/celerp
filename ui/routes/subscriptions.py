@@ -316,7 +316,7 @@ def _period_actions(entity_id: str, row: dict) -> FT:
 def _periods_table(entity_id: str, rows: list[dict], *, oldest_due_row: dict | None = None,
                    older_before: int | None = None, historical_page: bool = False) -> FT:
     """The agreement's periods, newest first: dates, state, the document that billed it."""
-    if not rows and oldest_due_row is None:
+    if not rows and oldest_due_row is None and not historical_page:
         return ""
 
     def _row(r: dict) -> FT:

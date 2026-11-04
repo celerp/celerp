@@ -364,6 +364,7 @@ def _build_router() -> APIRouter:
             if not after_void or doc is None or doc.get("status") != "void":
                 await _refuse_claimed(session, company_id, entry)
             release += 1  # the next document for this period takes a new claim key
+            await billing.discard_email_attempts(session, company_id, entry["doc_id"])
         elif entry.get("state") != SKIPPED:
             return {"ok": True}
         periods[str(k)] = {"state": RELEASED, "release_count": release, "by": str(user.id), "at": billing.now_stamp()}
