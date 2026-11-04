@@ -7234,7 +7234,10 @@ def _sent_line_ids(lines: list) -> list[str]:
 
     The API keeps a well-formed line id as sent and refuses any other, so these are the ids
     the saved lines carry, whatever another writer does after the save. They are taken from
-    the request, never from a later read, which could see that writer's lines."""
+    the request, never from a later read, which could see that writer's lines. A line sent
+    with no id (the page always gives its rows one) is handed back an empty one, as its id
+    is not known without that read: a line action then refuses it as no longer on the
+    record, and acts on nothing."""
     return [str(li.get("line_id") or "") if isinstance(li, dict) else "" for li in lines]
 
 
