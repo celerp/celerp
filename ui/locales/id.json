@@ -2021,7 +2021,7 @@
   "shell.restarting": "Sedang memulai ulang...",
   "shell.update_available_prefix": "Pembaruan tersedia: v",
   "shell.update_not_checked": "Belum diperiksa",
-  "shell.update_installing": "Memasang v{version}. Celerp akan kembali dalam sekitar satu menit.",
+  "shell.update_installing": "Memasang v{version}. Celerp akan kembali dalam sekitar dua menit.",
   "shell.update_still_restarting": "Celerp masih memulai ulang. Pilih Coba lagi dalam beberapa menit.",
   "shell.update_result_ok": "Diperbarui ke v{version}.",
   "shell.update_result_failed": "Tidak dapat memperbarui ke v{version}: {reason}. Data Anda tidak diubah.",

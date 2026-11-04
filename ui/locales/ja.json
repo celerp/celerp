@@ -2021,7 +2021,7 @@
   "shell.restarting": "再起動中...",
   "shell.update_available_prefix": "利用可能な更新: v",
   "shell.update_not_checked": "まだ確認していません",
-  "shell.update_installing": "v{version} をインストールしています。Celerp は約 1 分で戻ります。",
+  "shell.update_installing": "v{version} をインストールしています。Celerp は約 2 分で戻ります。",
   "shell.update_still_restarting": "Celerp はまだ再起動中です。数分後に「再試行」を選んでください。",
   "shell.update_result_ok": "v{version} に更新しました。",
   "shell.update_result_failed": "v{version} に更新できませんでした: {reason}。データは変更されていません。",

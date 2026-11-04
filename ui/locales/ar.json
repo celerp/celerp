@@ -2021,7 +2021,7 @@
   "shell.restarting": "جاري إعادة التشغيل...",
   "shell.update_available_prefix": "تحديث متاح: v",
   "shell.update_not_checked": "لم يتم التحقق بعد",
-  "shell.update_installing": "جارٍ تثبيت v{version}. سيعود Celerp خلال دقيقة تقريبًا.",
+  "shell.update_installing": "جارٍ تثبيت v{version}. سيعود Celerp خلال دقيقتين تقريبًا.",
   "shell.update_still_restarting": "لا يزال Celerp قيد إعادة التشغيل. اختر إعادة المحاولة بعد بضع دقائق.",
   "shell.update_result_ok": "تم التحديث إلى v{version}.",
   "shell.update_result_failed": "تعذر التحديث إلى v{version}: {reason}. لم تتغير بياناتك.",

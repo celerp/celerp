@@ -2021,7 +2021,7 @@
   "shell.restarting": "กำลังรีสตาร์ท...",
   "shell.update_available_prefix": "มีอัปเดตใหม่: v",
   "shell.update_not_checked": "ยังไม่ได้ตรวจสอบ",
-  "shell.update_installing": "กำลังติดตั้ง v{version} Celerp จะกลับมาในอีกประมาณหนึ่งนาที",
+  "shell.update_installing": "กำลังติดตั้ง v{version} Celerp จะกลับมาในอีกประมาณสองนาที",
   "shell.update_still_restarting": "Celerp ยังรีสตาร์ทไม่เสร็จ เลือก ลองอีกครั้ง ในอีกไม่กี่นาที",
   "shell.update_result_ok": "อัปเดตเป็น v{version} แล้ว",
   "shell.update_result_failed": "ไม่สามารถอัปเดตเป็น v{version}: {reason} ข้อมูลของคุณไม่มีการเปลี่ยนแปลง",

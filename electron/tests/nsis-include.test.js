@@ -33,7 +33,7 @@ test("the include says what will happen in plain words",
     expect(nsh).toContain('Caption "${PRODUCT_NAME} ${VERSION} Setup"');
   });
 
-test("the in-app updater is never prompted", function test_nsis_include_skips_updates() {
+test("an update is never asked the questions of an install by hand", function test_nsis_include_skips_updates() {
   const init = include().split("!macro customInit")[1];
   expect(init.trimStart().startsWith("${IfNot} ${isUpdated}")).toBe(true);
 });
@@ -312,10 +312,11 @@ test("setup stops before copying when the app did not unpack completely",
 
 const template = (rel) => fs.readFileSync(path.join(templatesDir(), rel), "utf8");
 
-// Every Quit setup can reach. Each one either goes through celerpUpdateExit, or is
-// listed here with the reason it never ends an update. A new Quit anywhere fails
-// until it is placed in a row.
-const ALLOWED_QUITS = [
+// Every Quit and Abort setup can reach. Each one either goes through celerpUpdateExit,
+// or is listed here with the reason it never ends an update. A new Quit or Abort
+// anywhere fails until it is placed in a row. A section that aborts (a file write
+// answered Cancel) ends in .onInstFailed, which goes through celerpUpdateExit.
+const ALLOWED_ENDS = [
   { file: "build/installer.nsh", within: "!macro customInit", count: 3,
     reason: "inside the not-updated guard" },
   { file: "build/installer.nsh", within: "!macro celerpUpdateExit", count: 2,
@@ -340,11 +341,18 @@ const ALLOWED_QUITS = [
   { file: "multiUser.nsh", count: 1, reason: "uninstaller build only" },
   { file: "webPackage.nsh", count: 3, reason: "web installer, not built" },
   { file: "UAC.nsh", count: 1, reason: "UAC_PageElevation_OnInit is never inserted" },
+  { kind: "Abort", file: "common.nsh", after: "${if} ${isUpdated}", count: 1,
+    reason: "skips a page in an update; never ends setup" },
+  { kind: "Abort", file: "multiUserUi.nsh", count: 6,
+    reason: "install-mode page functions: each skips the page or stays on it, never ends setup" },
+  { kind: "Abort", file: "uninstaller.nsh", count: 1, reason: "uninstaller build only" },
+  { kind: "Abort", file: "allowOnlyOneInstallerInstance.nsh", after: "notfound:", count: 1,
+    reason: "another setup is running and owns the relaunch" },
 ];
 
 // Where setup stops through celerpUpdateExit, by file.
 const UPDATE_EXITS = {
-  "build/installer.nsh": 8,
+  "build/installer.nsh": 9,
   "extractAppPackage.nsh": 2,
   "allowOnlyOneInstallerInstance.nsh": 1,
   "installUtil.nsh": 1,
@@ -360,7 +368,7 @@ function installerScripts() {
 
 test("every way an update can stop reopens the installed Celerp",
   function test_every_updated_exit_reopens_celerp() {
-    const found = new Map(ALLOWED_QUITS.map((row) => [row, 0]));
+    const found = new Map(ALLOWED_ENDS.map((row) => [row, 0]));
     const unplaced = [];
     const exits = {};
     for (const { name, lines } of installerScripts()) {
@@ -369,10 +377,11 @@ test("every way an update can stop reopens the installed Celerp",
         if (/^!macro\s/.test(line)) opened.push(line);
         if (line === "!macroend") opened.pop();
         if (line.startsWith("!insertmacro celerpUpdateExit")) exits[name] = (exits[name] || 0) + 1;
-        if (!/(^|\$\{\|\}\s*)Quit(\s|$)/i.test(line)) return;
+        const kind = /(^|\$\{\|\}\s*)Quit(\s|$)/i.test(line) ? "Quit" : /^Abort(\s|$)/.test(line) ? "Abort" : null;
+        if (!kind) return;
         let before = i - 1;
         while (before >= 0 && lines[before] === "") before -= 1;
-        const row = ALLOWED_QUITS.find((r) => r.file === name
+        const row = ALLOWED_ENDS.find((r) => (r.kind || "Quit") === kind && r.file === name
           && (!r.within || opened.some((m) => m.startsWith(r.within)))
           && (!r.after || (before >= 0 && lines[before].endsWith(r.after))));
         if (row) found.set(row, found.get(row) + 1);
@@ -380,8 +389,9 @@ test("every way an update can stop reopens the installed Celerp",
       });
     }
     expect(unplaced).toEqual([]);
-    expect(ALLOWED_QUITS.filter((row) => found.get(row) !== row.count).map((row) => row.reason)).toEqual([]);
+    expect(ALLOWED_ENDS.filter((row) => found.get(row) !== row.count).map((row) => row.reason)).toEqual([]);
     expect(exits).toEqual(UPDATE_EXITS);
+    expect(macro(include(), "celerpInstallerFunctions")).toContain("Function .onInstFailed");
   });
 
 test("an update that stops logs why and reopens the installed Celerp, and a fresh install just stops",
@@ -392,6 +402,7 @@ test("an update that stops logs why and reopens the installed Celerp, and a fres
     expect(body).toEqual([
       '!insertmacro celerpUpdateLog "stopped: ${REASON}"',
       "${If} ${isUpdated}",
+      "HideWindow",
       '${StdUtils.ExecShellAsUser} $0 "$INSTDIR\\${APP_EXECUTABLE_FILENAME}" "open" "--updated --update-install-failed=${VERSION}"',
       '!insertmacro celerpUpdateLog "reopened $INSTDIR\\${APP_EXECUTABLE_FILENAME}: $0"',
       "${EndIf}",
@@ -409,7 +420,8 @@ test("the uninstaller build stops without a log or a relaunch",
     const functions = macro(nsh, "celerpInstallerFunctions");
     expect(functions).toContain("Function celerpCloseReopenedApp");
     expect(functions).toContain("Function celerpWriteUpdateLog");
-    expect(nsh.split(/^\s*Function /m).length).toBe(3);
+    expect(functions).toContain("Function .onInstFailed");
+    expect(nsh.split(/^\s*Function /m).length).toBe(4);
     const installerOnly = nsh.split("!ifndef BUILD_UNINSTALLER\n  ; swap:")[1].split("!endif")[0];
     for (const name of ["celerpFound", "celerpSetupMutex"]) expect(installerOnly).toContain(`Var ${name}`);
     expect(nsh.match(/^\s*Var /gm).length).toBe(installerOnly.match(/^\s*Var /gm).length);
@@ -418,6 +430,32 @@ test("the uninstaller build stops without a log or a relaunch",
     const after = nsi.split('Section "install" INSTALL_SECTION_ID')[1].split("SectionEnd")[1];
     expect(after.trimStart().split(/\s*\n\s*/).slice(0, 3))
       .toEqual(["!ifndef BUILD_UNINSTALLER", "!insertmacro celerpInstallerFunctions", "!endif"]);
+  });
+
+test("a file write answered Cancel ends the update with the old Celerp reopened",
+  function test_section_failure_reopens_celerp() {
+    const nsh = include();
+    const installerOnly = nsh.split("!ifndef BUILD_UNINSTALLER\n  ; swap:")[1].split("!endif")[0];
+    expect(installerOnly.split(/\s*\n\s*/)).toContain("AllowSkipFiles off");
+    expect(nsh.match(/AllowSkipFiles/g).length).toBe(1);
+    const failed = macro(nsh, "celerpInstallerFunctions").split("Function .onInstFailed")[1].split("FunctionEnd")[0];
+    expect(failed.trim().split(/\s*\n\s*/)).toEqual([
+      "!insertmacro celerpAbandonCopy",
+      '!insertmacro celerpUpdateExit "setup stopped while writing its files"',
+    ]);
+  });
+
+test("an old version's uninstaller that fails is logged and setup goes on, except in a direct install",
+  function test_old_uninstall_failure_is_logged() {
+    const check = macro(include(), "celerpUninstallCheck");
+    const [errors, rest] = check.split("${ElseIf} $R0 != 0");
+    expect(errors).toMatch(/!insertmacro celerpUpdateLog "old version uninstall: [^"\n]*\$R0"/);
+    expect(rest).toContain('!insertmacro celerpUpdateLog "old version uninstall: code $R0"');
+    const [direct, swap] = rest.split("${EndIf}");
+    expect(direct).toContain('${If} $celerpMode == "direct"');
+    expect(direct).toContain("!insertmacro celerpUpdateExit");
+    expect(swap).not.toContain("celerpUpdateExit");
+    expect(swap).toContain("celerpUpdateLog");
   });
 
 test("an update shows setup's progress window, also when the updater asked for a silent install",

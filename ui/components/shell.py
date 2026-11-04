@@ -2168,7 +2168,7 @@ def _shell_js_i18n(lang: str = "en") -> dict:
         "updateReady": t("shell.js_update_ready", lang),
         "updateCheckFailed": t("shell.update_check_failed", lang),
         "updateFailed": {kind: t(f"shell.update_{kind}_failed", lang)
-                         for kind in ("check", "download", "save", "verify", "install")},
+                         for kind in ("check", "download", "save", "verify", "install", "stopped")},
         "checking": t("shell.checking", lang),
         "restarting": t("shell.restarting", lang),
         "updateAvailablePrefix": t("shell.update_available_prefix", lang),

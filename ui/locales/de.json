@@ -2022,7 +2022,7 @@
   "shell.restarting": "Neustart...",
   "shell.update_available_prefix": "Update verfügbar: v",
   "shell.update_not_checked": "Noch nicht geprüft",
-  "shell.update_installing": "v{version} wird installiert. Celerp ist in etwa einer Minute wieder da.",
+  "shell.update_installing": "v{version} wird installiert. Celerp ist in etwa zwei Minuten wieder da.",
   "shell.update_still_restarting": "Celerp startet noch neu. Wählen Sie in ein paar Minuten „Erneut versuchen“.",
   "shell.update_result_ok": "Auf v{version} aktualisiert.",
   "shell.update_result_failed": "Aktualisierung auf v{version} nicht möglich: {reason}. Ihre Daten wurden nicht verändert.",

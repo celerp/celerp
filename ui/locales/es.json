@@ -2021,7 +2021,7 @@
   "shell.restarting": "Reiniciando...",
   "shell.update_available_prefix": "Actualización disponible: v",
   "shell.update_not_checked": "Aún no comprobado",
-  "shell.update_installing": "Instalando v{version}. Celerp volverá en aproximadamente un minuto.",
+  "shell.update_installing": "Instalando v{version}. Celerp volverá en unos dos minutos.",
   "shell.update_still_restarting": "Celerp todavía se está reiniciando. Seleccione Reintentar en unos minutos.",
   "shell.update_result_ok": "Actualizado a v{version}.",
   "shell.update_result_failed": "No se pudo actualizar a v{version}: {reason}. Sus datos no se modificaron.",

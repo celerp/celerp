@@ -148,10 +148,15 @@
   Var celerpKb
   Var celerpFound
   Var celerpSetupMutex
+
+  ; A file that cannot be written offers Retry and Cancel, never Ignore, so no file is
+  ; left out of an install; Cancel ends in .onInstFailed.
+  AllowSkipFiles off
 !endif
 
 ; Every way setup stops early. In an update it logs why and reopens the installed
 ; Celerp, which then says the update stopped, so the user is never left without it.
+; Setup's window hides first, so Celerp's window opens in front of it.
 ; The uninstaller build only stops: the installer that ran it reopens Celerp.
 !ifdef BUILD_UNINSTALLER
   !macro celerpUpdateExit REASON
@@ -163,6 +168,7 @@
   !macro celerpUpdateExit REASON
     !insertmacro celerpUpdateLog "stopped: ${REASON}"
     ${If} ${isUpdated}
+      HideWindow
       ${StdUtils.ExecShellAsUser} $0 "$INSTDIR\${APP_EXECUTABLE_FILENAME}" "open" "--updated --update-install-failed=${VERSION}"
       !insertmacro celerpUpdateLog "reopened $INSTDIR\${APP_EXECUTABLE_FILENAME}: $0"
     ${EndIf}
@@ -246,6 +252,13 @@
       Pop $1
       Pop $R1
       Pop $R0
+    FunctionEnd
+
+    ; A section that stopped: a file write answered Cancel. The copy had not reached
+    ; the swap, so the installed version is still in place.
+    Function .onInstFailed
+      !insertmacro celerpAbandonCopy
+      !insertmacro celerpUpdateExit "setup stopped while writing its files"
     FunctionEnd
   !macroend
 !endif
@@ -593,17 +606,19 @@
   ${endIf}
 !macroend
 
-; Once the new version is in place, an old uninstaller that fails is reported, not
-; fatal: what it leaves in the old folder is removed with the folder.
+; Once the new version is in place, an old uninstaller that fails is reported and
+; logged, not fatal: what it leaves in the old folder is removed with the folder.
 !macro celerpUninstallCheck
   ${If} ${Errors}
     DetailPrint `Uninstall was not successful. Not able to launch uninstaller!`
+    !insertmacro celerpUpdateLog "old version uninstall: its uninstaller did not start, code $R0"
   ${ElseIf} $R0 != 0
     ${If} $celerpMode == "direct"
       MessageBox MB_OK|MB_ICONEXCLAMATION "$(uninstallFailed): $R0"
       !insertmacro celerpUpdateExit "uninstall of the old version failed: $R0"
     ${EndIf}
     DetailPrint `Uninstall was not successful. Uninstaller error code: $R0.`
+    !insertmacro celerpUpdateLog "old version uninstall: code $R0"
   ${EndIf}
 !macroend
 

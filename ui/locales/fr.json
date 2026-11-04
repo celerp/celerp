@@ -2022,7 +2022,7 @@
   "shell.restarting": "Redémarrage en cours...",
   "shell.update_available_prefix": "Mise à jour disponible : v",
   "shell.update_not_checked": "Pas encore vérifié",
-  "shell.update_installing": "Installation de v{version}. Celerp sera de retour dans environ une minute.",
+  "shell.update_installing": "Installation de v{version}. Celerp sera de retour dans environ deux minutes.",
   "shell.update_still_restarting": "Celerp redémarre encore. Sélectionnez « Réessayer » dans quelques minutes.",
   "shell.update_result_ok": "Mis à jour vers v{version}.",
   "shell.update_result_failed": "Impossible de mettre à jour vers v{version} : {reason}. Vos données n'ont pas été modifiées.",

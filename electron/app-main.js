@@ -1007,7 +1007,7 @@ function setupAutoUpdater() {
     if (installingUpdate) {
       installingUpdate = false;
       const { version } = updateState.getUpdateState();
-      updateState.installFailed(version, message);
+      updateState.installFailed(version, message, "install");
       showUpdateFailure(updateState.getUpdateState()).finally(() => {
         app.relaunch({ args: [...process.argv.slice(1).filter((arg) => arg !== UPDATED_ARG
                                 && !arg.startsWith(INSTALL_FAILED_ARG)), INSTALL_FAILED_ARG + version] });

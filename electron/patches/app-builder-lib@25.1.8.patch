@@ -172,8 +172,8 @@ index 053772f55ca6ece52f0a34c4fa0f05c9a5f07bd2..42759718eb6a250af51c0c5bb7200a48
    !insertmacro quitSuccess
  !else
 -  # for assisted installer run only if silent, because assisted installer has run after finish option
-+  # for assisted installer run only if silent, because assisted installer has run after finish option;
-+  # an update reopens Celerp and ends here, without the finish page
++  # an assisted install starts the app itself only when silent (an interactive one offers it on the
++  # finish page) or in an update, which reopens Celerp and ends here, without the finish page
    ${if} ${isForceRun}
 -  ${andIf} ${Silent}
 -    !insertmacro doStartApp

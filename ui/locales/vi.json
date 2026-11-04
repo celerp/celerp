@@ -2021,7 +2021,7 @@
   "shell.restarting": "Đang khởi động lại...",
   "shell.update_available_prefix": "Có bản cập nhật: v",
   "shell.update_not_checked": "Chưa kiểm tra",
-  "shell.update_installing": "Đang cài đặt v{version}. Celerp sẽ hoạt động trở lại sau khoảng một phút.",
+  "shell.update_installing": "Đang cài đặt v{version}. Celerp sẽ hoạt động trở lại sau khoảng hai phút.",
   "shell.update_still_restarting": "Celerp vẫn đang khởi động lại. Hãy chọn Thử lại sau vài phút.",
   "shell.update_result_ok": "Đã cập nhật lên v{version}.",
   "shell.update_result_failed": "Không thể cập nhật lên v{version}: {reason}. Dữ liệu của bạn không bị thay đổi.",

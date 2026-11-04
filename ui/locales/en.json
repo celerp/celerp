@@ -2268,7 +2268,7 @@
   "shell.restarting": "Restarting...",
   "shell.update_available_prefix": "Update available: v",
   "shell.update_not_checked": "Not checked yet",
-  "shell.update_installing": "Installing v{version}. Celerp will be back in about a minute.",
+  "shell.update_installing": "Installing v{version}. Celerp will be back in about two minutes.",
   "shell.update_still_restarting": "Celerp is still restarting. Select Try again in a few minutes.",
   "shell.update_result_ok": "Updated to v{version}.",
   "shell.update_result_failed": "Could not update to v{version}: {reason}. Your data was not changed.",
