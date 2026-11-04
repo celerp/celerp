@@ -188,7 +188,7 @@ test("the new version is copied next to the install folder under names of the sa
 test("an installed version is never copied over: setup stops instead",
   function test_nsis_no_direct_copy_over_an_install() {
     const nsh = include();
-    const stops = /The installed version is as it was\." \/SD IDOK\s*\n\s*SetErrorLevel 2\s*\n\s*Quit/;
+    const stops = /The installed version is as it was\." \/SD IDOK\s*\n\s*!insertmacro celerpUpdateExit "/;
     // siblings it did not make, or any other reason it would copy straight into an install
     const prepare = macro(nsh, "celerpPrepareReplace");
     const found = prepare.slice(prepare.indexOf('DetailPrint "Left as found'));
@@ -213,7 +213,7 @@ test("setup stops before changing anything when a volume is short of space",
     expect(check).toContain("${APP_64_UNPACKED_SIZE}");
     const require = macro(nsh, "celerpRequireSpace");
     expect(require).toContain("Nothing has been changed.");
-    expect(require).toMatch(/Nothing has been changed\." \/SD IDOK\s*\n\s*SetErrorLevel 2\s*\n\s*Quit/);
+    expect(require).toMatch(/Nothing has been changed\." \/SD IDOK\s*\n\s*!insertmacro celerpUpdateExit "/);
   });
 
 test("a failed swap puts the installed version back and a stopped one is undone next time",
@@ -225,7 +225,7 @@ test("a failed swap puts the installed version back and a stopped one is undone 
     const failed = swap.split('Rename "$celerpStage" "$INSTDIR"')[1].split("SetOutPath $INSTDIR")[0];
     expect(failed).toContain('Rename "$celerpOld" "$INSTDIR"');
     expect(failed).toContain("!insertmacro celerpAbandonCopy");
-    expect(failed).toContain("SetErrorLevel 2");
+    expect(failed).toContain("!insertmacro celerpUpdateExit");
     // a process cannot move or delete its working folder
     expect(swap.trim().split(/\s*\n\s*/)[1]).toBe("SetOutPath $TEMP");
     expect(macro(nsh, "celerpAbandonCopy")).toContain('RMDir /r "$celerpStage"');
@@ -299,7 +299,7 @@ test("setup stops before copying when the app did not unpack completely",
     expect(body).toContain("System::Int64Op $celerpBytes + 1023");
     expect(body).toContain("System::Int64Op $celerpKb / 1024");
     expect(body).toContain("${If} $celerpKb != ${APP_64_UNPACKED_SIZE}");
-    expect(body).toMatch(/\/SD IDOK\s*\n\s*!insertmacro celerpAbandonCopy\s*\n\s*SetErrorLevel 2\s*\n\s*Quit/);
+    expect(body).toMatch(/\/SD IDOK\s*\n\s*!insertmacro celerpAbandonCopy\s*\n\s*!insertmacro celerpUpdateExit "/);
     expect(pkg.build.nsis.preCompressedFileExtensions).toEqual([]);
   });
 
@@ -426,8 +426,10 @@ test("an update shows setup's progress window, also when the updater asked for a
     const visible = init.split("${If} ${isUpdated}")[1];
     expect(visible).toBeDefined();
     const lines = visible.trim().split(/\s*\n\s*/);
-    expect(lines[0]).toMatch(/^!insertmacro celerpUpdateLog "start: \$\{VERSION\}, mode \$installMode/);
-    expect(lines[1]).toBe("SetSilent normal");
+    // the log says whether the updater asked for a silent install, then setup shows its window
+    expect(lines.slice(0, 4)).toEqual(['StrCpy $R9 "no"', "${If} ${Silent}", 'StrCpy $R9 "yes"', "${EndIf}"]);
+    expect(lines[4]).toBe('!insertmacro celerpUpdateLog "start: ${VERSION}, mode $installMode, silent asked: $R9"');
+    expect(lines[5]).toBe("SetSilent normal");
     // the not-updated prompts still come first and are unchanged
     expect(init.indexOf("${IfNot} ${isUpdated}")).toBeLessThan(init.indexOf("${If} ${isUpdated}"));
   });
