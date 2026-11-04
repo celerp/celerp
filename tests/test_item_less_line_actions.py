@@ -568,6 +568,20 @@ async def test_every_bulk_line_action_is_covered_by_the_guard_and_has_its_own_re
     assert {v[1] for v in _ALL_SKIPPED.values()} <= set(LINE_SKIP_REASONS)
 
 
+async def test_the_page_confirms_every_stock_action_from_the_same_table():
+    """The page script's confirm reads each action's kinds from the skip table, and no stock
+    action on the toolbar asks a fixed question of its own. Red statement: Set as shipped
+    asked "Set the selected lines as shipped?" and named no line it would leave."""
+    from fasthtml.common import to_xml
+
+    from celerp_docs.doc_constants import LINE_SKIP_REASONS
+    from ui.routes.documents import _li_bulk_toolbar, _line_skip_strings
+    assert _line_skip_strings()["skip_kinds"] == {a: list(k) for a, k in LINE_SKIP_REASONS.items()}
+    html = to_xml(_li_bulk_toolbar("doc:1", False, show_fulfill=True, show_reserve=True))
+    assert "hx-confirm" not in html
+    assert 'onclick="liBulkFulfillConfirmed(event)"' in html
+
+
 async def _page_notice(ui_client, route: str, owner: str, lids: list[str], answer: dict) -> str:
     """The notice the page shows for ``answer`` to the action ``route`` names, sent for ``lids``."""
     from test_helpers import make_test_token

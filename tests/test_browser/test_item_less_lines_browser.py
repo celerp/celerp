@@ -167,6 +167,66 @@ def test_set_available_sends_held_and_item_less_rows(page, ui_server, api):
     assert _posted(sent.value, "line_id") == [stone_line, gia_line]
 
 
+_STOCK_ACTIONS = [("li-fulfill", "#li-bulk-fulfill-btn", "shipped"),
+                  ("li-reserve", "#li-bulk-reserve-btn", "reserved"),
+                  ("li-revert", "#li-bulk-revert-btn", "available")]
+
+
+@pytest.mark.parametrize("action, button, word", _STOCK_ACTIONS, ids=[a[2] for a in _STOCK_ACTIONS])
+def test_every_stock_action_confirms_the_count_and_names_the_lines_it_leaves(page, ui_server, api, action, button, word):
+    """Set as shipped, reserved and available ask the same way: the count of lines they act on,
+    then the lines they leave as they are; the notice leads with the count. A choice of only
+    such lines goes without a confirm and is refused in the action's own words. Red statement:
+    Set as shipped asked "Set the selected lines as shipped?" and named no line."""
+    asked: list[str] = []
+    answer_confirms(page, lambda question: asked.append(question) or True)
+    stones = [_stone(api), _stone(api)]
+    doc_id = _invoice(api, [*map(_stone_line, stones), dict(_GIA)])
+    if word == "available":
+        r = api.post(f"/docs/{doc_id}/reserve-lines", json={"line_ids": _line_ids(api, f"/docs/{doc_id}")[:2],
+                                                           "new_status": "reserved"})
+        assert r.status_code in (200, 201), r.text
+    page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
+
+    # Only the certificate: no question, and the refusal says why in this action's words.
+    page.locator("tbody .li-select").nth(2).check()
+    page.locator("#li-bulk-select").select_option(value=action)
+    page.locator(button).click()
+    toast = page.locator(".toast-container .toast--error").last
+    toast.wait_for(state="visible", timeout=8000)
+    assert asked == []
+    assert toast.inner_text().startswith('Line 3 "GIA Certificate" isn\'t an inventory item, so it has no status '
+                                         'to change. Choose the inventory lines instead.')
+
+    # Every line: the question counts the two stones and names the certificate.
+    page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
+    page.check("#li-select-all")
+    page.locator("#li-bulk-select").select_option(value=action)
+    page.locator(button).click()
+    notice = _persistent_toast(page, "GIA Certificate")
+    assert asked == [f'Set 2 lines as {word}? Line 3 "GIA Certificate" will be left as it is.']
+    assert notice.startswith(f"2 lines set as {word}.")
+    expected = {"shipped": "sold", "reserved": "reserved", "available": "available"}[word]
+    assert [_status(api, s) for s in stones] == [expected, expected]
+
+
+def test_set_available_on_lines_with_nothing_out_does_not_send_the_user_back(page, ui_server, api):
+    """A List of stones that are all available, and a certificate: Set as available has
+    nothing to change. Red statement: the refusal said "Choose the inventory lines instead"
+    to a user who had chosen them."""
+    stones = [_stone(api), _stone(api)]
+    list_id = _quotation(api, [*map(_stone_line, stones), dict(_GIA)])
+    answer_confirms(page)
+    page.goto(f"{ui_server}/lists/{list_id}", wait_until="domcontentloaded")
+    page.check("#li-select-all")
+    page.evaluate("liBulkAvailableConfirmed()")
+    toast = page.locator(".toast-container .toast--error").last
+    toast.wait_for(state="visible", timeout=8000)
+    said = toast.inner_text()
+    assert "Choose the inventory lines instead" not in said
+    assert "nothing held or out" in said and '3 "GIA Certificate"' in said
+
+
 def test_line_selection_sends_an_empty_id_for_a_row_without_one(page, ui_server, api):
     first, second = _stone(api), _stone(api)
     doc_id = _invoice(api, [_stone_line(first), _stone_line(second)])
@@ -177,7 +237,7 @@ def test_line_selection_sends_an_empty_id_for_a_row_without_one(page, ui_server,
     page.locator("tbody .li-select").nth(1).evaluate("cb => cb.removeAttribute('data-line-id')")
     page.locator("#li-bulk-select").select_option(value="li-fulfill")
     with page.expect_request(lambda q: q.method == "POST" and q.url.endswith("/fulfill-lines")) as sent:
-        page.locator("#li-bulk-fulfill-btn button").click()
+        page.locator("#li-bulk-fulfill-btn").click()
     assert _posted(sent.value, "line_id") == [first_id, ""]
     assert _posted(sent.value, "selected") == []
     toast = page.locator(".toast-container .toast--error").last
@@ -205,7 +265,10 @@ def test_set_scanned_and_print_labels_name_skipped_rows(page, ui_server, api):
         page.evaluate("liBulkSetScanned(true)")
     lids = [li["line_id"] for li in api.get(f"/lists/{audit_id}").json()["line_items"]]
     assert sorted(_posted(sent.value, "line_id")) == sorted(lids)
-    assert f'{gia_row} "GIA Certificate"' in _persistent_toast(page, "GIA Certificate")
+    # The notice leads with the count, then names the certificate in scanning's own words.
+    scan_notice = _persistent_toast(page, "GIA Certificate")
+    assert scan_notice.startswith(f'2 lines marked as scanned. Line {gia_row} "GIA Certificate" isn\'t an '
+                                  'inventory item, so there is nothing to scan'), scan_notice
     # The rows come back unticked, and so does Select all.
     assert page.evaluate("[...document.querySelectorAll('#line-body .li-select')].some(c => c.checked)") is False
     assert page.evaluate("(s => [s.checked, s.indeterminate])(document.getElementById('li-select-all'))") == [False, False]

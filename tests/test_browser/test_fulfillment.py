@@ -591,7 +591,7 @@ def test_shipping_goods_another_invoice_set_aside_shows_a_lasting_notice(page, u
     _assert_no_crash(page, "second invoice")
     page.locator(".li-select").first.check()
     page.locator("#li-bulk-select").select_option(value="li-fulfill")
-    page.locator("#li-bulk-fulfill-btn button").click()
+    page.locator("#li-bulk-fulfill-btn").click()
 
     page.wait_for_selector(".toast-container .toast--info", timeout=8000)
     toast = page.locator(".toast-container .toast--info").first.inner_text()

@@ -212,14 +212,16 @@ function liSkipNotice(rows, forms) {
   if (rows.length && window.celerpToast) celerpToast(liNameLines(rows, forms), 'info', true);
 }
 // The confirm for a stock line action: it counts the rows the action acts on (countForms,
-// each with {n}) and names up front the rows it will leave as they are (skipForms): a row
-// with no item or a service (data-skip), and with ``idle`` (Set as available) a row with
-// nothing held or out. Empty when no row acts: the request goes without a confirm and the
-// server's refusal names the rows.
-function liLineConfirm(rows, countForms, skipForms, idle) {
+// each with {n}) and names up front the rows it will leave as they are (skipForms). Which
+// those are is the action's own entry of the skip table (``kinds``, LINE_SKIP_REASONS): a row
+// whose data-skip (no item, or a service) is one of them, and with "idle" a row with nothing
+// held or out. Empty when no row acts: the request goes without a confirm and the server's
+// refusal names the rows.
+function liLineConfirm(rows, countForms, skipForms, kinds) {
   var left = rows.filter(function(cb) {
     var st = cb.getAttribute('data-item-status') || '';
-    return cb.getAttribute('data-skip') || (idle && st !== 'reserved' && st !== 'sold' && st !== 'memo_out');
+    return kinds.indexOf(cb.getAttribute('data-skip')) >= 0
+      || (kinds.indexOf('idle') >= 0 && st !== 'reserved' && st !== 'sold' && st !== 'memo_out');
   });
   if (left.length === rows.length) return '';
   var msg = celerpCount(countForms, rows.length - left.length);

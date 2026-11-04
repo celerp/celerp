@@ -86,6 +86,20 @@
       "params": [
         "n"
       ]
+    },
+    "documents.confirm_set_shipped_one": {
+      "en": "Set 1 line as shipped?",
+      "params": []
+    },
+    "documents.confirm_set_shipped_many": {
+      "en": "Set {n} lines as shipped?",
+      "params": [
+        "n"
+      ]
+    },
+    "documents.could_not_set_shipped": {
+      "en": "The selected lines couldn't be set as shipped. Select Try again.",
+      "params": []
     }
   }
 }

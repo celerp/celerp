@@ -4309,7 +4309,7 @@ celerpUpdateBulkAlloc();
         key for this action, so the same action sent again is answered with the first result."""
         return {"line_ids": list(form.getlist("line_id")), "idempotency_key": required_operation_key(form, action)}
 
-    async def _line_action_proxy(request: Request, call, redirect: str | None = None):
+    async def _line_action_proxy(request: Request, call):
         """Send a line action and answer with a toast saying what it did, shown on the page
         the caller opens next. ``call`` returns the API call and its arguments, plus ``_done``:
         the message key naming the action, with a ``_one`` and a ``_many`` form."""
@@ -4341,14 +4341,13 @@ celerpUpdateBulkAlloc();
             n = len(kwargs["line_ids"]) - len((answer.get("skipped") or []) if isinstance(answer, dict) else [])
             message, persist = _with_skipped(t(f"{done}_{'one' if n == 1 else 'many'}", n=n), answer)
             toast = toast_header(message, "info", persist=persist)
-        return _R("", status_code=204, headers={**toast, **({"HX-Redirect": redirect} if redirect else {})})
+        return _R("", status_code=204, headers=toast)
 
     @app.post("/docs/{entity_id}/fulfill-lines")
     async def doc_fulfill_lines(request: Request, entity_id: str):
         return await _line_action_proxy(
             request, lambda form: {"_send": api.fulfill_lines, "entity_id": entity_id, "_done": "documents.lines_shipped",
-                          **_line_action_form(form, "fulfil")},
-            redirect=f"/docs/{entity_id}")
+                          **_line_action_form(form, "fulfil")})
 
     @app.post("/docs/{entity_id}/back-to-memo")
     async def doc_back_to_memo(request: Request, entity_id: str):
@@ -6549,6 +6548,15 @@ def _count_forms(key: str) -> dict[str, str]:
     return {"one": t(f"{key}_one"), "many": t(f"{key}_many")}
 
 
+def _line_skip_strings() -> dict:
+    """The page script's part of the bulk line actions' skip table (LINE_SKIP_REASONS): the
+    kinds of line each action leaves as it is, which its confirm names (liLineConfirm), and
+    the notice of Print labels, which runs in the page."""
+    from celerp_docs.doc_constants import LINE_SKIP_REASONS
+    return {"skip_kinds": {action: list(kinds) for action, kinds in LINE_SKIP_REASONS.items()},
+            "labels_skipped": _count_forms(LINE_SKIP_REASONS["labels"]["no_item"][0])}
+
+
 def _receive_summary(line_counts: dict | None) -> str:
     """What a receipt did with its lines: how many added stock, and how many expense and asset
     lines added none. Groups with no lines are left out; no counts, no summary."""
@@ -6924,17 +6932,12 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
             ]
         else:
             if show_fulfill:
+                # A plain button, as Set as reserved is, so it confirms the same way: the count
+                # and the lines it will leave as they are.
                 children.append(
-                    Form(
-                        _line_action_submit(_fulfill_label, "btn btn--primary btn--sm"),
-                        id="li-bulk-fulfill-btn",
-                        style="display:none",
-                        hx_post=f"/docs/{entity_id}/fulfill-lines",
-                        hx_swap="none",
-                        hx_confirm=t("documents.confirm_ship_goods"),
-                        hx_disabled_elt="find button[type=submit]",
-                        onsubmit="return submitLiBulkAction(this)",
-                    )
+                    Button(_fulfill_label, type="button", id="li-bulk-fulfill-btn",
+                           cls="btn btn--primary btn--sm", style="display:none",
+                           onclick="liBulkFulfillConfirmed(event)"),
                 )
             if show_reserve:
                 children.append(
@@ -8745,7 +8748,7 @@ window._L = {_json.dumps({
     "rows_selected": t("documents.rows_selected"),
     "no_lines_selected": t("documents.no_lines_selected"),
     "no_inventory_labels": t("documents.no_inventory_items_labels"),
-    "labels_skipped": _count_forms("documents.labels_skipped"),
+    **_line_skip_strings(),
     "will_skip": _count_forms("documents.will_skip"),
     "confirm_set_reserved": _count_forms("documents.confirm_set_reserved"),
     "confirm_set_available": _count_forms("documents.confirm_set_available"),
@@ -10412,7 +10415,7 @@ async function celerpCsvImport(input, entityId) {{
       return;
     }}
     var _confirm=(target==='reserved'?_L.confirm_set_reserved:_L.confirm_set_available);
-    var msg=liLineConfirm(rows, _confirm, _L.will_skip, target!=='reserved');
+    var msg=liLineConfirm(rows, _confirm, _L.will_skip, _L.skip_kinds[target==='reserved'?'reserve':'set-available']);
     if(msg&&!(await celerpConfirm(msg))) return;
     // Persist pending edits first so the server sees every selected line, then act. A failed
     // save has already shown its reason; acting on top of it would use stale lines.
@@ -10712,11 +10715,13 @@ async function celerpCsvImport(input, entityId) {{
   const _L = {_json.dumps({
     "rows_selected": t("documents.rows_selected"),
     "no_inventory_labels": t("documents.no_inventory_items_labels"),
-    "labels_skipped": _count_forms("documents.labels_skipped"),
+    **_line_skip_strings(),
     "no_lines_selected": t("documents.no_lines_selected"),
     "will_skip": _count_forms("documents.will_skip"),
+    "confirm_set_shipped": _count_forms("documents.confirm_set_shipped"),
     "confirm_set_reserved": _count_forms("documents.confirm_set_reserved"),
     "confirm_set_available": _count_forms("documents.confirm_set_available"),
+    "could_not_set_shipped": t("documents.could_not_set_shipped"),
     "could_not_set_reserved": t("documents.could_not_set_reserved"),
     "could_not_set_available": t("documents.could_not_set_available"),
     "sold_reserve_warn": t("documents.sold_reserve_warn"),
@@ -10798,19 +10803,22 @@ async function celerpCsvImport(input, entityId) {{
   window.liActionChanged=function(action){{ window.liBulkActionSelected(action); }};
   // The operation key this page was rendered with (see ui/components/operation_key.py).
   function _liKey(){{ return toolbar?(toolbar.getAttribute('data-operation-key')||''):''; }}
-  // Set as shipped posts the HTMX form: it names each chosen line and carries the page's key.
-  window.submitLiBulkAction=function(formEl){{
-    formEl.querySelectorAll('input[name="selected"],input[name="line_id"],input[name="idempotency_key"]')
-      .forEach(function(el){{el.remove();}});
-    var pairs=celerpLineSelection(_liCheckedRows()).concat([['idempotency_key',_liKey()]]);
-    pairs.forEach(function(kv){{
-      var inp=document.createElement('input');inp.type='hidden';inp.name=kv[0];inp.value=kv[1];
-      formEl.appendChild(inp);
-    }});
-    return true;
-  }};
   function _liCheckedRows(){{
     return table?Array.prototype.slice.call(table.querySelectorAll('.li-select:checked')):[];
+  }}
+
+  // "Set as shipped": the chosen lines ship in one request, after the confirm counts them and
+  // names the lines it will leave as they are.
+  window.liBulkFulfillConfirmed=function(e){{ return celerpLineActionOnce(e, _liFulfill); }};
+  async function _liFulfill(){{
+    var rows=_liCheckedRows();
+    if(!rows.length){{ if(window.celerpToast)celerpToast(_L.no_lines_selected,'error'); return; }}
+    var msg=liLineConfirm(rows, _L.confirm_set_shipped, _L.will_skip, _L.skip_kinds['fulfill']);
+    if(msg&&!(await celerpConfirm(msg))) return;
+    if(!(await celerpLineAction('/docs/'+_liEid+'/fulfill-lines', rows, [], _liKey(), _L.could_not_set_shipped)))
+      return false;
+    window.location.reload();
+    return true;
   }}
 
   // "Set as reserved": status change on the selected lines, one request. A line this doc
@@ -10820,8 +10828,8 @@ async function celerpCsvImport(input, entityId) {{
     var rows=_liCheckedRows();
     if(!rows.length){{ if(window.celerpToast)celerpToast(_L.no_lines_selected,'error'); return; }}
     var sold=rows.filter(function(cb){{return (cb.getAttribute('data-item-status')||'')==='sold';}}).length;
-    var msg=liLineConfirm(rows, _L.confirm_set_reserved, _L.will_skip, false);
-    if(sold) msg=_L.sold_reserve_warn.replace('{{n}}', sold);
+    var msg=liLineConfirm(rows, _L.confirm_set_reserved, _L.will_skip, _L.skip_kinds['reserve']);
+    if(sold) msg+=' '+_L.sold_reserve_warn.replace('{{n}}', sold);
     if(msg&&!(await celerpConfirm(msg))) return;
     if(!(await celerpLineAction(_liBase+_liEid+'/reserve-lines', rows, [['new_status','reserved']], _liKey(), _L.could_not_set_reserved)))
       return false;
@@ -10856,7 +10864,7 @@ async function celerpCsvImport(input, entityId) {{
       // The whole line coming back needs no quantity: everything still out returns.
       if(qty!==max) fields.push([inp.name,String(qty)]);
     }}
-    var msg=liLineConfirm(rows, _L.confirm_set_available, _L.will_skip, true);
+    var msg=liLineConfirm(rows, _L.confirm_set_available, _L.will_skip, _L.skip_kinds['set-available']);
     if(msg&&!(await celerpConfirm(msg))) return;
     if(!(await celerpLineAction(_liBase+_liEid+'/set-available', rows, fields, _liKey(), _L.could_not_set_available)))
       return false;

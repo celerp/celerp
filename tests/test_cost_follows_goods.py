@@ -388,9 +388,10 @@ async def test_the_ship_notice_says_the_other_invoice_cannot_ship_it():
     with patch("ui.api_client.fulfill_lines", new=AsyncMock(return_value=answer)):
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as ui:
             ui.cookies.update(authed_cookies())
-            r = await ui.post("/docs/doc:B/fulfill-lines", data={"selected": ["item:1"], "idempotency_key": "page-key-1"})
+            r = await ui.post("/docs/doc:B/fulfill-lines", data={"line_id": ["ln-1"], "idempotency_key": "page-key-1"})
     assert r.status_code == 204, r.text
-    assert r.headers["HX-Redirect"] == "/docs/doc:B"
+    # The page reloads itself, as after every line action, and shows the notice it kept.
+    assert "HX-Redirect" not in r.headers
     toast = json.loads(r.headers["HX-Trigger"])["celerpToast"]
     assert toast == {"message": t("documents.cost_moved_with_goods", sku="LOT-1", doc="INV-A"),
                      "type": "info", "persist": True}
