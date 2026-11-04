@@ -41,8 +41,27 @@ _NOTICE = "subscriptions.notice_schedule_check"
 _DOC_TYPES = {"invoice": {"invoice"}, "purchase_order": {"purchase_order", "bill"}}
 
 
-def _is_legacy(state: dict) -> bool:
+def is_legacy(state: dict) -> bool:
+    """The template still holds an earlier release's fields instead of a schedule."""
     return "anchor_date" not in state and any(f in state for f in _LEGACY)
+
+
+def legacy_schedule(state: dict) -> dict:
+    """The schedule fields an earlier release's template meant, read as that release read
+    them: anchored on its next run date (or start date), and a custom interval left empty
+    is the 30 days it billed on. ValueError saying why when they describe no schedule."""
+    anchor = state.get("next_run_date") or state.get("start_date")
+    if not anchor:
+        raise ValueError("it has no next run date or start date")
+    fields = {"anchor_date": anchor, "generation_mode": "manual_due", "billing_timing": "advance"}
+    if (state.get("frequency") or "monthly") == "custom":
+        days = state.get("custom_interval_days")
+        days = int(days) if isinstance(days, str) and days.strip().isdigit() else days
+        if days and type(days) is not int:
+            raise ValueError(f'its custom interval "{days}" is not a number of days')
+        fields["custom_interval_days"] = days or 30
+    Schedule.from_state({**state, **fields, "periods": {}})
+    return fields
 
 
 async def _placements(session, company_id, state: dict, schedule: Schedule,
@@ -91,31 +110,26 @@ async def _migrate_template(session: AsyncSession, company_id, proj: Projection,
                             conflicts: set[str] | None = None) -> bool | None:
     """Move one template onto a schedule; True when it waits for history review, None when
     another start already moved it. Caller holds the savepoint and commits."""
-    row = await billing.locked_agreement(session, company_id, proj.entity_id)
+    row = await billing.locked_agreement(session, company_id, proj.entity_id, scheduled=False)
     state = row.state
-    if not _is_legacy(state):
+    if not is_legacy(state):
         return None
     old_next = state.get("next_run_date")
-    changes: dict = {"generation_mode": "manual_due", "billing_timing": "advance"}
+    changes = legacy_schedule(state)
     review: list = []
-    anchor = old_next or state.get("start_date")
-    if not anchor:
-        raise ValueError("Cannot migrate a subscription without its first billing date")
-    if anchor:
-        changes["anchor_date"] = anchor
-        schedule = Schedule.from_state({**state, **changes, "periods": {}})
-        placed, problems = await _placements(session, company_id,
-                                              {**state, "id": proj.entity_id}, schedule, conflicts or set())
-        periods = {}
-        if problems:
-            review = [{"doc_id": d, "candidates": ks} for d, ks in placed.items()]
-            periods = {str(k): {"state": UNRESOLVED, "release_count": 0} for ks in placed.values() for k in ks}
-            log.info("Template %s waits for history review: %s", proj.entity_id, "; ".join(problems))
-        else:
-            periods = {str(ks[0]): {"state": BILLED, "doc_id": d, "release_count": 0} for d, ks in placed.items()}
-        changes["periods"] = periods
-        if review:
-            changes["history_review"] = review
+    schedule = Schedule.from_state({**state, **changes, "periods": {}})
+    placed, problems = await _placements(session, company_id,
+                                          {**state, "id": proj.entity_id}, schedule, conflicts or set())
+    periods = {}
+    if problems:
+        review = [{"doc_id": d, "candidates": ks} for d, ks in placed.items()]
+        periods = {str(k): {"state": UNRESOLVED, "release_count": 0} for ks in placed.values() for k in ks}
+        log.info("Template %s waits for history review: %s", proj.entity_id, "; ".join(problems))
+    else:
+        periods = {str(ks[0]): {"state": BILLED, "doc_id": d, "release_count": 0} for d, ks in placed.items()}
+    changes["periods"] = periods
+    if review:
+        changes["history_review"] = review
     await emit_event(
         session, company_id=company_id, entity_id=proj.entity_id, entity_type="doc", event_type="doc.updated",
         data={"fields_changed": {**{k: {"new": v} for k, v in changes.items()},
@@ -197,7 +211,7 @@ async def migrate_company(session: AsyncSession, company_id, *, force: bool = Fa
             if owner != agreement.entity_id:
                 conflicts.add(doc_id)
     for proj in agreements:
-        if not _is_legacy(proj.state):
+        if not is_legacy(proj.state):
             continue
         try:
             async with session.begin_nested():

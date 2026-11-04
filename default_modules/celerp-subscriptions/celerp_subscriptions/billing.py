@@ -93,13 +93,33 @@ def compute_due_date(issue_date: date, payment_terms: str | None, company: Compa
     return None
 
 
-async def locked_agreement(session: AsyncSession, company_id, entity_id: str) -> Projection:
+async def locked_agreement(session: AsyncSession, company_id, entity_id: str, *,
+                           scheduled: bool = True) -> Projection:
     """The agreement under the company lock and its own row lock, as the previous writer
-    committed it: every schedule operation reads and writes it under this lock."""
+    committed it: every schedule operation reads and writes it under this lock. With
+    ``scheduled`` (every operation that reads the schedule), a template not yet moved onto
+    one is refused with a 409 naming it and why."""
     proj = (await lock_projections(session, company_id, [entity_id])).get(entity_id)
     if not proj or proj.state.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
         raise HTTPException(status_code=404, detail=t("subscriptions.err_not_found"))
+    if scheduled and (reason := not_moved(proj.state)) is not None:
+        raise HTTPException(status_code=409, detail=t(
+            "subscriptions.err_not_moved", ref=proj.state.get("ref_id") or entity_id, reason=reason))
     return proj
+
+
+def not_moved(state: dict) -> str | None:
+    """Why a template still holds an earlier release's fields instead of a schedule, or None
+    when it has a schedule."""
+    from celerp_subscriptions import migration
+
+    if not migration.is_legacy(state):
+        return None
+    try:
+        migration.legacy_schedule(state)
+    except ValueError as exc:
+        return str(exc)
+    return t("subscriptions.not_moved_pending")
 
 
 async def write_agreement(session: AsyncSession, company_id, entity_id: str, changes: dict, actor_id, *,
@@ -307,10 +327,11 @@ async def period_list(session: AsyncSession, company_id, state: dict, today: dat
     """An agreement's periods from its lowest to the one after today (and any claimed later),
     newest first, at most ``limit``, with each claim's state and document; its next bill date;
     the earlier documents waiting for history review, each with its candidate periods; and the
-    ones set aside as billing no period of their own."""
+    ones set aside as billing no period of their own. A template not yet on a schedule has
+    none of these, and ``not_moved`` says why."""
     if not state.get("anchor_date"):
         return {"next_bill_date": None, "rows": [], "review": [], "set_aside": [],
-                "older_before": None, "oldest_due_row": None}
+                "older_before": None, "oldest_due_row": None, "not_moved": not_moved(state)}
     schedule = Schedule.from_state(state)
     nxt = schedule.next_bill_date(floor=review_floor(state))
     first = schedule.first()
