@@ -927,7 +927,8 @@ _REVIEWED: dict[tuple[str, str], str] = {
     ("ui/routes/contacts.py", "setup_routes"): _OWN_UI,
     **{(_DOCS_UI, name): _OWN_UI for name in (
         "_hold_refusal", "_physical_lots", "_sales_options", "_doc_line_actions",
-        "_writeoff_account_choices", "_payment_section", "_doc_detail", "setup_routes")},
+        "_writeoff_account_choices", "_payment_section", "_doc_detail", "_line_skip_strings",
+        "setup_routes")},
     **{(_DOCS_UI, name): "builds document lines from selected items; called only from Inventory's "
        "own bulk actions (ui/routes/inventory.py), so it runs only while Inventory runs"
        for name in ("_line_items_from_inventory", "_reorder_po_line")},
