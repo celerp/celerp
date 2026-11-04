@@ -53,6 +53,7 @@ from celerp.services.account_roles import (
     surviving_key,
 )
 from celerp.services.business_time import business_date_of
+from celerp.services.record_quantities import sent_out_by
 from celerp.services import doc_asset_lines
 from celerp.services.company_lock import lock_company
 from celerp.services.document_lines import line_item_id
@@ -3369,9 +3370,10 @@ class _Shipments:
     (doc, lot) the line id and line index its latest fulfillment for the doc recorded.
 
     Only the doc's current issue counts: what it shipped before its last revert to draft
-    belongs to the earlier issue. No lot is out across a revert (the revert is refused while
-    one is) and the revert voids every cost the earlier issue recognized, so that history
-    holds no cost for the reissued doc and its lines may since have changed."""
+    belongs to the earlier issue, whose costs the revert voided and whose lines may since
+    have changed. A lot the doc still holds out (sent_out_by) keeps its earlier history,
+    though: the revert is refused while a lot is out, so such a lot means a guard was
+    bypassed, and it must still reach the line refusal rather than drop out of the books."""
 
     out: dict[str, list[Projection]] = field(default_factory=dict)
     back: dict[str, list[tuple[Projection, float]]] = field(default_factory=dict)
@@ -3409,18 +3411,16 @@ async def _shipments(session, company_id, doc_ids) -> _Shipments:
             LedgerEntry.event_type == "doc.reverted_to_draft",
         ).group_by(LedgerEntry.entity_id)
     )).all())
-    last: dict[tuple[str, str], tuple[str, dict]] = {}
+    last: dict[tuple[str, str], tuple[str, dict, bool]] = {}
     for entry_id, entity_id, event_type, data, metadata_ in rows:
         key = (str((data or {}).get("source_doc_id")), entity_id)
-        if entry_id <= reverted.get(key[0], 0):
-            continue
-        last[key] = (event_type, data or {})
+        last[key] = (event_type, data or {}, entry_id <= reverted.get(key[0], 0))
         if event_type == "item.fulfilled":
             result.recorded[key] = recorded_line(SimpleNamespace(metadata_=metadata_))
     lots = await _load_rows(session, company_id, {lot_id for _doc, lot_id in last})
-    for (doc_id, lot_id), (event_type, data) in sorted(last.items()):
+    for (doc_id, lot_id), (event_type, data, earlier) in sorted(last.items()):
         row = lots.get(lot_id)
-        if row is None:
+        if row is None or (earlier and not sent_out_by(row.state or {}, doc_id)):
             continue
         if event_type == "item.fulfilled":
             result.out.setdefault(doc_id, []).append(row)

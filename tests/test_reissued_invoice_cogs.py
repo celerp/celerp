@@ -168,14 +168,20 @@ async def test_kept_line_returned_before_revert_holds_full_share_after_reissue(c
     assert (await _per_doc(session, auth)).get(doc) == round(COSTS[0] + COSTS[1], 2)
 
 
-async def _rewrite_lines(session, auth, doc: str, rewrite) -> None:
-    """Store the invoice's lines as ``rewrite`` returns them, as a record whose lines no longer
-    say where its goods went (a line edited outside its event history)."""
+async def _rewrite_state(session, auth, doc: str, change) -> None:
+    """Store on the invoice's record the fields ``change`` returns for its state, outside its
+    event history."""
     session.expire_all()
     row = (await session.execute(select(Projection).where(
         Projection.company_id == auth["company_id"], Projection.entity_id == doc))).scalar_one()
-    row.state = {**row.state, "line_items": rewrite(row.state["line_items"])}
+    row.state = {**row.state, **change(row.state)}
     await session.commit()
+
+
+async def _rewrite_lines(session, auth, doc: str, rewrite) -> None:
+    """Store the invoice's lines as ``rewrite`` returns them, as a record whose lines no longer
+    say where its goods went (a line edited outside its event history)."""
+    await _rewrite_state(session, auth, doc, lambda st: {"line_items": rewrite(st["line_items"])})
 
 
 async def test_unmatched_out_lot_still_refused_with_new_message(client, session, auth):
@@ -219,3 +225,64 @@ async def test_ambiguous_back_lot_still_refused(client, session, auth):
     assert r.json()["detail"]["message_key"] == "error.cogs_line_unknown"
     assert r.json()["detail"]["params"]["items"] == sku
     assert await _per_doc(session, auth) == before
+
+
+async def _ship_in_two_batches(client, auth, stones):
+    """An invoice of two stones whose second line ships first and whose first line ships in a
+    second batch, so the invoice's list of shipped goods names only the first stone."""
+    doc = await _invoice(client, auth, stones)
+    first, second = await _line_ids(client, auth, doc)
+    for line in (second, first):
+        r = await _ship(client, auth, doc, [line])
+        assert r.status_code == 200, r.text
+    return doc, first, second
+
+
+async def test_line_of_a_lot_still_out_cannot_be_dropped(client, session, auth):
+    """An issued invoice keeps the line of goods still out on it: removing that line is refused."""
+    stones = (await _stones(client, auth))[:2]
+    doc, _first, _second = await _ship_in_two_batches(client, auth, stones)
+    st = await _state(client, auth, doc)
+    r = await client.patch(f"/docs/{doc}", headers=auth["headers"], json={
+        "fields_changed": {"line_items": {"old": st["line_items"], "new": st["line_items"][:1]}},
+        "expected_version": st["version"]})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["message_key"] == "lines.shipped_elsewhere"
+    assert len((await _state(client, auth, doc))["line_items"]) == 2
+
+
+async def test_invoice_with_a_lot_still_out_cannot_be_reverted(client, session, auth):
+    """Setting the later batch available leaves the invoice partly shipped while the earlier
+    batch's goods are still out, so it cannot go back to draft."""
+    stones = (await _stones(client, auth))[:2]
+    doc, first, _second = await _ship_in_two_batches(client, auth, stones)
+    r = await client.post(f"/docs/{doc}/set-available", headers=auth["headers"], json={"line_ids": [first]})
+    assert r.status_code == 200, r.text
+    assert r.json()["fulfillment_status"] == "partial"
+    r = await client.post(f"/docs/{doc}/revert-to-draft", headers=auth["headers"], json={})
+    assert r.status_code == 409, r.text
+    assert (await _state(client, auth, doc))["status"] != "draft"
+    assert (await client.get(f"/items/{stones[1][0]}", headers=auth["headers"])).json()["status"] == "sold"
+
+
+async def test_lot_still_out_across_a_revert_is_still_refused(client, session, auth):
+    """Goods still out when an invoice went back to draft (only a guard letting the revert
+    through can do that) stay on the books of the invoice: once their line is gone, the next
+    shipment is refused and names them, and nothing is booked."""
+    stones = (await _stones(client, auth))[:2]
+    doc, first, _second = await _ship_in_two_batches(client, auth, stones)
+    await _ok(client, auth, f"/docs/{doc}/set-available", {"line_ids": [first]})
+    # the invoice as a Set available that ignored the goods still out would leave it
+    await _rewrite_state(session, auth, doc, lambda st: {"fulfilled_items": [], "fulfillment_status": "unfulfilled"})
+    await _ok(client, auth, f"/docs/{doc}/revert-to-draft")
+    await _rewrite_lines(session, auth, doc, lambda lines: lines[:1])
+    await _ok(client, auth, f"/docs/{doc}/finalize")
+    before = (await _per_doc(session, auth), await _account_net(session, auth["company_id"], COGS))
+    r = await _ship(client, auth, doc, await _line_ids(client, auth, doc))
+    assert r.status_code == 409, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "error.cogs_line_unknown"
+    assert detail["params"] == {"doc": await _doc_number(session, auth, doc), "items": stones[1][1]}
+    assert (await _per_doc(session, auth), await _account_net(session, auth["company_id"], COGS)) == before
+    assert (await client.get(f"/items/{stones[1][0]}", headers=auth["headers"])).json()["status"] == "sold"
+    assert (await client.get(f"/items/{stones[0][0]}", headers=auth["headers"])).json()["status"] == "available"
