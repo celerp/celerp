@@ -2,6 +2,15 @@ diff --git a/templates/nsis/include/allowOnlyOneInstallerInstance.nsh b/template
 index 97b27fce6798e30e3e631221435f09b3579e77c3..9893ed92e3cc36a0fc91c3051742f55752c840f7 100644
 --- a/templates/nsis/include/allowOnlyOneInstallerInstance.nsh
 +++ b/templates/nsis/include/allowOnlyOneInstallerInstance.nsh
+@@ -63,7 +63,7 @@
+         Goto doStopProcess
+       ${endIf}
+       MessageBox MB_OKCANCEL|MB_ICONEXCLAMATION "$(appRunning)" /SD IDOK IDOK doStopProcess
+-      Quit
++      !insertmacro celerpUpdateExit "the running Celerp was left open"
+ 
+       doStopProcess:
+ 
 @@ -108,7 +108,7 @@
          # Ask user to close it manually
          ${if} $R1 > 1
@@ -71,7 +80,7 @@ index f5470bf52e923dc47266cea4684c76ef78ced451..f8a02ea4abe136a7fe0331b812b6f4fb
      CopyFiles /SILENT "$PLUGINSDIR\7z-out\*" $OUTDIR
      IfErrors 0 DoneExtract7za
  
-@@ -113,22 +129,13 @@
+@@ -113,22 +129,12 @@
        # Try copying a few times before asking for a user action.
        Goto RetryExtract7za
      ${else}
@@ -94,7 +103,6 @@ index f5470bf52e923dc47266cea4684c76ef78ced451..f8a02ea4abe136a7fe0331b812b6f4fb
 -    Quit
 +    # Stop rather than extract over the top while ignoring errors: that reports
 +    # success with files missing, for example on a full disk.
-+    !insertmacro celerpAbandonCopy
 +    !insertmacro celerpUpdateExit "the app files could not be copied to $INSTDIR"
  
    RetryExtract7za:

@@ -148,14 +148,17 @@
   Var celerpKb
   Var celerpFound
   Var celerpSetupMutex
+  ; "1" from the marker to the swap: a stop in between removes the new folder.
+  Var celerpCopying
 
   ; A file that cannot be written offers Retry and Cancel, never Ignore, so no file is
   ; left out of an install; Cancel ends in .onInstFailed.
   AllowSkipFiles off
 !endif
 
-; Every way setup stops early. In an update it logs why and reopens the installed
-; Celerp, which then says the update stopped, so the user is never left without it.
+; Every way setup stops early. A copy it had started is removed. In an update it logs
+; why and reopens the installed Celerp, which then says the update stopped, so the
+; user is never left without it.
 ; Setup's window hides first, so Celerp's window opens in front of it.
 ; The uninstaller build only stops: the installer that ran it reopens Celerp.
 !ifdef BUILD_UNINSTALLER
@@ -166,6 +169,7 @@
 !endif
 !ifndef BUILD_UNINSTALLER
   !macro celerpUpdateExit REASON
+    !insertmacro celerpAbandonCopy
     !insertmacro celerpUpdateLog "stopped: ${REASON}"
     ${If} ${isUpdated}
       HideWindow
@@ -257,7 +261,6 @@
     ; A section that stopped: a file write answered Cancel. The copy had not reached
     ; the swap, so the installed version is still in place.
     Function .onInstFailed
-      !insertmacro celerpAbandonCopy
       !insertmacro celerpUpdateExit "setup stopped while writing its files"
     FunctionEnd
   !macroend
@@ -487,6 +490,7 @@
     ${Else}
       FileWriteUTF16LE $celerpFile "$celerpMarkerText"
       FileClose $celerpFile
+      StrCpy $celerpCopying "1"
     ${EndIf}
   ${EndIf}
   ${If} $celerpMode == "direct"
@@ -498,7 +502,8 @@
 
 ; A copy that did not finish: the new folder goes and the installed version stays.
 !macro celerpAbandonCopy
-  ${If} $celerpMode != "direct"
+  ${If} $celerpCopying == "1"
+    StrCpy $celerpCopying "0"
     ; a process cannot delete its own working folder
     SetOutPath $TEMP
     RMDir /r "$celerpStage"
@@ -523,7 +528,6 @@
       Pop $celerpKb
       ${If} $celerpKb != ${APP_64_UNPACKED_SIZE}
         MessageBox MB_OK|MB_ICONEXCLAMATION "${PRODUCT_NAME} could not unpack all of its files, usually because the disk is full. Free up space, then run setup again. The installed version is as it was." /SD IDOK
-        !insertmacro celerpAbandonCopy
         !insertmacro celerpUpdateExit "the unpacked app is short"
       ${EndIf}
     ${EndIf}
@@ -547,7 +551,6 @@
         ${If} $celerpTry < 10
           Sleep 1000
         ${ElseIf} ${Cmd} `MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "${PRODUCT_NAME} could not replace the files in $INSTDIR because one of them is in use. Close ${PRODUCT_NAME} and any window open on that folder, then click Retry. Cancel leaves the installed version as it is." /SD IDCANCEL IDCANCEL`
-          !insertmacro celerpAbandonCopy
           !insertmacro celerpUpdateExit "files in $INSTDIR in use, Cancel"
         ${Else}
           StrCpy $celerpTry 0
@@ -562,10 +565,10 @@
       ${If} $celerpMode == "swap"
         Rename "$celerpOld" "$INSTDIR"
       ${EndIf}
-      !insertmacro celerpAbandonCopy
       MessageBox MB_OK|MB_ICONEXCLAMATION "${PRODUCT_NAME} could not move its new files into $INSTDIR. The installed version is as it was." /SD IDOK
       !insertmacro celerpUpdateExit "could not move the new files into $INSTDIR"
     ${EndIf}
+    StrCpy $celerpCopying "0"
     !insertmacro celerpUpdateLog "swapped: the new files are in $INSTDIR"
     SetOutPath $INSTDIR
     ; The packed and unpacked app are no longer needed, and the old uninstaller may

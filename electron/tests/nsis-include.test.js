@@ -106,8 +106,8 @@ test("setup stops with an error when the app files cannot be copied",
     const failed = macro.split("IfErrors 0 DoneExtract7za")[1].split("RetryExtract7za:")[0];
     expect(failed).toContain("/SD IDCANCEL IDRETRY RetryExtract7za");
     expect(failed).toContain("could not copy its files to $INSTDIR. Make sure the disk has enough free space");
-    expect(failed.trim().split(/\s*\n\s*/).slice(-2)).toEqual([
-      "!insertmacro celerpAbandonCopy", '!insertmacro celerpUpdateExit "the app files could not be copied to $INSTDIR"']);
+    expect(failed.trim().split(/\s*\n\s*/).slice(-1)).toEqual([
+      '!insertmacro celerpUpdateExit "the app files could not be copied to $INSTDIR"']);
     expect(macro.split('Nsis7z::Extract "${FILE}"').length).toBe(2);
   });
 
@@ -224,7 +224,6 @@ test("a failed swap puts the installed version back and a stopped one is undone 
     expect(swap).toContain('Rename "$celerpStage" "$INSTDIR"');
     const failed = swap.split('Rename "$celerpStage" "$INSTDIR"')[1].split("SetOutPath $INSTDIR")[0];
     expect(failed).toContain('Rename "$celerpOld" "$INSTDIR"');
-    expect(failed).toContain("!insertmacro celerpAbandonCopy");
     expect(failed).toContain("!insertmacro celerpUpdateExit");
     // a process cannot move or delete its working folder
     expect(swap.trim().split(/\s*\n\s*/)[1]).toBe("SetOutPath $TEMP");
@@ -299,7 +298,7 @@ test("setup stops before copying when the app did not unpack completely",
     expect(body).toContain("System::Int64Op $celerpBytes + 1023");
     expect(body).toContain("System::Int64Op $celerpKb / 1024");
     expect(body).toContain("${If} $celerpKb != ${APP_64_UNPACKED_SIZE}");
-    expect(body).toMatch(/\/SD IDOK\s*\n\s*!insertmacro celerpAbandonCopy\s*\n\s*!insertmacro celerpUpdateExit "/);
+    expect(body).toMatch(/\/SD IDOK\s*\n\s*!insertmacro celerpUpdateExit "/);
     expect(pkg.build.nsis.preCompressedFileExtensions).toEqual([]);
   });
 
@@ -333,8 +332,6 @@ const ALLOWED_ENDS = [
   { file: "multiUserUi.nsh", after: "${If} $1 = 1", count: 1,
     reason: "install-mode page leave: the page is skipped in an update" },
   { file: "multiUserUi.nsh", after: "!insertmacro UAC_RunElevated", count: 1, reason: "uninstaller build only" },
-  { file: "allowOnlyOneInstallerInstance.nsh", after: '"$(appRunning)" /SD IDOK IDOK doStopProcess', count: 1,
-    reason: "an update goes straight to the close, never to this prompt" },
   { file: "installer.nsi", after: "${EndSwitch}", count: 1,
     reason: "silent per-machine elevation: an update is no longer silent" },
   { file: "uninstaller.nsh", count: 1, reason: "one-click uninstaller only" },
@@ -354,7 +351,7 @@ const ALLOWED_ENDS = [
 const UPDATE_EXITS = {
   "build/installer.nsh": 9,
   "extractAppPackage.nsh": 2,
-  "allowOnlyOneInstallerInstance.nsh": 1,
+  "allowOnlyOneInstallerInstance.nsh": 2,
   "installUtil.nsh": 1,
   "multiUserUi.nsh": 1,
 };
@@ -394,12 +391,50 @@ test("every way an update can stop reopens the installed Celerp",
     expect(macro(include(), "celerpInstallerFunctions")).toContain("Function .onInstFailed");
   });
 
+// Once the copy into the new folder has started, every way setup stops removes that
+// folder and its marker, so a stopped setup leaves nothing beside the install. The
+// exit itself abandons the copy, so no exit can skip it, and the copy counts as
+// started only from the marker to the swap: a setup that stops before it leaves
+// alone the folders it found, and one that stops after it keeps the new install.
+test("every exit after the copy starts removes the new folder and its marker",
+  function test_every_exit_abandons_the_copy() {
+    const nsh = include();
+    const scripts = installerScripts();
+    const lines = (pattern) => scripts.flatMap(({ name, lines: all }) => {
+      const opened = [];
+      return all.flatMap((line) => {
+        if (/^!macro\s/.test(line)) opened.push(line);
+        if (line === "!macroend") opened.pop();
+        return pattern.test(line) ? [`${name} ${opened.join(" > ")}: ${line}`] : [];
+      });
+    });
+    expect(lines(/^!insertmacro celerpAbandonCopy$/))
+      .toEqual(["build/installer.nsh !macro celerpUpdateExit REASON: !insertmacro celerpAbandonCopy"]);
+    expect(lines(/\$celerpCopying\b/)).toEqual([
+      'build/installer.nsh !macro celerpBeginCopy: StrCpy $celerpCopying "1"',
+      'build/installer.nsh !macro celerpAbandonCopy: ${If} $celerpCopying == "1"',
+      'build/installer.nsh !macro celerpAbandonCopy: StrCpy $celerpCopying "0"',
+      'build/installer.nsh !macro celerpSwapIn: StrCpy $celerpCopying "0"',
+    ]);
+    const begin = macro(nsh, "celerpBeginCopy");
+    expect(begin.split("FileClose $celerpFile")[1].trim().split(/\s*\n\s*/)[0]).toBe('StrCpy $celerpCopying "1"');
+    const swapped = macro(nsh, "celerpSwapIn").split('!insertmacro celerpUpdateExit "could not move the new files into $INSTDIR"')[1];
+    expect(swapped.trim().split(/\s*\n\s*/).slice(0, 2)).toEqual(["${EndIf}", 'StrCpy $celerpCopying "0"']);
+    // the stock prompt for a Celerp left open, and the one that cannot be closed,
+    // both stop through the exit: celerpSwapIn reaches them after the copy
+    const running = template("include/allowOnlyOneInstallerInstance.nsh");
+    for (const prompt of ['"$(appRunning)" /SD IDOK IDOK doStopProcess', '"$(appCannotBeClosed)" /SD IDCANCEL IDRETRY loop']) {
+      expect(running.split(prompt)[1].trim().split("\n")[0]).toMatch(/^!insertmacro celerpUpdateExit "/);
+    }
+  });
+
 test("an update that stops logs why and reopens the installed Celerp, and a fresh install just stops",
   function test_update_exit_reopens_installed_celerp() {
     const nsh = include();
     const [, installer] = nsh.split("!ifndef BUILD_UNINSTALLER\n  !macro celerpUpdateExit REASON");
     const body = installer.split("!macroend")[0].trim().split(/\s*\n\s*/);
     expect(body).toEqual([
+      "!insertmacro celerpAbandonCopy",
       '!insertmacro celerpUpdateLog "stopped: ${REASON}"',
       "${If} ${isUpdated}",
       "HideWindow",
@@ -418,7 +453,7 @@ test("the uninstaller build stops without a log or a relaunch",
     expect(uninstaller.split("!macroend")[0].trim().split(/\s*\n\s*/)).toEqual(["SetErrorLevel 2", "Quit"]);
     // the variables of an update exist in the installer build only
     const installerOnly = nsh.split("!ifndef BUILD_UNINSTALLER\n  ; swap:")[1].split("!endif")[0];
-    for (const name of ["celerpFound", "celerpSetupMutex"]) expect(installerOnly).toContain(`Var ${name}`);
+    for (const name of ["celerpFound", "celerpSetupMutex", "celerpCopying"]) expect(installerOnly).toContain(`Var ${name}`);
     expect(nsh.match(/^\s*Var /gm).length).toBe(installerOnly.match(/^\s*Var /gm).length);
   });
 
@@ -458,7 +493,6 @@ test("a file write answered Cancel ends the update with the old Celerp reopened"
     expect(nsh.match(/AllowSkipFiles/g).length).toBe(1);
     const failed = macro(nsh, "celerpInstallerFunctions").split("Function .onInstFailed")[1].split("FunctionEnd")[0];
     expect(failed.trim().split(/\s*\n\s*/)).toEqual([
-      "!insertmacro celerpAbandonCopy",
       '!insertmacro celerpUpdateExit "setup stopped while writing its files"',
     ]);
   });
