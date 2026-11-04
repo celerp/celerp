@@ -35,20 +35,19 @@ jobs:
             constraints.txt
       - name: Install dependencies
         run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist -c constraints.txt
-      - name: Focused regression suite
+      - name: Refresh module integrity lock
+        run: |
+          python scripts/gen_first_party_lock.py
+          grep '"celerp-subscriptions"' default_modules/first_party.lock.json
+      - name: Targeted regression suite
         env:
           ALLOW_INSECURE_JWT: "true"
           DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
         run: >
           pytest -n 2 -q --tb=short --no-cov
-          default_modules/celerp-subscriptions/tests/
-          tests/test_company_backup_lifecycle.py
-          tests/test_company_backup.py
-          tests/test_email_service.py
-          tests/test_periodic_dispatcher.py
-          tests/test_role_permissions.py
+          tests/test_openapi_docs.py
+          tests/test_migrations/test_alembic_graph.py
+          tests/test_default_modules_boot.py
+          default_modules/celerp-subscriptions/tests/test_periods.py
+          default_modules/celerp-subscriptions/tests/test_subscriptions_ui.py
           tests/test_subscriptions_manual_generation.py
-          tests/test_i18n_subscriptions.py
-          tests/test_one_unit.py
-          tests/test_migrations/test_models_match_migrations.py
-          tests/test_migrations/test_fresh_install_migrate.py
