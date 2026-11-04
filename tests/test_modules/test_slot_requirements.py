@@ -77,6 +77,7 @@ _VALID = {
     "doc_finalize_hook": [{"handler": "{inner}.hooks:hook"}],
     "on_doc_payment": [{"handler": "{inner}.hooks:hook"}],
     "item_lineage_guard": [{"handler": "{inner}.lineage:guard"}],
+    "doc_status_guard": [{"handler": "{inner}.lineage:guard"}],
     "inventory_in_production": [{"handler": "{inner}.lineage:in_production"}],
     "demo_records": [{"handler": "{inner}.lineage:demo"}],
     "background_loop": [{"handler": "{inner}.hooks:loop"}],

@@ -95,6 +95,7 @@ def test_manufacturing_slots_are_public_with_their_keyword_contracts():
     assert loader._HANDLER_KEYWORDS == {
         "inventory_in_production": ("session", "company_id"),
         "item_lineage_guard": ("session", "entry", "transition"),
+        "doc_status_guard": ("session", "entry", "transition"),
         "demo_records": ("session", "company_id", "user_id"),
         "background_loop": (),
         "doc_asset_lines": ("session", "company_id", "user_id", "doc_id", "doc", "change"),

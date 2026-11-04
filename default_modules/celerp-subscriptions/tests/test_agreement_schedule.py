@@ -561,7 +561,8 @@ async def test_bulk_replay_after_void_and_reopen_never_creates_replacement(clien
 
     repeated = await client.post(url, headers=hd, json=original)
     assert repeated.status_code == 200, repeated.text
-    assert repeated.json()["results"][0]["doc_id"] == doc_id
+    row = repeated.json()["results"][0]
+    assert not row["ok"] and first.json()["results"][0]["ref_id"] in row["error"]
     assert len(await billed_docs(session, eid)) == 1
 
     fresh = {"items": [{**_bulk_item(eid), "request_key": "new-generation"}]}
