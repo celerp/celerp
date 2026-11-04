@@ -219,3 +219,10 @@ def test_a_list_of_sentence_reasons_reads_as_sentences():
               "message_key": "lines.revert_part_not_memo", "params": {"name": s, "status": "sold"}} for s in ("A", "B")]
     text = refusal_text({"message": "Cannot take back", "message_key": "lines.cannot_revert", "params": {"reasons": parts}})
     assert "this one is sold; B:" in text.replace("Sold", "sold"), text
+
+
+def test_a_line_with_no_item_status_shows_the_empty_mark():
+    from ui.components.table import EMPTY
+    from ui.routes.documents import _item_status_badge_cell
+    html = to_xml(_item_status_badge_cell("", ""))
+    assert f'<span class="cell-empty">{EMPTY}</span>' in html, html

@@ -29,7 +29,7 @@ from celerp.services.units import (
 from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, line_label, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
 from ui.components.shell import base_shell, page_header, refusal_fix, toast_header, page_title
 from ui.security import not_permitted_redirect
-from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, period_all_time_link, period_empty_text, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum, display_unit, doc_href, doc_status_badge, doc_status_shown
+from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, period_all_time_link, period_empty_text, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, empty_mark, display_enum, display_unit, doc_href, doc_status_badge, doc_status_shown
 from celerp.services.background import spawn_background
 from celerp.services.document_lines import line_item_id
 from celerp.services.business_time import business_today
@@ -935,7 +935,7 @@ def _line_held(li: dict, status_doc: tuple[str, str] | None, owner_id: str,
 def _item_status_badge_cell(status_val: str, eid: str, status_doc: tuple[str, str] | None = None,
                             held: tuple[float, float] | None = None) -> FT:
     """Status column cell for a document line: linked badge when the item's status is
-    known, muted '-' otherwise. Shared by the draft and finalized line tables.
+    known, the empty mark otherwise. Shared by the draft and finalized line tables.
 
     status_doc: (doc_entity_id, doc_number) of the document that caused the status.
     The badge then reads STATUS: DOC-NUMBER with the number linked to that document,
@@ -967,7 +967,7 @@ def _item_status_badge_cell(status_val: str, eid: str, status_doc: tuple[str, st
                 if eid else Span(label, cls=f"badge {badge_cls}")
             )
         return _badge_cell(badge_el, cls="col-item-status")
-    return Td(Span("-", cls="muted"), cls="col-item-status")
+    return Td(empty_mark(), cls="col-item-status")
 
 
 def _vendor_line_badge(li: dict, doc_status: str, receipt_unknown: bool = False) -> FT:
@@ -8382,8 +8382,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Td(_sku_input(), cls="col-sku"), _e_desc_cell,
             ]
             if _draft_show_item_status:
-                # No item picked yet; newly added rows show '-' until the next reload.
-                cells.insert(1, Td(Span("-", cls="muted"), cls="col-item-status"))
+                # No item picked yet; newly added rows show the empty mark until an item is picked.
+                cells.insert(1, Td(empty_mark(), cls="col-item-status"))
             if _cat_cell:
                 cells.append(_cat_cell)
             if _ra_cell:
@@ -9151,7 +9151,7 @@ function celerpFillRow(row, data) {{
             }
         } else {
             const dash = document.createElement('span');
-            dash.className = 'muted'; dash.textContent = '-';
+            dash.className = 'cell-empty'; dash.textContent = '--';
             statusCell.replaceChildren(dash);
         }
         const cb = row.querySelector('.li-select');
