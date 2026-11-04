@@ -27,7 +27,7 @@ from celerp.services.units import (
     DEFAULT_UNITS, RECEIVE_KINDS, build_unit_map, default_receive_as, format_qty, line_receive_kind, plain_number, quantity_step,
 )
 from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
-from ui.components.shell import base_shell, page_header, toast_header, page_title
+from ui.components.shell import base_shell, page_header, refusal_fix, toast_header, page_title
 from ui.security import not_permitted_redirect
 from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, period_all_time_link, period_empty_text, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, display_enum, display_unit, doc_href, doc_status_badge, doc_status_shown
 from celerp.services.background import spawn_background
@@ -1135,6 +1135,13 @@ def _line_number_field(unit_label: str, **attrs) -> FT:
     )
 
 
+def _with_skipped(message: str, answer) -> tuple[str, bool]:
+    """``message`` followed by the notice naming the lines an action left as they are, and
+    whether the toast stays until it is closed, which it does when it names any."""
+    notice = answer.get("skipped_notice") if isinstance(answer, dict) else None
+    return (f"{message} {refusal_text(notice)}", True) if notice else (message, False)
+
+
 def _reopened_toast(answer) -> dict:
     """A notice that stays until closed, naming the memo an action gave goods back to and
     opened again, with a link to it; empty when no memo reopened."""
@@ -1142,7 +1149,8 @@ def _reopened_toast(answer) -> dict:
     if not memos:
         return {}
     names = ", ".join(m.get("doc_number") or m.get("id") or "" for m in memos)
-    return toast_header(t("documents.memo_reopened_notice", memo=names), "info", persist=True,
+    message, _ = _with_skipped(t("documents.memo_reopened_notice", memo=names), answer)
+    return toast_header(message, "info", persist=True,
                         action={"href": doc_href(memos[0].get("id")), "label": memos[0].get("doc_number") or ""})
 
 
@@ -1155,6 +1163,10 @@ def _action_error(msg: str | dict | APIError, *, persist: bool = False, action: 
     from starlette.responses import HTMLResponse as _HR
     if isinstance(msg, APIError):
         msg = msg.data if isinstance(msg.data, dict) and msg.data.get("message_key") else error_message(msg)
+    if isinstance(msg, dict) and msg.get("also"):
+        # A refusal of several kinds: its message, then each of the others.
+        action = action or refusal_fix(msg)
+        msg = f"{refusal_text(msg)} {refusal_text(msg['also'])}"
     return _HR(
         "",
         status_code=200,
@@ -3408,7 +3420,8 @@ celerpUpdateBulkAlloc();
             if e.status == 401:
                 raise
             return JSONResponse({**saved, "error": error_message(e)})
-        return JSONResponse({**saved, "money": _doc_money(doc)})
+        return JSONResponse({**saved, "money": _doc_money(doc),
+                             "line_ids": [li.get("line_id") for li in doc.get("line_items") or []]})
 
     async def _proxy_reprice(request: Request, entity_id: str, reprice_fn):
         """Transport-only Web UI adapter; all repricing semantics live in celerp-docs."""
@@ -4261,11 +4274,9 @@ celerpUpdateBulkAlloc();
     # -----------------------------------------------------------------------
 
     def _line_action_form(form, action: str) -> dict:
-        """The selection a line action form names: ``line_id`` per chosen line (older rows
-        without one send their item as ``selected``), and the page's key for this action, so
-        the same action sent again is answered with the first result."""
-        return {"line_ids": list(form.getlist("line_id")), "line_entity_ids": list(form.getlist("selected")),
-                "idempotency_key": required_operation_key(form, action)}
+        """The selection a line action form names: ``line_id`` per chosen line, and the page's
+        key for this action, so the same action sent again is answered with the first result."""
+        return {"line_ids": list(form.getlist("line_id")), "idempotency_key": required_operation_key(form, action)}
 
     async def _line_action_proxy(request: Request, call, redirect: str | None = None):
         """Send a line action and answer with a toast saying what it did, shown on the page
@@ -4294,10 +4305,11 @@ celerpUpdateBulkAlloc();
         elif moved:
             notice = " ".join(t("documents.cost_moved_with_goods", sku=m.get("sku") or m.get("lot_id"),
                                 doc=m.get("doc_number") or m.get("doc_id")) for m in moved)
-            toast = toast_header(notice, "info", persist=True)
+            toast = toast_header(_with_skipped(notice, answer)[0], "info", persist=True)
         else:
-            n = len(kwargs["line_ids"]) + len(kwargs["line_entity_ids"])
-            toast = toast_header(t(f"{done}_{'one' if n == 1 else 'many'}", n=n), "info")
+            n = len(kwargs["line_ids"]) - len((answer.get("skipped") or []) if isinstance(answer, dict) else [])
+            message, persist = _with_skipped(t(f"{done}_{'one' if n == 1 else 'many'}", n=n), answer)
+            toast = toast_header(message, "info", persist=persist)
         return _R("", status_code=204, headers={**toast, **({"HX-Redirect": redirect} if redirect else {})})
 
     @app.post("/docs/{entity_id}/fulfill-lines")
@@ -5105,7 +5117,9 @@ celerpUpdateBulkAlloc();
             if e.status == 401:
                 raise
             return JSONResponse({**saved, "error": error_message(e)})
-        return JSONResponse({**saved, "money": _doc_money({"doc_type": "list", **lst})})
+        return JSONResponse({**saved, "money": _doc_money({"doc_type": "list", **lst}),
+                             "line_ids": [li.get("line_id") for li in
+                                          (lst.get("line_items") or [])[offset:offset + len(page)]]})
 
     @app.post("/lists/{entity_id}/action/{action}")
     async def list_action(request: Request, entity_id: str, action: str):
@@ -9723,6 +9737,14 @@ function _celerpRowLineId(row) {{
     if (!el.value) el.value = _celerpNewLineId();
     return el.value;
 }}
+function _celerpSetRowLineId(row, id) {{
+    // The id the server saved the row's line under, on its hidden field and its checkbox,
+    // so a line action right after the save names the line.
+    const el = row.querySelector('[data-name="line_id"]');
+    if (el) el.value = id || '';
+    const cb = row.querySelector('.li-select');
+    if (cb) cb.setAttribute('data-line-id', id || '');
+}}
 function _celerpRowHasContent(row) {{
     // A row is a line worth saving once it names something or carries a price.
     const val = name => row.querySelector(`[data-name="${{name}}"]`)?.value;
@@ -9915,6 +9937,8 @@ async function _celerpRefreshHeldBadges() {{
     if (!window._CELERP_CAN_EDIT_LINES) return true;
     const revision = window._celerpLineRevision;
     const lines = _celerpCollectLines();
+    // The rows the collector sent, in its order, so the saved line ids land on them.
+    const savedRows = Array.from(document.querySelectorAll('#{line_body_id} tr')).filter(_celerpRowHasContent);
     // A null return means the collector aborted on an invalid quantity and has
     // already shown the error: send no request and report the save as failed so
     // callers that gate on a clean save hold position.
@@ -9952,6 +9976,8 @@ async function _celerpRefreshHeldBadges() {{
         try {{
             const data = await resp.json();
             if (data && data.version != null) _celerpEntityVersion = data.version;
+            if (data && Array.isArray(data.line_ids) && data.line_ids.length === savedRows.length)
+                savedRows.forEach((row, i) => _celerpSetRowLineId(row, data.line_ids[i]));
             // The server's money for what was just saved, unless a newer edit is already pending
             // (its own save brings fresher figures).
             if (data && data.money && revision === window._celerpLineRevision) _celerpShowStoredMoney(data.money);
@@ -10294,11 +10320,7 @@ async function celerpCsvImport(input, entityId) {{
   if(table) table.addEventListener('change',function(e){{
     if(e.target&&e.target.classList.contains('li-select')) _update();
   }});
-  var sa=document.getElementById('li-select-all');
-  if(sa) sa.addEventListener('change',function(){{
-    if(table) table.querySelectorAll('tbody .li-select').forEach(function(cb){{cb.checked=sa.checked;}});
-    _update();
-  }});
+  liSelectAll(table, document.getElementById('li-select-all'), _update);
   var deleteBtn=document.getElementById('li-bulk-delete-btn');
   var labelsBtn=document.getElementById('li-bulk-labels-btn');
   var markScanBtn=document.getElementById('li-bulk-markscan-btn');
@@ -10481,14 +10503,11 @@ async function celerpCsvImport(input, entityId) {{
             cells = []
             if _fin_show_bulk:
                 li_sku = li.get("sku") or ""
-                # For inbound docs, enable all rows - fulfill_lines ignores entity_ids for inbound.
-                # For outbound docs, disable rows without entity_id (no inventory action possible).
-                _cb_disabled = not li_eid and not _is_vendor_doc
                 _li_status = item_status_map.get(li_eid, "") if item_status_map else ""
                 cells.append(Td(
                     Input(type="checkbox", cls="li-select", value=li_eid, data_sku=li_sku,
                           data_item_status=_li_status, data_line_id=str(li.get("line_id") or ""),
-                          data_line_index=str(idx), disabled=_cb_disabled),
+                          data_line_index=str(idx)),
                     Input(type="hidden", value=li_eid, data_name="entity_id"),
                     cls="col-checkbox li-checkbox-cell",
                 ))
@@ -10679,11 +10698,7 @@ async function celerpCsvImport(input, entityId) {{
   if(table) table.addEventListener('change',function(e){{
     if(e.target&&e.target.classList.contains('li-select')) _update();
   }});
-  var sa=document.getElementById('li-select-all');
-  if(sa) sa.addEventListener('change',function(){{
-    if(table) table.querySelectorAll('.li-select').forEach(function(cb){{cb.checked=sa.checked;}});
-    _update();
-  }});
+  liSelectAll(table, document.getElementById('li-select-all'), _update);
   const _liEid = {repr(entity_id)};
   const _liBase = {'"/lists/"' if is_list else '"/docs/"'};
   var labelsBtn=document.getElementById('li-bulk-labels-btn');
@@ -10750,7 +10765,7 @@ async function celerpCsvImport(input, entityId) {{
   // already shipped is taken back into stock first (sale reversed), so the confirm says so.
   window.liBulkReserveConfirmed=function(e){{ return celerpLineActionOnce(e, _liReserve); }};
   async function _liReserve(){{
-    var rows=_liCheckedRows().filter(function(cb){{return cb.value;}});
+    var rows=_liCheckedRows();
     if(!rows.length){{ if(window.celerpToast)celerpToast(_L.no_lines_selected,'error'); return; }}
     var sold=rows.filter(function(cb){{return (cb.getAttribute('data-item-status')||'')==='sold';}}).length;
     var msg=celerpCount(_L.confirm_set_reserved, rows.length);
@@ -10769,11 +10784,13 @@ async function celerpCsvImport(input, entityId) {{
   // cancelling sends nothing.
   window.liBulkAvailableConfirmed=function(e){{ return celerpLineActionOnce(e, _liSetAvailable); }};
   async function _liSetAvailable(){{
-    var rows=_liCheckedRows().filter(function(cb){{return cb.value;}});
+    var rows=_liCheckedRows();
     if(!rows.length){{ if(window.celerpToast)celerpToast(_L.no_lines_selected,'error'); return; }}
+    // A row with no item goes to the server, which leaves it as it is and names it; a stocked
+    // row with nothing held or out is left out here, since the server refuses it.
     var acting=rows.filter(function(cb){{
       var st=cb.getAttribute('data-item-status')||'';
-      return st==='reserved'||st==='sold'||st==='memo_out';
+      return !cb.value||st==='reserved'||st==='sold'||st==='memo_out';
     }});
     if(!acting.length){{ if(window.celerpToast)celerpToast(_L.none_can_available,'error'); return; }}
     var fields=[];

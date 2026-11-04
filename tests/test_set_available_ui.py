@@ -50,7 +50,7 @@ async def test_the_proxy_sends_one_request_by_line_id_with_its_key(ui_client, ba
     sent.assert_awaited_once()
     args, kwargs = sent.await_args
     assert args[1] == "x:1"
-    assert kwargs == {"line_ids": [_L0, _L1], "line_entity_ids": [], "quantities": {_L1: 2.0},
+    assert kwargs == {"line_ids": [_L0, _L1], "quantities": {_L1: 2.0},
                       "idempotency_key": "k-1:set-available", "is_list": is_list}
 
 
@@ -96,9 +96,9 @@ async def test_reserve_and_fulfil_proxies_send_line_ids_and_the_key(ui_client):
         r = await ui_client.post("/docs/x:1/fulfill-lines", data={
             "line_id": [_L0], "idempotency_key": "k-f"})
         assert r.status_code == 204, r.text
-    assert reserve.await_args.kwargs == {"line_ids": [_L0], "line_entity_ids": [], "new_status": "reserved",
+    assert reserve.await_args.kwargs == {"line_ids": [_L0], "new_status": "reserved",
                                          "idempotency_key": "k-r:reserved", "is_list": False}
-    assert fulfil.await_args.kwargs == {"line_ids": [_L0], "line_entity_ids": [], "idempotency_key": "k-f:fulfil"}
+    assert fulfil.await_args.kwargs == {"line_ids": [_L0], "idempotency_key": "k-f:fulfil"}
 
 
 @pytest.mark.asyncio
@@ -120,9 +120,9 @@ async def test_the_api_client_posts_the_selection_quantities_and_key():
         await api.set_lines_available("t", "doc:1", line_ids=[_L0], quantities={_L0: 1.5}, idempotency_key="k")
         await api.set_lines_available("t", "list:1", line_ids=[_L0], idempotency_key="k2", is_list=True)
     assert posted == [
-        ("/docs/doc:1/set-available", {"line_ids": [_L0], "line_entity_ids": [], "quantities": {_L0: 1.5},
+        ("/docs/doc:1/set-available", {"line_ids": [_L0], "quantities": {_L0: 1.5},
                                         "idempotency_key": "k"}),
-        ("/lists/list:1/set-available", {"line_ids": [_L0], "line_entity_ids": [], "quantities": None,
+        ("/lists/list:1/set-available", {"line_ids": [_L0], "quantities": None,
                                           "idempotency_key": "k2"}),
     ]
 

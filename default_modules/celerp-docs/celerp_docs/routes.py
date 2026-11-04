@@ -590,8 +590,8 @@ class DocBatchImportRequest(BaseModel):
 class FulfillLinesRequest(BaseModel):
     """The lines an action applies to: ``line_ids`` names each line by its line id.
 
-    ``line_entity_ids`` names lines by the item they bind, for clients written before
-    lines had ids; each item must be on exactly one line. Send one of the two.
+    ``line_entity_ids`` picks lines by the item they bind; each item must be on exactly one
+    line. Send one of the two.
     ``idempotency_key`` names one submission: sending it again returns the first result."""
     line_ids: list[str] = Field(default_factory=list)
     line_entity_ids: list[str] = Field(default_factory=list)
@@ -10298,8 +10298,8 @@ async def batch_import_lists(
 def _selected_line_indices(line_items: list[dict], body: FulfillLinesRequest) -> list[int]:
     """The lines a request names, as positions in ``line_items``, in document order.
 
-    ``line_ids`` must each name a line on the record. A legacy ``line_entity_ids`` entry
-    names the line that binds that item, and only when exactly one line does: an item on
+    ``line_ids`` must each name a line on the record. A ``line_entity_ids`` entry picks
+    the line that binds that item, and only when exactly one line does: an item on
     several lines does not say which of them is meant."""
     if body.line_ids and body.line_entity_ids:
         raise HTTPException(status_code=422, detail=refusal(
@@ -11236,9 +11236,10 @@ async def _reverse_whole_lines(
 
 
 def _revert_selection(line_items: list[dict], body: FulfillLinesRequest) -> list[int]:
-    """The lines a revert names. A legacy ``line_entity_ids`` body names the lots to take
-    back themselves (a lot drawn from another lot of a line's product is on no line), so it
-    selects no line; the lots are proved one by one instead."""
+    """The lines a revert names. A ``line_entity_ids`` body, which picks lines by the item
+    they bind, names the lots to take back themselves (a lot drawn from another lot of a
+    line's product is on no line), so it selects no line; the lots are proved one by one
+    instead."""
     if body.line_entity_ids and not body.line_ids:
         return []
     return _selected_line_indices(line_items, body)

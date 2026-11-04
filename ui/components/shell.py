@@ -162,16 +162,30 @@ async function celerpLineActionOnce(e, run) {
   var leaving = false;
   try { leaving = await run(); } finally { if (!leaving) _celerpLineActionBusy = false; }
 }
-// The [name, value] pairs naming the chosen rows: line_id each when every row has one,
-// otherwise the item each row binds.
+// The [name, value] pairs naming the chosen rows: one line_id each, empty for a row without
+// one, so the server names it instead of the request leaving it out.
 function celerpLineSelection(rows) {
-  var byLine = rows.every(function(cb) { return cb.getAttribute('data-line-id'); });
-  var out = [];
-  rows.forEach(function(cb) {
-    var id = byLine ? cb.getAttribute('data-line-id') : cb.value;
-    if (id) out.push([byLine ? 'line_id' : 'selected', id]);
+  return rows.map(function(cb) { return ['line_id', cb.getAttribute('data-line-id') || '']; });
+}
+// Select all for a line table: ticks or unticks every row, then calls ``onChange``. It shows
+// all, none or some (indeterminate) as rows are ticked one by one.
+function liSelectAll(table, sa, onChange) {
+  if (!table || !sa) return;
+  function boxes() { return table.querySelectorAll('tbody .li-select'); }
+  function sync() {
+    var b = boxes(), n = 0;
+    b.forEach(function(cb) { if (cb.checked) n++; });
+    sa.checked = n > 0 && n === b.length;
+    sa.indeterminate = n > 0 && n < b.length;
+  }
+  sa.addEventListener('change', function() {
+    boxes().forEach(function(cb) { cb.checked = sa.checked; });
+    sync();
+    if (onChange) onChange();
   });
-  return out;
+  table.addEventListener('change', function(e) {
+    if (e.target && e.target.classList.contains('li-select')) sync();
+  });
 }
 // A count message in the form that reads right for n: forms is {one, many}, each with {n}.
 function celerpCount(forms, n) {
