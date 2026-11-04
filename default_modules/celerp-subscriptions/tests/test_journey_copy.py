@@ -186,6 +186,26 @@ async def test_a_bulk_run_names_each_agreement_document_and_period_it_acted_on(o
         assert template_label(sub, eid) in text
 
 
+@pytest.mark.parametrize("view", ["/subscriptions?direction=sales", "/subscriptions?direction=sales&status=active&q=SUBI"])
+async def test_generate_all_due_redraws_the_list_rows_and_counts_it_changed(owner_ui, monkeypatch, view):
+    """Run from the list, Generate all due answers with the list's status cards and table as a
+    reload of the same view would draw them, so no row reads its old next bill date."""
+    freeze_day(monkeypatch, "2026-03-15")
+    ids = [await agreement(owner_ui.api, {}, start="2026-03-01") for _ in range(2)]
+    before = BeautifulSoup((await owner_ui.get(view)).text, "html.parser")
+    r = await owner_ui.post("/subscriptions/generate-due", data={"item": [f"{eid}|0" for eid in ids], **_key()},
+                            headers={"HX-Request": "true", "HX-Current-URL": f"http://test{view}"})
+    assert r.status_code == 200, r.text
+    answer = BeautifulSoup(r.text, "html.parser")
+    after = BeautifulSoup((await owner_ui.get(view)).text, "html.parser")
+    for part in ("#sub-table", "#sub-status-cards"):
+        drawn = answer.select_one(part)
+        assert drawn is not None and drawn.get("hx-swap-oob") == "true", part
+        del drawn["hx-swap-oob"]
+        assert str(drawn) == str(after.select_one(part)), part
+    assert str(before.select_one("#sub-table")) != str(after.select_one("#sub-table"))
+
+
 _CHANGED = {"anchor_date": "2026-04-05", "frequency": "weekly", "custom_interval_days": "10", "billing_timing": "arrears",
             "term_start": "2026-04-01", "term_end": "2027-04-01", "cancel_at_period_end": "true",
             "catchup_periods": "3", "generation_mode": "manual_due", "auto_send": "true"}

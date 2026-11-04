@@ -12,9 +12,10 @@ the agreement's periods are listed under the document.
 from __future__ import annotations
 
 import logging
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 from fasthtml.common import *
+from starlette.datastructures import QueryParams
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 
@@ -234,7 +235,7 @@ def _sub_status_cards(items: list[dict], active_status: str, direction: str) -> 
         {"label": display_enum("paused", "subscription_status"),    "count": counts.get("paused", 0),    "total": None, "status": "paused",    "color": "yellow", "_url": f"{base}&status=paused"},
         {"label": display_enum("cancelled", "subscription_status"), "count": counts.get("cancelled", 0), "total": None, "status": "cancelled", "color": "gray",   "_url": f"{base}&status=cancelled"},
     ]
-    return status_cards(cards, base, active_status or None, currency=None, show_all_card=False)
+    return Div(status_cards(cards, base, active_status or None, currency=None, show_all_card=False), id="sub-status-cards")
 
 
 def _data_table(*parts) -> FT:
@@ -817,6 +818,35 @@ async def _all_agreements(token: str, direction: str | None = None, *, review: b
             return items
 
 
+def _list_state(params) -> dict:
+    """What a list view of agreements shows, from its query params: the list page's URL, or the
+    page an action was taken from."""
+    try:
+        page = max(int(params.get("page", 1)), 1)
+    except (TypeError, ValueError):
+        page = 1
+    return {"direction": params.get("direction") or "sales", "status": params.get("status", ""), "q": params.get("q", ""),
+            "review": params.get("review", "") in {"1", "true"}, "page": page,
+            "per_page": per_page_value(params.get("per_page"), _PER_PAGE)}
+
+
+def _listed(items: list[dict], state: dict) -> list[dict]:
+    """The agreements a list view shows: those of its status (the default, All Issued, leaves
+    drafts out) that match its search."""
+    status, ql = state["status"], state["q"].lower()
+    items = [i for i in items if i.get("status") == status] if status else [i for i in items if i.get("status") != "draft"]
+    return [i for i in items if not ql or any(ql in (v or "").lower() for v in (
+        i.get("ref_id") or i.get("doc_number"), i.get("name"), i.get("contact_name"), i.get("contact_company_name")))]
+
+
+def _list_views(all_items: list[dict], state: dict) -> tuple[FT, FT, int]:
+    """The status cards and the table of one page of a list view, and how many rows it has in all."""
+    listed = _listed(all_items, state)
+    page, per_page = state["page"], state["per_page"]
+    return (_sub_status_cards(all_items, state["status"], state["direction"]),
+            _sub_table(listed[(page - 1) * per_page: page * per_page], state["direction"], state["review"]), len(listed))
+
+
 async def _agreements(token: str, direction: str | None = None) -> dict[str, dict]:
     """Agreements by id, of one direction or both."""
     items = await _all_agreements(token, direction)
@@ -874,9 +904,17 @@ def setup_routes(app) -> None:
                 item["request_key"] = f"{key}:{item['period_index']}"
             result = await api.generate_all_due(token, items)
             subs = await _agreements(token)
+            answer = _due_results(result, subs, str(form[FIELD]))
+            # Run from the list: its cards and rows show what the run changed.
+            page = urlsplit(request.headers.get("HX-Current-URL", ""))
+            if page.path != "/subscriptions":
+                return answer
+            state = _list_state(QueryParams(page.query))
+            listed = await _all_agreements(token, state["direction"], review=state["review"])
         except APIError as e:
             return _refused(e)
-        return _due_results(result, subs, str(form[FIELD]))
+        cards, table, _ = _list_views(listed, state)
+        return answer, cards(hx_swap_oob="true"), table(hx_swap_oob="true")
 
     @app.get("/subscriptions/catch-up")
     async def subscriptions_catch_up_page(request: Request):
@@ -981,32 +1019,14 @@ def setup_routes(app) -> None:
             return RedirectResponse("/login", status_code=302)
         if (r := await _check_permission(request, "view_subscriptions", page_view=True)):
             return r
-        q = request.query_params.get("q", "")
-        page = int(request.query_params.get("page", 1))
-        per_page = per_page_value(request.query_params.get("per_page"), _PER_PAGE)
-
+        state = _list_state(request.query_params)
+        q, page, per_page = state["q"], state["page"], state["per_page"]
         try:
             all_items = await _all_agreements(token, direction, review=review)
         except APIError as exc:
             return await _load_error_page(request, t(f"nav.subscriptions_{'sales' if direction == 'sales' else 'purchasing'}"),
                                           exc, "subscriptions_sales" if direction == "sales" else "subscriptions_purchasing")
-
-        filtered = all_items
-        if status:
-            filtered = [i for i in filtered if i.get("status") == status]
-        else:
-            # "All Issued" default view excludes drafts
-            filtered = [i for i in filtered if i.get("status") != "draft"]
-        if q:
-            ql = q.lower()
-            filtered = [i for i in filtered if
-                        ql in (i.get("ref_id") or i.get("doc_number") or "").lower()
-                        or ql in (i.get("name") or "").lower()
-                        or ql in (i.get("contact_name") or "").lower()
-                        or ql in (i.get("contact_company_name") or "").lower()]
-
-        total = len(filtered)
-        page_items = filtered[(page - 1) * per_page: page * per_page]
+        cards, table, total = _list_views(all_items, state)
         side = "sales" if direction == "sales" else "purchasing"
         title = t(f"nav.subscriptions_{side}")
         extra = urlencode({k: v for k, v in {"direction": direction, "status": status, "q": q,
@@ -1032,8 +1052,8 @@ def setup_routes(app) -> None:
             _review_banner(all_items, direction, review),
             Div(id="sub-due-panel", data_esc_clear="1"),
             _PANEL_ESC_JS,
-            _sub_status_cards(all_items, status, direction),
-            _sub_table(page_items, direction, review),
+            cards,
+            table,
             pagination(page, total, per_page, "/subscriptions", extra),
             cls="page-content",
         )
@@ -1053,18 +1073,7 @@ def setup_routes(app) -> None:
         except APIError as exc:
             _signed_out(exc)
             return Div(error_message(exc), id="sub-table", cls="flash flash--warning")
-        if status:
-            items = [i for i in items if i.get("status") == status]
-        else:
-            items = [i for i in items if i.get("status") != "draft"]
-        if q:
-            ql = q.lower()
-            items = [i for i in items if
-                     ql in (i.get("ref_id") or i.get("doc_number") or "").lower()
-                     or ql in (i.get("name") or "").lower()
-                     or ql in (i.get("contact_name") or "").lower()
-                     or ql in (i.get("contact_company_name") or "").lower()]
-        return _sub_table(items, direction, review)
+        return _sub_table(_listed(items, _list_state(request.query_params)), direction, review)
 
     # --- Create blank draft → redirect to detail ---
 
