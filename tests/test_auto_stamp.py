@@ -817,3 +817,30 @@ def test_an_upgraded_database_without_the_journal_ref_index_is_stamped_below_it(
         stamp = find_safe_stamp(list(script.walk_revisions()), _real_sigs_by_rev(), inspector,
                                 expected_metadata=load_kernel_metadata())
     assert stamp == expected
+
+
+class _Reflection20:
+    """An inspector reporting indexes as SQLAlchemy 2.0 does (the Python 3.10 pin): no
+    ``postgresql_invalid`` flag, so an invalid index reads like a valid one."""
+
+    def __init__(self, inspector):
+        self._inspector = inspector
+
+    def __getattr__(self, name):
+        return getattr(self._inspector, name)
+
+    def get_indexes(self, table, *args, **kwargs):
+        indexes = self._inspector.get_indexes(table, *args, **kwargs)
+        return [{k: v for k, v in item.items() if k != "dialect_options"} for item in indexes]
+
+
+def test_an_invalid_journal_ref_index_is_not_proven_whatever_the_reflection_reports():
+    """The invalid index of a cancelled concurrent build leaves p9q0r1s2t3u4 to run even where
+    reflection does not flag it invalid."""
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(build_alembic_config())
+    with _pg_inspector_for_models(invalid_indexes=("ix_ledger_je_doc_refs_gin",)) as inspector:
+        stamp = find_safe_stamp(list(script.walk_revisions()), _real_sigs_by_rev(), _Reflection20(inspector),
+                                expected_metadata=load_kernel_metadata())
+    assert stamp == "m8a9b0c1d2e3"
