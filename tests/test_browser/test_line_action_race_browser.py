@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from .conftest import answer_confirms
-from .test_item_less_lines_browser import _GIA, _invoice, _line_ids, _persistent_toast, _status, _stone, _stone_line
+from .test_item_less_lines_browser import _GIA, _NOT_STOCK, _invoice, _line_ids, _persistent_toast, _status, _stone, _stone_line
 
 pytestmark = pytest.mark.browser
 
@@ -49,8 +49,9 @@ def test_set_as_shipped_ships_no_line_its_confirm_left_until_asked_again(page, u
     page.locator("#li-bulk-fulfill-btn").click()
     notice = _persistent_toast(page, "GIA Certificate")
     assert asked == [
-        f'Set 1 line as shipped? Lines 1 "{sold["sku"]}", 3 "GIA Certificate" will be left as they are.',
-        _CHANGED + 'Set 2 lines as shipped? Line 3 "GIA Certificate" will be left as it is.']
+        f'Set 1 line as shipped? Line 1 "{sold["sku"]}" has already shipped, so it will be left as it is. '
+        f'Line 3 "GIA Certificate" {_NOT_STOCK}',
+        _CHANGED + f'Set 2 lines as shipped? Line 3 "GIA Certificate" {_NOT_STOCK}']
     assert notice.startswith("2 lines set as shipped.")
     assert _status(api, sold) == "sold" and _status(api, free) == "sold"
 
@@ -69,8 +70,8 @@ def test_set_as_reserved_reverses_no_sale_its_confirm_did_not_warn_of(page, ui_s
     notice = _persistent_toast(page, "came back into stock")
     taken = f'Line 1 "{first["sku"]}"'
     assert asked == [
-        'Set 2 lines as reserved? Line 3 "GIA Certificate" will be left as it is.',
-        _CHANGED + 'Set 2 lines as reserved? Line 3 "GIA Certificate" will be left as it is. '
+        f'Set 2 lines as reserved? Line 3 "GIA Certificate" {_NOT_STOCK}',
+        _CHANGED + f'Set 2 lines as reserved? Line 3 "GIA Certificate" {_NOT_STOCK} '
         f'{taken} has already shipped: this takes its goods back into stock and reverses its shipment.']
     assert notice.startswith("2 lines set as reserved.")
     assert f"{taken} had already shipped, so its goods came back into stock and its shipment was reversed." in notice

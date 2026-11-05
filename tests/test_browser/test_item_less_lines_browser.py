@@ -124,6 +124,9 @@ def test_select_all_is_tri_state_and_untick_works(page, ui_server, api, finalize
     assert _select_all_state(page) == {"checked": True, "indeterminate": False}
 
 
+_NOT_STOCK = "isn't an inventory item, so it will be left as it is."
+
+
 def test_set_available_sends_held_and_item_less_rows(page, ui_server, api):
     asked: list[str] = []
     answer_confirms(page, lambda question: asked.append(question) or True)
@@ -140,8 +143,8 @@ def test_set_available_sends_held_and_item_less_rows(page, ui_server, api):
     with page.expect_request(_bound("/set-available")) as sent:
         page.locator("#li-bulk-revert-btn").click()
     # The confirm counts the one line it acts on and names the two it leaves up front.
-    assert asked[-1] == (f'Set 1 line as available? Lines 2 "{free["sku"]}", 3 "GIA Certificate" '
-                         'will be left as they are.')
+    assert asked[-1] == (f'Set 1 line as available? Line 2 "{free["sku"]}" has nothing held or out, so it will '
+                         f'be left as it is. Line 3 "GIA Certificate" {_NOT_STOCK}')
     assert _posted(sent.value, "line_id") == [held_id, free_id, gia_id]
     assert _posted(sent.value, "selected") == []
     assert '3 "GIA Certificate"' in _persistent_toast(page, "GIA Certificate")
@@ -153,7 +156,7 @@ def test_set_available_sends_held_and_item_less_rows(page, ui_server, api):
     page.locator("#li-bulk-select").select_option(value="li-reserve")
     with page.expect_request(_bound("/reserve-lines")) as sent:
         page.evaluate("liBulkReserveConfirmed()")
-    assert asked[-1] == 'Set 2 lines as reserved? Line 3 "GIA Certificate" will be left as it is.'
+    assert asked[-1] == f'Set 2 lines as reserved? Line 3 "GIA Certificate" {_NOT_STOCK}'
     assert _posted(sent.value, "line_id") == [held_id, free_id, gia_id]
 
     # A List: a reserved stone and a certificate. Set as available releases the stone.
@@ -167,7 +170,7 @@ def test_set_available_sends_held_and_item_less_rows(page, ui_server, api):
     page.check("#li-select-all")
     with page.expect_request(_bound("/set-available")) as sent:
         page.evaluate("liBulkAvailableConfirmed()")
-    assert asked[-1] == 'Set 1 line as available? Line 2 "GIA Certificate" will be left as it is.'
+    assert asked[-1] == f'Set 1 line as available? Line 2 "GIA Certificate" {_NOT_STOCK}'
     assert _posted(sent.value, "line_id") == [stone_line, gia_line]
     assert '2 "GIA Certificate"' in _persistent_toast(page, "GIA Certificate")
     assert _status(api, stone) == "available"
@@ -216,7 +219,7 @@ def test_every_stock_action_confirms_the_count_and_names_the_lines_it_leaves(pag
     page.locator("#li-bulk-select").select_option(value=action)
     page.locator(button).click()
     notice = _persistent_toast(page, "GIA Certificate")
-    assert asked == [f'Set 2 lines as {word}? Line 3 "GIA Certificate" will be left as it is.']
+    assert asked == [f'Set 2 lines as {word}? Line 3 "GIA Certificate" {_NOT_STOCK}']
     assert notice.startswith(f"2 lines set as {word}.")
     expected = {"shipped": "sold", "reserved": "reserved", "available": "available"}[word]
     assert [_status(api, s) for s in stones] == [expected, expected]
@@ -240,8 +243,8 @@ def test_set_as_shipped_asks_about_the_lines_it_ships_and_names_the_rest(page, u
     with page.expect_request(_bound("/fulfill-lines")):
         page.locator("#li-bulk-fulfill-btn").click()
     notice = _persistent_toast(page, "GIA Certificate")
-    assert asked == [f'Set 1 line as shipped? Lines 1 "{shipped["sku"]}", 3 "GIA Certificate" '
-                     'will be left as they are.']
+    assert asked == [f'Set 1 line as shipped? Line 1 "{shipped["sku"]}" has already shipped, so it will be left '
+                     f'as it is. Line 3 "GIA Certificate" {_NOT_STOCK}']
     assert notice.startswith("1 line set as shipped.")
     assert _status(api, free) == "sold"
 
