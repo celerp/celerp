@@ -323,6 +323,39 @@ async def test_completed_woo_order_with_a_service_line_still_reaches_fulfilled(c
     assert {fi.get("item_id") for fi in doc.state["fulfilled_items"]} == {lot, svc["id"]}
 
 
+async def test_completed_woo_order_that_cannot_ship_every_line_is_refused_whole(connector_session, client, auth):
+    """A completed order never syncs with a line left unshipped: two order lines of one
+    single-unit lot are refused before anything ships, so the shipping step never skips one."""
+    import celerp.connectors.upsert as connector
+    from sqlalchemy import update
+
+    from celerp.models.accounting import UserCompany
+    from test_invoice_unshipped_books import _lot
+    session, cid = connector_session, str(auth["company_id"])
+    await session.execute(update(UserCompany).where(UserCompany.company_id == auth["company_id"]).values(role="owner"))
+    sku = f"WCS-{uuid.uuid4().hex[:6]}"
+    lot = await _lot(client, auth, sku, 1, 40.0)
+    line = {"product_id": 972, "variation_id": 0, "sku": sku, "name": "Stone", "quantity": 1,
+            "total": "15.00", "total_tax": "0"}
+    order = {"id": 971, "number": "971", "status": "completed", "currency": "USD", "total": "30.00", "total_tax": "0",
+             "line_items": [line, {**line, "id": 2}], "shipping_lines": [], "fee_lines": []}
+    with pytest.raises(ValueError, match="requires 2, but only 1 is sellable"):
+        await connector.upsert_order_from_woocommerce(cid, order)
+    session.expire_all()
+    assert (await session.get(Projection, {"company_id": auth["company_id"], "entity_id": lot})).state["status"] != "sold"
+
+
+async def test_the_lines_an_action_leaves_are_listed_in_line_order(client, session):
+    """Red statement: ``skipped`` listed the lines by why they were left, so the item-less line 2
+    came before the shipped line 1."""
+    g = await _gems(client)
+    d = await _doc(client, g, [_line(g, "DEMO-SAP-001"), GIA, _line(g, "DEMO-EMR-001")])
+    stone, gia, emerald = await _ids(client, g, d)
+    await _ship(client, g, d, [stone])
+    answer = await _ok(await _act(client, g, d, "fulfill-lines", [emerald, gia, stone]))
+    assert [(s["line"], s["kind"]) for s in answer["skipped"]] == [(1, "shipped"), (2, "no_item")]
+
+
 async def test_by_item_take_back_is_unchanged(client, session):
     """Take back naming items, not lines, takes back that item's lots and skips nothing,
     with an item-less charge on the memo."""

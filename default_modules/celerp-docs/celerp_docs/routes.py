@@ -502,7 +502,8 @@ LINE_ANSWER_KEYS = {
     "binding": ("this answer as one digest; send it back with the action to have the action refused "
                 "(409 ``lines.preview_differs``), changing nothing, if it would now do anything else"),
     "fulfillment_status": "the record's shipping status after the action",
-    "fulfilled": "the items it ships",
+    "fulfilled": ("the items it ships; in a preview, a part of a lot it would carve off is named by an id "
+                  "the action does not keep"),
     "taken_from": ("the other invoices that had set the shipped goods' cost aside, each with "
                    "``sku``, ``lot_id``, ``doc_id`` and ``doc_number``"),
     "reverted": "the items it takes back whole",
@@ -11151,7 +11152,10 @@ def _taken_back_notice(taken_back: list[dict]) -> dict:
 def _line_action_answer(action: str, result: dict, chosen: list[str], *, binds: bool) -> dict:
     """``result`` of the line action ``action`` on the lines ``chosen`` (their line ids), with
     the lines it acted on (``acted``), the notices naming the lines it left and the shipped
-    lines it took back, and with ``binds`` its ``binding`` (outcome_binding)."""
+    lines it took back, and with ``binds`` its ``binding`` (outcome_binding). The lines it
+    left are listed in line order."""
+    if result.get("skipped"):
+        result["skipped"] = sorted(result["skipped"], key=lambda s: s["line"])
     left = {s["line_id"] for s in result.get("skipped") or []}
     result["acted"] = [lid for lid in chosen if lid not in left]
     if result.get("skipped"):
