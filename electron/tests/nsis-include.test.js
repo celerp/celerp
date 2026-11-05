@@ -254,6 +254,95 @@ test("the replaced version is uninstalled from where it moved to",
     expect(installer).toContain('WriteRegStr SHELL_CONTEXT "${INSTALL_REGISTRY_KEY}" InstallLocation "$INSTDIR"');
   });
 
+// The body of a macro or function, in Celerp's include or a template.
+function body(name) {
+  for (const { lines } of installerScripts()) {
+    const start = lines.findIndex((line) => line === `!macro ${name}` || line.startsWith(`!macro ${name} `)
+      || line === `Function ${name}`);
+    if (start > -1) return lines.slice(start + 1, lines.findIndex((line, i) => i > start
+      && (line === "!macroend" || line === "FunctionEnd")));
+  }
+  return null;
+}
+
+// Every line a swap runs between writing its marker and registryAddInstallInfo: the
+// install section's steps there, and every macro and function they reach.
+function swapLines() {
+  const section = template("installSection.nsh");
+  const steps = section.split("!insertmacro celerpBeginCopy")[1].split("!insertmacro registryAddInstallInfo")[0];
+  const seen = new Set();
+  const lines = [];
+  (function walk(text) {
+    for (const [, name] of text.matchAll(/(?:!insertmacro|Call)\s+([\w.]+)/gi)) {
+      if (seen.has(name)) continue;
+      seen.add(name);
+      const found = body(name);
+      if (found === null) continue;
+      lines.push(...found.map((line) => ({ name, line })));
+      walk(found.join("\n"));
+    }
+  })(`!insertmacro celerpBeginCopy\n${steps}`);
+  return lines;
+}
+
+test("a swap changes nothing outside its own folders that a stopped setup leaves unrecovered",
+  function test_nsis_swap_writes_are_recovered() {
+    const lines = swapLines();
+    expect(lines.some(({ name }) => name === "celerpOldVersionLocation")).toBe(true);
+    // celerpMoveRegStr's own write is the setting back
+    const writes = lines.filter(({ name, line }) => name !== "celerpMoveRegStr"
+      && /^(WriteReg\w+|DeleteReg\w+|CreateShortCut|WinShell::|WriteINIStr|DeleteINI\w+)\b/i.test(line));
+    expect(writes.length).toBeGreaterThan(0);
+    const finish = body("celerpFinishReplace");
+    const markerGone = finish.findIndex((line) => line === 'Delete "$celerpMarker"');
+    for (const { name, line } of writes) {
+      // a registry value set to the moved-aside folder is set back before the marker goes
+      const m = line.match(/^WriteRegStr (\S+) ("[^"]+") (\S+) "\$celerpOld"$/);
+      expect([name, line, m !== null]).toEqual([name, line, true]);
+      const restore = `!insertmacro celerpMoveRegStr ${m[1]} ${m[2]} ${m[3]} "$celerpOld" "$INSTDIR"`;
+      const at = finish.indexOf(restore);
+      expect([line, at > -1 && at < markerGone]).toEqual([line, true]);
+    }
+  });
+
+// The template reads InstallLocation in these places without making it $INSTDIR.
+const INSTALL_LOCATION_PRESENCE = {
+  "assistedInstaller.nsh": "only whether there is an install, for the install mode page",
+  "installUtil.nsh": "the folder of the version being replaced, read after setup set InstallLocation back",
+};
+
+test("every install folder taken from InstallLocation is the one a stopped swap's marker names",
+  function test_nsis_install_dir_of_stopped_swap() {
+    let readers = 0;
+    for (const { name, lines } of installerScripts()) {
+      lines.forEach((line, i) => {
+        const m = line.match(/^(?:ReadRegStr|!insertmacro readReg) (\$\w+) "?(\$?\w+)"? "\$\{INSTALL_REGISTRY_KEY\}" InstallLocation$/);
+        if (!m) return;
+        readers += 1;
+        const end = lines.findIndex((l, j) => j > i && (l === "!macroend" || l === "FunctionEnd"));
+        const rest = lines.slice(i + 1, end);
+        const into = rest.findIndex((l) => l === `StrCpy $INSTDIR ${m[1]}`);
+        if (into === -1) {
+          expect([name, line, INSTALL_LOCATION_PRESENCE[name] !== undefined]).toEqual([name, line, true]);
+          return;
+        }
+        const resolve = rest.findIndex((l) => l === `!insertmacro celerpInstallDirOfStoppedSwap ${m[2]}`);
+        expect([name, line, resolve > into]).toEqual([name, line, true]);
+        // nothing between them reads $INSTDIR
+        expect(rest.slice(into + 1, resolve).filter((l) => l.includes("$INSTDIR") && !l.startsWith("StrCpy $INSTDIR")))
+          .toEqual([]);
+      });
+    }
+    expect(readers).toBeGreaterThanOrEqual(4);
+    const resolve = macro(include(), "celerpInstallDirOfStoppedSwap");
+    // the folder comes only from a marker setup itself wrote, beside the moved-aside folder
+    expect(resolve).toContain('FileOpen $2 "$1\\~S$3" r');
+    expect(resolve).toContain('StrCpy $2 "${PRODUCT_NAME} setup is replacing $1\\"');
+    expect(resolve).toContain('!insertmacro celerpMoveRegStr ${ROOT} "${INSTALL_REGISTRY_KEY}" InstallLocation "$4" "$INSTDIR"');
+    expect(macro(include(), "celerpPrepareReplace"))
+      .toContain('StrCpy $celerpMarkerText "${PRODUCT_NAME} setup is replacing $INSTDIR"');
+  });
+
 // Setup deletes its temporary folder as it exits, which it cannot do while that folder
 // is its working folder. Where setup moves its working folder out of the install
 // folder, it goes to the folder that holds the temporary folder, so a setup that stops

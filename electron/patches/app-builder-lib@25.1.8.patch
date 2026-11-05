@@ -254,7 +254,7 @@ index 3de631bf0ce5095d03062ba98a68c5249904911e..3f62ce1f058e51529eb1edf8c9aee981
  !ifndef INSTALL_MODE_PER_ALL_USERS
    !ifndef ONE_CLICK
      Var hasPerUserInstallation
-@@ -28,23 +61,24 @@ Var installMode
+@@ -28,23 +61,25 @@ Var installMode
        StrCpy $INSTDIR $perUserInstallationFolder
      ${else}
        StrCpy $0 "$LocalAppData\Programs"
@@ -286,10 +286,11 @@ index 3de631bf0ce5095d03062ba98a68c5249904911e..3f62ce1f058e51529eb1edf8c9aee981
 -      StrCpy $INSTDIR $R0
 -    ${endif}
 +    !insertmacro installDirFromCommandLine
++    !insertmacro celerpInstallDirOfStoppedSwap HKCU
  
    !macroend
  !endif
-@@ -83,11 +117,7 @@ Var installMode
+@@ -83,11 +118,8 @@ Var installMode
        StrCpy $INSTDIR "$0\${APP_FILENAME}"
      ${endif}
  
@@ -299,6 +300,7 @@ index 3de631bf0ce5095d03062ba98a68c5249904911e..3f62ce1f058e51529eb1edf8c9aee981
 -      StrCpy $INSTDIR $R0
 -    ${endif}
 +    !insertmacro installDirFromCommandLine
++    !insertmacro celerpInstallDirOfStoppedSwap HKLM
  
    !macroend
  !endif

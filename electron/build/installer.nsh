@@ -582,7 +582,9 @@
 ; The version being replaced has moved aside: its uninstaller runs there. That
 ; uninstaller takes its folder from InstallLocation, not from the folder it is given,
 ; so InstallLocation names the moved folder while it runs; registryAddInstallInfo
-; then sets it back to $INSTDIR.
+; then sets it back to $INSTDIR. A setup stopped before that leaves it naming the moved
+; folder: celerpFinishReplace sets it back before the marker goes, and while the marker
+; is there celerpInstallDirOfStoppedSwap finds the install from it.
 !macro celerpOldVersionLocation
   ${If} $celerpMode == "swap"
   ${AndIf} $installationDir == $INSTDIR
@@ -599,6 +601,72 @@
       ${EndIf}
     ${EndIf}
   ${EndIf}
+!macroend
+
+; Sets a registry value that reads FROM to TO, and leaves any other value as it is.
+!macro celerpMoveRegStr ROOT KEY NAME FROM TO
+  Push $0
+  ReadRegStr $0 ${ROOT} ${KEY} ${NAME}
+  ${If} $0 == ${FROM}
+    WriteRegStr ${ROOT} ${KEY} ${NAME} ${TO}
+  ${EndIf}
+  Pop $0
+!macroend
+
+; $INSTDIR as just read from InstallLocation in registry root ROOT. A setup stopped
+; while the version it replaced was being removed can leave InstallLocation naming
+; that version's moved-aside folder <parent>\~O<rest>. Beside it is the marker
+; <parent>\~S<rest>, naming the install it was replacing: setup, the uninstaller and
+; every reopen use that folder, InstallLocation names it again, and setup then
+; finishes the stopped swap (celerpPrepareReplace).
+!macro celerpInstallDirOfStoppedSwap ROOT
+  Push $0
+  Push $1
+  Push $2
+  Push $3
+  Push $4
+  Push $5
+  Push $6
+  StrCpy $4 $INSTDIR
+  ${GetParent} "$INSTDIR" $1
+  StrLen $2 "$1\~O"
+  StrCpy $0 $INSTDIR $2
+  StrCpy $3 $INSTDIR "" $2
+  ${If} $1 != ""
+  ${AndIf} $0 == "$1\~O"
+  ${AndIf} $3 != ""
+    StrCpy $0 ""
+    ClearErrors
+    FileOpen $2 "$1\~S$3" r
+    ${IfNot} ${Errors}
+      FileReadUTF16LE $2 $0
+      FileClose $2
+    ${EndIf}
+    StrCpy $2 "${PRODUCT_NAME} setup is replacing $1\"
+    StrLen $5 $2
+    StrCpy $6 $0 $5
+    ${If} $6 == $2
+      ; the marker names <parent>\<two letters, the first not ~><rest>
+      StrCpy $6 $0 "" $5
+      StrCpy $5 $6 "" 2
+      StrCpy $0 $6 1
+      StrCpy $2 $6 1 1
+      ${If} $5 == $3
+      ${AndIf} $0 != "~"
+      ${AndIf} $0 != "\"
+      ${AndIf} $2 != "\"
+        StrCpy $INSTDIR "$1\$6"
+        !insertmacro celerpMoveRegStr ${ROOT} "${INSTALL_REGISTRY_KEY}" InstallLocation "$4" "$INSTDIR"
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+  Pop $6
+  Pop $5
+  Pop $4
+  Pop $3
+  Pop $2
+  Pop $1
+  Pop $0
 !macroend
 
 !macro celerpUninstallOldVersions
@@ -636,6 +704,10 @@
 
 !macro celerpFinishReplace
   ${If} $celerpMode == "swap"
+    ; an old uninstaller that did not remove its registry keys left InstallLocation
+    ; naming the moved folder, which only the marker can resolve
+    !insertmacro celerpMoveRegStr HKEY_CURRENT_USER "${INSTALL_REGISTRY_KEY}" InstallLocation "$celerpOld" "$INSTDIR"
+    !insertmacro celerpMoveRegStr SHELL_CONTEXT "${INSTALL_REGISTRY_KEY}" InstallLocation "$celerpOld" "$INSTDIR"
     RMDir /r "$celerpOld"
   ${EndIf}
   ${If} $celerpMode != "direct"
