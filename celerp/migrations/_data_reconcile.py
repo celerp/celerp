@@ -74,6 +74,14 @@ def set_meta(conn: "Connection", key: str, value: str) -> None:
     )
 
 
+def delete_meta(conn: "Connection", key: str) -> None:
+    """Remove an instance_meta value, so get_meta reads it as unset (table auto-created)."""
+    from sqlalchemy import text
+
+    _ensure_meta_table(conn)
+    conn.execute(text(f"DELETE FROM {_META_TABLE} WHERE key = :k"), {"k": key})
+
+
 def data_backfill_scripts():
     """Return alembic Script objects the walker advances past, oldest→newest.
 

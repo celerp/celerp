@@ -79,7 +79,7 @@ from celerp_contacts.references import (
 )
 from celerp.output.document_context import prepare_document_output
 from celerp.output.doc_print import fmt_money
-from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, DRAFT_REVERT_RETURNED, DRAFT_REVERT_STATUSES, INBOUND_DRAFT_REVERT_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, SCHEDULE_OWNED_FIELDS, SCHEDULE_TERM_FIELDS, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, CREDIT_APPLICATION_METHODS, CONVERTIBLE_STATUSES
+from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, DRAFT_REVERT_RETURNED, DRAFT_REVERT_STATUSES, INBOUND_DRAFT_REVERT_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, SCHEDULE_OWNED_FIELDS, SCHEDULE_REMOVED_FIELDS, SCHEDULE_TERM_FIELDS, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, CREDIT_APPLICATION_METHODS, CONVERTIBLE_STATUSES
 from celerp.services.record_quantities import FULFILLABLE_STATUSES, QUOTATION_SPENT_STATUSES, RECEIVABLE_STATUSES, sent_out_by
 from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, MEMO_DRAW_STATUSES, doc_value, is_awaiting_payment, is_open_credit, is_overdue_document, is_owed, is_paid_document, outstanding_balance
 from celerp.services.list_behavior import (
@@ -211,10 +211,24 @@ def _require_doc_rate_http(doc: dict, base_currency: str) -> Decimal:
         raise HTTPException(status_code=422, detail=exc.detail) from exc
 
 
+def schedule_fields_refusal(keys) -> dict | None:
+    """Why a caller's data may not hold these keys, or None: a field an earlier release kept
+    on a template, which no writer takes, or one only an agreement's schedule writes. Every
+    create, edit and import of a document asks it first."""
+    keys = set(keys)
+    if removed := sorted(keys & SCHEDULE_REMOVED_FIELDS):
+        return catalog_refusal("documents.err_schedule_fields_removed", fields=", ".join(removed))
+    if owned := sorted(keys & SCHEDULE_OWNED_FIELDS):
+        return catalog_refusal("documents.err_schedule_fields_owned", fields=", ".join(owned))
+    return None
+
+
 def _reject_lifecycle_fields(data):
     """Creation owns no lifecycle or settlement state. Status is checked on its
     own (it may say draft); anything else lifecycle-owned is refused by name."""
     if isinstance(data, dict):
+        if (refused := schedule_fields_refusal(data)) is not None:
+            raise ValueError(refused["message"])
         if "credited" in data:
             raise ValueError(
                 "credited cannot be set when creating. The credited amount is set by issuing "
@@ -317,10 +331,12 @@ async def _earlier_run(session: AsyncSession, company_id, key: str, *, event_typ
 
 _PROTECTED_FIELDS = frozenset({"status", "entity_type", "company_id", "source_memo_id", "invoiced_on",
                               "received_items", "received_item_ids", "credited", SCAN_RUNS_FIELD}
-                             ) | SCHEDULE_OWNED_FIELDS | SCHEDULE_TERM_FIELDS
+                             ) | SCHEDULE_OWNED_FIELDS | SCHEDULE_REMOVED_FIELDS | SCHEDULE_TERM_FIELDS
 
 
 def _refuse_protected_fields(fields_changed: dict) -> None:
+    if (refused := schedule_fields_refusal(fields_changed)) is not None:
+        raise HTTPException(status_code=422, detail=refused)
     attempted = _PROTECTED_FIELDS & set(fields_changed)
     if attempted:
         raise HTTPException(

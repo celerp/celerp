@@ -18,9 +18,10 @@ Runs at startup per company, gated by a marker, and again (whatever the marker s
 company is restored or turns Subscriptions on, with the same per-template rules. A company staged for a migration, or that
 has Subscriptions turned off, is skipped and waits for a later start. Each template moves in
 its own savepoint: one that fails is rolled back alone, logged and named in a notice with
-why, and the marker stays unset so the next start tries it again; correcting its schedule
-moves it at once (``move_template``). The integrity check runs after every pass; a
-problem is logged and notified once and also keeps the marker unset. The hook never raises.
+why, and the marker is cleared, by the pass a restore or turning Subscriptions on forces
+too, so the next start tries it again; correcting its schedule moves it at once (``move_template``). The
+integrity check runs after every pass; a problem is logged and notified once and also leaves
+the marker unset. The hook never raises.
 """
 from __future__ import annotations
 
@@ -221,7 +222,7 @@ async def check_template_schedule_integrity(session: AsyncSession, company_id) -
 
 async def migrate_company(session: AsyncSession, company_id, *, force: bool = False) -> dict | None:
     """Move one company's templates; None when the company waits for a later start. Caller commits."""
-    from celerp.migrations._data_reconcile import get_meta, set_meta
+    from celerp.migrations._data_reconcile import delete_meta, get_meta, set_meta
     from celerp.models.company import Company
     from celerp.modules.registry import uses_module
     from celerp.notifications.service import notify_once
@@ -272,7 +273,9 @@ async def migrate_company(session: AsyncSession, company_id, *, force: bool = Fa
                           action_url="/subscriptions?direction=sales",
                           i18n={"title": f"{_NOTICE}_title", "body": f"{_NOTICE}_body"})
     result["marked"] = not failed and not problems
-    if result["marked"] and not force:
+    if not result["marked"]:
+        await conn.run_sync(lambda c: delete_meta(c, marker))
+    elif not force:
         await conn.run_sync(lambda c: set_meta(c, marker, "done"))
     return result
 

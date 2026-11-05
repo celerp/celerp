@@ -7249,5 +7249,7 @@
   "subscriptions.sending_off_manual": "Bills are made by hand now, so Send automatically is off too.",
   "subscriptions.doc_bills_period": "Bills {start} to {end} of a subscription agreement.",
   "subscriptions.doc_open_agreement": "Open the agreement",
-  "subscriptions.doc_void_period": "While this document is void, that period is not billed. Unvoid it, or reopen the period on the agreement to bill it again."
+  "subscriptions.doc_void_period": "While this document is void, that period is not billed. Unvoid it, or reopen the period on the agreement to bill it again.",
+  "documents.err_schedule_fields_removed": "Celerp no longer keeps {fields}: an agreement bills from its start date, and its periods name the documents it billed.",
+  "documents.err_schedule_fields_owned": "Only an agreement's own schedule actions can set {fields}."
 }

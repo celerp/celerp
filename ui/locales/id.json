@@ -7249,5 +7249,7 @@
   "subscriptions.sending_off_manual": "Tagihan sekarang dibuat secara manual, jadi Kirim secara otomatis juga dinonaktifkan.",
   "subscriptions.doc_bills_period": "Menagih periode {start} hingga {end} dalam perjanjian langganan.",
   "subscriptions.doc_open_agreement": "Buka perjanjian",
-  "subscriptions.doc_void_period": "Selama dokumen ini dibatalkan, periode tersebut belum ditagihkan. Pulihkan dokumen yang dibatalkan atau buka kembali periode pada perjanjian untuk menagihnya lagi."
+  "subscriptions.doc_void_period": "Selama dokumen ini dibatalkan, periode tersebut belum ditagihkan. Pulihkan dokumen yang dibatalkan atau buka kembali periode pada perjanjian untuk menagihnya lagi.",
+  "documents.err_schedule_fields_removed": "Celerp no longer keeps {fields}: an agreement bills from its start date, and its periods name the documents it billed.",
+  "documents.err_schedule_fields_owned": "Only an agreement's own schedule actions can set {fields}."
 }

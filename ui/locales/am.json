@@ -7249,5 +7249,7 @@
   "subscriptions.sending_off_manual": "የክፍያ መጠየቂያዎች አሁን በእጅ ይዘጋጃሉ፣ ስለዚህ «በራስ-ሰር ላክ» ደግሞ ተሰናክሏል።",
   "subscriptions.doc_bills_period": "ለ{start} እስከ {end} ያለውን የደንበኝነት ስምምነት ጊዜ የክፍያ መጠየቂያ ያዘጋጃል።",
   "subscriptions.doc_open_agreement": "ስምምነቱን ክፈት",
-  "subscriptions.doc_void_period": "ይህ ሰነድ የተሰረዘ እስከሆነ ድረስ ለዚያ ጊዜ የክፍያ መጠየቂያ አልተዘጋጀም። ስረዛውን ይቀልብሱ ወይም በስምምነቱ ውስጥ ጊዜውን እንደገና ይክፈቱ።"
+  "subscriptions.doc_void_period": "ይህ ሰነድ የተሰረዘ እስከሆነ ድረስ ለዚያ ጊዜ የክፍያ መጠየቂያ አልተዘጋጀም። ስረዛውን ይቀልብሱ ወይም በስምምነቱ ውስጥ ጊዜውን እንደገና ይክፈቱ።",
+  "documents.err_schedule_fields_removed": "Celerp no longer keeps {fields}: an agreement bills from its start date, and its periods name the documents it billed.",
+  "documents.err_schedule_fields_owned": "Only an agreement's own schedule actions can set {fields}."
 }

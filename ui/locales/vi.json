@@ -7249,5 +7249,7 @@
   "subscriptions.sending_off_manual": "Hóa đơn hiện được tạo thủ công nên tính năng Tự động gửi cũng bị tắt.",
   "subscriptions.doc_bills_period": "Lập hóa đơn cho kỳ từ {start} đến {end} của thỏa thuận đăng ký.",
   "subscriptions.doc_open_agreement": "Mở thỏa thuận",
-  "subscriptions.doc_void_period": "Khi chứng từ này còn bị hủy, kỳ đó chưa được lập hóa đơn. Hãy hoàn tác việc hủy chứng từ hoặc mở lại kỳ trong thỏa thuận để lập hóa đơn lại."
+  "subscriptions.doc_void_period": "Khi chứng từ này còn bị hủy, kỳ đó chưa được lập hóa đơn. Hãy hoàn tác việc hủy chứng từ hoặc mở lại kỳ trong thỏa thuận để lập hóa đơn lại.",
+  "documents.err_schedule_fields_removed": "Celerp no longer keeps {fields}: an agreement bills from its start date, and its periods name the documents it billed.",
+  "documents.err_schedule_fields_owned": "Only an agreement's own schedule actions can set {fields}."
 }

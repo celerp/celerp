@@ -12,5 +12,18 @@
     "th",
     "vi"
   ],
-  "keys": {}
+  "keys": {
+    "documents.err_schedule_fields_removed": {
+      "en": "Celerp no longer keeps {fields}: an agreement bills from its start date, and its periods name the documents it billed.",
+      "params": [
+        "fields"
+      ]
+    },
+    "documents.err_schedule_fields_owned": {
+      "en": "Only an agreement's own schedule actions can set {fields}.",
+      "params": [
+        "fields"
+      ]
+    }
+  }
 }

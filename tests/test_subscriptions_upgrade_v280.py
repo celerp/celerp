@@ -314,3 +314,46 @@ async def test_fixing_a_template_from_its_page_sends_a_shared_document_to_histor
     state = await _state(session, old, "custom_no_days")
     assert [e["doc_id"] for e in state.get("history_review") or []] == [shared], state
     assert not [e for e in state["periods"].values() if e.get("doc_id") == shared], state["periods"]
+
+
+async def test_a_2_8_0_draft_starts_on_its_start_date_whatever_next_run_date_it_holds(client, session, monkeypatch):
+    """2.8.0's activate set a draft's first run from its start date and never read a next run
+    date the draft held, so the move anchors the draft on its start date too."""
+    async def stale_next_run(session, old):
+        await _set(session, old, "draft", next_run_date="2027-03-01")
+
+    old = await _upgrade(session, monkeypatch, "2026-11-04", before_start=stale_next_run)
+    state = await _state(session, old, "draft")
+    assert (state["anchor_date"], state["start_date"]) == (_OLD["draft"]["start_date"],) * 2, state
+    assert "next_run_date" not in state
+
+
+async def test_a_template_a_restore_could_not_move_moves_at_the_next_start(client, session, monkeypatch):
+    """A template is refused as moving the next time Celerp starts, and it does, even when the
+    pass that failed was the one a restore forces in a company that started this release before."""
+    from celerp.migrations._data_reconcile import set_meta
+    from celerp.modules.slots import fire_lifecycle
+    from celerp_subscriptions import billing, migration
+    from ui.i18n import t
+
+    _on(monkeypatch, "2026-11-04")
+    old = await pre366.load(session, "demo", FIXTURE)
+    cid, eid = old["company_id"], old["runs"]["clean_monthly"]
+    await (await session.connection()).run_sync(lambda c: set_meta(c, migration._MARKER.format(cid), "done"))
+    await session.commit()
+    real = migration._migrate_template
+
+    async def broken_for_one(session, company_id, proj, *a, **kw):
+        if proj.entity_id == eid:
+            raise RuntimeError("broken on purpose")
+        return await real(session, company_id, proj, *a, **kw)
+
+    monkeypatch.setattr(migration, "_migrate_template", broken_for_one)
+    assert not await fire_lifecycle("on_company_restored", session=session, company_id=cid)
+    await session.commit()
+    assert billing.not_moved(await _state(session, old, "clean_monthly")) == t("subscriptions.not_moved_pending")
+
+    monkeypatch.setattr(migration, "_migrate_template", real)
+    await pre366.last_started_on_older_release(session, "2.8.0", semantics=2)
+    await pre366.start()
+    assert (await _state(session, old, "clean_monthly"))["anchor_date"] == _OLD["clean_monthly"]["next_run_date"]

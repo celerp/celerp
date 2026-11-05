@@ -7249,5 +7249,7 @@
   "subscriptions.sending_off_manual": "Ahora las facturas se generan manualmente, por lo que «Enviar automáticamente» también está desactivado.",
   "subscriptions.doc_bills_period": "Factura el período del {start} al {end} de un acuerdo de suscripción.",
   "subscriptions.doc_open_agreement": "Abrir el acuerdo",
-  "subscriptions.doc_void_period": "Mientras este documento esté anulado, ese período no estará facturado. Revierta la anulación o reabra el período en el acuerdo para volver a facturarlo."
+  "subscriptions.doc_void_period": "Mientras este documento esté anulado, ese período no estará facturado. Revierta la anulación o reabra el período en el acuerdo para volver a facturarlo.",
+  "documents.err_schedule_fields_removed": "Celerp no longer keeps {fields}: an agreement bills from its start date, and its periods name the documents it billed.",
+  "documents.err_schedule_fields_owned": "Only an agreement's own schedule actions can set {fields}."
 }

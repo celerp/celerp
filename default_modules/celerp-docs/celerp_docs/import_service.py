@@ -44,6 +44,7 @@ from celerp_docs.routes import (
     imported_settlement_free,
     import_digest,
     refuse_reused_import_key,
+    schedule_fields_refusal,
     settle_imported_credit,
     write_doc_patch,
 )
@@ -177,6 +178,8 @@ async def create_imported_doc(
     batch imports; returns the doc.created entry."""
     from celerp.services import auto_je
 
+    if (refused := schedule_fields_refusal(rec.data)) is not None:
+        raise HTTPException(status_code=422, detail=refused)
     await _lock_imported_contact(session, company_id, "doc", rec.data)
     await _assert_import_number_free(session, company_id, "doc", rec.data)
     if auto_je.imported_issue_kind(rec.data) is not None:

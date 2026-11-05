@@ -56,6 +56,7 @@ class _Package:
         self.functions: dict[str, list[ast.AST]] = {}
         self.classes: dict[str, ast.ClassDef] = {}
         self.constants: dict[str, ast.AST] = {}
+        self.imported: dict[str, str] = {}
         self.parent: dict[ast.AST, ast.AST] = {}
         for path, tree in self.trees.items():
             for node in ast.walk(tree):
@@ -66,6 +67,8 @@ class _Package:
                 elif isinstance(node, ast.ClassDef):
                     self.classes[node.name] = node
             for node in tree.body:
+                if isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                    self.imported.update({a.asname or a.name: node.module for a in node.names})
                 if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
                     self.constants[node.targets[0].id] = node.value
 
@@ -142,6 +145,8 @@ class _Package:
             return out
         if name in self.constants:
             return self.keys(self.constants[name], fn, seen)
+        if name in self.imported and (value := _imported_strings(self.imported[name], name)):
+            return value
         raise Unresolved(name)
 
     def _through_callers(self, fn, param: str, seen) -> set[str]:
@@ -175,6 +180,22 @@ class _Package:
                     out |= self.keys(ret.value, helper, seen)
             return out
         raise Unresolved(ast.unparse(call))
+
+
+def _imported_strings(module: str, name: str) -> set[str] | None:
+    """The strings a constant another module defines as a literal collection of strings."""
+    rel = Path(*module.split(".")).with_suffix(".py")
+    for path in (p for top in SOURCE_TOPS for p in (ROOT / top).rglob(rel.name) if p.as_posix().endswith(rel.as_posix())):
+        for node in ast.parse(path.read_text(encoding="utf-8")).body:
+            target = node.targets[0] if isinstance(node, ast.Assign) and len(node.targets) == 1 else getattr(node, "target", None)
+            if isinstance(target, ast.Name) and target.id == name and node.value is not None:
+                value = node.value
+                if isinstance(value, ast.Call) and _callee(value) in ("frozenset", "set", "tuple") and value.args:
+                    value = value.args[0]
+                if isinstance(value, (ast.Set, ast.Tuple, ast.List)) and value.elts and all(
+                        isinstance(e, ast.Constant) and isinstance(e.value, str) for e in value.elts):
+                    return {e.value for e in value.elts}
+    return None
 
 
 def _resolve(pkg: _Package, row: Write, expr, fn, into: set[str]) -> None:

@@ -7249,5 +7249,7 @@
   "subscriptions.sending_off_manual": "تُنشأ الفواتير الآن يدويًا، ولذلك عُطّل «الإرسال تلقائيًا» أيضًا.",
   "subscriptions.doc_bills_period": "يفوتر الفترة من {start} إلى {end} ضمن اتفاقية اشتراك.",
   "subscriptions.doc_open_agreement": "فتح الاتفاقية",
-  "subscriptions.doc_void_period": "ما دام هذا المستند ملغًى، فلن تكون تلك الفترة مفوترة. ألغِ إبطال المستند، أو أعد فتح الفترة في الاتفاقية لفوترتها مجددًا."
+  "subscriptions.doc_void_period": "ما دام هذا المستند ملغًى، فلن تكون تلك الفترة مفوترة. ألغِ إبطال المستند، أو أعد فتح الفترة في الاتفاقية لفوترتها مجددًا.",
+  "documents.err_schedule_fields_removed": "Celerp no longer keeps {fields}: an agreement bills from its start date, and its periods name the documents it billed.",
+  "documents.err_schedule_fields_owned": "Only an agreement's own schedule actions can set {fields}."
 }
