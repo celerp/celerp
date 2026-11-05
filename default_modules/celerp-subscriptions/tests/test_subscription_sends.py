@@ -9,6 +9,7 @@ the page that sets it up, and an email still waiting to go out is shown until it
 from __future__ import annotations
 
 import ast
+import json
 import uuid
 from datetime import date
 from pathlib import Path
@@ -27,6 +28,11 @@ async def _sending(client, hd, *, start="2026-07-01", catchup=0) -> str:
     r = await schedule(client, hd, eid, generation_mode="auto_invoice", catchup_periods=catchup, auto_send=True)
     assert r.status_code == 200, r.text
     return eid
+
+
+def _no_email(monkeypatch) -> None:
+    monkeypatch.setattr("celerp.config.settings.gateway_token", "")
+    monkeypatch.setattr("celerp.config.settings.smtp_host", "")
 
 
 def _closed_port() -> int:
@@ -352,3 +358,79 @@ def test_every_recorded_send_state_reads_the_same_on_the_summary_the_periods_and
             status = billing.send_status(agreement_state, {"state": state})
             assert status in summary_module._SEND_KINDS, (state, status)
             assert status == "sent" or _SEND_BADGE[status][0] in en, (state, status)
+
+
+async def test_an_email_the_next_pass_will_not_send_reads_as_not_sent_and_is_acknowledged(owner_ui, session, monkeypatch):
+    """Billed with Send on, the app stopped before the email went and stayed down past the
+    catch-up window: the next pass will not send it, so it is not "waiting". Its period reads
+    "Email not sent" and its summary row clears when acknowledged, with Send still on."""
+    from celerp_subscriptions import billing
+    api = owner_ui.api
+    _no_email(monkeypatch)
+    freeze_day(monkeypatch, "2026-07-01")
+    cid = await company_id(api, {})
+    eid = await _sending(api, {})
+    await billing.run_due(session=session, company_id=uuid.UUID(cid), today=date(2026, 7, 1), budget=10)
+    await session.commit()  # the after-commit send never ran: the app stopped first
+    freeze_day(monkeypatch, "2026-08-02")
+    status = _period_status((await owner_ui.get(f"/subscriptions/{eid}")).text, "2026-07-01")
+    assert t("subscriptions.period_send_not_sent") in status
+    assert t("subscriptions.period_send_pending") not in status
+    assert (await api.post("/subscriptions/summary/ack")).status_code == 200
+    sm = await summary(api, {})
+    assert sm["counts"]["send_pending"] == 0 and not [r for r in sm["rows"] if r["entity_id"] == eid]
+
+
+async def test_an_invoice_sent_again_from_its_page_settles_its_period_email(owner_ui, session, monkeypatch):
+    """The unattended send was cut off; the user sends the invoice from its own page and it
+    goes. The period no longer says the email may not have arrived, the summary has no send
+    to check, and the next pass sends nothing more."""
+    api = owner_ui.api
+    freeze_day(monkeypatch, "2026-07-01")
+    async with SmtpStub(drop_after_message=True) as stub:
+        with smtp_settings(stub.port):
+            cid = await company_id(api, {})
+            eid = await _sending(api, {})
+            await tick(session, cid, "2026-07-01")
+    [doc] = await billed_docs(session, eid)
+    assert (await template(api, {}, eid))["periods"]["0"]["send"]["state"] == "unconfirmed"
+    async with SmtpStub() as working:
+        with smtp_settings(working.port):
+            sent = await api.post(f"/docs/{doc['entity_id']}/send", json={"sent_via": "email",
+                                                                          "sent_to": "member@example.test"})
+            assert sent.status_code == 200, sent.text
+            await tick(session, cid, "2026-07-02")
+            assert len(working.messages) == 1  # the page's own send; the pass sends nothing more
+    status = _period_status((await owner_ui.get(f"/subscriptions/{eid}")).text, "2026-07-01")
+    assert t("subscriptions.period_send_unconfirmed") not in status
+    sm = await summary(api, {})
+    assert sm["counts"]["send_unconfirmed"] == 0 and sm["counts"]["send_failed"] == 0
+
+
+async def test_a_cut_off_send_is_offered_again_behind_a_confirm_on_any_transport(owner_ui, session, monkeypatch):
+    """A send through the company's own mail server was cut off. The summary row and the
+    period both offer Send again, behind a confirm that says the email may already have
+    arrived; confirmed, it sends a new message and the period reads as sent."""
+    api = owner_ui.api
+    freeze_day(monkeypatch, "2026-07-01")
+    async with SmtpStub(drop_after_message=True) as stub:
+        with smtp_settings(stub.port):
+            cid = await company_id(api, {})
+            eid = await _sending(api, {})
+            await tick(session, cid, "2026-07-01")
+    from bs4 import BeautifulSoup
+    confirm = t("subscriptions.send_again_confirm")
+    page = BeautifulSoup((await owner_ui.get("/subscriptions/summary")).text, "html.parser")
+    [again] = [b for b in page.select("button") if b.get_text(strip=True) == t("btn.send_again")]
+    assert again.get("hx-confirm") == confirm
+    periods = BeautifulSoup((await owner_ui.get(f"/subscriptions/{eid}")).text, "html.parser").select_one("#sub-periods")
+    [row_again] = [b for b in periods.select("button") if b.get_text(strip=True) == t("btn.send_again")]
+    assert row_again.get("hx-confirm") == confirm
+    async with SmtpStub() as working:
+        with smtp_settings(working.port):
+            r = await owner_ui.post(row_again["hx-post"], data=json.loads(row_again["hx-vals"]))
+            assert r.status_code == 204, r.text
+            assert len(working.messages) == 1
+    assert json.loads(r.headers["HX-Trigger"])["celerpToast"]["type"] == "success"
+    assert (await template(api, {}, eid))["periods"]["0"]["send"]["state"] == "sent"
+    assert [d["status"] for d in await billed_docs(session, eid)] == ["sent"]
