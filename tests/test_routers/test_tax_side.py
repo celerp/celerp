@@ -139,8 +139,11 @@ def test_each_document_offers_only_taxes_for_its_side():
 
     from celerp.tax_regimes import taxes_for
 
-    assert [t["name"] for t in taxes_for(th, "invoice")] == ["VAT 7%", "Exempt"]
-    assert [t["name"] for t in taxes_for(th, "bill")] == ["VAT 7%", "Exempt", "WHT 3%", "WHT 5%"]
+    def side(tax_types: tuple[str, ...]) -> list[str]:
+        return [t["name"] for t in th if t["tax_type"] in tax_types]
+
+    assert side(("purchase",)) and [t["name"] for t in taxes_for(th, "invoice")] == side(("both", "sales"))
+    assert [t["name"] for t in taxes_for(th, "bill")] == side(("both", "purchase"))
     assert "Sales Tax 10%" not in [t["name"] for t in taxes_for(TAX_REGIMES["MY"]["taxes"], "bill")]
 
 
