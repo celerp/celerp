@@ -61,7 +61,7 @@ def _done(back: str, message: str, kind: str = "success") -> Response:
 async def _redrawn(draw, fallback=None, said: str = ""):
     """What a done action shows next, read after it: ``draw()``'s answer. When a read fails,
     the action is still done: ``fallback()`` and ``said`` (what the action's own answer says)
-    with a warning to reload the page, never a refusal."""
+    with a warning that offers Try again, never a refusal."""
     try:
         return await draw()
     except APIError as e:
