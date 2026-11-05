@@ -179,6 +179,24 @@ def test_existing_shared_list_counter_remains_continuous():
     assert c.settings["sequences"]["list"]["next"] == 41
 
 
+@pytest.mark.parametrize("list_type,prefix", [("audit", "AUD"), ("writeoff", "WO"), ("shipping_doc", "SHIP")])
+def test_types_that_never_drew_the_shared_counter_keep_their_own(list_type, prefix):
+    """Audit, write-off and shipping Lists had their own counters before the shared one was split,
+    so a company with an old shared counter still numbers them AUD-, WO- and SHIP-."""
+    c = _company(sequences={"list": {"prefix": "LST", "pattern": "{PREFIX}-{####}", "next": 40}})
+    assert list_sequence_key(list_type, c.settings) == list_type
+    assert next_doc_ref(c, list_sequence_key(list_type, c.settings)).startswith(f"{prefix}-")
+    assert c.settings["sequences"]["list"]["next"] == 40
+    previews = {row["doc_type"]: row["preview"] for row in get_all_sequences(c)}
+    assert previews[list_type].startswith(f"{prefix}-")
+
+
+@pytest.mark.parametrize("list_type", ["quotation", "transfer", None])
+def test_types_that_drew_the_shared_counter_continue_it(list_type):
+    c = _company(sequences={"list": {"prefix": "LST", "pattern": "{PREFIX}-{####}", "next": 40}})
+    assert next_doc_ref(c, list_sequence_key(list_type, c.settings)) == "LST-0040"
+
+
 def test_explicit_typed_list_counter_overrides_legacy_configuration():
     c = _company(sequences={
         "list": {"prefix": "OLD", "pattern": "{PREFIX}-{####}", "next": 40},

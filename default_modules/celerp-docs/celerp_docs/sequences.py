@@ -33,13 +33,16 @@ _PREFIX_BY_DOC_TYPE = {
 # Every list type has its own numbering counter. The shared "list" counter (LST) is no longer
 # drawn from; it stays in the table so a company's old settings and numbers are still read.
 _LIST_PREFIX_KEYS = {"quotation", "transfer", "audit", "writeoff", "shipping_doc"}
+# The types the shared counter numbered. Audit, write-off and shipping always had their own.
+_SHARED_COUNTER_KEYS = {"quotation", "transfer"}
 
 
 def list_sequence_key(list_type: str | None, settings: dict | None = None) -> str:
-    """Keep an existing shared counter until this type has its own configuration."""
+    """Keep an existing shared counter for the types it numbered until the type has its own
+    configuration."""
     key = list_type if list_type in _LIST_PREFIX_KEYS else "quotation"
     sequences = (settings or {}).get("sequences") or {}
-    if sequences.get("list") and not sequences.get(key):
+    if key in _SHARED_COUNTER_KEYS and sequences.get("list") and not sequences.get(key):
         return "list"
     return key
 
