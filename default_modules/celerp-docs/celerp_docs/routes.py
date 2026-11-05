@@ -8620,14 +8620,18 @@ async def _get_list(session: AsyncSession, company_id, entity_id: str) -> Projec
 
 
 async def _next_free_list_ref(session: AsyncSession, company, company_id, list_type: str | None) -> str:
-    """The next number of this List type's counter that no List holds yet. Every type has its
-    own counter but all share the list: ids, so a counter can reach a number another type (or
-    an import) already took: that number is skipped, never reused, and nothing is renumbered.
+    """The next number of this List type's counter that no List or document holds yet. Every
+    type has its own counter but all share the list: ids, and quotation Lists share their
+    counter with quotation documents, so a counter can reach a number another type, a document
+    or an import already took: that number is skipped, never reused, and nothing is renumbered.
     ``company`` comes from locked_company(), as for next_doc_ref()."""
     key = list_sequence_key(list_type, company.settings)
     while True:
         ref_id = next_doc_ref(company, key)
-        if await session.get(Projection, {"company_id": company_id, "entity_id": f"list:{ref_id}"}) is None:
+        held = await session.scalar(select(Projection.entity_id).where(
+            Projection.company_id == company_id,
+            Projection.entity_id.in_((f"list:{ref_id}", f"doc:{ref_id}"))).limit(1))
+        if held is None:
             return ref_id
 
 

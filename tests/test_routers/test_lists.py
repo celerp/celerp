@@ -688,6 +688,20 @@ class TestListPrefixes:
         assert state["list_type"] == "transfer"
 
     @pytest.mark.asyncio
+    async def test_a_number_a_quotation_document_holds_is_skipped(self, client):
+        """Quotation documents and quotation Lists draw one counter. After a reset, the next
+        List skips the number a document holds, so no document and List share a number."""
+        token = await _register(client)
+        r = await client.post("/docs", headers=_h(token), json={"doc_type": "quotation"})
+        assert r.status_code == 200, r.text
+        doc_ref = r.json()["id"].removeprefix("doc:")
+        r = await client.patch("/docs/sequences/quotation", headers=_h(token), json={"next": 1})
+        assert r.status_code == 200, r.text
+        quote = await _create_list(client, token, list_type="quotation")
+        assert quote.removeprefix("list:") != doc_ref
+        assert quote.endswith("-0002")
+
+    @pytest.mark.asyncio
     async def test_the_old_list_counter_is_still_in_the_api(self, client):
         token = await _register(client)
         rows = (await client.get("/docs/sequences", headers=_h(token))).json()
