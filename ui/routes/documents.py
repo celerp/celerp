@@ -814,12 +814,15 @@ def _doc_filters(state: dict[str, str], date_from: str, date_to: str, preset: st
     if not any(state.get(k) for k in _DATE_KEYS):
         for field in period:
             field.children[1].attrs["data-unchosen"] = "1"
-    search = search_bar(placeholder=t("documents.search_docs_placeholder"), target="#doc-content",
+    placeholder = t("documents.search_docs_placeholder")
+    search = search_bar(placeholder=placeholder, target="#doc-content",
                         url="/docs/search?" + _state_query(state, without=("q",)), value=state.get("q", ""))
+    caption = t(_DOC_TYPE_SEARCH_LABELS.get(doc_type, "documents.search_all"), lang)
+    # A phone shows only a short placeholder; the box's name carries the caption and what it searches.
+    search.attrs["aria-label"] = f"{caption}: {placeholder.rstrip('. …')}"
     return filter_panel(
         "/docs",
-        filter_field(t(_DOC_TYPE_SEARCH_LABELS.get(doc_type, "documents.search_all"), lang), search,
-                     field_id="search-input", wide=True),
+        filter_field(caption, search, field_id="search-input", wide=True),
         select_field("accounting_sync", t("filter.records", lang),
                      [(choice, t(title, lang)) for choice, title in _ACCOUNTING_SYNC_CHOICES],
                      state.get("accounting_sync", ""), lang=lang, on_change=_DOC_FILTER_ON_CHANGE),
