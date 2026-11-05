@@ -68,6 +68,18 @@
       "params": [
         "lines"
       ]
+    },
+    "documents.drawn_lines_skipped_one": {
+      "en": "Line {lines} was invoiced from a memo and its products are already with the customer, so it was left as it is.",
+      "params": [
+        "lines"
+      ]
+    },
+    "documents.drawn_lines_skipped_many": {
+      "en": "Lines {lines} were invoiced from a memo and their products are already with the customer, so they were left as they are.",
+      "params": [
+        "lines"
+      ]
     }
   }
 }

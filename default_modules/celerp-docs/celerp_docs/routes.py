@@ -10983,7 +10983,9 @@ async def _fulfill_lines_impl(
         reasons = "; ".join(blocked)
         raise HTTPException(status_code=409, detail=refusal(
             "lines.cannot_fulfil", f"Cannot fulfill: {reasons}", reasons=reasons))
-    left += _skipped_lines(line_items, already, "shipped") + [
+    drawn = [i for i in already if line_items[i].get("drawn_from")]
+    left += (_skipped_lines(line_items, [i for i in already if i not in drawn], "shipped")
+             + _skipped_lines(line_items, drawn, "drawn")) + [
         {**s, "reason": unavailable[s["line"] - 1]} for s in _skipped_lines(line_items, list(unavailable), "unavailable")]
     if left and not shipments and not service_lines:
         _refuse_skipped("fulfill", left)

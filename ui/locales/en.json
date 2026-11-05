@@ -7120,5 +7120,7 @@
   "documents.scanned_lines_skipped_one": "Line {lines} was already marked as scanned, so it was left as it is.",
   "documents.scanned_lines_skipped_many": "Lines {lines} were already marked as scanned, so they were left as they are.",
   "documents.unscanned_lines_skipped_one": "Line {lines} wasn't marked as scanned, so there was nothing to clear.",
-  "documents.unscanned_lines_skipped_many": "Lines {lines} weren't marked as scanned, so there was nothing to clear."
+  "documents.unscanned_lines_skipped_many": "Lines {lines} weren't marked as scanned, so there was nothing to clear.",
+  "documents.drawn_lines_skipped_one": "Line {lines} was invoiced from a memo and its products are already with the customer, so it was left as it is.",
+  "documents.drawn_lines_skipped_many": "Lines {lines} were invoiced from a memo and their products are already with the customer, so they were left as they are."
 }

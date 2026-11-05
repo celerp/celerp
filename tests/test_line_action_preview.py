@@ -177,6 +177,27 @@ async def test_a_line_shipped_from_part_of_a_weight_lot_does_not_ship_again(clie
     assert (await _ok(await client.get(f"/items/{lot['id']}", headers=g.h)))["quantity"] == left
 
 
+async def test_a_line_invoiced_from_a_memo_is_left_as_already_with_the_customer(client, session):
+    """Set as shipped on a finalized invoice drawn from a memo leaves the drawn line as one
+    whose goods are already with the customer. Red statement: it was named as already
+    shipped with the advice to set it as available first, which would take the customer's
+    goods back into stock."""
+    from memo_draw_support import draw
+    g = await _gems(client)
+    memo = await test_item_less_line_actions._doc(client, g, [_line(g, "DEMO-SAP-001")], doc_type="memo")
+    mids = await _ids(client, g, memo)
+    await _ok(await _act(client, g, memo, "fulfill-lines", mids))
+    preview = await _ok(await draw(client, g.h, memo, line_ids=mids, dry_run=True))
+    inv = (await _ok(await draw(client, g.h, memo, line_ids=mids, binding=preview["binding"])))["target_doc_id"]
+    await _ok(await client.post(f"/docs/{inv}/finalize", headers=g.h))
+    [drawn] = await _ids(client, g, inv)
+    r = await _act(client, g, inv, "fulfill-lines", [drawn])
+    assert r.status_code == 422, r.text
+    assert (r.json()["detail"]["message_key"], r.json()["detail"]["params"]) == (
+        "documents.drawn_lines_skipped_one", {"lines": '1 "DEMO-SAP-001"'})
+    assert await _status(client, g, "DEMO-SAP-001") == "sold"
+
+
 async def test_the_preview_of_back_to_memo_is_what_it_then_does(client, session):
     from test_item_less_line_actions import _drawn_invoice_with_own_certificate
     g = await _gems(client)
