@@ -55,6 +55,9 @@ jobs:
       - name: Install deps
         run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split -c constraints.txt
 
+      - name: Tune the throwaway Postgres
+        run: scripts/ci_tune_postgres.sh postgresql://celerp:celerp@localhost:5432/celerp_test
+
       - name: Run tests (shard ${{ matrix.group }}/32)
         env:
           ALLOW_INSECURE_JWT: "true"
@@ -174,6 +177,9 @@ jobs:
       - name: Install deps
         run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split -c constraints.txt
 
+      - name: Tune the throwaway Postgres
+        run: scripts/ci_tune_postgres.sh postgresql://celerp:celerp@localhost:5432/celerp_test
+
       - name: Run process tests
         env:
           ALLOW_INSECURE_JWT: "true"
@@ -261,6 +267,9 @@ jobs:
       - name: Install deps
         run: pip install uv && uv pip install --system -e ".[dev]" -c constraints.txt
 
+      - name: Tune the throwaway Postgres
+        run: scripts/ci_tune_postgres.sh postgresql://celerp:celerp@localhost:5432/celerp_test
+
       - name: Run the integration suite
         env:
           ALLOW_INSECURE_JWT: "true"
@@ -310,6 +319,9 @@ jobs:
 
       - name: Install Chromium for Playwright
         run: python -m playwright install --with-deps chromium
+
+      - name: Tune the throwaway Postgres
+        run: scripts/ci_tune_postgres.sh postgresql://celerp:celerp@localhost:5432/celerp_test
 
       - name: Run browser tests (shard ${{ matrix.group }}/6)
         env:

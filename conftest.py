@@ -86,44 +86,16 @@ def _remove_own_temp_files() -> None:
 # ── Postgres for the whole test suite ──────────────────────────────────────────
 # Both production targets (the server and the Electron embedded-postgres build)
 # run Postgres, so the tests run on Postgres too. A pre-set DATABASE_URL (e.g. a
-# CI services container) is honored; otherwise we start a throwaway Postgres via
-# testcontainers (Docker), tuned for throwaway speed (fsync/synchronous_commit/
-# full_page_writes off — safe because the data is discarded). Each pytest-xdist
+# CI services container, which the CI job tunes itself) is used as it is; otherwise we
+# start a throwaway Postgres via testcontainers (Docker), tuned for throwaway speed
+# (fsync/synchronous_commit/full_page_writes off, safe because the data is discarded). Each pytest-xdist
 # worker gets its own database. MUST run before celerp.db / test_helpers import.
 _PG_CONTAINER = None
-
-
-def _tune_pg_server(url: str) -> None:
-    """Turn off durability guards on a preset (CI) Postgres — mirrors the testcontainers
-    tuning. The test DB is throwaway, so fsync / synchronous_commit / full_page_writes off is
-    safe and removes the per-commit disk syncs that dominate a commit-heavy suite on CI's stock
-    Postgres service. Server-wide (covers every xdist worker DB) and applied via pg_reload_conf
-    (all three GUCs are reloadable — no restart). Best-effort: a no-op if the role lacks the
-    superuser needed for ALTER SYSTEM, which only costs speed, never correctness."""
-    from urllib.parse import urlsplit
-    import psycopg2
-
-    parts = urlsplit(url.replace("+asyncpg", ""))
-    try:
-        conn = psycopg2.connect(host=parts.hostname, port=parts.port, user=parts.username,
-                                password=parts.password, dbname=parts.path.lstrip("/") or "postgres")
-        conn.autocommit = True
-        try:
-            with conn.cursor() as cur:
-                cur.execute("ALTER SYSTEM SET fsync = off")
-                cur.execute("ALTER SYSTEM SET synchronous_commit = off")
-                cur.execute("ALTER SYSTEM SET full_page_writes = off")
-                cur.execute("SELECT pg_reload_conf()")
-        finally:
-            conn.close()
-    except Exception:
-        pass
 
 
 def _provision_test_database() -> None:
     url = os.environ.get("DATABASE_URL", "")
     if url.startswith("postgresql"):
-        _tune_pg_server(url)
         worker = os.environ.get("PYTEST_XDIST_WORKER")
         if worker:
             url = provision_worker_db(url, worker)
