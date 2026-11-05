@@ -2712,3 +2712,66 @@ async def test_by_doc_requires_view_financial_reports(client, session):
     operator = await _user_with_role(client, session, admin, "operator")
     assert (await client.get(f"/accounting/journal/by-doc/{doc}",
                              headers=_h(operator))).status_code == 403
+
+
+def _item_rows(entry: dict) -> list[tuple]:
+    return [(l["account"], l["item"], l["debit"], l["credit"]) for l in entry["lines"] if l.get("item")]
+
+
+@pytest.mark.asyncio
+async def test_by_doc_names_the_items_on_a_purchase_order_receipt(client):
+    """A receipt posts the goods a purchase order brought in, so its entry is an item posting."""
+    from test_helpers import default_location_id
+
+    tok = await _reg(client)
+    r = await client.post("/docs", headers=_h(tok), json={
+        "doc_type": "purchase_order", "contact_id": "contact:1", "issue_date": "2026-02-01",
+        "line_items": [{"sku": "WIDGET", "name": "WIDGET", "quantity": 2, "unit_price": 50.0,
+                        "line_total": 100.0}],
+        "subtotal": 100.0, "total": 100.0})
+    assert r.status_code == 200, r.text
+    po = r.json()["id"]
+    r = await client.post(f"/docs/{po}/receive", headers=_h(tok), json={
+        "location_id": await default_location_id(client, _h(tok)),
+        "received_items": [{"po_line_index": 0, "sku": "WIDGET", "name": "WIDGET",
+                            "quantity_received": 2, "receive_as": "stock"}]})
+    assert r.status_code == 200, r.text
+
+    impact = await _by_doc(client, tok, po)
+    receipt = next(e for e in impact["entries"] if ":rcv" in e["je_id"])
+    assert receipt["items_status"] == "expanded"
+    assert [(item, debit) for _, item, debit, _ in _item_rows(receipt)] == [("WIDGET", 100.0)]
+    assert impact["total_debit"] == impact["total_credit"] == 100.0
+
+
+@pytest.mark.asyncio
+async def test_by_doc_names_the_items_on_an_entry_an_unvoid_restores(client):
+    """An unvoid re-posts the entry the void took out; the copy is the same item posting."""
+    tok = await _reg(client)
+    doc = await _doc_with_items(client, tok, "invoice", [("WIDGET", 2, 30.0), ("GIZMO", 1, 40.0)])
+    original = next(e for e in (await _by_doc(client, tok, doc))["entries"])
+    assert (await client.post(f"/docs/{doc}/void", headers=_h(tok), json={"reason": "test"})).status_code == 200
+    assert (await client.post(f"/docs/{doc}/unvoid", headers=_h(tok), json={})).status_code == 200
+
+    impact = await _by_doc(client, tok, doc)
+    restored = next(e for e in impact["entries"] if ":unvoid:" in e["je_id"])
+    assert restored["items_status"] == "expanded"
+    assert _item_rows(restored) == _item_rows(original)
+    assert impact["total_debit"] == impact["total_credit"] == 100.0
+
+
+@pytest.mark.asyncio
+async def test_by_doc_a_locked_void_reversal_carries_no_item_rows(client):
+    """A void reaching back into a locked period posts a reversal on an open date. It undoes the
+    whole entry, so it names no items: the receivable line it credits is not a sale."""
+    tok = await _reg(client)
+    doc = await _doc_with_items(client, tok, "invoice", [("WIDGET", 2, 30.0), ("GIZMO", 1, 40.0)])
+    r = await client.post("/accounting/period-lock", headers=_h(tok), json={"lock_date": "2026-02-28"})
+    assert r.status_code == 200, r.text
+    assert (await client.post(f"/docs/{doc}/void", headers=_h(tok), json={"reason": "test"})).status_code == 200
+
+    impact = await _by_doc(client, tok, doc)
+    reversal = next(e for e in impact["entries"] if e["je_id"].endswith(":reversal"))
+    assert reversal["items_status"] == "no_items"
+    assert _item_rows(reversal) == []
+    assert impact["total_debit"] == impact["total_credit"] == 200.0

@@ -1115,6 +1115,35 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
                 )
             )
         ).scalars().all())
+    # An unvoid re-posts the entry the void took out, under its own id; it is the
+    # same posting, so it is classified by the trigger of the entry it restores.
+    creation_trigger = {ev.entity_id: (ev.metadata_ or {}).get("trigger") for ev in ledger_events}
+    restores = {ev.entity_id: (ev.metadata_ or {})["restores"]
+                for ev in ledger_events if (ev.metadata_ or {}).get("restores")}
+    looked_up = set(creation_trigger)
+    pending = set(restores.values()) - looked_up
+    while pending:
+        looked_up |= pending
+        for chunk in _id_chunks(sorted(pending)):
+            for ev in (await session.execute(
+                select(LedgerEntry).where(
+                    LedgerEntry.company_id == company_id,
+                    LedgerEntry.event_type == "acc.journal_entry.created",
+                    LedgerEntry.entity_id.in_(chunk),
+                )
+            )).scalars().all():
+                creation_trigger[ev.entity_id] = (ev.metadata_ or {}).get("trigger")
+                if (ev.metadata_ or {}).get("restores"):
+                    restores[ev.entity_id] = ev.metadata_["restores"]
+        pending = set(restores.values()) - looked_up
+
+    def _posting_trigger(je_id: str) -> str | None:
+        seen = set()
+        while je_id in restores and je_id not in seen:
+            seen.add(je_id)
+            je_id = restores[je_id]
+        return creation_trigger.get(je_id)
+
     je_meta: dict[str, dict] = {}
     je_ts: dict[str, str] = {}
     for ev in ledger_events:
@@ -1194,14 +1223,16 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
             "contact_id": contact_id,
             "doc_type": canonical_doc_type(doc_type),
             "is_payment": isinstance(payment_index, int),
-            "is_cost_posting": meta.get("trigger") == "doc.fulfilled",
+            "is_cost_posting": _posting_trigger(je_id) == "doc.fulfilled",
             # Other posting kinds may happen to equal a document's net price.
-            "is_item_posting": meta.get("trigger") in (
-                "doc.finalized", "doc.imported", "doc.converted_to_bill",
+            "is_item_posting": _posting_trigger(je_id) in (
+                "doc.finalized", "doc.imported", "doc.converted_to_bill", "doc.received",
             ),
             "doc": state,
         }
-    return {je_id: refs[original] for je_id, original in reverses.items() if original in refs}
+    # A reversal undoes the whole entry on the party line; it names no items.
+    return {je_id: refs[original] if je_id == original else {**refs[original], "is_item_posting": False}
+            for je_id, original in reverses.items() if original in refs}
 
 
 def _line_party(refs: dict[str, dict], je_id: str, entry: dict, survivors: dict[str, str]) -> str:
