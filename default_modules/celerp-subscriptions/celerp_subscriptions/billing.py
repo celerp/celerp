@@ -146,10 +146,12 @@ async def write_agreement(session: AsyncSession, company_id, entity_id: str, cha
     change, and a change to periods keeps the dates and the document number of each period it
     touched, so History can name them. Every agreement change in this module goes through here.
 
-    It is also where an unattended mode comes into force: a mode in force after the change
-    that was not before, or whose consent terms change, needs both its permissions from the
-    actor's role (403 naming the first missing) and records the actor's consent; the consents
-    kept are exactly the modes in force after the change, so pausing or cancelling drops them."""
+    It is also where consent to an unattended mode is given, whatever the status: a write that
+    chooses a mode (configured_modes) or changes one of its consent terms while it is chosen
+    needs both its permissions from the actor's role (403 naming the first missing) and records
+    the actor's consent; the consents kept are exactly the modes chosen after the change, so
+    turning a mode off drops its consent and a status change keeps it. A write that changes the
+    status may not move a consent (ValueError): status and terms are written apart."""
     before = (await session.execute(select(Projection.state).where(
         Projection.company_id == company_id, Projection.entity_id == entity_id))).scalar_one_or_none() or {}
     changes = {k: v for k, v in changes.items() if shown(k, before.get(k)) != shown(k, v)}
@@ -157,8 +159,8 @@ async def write_agreement(session: AsyncSession, company_id, entity_id: str, cha
     if not changes and all(shown(k, before[k]) == shown(k, None) for k in drop):
         drop = ()
     merged = {**{k: v for k, v in before.items() if k not in drop}, **changes}
-    running, in_force = modes_in_force(before), modes_in_force(merged)
-    needed = [m for m in in_force if m not in running or any(f in changes for f in CONSENT_TERMS[m])]
+    chosen, choosing = configured_modes(before), configured_modes(merged)
+    needed = [m for m in choosing if m not in chosen or any(f in changes for f in CONSENT_TERMS[m])]
     if needed:
         company = await session.get(Company, company_id)
         role = await _member_role(session, company_id, actor_id)
@@ -166,8 +168,10 @@ async def write_agreement(session: AsyncSession, company_id, entity_id: str, cha
             if (missing := missing_mode_permission((company.settings if company else None) or {}, role, mode)):
                 raise missing_permission(missing)
     kept = before.get("consents") or {}
-    consents = {**{m: kept[m] for m in in_force if m in kept},
+    consents = {**{m: kept[m] for m in choosing if m in kept},
                 **{m: {"by": str(actor_id), "at": now_stamp()} for m in needed}}
+    if consents != kept and "status" in changes:
+        raise ValueError(f"a status change of {entity_id} would move its consents")
     if consents != kept:
         changes, drop = ({**changes, "consents": consents}, drop) if consents else (changes, (*drop, "consents"))
     if not changes and not drop:
@@ -214,8 +218,7 @@ AGREEMENT_STATUSES = frozenset({"draft", "active", "paused", "cancelled", "void"
 async def guard_agreement_status(*, session, entry, transition) -> None:
     """doc_status_guard: the status of an agreement that runs an unattended mode, before or
     after the change, changes only in write_agreement (activate, pause, resume, cancel on its
-    own page), where a mode coming into force asks for its consent and a mode stopping drops
-    it. Every other writer (void, unvoid, finalize, revert, an import) is refused (409), and so
+    own page). Every other writer (void, unvoid, finalize, revert, an import) is refused (409), and so
     is any that would leave an agreement a status outside AGREEMENT_STATUSES. A draft starts only
     through Activate, which writes its schedule, so a draft leaves draft elsewhere only by void;
     that refusal names Activate. An agreement without a schedule bills nothing (billable)."""
@@ -685,13 +688,18 @@ def send_status(state: dict, k, today: date, doc: dict | None = None) -> str | N
     return "unconfirmed" if recorded in UNCONFIRMED else recorded
 
 
-def modes_in_force(state: dict) -> list[str]:
-    """The unattended modes that run for an agreement, by their consent key. A mode runs only
-    while the agreement is active, and sending runs only on what automatic billing makes, so
+def configured_modes(state: dict) -> list[str]:
+    """The unattended modes the agreement's terms choose, by their consent key, whatever its
+    status: what a consent is given to. Sending runs only on what automatic billing makes, so
     Send automatically on a manual agreement is not one of them."""
-    if not billable(state) or state.get("generation_mode") not in AUTO_MODES:
+    if state.get("generation_mode") not in AUTO_MODES:
         return []
     return ["generation", *(["sending"] if state.get("auto_send") else [])]
+
+
+def modes_in_force(state: dict) -> list[str]:
+    """The chosen modes that run now: only while the agreement can bill (billable)."""
+    return configured_modes(state) if billable(state) else []
 
 
 async def run_due(*, session: AsyncSession, company_id, today: date, budget: int) -> OperationReport:

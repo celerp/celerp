@@ -12,11 +12,12 @@ in the reader's language when read.
 """
 from __future__ import annotations
 
+import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.models.company import Company
+from celerp.models.company import Company, User
 from celerp.models.projections import Projection
 from celerp.services.business_time import company_today
 from celerp.services.company_lock import locked_company
@@ -69,6 +70,33 @@ async def send_answer(session: AsyncSession, company_id, entity_id: str, k: int)
     return {"ok": True, "period_index": k, "send": status,
             "message": _message(kind, (doc or {}).get("ref_id") or doc_id,
                                 (entry.get("send") or {}).get("error_key")) if kind else None}
+
+
+async def _member_name(session, user_id) -> str:
+    try:
+        name = await session.scalar(select(User.name).where(User.id == uuid.UUID(str(user_id))))
+    except ValueError:
+        name = None
+    return name or t("subscriptions.runs_former_member")
+
+
+async def modes_answer(session: AsyncSession, company_id, entity_id: str) -> dict:
+    """What runs on its own for the agreement now, read from it as stored after a status
+    change: each mode in force and the member whose authorization it runs under, or whose
+    authorization has lapsed so it does not run; that it is billed by hand when none is."""
+    state = (await _states(session, company_id, {entity_id})).get(entity_id) or {}
+    company = await session.get(Company, company_id)
+    settings = (company.settings or {}) if company else {}
+    runs, lapsed, sentences = [], [], []
+    for mode in billing.modes_in_force(state):
+        name = await _member_name(session, ((state.get("consents") or {}).get(mode) or {}).get("by"))
+        if await billing.authorizer(session, company_id, settings, state, mode) is None:
+            lapsed.append(mode)
+            sentences.append(t(f"subscriptions.runs_{mode}_lapsed", name=name))
+        else:
+            runs.append(mode)
+            sentences.append(t(f"subscriptions.runs_{mode}", name=name))
+    return {"runs": runs, "lapsed": lapsed, "message": " ".join(sentences) or t("subscriptions.runs_by_hand")}
 
 
 async def report(session: AsyncSession, company_id, user_id, *, everything: bool = False) -> dict:

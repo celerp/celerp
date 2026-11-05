@@ -91,6 +91,8 @@ class _Package:
             return set()
         if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
             return {expr.value}
+        if isinstance(expr, ast.Await):
+            return self.keys(expr.value, fn, seen)
         if isinstance(expr, ast.Dict):
             out = set()
             for k, v in zip(expr.keys, expr.values):

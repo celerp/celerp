@@ -7265,5 +7265,11 @@
   "subscriptions.err_bill_void": "This subscription is void, so it bills nothing. Unvoid it in Documents to bill it again.",
   "subscriptions.err_bill_not_active": "Only an active subscription bills, and this one is not active. Revert it to draft in Documents, then activate it on its page.",
   "subscriptions.err_agreement_activate": "A draft subscription starts only with Activate on its own page, which sets its first bill date. Documents can void it, but not finalize or issue it.",
-  "subscriptions.err_agreement_status_lifecycle": "A subscription is only ever draft, active, paused, cancelled or void. Change its status on its own page: activate, pause, resume or cancel it there. Documents can void it, unvoid it or revert it to draft."
+  "subscriptions.err_agreement_status_lifecycle": "A subscription is only ever draft, active, paused, cancelled or void. Change its status on its own page: activate, pause, resume or cancel it there. Documents can void it, unvoid it or revert it to draft.",
+  "subscriptions.runs_generation": "Automatic billing runs now, authorized by {name}.",
+  "subscriptions.runs_sending": "Each bill is emailed to the customer automatically, authorized by {name}.",
+  "subscriptions.runs_generation_lapsed": "Automatic billing is on but does not run: {name}, who authorized it, no longer has permission to. Someone who does can turn it off and on again to authorize it.",
+  "subscriptions.runs_sending_lapsed": "Automatic sending is on but does not run: {name}, who authorized it, no longer has permission to. Someone who does can turn it off and on again to authorize it.",
+  "subscriptions.runs_by_hand": "Nothing runs automatically: bill each period from this page.",
+  "subscriptions.runs_former_member": "a former member"
 }

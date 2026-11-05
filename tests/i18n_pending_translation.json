@@ -28,6 +28,38 @@
     "subscriptions.err_agreement_status_lifecycle": {
       "en": "A subscription is only ever draft, active, paused, cancelled or void. Change its status on its own page: activate, pause, resume or cancel it there. Documents can void it, unvoid it or revert it to draft.",
       "params": []
+    },
+    "subscriptions.runs_generation": {
+      "en": "Automatic billing runs now, authorized by {name}.",
+      "params": [
+        "name"
+      ]
+    },
+    "subscriptions.runs_sending": {
+      "en": "Each bill is emailed to the customer automatically, authorized by {name}.",
+      "params": [
+        "name"
+      ]
+    },
+    "subscriptions.runs_generation_lapsed": {
+      "en": "Automatic billing is on but does not run: {name}, who authorized it, no longer has permission to. Someone who does can turn it off and on again to authorize it.",
+      "params": [
+        "name"
+      ]
+    },
+    "subscriptions.runs_sending_lapsed": {
+      "en": "Automatic sending is on but does not run: {name}, who authorized it, no longer has permission to. Someone who does can turn it off and on again to authorize it.",
+      "params": [
+        "name"
+      ]
+    },
+    "subscriptions.runs_by_hand": {
+      "en": "Nothing runs automatically: bill each period from this page.",
+      "params": []
+    },
+    "subscriptions.runs_former_member": {
+      "en": "a former member",
+      "params": []
     }
   }
 }

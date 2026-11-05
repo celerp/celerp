@@ -1302,10 +1302,10 @@ def setup_routes(app) -> None:
         except APIError as e:
             return _refused(e)
         if action in _BILLING_ACTIONS:
-            message = _billed_text(done)
-        else:
-            message = t(_ACTION_DONE[action])
-        return _done(f"/subscriptions/{entity_id}", message)
+            return _done(f"/subscriptions/{entity_id}", _billed_text(done))
+        # Resume and Activate answer with what now runs automatically, read after the change.
+        message = " ".join(m for m in (t(_ACTION_DONE[action]), done.get("message")) if m)
+        return _done(f"/subscriptions/{entity_id}", message, "warning" if done.get("lapsed") else "success")
 
     @app.post("/subscriptions/{entity_id}/periods/{k}/{action}")
     async def subscription_period_ui(request: Request, entity_id: str, k: int, action: str):

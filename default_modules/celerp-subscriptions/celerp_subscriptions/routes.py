@@ -156,6 +156,16 @@ async def _write(session, company_id, entity_id, changes: dict, user, *, drop: t
     await session.commit()
 
 
+async def _first_schedule(session, company_id, state: dict) -> dict:
+    """The start date and schedule an agreement not yet on one starts with: its start date (or
+    today) as its anchor, with its own settings; 422 saying why when they describe none."""
+    start = state.get("start_date") or (await company_today(session, company_id)).isoformat()
+    try:
+        return {"start_date": start, **migration.legacy_schedule({**state, "start_date": start})}
+    except ScheduleError as exc:
+        raise HTTPException(status_code=422, detail=t(exc.key, **exc.params)) from exc
+
+
 async def _move_with(session, company_id, proj: Projection, sent: dict, user) -> dict:
     """A template not yet on a schedule takes only its frequency and interval, and moves onto
     a schedule with them at once; 409 naming it and why while it still cannot."""
@@ -499,6 +509,10 @@ def _build_router() -> APIRouter:
         sending_off = sending_off and "generation_mode" in changes
         if sending_off:
             changes["auto_send"] = False
+        if billing.configured_modes({**state, **changes}) and not state.get("anchor_date"):
+            # Automatic terms are consented whole: an agreement without a schedule takes the one
+            # Activate would give it in the same write, so Activate never changes a consent term.
+            changes = {**(await _first_schedule(session, company_id, {**state, **changes})), **changes}
         merged = {**state, **changes}
         try:
             schedule = Schedule.from_state(merged) if merged.get("anchor_date") else None
@@ -638,7 +652,8 @@ def _build_router() -> APIRouter:
         user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
-        """Resume billing. Periods missed while paused stay due: none is skipped, unless the
+        """Resume billing, the status only: any automatic terms keep the consent of whoever set
+        them, and the answer says what now runs. Periods missed while paused stay due: none is skipped, unless the
         template was paused on an earlier release, which restarted it from the resume day. Then
         every open period that started on or before today is skipped with that reason (each
         can be un-skipped), once."""
@@ -663,7 +678,8 @@ def _build_router() -> APIRouter:
             changes["periods"] = periods
         await _write(session, company_id, entity_id, changes, user,
                      drop=("resume_restarts",) if "resume_restarts" in state else ())
-        return {"ok": True, "next_bill_date": next_bill_date({**state, **changes}), "skipped": skipped}
+        return {"ok": True, "next_bill_date": next_bill_date({**state, **changes}), "skipped": skipped,
+                **await summary.modes_answer(session, company_id, entity_id)}
 
     @router.post("/{entity_id}/cancel")
     async def cancel_subscription(
@@ -688,19 +704,16 @@ def _build_router() -> APIRouter:
         session: AsyncSession = Depends(get_session),
     ) -> dict:
         """Promote a draft agreement to active. Its first period starts on the start date,
-        which is also its first bill date when billed in advance."""
+        which is also its first bill date when billed in advance. The status changes only: any
+        automatic terms keep the consent of whoever set them, and the answer says what now runs."""
         proj = await billing.locked_agreement(session, company_id, entity_id)
         if proj.state.get("status") != "draft":
             raise HTTPException(status_code=409, detail=t("subscriptions.err_activate_not_draft"))
-        start = proj.state.get("start_date") or (await company_today(session, company_id)).isoformat()
-        try:
-            schedule = migration.legacy_schedule({**proj.state, "start_date": start})
-        except ScheduleError as exc:
-            raise HTTPException(status_code=422, detail=t(exc.key, **exc.params)) from exc
-        changes = {"status": "active", "start_date": start, **schedule}
+        changes = {"status": "active", **await _first_schedule(session, company_id, proj.state)}
         merged = {**proj.state, **changes}
         await _write(session, company_id, entity_id, changes, user)
-        return {"ok": True, "next_bill_date": next_bill_date(merged)}
+        return {"ok": True, "next_bill_date": next_bill_date(merged),
+                **await summary.modes_answer(session, company_id, entity_id)}
 
     return router
 
