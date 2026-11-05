@@ -7088,5 +7088,5 @@
   "company.err_price_list_rounding": "Nilai pembulatan untuk {name} harus berupa angka lebih besar dari 0 dan tidak lebih dari {max}.",
   "company.err_price_list_cost_name": "{name} adalah nama yang dicadangkan Celerp untuk biaya. Setiap perusahaan sudah memiliki daftar Biaya yang menampilkan biaya setiap barang. Berikan nama lain untuk daftar ini.",
   "docs.revert_received_in_stock": "Tidak dapat dikembalikan ke draf selama barang yang diterima pada dokumen ini masih ada di stok. Pilih baris tersebut dan gunakan Pengembalian Barang terlebih dahulu, lalu kembalikan ke draf.",
-  "docs.revert_lines_out": "Cannot revert to draft while lines are still out on memo or sold. Select those lines and use Set as available first, then revert."
+  "docs.revert_lines_out": "Tidak dapat mengembalikan dokumen ke draf selama masih ada baris yang berada di luar melalui memo atau sudah terjual. Pilih baris-baris tersebut dan gunakan Tetapkan sebagai tersedia terlebih dahulu, lalu kembalikan ke draf."
 }
