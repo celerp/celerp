@@ -513,6 +513,14 @@ class TestFindSafeStamp:
             "rev2": [RevisionSignature(rev="rev2", kind="drop_column", table="notices", column="read")],
         }
         assert find_safe_stamp(revs, sigs_by_rev, inspector) == "rev1"
+        # Against the kernel schema a table no revision creates is one only the
+        # startup creates (test_startup_tables_stamp), so here a revision creates it.
+        revs = [MagicMock(revision=f"rev{i}") for i in (3, 2, 1)]
+        sigs_by_rev = {
+            "rev1": [RevisionSignature(rev="rev1", kind="create_table", table="users")],
+            "rev2": [RevisionSignature(rev="rev2", kind="create_table", table="notices")],
+            "rev3": [RevisionSignature(rev="rev3", kind="drop_column", table="notices", column="read")],
+        }
         assert find_safe_stamp(revs, sigs_by_rev, inspector, expected_metadata=metadata) == "rev1"
 
     def test_an_unreadable_column_list_is_no_proof_a_column_was_dropped(self):

@@ -335,6 +335,25 @@ def _signature_applied(inspector, sig: RevisionSignature) -> bool:
     return False
 
 
+def startup_requirements(metadata, sigs_by_rev: dict[str, list[RevisionSignature]]) -> dict[str, frozenset[str]]:
+    """For each kernel table that exists only once the app has started, the tables no
+    revision creates that it needs. Those the startup alone creates from the models
+    need themselves; a table holding a foreign key to one needs what that one needs,
+    since a revision can create it only after the startup has. An install that has
+    never started the app lacks every one of them."""
+    created = {sig.table for sigs in sigs_by_rev.values() for sig in sigs if sig.kind == "create_table"}
+    needs = {name: {name} for name in metadata.tables if name not in created}
+    grew = True
+    while grew:
+        grew = False
+        for name, table in metadata.tables.items():
+            wanted = set().union(*(needs.get(fk.column.table.name, set()) for fk in table.foreign_keys))
+            if wanted - needs.get(name, set()):
+                needs[name] = needs.get(name, set()) | wanted
+                grew = True
+    return {name: frozenset(tables) for name, tables in needs.items()}
+
+
 def load_kernel_metadata():
     """Return the current kernel model schema. Loaded modules register their own
     tables on the same Base; those are not the kernel's."""
@@ -366,14 +385,18 @@ def find_safe_stamp(
     When ``expected_metadata`` is supplied, historical objects no longer owned
     by the current kernel are ignored; this prevents a create_all database from
     being judged against obsolete intermediate schema while still detecting a
-    missing current column/index in any older revision.
+    missing current column/index in any older revision. A table only the startup
+    creates (``startup_requirements``) is evidence only once the startup has created
+    what it needs: before that its absence says nothing about which revisions ran.
     """
     revs = [r for r in revisions if getattr(r, "revision", None) is not None]
+    startup = startup_requirements(expected_metadata, sigs_by_rev) if expected_metadata is not None else {}
     evidence = []  # (position, applied) for each revision with schema evidence
     for i, rev in enumerate(revs):
         sigs = [
             sig for sig in sigs_by_rev.get(rev.revision, [])
             if _signature_expected(expected_metadata, sig)
+            and all(_table_exists(inspector, t) for t in startup.get(sig.table, ()))
         ]
         if sigs:
             evidence.append((i, all(_signature_applied(inspector, sig) for sig in sigs)))
