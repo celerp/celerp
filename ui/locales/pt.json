@@ -2627,7 +2627,6 @@
   "documents.set_as_reserved": "Definir como reservado",
   "documents.set_as_shipped": "Definir como enviado",
   "documents.sku_placeholder": "SKU...",
-  "documents.sold_reserve_warn": "{n} das linhas selecionadas já foram enviadas. Definir essas linhas como reservadas retorna as mercadorias ao estoque e estorna o lançamento de venda neste documento. Deseja continuar?",
   "documents.start_audit": "Iniciar auditoria",
   "documents.status_available": "Em estoque",
   "documents.status_not_received": "Não recebido",
@@ -7111,5 +7110,15 @@
   "company.err_price_list_base_factor": "{name} é a lista de preços base e, por isso, não pode ter um fator.",
   "company.err_price_list_rounding_needs_factor": "O arredondamento de {name} exige um fator. Adicione um fator ou remova o arredondamento.",
   "company.err_price_list_rounding": "O valor de arredondamento de {name} deve ser um número maior que 0 e menor ou igual a {max}.",
-  "company.err_price_list_cost_name": "{name} é um nome reservado pela Celerp para custos. Toda empresa já tem a lista Custo, que mostra o custo de cada item. Dê outro nome a esta lista."
+  "company.err_price_list_cost_name": "{name} é um nome reservado pela Celerp para custos. Toda empresa já tem a lista Custo, que mostra o custo de cada item. Dê outro nome a esta lista.",
+  "lines.preview_differs": "The lines changed after the preview, so nothing was changed. Check the new preview, then confirm again.",
+  "documents.lines_changed_since_confirm": "The lines changed while this confirm was open, so nothing was changed. This is what the action does now:",
+  "documents.will_take_back_one": "Line {lines} has already shipped: this takes its goods back into stock and reverses its shipment.",
+  "documents.will_take_back_many": "Lines {lines} have already shipped: this takes their goods back into stock and reverses their shipments.",
+  "documents.taken_back_one": "Line {lines} had already shipped, so its goods came back into stock and its shipment was reversed.",
+  "documents.taken_back_many": "Lines {lines} had already shipped, so their goods came back into stock and their shipments were reversed.",
+  "documents.scanned_lines_skipped_one": "Line {lines} was already marked as scanned, so it was left as it is.",
+  "documents.scanned_lines_skipped_many": "Lines {lines} were already marked as scanned, so they were left as they are.",
+  "documents.unscanned_lines_skipped_one": "Line {lines} wasn't marked as scanned, so there was nothing to clear.",
+  "documents.unscanned_lines_skipped_many": "Lines {lines} weren't marked as scanned, so there was nothing to clear."
 }

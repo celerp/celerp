@@ -160,16 +160,26 @@ async function celerpLineAction(url, rows, fields, key, fallbackMsg) {
   _celerpLineRefused(sent, fallbackMsg);
   return false;
 }
-// The question a stock line action asks before it runs, from the action's own preview
-// (dry_run): how many lines it acts on and which it leaves as they are. Nothing changes. Null
-// when the action would be refused, after showing why, so nothing is asked.
-async function celerpLinePreview(url, rows, fields, key, fallbackMsg) {
+// A stock line action with its confirm. The action's own preview (dry_run) asks the question:
+// how many lines it acts on, which it leaves as they are and what it takes back. The action is
+// sent bound to that preview, so when the lines changed while the question was open it changes
+// nothing and the fresh question is asked, saying so. A refusal is shown and nothing is asked.
+// Resolves true when the action ran, keeping the server's toast for the page opened next.
+async function celerpStockLineAction(url, rows, fields, key, fallbackMsg) {
   var sent = await _celerpLinePost(url, rows, (fields || []).concat([['dry_run', '1']]), key);
-  if (sent && sent.resp.ok && (sent.resp.headers.get('Content-Type') || '').indexOf('json') >= 0) {
-    try { return (await sent.resp.json()).confirm; } catch (e) {}
+  while (true) {
+    var asked = null;
+    if (sent && sent.resp.ok && (sent.resp.headers.get('Content-Type') || '').indexOf('json') >= 0) {
+      try { asked = await sent.resp.json(); } catch (e) {}
+    }
+    if (!asked) { _celerpLineRefused(sent, fallbackMsg); return false; }
+    if (!(await celerpConfirm(asked.confirm))) return false;
+    sent = await _celerpLinePost(url, rows, (fields || []).concat([['binding', asked.binding]]), key);
+    if (sent && sent.resp.status === 204) {
+      if (sent.trigger && sent.trigger.celerpToast) _celerpKeepToast(sent.trigger.celerpToast);
+      return true;
+    }
   }
-  _celerpLineRefused(sent, fallbackMsg);
-  return null;
 }
 // One line action at a time: the second click of a double click, or a click while another
 // action's confirm or request is open, does nothing. ``run`` resolves true when the page is

@@ -2628,7 +2628,6 @@
   "documents.set_as_reserved": "Marquer comme réservé",
   "documents.set_as_shipped": "Marquer comme expédié",
   "documents.sku_placeholder": "Référence...",
-  "documents.sold_reserve_warn": "{n} des lignes sélectionnées ont déjà été expédiées. Les marquer comme réservées remet les marchandises en stock et annule l'écriture de vente sur ce document. Continuer ?",
   "documents.start_audit": "Lancer l'audit",
   "documents.status_available": "En stock",
   "documents.status_not_received": "Non reçu",
@@ -7111,5 +7110,15 @@
   "company.err_price_list_base_factor": "{name} est la liste de prix de base et ne peut donc pas avoir de coefficient.",
   "company.err_price_list_rounding_needs_factor": "L'arrondi de {name} nécessite un coefficient. Ajoutez-en un ou désactivez l'arrondi.",
   "company.err_price_list_rounding": "La valeur d'arrondi de {name} doit être un nombre supérieur à 0 et inférieur ou égal à {max}.",
-  "company.err_price_list_cost_name": "{name} est un nom réservé par Celerp pour le coût. Chaque entreprise dispose déjà de la liste « Coût », qui affiche le coût de chaque article. Donnez un autre nom à cette liste."
+  "company.err_price_list_cost_name": "{name} est un nom réservé par Celerp pour le coût. Chaque entreprise dispose déjà de la liste « Coût », qui affiche le coût de chaque article. Donnez un autre nom à cette liste.",
+  "lines.preview_differs": "The lines changed after the preview, so nothing was changed. Check the new preview, then confirm again.",
+  "documents.lines_changed_since_confirm": "The lines changed while this confirm was open, so nothing was changed. This is what the action does now:",
+  "documents.will_take_back_one": "Line {lines} has already shipped: this takes its goods back into stock and reverses its shipment.",
+  "documents.will_take_back_many": "Lines {lines} have already shipped: this takes their goods back into stock and reverses their shipments.",
+  "documents.taken_back_one": "Line {lines} had already shipped, so its goods came back into stock and its shipment was reversed.",
+  "documents.taken_back_many": "Lines {lines} had already shipped, so their goods came back into stock and their shipments were reversed.",
+  "documents.scanned_lines_skipped_one": "Line {lines} was already marked as scanned, so it was left as it is.",
+  "documents.scanned_lines_skipped_many": "Lines {lines} were already marked as scanned, so they were left as they are.",
+  "documents.unscanned_lines_skipped_one": "Line {lines} wasn't marked as scanned, so there was nothing to clear.",
+  "documents.unscanned_lines_skipped_many": "Lines {lines} weren't marked as scanned, so there was nothing to clear."
 }

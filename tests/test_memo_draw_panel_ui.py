@@ -83,14 +83,14 @@ def test_every_preview_then_confirm_form_carries_an_operation_key():
     import inspect
     import typing
 
-    from celerp_docs.routes import router
+    from celerp_docs.routes import binds_its_outcome, router
     from pydantic import BaseModel
     from ui.routes import documents
 
     previewed = {route.path for route in router.routes
                  for hint in typing.get_type_hints(getattr(route, "endpoint", None) or (lambda: None)).values()
                  if isinstance(hint, type) and issubclass(hint, BaseModel) and "dry_run" in hint.model_fields
-                 and not getattr(hint, "frames_confirm", False)}
+                 and not binds_its_outcome(hint)}
     forms = [node for node in ast.walk(ast.parse(inspect.getsource(documents)))
              if isinstance(node, ast.Call) and any(k.arg is None and getattr(k.value, "id", "") == "CONFIRMS_PREVIEW"
                                                    for k in node.keywords)]

@@ -2856,7 +2856,6 @@
   "documents.set_as_reserved": "እንደተጠበቀ አቀናብር",
   "documents.set_as_shipped": "እንደ ተልኳል",
   "documents.sku_placeholder": "SKU...",
-  "documents.sold_reserve_warn": "ከተመረጡት መስመሮች {n} ቀድሞውኑ ተልከዋል። እንደ ተያዙ ማድረግ ዕቃዎቹን ወደ ክምችት ይመልሳል እና በዚህ ሰነድ ላይ ያለውን የሽያጭ ሒሳብ ግቤት ይቀለብሳል። ይቀጥል?",
   "documents.start_audit": "ኦዲት ጀምር",
   "documents.status_available": "በክምችት ውስጥ",
   "documents.status_not_received": "አልደረሰም",
@@ -7111,5 +7110,15 @@
   "company.err_price_list_base_factor": "{name} መሠረታዊ የዋጋ ዝርዝር ስለሆነ ብዜት ሊኖረው አይችልም።",
   "company.err_price_list_rounding_needs_factor": "የ{name} ማጠጋጋት ብዜት ያስፈልገዋል። ብዜት ያክሉ ወይም ማጠጋጋቱን ያስወግዱ።",
   "company.err_price_list_rounding": "የ{name} የማጠጋጋት ዋጋ ከ0 በላይ እና ከ{max} ያልበለጠ ቁጥር መሆን አለበት።",
-  "company.err_price_list_cost_name": "{name} ለወጪ በCelerp የተያዘ ስም ነው። እያንዳንዱ ኩባንያ የዕቃዎቹን ወጪ የሚያሳይ «ወጪ» የዋጋ ዝርዝር አለው። ስለዚህ ለዚህ ዝርዝር ሌላ ስም ይስጡ።"
+  "company.err_price_list_cost_name": "{name} ለወጪ በCelerp የተያዘ ስም ነው። እያንዳንዱ ኩባንያ የዕቃዎቹን ወጪ የሚያሳይ «ወጪ» የዋጋ ዝርዝር አለው። ስለዚህ ለዚህ ዝርዝር ሌላ ስም ይስጡ።",
+  "lines.preview_differs": "The lines changed after the preview, so nothing was changed. Check the new preview, then confirm again.",
+  "documents.lines_changed_since_confirm": "The lines changed while this confirm was open, so nothing was changed. This is what the action does now:",
+  "documents.will_take_back_one": "Line {lines} has already shipped: this takes its goods back into stock and reverses its shipment.",
+  "documents.will_take_back_many": "Lines {lines} have already shipped: this takes their goods back into stock and reverses their shipments.",
+  "documents.taken_back_one": "Line {lines} had already shipped, so its goods came back into stock and its shipment was reversed.",
+  "documents.taken_back_many": "Lines {lines} had already shipped, so their goods came back into stock and their shipments were reversed.",
+  "documents.scanned_lines_skipped_one": "Line {lines} was already marked as scanned, so it was left as it is.",
+  "documents.scanned_lines_skipped_many": "Lines {lines} were already marked as scanned, so they were left as they are.",
+  "documents.unscanned_lines_skipped_one": "Line {lines} wasn't marked as scanned, so there was nothing to clear.",
+  "documents.unscanned_lines_skipped_many": "Lines {lines} weren't marked as scanned, so there was nothing to clear."
 }

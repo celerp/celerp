@@ -463,8 +463,9 @@ class DocReopenBody(BaseModel):
 # ── Preview, then confirm ─────────────────────────────────────────────────────
 # A write with a preview (``dry_run``) confirms only the preview shown: the preview answers
 # with a binding, and the write refuses a binding that differs from what it would write now.
-# A stock line action is the one exception (FulfillLinesRequest.frames_confirm): its preview
-# only words the confirm, and the action decides again when it runs and answers what it did.
+# A stock line action binds the outcome of its preview (outcome_binding): the lines it acts on,
+# the lines it leaves and why, and what it takes back, so an edit that changes none of these
+# never refuses it.
 
 # Request fields that never change what a write does; every other field is bound to its preview.
 PREVIEW_UNBOUND_FIELDS = frozenset({"idempotency_key", "dry_run", "binding"})
@@ -475,6 +476,17 @@ def preview_binding(rows: list[Projection | None], body: BaseModel) -> str:
     a record it makes) and every field of the request that changes what it writes."""
     shown = {"rows": [[row.entity_id, row.version] if row else None for row in rows],
              "request": body.model_dump(mode="json", exclude=set(PREVIEW_UNBOUND_FIELDS))}
+    return hashlib.sha256(json.dumps(shown, sort_keys=True).encode()).hexdigest()
+
+
+def outcome_binding(result: dict) -> str:
+    """What a stock line action's preview shows, as one digest: the lines it acts on, each line
+    it leaves with why, the lines whose shipment it takes back and the other records it takes
+    goods from. Lots are left out: a lot carved off is new each time the action runs."""
+    shown = {"acted": result["acted"],
+             "skipped": sorted([s["line_id"] or "", s["kind"]] for s in result.get("skipped") or []),
+             "taken_back": sorted(t["line_id"] or "" for t in result.get("taken_back") or []),
+             "taken_from": sorted({m["doc_id"] for m in result.get("taken_from") or []})}
     return hashlib.sha256(json.dumps(shown, sort_keys=True).encode()).hexdigest()
 
 
@@ -598,15 +610,16 @@ class FulfillLinesRequest(BaseModel):
     ``idempotency_key`` names one submission: sending it again returns the first result.
     ``dry_run`` answers what the action would do, as the action itself decides it, and changes
     nothing: the lines it would act on (``acted``) and the lines it would leave (``skipped``),
-    or the refusal it would give."""
+    or the refusal it would give, with its ``binding`` (outcome_binding). Sending that
+    ``binding`` back with the action refuses it (409 ``lines.preview_differs``), changing
+    nothing, when the action would now act on, leave or take back other lines than the
+    preview said."""
     line_ids: list[str] = Field(default_factory=list)
     line_entity_ids: list[str] = Field(default_factory=list)
     idempotency_key: str | None = None
     # Not part of the request a key names: the preview and the action it confirms share one.
     dry_run: bool = Field(default=False, exclude=True)
-    # The preview takes no binding: the lines it names are re-checked when the action runs, and
-    # the action's answer says which it acted on and which it left.
-    frames_confirm: ClassVar[bool] = True
+    binding: str | None = Field(default=None, exclude=True)
 
     @field_validator("line_ids", "line_entity_ids")
     @classmethod
@@ -10398,11 +10411,16 @@ def _stock_line(line_items: list[dict], index: int, locked: dict[str, Projection
     return proj
 
 
-def _skipped_lines(line_items: list[dict], indices: list[int], kind: str) -> list[dict]:
-    """The lines at ``indices`` a line action leaves as they are, each named by its number
-    and label and carrying its line id; ``kind`` is a kind of LINE_SKIP_REASONS."""
-    return [{"line": i + 1, "name": line_label(line_items[i]), "kind": kind, "line_id": line_items[i].get("line_id")}
+def _named_lines(line_items: list[dict], indices) -> list[dict]:
+    """The lines at ``indices``, each named by its number and label and carrying its line id."""
+    return [{"line": i + 1, "name": line_label(line_items[i]), "line_id": line_items[i].get("line_id")}
             for i in indices]
+
+
+def _skipped_lines(line_items: list[dict], indices: list[int], kind: str) -> list[dict]:
+    """The lines at ``indices`` a line action leaves as they are (_named_lines); ``kind`` is a
+    kind of LINE_SKIP_REASONS."""
+    return [{**named, "kind": kind} for named in _named_lines(line_items, indices)]
 
 
 def _skip_messages(action: str, skipped: list[dict], *, refuse: bool = False) -> list[dict]:
@@ -11078,13 +11096,31 @@ async def _fulfill_lines_impl(
             "skipped": left}
 
 
-def _line_action_answer(action: str, result: dict, chosen: list[str]) -> dict:
+def binds_its_outcome(model: type) -> bool:
+    """Whether requests of ``model`` are a stock line action's, bound to the outcome of its
+    preview (outcome_binding). The memo draw binds its request instead (draw_problems)."""
+    return issubclass(model, FulfillLinesRequest) and not issubclass(model, InvoiceLinesRequest)
+
+
+def _taken_back_notice(taken_back: list[dict], *, ahead: bool = False) -> dict:
+    """The message naming the shipped lines a line action took back into stock, reversing
+    their shipment, or with ``ahead`` the confirm's warning that it will."""
+    key = f"documents.{'will_take_back' if ahead else 'taken_back'}_{'one' if len(taken_back) == 1 else 'many'}"
+    return catalog_refusal(key, lines=", ".join(line_name(s["line"], s["name"]) for s in taken_back))
+
+
+def _line_action_answer(action: str, result: dict, chosen: list[str], *, binds: bool) -> dict:
     """``result`` of the line action ``action`` on the lines ``chosen`` (their line ids), with
-    the lines it acted on (``acted``) and the notice naming the lines it left."""
+    the lines it acted on (``acted``), the notices naming the lines it left and the shipped
+    lines it took back, and with ``binds`` its ``binding`` (outcome_binding)."""
     left = {s["line_id"] for s in result.get("skipped") or []}
     result["acted"] = [lid for lid in chosen if lid not in left]
     if result.get("skipped"):
         result["skipped_notice"] = _skip_messages(action, result["skipped"])
+    if result.get("taken_back"):
+        result["taken_back_notice"] = [_taken_back_notice(result["taken_back"])]
+    if binds:
+        result["binding"] = outcome_binding(result)
     return result
 
 
@@ -11112,8 +11148,10 @@ async def _line_action(session, company_id, user, owner: Projection, action: str
     result and a different request under it is refused. The result names the lines it acted
     on (``acted``) beside those it left (``skipped``). With ``body.dry_run`` the action runs
     the same way and all it wrote is rolled back unrecorded, so a preview is the action's own
-    answer, never a second rule. ``operation``: the key and digest of the caller's own
-    request, when it is not ``body``."""
+    answer, never a second rule. An action that binds its outcome (binds_its_outcome) answers
+    with its ``binding``, and sent with a binding refuses, changing nothing, when its own
+    differs. ``operation``: the key and digest of
+    the caller's own request, when it is not ``body``."""
     key, digest = operation or _operation(f"{action}-lines", owner.entity_id, body)
     record_id = f"line_action:{_step_id(key)}"
     if (done := await _earlier_run(session, company_id, key, event_type="line_action.recorded",
@@ -11129,13 +11167,19 @@ async def _line_action(session, company_id, user, owner: Projection, action: str
         refuse_drawn_memo_line_action(owner.state, indices, {i: n for i, (n, _) in numbers.items()})
     # Read before the action: Back to memo takes its lines off.
     chosen = [str(lid) for i in indices if (lid := line_items[i].get("line_id"))]
+    binds_outcome = binds_its_outcome(type(body))
     if body.dry_run:
         with _no_commit(session):
             try:
-                return _line_action_answer(action, await run(indices), chosen)
+                return _line_action_answer(action, await run(indices), chosen, binds=binds_outcome)
             finally:
                 await session.rollback()
-    result = _line_action_answer(action, await run(indices), chosen)
+    result = _line_action_answer(action, await run(indices), chosen, binds=binds_outcome)
+    if binds_outcome and body.binding is not None and body.binding != result["binding"]:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=refusal(
+            "lines.preview_differs",
+            "The lines changed after the preview, so nothing was changed. Check the new preview, then confirm again."))
     await emit_event(
         session, company_id=uuid.UUID(str(company_id)), entity_id=record_id,
         entity_type="line_action", event_type="line_action.recorded",
@@ -11440,6 +11484,8 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
     idle: list[int] = []
     # (key the request names it by, lots it covers) per chosen line or legacy lot.
     groups: list[tuple[str, list[Projection], str | None]] = []
+    # The lines with goods out that come back.
+    out_lines: set[int] = set()
     if indices:
         chosen_skus = {str(line_items[i].get("sku") or "").strip() for i in indices} - {""}
         for eid, idx in line_of.items():
@@ -11459,6 +11505,7 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
                                           name=name))
                 continue
             groups.append((str(line_items[i].get("line_id")), lots, line_item_id(line_items[i])))
+            out_lines.add(i)
     else:
         for eid in body.line_entity_ids:
             proj = locked.get(eid)
@@ -11477,6 +11524,7 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
                 errors.append(_unattributed(eid))
             else:
                 groups.append((eid, [proj], eid))
+                out_lines.add(line_of[eid])
 
     skipped = left + _skipped_lines(line_items, idle, "idle")
     to_revert: list[str] = []
@@ -11521,10 +11569,12 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
             "lines.cannot_set_available", f"Cannot set as available: {reasons}", reasons=errors)
             if set_available else
             refusal("lines.cannot_revert", f"Cannot take back: {reasons}", reasons=errors))
+    # Set as available names the shipped lines it takes back; taking back is all Revert does.
+    taken_back = {"taken_back": _named_lines(line_items, sorted(out_lines))} if set_available else {}
     if set_available:
         if not groups:
             return {"fulfillment_status": state.get("fulfillment_status"), "reverted": [], "partially_returned": [],
-                    "skipped": skipped}
+                    "skipped": skipped, **taken_back}
         _check_revert_status(state)
 
     cid = uuid.UUID(str(company_id))
@@ -11570,6 +11620,7 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
         # Lots that came back in part: the new in-stock parcel per part-returned line.
         "partially_returned": returned_brief,
         "skipped": skipped,
+        **taken_back,
     }
 
 
@@ -11614,7 +11665,6 @@ class InvoiceLinesRequest(RevertLinesRequest):
     target_doc_id: str | None = None
     dry_run: bool = False
     binding: str | None = None
-    frames_confirm: ClassVar[bool] = False
 
     @model_validator(mode="after")
     def _names_lines_by_id(self):
@@ -12313,7 +12363,7 @@ async def _reserve_lines_impl(
     if commit:
         await session.commit()
     return {"new_status": new_status, "reserved": held, "released": released, "skipped": left,
-            "taken_back": [line_items[i].get("line_id") for i in sorted(shipped)]}
+            "taken_back": _named_lines(line_items, sorted(shipped))}
 
 
 @router.post("/{entity_id}/reserve-lines")

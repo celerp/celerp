@@ -3,8 +3,8 @@
 """Every write of the docs module that has a preview (a request field ``dry_run``) confirms only
 the preview shown: the preview answers with a ``binding``, and the write refuses one that differs
 from what it would write now. The previewed writes are found from the router, so a new one with
-no case here turns this red. A stock line action's preview only words its confirm
-(``frames_confirm``); tests/test_line_action_preview.py holds it to the action's own answer."""
+no case here turns this red. A stock line action binds its preview's outcome
+(binds_its_outcome); tests/test_line_action_preview.py holds it to that."""
 from __future__ import annotations
 
 import typing
@@ -21,13 +21,13 @@ pytestmark = pytest.mark.asyncio
 def _previewed_writes() -> dict[str, type[BaseModel]]:
     """Each docs route whose request body has ``dry_run`` and a preview it binds, by path, with
     its body model."""
-    from celerp_docs.routes import router
+    from celerp_docs.routes import binds_its_outcome, router
 
     found = {}
     for route in router.routes:
         for hint in typing.get_type_hints(getattr(route, "endpoint", None) or (lambda: None)).values():
             if (isinstance(hint, type) and issubclass(hint, BaseModel) and "dry_run" in hint.model_fields
-                    and not getattr(hint, "frames_confirm", False)):
+                    and not binds_its_outcome(hint)):
                 found[route.path] = hint
     return found
 

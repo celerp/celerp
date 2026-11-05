@@ -138,7 +138,7 @@ async def test_set_as_reserved_names_the_shipped_lines_it_takes_back(client, ses
     owner, lids = await _record(client, g, "invoice", {"DEMO-EMR-001": "shipped"})
     answer = await _ok(await _act(client, g, owner, "reserve-lines", [lids["DEMO-SAP-001"], lids["DEMO-EMR-001"]],
                                   new_status="reserved", dry_run=True))
-    assert answer["taken_back"] == [lids["DEMO-EMR-001"]]
+    assert [s["line_id"] for s in answer["taken_back"]] == [lids["DEMO-EMR-001"]]
 
 
 async def test_set_as_shipped_ships_the_lines_that_can_ship_and_names_the_rest(client, session):
@@ -175,22 +175,6 @@ async def test_a_line_shipped_from_part_of_a_weight_lot_does_not_ship_again(clie
     mixed = await _act(client, g, owner, "fulfill-lines", [lid, gia])
     assert mixed.status_code == 422, mixed.text
     assert (await _ok(await client.get(f"/items/{lot['id']}", headers=g.h)))["quantity"] == left
-
-
-async def test_every_stock_line_preview_is_held_to_its_action():
-    """Each route whose preview only words its confirm (``frames_confirm``) has cases above (or
-    below, for Back to memo), so a new one is held to its action's answer too."""
-    import typing
-
-    from celerp_docs.routes import lists_router, router
-    from pydantic import BaseModel
-
-    found = {("lists" if r in lists_router.routes else "docs", r.path.rsplit("/", 1)[-1])
-             for r in [*router.routes, *lists_router.routes]
-             for hint in typing.get_type_hints(getattr(r, "endpoint", None) or (lambda: None)).values()
-             if isinstance(hint, type) and issubclass(hint, BaseModel) and getattr(hint, "frames_confirm", False)}
-    covered = {("lists" if kind == "list" else "docs", path) for kind, path, *_ in _CASES.values()}
-    assert found == covered | {("docs", "back-to-memo")}
 
 
 async def test_the_preview_of_back_to_memo_is_what_it_then_does(client, session):
@@ -273,9 +257,10 @@ async def test_the_page_confirm_is_the_actions_own_preview(client, session, ui_c
     assert sent.await_args.kwargs["dry_run"] is True
     named = ", ".join(line_name(s["line"], s["name"]) for s in sorted(preview["skipped"], key=lambda s: s["line"]))
     said = f"{_count(confirm, len(acts))} {_count('documents.will_skip', len(preview['skipped']), lines=named)}"
-    if preview.get("taken_back"):
-        said += " " + t("documents.sold_reserve_warn", n=len(preview["taken_back"]))
-    assert r.json() == {"confirm": said}
+    if taken := preview.get("taken_back"):
+        said += " " + _count("documents.will_take_back", len(taken),
+                             lines=", ".join(line_name(s["line"], s["name"]) for s in taken))
+    assert r.json() == {"confirm": said, "binding": preview["binding"]}
     if case == "ship-mixed":
         assert said == ('Set 2 lines as shipped? Lines 2 "DEMO-EMR-001", 3 "DEMO-MIN-001", '
                         '4 "GIA Certificate" will be left as they are.')
@@ -336,3 +321,162 @@ async def test_mark_as_scanned_counts_the_lines_the_list_changed(ui_client):
         r = await ui_client.post("/lists/list:1/set-scanned", data={"line_id": ["a", "b"], "scanned": "1"})
     assert r.status_code == 200, r.text
     assert json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"] == _count("documents.lines_scanned", 0)
+
+
+# ── Bound to its preview ──────────────────────────────────────────────────────
+# The action confirms only the preview shown: the preview answers with a ``binding`` (the lines
+# it acts on, the lines it leaves and why, the shipped lines it takes back), and an action sent
+# with that binding refuses (409, changing nothing) when it would now do anything else.
+
+async def _sell_elsewhere(client, g, owner, lids, sku):
+    other = await _doc_of(client, g, [_line(g, sku)])
+    await _ok(await _act(client, g, other, "fulfill-lines", await _ids(client, g, other)))
+
+
+async def _take_back_elsewhere(client, g, owner, lids, sku):
+    item = g.items[sku]["id"]
+    other = (await _ok(await client.get(f"/items/{item}", headers=g.h)))["status_doc_id"]
+    await _ok(await _act(client, g, other, "set-available", await _ids(client, g, other)))
+
+
+async def _hold_here(client, g, owner, lids, sku):
+    await _ok(await _act(client, g, owner, "reserve-lines", [lids[sku]], new_status="reserved"))
+
+
+async def _release_here(client, g, owner, lids, sku):
+    await _ok(await _act(client, g, owner, "reserve-lines", [lids[sku]], new_status="available"))
+
+
+async def _ship_here(client, g, owner, lids, sku):
+    await _ok(await _act(client, g, owner, "fulfill-lines", [lids[sku]]))
+
+
+async def _take_back_here(client, g, owner, lids, sku):
+    await _ok(await _act(client, g, owner, "set-available", [lids[sku]]))
+
+
+_SAP, _EMR, _MIN = STONES
+# (action, change made by someone else between the preview and the confirm) -> how the bound
+# action answers: (record, path, extra body, stone states, chosen skus, change, its sku,
+# "differs": refused as changed since the preview, or "refused": the action's own refusal),
+# or why the change cannot make that action do anything its preview did not say.
+_RACES = {
+    ("ship", "grows"): ("invoice", "fulfill-lines", {}, {_MIN: "elsewhere"}, (_SAP, _MIN, "GIA"),
+                        _take_back_elsewhere, _MIN, "differs"),
+    ("ship", "shrinks"): ("invoice", "fulfill-lines", {}, {}, (_SAP, _MIN, "GIA"), _sell_elsewhere, _MIN, "differs"),
+    ("ship", "takes back"): "Set as shipped never takes goods back.",
+    ("reserve", "grows"): "A line that cannot be reserved refuses the whole choice, so no preview leaves one.",
+    ("reserve", "shrinks"): ("invoice", "reserve-lines", {"new_status": "reserved"}, {}, (_SAP, _EMR, "GIA"),
+                             _sell_elsewhere, _EMR, "refused"),
+    ("reserve", "takes back"): ("invoice", "reserve-lines", {"new_status": "reserved"}, {}, (_SAP, _EMR, "GIA"),
+                                _ship_here, _EMR, "differs"),
+    ("release", "grows"): "A line holding nothing refuses the whole choice, so no preview leaves one.",
+    ("release", "shrinks"): ("invoice", "reserve-lines", {"new_status": "available"}, {_SAP: "held", _EMR: "held"},
+                             (_SAP, _EMR), _release_here, _EMR, "refused"),
+    ("release", "takes back"): "Releasing a hold never takes goods back.",
+    ("set-available", "grows"): ("invoice", "set-available", {}, {_SAP: "held"}, (_SAP, _MIN, "GIA"),
+                                 _hold_here, _MIN, "differs"),
+    ("set-available", "shrinks"): ("invoice", "set-available", {}, {_SAP: "held", _MIN: "held"}, (_SAP, _MIN, "GIA"),
+                                   _release_here, _MIN, "differs"),
+    ("set-available", "takes back"): ("invoice", "set-available", {}, {_SAP: "held", _MIN: "held"},
+                                      (_SAP, _MIN, "GIA"), _ship_here, _MIN, "differs"),
+    ("revert", "grows"): "A line with nothing out refuses the whole choice, so no preview leaves one.",
+    ("revert", "shrinks"): ("invoice", "revert-lines", {}, {_SAP: "shipped", _EMR: "shipped"}, (_SAP, _EMR, "GIA"),
+                            _take_back_here, _EMR, "refused"),
+    ("revert", "takes back"): "Each line it acts on is taken back, so a line taken back is a line it acts on (grows).",
+    ("list reserve", "grows"): "A line that cannot be reserved refuses the whole choice, so no preview leaves one.",
+    ("list reserve", "shrinks"): ("list", "reserve-lines", {"new_status": "reserved"}, {}, (_SAP, _EMR, "GIA"),
+                                  _sell_elsewhere, _EMR, "refused"),
+    ("list reserve", "takes back"): "A List never ships, so it has no goods to take back.",
+    ("list release", "grows"): "A line holding nothing refuses the whole choice, so no preview leaves one.",
+    ("list release", "shrinks"): ("list", "reserve-lines", {"new_status": "available"}, {_SAP: "held", _EMR: "held"},
+                                  (_SAP, _EMR), _release_here, _EMR, "refused"),
+    ("list release", "takes back"): "A List never ships, so it has no goods to take back.",
+    ("list set-available", "grows"): ("list", "set-available", {}, {_SAP: "held"}, (_SAP, _MIN, "GIA"),
+                                      _hold_here, _MIN, "differs"),
+    ("list set-available", "shrinks"): ("list", "set-available", {}, {_SAP: "held", _MIN: "held"},
+                                        (_SAP, _MIN, "GIA"), _release_here, _MIN, "differs"),
+    ("list set-available", "takes back"): "A List never ships, so it has no goods to take back.",
+}
+
+
+async def test_every_stock_line_action_meets_every_change_between_preview_and_action():
+    """Each line action with a preview, and each way the state can change before its confirm,
+    has a case above or the reason it cannot happen."""
+    actions = {"ship": "fulfill-lines", "reserve": "reserve-lines", "release": "reserve-lines",
+               "set-available": "set-available", "revert": "revert-lines", "list reserve": "reserve-lines",
+               "list release": "reserve-lines", "list set-available": "set-available"}
+    assert set(_RACES) == {(a, c) for a in actions for c in ("grows", "shrinks", "takes back")}
+    previewed = {(base, r.path.rsplit("/", 1)[-1]) for base, r in _previewed_line_actions()}
+    covered = {("lists" if a.startswith("list") else "docs", p) for a, p in actions.items()}
+    assert previewed == covered | {("docs", "back-to-memo")}
+
+
+def _previewed_line_actions():
+    """Every docs and lists route a stock line action runs on: its body names lines by line id
+    and has a preview (``dry_run``). The memo draw binds its own preview (test_preview_binding)."""
+    import typing
+
+    from celerp_docs.routes import binds_its_outcome, lists_router, router
+    for base, rt in (("docs", router), ("lists", lists_router)):
+        for r in rt.routes:
+            for hint in typing.get_type_hints(getattr(r, "endpoint", None) or (lambda: None)).values():
+                if isinstance(hint, type) and binds_its_outcome(hint):
+                    yield base, r
+
+
+@pytest.mark.parametrize("race", [k for k, v in _RACES.items() if not isinstance(v, str)],
+                         ids=lambda k: " ".join(k))
+async def test_an_action_does_only_what_its_preview_said(client, session, race):
+    """Someone changes the stock between the preview and the confirm. The confirmed action,
+    bound to its preview, changes nothing and says the lines changed (or gives its own refusal);
+    a fresh preview then binds the action to what it now does. Red statement: Set as shipped
+    confirmed "Set 1 line as shipped?" and shipped 2 when a line was taken back elsewhere
+    meanwhile, and Set as reserved reversed a sale its confirm never mentioned."""
+    kind, path, extra, states, chosen, change, sku, answer = _RACES[race]
+    g = await _gems(client)
+    owner, lids = await _record(client, g, kind, states)
+    base = "lists" if kind == "list" else "docs"
+    url, key = f"/{base}/{owner}/{path}", uuid.uuid4().hex
+    body = {"line_ids": [lids[s] for s in chosen], "idempotency_key": key, **extra}
+    preview = await _ok(await client.post(url, headers=g.h, json={**body, "dry_run": True}))
+    assert preview.get("binding"), preview
+    await change(client, g, owner, lids, sku)
+    before = await _snapshot(client, session, g, owner)
+    bound = await client.post(url, headers=g.h, json={**body, "binding": preview["binding"]})
+    assert await _snapshot(client, session, g, owner) == before, "the refused action changed something"
+    if answer == "differs":
+        assert bound.status_code == 409, bound.text
+        assert bound.json()["detail"]["message_key"] == "lines.preview_differs"
+        fresh = await client.post(url, headers=g.h, json={**body, "dry_run": True})
+        assert fresh.status_code == 200, fresh.text
+        assert fresh.json()["binding"] != preview["binding"]
+        real = await client.post(url, headers=g.h, json={**body, "binding": fresh.json()["binding"]})
+        assert (real.status_code, real.json()) == (200, fresh.json())
+    else:
+        assert 400 <= bound.status_code < 500 and bound.status_code != 409, bound.text
+
+
+async def test_back_to_memo_bound_to_its_preview_refuses_when_its_line_went_back_meanwhile(client, session):
+    from test_item_less_line_actions import _drawn_invoice_with_own_certificate
+    g = await _gems(client)
+    _memo, invoice, drawn, own = await _drawn_invoice_with_own_certificate(client, g)
+    url, body = f"/docs/{invoice}/back-to-memo", {"line_ids": [drawn, own], "idempotency_key": uuid.uuid4().hex}
+    preview = await _ok(await client.post(url, headers=g.h, json={**body, "dry_run": True}))
+    await _ok(await client.post(url, headers=g.h, json={"line_ids": [drawn], "idempotency_key": uuid.uuid4().hex}))
+    before = await _state(client, g, invoice)
+    bound = await client.post(url, headers=g.h, json={**body, "binding": preview["binding"]})
+    assert 400 <= bound.status_code < 500, bound.text
+    assert await _state(client, g, invoice) == before
+
+
+async def test_an_action_sent_without_a_binding_still_names_the_sale_it_reverses(client, session):
+    """An API caller that sent no binding saw no confirm: the answer still names every line
+    whose goods came back into stock and whose sale was reversed, in its notice too."""
+    g = await _gems(client)
+    owner, lids = await _record(client, g, "invoice", {_EMR: "shipped"})
+    answer = await _ok(await _act(client, g, owner, "reserve-lines", [lids[_SAP], lids[_EMR]],
+                                  new_status="reserved"))
+    assert [(t["line"], t["line_id"]) for t in answer["taken_back"]] == [(2, lids[_EMR])]
+    assert [(n["message_key"], n["params"]) for n in answer["taken_back_notice"]] == [
+        ("documents.taken_back_one", {"lines": f'2 "{_EMR}"'})]

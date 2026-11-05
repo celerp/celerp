@@ -1158,10 +1158,12 @@ def _line_number_field(unit_label: str, **attrs) -> FT:
     )
 
 
-def _with_skipped(message: str, answer) -> tuple[str, bool]:
-    """``message`` followed by the notice naming the lines an action left as they are, and
-    whether the toast stays until it is closed, which it does when it names any."""
-    notice = answer.get("skipped_notice") if isinstance(answer, dict) else None
+def _with_notices(message: str, answer) -> tuple[str, bool]:
+    """``message`` followed by the notices naming the lines an action left as they are and the
+    shipped lines it took back into stock, and whether the toast stays until it is closed,
+    which it does when it names any."""
+    notice = [*(answer.get("skipped_notice") or []), *(answer.get("taken_back_notice") or [])] \
+        if isinstance(answer, dict) else []
     return (f"{message} {refusal_text(notice)}", True) if notice else (message, False)
 
 
@@ -1173,13 +1175,14 @@ def _count_text(key: str, n: int, **params) -> str:
 def _preview_confirm(confirm: str, answer: dict) -> str:
     """The question a stock line action asks from its own preview ``answer``: how many lines
     it acts on (``confirm``, a counted message key), the lines it leaves as they are, and the
-    shipped lines Set as reserved takes back into stock."""
+    shipped lines it takes back into stock."""
     parts = [_count_text(confirm, len(answer.get("acted") or []))]
     if skipped := sorted(answer.get("skipped") or [], key=lambda s: s["line"]):
         parts.append(_count_text("documents.will_skip", len(skipped),
                                  lines=", ".join(line_name(s["line"], s["name"]) for s in skipped)))
     if taken_back := answer.get("taken_back"):
-        parts.append(t("documents.sold_reserve_warn", n=len(taken_back)))
+        parts.append(_count_text("documents.will_take_back", len(taken_back),
+                                 lines=", ".join(line_name(s["line"], s["name"]) for s in taken_back)))
     return " ".join(parts)
 
 
@@ -1190,7 +1193,7 @@ def _reopened_toast(answer) -> dict:
     if not memos:
         return {}
     names = ", ".join(m.get("doc_number") or m.get("id") or "" for m in memos)
-    message, _ = _with_skipped(t("documents.memo_reopened_notice", memo=names), answer)
+    message, _ = _with_notices(t("documents.memo_reopened_notice", memo=names), answer)
     return toast_header(message, "info", persist=True,
                         action={"href": doc_href(memos[0].get("id")), "label": memos[0].get("doc_number") or ""})
 
@@ -3712,7 +3715,7 @@ celerpUpdateBulkAlloc();
             return _action_error(f"{msg} {t('documents.draw_also')} {refusal_text(also)}" if also else msg)
         # Read on the new invoice: say what came over from which memo, and what stayed there.
         n = result.get("invoiced") or 0
-        message, persist = _with_skipped(
+        message, persist = _with_notices(
             _count_text("documents.lines_invoiced", n, memo=result.get("memo_ref") or ""), result)
         return _R("", status_code=204, headers={
             "HX-Redirect": doc_href(result.get("target_doc_id")), **toast_header(message, "info", persist=persist)})
@@ -4329,7 +4332,9 @@ celerpUpdateBulkAlloc();
         the message key naming the action, with a ``_one`` and a ``_many`` form, and for a
         stock action ``_confirm``, the key of its question. Such an action sent with
         ``dry_run=1`` is the API's preview, answered with the question to ask (``confirm``)
-        or the action's refusal; nothing changes."""
+        and its ``binding``, or the action's refusal; nothing changes. Sent with that
+        ``binding``, the action refuses anything but what the preview showed: when the lines
+        changed meanwhile, nothing changes and the answer is the fresh question, saying so."""
         from starlette.responses import JSONResponse, Response as _R
         token = _token(request)
         if not token:
@@ -4341,7 +4346,16 @@ celerpUpdateBulkAlloc();
             confirm = kwargs.pop("_confirm", None)
             if preview := bool(confirm) and form.get("dry_run") == "1":
                 kwargs["dry_run"] = True
-            answer = await send(token, entity_id, **kwargs)
+            elif confirm:
+                kwargs["binding"] = form.get("binding") or None
+            try:
+                answer = await send(token, entity_id, **kwargs)
+            except APIError as e:
+                if e.status != 409 or not isinstance(e.data, dict) or e.data.get("message_key") != "lines.preview_differs":
+                    raise
+                fresh = await send(token, entity_id, **{**kwargs, "binding": None, "dry_run": True})
+                return JSONResponse({"confirm": f'{t("documents.lines_changed_since_confirm")} '
+                                                f'{_preview_confirm(confirm, fresh)}', "binding": fresh["binding"]})
         except ValueError as exc:
             return _action_error(str(exc))
         except APIError as e:
@@ -4349,7 +4363,7 @@ celerpUpdateBulkAlloc();
                 raise
             return _action_error(e)
         if preview:
-            return JSONResponse({"confirm": _preview_confirm(confirm, answer)})
+            return JSONResponse({"confirm": _preview_confirm(confirm, answer), "binding": answer["binding"]})
         said = _count_text(done, len(answer.get("acted") or []))
         # Goods another invoice named: say whose, and that it can no longer ship them, in a
         # notice that stays until it is closed.
@@ -4359,9 +4373,9 @@ celerpUpdateBulkAlloc();
         elif moved:
             notice = " ".join([said, *(t("documents.cost_moved_with_goods", sku=m.get("sku") or m.get("lot_id"),
                                          doc=m.get("doc_number") or m.get("doc_id")) for m in moved)])
-            toast = toast_header(_with_skipped(notice, answer)[0], "info", persist=True)
+            toast = toast_header(_with_notices(notice, answer)[0], "info", persist=True)
         else:
-            message, persist = _with_skipped(said, answer)
+            message, persist = _with_notices(said, answer)
             toast = toast_header(message, "info", persist=persist)
         return _R("", status_code=204, headers=toast)
 
@@ -5405,7 +5419,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             return api.refusal_response(e)
         verb = "lines_scanned" if scanned else "lines_unscanned"
-        message, persist = _with_skipped(_count_text(f"documents.{verb}", result.get("changed") or 0), result)
+        message, persist = _with_notices(_count_text(f"documents.{verb}", result.get("changed") or 0), result)
         return HTMLResponse(to_xml(await _audit_line_tbody(token, entity_id, *_line_window(form))),
                             headers=toast_header(message, "info", persist=persist))
 
@@ -10443,9 +10457,7 @@ async function celerpCsvImport(input, entityId) {{
     var url=_CELERP_BASE + _CELERP_EID + (reserve?'/reserve-lines':'/set-available');
     var fields=reserve?[['new_status','reserved']]:[];
     var fallback=reserve?_L.could_not_set_reserved:_L.could_not_set_available;
-    var msg=await celerpLinePreview(url, rows, fields, _key, fallback);
-    if(msg===null||!(await celerpConfirm(msg))) return;
-    var ok=await celerpLineAction(url, rows, fields, _key, fallback);
+    var ok=await celerpStockLineAction(url, rows, fields, _key, fallback);
     if(ok) window.location.reload();
     return ok;
   }}
@@ -10822,12 +10834,10 @@ async function celerpCsvImport(input, entityId) {{
     return table?Array.prototype.slice.call(table.querySelectorAll('.li-select:checked')):[];
   }}
 
-  // A stock line action on the chosen rows: the server's preview of it asks the question (how
-  // many lines it acts on, which it leaves as they are), then the action runs in one request.
+  // A stock line action on the chosen rows, asked from its own preview and bound to it
+  // (celerpStockLineAction), in one request.
   async function _liStockAction(url, rows, fields, fallback){{
-    var msg=await celerpLinePreview(url, rows, fields, _liKey(), fallback);
-    if(msg===null||!(await celerpConfirm(msg))) return;
-    if(!(await celerpLineAction(url, rows, fields, _liKey(), fallback))) return false;
+    if(!(await celerpStockLineAction(url, rows, fields, _liKey(), fallback))) return false;
     window.location.reload();
     return true;
   }}

@@ -12,5 +12,62 @@
     "th",
     "vi"
   ],
-  "keys": {}
+  "keys": {
+    "lines.preview_differs": {
+      "en": "The lines changed after the preview, so nothing was changed. Check the new preview, then confirm again.",
+      "params": []
+    },
+    "documents.lines_changed_since_confirm": {
+      "en": "The lines changed while this confirm was open, so nothing was changed. This is what the action does now:",
+      "params": []
+    },
+    "documents.will_take_back_one": {
+      "en": "Line {lines} has already shipped: this takes its goods back into stock and reverses its shipment.",
+      "params": [
+        "lines"
+      ]
+    },
+    "documents.will_take_back_many": {
+      "en": "Lines {lines} have already shipped: this takes their goods back into stock and reverses their shipments.",
+      "params": [
+        "lines"
+      ]
+    },
+    "documents.taken_back_one": {
+      "en": "Line {lines} had already shipped, so its goods came back into stock and its shipment was reversed.",
+      "params": [
+        "lines"
+      ]
+    },
+    "documents.taken_back_many": {
+      "en": "Lines {lines} had already shipped, so their goods came back into stock and their shipments were reversed.",
+      "params": [
+        "lines"
+      ]
+    },
+    "documents.scanned_lines_skipped_one": {
+      "en": "Line {lines} was already marked as scanned, so it was left as it is.",
+      "params": [
+        "lines"
+      ]
+    },
+    "documents.scanned_lines_skipped_many": {
+      "en": "Lines {lines} were already marked as scanned, so they were left as they are.",
+      "params": [
+        "lines"
+      ]
+    },
+    "documents.unscanned_lines_skipped_one": {
+      "en": "Line {lines} wasn't marked as scanned, so there was nothing to clear.",
+      "params": [
+        "lines"
+      ]
+    },
+    "documents.unscanned_lines_skipped_many": {
+      "en": "Lines {lines} weren't marked as scanned, so there was nothing to clear.",
+      "params": [
+        "lines"
+      ]
+    }
+  }
 }

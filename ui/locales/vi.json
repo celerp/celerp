@@ -2627,7 +2627,6 @@
   "documents.set_as_reserved": "Đặt thành đã đặt trước",
   "documents.set_as_shipped": "Đặt thành đã giao hàng",
   "documents.sku_placeholder": "SKU...",
-  "documents.sold_reserve_warn": "{n} trong số các dòng đã chọn đã được giao. Việc đặt chúng thành \"đã đặt trước\" sẽ đưa hàng hóa trở lại kho và hủy ghi nhận bán hàng trên tài liệu này. Tiếp tục?",
   "documents.start_audit": "Bắt đầu kiểm toán",
   "documents.status_available": "Còn hàng",
   "documents.status_not_received": "Chưa nhận",
@@ -7111,5 +7110,15 @@
   "company.err_price_list_base_factor": "{name} là bảng giá cơ sở nên không thể có hệ số.",
   "company.err_price_list_rounding_needs_factor": "Làm tròn giá của {name} cần có hệ số. Hãy thêm hệ số hoặc bỏ thiết lập làm tròn.",
   "company.err_price_list_rounding": "Mức làm tròn của {name} phải là số lớn hơn 0 và không vượt quá {max}.",
-  "company.err_price_list_cost_name": "{name} là tên Celerp dành riêng cho giá vốn. Mỗi công ty đã có bảng giá Giá vốn, hiển thị giá vốn của từng mặt hàng. Hãy đặt tên khác cho bảng giá này."
+  "company.err_price_list_cost_name": "{name} là tên Celerp dành riêng cho giá vốn. Mỗi công ty đã có bảng giá Giá vốn, hiển thị giá vốn của từng mặt hàng. Hãy đặt tên khác cho bảng giá này.",
+  "lines.preview_differs": "The lines changed after the preview, so nothing was changed. Check the new preview, then confirm again.",
+  "documents.lines_changed_since_confirm": "The lines changed while this confirm was open, so nothing was changed. This is what the action does now:",
+  "documents.will_take_back_one": "Line {lines} has already shipped: this takes its goods back into stock and reverses its shipment.",
+  "documents.will_take_back_many": "Lines {lines} have already shipped: this takes their goods back into stock and reverses their shipments.",
+  "documents.taken_back_one": "Line {lines} had already shipped, so its goods came back into stock and its shipment was reversed.",
+  "documents.taken_back_many": "Lines {lines} had already shipped, so their goods came back into stock and their shipments were reversed.",
+  "documents.scanned_lines_skipped_one": "Line {lines} was already marked as scanned, so it was left as it is.",
+  "documents.scanned_lines_skipped_many": "Lines {lines} were already marked as scanned, so they were left as they are.",
+  "documents.unscanned_lines_skipped_one": "Line {lines} wasn't marked as scanned, so there was nothing to clear.",
+  "documents.unscanned_lines_skipped_many": "Lines {lines} weren't marked as scanned, so there was nothing to clear."
 }

@@ -2938,7 +2938,6 @@
   "documents.set_as_reserved": "Set as reserved",
   "documents.set_as_shipped": "Set as shipped",
   "documents.sku_placeholder": "SKU...",
-  "documents.sold_reserve_warn": "{n} of the selected lines are already shipped. Setting them as reserved takes the goods back into stock and reverses the sale posting on this document. Continue?",
   "documents.start_audit": "Start audit",
   "documents.status_available": "In Stock",
   "documents.status_not_received": "Not Received",
@@ -7111,5 +7110,15 @@
   "inventory.err_barcode_taken": "Another item already has barcode {barcode}. Use a different barcode, or change it on the other item first.",
   "inventory.err_barcode_taken_unnamed": "Another item already has this barcode. Use a different barcode, or change it on the other item first.",
   "inventory.err_rfid_epc_taken": "Another item already has RFID / EPC code {code}. Use a different code, or change it on the other item first.",
-  "inventory.err_rfid_epc_taken_unnamed": "Another item already has this RFID / EPC code. Use a different code, or change it on the other item first."
+  "inventory.err_rfid_epc_taken_unnamed": "Another item already has this RFID / EPC code. Use a different code, or change it on the other item first.",
+  "lines.preview_differs": "The lines changed after the preview, so nothing was changed. Check the new preview, then confirm again.",
+  "documents.lines_changed_since_confirm": "The lines changed while this confirm was open, so nothing was changed. This is what the action does now:",
+  "documents.will_take_back_one": "Line {lines} has already shipped: this takes its goods back into stock and reverses its shipment.",
+  "documents.will_take_back_many": "Lines {lines} have already shipped: this takes their goods back into stock and reverses their shipments.",
+  "documents.taken_back_one": "Line {lines} had already shipped, so its goods came back into stock and its shipment was reversed.",
+  "documents.taken_back_many": "Lines {lines} had already shipped, so their goods came back into stock and their shipments were reversed.",
+  "documents.scanned_lines_skipped_one": "Line {lines} was already marked as scanned, so it was left as it is.",
+  "documents.scanned_lines_skipped_many": "Lines {lines} were already marked as scanned, so they were left as they are.",
+  "documents.unscanned_lines_skipped_one": "Line {lines} wasn't marked as scanned, so there was nothing to clear.",
+  "documents.unscanned_lines_skipped_many": "Lines {lines} weren't marked as scanned, so there was nothing to clear."
 }

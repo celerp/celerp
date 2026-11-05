@@ -2627,7 +2627,6 @@
   "documents.set_as_reserved": "「予約済み」に設定",
   "documents.set_as_shipped": "「出荷済み」に設定",
   "documents.sku_placeholder": "SKU...",
-  "documents.sold_reserve_warn": "選択された行のうち {n} はすでに出荷済みです。これらを「予約済み」に設定すると、商品は在庫に戻され、この伝票の販売仕訳が取り消されます。続行しますか？",
   "documents.start_audit": "監査を開始",
   "documents.status_available": "在庫あり",
   "documents.status_not_received": "未受領",
@@ -7111,5 +7110,15 @@
   "company.err_price_list_base_factor": "{name}は基準価格表なので、係数を設定できません。",
   "company.err_price_list_rounding_needs_factor": "{name}の端数処理には係数が必要です。係数を追加するか、端数処理を解除してください。",
   "company.err_price_list_rounding": "{name}の端数処理の値は0より大きく、{max}以下の数値である必要があります。",
-  "company.err_price_list_cost_name": "{name}はCelerpが原価用に予約している名前です。各会社には、品目ごとの原価を表示する「原価」価格表がすでにあります。この価格表には別の名前を付けてください。"
+  "company.err_price_list_cost_name": "{name}はCelerpが原価用に予約している名前です。各会社には、品目ごとの原価を表示する「原価」価格表がすでにあります。この価格表には別の名前を付けてください。",
+  "lines.preview_differs": "The lines changed after the preview, so nothing was changed. Check the new preview, then confirm again.",
+  "documents.lines_changed_since_confirm": "The lines changed while this confirm was open, so nothing was changed. This is what the action does now:",
+  "documents.will_take_back_one": "Line {lines} has already shipped: this takes its goods back into stock and reverses its shipment.",
+  "documents.will_take_back_many": "Lines {lines} have already shipped: this takes their goods back into stock and reverses their shipments.",
+  "documents.taken_back_one": "Line {lines} had already shipped, so its goods came back into stock and its shipment was reversed.",
+  "documents.taken_back_many": "Lines {lines} had already shipped, so their goods came back into stock and their shipments were reversed.",
+  "documents.scanned_lines_skipped_one": "Line {lines} was already marked as scanned, so it was left as it is.",
+  "documents.scanned_lines_skipped_many": "Lines {lines} were already marked as scanned, so they were left as they are.",
+  "documents.unscanned_lines_skipped_one": "Line {lines} wasn't marked as scanned, so there was nothing to clear.",
+  "documents.unscanned_lines_skipped_many": "Lines {lines} weren't marked as scanned, so there was nothing to clear."
 }
