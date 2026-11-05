@@ -7261,5 +7261,9 @@
   "subscriptions.history_billed_ref": "{start} から {end} までの期間を {ref} で請求しました。",
   "subscriptions.history_reopened_ref": "{start} から {end} までの期間を再開し、{ref} との関連付けを解除しました。",
   "subscriptions.history_send_settled": "{start} から {end} までの請求書は、その書類のページからメール送信されました。",
-  "subscriptions.period_earlier_bills": "過去の請求書："
+  "subscriptions.period_earlier_bills": "過去の請求書：",
+  "subscriptions.err_bill_void": "This subscription is void, so it bills nothing. Unvoid it in Documents to bill it again.",
+  "subscriptions.err_bill_not_active": "Only an active subscription bills, and this one is not active. Revert it to draft in Documents, then activate it on its page.",
+  "subscriptions.err_agreement_activate": "A draft subscription starts only with Activate on its own page, which sets its first bill date. Documents can void it, but not finalize or issue it.",
+  "subscriptions.err_agreement_status_lifecycle": "A subscription is only ever draft, active, paused, cancelled or void. Change its status on its own page: activate, pause, resume or cancel it there. Documents can void it, unvoid it or revert it to draft."
 }

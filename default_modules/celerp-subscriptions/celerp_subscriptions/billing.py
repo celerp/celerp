@@ -206,22 +206,47 @@ async def write_agreement(session: AsyncSession, company_id, entity_id: str, cha
         _WRITING.reset(writing)
 
 
+# The statuses an agreement holds. Only write_agreement (its own page) moves it between draft,
+# active, paused and cancelled; Documents may also void it, unvoid it or revert it to draft.
+AGREEMENT_STATUSES = frozenset({"draft", "active", "paused", "cancelled", "void"})
+
+
 async def guard_agreement_status(*, session, entry, transition) -> None:
     """doc_status_guard: the status of an agreement that runs an unattended mode, before or
     after the change, changes only in write_agreement (activate, pause, resume, cancel on its
     own page), where a mode coming into force asks for its consent and a mode stopping drops
-    it. Every other writer (void, unvoid, finalize, revert, an import) is refused (409)."""
+    it. Every other writer (void, unvoid, finalize, revert, an import) is refused (409), and so
+    is any that would leave an agreement a status outside AGREEMENT_STATUSES. A draft starts only
+    through Activate, which writes its schedule: a draft leaves draft elsewhere only by void, and
+    a new agreement starts active or paused only on a schedule. Those refusals name Activate."""
     if _WRITING.get() == entry.entity_id or transition.after.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
         return
     if modes_in_force(transition.before or {}) or modes_in_force(transition.after):
         raise HTTPException(status_code=409, detail=t("subscriptions.err_agreement_status_elsewhere"))
+    status, was = transition.after.get("status"), (transition.before or {}).get("status")
+    if was in (None, "draft") and (status not in AGREEMENT_STATUSES or (was == "draft" and status != "void") or (
+            status in ("active", "paused") and not transition.after.get("anchor_date"))):
+        raise HTTPException(status_code=409, detail=t("subscriptions.err_agreement_activate"))
+    if status not in AGREEMENT_STATUSES:
+        raise HTTPException(status_code=409, detail=t("subscriptions.err_agreement_status_lifecycle"))
 
 
-def refuse_status(state: dict) -> None:
-    status = state.get("status")
-    if status in ("draft", "paused", "cancelled"):
-        key = "subscriptions.err_generate_cancelled" if status == "cancelled" else f"subscriptions.err_bill_{status}"
-        raise HTTPException(status_code=409, detail=t(key))
+def billable(state: dict) -> bool:
+    """The one rule for whether an agreement's periods can bill: it is active and on a
+    schedule. Every other status, named or not, bills nothing."""
+    return state.get("status") == "active" and bool(state.get("anchor_date"))
+
+
+# Why a status does not bill, for the ones an agreement holds; any other reads the last.
+_UNBILLABLE = {"draft": "subscriptions.err_bill_draft", "paused": "subscriptions.err_bill_paused",
+               "cancelled": "subscriptions.err_generate_cancelled", "void": "subscriptions.err_bill_void"}
+
+
+def refuse_unbillable(state: dict) -> None:
+    """A 409 naming why, unless the agreement is billable."""
+    if not billable(state):
+        raise HTTPException(status_code=409, detail=t(
+            _UNBILLABLE.get(state.get("status"), "subscriptions.err_bill_not_active")))
 
 
 async def doc_state(session, company_id, doc_id: str) -> dict | None:
@@ -384,7 +409,7 @@ async def claim_period(session: AsyncSession, company_id, template_id: str, *, a
         return prior
     proj = await locked_agreement(session, company_id, template_id)
     state = proj.state
-    refuse_status(state)
+    refuse_unbillable(state)
     schedule = Schedule.from_state(state)
     today = business_today((company.settings or {}).get("timezone"))
     k = schedule.oldest_open(floor=review_floor(state))
@@ -545,7 +570,7 @@ async def period_list(session: AsyncSession, company_id, state: dict, today: dat
 
 def due_periods(state: dict, today: date) -> tuple[Schedule, list[int]] | None:
     """The schedule and its due open periods, for an active agreement with a schedule."""
-    if state.get("status") != "active" or not state.get("anchor_date"):
+    if not billable(state):
         return None
     schedule = Schedule.from_state(state)
     return schedule, schedule.due(today, floor=review_floor(state))
@@ -665,7 +690,7 @@ def modes_in_force(state: dict) -> list[str]:
     """The unattended modes that run for an agreement, by their consent key. A mode runs only
     while the agreement is active, and sending runs only on what automatic billing makes, so
     Send automatically on a manual agreement is not one of them."""
-    if state.get("status") != "active" or state.get("generation_mode") not in AUTO_MODES:
+    if not billable(state) or state.get("generation_mode") not in AUTO_MODES:
         return []
     return ["generation", *(["sending"] if state.get("auto_send") else [])]
 

@@ -7261,5 +7261,9 @@
   "subscriptions.history_billed_ref": "Đã lập hóa đơn cho kỳ từ {start} đến {end} trên {ref}.",
   "subscriptions.history_reopened_ref": "Đã mở lại kỳ từ {start} đến {end} và bỏ liên kết với {ref}.",
   "subscriptions.history_send_settled": "Hóa đơn cho kỳ từ {start} đến {end} đã được gửi qua email từ trang của hóa đơn đó.",
-  "subscriptions.period_earlier_bills": "Các hóa đơn trước đó:"
+  "subscriptions.period_earlier_bills": "Các hóa đơn trước đó:",
+  "subscriptions.err_bill_void": "This subscription is void, so it bills nothing. Unvoid it in Documents to bill it again.",
+  "subscriptions.err_bill_not_active": "Only an active subscription bills, and this one is not active. Revert it to draft in Documents, then activate it on its page.",
+  "subscriptions.err_agreement_activate": "A draft subscription starts only with Activate on its own page, which sets its first bill date. Documents can void it, but not finalize or issue it.",
+  "subscriptions.err_agreement_status_lifecycle": "A subscription is only ever draft, active, paused, cancelled or void. Change its status on its own page: activate, pause, resume or cancel it there. Documents can void it, unvoid it or revert it to draft."
 }

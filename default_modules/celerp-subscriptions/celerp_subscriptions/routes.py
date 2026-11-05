@@ -273,6 +273,7 @@ def _build_router() -> APIRouter:
                     raise HTTPException(status_code=409, detail=t("subscriptions.err_catchup_not_listed"))
                 async with session.begin_nested():
                     proj = await billing.locked_agreement(session, company_id, item.entity_id)
+                    billing.refuse_unbillable(proj.state)
                     oldest = Schedule.from_state(proj.state).oldest_open(floor=billing.review_floor(proj.state))
                     if oldest != item.period_index:
                         raise HTTPException(status_code=409, detail=t("subscriptions.err_early_not_next"))
