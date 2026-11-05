@@ -2775,3 +2775,31 @@ async def test_by_doc_a_locked_void_reversal_carries_no_item_rows(client):
     assert reversal["items_status"] == "no_items"
     assert _item_rows(reversal) == []
     assert impact["total_debit"] == impact["total_credit"] == 200.0
+
+
+@pytest.mark.asyncio
+async def test_by_doc_shows_the_postings_of_a_list(client):
+    """An audit List posts its stock adjustment under the List's id, so the List's GL Impact
+    holds it, named after the List."""
+    tok = await _reg(client)
+    r = await client.post("/companies/me/locations", headers=_h(tok), json={"name": "Counted", "type": "warehouse"})
+    assert r.status_code == 200, r.text
+    loc = r.json()["id"]
+    r = await client.post("/items", headers=_h(tok), json={
+        "sku": "AUD-1", "name": "Lot", "quantity": 10, "sell_by": "piece",
+        "status": "available", "cost_total": 100.0, "location_id": loc})
+    assert r.status_code == 200, r.text
+    item = r.json()["id"]
+    audit = (await client.post("/lists/audit", headers=_h(tok), json={"location_id": loc})).json()["id"]
+    assert (await client.post(f"/lists/{audit}/finalize", headers=_h(tok))).status_code == 200
+    r = await client.patch(f"/lists/{audit}/line/{item}", headers=_h(tok), json={"counted_qty": 8})
+    assert r.status_code == 200, r.text
+    r = await client.post(f"/lists/{audit}/adjust", headers=_h(tok))
+    assert r.status_code == 200, r.text
+
+    impact = await _by_doc(client, tok, audit)
+    assert [e["je_id"] for e in impact["entries"]] == [f"je:auto:{audit}:audit:0"]
+    entry = impact["entries"][0]
+    assert entry["source_doc"]["doc_id"] == audit
+    assert entry["items_status"] == "no_items"
+    assert impact["total_debit"] == impact["total_credit"] == 20.0

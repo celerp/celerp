@@ -1063,7 +1063,7 @@ def _je_memo(memo: str, ref: dict | None) -> str:
     return memo
 
 
-_DOC_SOURCE_KEYS = ("doc_id", "cn_id", "dn_id", "from_doc_id")
+_DOC_SOURCE_KEYS = ("doc_id", "cn_id", "dn_id", "from_doc_id", "list_id")
 
 
 def _linked_doc_events(doc_id: str, dialect_name: str):
@@ -1082,8 +1082,8 @@ def _linked_doc_events(doc_id: str, dialect_name: str):
 async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: list[str]) -> dict[str, dict]:
     """Source-doc display info per journal entry: {je_id: {"doc_id", "doc_ref", "fx"}}.
 
-    Only JEs whose creation event carries a doc_id in its ledger metadata appear;
-    doc_ref falls back to the raw doc_id when the doc projection is gone.
+    Only JEs whose creation event carries a document id (a List's postings carry
+    list_id) in its ledger metadata appear; doc_ref falls back to the raw doc_id when the doc projection is gone.
     fx is {"currency", "rate"} when the linked doc was recorded in a foreign
     currency with a stored conversion rate, else None - a missing rate leaves fx
     empty rather than guessing. Payment JEs (metadata carries payment_index)
@@ -1148,7 +1148,7 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
     je_ts: dict[str, str] = {}
     for ev in ledger_events:
         meta = ev.metadata_ or {}
-        source_id = meta.get("doc_id") or meta.get("cn_id") or meta.get("dn_id")
+        source_id = meta.get("doc_id") or meta.get("cn_id") or meta.get("dn_id") or meta.get("list_id")
         if source_id:
             je_meta[ev.entity_id] = {**meta, "doc_id": source_id}
             je_ts[ev.entity_id] = str((ev.data or {}).get("ts") or "")[:10]
