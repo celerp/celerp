@@ -276,15 +276,19 @@ async def test_the_page_confirm_is_the_actions_own_preview(client, session, ui_c
     r, sent = await _page_post(ui_client, call, preview, f"/{base}/{owner}/{path}", {**data, "dry_run": "1"})
     assert r.status_code == 200, r.text
     assert sent.await_args.kwargs["dry_run"] is True
-    named = ", ".join(line_name(s["line"], s["name"]) for s in sorted(preview["skipped"], key=lambda s: s["line"]))
-    said = f"{_count(confirm, len(acts))} {_count('documents.will_skip', len(preview['skipped']), lines=named)}"
+    said = _count(confirm, len(acts))
+    for k in dict.fromkeys(s["kind"] for s in sorted(preview["skipped"], key=lambda s: s["line"])):
+        of_kind = sorted((s for s in preview["skipped"] if s["kind"] == k), key=lambda s: s["line"])
+        said += " " + _count(f"documents.will_skip_{k}", len(of_kind),
+                             lines=", ".join(line_name(s["line"], s["name"]) for s in of_kind))
     if taken := preview.get("taken_back"):
         said += " " + _count("documents.will_take_back", len(taken),
                              lines=", ".join(line_name(s["line"], s["name"]) for s in taken))
     assert r.json() == {"confirm": said, "binding": preview["binding"]}
     if case == "ship-mixed":
-        assert said == ('Set 2 lines as shipped? Lines 2 "DEMO-EMR-001", 3 "DEMO-MIN-001", '
-                        '4 "GIA Certificate" will be left as they are.')
+        assert said == ('Set 2 lines as shipped? Line 2 "DEMO-EMR-001" has already shipped, so it will be left '
+                        'as it is. Line 3 "DEMO-MIN-001" has goods that aren\'t free to ship, so it will be left '
+                        'as it is. Line 4 "GIA Certificate" isn\'t an inventory item, so it will be left as it is.')
 
     # The action itself: its notice counts the lines it acted on.
     real = await _ok(await client.post(f"/{base}/{owner}/{path}", headers=g.h, json={
@@ -351,9 +355,9 @@ async def test_mark_as_scanned_counts_the_lines_the_list_changed(ui_client):
 
 
 # ── Bound to its preview ──────────────────────────────────────────────────────
-# The action confirms only the preview shown: the preview answers with a ``binding`` (the lines
-# it acts on, the lines it leaves and why, the shipped lines it takes back), and an action sent
-# with that binding refuses (409, changing nothing) when it would now do anything else.
+# The action confirms only the preview shown: the preview answers with a ``binding`` (each part
+# of OUTCOME_SHOWN), and an action sent with that binding refuses (409, changing nothing) when it
+# would now do anything else.
 
 async def _sell_elsewhere(client, g, owner, lids, sku):
     other = await _doc_of(client, g, [_line(g, sku)])
@@ -382,31 +386,48 @@ async def _take_back_here(client, g, owner, lids, sku):
     await _ok(await _act(client, g, owner, "set-available", [lids[sku]]))
 
 
+async def _ship_here_once_taken_back_elsewhere(client, g, owner, lids, sku):
+    await _take_back_elsewhere(client, g, owner, lids, sku)
+    await _ship_here(client, g, owner, lids, sku)
+
+
+async def _set_aside_elsewhere(client, g, owner, lids, sku):
+    await _doc_of(client, g, [_line(g, sku)])
+
+
+async def _choose_too(client, g, owner, lids, sku):
+    """Not a change in stock: the confirm is sent for ``sku``'s line as well."""
+    return (sku,)
+
+
 _SAP, _EMR, _MIN = STONES
+_ACTS, _LEAVES = frozenset({"acted", "skipped"}), frozenset({"skipped"})
 # (action, change made by someone else between the preview and the confirm) -> how the bound
-# action answers: (record, path, extra body, stone states, chosen skus, change, its sku,
-# "differs": refused as changed since the preview, or "refused": the action's own refusal),
-# or why the change cannot make that action do anything its preview did not say.
+# action answers: (record, path, extra body, stone states, chosen skus, change, its sku, and
+# the parts of the binding (OUTCOME_SHOWN) the change alters, so the action is refused as changed
+# since the preview, or "refused": the action's own refusal), or why the change cannot make that
+# action do anything its preview did not say. A change whose method returns skus sends the
+# confirm for those lines as well.
 _RACES = {
     ("ship", "grows"): ("invoice", "fulfill-lines", {}, {_MIN: "elsewhere"}, (_SAP, _MIN, "GIA"),
-                        _take_back_elsewhere, _MIN, "differs"),
-    ("ship", "shrinks"): ("invoice", "fulfill-lines", {}, {}, (_SAP, _MIN, "GIA"), _sell_elsewhere, _MIN, "differs"),
+                        _take_back_elsewhere, _MIN, _ACTS | {"taken_from"}),
+    ("ship", "shrinks"): ("invoice", "fulfill-lines", {}, {}, (_SAP, _MIN, "GIA"), _sell_elsewhere, _MIN, _ACTS),
     ("ship", "takes back"): "Set as shipped never takes goods back.",
     ("reserve", "grows"): "A line that cannot be reserved refuses the whole choice, so no preview leaves one.",
     ("reserve", "shrinks"): ("invoice", "reserve-lines", {"new_status": "reserved"}, {}, (_SAP, _EMR, "GIA"),
                              _sell_elsewhere, _EMR, "refused"),
     ("reserve", "takes back"): ("invoice", "reserve-lines", {"new_status": "reserved"}, {}, (_SAP, _EMR, "GIA"),
-                                _ship_here, _EMR, "differs"),
+                                _ship_here, _EMR, frozenset({"taken_back"})),
     ("release", "grows"): "A line holding nothing refuses the whole choice, so no preview leaves one.",
     ("release", "shrinks"): ("invoice", "reserve-lines", {"new_status": "available"}, {_SAP: "held", _EMR: "held"},
                              (_SAP, _EMR), _release_here, _EMR, "refused"),
     ("release", "takes back"): "Releasing a hold never takes goods back.",
     ("set-available", "grows"): ("invoice", "set-available", {}, {_SAP: "held"}, (_SAP, _MIN, "GIA"),
-                                 _hold_here, _MIN, "differs"),
+                                 _hold_here, _MIN, _ACTS),
     ("set-available", "shrinks"): ("invoice", "set-available", {}, {_SAP: "held", _MIN: "held"}, (_SAP, _MIN, "GIA"),
-                                   _release_here, _MIN, "differs"),
+                                   _release_here, _MIN, _ACTS),
     ("set-available", "takes back"): ("invoice", "set-available", {}, {_SAP: "held", _MIN: "held"},
-                                      (_SAP, _MIN, "GIA"), _ship_here, _MIN, "differs"),
+                                      (_SAP, _MIN, "GIA"), _ship_here, _MIN, frozenset({"taken_back"})),
     ("revert", "grows"): "A line with nothing out refuses the whole choice, so no preview leaves one.",
     ("revert", "shrinks"): ("invoice", "revert-lines", {}, {_SAP: "shipped", _EMR: "shipped"}, (_SAP, _EMR, "GIA"),
                             _take_back_here, _EMR, "refused"),
@@ -420,10 +441,17 @@ _RACES = {
                                   (_SAP, _EMR), _release_here, _EMR, "refused"),
     ("list release", "takes back"): "A List never ships, so it has no goods to take back.",
     ("list set-available", "grows"): ("list", "set-available", {}, {_SAP: "held"}, (_SAP, _MIN, "GIA"),
-                                      _hold_here, _MIN, "differs"),
+                                      _hold_here, _MIN, _ACTS),
     ("list set-available", "shrinks"): ("list", "set-available", {}, {_SAP: "held", _MIN: "held"},
-                                        (_SAP, _MIN, "GIA"), _release_here, _MIN, "differs"),
+                                        (_SAP, _MIN, "GIA"), _release_here, _MIN, _ACTS),
     ("list set-available", "takes back"): "A List never ships, so it has no goods to take back.",
+    # Parts of the binding no change above alters alone; only Set as shipped's answer can.
+    ("ship", "leaves for another reason"): ("invoice", "fulfill-lines", {}, {_MIN: "elsewhere"}, (_SAP, _MIN, "GIA"),
+                                            _ship_here_once_taken_back_elsewhere, _MIN, _LEAVES),
+    ("ship", "takes from another invoice"): ("invoice", "fulfill-lines", {}, {}, (_SAP, "GIA"),
+                                             _set_aside_elsewhere, _SAP, frozenset({"taken_from"})),
+    ("ship", "is confirmed for more lines"): ("invoice", "fulfill-lines", {}, {}, (_SAP, "GIA"),
+                                              _choose_too, _MIN, frozenset({"acted"})),
 }
 
 
@@ -433,10 +461,31 @@ async def test_every_stock_line_action_meets_every_change_between_preview_and_ac
     actions = {"ship": "fulfill-lines", "reserve": "reserve-lines", "release": "reserve-lines",
                "set-available": "set-available", "revert": "revert-lines", "list reserve": "reserve-lines",
                "list release": "reserve-lines", "list set-available": "set-available"}
-    assert set(_RACES) == {(a, c) for a in actions for c in ("grows", "shrinks", "takes back")}
+    matrix = {(a, c) for a in actions for c in ("grows", "shrinks", "takes back")}
+    assert set(_RACES) >= matrix
+    assert all(not isinstance(_RACES[k], str) for k in set(_RACES) - matrix)
     previewed = {(base, r.path.rsplit("/", 1)[-1]) for base, r in _previewed_line_actions()}
     covered = {("lists" if a.startswith("list") else "docs", p) for a, p in actions.items()}
     assert previewed == covered | {("docs", "back-to-memo")}
+
+
+async def test_every_part_of_the_binding_has_a_change_that_alters_it_alone():
+    """Each part of what a preview binds has a race above in which it alone changes, so no part
+    can drop out of the binding unnoticed; a part added without one fails here."""
+    from celerp_docs.routes import OUTCOME_SHOWN
+    raced = [v[-1] for v in _RACES.values() if not isinstance(v, str) and v[-1] != "refused"]
+    assert set().union(*raced) <= set(OUTCOME_SHOWN)
+    assert [p for p in OUTCOME_SHOWN if {p} not in raced] == []
+
+
+async def test_the_question_words_why_it_leaves_each_kind_of_line():
+    """Every kind of line an action with a question can leave has its own words there, so a
+    line left for another reason changes the question too."""
+    from celerp_docs.doc_constants import LINE_SKIP_REASONS
+    from ui.i18n import _load
+    en = _load("en")
+    kinds = {k for action in {_RACE_ACTIONS[p] for p in _CONFIRMS} for k in LINE_SKIP_REASONS[action]}
+    assert [f"{k}_{n}" for k in sorted(kinds) for n in ("one", "many") if f"documents.will_skip_{k}_{n}" not in en] == []
 
 
 def _previewed_line_actions():
@@ -452,6 +501,12 @@ def _previewed_line_actions():
                     yield base, r
 
 
+# The question the page asks before each action with a race above (documents.py _line_action_proxy).
+_RACE_ACTIONS = {"fulfill-lines": "fulfill", "set-available": "set-available", "reserve-lines": "reserve"}
+_CONFIRMS = {"fulfill-lines": "documents.confirm_set_shipped", "set-available": "documents.confirm_set_available",
+             "reserve-lines": "documents.confirm_set_{new_status}"}
+
+
 @pytest.mark.parametrize("race", [k for k, v in _RACES.items() if not isinstance(v, str)],
                          ids=lambda k: " ".join(k))
 async def test_an_action_does_only_what_its_preview_said(client, session, race):
@@ -460,6 +515,8 @@ async def test_an_action_does_only_what_its_preview_said(client, session, race):
     a fresh preview then binds the action to what it now does. Red statement: Set as shipped
     confirmed "Set 1 line as shipped?" and shipped 2 when a line was taken back elsewhere
     meanwhile, and Set as reserved reversed a sale its confirm never mentioned."""
+    from celerp_docs.routes import OUTCOME_SHOWN
+    from ui.routes.documents import _preview_confirm
     kind, path, extra, states, chosen, change, sku, answer = _RACES[race]
     g = await _gems(client)
     owner, lids = await _record(client, g, kind, states)
@@ -468,16 +525,19 @@ async def test_an_action_does_only_what_its_preview_said(client, session, race):
     body = {"line_ids": [lids[s] for s in chosen], "idempotency_key": key, **extra}
     preview = await _ok(await client.post(url, headers=g.h, json={**body, "dry_run": True}))
     assert preview.get("binding"), preview
-    await change(client, g, owner, lids, sku)
+    body["line_ids"] += [lids[s] for s in await change(client, g, owner, lids, sku) or ()]
     before = await _snapshot(client, session, g, owner)
     bound = await client.post(url, headers=g.h, json={**body, "binding": preview["binding"]})
     assert await _snapshot(client, session, g, owner) == before, "the refused action changed something"
-    if answer == "differs":
+    if answer != "refused":
         assert bound.status_code == 409, bound.text
         assert bound.json()["detail"]["message_key"] == "lines.preview_differs"
         fresh = await client.post(url, headers=g.h, json={**body, "dry_run": True})
         assert fresh.status_code == 200, fresh.text
-        assert fresh.json()["binding"] != preview["binding"]
+        assert {p for p, show in OUTCOME_SHOWN.items() if show(fresh.json()) != show(preview)} == answer
+        confirm = _CONFIRMS[path].format(**extra)
+        assert _preview_confirm(confirm, fresh.json()) != _preview_confirm(confirm, preview), \
+            "the fresh question repeats the one answered"
         real = await client.post(url, headers=g.h, json={**body, "binding": fresh.json()["binding"]})
         assert (real.status_code, real.json()) == (200, fresh.json())
         assert_described(("POST", f"/{base}/{{entity_id}}/{path}"), real.json())
@@ -533,4 +593,4 @@ async def test_the_page_sends_the_action_bound_and_asks_again_when_the_lines_cha
     assert second.kwargs["dry_run"] is True and second.kwargs["binding"] is None
     assert r.json() == {"binding": "fresh", "confirm": (
         f'{t("documents.lines_changed_since_confirm")} {_count("documents.confirm_set_shipped", 1)} '
-        f'{_count("documents.will_skip", 1, lines=chr(50) + " " + chr(34) + "DEMO-EMR-001" + chr(34))}')}
+        f'{_count("documents.will_skip_unavailable", 1, lines=chr(50) + " " + chr(34) + "DEMO-EMR-001" + chr(34))}')}

@@ -480,14 +480,20 @@ def preview_binding(rows: list[Projection | None], body: BaseModel) -> str:
     return hashlib.sha256(json.dumps(shown, sort_keys=True).encode()).hexdigest()
 
 
+# What a stock line action's preview shows, part by part, from its answer: the lines it acts on,
+# each line it leaves with why, the lines whose shipment it takes back and the other records it
+# takes goods from. Lots are left out: a lot carved off is new each time the action runs.
+OUTCOME_SHOWN = {
+    "acted": lambda result: result["acted"],
+    "skipped": lambda result: sorted([s["line_id"] or "", s["kind"]] for s in result.get("skipped") or []),
+    "taken_back": lambda result: sorted(t["line_id"] or "" for t in result.get("taken_back") or []),
+    "taken_from": lambda result: sorted({m["doc_id"] for m in result.get("taken_from") or []}),
+}
+
+
 def outcome_binding(result: dict) -> str:
-    """What a stock line action's preview shows, as one digest: the lines it acts on, each line
-    it leaves with why, the lines whose shipment it takes back and the other records it takes
-    goods from. Lots are left out: a lot carved off is new each time the action runs."""
-    shown = {"acted": result["acted"],
-             "skipped": sorted([s["line_id"] or "", s["kind"]] for s in result.get("skipped") or []),
-             "taken_back": sorted(t["line_id"] or "" for t in result.get("taken_back") or []),
-             "taken_from": sorted({m["doc_id"] for m in result.get("taken_from") or []})}
+    """What a stock line action's preview shows (OUTCOME_SHOWN), as one digest."""
+    shown = {part: show(result) for part, show in OUTCOME_SHOWN.items()}
     return hashlib.sha256(json.dumps(shown, sort_keys=True).encode()).hexdigest()
 
 

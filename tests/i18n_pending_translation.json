@@ -80,6 +80,85 @@
       "params": [
         "lines"
       ]
+    },
+    "documents.will_skip_no_item_one": {
+      "en": "Line {lines} isn't an inventory item, so it will be left as it is.",
+      "params": [
+        "lines"
+      ]
+    },
+    "documents.will_skip_no_item_many": {
+      "en": "Lines {lines} aren't inventory items, so they will be left as they are.",
+      "params": [
+        "lines"
+      ]
+    },
+    "documents.will_skip_service_one": {
+      "en": "Line {lines} is a service, not stock, so it will be left as it is.",
+      "params": [
+        "lines"
+      ]
+    },
+    "documents.will_skip_service_many": {
+      "en": "Lines {lines} are services, not stock, so they will be left as they are.",
+      "params": [
+        "lines"
+      ]
+    },
+    "documents.will_skip_shipped_one": {
+      "en": "Line {lines} has already shipped, so it will be left as it is.",
+      "params": [
+        "lines"
+      ]
+    },
+    "documents.will_skip_shipped_many": {
+      "en": "Lines {lines} have already shipped, so they will be left as they are.",
+      "params": [
+        "lines"
+      ]
+    },
+    "documents.will_skip_drawn_one": {
+      "en": "Line {lines} was invoiced from a memo and its products are already with the customer, so it will be left as it is.",
+      "params": [
+        "lines"
+      ]
+    },
+    "documents.will_skip_drawn_many": {
+      "en": "Lines {lines} were invoiced from a memo and their products are already with the customer, so they will be left as they are.",
+      "params": [
+        "lines"
+      ]
+    },
+    "documents.will_skip_unavailable_one": {
+      "en": "Line {lines} has goods that aren't free to ship, so it will be left as it is.",
+      "params": [
+        "lines"
+      ]
+    },
+    "documents.will_skip_unavailable_many": {
+      "en": "Lines {lines} have goods that aren't free to ship, so they will be left as they are.",
+      "params": [
+        "lines"
+      ]
+    },
+    "documents.will_skip_idle_one": {
+      "en": "Line {lines} has nothing held or out, so it will be left as it is.",
+      "params": [
+        "lines"
+      ]
+    },
+    "documents.will_skip_idle_many": {
+      "en": "Lines {lines} have nothing held or out, so they will be left as they are.",
+      "params": [
+        "lines"
+      ]
+    },
+    "documents.will_take_from": {
+      "en": "Lot {sku} is on invoice {doc}: shipping it here means invoice {doc} can no longer ship it.",
+      "params": [
+        "sku",
+        "doc"
+      ]
     }
   }
 }

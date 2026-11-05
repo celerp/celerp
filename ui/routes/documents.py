@@ -1173,16 +1173,22 @@ def _count_text(key: str, n: int, **params) -> str:
 
 
 def _preview_confirm(confirm: str, answer: dict) -> str:
-    """The question a stock line action asks from its own preview ``answer``: how many lines
-    it acts on (``confirm``, a counted message key), the lines it leaves as they are, and the
-    shipped lines it takes back into stock."""
+    """The question a stock line action asks from its own preview ``answer``, wording every
+    part of what the preview binds: how many lines it acts on (``confirm``, a counted message
+    key), the lines it leaves as they are and why, the shipped lines it takes back into stock,
+    and the goods it takes from other invoices."""
     parts = [_count_text(confirm, len(answer.get("acted") or []))]
-    if skipped := sorted(answer.get("skipped") or [], key=lambda s: s["line"]):
-        parts.append(_count_text("documents.will_skip", len(skipped),
+    by_kind: dict[str, list[dict]] = {}
+    for s in sorted(answer.get("skipped") or [], key=lambda s: s["line"]):
+        by_kind.setdefault(s["kind"], []).append(s)
+    for kind, skipped in by_kind.items():
+        parts.append(_count_text(f"documents.will_skip_{kind}", len(skipped),
                                  lines=", ".join(line_name(s["line"], s["name"]) for s in skipped)))
     if taken_back := answer.get("taken_back"):
         parts.append(_count_text("documents.will_take_back", len(taken_back),
                                  lines=", ".join(line_name(s["line"], s["name"]) for s in taken_back)))
+    parts += [t("documents.will_take_from", sku=m.get("sku") or m.get("lot_id"), doc=m.get("doc_number") or m.get("doc_id"))
+              for m in answer.get("taken_from") or []]
     return " ".join(parts)
 
 
