@@ -23,8 +23,9 @@ _NESTED = {
 
 
 def _sites() -> Counter:
-    """Per file, the HTTPException details in a ValueError or Exception handler that use the
-    caught exception other than as ``refusal_detail(exc)``."""
+    """Per file, the HTTPException details (the ``detail`` keyword or the second positional
+    argument) in a ValueError or Exception handler that use the caught exception other than as
+    ``refusal_detail(exc)``."""
     sites = Counter()
     for path in [*(ROOT / "celerp").rglob("*.py"), *(ROOT / "default_modules").rglob("*.py"), *(ROOT / "ui").rglob("*.py")]:
         for handler in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
@@ -36,9 +37,9 @@ def _sites() -> Counter:
             for node in ast.walk(ast.Module(body=handler.body, type_ignores=[])):
                 if not (isinstance(node, ast.Call) and getattr(node.func, "id", None) == "HTTPException"):
                     continue
-                for kw in node.keywords:
-                    v = kw.value
-                    if kw.arg != "detail" or not any(isinstance(n, ast.Name) and n.id == handler.name for n in ast.walk(v)):
+                details = [kw.value for kw in node.keywords if kw.arg == "detail"] + node.args[1:2]
+                for v in details:
+                    if not any(isinstance(n, ast.Name) and n.id == handler.name for n in ast.walk(v)):
                         continue
                     if (isinstance(v, ast.Call) and getattr(v.func, "id", None) == "refusal_detail"
                             and len(v.args) == 1 and isinstance(v.args[0], ast.Name) and v.args[0].id == handler.name):
