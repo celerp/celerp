@@ -7086,5 +7086,7 @@
   "company.err_price_list_base_factor": "{name} é a lista de preços base e, por isso, não pode ter um fator.",
   "company.err_price_list_rounding_needs_factor": "O arredondamento de {name} exige um fator. Adicione um fator ou remova o arredondamento.",
   "company.err_price_list_rounding": "O valor de arredondamento de {name} deve ser um número maior que 0 e menor ou igual a {max}.",
-  "company.err_price_list_cost_name": "{name} é um nome reservado pela Celerp para custos. Toda empresa já tem a lista Custo, que mostra o custo de cada item. Dê outro nome a esta lista."
+  "company.err_price_list_cost_name": "{name} é um nome reservado pela Celerp para custos. Toda empresa já tem a lista Custo, que mostra o custo de cada item. Dê outro nome a esta lista.",
+  "docs.revert_received_in_stock": "Não é possível reverter para rascunho enquanto as mercadorias recebidas neste documento ainda estiverem em estoque. Selecione essas linhas e use primeiro Devolução de mercadorias; depois reverta.",
+  "docs.revert_lines_out": "Não é possível reverter para rascunho enquanto houver linhas ainda fora em consignação ou vendidas. Selecione essas linhas e use primeiro Definir como disponível; depois reverta."
 }

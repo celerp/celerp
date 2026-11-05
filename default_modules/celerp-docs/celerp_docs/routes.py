@@ -1692,15 +1692,17 @@ async def _numbers_or_recorded(session: AsyncSession, company_id, ids) -> dict[s
         return {}
 
 
-async def _drawn_on(session: AsyncSession, company_id, state: dict) -> list[tuple[str, str | None]]:
+async def _drawn_on(session: AsyncSession, company_id, state: dict,
+                    numbers=None) -> list[tuple[str, str | None]]:
     """The invoices holding goods drawn from a memo *state* that have not come back (a take
     with unreturned lines, memo_draws), in draw order, by current number and status; empty
     for any other document. Whether a take counts is the memo's own record; the status only
-    names a blocking draft."""
+    names a blocking draft. A caller that needs no status reads ``numbers`` with
+    _numbers_or_recorded, so a number it cannot read is the one the memo recorded."""
     if state.get("doc_type") != "memo":
         return []
     takes = [t for t in memo_draws(state) if t["lines"]]
-    current = await _current_doc_numbers(session, company_id, {t["invoice_id"] for t in takes})
+    current = await (numbers or _current_doc_numbers)(session, company_id, {t["invoice_id"] for t in takes})
     return [current.get(t["invoice_id"], (t.get("doc_number") or t["invoice_id"], None)) for t in takes]
 
 
@@ -3621,6 +3623,11 @@ class RevertCheck:
         return [reason for reason, _ in self.refusals]
 
 
+def _refuse(refusals: list, reason: str, detail) -> None:
+    """Add one reason Revert to Draft is refused, with the refusal it answers."""
+    refusals.append((reason, HTTPException(status_code=409, detail=detail)))
+
+
 async def revert_check(session, company_id, entity_id: str, state: dict, units: list[dict],
                        as_locked: bool = False) -> RevertCheck:
     """The one rule for Revert to Draft. The route answers the first refusal, GET /docs/{id}
@@ -3635,16 +3642,13 @@ async def revert_check(session, company_id, entity_id: str, state: dict, units: 
         state = locked_state(session, entity_id) or state
     refusals: list[tuple[str, HTTPException]] = []
 
-    def refuse(reason: str, detail, status_code: int = 409) -> None:
-        refusals.append((reason, HTTPException(status_code=status_code, detail=detail)))
-
     if (under_note := await _undo_under_credit_note(session, company_id, state, entity_id, "revert",
                                                     as_locked)) is not None:
         refusals.append(("credit_note", under_note))
     # A note a return raised holds the return's credit, so a draft of it could be edited or
     # deleted while the bill stays settled by it. Voiding it takes the return back instead.
     if state.get("doc_type") == "debit_note" and state.get("source_return"):
-        refuse("return_note", refusal(
+        _refuse(refusals, "return_note", refusal(
             "debit_note.revert_return",
             "This supplier credit note was raised by a return, so it cannot go back to draft. To undo "
             "the return, void the credit note: the goods go back into stock and the bill owes them again."))
@@ -3658,7 +3662,7 @@ async def revert_check(session, company_id, entity_id: str, state: dict, units: 
     # after it was made from an order has no draft to go back to that holds them, so it is voided.
     # Goods the document was imported with are opening stock, which no revert takes back.
     if state.get("received_items") and await _imported_receipt_held(session, company_id, entity_id):
-        refuse("imported_receipt", refusal(
+        _refuse(refusals, "imported_receipt", refusal(
             "docs.revert_imported_receipt",
             "This document cannot go back to draft: it was imported holding goods already in stock, which "
             "the opening balances carry. Send back any goods it still holds with Return Goods, then settle "
@@ -3667,7 +3671,7 @@ async def revert_check(session, company_id, entity_id: str, state: dict, units: 
     if emptied and state.get("doc_type") == "bill":
         on_order = await _order_receipts_only(session, company_id, entity_id)
         if on_order is False:
-            refuse("returned_bill", refusal(
+            _refuse(refusals, "returned_bill", refusal(
                 "docs.revert_returned_bill",
                 "This bill cannot go back to draft: goods were received on it after it was made from its "
                 "purchase order. To cancel the bill, void it."))
@@ -3679,17 +3683,24 @@ async def revert_check(session, company_id, entity_id: str, state: dict, units: 
     paid = float(state.get("amount_paid", 0) or 0) != 0
     status = state.get("status")
     if status not in revertable and not settled_by_credit_only(state) and not (paid and status in ("partial", "paid")):
-        refuse("status", t("documents.err_revert_status"))
+        _refuse(refusals, "status", refusal(
+            "documents.err_revert_status",
+            "Only a finalized, sent or awaiting-payment document can go back to Draft. This one is already "
+            "a draft, paid or void."))
     if paid:
-        refuse("payments", t("documents.err_revert_has_payments"))
+        _refuse(refusals, "payments", refusal(
+            "documents.err_revert_has_payments",
+            "This document has payments, so it can't go back to Draft. Void the payments first."))
     # Both blocks below name the button on the document's lines that clears them, so the
     # user is sent to the action rather than left to guess where goods are returned.
     if state.get("received_items") and not (to_order or emptied):
-        refuse("received", "Cannot revert to draft while goods received on this document are still in stock. "
-                           "Select those lines and use Return Goods first, then revert.")
-    if drawn := await _drawn_on(session, company_id, state):
+        _refuse(refusals, "received", refusal(
+            "docs.revert_received_in_stock",
+            "Cannot revert to draft while goods received on this document are still in stock. "
+            "Select those lines and use Return Goods first, then revert."))
+    if drawn := await _drawn_on(session, company_id, state, _numbers_or_recorded):
         memo = str(state.get("ref_id") or state.get("doc_number") or entity_id)
-        refuse("drawn", refusal(
+        _refuse(refusals, "drawn", refusal(
             "docs.memo_revert_while_drawn",
             f"Memo {memo} can't go back to Draft while its products are on invoice {drawn[0][0]}. Send them "
             "back to the memo or void that invoice first. To finish a memo whose products sold, close it instead.",
@@ -3697,8 +3708,10 @@ async def revert_check(session, company_id, entity_id: str, state: dict, units: 
     # Fulfilled items are tracked in state["fulfilled_items"]; each entry with a non-null
     # item_id is an inventory item that is now out on memo or sold.
     if any(fi.get("item_id") is not None for fi in state.get("fulfilled_items") or []):
-        refuse("out", "Cannot revert to draft while lines are still out on memo or sold. "
-                      "Select those lines and use Set as available first, then revert.")
+        _refuse(refusals, "out", refusal(
+            "docs.revert_lines_out",
+            "Cannot revert to draft while lines are still out on memo or sold. "
+            "Select those lines and use Set as available first, then revert."))
     try:
         await require_moving_fits(session, company_id, entity_id, "doc", {**state, "status": "draft"}, units)
     except HTTPException as exc:

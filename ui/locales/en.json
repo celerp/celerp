@@ -7086,5 +7086,7 @@
   "inventory.err_barcode_taken": "Another item already has barcode {barcode}. Use a different barcode, or change it on the other item first.",
   "inventory.err_barcode_taken_unnamed": "Another item already has this barcode. Use a different barcode, or change it on the other item first.",
   "inventory.err_rfid_epc_taken": "Another item already has RFID / EPC code {code}. Use a different code, or change it on the other item first.",
-  "inventory.err_rfid_epc_taken_unnamed": "Another item already has this RFID / EPC code. Use a different code, or change it on the other item first."
+  "inventory.err_rfid_epc_taken_unnamed": "Another item already has this RFID / EPC code. Use a different code, or change it on the other item first.",
+  "docs.revert_received_in_stock": "Cannot revert to draft while goods received on this document are still in stock. Select those lines and use Return Goods first, then revert.",
+  "docs.revert_lines_out": "Cannot revert to draft while lines are still out on memo or sold. Select those lines and use Set as available first, then revert."
 }

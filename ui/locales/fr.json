@@ -7086,5 +7086,7 @@
   "company.err_price_list_base_factor": "{name} est la liste de prix de base et ne peut donc pas avoir de coefficient.",
   "company.err_price_list_rounding_needs_factor": "L'arrondi de {name} nécessite un coefficient. Ajoutez-en un ou désactivez l'arrondi.",
   "company.err_price_list_rounding": "La valeur d'arrondi de {name} doit être un nombre supérieur à 0 et inférieur ou égal à {max}.",
-  "company.err_price_list_cost_name": "{name} est un nom réservé par Celerp pour le coût. Chaque entreprise dispose déjà de la liste « Coût », qui affiche le coût de chaque article. Donnez un autre nom à cette liste."
+  "company.err_price_list_cost_name": "{name} est un nom réservé par Celerp pour le coût. Chaque entreprise dispose déjà de la liste « Coût », qui affiche le coût de chaque article. Donnez un autre nom à cette liste.",
+  "docs.revert_received_in_stock": "Impossible de revenir au brouillon tant que des marchandises reçues sur ce document sont encore en stock. Sélectionnez ces lignes et utilisez d'abord Retour de marchandises, puis revenez au brouillon.",
+  "docs.revert_lines_out": "Impossible de revenir au brouillon tant que des lignes sont encore sorties en dépôt ou vendues. Sélectionnez ces lignes et utilisez d'abord Marquer comme disponible, puis revenez au brouillon."
 }

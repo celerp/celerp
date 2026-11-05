@@ -7086,5 +7086,7 @@
   "company.err_price_list_base_factor": "{name} es la lista de precios base, por lo que no puede tener un factor.",
   "company.err_price_list_rounding_needs_factor": "El redondeo de {name} requiere un factor. Añada un factor o quite el redondeo.",
   "company.err_price_list_rounding": "El valor de redondeo de {name} debe ser un número mayor que 0 y no superior a {max}.",
-  "company.err_price_list_cost_name": "{name} es un nombre que Celerp reserva para el costo. Cada empresa ya tiene la lista Costo, que muestra el costo de cada artículo. Asigne otro nombre a esta lista."
+  "company.err_price_list_cost_name": "{name} es un nombre que Celerp reserva para el costo. Cada empresa ya tiene la lista Costo, que muestra el costo de cada artículo. Asigne otro nombre a esta lista.",
+  "docs.revert_received_in_stock": "No se puede volver al borrador mientras las mercancías recibidas en este documento sigan en stock. Seleccione esas líneas y use primero Devolución de mercancías; después vuelva al borrador.",
+  "docs.revert_lines_out": "No se puede volver al borrador mientras haya líneas aún fuera en memorándum o vendidas. Seleccione esas líneas y use primero Marcar como disponible; después vuelva al borrador."
 }

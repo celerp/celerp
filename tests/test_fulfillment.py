@@ -196,7 +196,7 @@ async def test_revert_to_draft_blocked_when_fulfilled_items_exist(client, sessio
     # that clears the block: "Set as available" on the memo's lines.
     r = await client.post(f"/docs/{doc_id}/revert-to-draft", headers=auth["headers"], json={})
     assert r.status_code == 409, r.text
-    assert "Set as available" in r.json()["detail"], r.text
+    assert "Set as available" in r.json()["detail"]["message"], r.text
 
 
 async def test_revert_bill_with_received_goods_names_return_goods(client, auth, _setup_ids):
@@ -221,7 +221,7 @@ async def test_revert_bill_with_received_goods_names_return_goods(client, auth, 
     assert received.status_code == 200, received.text
     r = await client.post(f"/docs/{bill_id}/revert-to-draft", headers=h, json={})
     assert r.status_code == 409, r.text
-    assert "Return Goods" in r.json()["detail"], r.text
+    assert "Return Goods" in r.json()["detail"]["message"], r.text
 
 
 async def test_revert_to_draft_allowed_after_all_lines_reverted(client, session, auth, _setup_ids):

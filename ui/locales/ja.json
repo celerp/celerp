@@ -7086,5 +7086,7 @@
   "company.err_price_list_base_factor": "{name}は基準価格表なので、係数を設定できません。",
   "company.err_price_list_rounding_needs_factor": "{name}の端数処理には係数が必要です。係数を追加するか、端数処理を解除してください。",
   "company.err_price_list_rounding": "{name}の端数処理の値は0より大きく、{max}以下の数値である必要があります。",
-  "company.err_price_list_cost_name": "{name}はCelerpが原価用に予約している名前です。各会社には、品目ごとの原価を表示する「原価」価格表がすでにあります。この価格表には別の名前を付けてください。"
+  "company.err_price_list_cost_name": "{name}はCelerpが原価用に予約している名前です。各会社には、品目ごとの原価を表示する「原価」価格表がすでにあります。この価格表には別の名前を付けてください。",
+  "docs.revert_received_in_stock": "この書類で受け取った商品がまだ在庫にあるため、ドラフトに戻せません。該当する明細を選択して先に「返品」を使い、その後ドラフトに戻してください。",
+  "docs.revert_lines_out": "メモで貸し出し中または販売済みの明細があるため、ドラフトに戻せません。該当する明細を選択して先に「利用可能」に設定を使い、その後ドラフトに戻してください。"
 }
