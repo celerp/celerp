@@ -7088,5 +7088,5 @@
   "company.err_price_list_rounding": "Il valore di arrotondamento per {name} deve essere maggiore di 0 e non superiore a {max}.",
   "company.err_price_list_cost_name": "{name} è un nome riservato da Celerp ai costi. Ogni azienda dispone già del listino Costo, che mostra il costo di ogni articolo. Assegna un altro nome a questo listino.",
   "docs.revert_received_in_stock": "Impossibile ripristinare a bozza finché la merce ricevuta su questo documento è ancora in magazzino. Seleziona quelle righe e usa prima Reso merci, poi ripristina.",
-  "docs.revert_lines_out": "Impossibile ripristinare a bozza finché ci sono righe ancora fuori in conto visione o vendute. Seleziona quelle righe e usa prima Imposta come disponibile, poi ripristina."
+  "docs.revert_lines_out": "Cannot revert to draft while lines are still out on memo or sold. Select those lines and use Set as available first, then revert."
 }

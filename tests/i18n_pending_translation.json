@@ -12,5 +12,10 @@
     "th",
     "vi"
   ],
-  "keys": {}
+  "keys": {
+    "docs.revert_lines_out": {
+      "en": "Cannot revert to draft while lines are still out on memo or sold. Select those lines and use Set as available first, then revert.",
+      "params": []
+    }
+  }
 }

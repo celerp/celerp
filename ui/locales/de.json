@@ -7088,5 +7088,5 @@
   "company.err_price_list_rounding": "Der Rundungswert für {name} muss größer als 0 und darf höchstens {max} sein.",
   "company.err_price_list_cost_name": "Der Name {name} ist in Celerp für Kosten reserviert. Jedes Unternehmen verfügt bereits über die Preisliste „Kosten“, die die Kosten jedes Artikels anzeigt. Geben Sie dieser Liste einen anderen Namen.",
   "docs.revert_received_in_stock": "Zurücksetzen in den Entwurf ist nicht möglich, solange auf diesem Beleg eingegangene Waren noch auf Lager sind. Wählen Sie diese Positionen aus, verwenden Sie zuerst Warenrückgabe und setzen Sie dann zurück.",
-  "docs.revert_lines_out": "Zurücksetzen in den Entwurf ist nicht möglich, solange Positionen noch auf Kommission ausgegeben oder verkauft sind. Wählen Sie diese Positionen aus, verwenden Sie zuerst Als verfügbar markieren und setzen Sie dann zurück."
+  "docs.revert_lines_out": "Cannot revert to draft while lines are still out on memo or sold. Select those lines and use Set as available first, then revert."
 }

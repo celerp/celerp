@@ -7088,5 +7088,5 @@
   "company.err_price_list_rounding": "Mức làm tròn của {name} phải là số lớn hơn 0 và không vượt quá {max}.",
   "company.err_price_list_cost_name": "{name} là tên Celerp dành riêng cho giá vốn. Mỗi công ty đã có bảng giá Giá vốn, hiển thị giá vốn của từng mặt hàng. Hãy đặt tên khác cho bảng giá này.",
   "docs.revert_received_in_stock": "Không thể hoàn nguyên về bản nháp khi hàng đã nhận trên chứng từ này vẫn còn trong kho. Hãy chọn các dòng đó và dùng Trả hàng trước, sau đó hoàn nguyên.",
-  "docs.revert_lines_out": "Không thể hoàn nguyên về bản nháp khi vẫn còn dòng đang gửi theo phiếu ký gửi hoặc đã bán. Hãy chọn các dòng đó và dùng Đặt thành có sẵn trước, sau đó hoàn nguyên."
+  "docs.revert_lines_out": "Cannot revert to draft while lines are still out on memo or sold. Select those lines and use Set as available first, then revert."
 }
