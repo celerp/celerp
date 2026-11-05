@@ -156,8 +156,8 @@
     "documents.will_take_from": {
       "en": "Lot {sku} is on invoice {doc}: shipping it here means invoice {doc} can no longer ship it.",
       "params": [
-        "sku",
-        "doc"
+        "doc",
+        "sku"
       ]
     }
   }
