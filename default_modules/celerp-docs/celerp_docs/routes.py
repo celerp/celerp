@@ -11102,10 +11102,10 @@ def binds_its_outcome(model: type) -> bool:
     return issubclass(model, FulfillLinesRequest) and not issubclass(model, InvoiceLinesRequest)
 
 
-def _taken_back_notice(taken_back: list[dict], *, ahead: bool = False) -> dict:
+def _taken_back_notice(taken_back: list[dict]) -> dict:
     """The message naming the shipped lines a line action took back into stock, reversing
-    their shipment, or with ``ahead`` the confirm's warning that it will."""
-    key = f"documents.{'will_take_back' if ahead else 'taken_back'}_{'one' if len(taken_back) == 1 else 'many'}"
+    their shipment."""
+    key = f"documents.taken_back_{'one' if len(taken_back) == 1 else 'many'}"
     return catalog_refusal(key, lines=", ".join(line_name(s["line"], s["name"]) for s in taken_back))
 
 

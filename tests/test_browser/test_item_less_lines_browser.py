@@ -71,6 +71,13 @@ def _sent(path: str):
     return lambda q: q.method == "POST" and q.url.endswith(path) and _posted(q, "dry_run") != ["1"]
 
 
+def _bound(path: str):
+    """Matches the request that runs the stock line action at ``path`` bound to the confirm its
+    preview asked (``binding``). An action sent unbound never matches, so a test waiting for it
+    fails."""
+    return lambda q: _sent(path)(q) and _posted(q, "binding") not in ([], [""])
+
+
 def _persistent_toast(page, text: str) -> str:
     toast = page.locator(".toast-container .toast--persist", has_text=text).first
     toast.wait_for(state="visible", timeout=10000)
@@ -130,7 +137,7 @@ def test_set_available_sends_held_and_item_less_rows(page, ui_server, api):
     page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
     page.check("#li-select-all")
     page.locator("#li-bulk-select").select_option(value="li-revert")
-    with page.expect_request(_sent("/set-available")) as sent:
+    with page.expect_request(_bound("/set-available")) as sent:
         page.locator("#li-bulk-revert-btn").click()
     # The confirm counts the one line it acts on and names the two it leaves up front.
     assert asked[-1] == (f'Set 1 line as available? Lines 2 "{free["sku"]}", 3 "GIA Certificate" '
@@ -144,7 +151,7 @@ def test_set_available_sends_held_and_item_less_rows(page, ui_server, api):
     # Reserve on the finalized invoice posts every ticked row, the certificate included.
     page.check("#li-select-all")
     page.locator("#li-bulk-select").select_option(value="li-reserve")
-    with page.expect_request(_sent("/reserve-lines")) as sent:
+    with page.expect_request(_bound("/reserve-lines")) as sent:
         page.evaluate("liBulkReserveConfirmed()")
     assert asked[-1] == 'Set 2 lines as reserved? Line 3 "GIA Certificate" will be left as it is.'
     assert _posted(sent.value, "line_id") == [held_id, free_id, gia_id]
@@ -158,7 +165,7 @@ def test_set_available_sends_held_and_item_less_rows(page, ui_server, api):
     assert _status(api, stone) == "reserved"
     page.goto(f"{ui_server}/lists/{list_id}", wait_until="domcontentloaded")
     page.check("#li-select-all")
-    with page.expect_request(_sent("/set-available")) as sent:
+    with page.expect_request(_bound("/set-available")) as sent:
         page.evaluate("liBulkAvailableConfirmed()")
     assert asked[-1] == 'Set 1 line as available? Line 2 "GIA Certificate" will be left as it is.'
     assert _posted(sent.value, "line_id") == [stone_line, gia_line]
@@ -167,7 +174,7 @@ def test_set_available_sends_held_and_item_less_rows(page, ui_server, api):
 
     # The List status action Reserve posts every ticked row too.
     page.check("#li-select-all")
-    with page.expect_request(_sent("/reserve-lines")) as sent:
+    with page.expect_request(_bound("/reserve-lines")) as sent:
         page.evaluate("liBulkReserveConfirmed()")
     assert _posted(sent.value, "line_id") == [stone_line, gia_line]
 
@@ -230,7 +237,8 @@ def test_set_as_shipped_asks_about_the_lines_it_ships_and_names_the_rest(page, u
     page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
     page.check("#li-select-all")
     page.locator("#li-bulk-select").select_option(value="li-fulfill")
-    page.locator("#li-bulk-fulfill-btn").click()
+    with page.expect_request(_bound("/fulfill-lines")):
+        page.locator("#li-bulk-fulfill-btn").click()
     notice = _persistent_toast(page, "GIA Certificate")
     assert asked == [f'Set 1 line as shipped? Lines 1 "{shipped["sku"]}", 3 "GIA Certificate" '
                      'will be left as they are.']

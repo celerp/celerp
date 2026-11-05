@@ -480,3 +480,29 @@ async def test_an_action_sent_without_a_binding_still_names_the_sale_it_reverses
     assert [(t["line"], t["line_id"]) for t in answer["taken_back"]] == [(2, lids[_EMR])]
     assert [(n["message_key"], n["params"]) for n in answer["taken_back_notice"]] == [
         ("documents.taken_back_one", {"lines": f'2 "{_EMR}"'})]
+
+
+async def test_the_page_sends_the_action_bound_and_asks_again_when_the_lines_changed(ui_client):
+    """The page's action carries the binding of the confirm the user answered. Refused because
+    the lines changed meanwhile, it changes nothing and the page answers the fresh question,
+    saying so, with the fresh binding; answered, the action runs bound to that."""
+    import ui.api_client as api
+    from unittest.mock import AsyncMock, patch
+
+    from test_helpers import make_test_token
+    from ui.i18n import t
+    differs = {"detail": {"message_key": "lines.preview_differs", "message": "changed", "params": {}}}
+    fresh = {"acted": ["a"], "skipped": [{"line": 2, "name": "DEMO-EMR-001", "line_id": "b", "kind": "unavailable"}],
+             "binding": "fresh"}
+    sent = AsyncMock(side_effect=[api._api_error(409, differs, "changed"), fresh])
+    ui_client.cookies.update({"celerp_token": make_test_token(role="owner")})
+    with patch("ui.api_client.fulfill_lines", new=sent):
+        r = await ui_client.post("/docs/doc:1/fulfill-lines",
+                                 data={"line_id": ["a", "b"], "idempotency_key": "k", "binding": "stale"})
+    assert r.status_code == 200, r.text
+    (first, second) = sent.await_args_list
+    assert first.kwargs["binding"] == "stale" and not first.kwargs.get("dry_run")
+    assert second.kwargs["dry_run"] is True and second.kwargs["binding"] is None
+    assert r.json() == {"binding": "fresh", "confirm": (
+        f'{t("documents.lines_changed_since_confirm")} {_count("documents.confirm_set_shipped", 1)} '
+        f'{_count("documents.will_skip", 1, lines=chr(50) + " " + chr(34) + "DEMO-EMR-001" + chr(34))}')}
