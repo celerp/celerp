@@ -54,6 +54,22 @@ def _toast(r) -> dict:
     return json.loads(r.headers["HX-Trigger"])["celerpToast"]
 
 
+# The bulk line handlers that send nothing to the server, so a second click has nothing to repeat.
+_LOCAL_HANDLERS = {"liBulkActionSelected": "shows the chosen action's button",
+                   "liBulkDeleteConfirmed": "removes rows from the draft on the page; the save follows",
+                   "liBulkLabelsConfirmed": "opens the labels to print in a new tab"}
+
+
+def test_every_bulk_line_action_runs_once_per_click():
+    """Each bulk line handler of the documents and lists pages that sends a request goes through
+    celerpLineActionOnce, so a double click never sends it twice."""
+    import ui.routes.documents as page
+    handlers = re.findall(r"window\.(liBulk\w+)=(.*)", inspect.getsource(page))
+    assert handlers
+    assert [name for name, body in handlers if name not in _LOCAL_HANDLERS
+            and "return celerpLineActionOnce(" not in body] == []
+
+
 @pytest.mark.parametrize("doc_type,status", [("invoice", "final"), ("memo", "sent")])
 def test_line_checkboxes_never_disabled(doc_type, status):
     boxes = _checkboxes(_page([dict(_STOCK), dict(_GIA)], doc_type, status))

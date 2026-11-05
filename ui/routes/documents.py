@@ -6927,10 +6927,10 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
         children += [
             Button(t("documents.mark_as_scanned"), type="button", id="li-bulk-markscan-btn",
                    cls="btn btn--secondary btn--sm", style="display:none",
-                   onclick="liBulkSetScanned(true)"),
+                   onclick="liBulkSetScanned(true, event)"),
             Button(t("documents.clear_scanned"), type="button", id="li-bulk-clearscan-btn",
                    cls="btn btn--secondary btn--sm", style="display:none",
-                   onclick="liBulkSetScanned(false)"),
+                   onclick="liBulkSetScanned(false, event)"),
         ]
     if show_fulfill or show_reserve or show_release:
         if is_inbound:
@@ -10476,7 +10476,7 @@ async function celerpCsvImport(input, entityId) {{
     if(ok) window.location.reload();
     return ok;
   }}); }};
-  window.liBulkSetScanned=async function(scanned){{
+  window.liBulkSetScanned=function(scanned, e){{ return celerpLineActionOnce(e, async function(){{
     var rows=table?Array.prototype.slice.call(table.querySelectorAll('tbody .li-select:checked')):[];
     var fd=new URLSearchParams();
     fd.append('scanned', scanned?'1':'0');
@@ -10498,7 +10498,7 @@ async function celerpCsvImport(input, entityId) {{
     }}
     if(sel) sel.value='';
     _hideBtns(); _update();
-  }};
+  }}); }};
   window.liBulkDeleteConfirmed=async function(){{
     var rows=table?Array.prototype.slice.call(table.querySelectorAll('tbody .li-select:checked')):[];
     if(!rows.length) return;
