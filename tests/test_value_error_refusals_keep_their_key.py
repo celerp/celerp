@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 _NESTED = {
     "celerp/routers/companies.py": 1,
     "default_modules/celerp-connectors/celerp_connectors/routes.py": 2,
-    "default_modules/celerp-docs/celerp_docs/routes.py": 8,
+    "default_modules/celerp-docs/celerp_docs/routes.py": 5,
 }
 
 

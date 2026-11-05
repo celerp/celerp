@@ -19,11 +19,12 @@ from celerp.models.projections import Projection
 # each transaction takes its company's lock; the refusal, once raised, blocks the commit.
 AUTHORITY = "celerp_request_authority"
 _REFUSED = "celerp_authority_refused"
-# What the locks taken in this transaction proved, each with the (sub)transaction that
-# took it: "locked" (lock_company held its row, company id), "loaded" (locked_company,
+# What the locks taken in this transaction proved or found, each with the (sub)transaction
+# that took it: "locked" (lock_company held its row, company id), "loaded" (locked_company,
 # company id), "deleting" (lock_company_for_deletion holds its row, company id), "judged"
-# (the authority judged again, company id as text) and "modules" (the modules judged,
-# (company id as text, names)). PostgreSQL releases a lock taken in a
+# (the authority judged again, company id as text), "modules" (the modules judged,
+# (company id as text, names)) and "locked_state" (each document lock_projections locked, as
+# it stood then: (entity id, its state as JSON), read back by locked_state). PostgreSQL releases a lock taken in a
 # savepoint when that savepoint rolls back, so what it proved goes with it (_proofs_released).
 _PROOFS = "celerp_lock_proofs"
 

@@ -3951,7 +3951,7 @@ async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = D
                 cycle_tag=f"unvoid-{entry.id}", ts=None, trigger="doc.unvoided",
             )
         except ValueError as exc:
-            raise HTTPException(status_code=409, detail=getattr(exc, "detail", str(exc))) from exc
+            raise HTTPException(status_code=409, detail=refusal_detail(exc)) from exc
 
     # TODO: actual re-fulfillment after unvoid would need inventory availability check.
     # For now, restore the fulfillment_status field so the UI reflects prior state.
@@ -11003,7 +11003,7 @@ async def _fulfill_lines_impl(
                 ts=fulfillment_date, trigger="doc.fulfilled",
             )
         except ValueError as exc:
-            raise HTTPException(status_code=409, detail=getattr(exc, "detail", str(exc))) from exc
+            raise HTTPException(status_code=409, detail=refusal_detail(exc)) from exc
 
     # Optimistically compute doc fulfillment_status. Service lines count as fulfilled (they are
     # rendered, not drawn from stock) so a service-only or mixed doc can reach "fulfilled".
@@ -11222,7 +11222,7 @@ async def _reverse_whole_lines(
                 ts=reversal_date, trigger="doc.fulfillment_reversed",
             )
         except ValueError as exc:
-            raise HTTPException(status_code=409, detail=getattr(exc, "detail", str(exc))) from exc
+            raise HTTPException(status_code=409, detail=refusal_detail(exc)) from exc
 
     # Optimistically compute doc fulfillment_status. A line drawn from a memo went out on
     # the memo, not by this document's delivery, so its lots never count as delivered here.
