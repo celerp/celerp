@@ -262,8 +262,9 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current["linked"].append({"entity_id": data["entity_id"], "entity_type": data["entity_type"]})
     elif event_type == "doc.sent":
         current["status"] = "sent"
-        if data.get("sent_via"):
-            current["sent_via"] = data["sent_via"]
+        # A send with a recipient emails the document, whichever caller sent it.
+        if via := data.get("sent_via") or ("email" if data.get("sent_to") else None):
+            current["sent_via"] = via
         if data.get("sent_to"):
             current["sent_to"] = data["sent_to"]
     elif event_type == "doc.finalized":

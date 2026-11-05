@@ -75,6 +75,7 @@ class ConfirmBody(BaseModel):
 
 
 class SendBody(BaseModel):
+    attempt: int = Field(..., ge=0)  # the stored attempt the user saw: the send's operation key
     again: bool = False
 
 
@@ -446,16 +447,17 @@ def _build_router() -> APIRouter:
     async def send_period(
         entity_id: str,
         k: int,
-        body: SendBody | None = None,
+        body: SendBody,
         company_id: uuid.UUID = Depends(get_current_company_id),
         _: None = require_permission("edit_documents"),
         user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
         """Send period ``k``'s document again after a failed or cut-off send (``again``: a new
-        message for one that may already have arrived); answered with how its email reads now."""
+        message for one that may already have arrived). ``attempt`` is the stored attempt the
+        user saw, so the same click arriving twice sends once; answered with how its email reads now."""
         await billing.deliver(lambda: billing.same_session(session), company_id, entity_id, k,
-                              retry_by=user.id, again=bool(body and body.again))
+                              retry_by=user.id, attempt=body.attempt, again=body.again)
         return await summary.send_answer(session, company_id, entity_id, k)
 
     @router.patch("/{entity_id}/schedule")

@@ -74,13 +74,14 @@ async def _redrawn(draw, fallback=None, said: str = ""):
 _SEND_TOAST = {"sent": "success", "failed": "error"}
 
 
-def _send_button(url: str, send: str | None, again: bool, **vals) -> FT:
+def _send_button(url: str, send: str | None, again: bool, attempt: int, **vals) -> FT:
     """Send a billed period's email: Retry after a failure, Send again (behind a confirm that it
-    may already have arrived) after a cut-off send, Send otherwise."""
+    may already have arrived) after a cut-off send, Send otherwise. It names the ``attempt`` on
+    screen, so the same click arriving twice sends once."""
     label = "btn.send_again" if again else "btn.retry" if send in ("failed", "unconfirmed") else "btn.send"
     confirm = {"hx_confirm": t("subscriptions.send_again_confirm")} if again else {}
     return Button(t(label), cls="btn btn--secondary btn--sm", hx_post=url, hx_swap="none",
-                  hx_vals={**vals, **({"again": "1"} if again else {})}, **confirm)
+                  hx_vals={**vals, "attempt": attempt, **({"again": "1"} if again else {})}, **confirm)
 
 _FREQUENCIES = ["weekly", "biweekly", "monthly", "quarterly", "annually", "custom"]
 _TIMINGS = ("advance", "arrears")
@@ -501,7 +502,7 @@ def _period_actions(entity_id: str, row: dict) -> FT:
     if state == "billed":
         reopen = Button(t("btn.reopen"), cls="btn btn--secondary btn--sm", hx_post=f"{base}/reopen", hx_swap="none",
                         title=t("subscriptions.reopen_title"))
-        send = (_send_button(f"{base}/send", row["send"], bool(row.get("again")))
+        send = (_send_button(f"{base}/send", row["send"], bool(row.get("again")), row["attempt"])
                 if row.get("send") in _SEND_BADGE else "")
         withdraw = (Button(t("subscriptions.history_withdraw"), cls="btn btn--secondary btn--sm", hx_swap="none",
                            hx_post=f"/subscriptions/{entity_id}/history/{row['doc_id']}/withdraw")
@@ -737,7 +738,7 @@ def _summary_table(rows: list[dict], subs: dict[str, dict]) -> FT:
         eid = r["entity_id"]
         doc = A(r.get("ref_id") or r["doc_id"], href=f"/docs/{r['doc_id']}") if r.get("doc_id") else "--"
         send = {"send_failed": "failed", "send_unconfirmed": "unconfirmed"}.get(r.get("kind"))
-        retry = (_send_button(r["retry_url"], send, bool(r.get("again")), back="summary")
+        retry = (_send_button(r["retry_url"], send, bool(r.get("again")), r["attempt"], back="summary")
                  if r.get("retry_url") else "")
         fix = (A(t("doc.send_relay_error_link"), href="/settings/cloud")
                if r.get("error_key") in _FIXED_IN_WEB_ACCESS else "")
@@ -1020,28 +1021,36 @@ def setup_routes(app) -> None:
         chosen = _catch_up_items(form)
         if not chosen:
             return _action_error(t("label.select_rows_first"))
-        try:
-            if action == "run":
+        # Each batch or period answers for itself: what earlier ones did stays reported beside a
+        # later failure. A run whose every batch was refused is a refusal.
+        results, refusals = [], []
+        if action == "run":
+            try:
                 key = required_operation_key(form, "catch-up")
-                for item in chosen:
-                    item["request_key"] = f"{key}:{item['period_index']}"
-                results = []
-                for offset in range(0, len(chosen), 50):
-                    response = await api.run_subscriptions_catch_up(token, chosen[offset:offset + 50])
-                    results.extend(response.get("results") or [])
-            else:
-                reason = str(form.get("reason", "")).strip()
-                results = []
-                for item in chosen:
-                    try:
-                        done = await api.subscription_period_action(token, item["entity_id"], item["period_index"],
-                                                                    "skip", {"reason": reason})
-                        results.append({**item, "ok": True, "skipped": True, **done["period"]})
-                    except APIError as e:
-                        _signed_out(e)
-                        results.append({**item, "ok": False, "error": error_message(e)})
-        except APIError as e:
-            return _refused(e)
+            except APIError as e:
+                return _refused(e)
+            for item in chosen:
+                item["request_key"] = f"{key}:{item['period_index']}"
+            for offset in range(0, len(chosen), 50):
+                batch = chosen[offset:offset + 50]
+                try:
+                    results.extend((await api.run_subscriptions_catch_up(token, batch)).get("results") or [])
+                except APIError as e:
+                    _signed_out(e)
+                    refusals.append(e)
+                    results.extend({**item, "ok": False, "error": error_message(e)} for item in batch)
+        else:
+            reason = str(form.get("reason", "")).strip()
+            for item in chosen:
+                try:
+                    done = await api.subscription_period_action(token, item["entity_id"], item["period_index"],
+                                                                "skip", {"reason": reason})
+                    results.append({**item, "ok": True, "skipped": True, **done["period"]})
+                except APIError as e:
+                    _signed_out(e)
+                    results.append({**item, "ok": False, "error": error_message(e)})
+        if refusals and len(refusals) == len(range(0, len(chosen), 50)):
+            return _refused(refusals[0])
 
         async def draw():
             items = (await api.subscriptions_catch_up(token)).get("items") or []
@@ -1316,7 +1325,9 @@ def setup_routes(app) -> None:
             return Response(status_code=401, headers={"HX-Redirect": "/login"})
         form = await request.form()
         reason = str(form.get("reason", "")).strip()
-        body = {"reason": reason} if action == "skip" else {"again": True} if form.get("again") else None
+        body = ({"reason": reason} if action == "skip"
+                else {"attempt": form.get("attempt"), **({"again": True} if form.get("again") else {})}
+                if action == "send" else None)
         try:
             done = await api.subscription_period_action(token, entity_id, k, action, body)
         except APIError as e:

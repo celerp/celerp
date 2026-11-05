@@ -60,6 +60,12 @@
     "subscriptions.runs_former_member": {
       "en": "a former member",
       "params": []
+    },
+    "subscriptions.summary_sent_by_hand": {
+      "en": "Sent {ref} by hand",
+      "params": [
+        "ref"
+      ]
     }
   }
 }

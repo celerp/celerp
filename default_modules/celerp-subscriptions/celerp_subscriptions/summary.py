@@ -54,6 +54,14 @@ async def _states(session, company_id, entity_ids: set[str]) -> dict[str, dict]:
     return {eid: state or {} for eid, state in rows}
 
 
+def _send_kind(status: str | None, send: dict) -> str | None:
+    """The summary kind of a period's email as billing.send_status reads it. A sent email that
+    someone sent (Send, Retry or Send again, or the document's own page) was sent by hand."""
+    if status == "sent" and (send.get("by") or send.get("via") or send.get("state") != "sent"):
+        return "sent_by_hand"
+    return _SEND_KINDS.get(status)
+
+
 def _message(kind: str, ref: str | None, error_key: str | None) -> str:
     return t(f"subscriptions.summary_{kind}", ref=ref or "", error=t(error_key) if error_key else "")
 
@@ -65,11 +73,11 @@ async def send_answer(session: AsyncSession, company_id, entity_id: str, k: int)
     entry = billing.periods_of(state).get(str(k)) or {}
     doc_id = entry.get("doc_id")
     doc = (await _states(session, company_id, {doc_id})).get(doc_id) if doc_id else None
+    send = entry.get("send") or {}
     status = billing.send_status(state, k, await company_today(session, company_id), doc)
-    kind = _SEND_KINDS.get(status)
+    kind = _send_kind(status, send)
     return {"ok": True, "period_index": k, "send": status,
-            "message": _message(kind, (doc or {}).get("ref_id") or doc_id,
-                                (entry.get("send") or {}).get("error_key")) if kind else None}
+            "message": _message(kind, (doc or {}).get("ref_id") or doc_id, send.get("error_key")) if kind else None}
 
 
 async def _member_name(session, user_id) -> str:
@@ -118,12 +126,11 @@ async def report(session: AsyncSession, company_id, user_id, *, everything: bool
                 found.append({**base, "kind": "generated", "at": entry["at"]})
             send = entry.get("send") or {}
             status = billing.send_status(state, k, today, docs.get(entry.get("doc_id")))
-            # A document sent from its own page settles its email; that send is the page's, not this summary's.
-            if status == "sent" and send.get("state") != "sent":
-                continue
-            kind = _SEND_KINDS.get(status)
-            if kind and (status == "waiting" or (send.get("at") or "") > since):
+            # An email someone sent by hand is theirs, not this summary's of what ran on its own.
+            kind = _send_kind(status, send)
+            if kind and kind != "sent_by_hand" and (status == "waiting" or (send.get("at") or "") > since):
                 found.append({**base, "kind": kind, "at": send.get("at"), "error_key": send.get("error_key"),
+                              "attempt": int(send.get("n") or 0),
                               "again": status == "unconfirmed" and billing.sends_again(send, replayable),
                               "retry_url": (f"/subscriptions/{row.entity_id}/periods/{k}/send"
                                             if kind in ("send_failed", "send_pending", "send_unconfirmed")

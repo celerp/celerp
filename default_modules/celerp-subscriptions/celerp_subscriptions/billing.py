@@ -46,6 +46,7 @@ from ui.i18n import t
 
 log = logging.getLogger(__name__)
 
+MODULE = "celerp-subscriptions"
 AUTO_MODES = frozenset({"auto_invoice"})
 # Each unattended mode and the permission its authorizer must keep holding.
 MODE_PERMISSION = {"generation": "automate_billing", "sending": "automate_sending"}
@@ -221,10 +222,15 @@ async def guard_agreement_status(*, session, entry, transition) -> None:
     own page). Every other writer (void, unvoid, finalize, revert, an import) is refused (409), and so
     is any that would leave an agreement a status outside AGREEMENT_STATUSES. A draft starts only
     through Activate, which writes its schedule, so a draft leaves draft elsewhere only by void;
-    that refusal names Activate. An agreement without a schedule bills nothing (billable)."""
+    that refusal names Activate. An agreement without a schedule bills nothing (billable). A
+    company that turned the module off runs no mode, so Documents can stop its agreements."""
+    from celerp.modules.registry import uses_module
+
     if _WRITING.get() == entry.entity_id or transition.after.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
         return
-    if modes_in_force(transition.before or {}) or modes_in_force(transition.after):
+    company = await session.get(Company, entry.company_id)
+    in_force = modes_in_force(transition.before or {}) or modes_in_force(transition.after)
+    if in_force and company is not None and uses_module(company.settings, MODULE):
         raise HTTPException(status_code=409, detail=t("subscriptions.err_agreement_status_elsewhere"))
     status, was = transition.after.get("status"), (transition.before or {}).get("status")
     if was == "draft" and status not in ("draft", "void"):
@@ -384,8 +390,9 @@ async def _bill(session, company, company_id, tid: str, state: dict, schedule: S
     await session.flush()
     periods = periods_of(state)
     periods[str(k)] = {"state": BILLED, "doc_id": doc_id, "release_count": release, "at": now_stamp(),
-                       "by": str(actor.id) if actor.id else None, "auto": auto,
-                       **({"send": {"state": "pending", "n": 0, "at": now_stamp()}} if send else {})}
+                       "by": str(actor.id) if actor.id else None, "auto": auto}
+    if send:
+        record_send(periods, k, None, state="pending", n=0)
     drop = ("billing_failure",) if state.get("billing_failure") else ()
     metadata = None
     if key:
@@ -524,7 +531,8 @@ async def _listed_row(session, company_id, state: dict, schedule: Schedule, k: i
             "status": period_status(entry.get("state"), doc, schedule.bill_date(k), today),
             "doc_id": doc_id, "ref_id": ((doc or {}).get("ref_id") or doc_id) if doc_id else None,
             "reason": entry.get("reason"), "history": bool(entry.get("history")), "released": released,
-            "send": send, "again": send == "unconfirmed" and sends_again(entry.get("send"), replayable)}
+            "send": send, "attempt": int((entry.get("send") or {}).get("n") or 0),
+            "again": send == "unconfirmed" and sends_again(entry.get("send"), replayable)}
 
 
 async def period_list(session: AsyncSession, company_id, state: dict, today: date, *,
@@ -681,11 +689,24 @@ def send_status(state: dict, k, today: date, doc: dict | None = None) -> str | N
     recorded = ((periods_of(state).get(str(k)) or {}).get("send") or {}).get("state")
     if recorded is None:
         return None
-    if recorded == "sent" or (doc or {}).get("sent_via"):
+    if recorded == "sent" or emailed(doc):
         return "sent"
     if recorded == "pending":
         return "waiting" if int(k) in waiting_sends(state, today) else "not_sent"
     return "unconfirmed" if recorded in UNCONFIRMED else recorded
+
+
+def emailed(doc: dict | None) -> str | None:
+    """How the document went out when it was emailed (the doc.sent projection's ``sent_via``,
+    recorded for every send with a recipient, whoever sent it), else None."""
+    return (doc or {}).get("sent_via")
+
+
+def record_send(periods: dict, k, by, **record) -> dict:
+    """Write period ``k``'s send record: ``record`` stamped now, with ``by`` the member who
+    pressed Send (absent when it went on its own). The one writer of a send record."""
+    send = periods[str(k)]["send"] = {**record, "at": now_stamp(), **({"by": str(by)} if by else {})}
+    return send
 
 
 def configured_modes(state: dict) -> list[str]:
@@ -727,7 +748,7 @@ async def run_due(*, session: AsyncSession, company_id, today: date, budget: int
                     # Decided again from the agreement as locked: the read above may be stale.
                     company = await locked_company(session, company_id)
                     if (company is None or not company.is_active
-                            or not uses_module(company.settings, "celerp-subscriptions")):
+                            or not uses_module(company.settings, MODULE)):
                         break
                     proj = await locked_agreement(session, company_id, row.entity_id)
                     found = unattended_due(proj.state, today)
@@ -796,11 +817,14 @@ def _deliverer(company_id, template_id: str, k: int):
     return _run
 
 
-async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=None, again: bool = False) -> dict:
+async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=None, attempt: int | None = None,
+                  again: bool = False) -> dict:
     """Send a period's document using one immutable message per transport attempt. A send
     that was cut off is replayed as the same attempt, or with ``again`` (the user confirmed
-    it may already have arrived) sent as a new one. A document already sent from its own
-    page settles the period's email instead of sending it twice."""
+    it may already have arrived) sent as a new one. A person's send (``retry_by``) names the
+    ``attempt`` they saw; once the stored attempt moved on, it is answered as stored and sends
+    nothing. A document already emailed (emailed) settles the period's email instead of
+    sending it twice."""
     from celerp.modules.registry import uses_module
     from celerp_docs.doc_constants import NO_SEND_DOC_TYPES
     from celerp_docs.routes import DocSendBody, doc_email, mark_doc_sent
@@ -811,7 +835,7 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
         company = await session.get(Company, company_id)
         if retry_by is None:
             if (company is None or not company.is_active
-                    or not uses_module(company.settings, "celerp-subscriptions")
+                    or not uses_module(company.settings, MODULE)
                     or not sends_itself(proj.state)
                     or await authorizer(session, company_id, company.settings or {}, proj.state, "sending") is None):
                 return {"state": "pending"}
@@ -820,6 +844,8 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
         send = dict(entry.get("send") or {})
         if entry.get("state") != BILLED:
             raise HTTPException(status_code=409, detail=t("subscriptions.err_send_not_billed"))
+        if retry_by is not None and int(send.get("n") or 0) != attempt:
+            return send
         if send.get("state") not in (("pending", "failed", *UNCONFIRMED) if retry_by else ("pending",)):
             return send
 
@@ -828,10 +854,9 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
             raise HTTPException(status_code=409, detail=t("subscriptions.err_send_unverified"))
         doc_id = entry["doc_id"]
         doc = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
-        via = (doc.state or {}).get("sent_via") if doc is not None else None
+        via = emailed(doc.state if doc is not None else None)
         if via and not again:
-            send = {"state": "sent", "n": int(send.get("n") or 0), "at": now_stamp(), "via": via}
-            periods[str(k)]["send"] = send
+            send = record_send(periods, k, retry_by, state="sent", n=int(send.get("n") or 0), via=via)
             await write_agreement(session, company_id, template_id, {"periods": periods}, retry_by)
             await session.commit()
             return send
@@ -865,10 +890,9 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
             to = ((contact.state or {}).get("email") if contact is not None else None) or ""
             if (doc is None or (doc.state or {}).get("status") == "void" or
                     (doc.state or {}).get("doc_type") in NO_SEND_DOC_TYPES or not to):
-                send = {"state": "failed", "n": n, "at": now_stamp(),
-                        "error_key": "subscriptions.err_send_no_email" if doc is not None and not to
-                        else "subscriptions.err_send_void"}
-                periods[str(k)]["send"] = send
+                send = record_send(periods, k, retry_by, state="failed", n=n,
+                                   error_key="subscriptions.err_send_no_email" if doc is not None and not to
+                                   else "subscriptions.err_send_void")
                 await write_agreement(session, company_id, template_id, {"periods": periods}, actor.id)
                 await session.commit()
                 return send
@@ -882,9 +906,8 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
                         raise ValueError("email too large")
             except Exception as exc:
                 log.warning("Preparing subscription email failed (%s)", type(exc).__name__)
-                send = {"state": "failed", "n": n, "at": now_stamp(),
-                        "error_key": "subscriptions.err_send_preparation"}
-                periods[str(k)]["send"] = send
+                send = record_send(periods, k, retry_by, state="failed", n=n,
+                                   error_key="subscriptions.err_send_preparation")
                 await write_agreement(session, company_id, template_id, {"periods": periods}, actor.id)
                 await session.commit()
                 return send
@@ -892,9 +915,8 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
             operation_id = str(uuid.uuid5(
                 uuid.NAMESPACE_URL, f"subscription-email:{company_id}:{doc_id}:{n}"))
             digest = hashlib.sha256(payload_json.encode()).hexdigest()
-            periods[str(k)]["send"] = {
-                "state": "sending", "n": n, "at": now_stamp(), "operation_id": operation_id,
-                "deduplicated": relay_idempotent, "payload_digest": digest}
+            record_send(periods, k, retry_by, state="sending", n=n, operation_id=operation_id,
+                        deduplicated=relay_idempotent, payload_digest=digest)
             await write_agreement(session, company_id, template_id, {"periods": periods}, actor.id)
             session.add(SubscriptionEmailAttempt(
                 company_id=company_id, operation_id=uuid.UUID(operation_id), doc_id=doc_id,
@@ -922,10 +944,9 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
             return sending
 
         outcome = "sent" if result.ok else ("unconfirmed" if uncertain or result.unconfirmed else "failed")
-        send = {"state": outcome, "n": n, "at": now_stamp(), "operation_id": operation_id,
-                "deduplicated": relay_idempotent, "payload_digest": digest,
-                **({"error_key": result.reason} if outcome == "failed" else {})}
-        periods[str(k)]["send"] = send
+        send = record_send(periods, k, retry_by, state=outcome, n=n, operation_id=operation_id,
+                           deduplicated=relay_idempotent, payload_digest=digest,
+                           **({"error_key": result.reason} if outcome == "failed" else {}))
         await write_agreement(session, company_id, template_id, {"periods": periods}, actor.id)
         if result.ok:
             try:

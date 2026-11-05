@@ -52,6 +52,7 @@
     "subscriptions.runs_generation_lapsed",
     "subscriptions.runs_sending",
     "subscriptions.runs_sending_lapsed",
+    "subscriptions.summary_sent_by_hand",
     "th.position",
     "th.sku"
   ],
@@ -96,6 +97,7 @@
     "subscriptions.runs_generation_lapsed",
     "subscriptions.runs_sending",
     "subscriptions.runs_sending_lapsed",
+    "subscriptions.summary_sent_by_hand",
     "th.position",
     "th.sku"
   ],
@@ -208,6 +210,7 @@
     "subscriptions.runs_generation_lapsed",
     "subscriptions.runs_sending",
     "subscriptions.runs_sending_lapsed",
+    "subscriptions.summary_sent_by_hand",
     "th.barcode",
     "th.code",
     "th.detail",
@@ -306,6 +309,7 @@
     "subscriptions.runs_generation_lapsed",
     "subscriptions.runs_sending",
     "subscriptions.runs_sending_lapsed",
+    "subscriptions.summary_sent_by_hand",
     "th.color",
     "th.editable",
     "th.factor",
@@ -438,6 +442,7 @@
     "subscriptions.runs_generation_lapsed",
     "subscriptions.runs_sending",
     "subscriptions.runs_sending_lapsed",
+    "subscriptions.summary_sent_by_hand",
     "th.actions",
     "th.code",
     "th.contact",
@@ -565,6 +570,7 @@
     "subscriptions.runs_generation_lapsed",
     "subscriptions.runs_sending",
     "subscriptions.runs_sending_lapsed",
+    "subscriptions.summary_sent_by_hand",
     "th.label",
     "th.memo",
     "th.position",
@@ -659,6 +665,7 @@
     "subscriptions.runs_generation_lapsed",
     "subscriptions.runs_sending",
     "subscriptions.runs_sending_lapsed",
+    "subscriptions.summary_sent_by_hand",
     "th.email",
     "th.file",
     "th.memo",
@@ -716,6 +723,7 @@
     "subscriptions.runs_generation_lapsed",
     "subscriptions.runs_sending",
     "subscriptions.runs_sending_lapsed",
+    "subscriptions.summary_sent_by_hand",
     "th.position",
     "th.sku"
   ],
@@ -812,6 +820,7 @@
     "subscriptions.runs_generation_lapsed",
     "subscriptions.runs_sending",
     "subscriptions.runs_sending_lapsed",
+    "subscriptions.summary_sent_by_hand",
     "th.item",
     "th.position",
     "th.sku",
@@ -869,6 +878,7 @@
     "subscriptions.runs_generation_lapsed",
     "subscriptions.runs_sending",
     "subscriptions.runs_sending_lapsed",
+    "subscriptions.summary_sent_by_hand",
     "th.position",
     "th.sku"
   ],
@@ -933,6 +943,7 @@
     "subscriptions.runs_generation_lapsed",
     "subscriptions.runs_sending",
     "subscriptions.runs_sending_lapsed",
+    "subscriptions.summary_sent_by_hand",
     "th.position",
     "th.sku"
   ]

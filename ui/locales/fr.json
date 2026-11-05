@@ -7271,5 +7271,6 @@
   "subscriptions.runs_generation_lapsed": "Automatic billing is on but does not run: {name}, who authorized it, no longer has permission to. Someone who does can turn it off and on again to authorize it.",
   "subscriptions.runs_sending_lapsed": "Automatic sending is on but does not run: {name}, who authorized it, no longer has permission to. Someone who does can turn it off and on again to authorize it.",
   "subscriptions.runs_by_hand": "Nothing runs automatically: bill each period from this page.",
-  "subscriptions.runs_former_member": "a former member"
+  "subscriptions.runs_former_member": "a former member",
+  "subscriptions.summary_sent_by_hand": "Sent {ref} by hand"
 }

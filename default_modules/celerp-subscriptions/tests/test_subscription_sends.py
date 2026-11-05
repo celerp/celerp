@@ -64,7 +64,7 @@ async def test_a_send_the_mail_server_never_took_is_failed_and_can_be_retried(cl
             assert row["kind"] == "send_failed" and row["retry_url"]
     async with SmtpStub() as working:
         with smtp_settings(working.port):
-            retried = await client.post(row["retry_url"], headers=hd)
+            retried = await client.post(row["retry_url"], headers=hd, json={"attempt": row["attempt"]})
             assert retried.status_code == 200, retried.text
             assert retried.json()["send"] == "sent" and len(working.messages) == 1
     assert [d["status"] for d in await billed_docs(session, eid)] == ["sent"]
@@ -85,12 +85,12 @@ async def test_a_send_cut_off_after_the_hand_over_is_sent_again_only_when_asked(
             row = await _send_row(client, hd, eid)
             assert row["kind"] == "send_unconfirmed" and row["again"] is True
             assert row["retry_url"] == f"/subscriptions/{eid}/periods/0/send"
-            refused = await client.post(row["retry_url"], headers=hd)
+            refused = await client.post(row["retry_url"], headers=hd, json={"attempt": row["attempt"]})
     assert refused.status_code == 409
     assert refused.json()["detail"]["message_key"] == "subscriptions.err_send_unverified"
     async with SmtpStub() as working:
         with smtp_settings(working.port):
-            again = await client.post(row["retry_url"], headers=hd, json={"again": True})
+            again = await client.post(row["retry_url"], headers=hd, json={"again": True, "attempt": row["attempt"]})
     assert again.status_code == 200, again.text
     assert again.json()["send"] == "sent" and len(working.messages) == 1
     assert (await template(client, hd, eid))["periods"]["0"]["send"]["state"] == "sent"
@@ -240,7 +240,7 @@ async def test_an_email_waiting_after_the_app_stopped_is_shown_and_never_sent_la
             assert all("INV-2607" not in (m["Subject"] or "") for m in stub.messages)
             row = await _send_row(client, hd, eid, all=1)
             assert row["kind"] == "send_pending" and row["period_index"] == 0
-            sent = await client.post(row["retry_url"], headers=hd)
+            sent = await client.post(row["retry_url"], headers=hd, json={"attempt": row["attempt"]})
             assert sent.status_code == 200 and sent.json()["send"] == "sent"
 
 
@@ -356,7 +356,7 @@ def test_every_recorded_send_state_reads_the_same_on_the_summary_the_periods_and
     from ui.routes.subscriptions import _SEND_BADGE
     source = Path(billing.__file__).read_text()
     outcome = re.search(r"^\s*outcome = (.*)$", source, re.M).group(1)
-    recorded = set(re.findall(r'"state": "(\w+)"', source)) | set(re.findall(r'"(\w+)"', outcome))
+    recorded = set(re.findall(r'\bstate="(\w+)"', source)) | set(re.findall(r'"(\w+)"', outcome))
     assert recorded == {"pending", "sending", "unconfirmed", "sent", "failed"}
     en = json.loads((Path(__file__).parents[3] / "ui/locales/en.json").read_text())
     sending_on = {"status": "active", "generation_mode": "auto_invoice", "auto_send": True}
@@ -443,3 +443,51 @@ async def test_a_cut_off_send_is_offered_again_behind_a_confirm_on_any_transport
     assert json.loads(r.headers["HX-Trigger"])["celerpToast"]["type"] == "success"
     assert (await template(api, {}, eid))["periods"]["0"]["send"]["state"] == "sent"
     assert [d["status"] for d in await billed_docs(session, eid)] == ["sent"]
+
+
+async def test_a_send_by_hand_says_it_was_sent_by_hand(client, session, monkeypatch):
+    """The unattended send was cut off; the user checks with the customer and presses Send
+    again. The answer says the user sent it, not that it went automatically, the stored send
+    names who sent it, and the summary does not list it among what went on its own (P4d-1)."""
+    freeze_day(monkeypatch, "2026-07-01")
+    async with SmtpStub(drop_after_message=True) as stub:
+        with smtp_settings(stub.port):
+            hd = await register(client)
+            cid = await company_id(client, hd)
+            eid = await _sending(client, hd)
+            await tick(session, cid, "2026-07-01")
+    [doc] = await billed_docs(session, eid)
+    seen = (await template(client, hd, eid))["periods"]["0"]["send"]
+    assert seen["state"] == "unconfirmed"
+    async with SmtpStub() as working:
+        with smtp_settings(working.port):
+            again = await client.post(f"/subscriptions/{eid}/periods/0/send", headers=hd,
+                                      json={"again": True, "attempt": seen["n"]})
+    assert again.status_code == 200, again.text
+    assert again.json()["message"] == t("subscriptions.summary_sent_by_hand", ref=doc["ref_id"])
+    assert (await template(client, hd, eid))["periods"]["0"]["send"].get("by")
+    sm = await summary(client, hd)
+    assert sm["counts"]["sent"] == 0 and sm["counts"]["send_unconfirmed"] == 0
+
+
+async def test_an_invoice_emailed_through_the_documents_api_settles_its_period_email(owner_ui, session, monkeypatch):
+    """Like the invoice page's send, a documents API send with only a recipient (the documented
+    body) emails the invoice: the period no longer says the email may not have arrived (P4d-2)."""
+    api = owner_ui.api
+    freeze_day(monkeypatch, "2026-07-01")
+    async with SmtpStub(drop_after_message=True) as stub:
+        with smtp_settings(stub.port):
+            cid = await company_id(api, {})
+            eid = await _sending(api, {})
+            await tick(session, cid, "2026-07-01")
+    [doc] = await billed_docs(session, eid)
+    async with SmtpStub() as working:
+        with smtp_settings(working.port):
+            sent = await api.post(f"/docs/{doc['entity_id']}/send", json={"sent_to": "member@example.test"})
+            assert sent.status_code == 200, sent.text
+            await tick(session, cid, "2026-07-02")
+            assert len(working.messages) == 1
+    status = _period_status((await owner_ui.get(f"/subscriptions/{eid}")).text, "2026-07-01")
+    assert t("subscriptions.period_send_unconfirmed") not in status
+    sm = await summary(api, {})
+    assert sm["counts"]["send_unconfirmed"] == 0 and sm["counts"]["send_failed"] == 0

@@ -175,7 +175,8 @@ async def _period(ui, session, monkeypatch, arm):
     arm()
     skipped = await ui.post(f"/subscriptions/{eid}/periods/1/skip", data={"reason": "Closed"})
     _not_refused(skipped)
-    sent = await ui.post(f"/subscriptions/{eid}/periods/0/send", data={"back": "summary"})
+    shown = next(p for p in (await ui.api.get(f"/subscriptions/{eid}/periods")).json()["rows"] if p["period_index"] == 0)
+    sent = await ui.post(f"/subscriptions/{eid}/periods/0/send", data={"back": "summary", "attempt": shown["attempt"]})
     assert sent.status_code == 204, sent.text
     fresh = (await ui.api.get(f"/subscriptions/{eid}/periods")).json()
     status = next(p for p in fresh["rows"] if p["period_index"] == 0)["send"]
@@ -281,3 +282,29 @@ def test_no_document_badge_decides_alone_how_its_agreement_bills_it():
     """A document's own status cannot say whether its period is billed again (P4c-1): a
     badge render reads no document status; what the agreement holds is read on the page."""
     assert [b.render for b in status_census.badge_renders() if b.reads_doc_status] == []
+
+
+def test_no_action_call_shares_a_refusal_with_an_earlier_one():
+    """An action called again in one request (a later call, or a later turn of a loop) under the
+    refusal of an earlier one reports the done work as refused when it fails (P2e-2): each such
+    call answers for itself, beside what the earlier ones did."""
+    assert [(r.key, r.chained) for r in _ROWS if r.chained] == []
+
+
+def test_one_writer_records_each_send():
+    """A period's send record is written in one place, which stores who pressed Send (P4d-1)."""
+    assert {w.function for w in status_census.send_writers()} == {status_census.SEND_WRITER}
+
+
+def test_every_send_on_a_persons_behalf_names_the_attempt():
+    """A person's Send names the attempt they saw, so a repeat of the same click (a second tab,
+    a double click, a retried request) is answered as stored, never sent again (P2e-4)."""
+    doors = status_census.deliver_doors()
+    assert [d for d in doors if d.on_behalf]
+    assert [d.caller for d in doors if d.on_behalf and not d.names_attempt] == []
+
+
+def test_one_reader_says_whether_a_document_was_emailed():
+    """Whether a document was emailed is read in one place, from what the doc.sent projection
+    stores for every caller (P4d-2)."""
+    assert {r.function for r in status_census.emailed_readers()} == {status_census.EMAILED}

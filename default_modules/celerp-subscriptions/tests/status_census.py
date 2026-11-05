@@ -263,7 +263,8 @@ class SendReader:
 
 def _reads_send(node: ast.AST) -> bool:
     for c in ast.walk(node):
-        if isinstance(c, ast.Subscript) and isinstance(c.slice, ast.Constant) and c.slice.value == "send":
+        if (isinstance(c, ast.Subscript) and not isinstance(c.ctx, ast.Store)
+                and isinstance(c.slice, ast.Constant) and c.slice.value == "send"):
             return True
         if (isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute) and c.func.attr == "get"
                 and c.args and isinstance(c.args[0], ast.Constant) and c.args[0].value == "send"):

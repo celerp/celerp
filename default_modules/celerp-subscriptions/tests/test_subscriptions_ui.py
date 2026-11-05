@@ -288,6 +288,37 @@ class TestBillingPages:
         assert len(BeautifulSoup(r.text, "html.parser").select("#catchup-card td a[href^='/docs/']")) == 3
         assert t("subscriptions.catchup_empty", "en") in r.text
 
+    async def test_a_catch_up_run_reports_the_batches_it_billed_when_a_later_one_fails(
+            self, owner_ui, session, monkeypatch):
+        """The catch-up page bills the chosen periods in batches. The first batch bills 50; the
+        second fails. The answer lists the 50 invoices beside the failure, never a refusal (P2e-2)."""
+        import ui.api_client as api
+        from agreement_kit import agreement, billed_docs, freeze_day, schedule
+        freeze_day(monkeypatch, "2026-09-01")
+        eids = []
+        for _ in range(2):
+            eid = await agreement(owner_ui.api, {}, start="2026-01-05", frequency="weekly")
+            assert (await schedule(owner_ui.api, {}, eid, generation_mode="auto_invoice", catchup_periods=0)).status_code == 200
+            eids.append(eid)
+        preview = (await owner_ui.api.get("/subscriptions/catch-up")).json()["items"]
+        items = [f"{i['entity_id']}|{p['period_index']}" for i in preview for p in i["periods"]]
+        assert len(items) > 50
+        real, calls = api.run_subscriptions_catch_up, []
+
+        async def second_fails(token, chunk):
+            calls.append(len(chunk))
+            if len(calls) > 1:
+                raise api.APIError(503, "Service temporarily unavailable")
+            return await real(token, chunk)
+        monkeypatch.setattr(api, "run_subscriptions_catch_up", second_fails)
+        r = await owner_ui.post("/subscriptions/catch-up/run", data={"item": items, "idempotency_key": "two-batches"})
+        assert r.status_code == 200 and r.headers.get("HX-Reswap") != "none"
+        assert "error" != json.loads(r.headers.get("HX-Trigger") or "{}").get("celerpToast", {}).get("type")
+        billed = [d for e in eids for d in await billed_docs(session, e)]
+        links = BeautifulSoup(r.text, "html.parser").select("#catchup-card td a[href^='/docs/']")
+        assert len(billed) == 50 and {a["href"] for a in links} == {f"/docs/{d['entity_id']}" for d in billed}
+        assert r.text.count("Service temporarily unavailable") == len(items) - 50
+
     async def test_catch_up_skip_needs_a_reason_per_period(self, owner_ui, monkeypatch):
         from agreement_kit import agreement, freeze_day, schedule
         freeze_day(monkeypatch, "2026-01-01")

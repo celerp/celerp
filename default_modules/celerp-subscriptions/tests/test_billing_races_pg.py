@@ -213,3 +213,53 @@ async def test_concurrent_email_delivery_only_claims_one_send(committed_engine, 
     async with factory() as session:
         state = (await session.get(Projection, {"company_id": cid, "entity_id": eid})).state
     assert state["periods"]["0"]["send"]["state"] == "sent"
+
+
+async def test_one_confirmed_send_again_sends_one_message_however_often_it_arrives(committed_engine, monkeypatch):
+    """A period's email was cut off. The user confirms Send again and the request arrives twice
+    (a double click, a second tab, a colleague): each names the attempt it saw, so the second,
+    arriving while the first is in flight, is answered with the send as stored (P2e-4)."""
+    from agreement_kit import contact
+    from celerp.services import email
+    from celerp_subscriptions import billing
+
+    freeze_day(monkeypatch, "2026-07-01")
+    factory = _factory(committed_engine)
+    seeded = await _company(factory)
+    owner, cid = seeded["h"]["owner"], seeded["company_id"]
+    async with _app_client(factory) as (client, _pending):
+        recipient = await contact(client, owner, "again@example.test")
+        eid = await agreement(client, owner, start="2026-07-01", contact_id=recipient)
+        assert (await schedule(client, owner, eid, generation_mode="auto_invoice", auto_send=True)).status_code == 200
+        async with factory() as s:
+            assert (await billing.run_due(session=s, company_id=cid, today=date(2026, 7, 1), budget=1)).done == 1
+            await s.commit()
+
+        async def cut_off(**_kwargs):
+            return email.EmailResult(False, "delivery outcome unknown", unconfirmed=True)
+        monkeypatch.setattr(email, "send_email", cut_off)
+        assert (await billing.deliver(factory, cid, eid, 0))["state"] == "unconfirmed"
+
+        started, release, calls = asyncio.Event(), asyncio.Event(), []
+
+        async def slow_ok(*, operation_id=None, **_kwargs):
+            calls.append(operation_id)
+            started.set()
+            await release.wait()
+            return email.EmailResult(True, "accepted")
+        monkeypatch.setattr(email, "send_email", slow_ok)
+        url, body = f"/subscriptions/{eid}/periods/0/send", {"again": True, "attempt": 1}
+        first = asyncio.create_task(client.post(url, headers=owner, json=body))
+        try:
+            await asyncio.wait_for(started.wait(), 30)
+            second = asyncio.create_task(client.post(url, headers=owner, json=body))
+            for _ in range(200):  # the second answers, or reaches the mail server too
+                if second.done() or len(calls) > 1:
+                    break
+                await asyncio.sleep(0.05)
+        finally:
+            release.set()
+        first, second = await asyncio.wait_for(first, 30), await asyncio.wait_for(second, 30)
+    assert first.status_code == second.status_code == 200, (first.text, second.text)
+    assert len(calls) == 1
+    assert first.json()["send"] == "sent"

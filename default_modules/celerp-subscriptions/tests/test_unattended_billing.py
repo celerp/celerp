@@ -147,14 +147,15 @@ async def test_email_failure_keeps_invoice_and_shows_retry(client, session, monk
     await tick(session, cid, "2026-07-02")
     assert len(mail.sent) == 1  # a failed send waits for the operator's retry
     mail.result = EmailResult(True, "accepted")
-    retried = await client.post(row["retry_url"], headers=hd)
+    retried = await client.post(row["retry_url"], headers=hd, json={"attempt": row["attempt"]})
     assert retried.status_code == 200, retried.text
-    again = await client.post(row["retry_url"], headers=hd)
+    again = await client.post(row["retry_url"], headers=hd, json={"attempt": row["attempt"]})
     assert again.status_code == 200
     assert len(mail.sent) == 2  # the retry sent once
     assert len(set(mail.operation_ids)) == 2  # a confirmed failure permits a new send identity
     assert [d["status"] for d in await billed_docs(session, eid)] == ["sent"]
-    assert (await summary(client, hd))["counts"]["sent"] == 1
+    counts = (await summary(client, hd))["counts"]
+    assert counts["sent"] == 0 and counts["send_failed"] == 0  # the operator sent it by hand
 
 
 async def test_operator_summary_since_ack(client, session, monkeypatch):
@@ -308,7 +309,7 @@ async def test_a_retried_send_is_recorded_as_the_person_who_retried(client, sess
     await tick(session, cid, "2026-07-01")
     row = next(r for r in (await summary(client, hd))["rows"] if r["kind"] == "send_failed")
     mail.result = EmailResult(True, "accepted")
-    assert (await client.post(row["retry_url"], headers=manager)).status_code == 200
+    assert (await client.post(row["retry_url"], headers=manager, json={"attempt": row["attempt"]})).status_code == 200
     actors = (await session.execute(select(LedgerEntry.actor_id).where(
         LedgerEntry.entity_id == row["doc_id"], LedgerEntry.event_type == "doc.sent"))).scalars().all()
     assert [str(a) for a in actors] == [manager_id]
@@ -377,7 +378,7 @@ async def test_relay_retry_keeps_original_transport_identity(client, session, mo
                                  reason="email.err_relay_refused")
 
     monkeypatch.setattr(email, "send_email", rejected)
-    assert (await client.post(row["retry_url"], headers=hd)).status_code == 200
+    assert (await client.post(row["retry_url"], headers=hd, json={"attempt": row["attempt"]})).status_code == 200
     assert (await template(client, hd, eid))["periods"]["0"]["send"]["state"] == "unconfirmed"
     assert (await template(client, hd, eid))["periods"]["0"]["send"]["n"] == 1
 
@@ -386,7 +387,7 @@ async def test_relay_retry_keeps_original_transport_identity(client, session, mo
         return await mail(*args, **kw)
 
     monkeypatch.setattr(email, "send_email", verified)
-    assert (await client.post(row["retry_url"], headers=hd)).status_code == 200
+    assert (await client.post(row["retry_url"], headers=hd, json={"attempt": row["attempt"]})).status_code == 200
     assert len(keys) == 3 and len(set(keys)) == 1
 
 
@@ -437,7 +438,7 @@ async def test_uncertain_email_reuses_original_payload_without_recomposition(cli
 
     monkeypatch.setattr(docs_routes, "doc_email", should_not_recompose)
     monkeypatch.setattr(email, "send_email", mail)
-    retried = await client.post(row["retry_url"], headers=hd)
+    retried = await client.post(row["retry_url"], headers=hd, json={"attempt": row["attempt"]})
     assert retried.status_code == 200, retried.text
     assert mail.sent == ["member@example.test"]
     assert (await template(client, hd, eid))["periods"]["0"]["send"]["n"] == 1
@@ -467,7 +468,7 @@ async def test_email_preparation_failure_is_visible_and_retryable(client, sessio
     assert mail.sent == []
 
     monkeypatch.setattr(docs_routes, "doc_email", original)
-    retry = await client.post(row["retry_url"], headers=hd)
+    retry = await client.post(row["retry_url"], headers=hd, json={"attempt": row["attempt"]})
     assert retry.status_code == 200, retry.text
     assert mail.sent == ["member@example.test"]
     assert [d["status"] for d in await billed_docs(session, eid)] == ["sent"]
@@ -501,7 +502,7 @@ async def test_missing_private_payload_refuses_uncertain_retry(client, session, 
     await session.commit()
     row = next(r for r in (await summary(client, hd))["rows"] if r["kind"] == "send_unconfirmed")
     assert row["again"] is True
-    assert (await client.post(row["retry_url"], headers=hd)).status_code == 409
+    assert (await client.post(row["retry_url"], headers=hd, json={"attempt": row["attempt"]})).status_code == 409
 
 
 async def test_uncertain_send_replay_window_enforced_at_api(client, session, monkeypatch, mail):
@@ -535,7 +536,7 @@ async def test_uncertain_send_replay_window_enforced_at_api(client, session, mon
     row = next(r for r in (await summary(client, hd))["rows"] if r["kind"] == "send_unconfirmed")
     assert row["again"] is True
     monkeypatch.setattr(email, "send_email", mail)
-    refused = await client.post(row["retry_url"], headers=hd)
+    refused = await client.post(row["retry_url"], headers=hd, json={"attempt": row["attempt"]})
     assert refused.status_code == 409
     assert mail.sent == []
 
