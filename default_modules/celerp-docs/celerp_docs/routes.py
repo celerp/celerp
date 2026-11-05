@@ -13,12 +13,12 @@ from dataclasses import asdict, dataclass, fields as _dc_fields, replace as _dc_
 from datetime import datetime, timezone, date as _date
 from decimal import Decimal
 from collections.abc import Awaitable, Callable, Iterable
-from typing import ClassVar, Literal, NamedTuple
+from typing import Annotated, ClassVar, Literal, NamedTuple
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 
-from pydantic import BaseModel, Field, ValidationError, field_validator, model_serializer, model_validator
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError, field_validator, model_serializer, model_validator
 from sqlalchemy import select, func as _func, text
 import sqlalchemy as _sa
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -328,13 +328,37 @@ def _refuse_protected_fields(fields_changed: dict) -> None:
         )
 
 
-def _refuse_malformed_lines(fields_changed: dict) -> None:
-    """Refuse (422, naming the field) lines that are not a list of objects, before any check
-    reads them as one."""
-    if "line_items" in fields_changed and not (
-            isinstance(lines := fields_changed["line_items"].get("new"), list)
-            and all(isinstance(line, dict) for line in lines)):
+# The type of every field a line declares, read from the line model. A line's taxes are left
+# to their own check (refuse_malformed_taxes), which also reads what older versions stored.
+_LINE_FIELD_TYPES = {
+    name: TypeAdapter(Annotated[(field.annotation, *field.metadata)]) if field.metadata else TypeAdapter(field.annotation)
+    for name, field in LineItem.model_fields.items() if name != "taxes"
+}
+
+
+def refuse_malformed_input(values: dict) -> None:
+    """Refuse (422, naming the field) ``line_items`` in *values* that are not a list of objects,
+    or a line holding a field of the wrong type, then taxes no total can be computed from
+    (refuse_malformed_taxes), before any check reads them. Every write that takes a document's
+    or a List's lines from outside (a save, a create, an import, a peer) checks it first, so
+    nothing of a refused write is stored.
+
+    Only the types of the fields the line model declares are checked: keys it does not declare
+    and an empty value (null) pass, and so do the model's rules across fields, which lines that
+    older versions stored do not all meet."""
+    lines = values.get("line_items", [])
+    if not (isinstance(lines, list) and all(isinstance(line, dict) for line in lines)):
         raise HTTPException(status_code=422, detail=catalog_refusal("error.invalid_input_fields", fields="line_items"))
+    for line in lines:
+        for key, value in line.items():
+            if value is None or key not in _LINE_FIELD_TYPES:
+                continue
+            try:
+                _LINE_FIELD_TYPES[key].validate_python(value)
+            except ValidationError:
+                raise HTTPException(status_code=422, detail=catalog_refusal(
+                    "error.invalid_input_fields", fields=f"line_items.{key}")) from None
+    refuse_malformed_taxes(values)
 
 
 def _stale_doc(key: str) -> HTTPException:
@@ -2223,8 +2247,7 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     fields_changed = dict(payload.fields_changed)
     require_currency_code((fields_changed.get("currency") or {}).get("new"))
     _refuse_protected_fields(fields_changed)
-    _refuse_malformed_lines(fields_changed)
-    refuse_malformed_taxes({k: (v or {}).get("new") for k, v in fields_changed.items()})
+    refuse_malformed_input({k: (v or {}).get("new") for k, v in fields_changed.items()})
     if scan_runs is not None:
         fields_changed[SCAN_RUNS_FIELD] = {"new": scan_runs}
     selecting = "contact_id" in fields_changed
@@ -9121,7 +9144,7 @@ async def create_list_record(payload: ListCreatePayload, company_id, role: str, 
     if (done := await _replay()) is not None:
         return done
     require_currency_code(payload.currency)
-    refuse_malformed_taxes({"line_items": payload.line_items})
+    refuse_malformed_input({"line_items": payload.line_items})
     # The contact first, as every contact-reference writer takes it (its lock takes the
     # company lock, then the contact row).
     contact = await _lock_selected_contact(session, company_id, settings, role, payload.contact_id or "")
@@ -9184,8 +9207,7 @@ async def write_list_patch(session: AsyncSession, company_id, role: str, setting
     fields_changed = dict(payload.fields_changed)
     require_currency_code((fields_changed.get("currency") or {}).get("new"))
     _refuse_protected_fields(fields_changed)
-    _refuse_malformed_lines(fields_changed)
-    refuse_malformed_taxes({k: (v or {}).get("new") for k, v in fields_changed.items()})
+    refuse_malformed_input({k: (v or {}).get("new") for k, v in fields_changed.items()})
     selecting = "contact_id" in fields_changed
     new_contact_id = str((fields_changed.get("contact_id") or {}).get("new") or "")
     if selecting and "line_items" in fields_changed:
@@ -9708,7 +9730,7 @@ async def patch_list_line_page(
     the window is exactly the submitted page's own length (a pure in-place replace that never drops
     off-window rows), so a delete or insert must carry the loaded window length, which the editor
     always sends."""
-    refuse_malformed_taxes({"line_items": payload.line_items})
+    refuse_malformed_input({"line_items": payload.line_items})
     row = await _get_list_for_update(session, company_id, entity_id)
     if row.state.get("status") != "draft":
         raise HTTPException(status_code=409, detail=t("documents.err_list_not_draft"))
@@ -10247,7 +10269,7 @@ async def import_list(
         ))
     role, settings = await locked_authority(session, company_id, user.id, ("edit_documents", "import_export_data"))
     _assert_list_import_permissions(settings, role, body.data)
-    refuse_malformed_taxes(body.data)
+    refuse_malformed_input(body.data)
 
     replay = await find_event_by_idempotency(session, company_id, body.idempotency_key)
     if replay is not None:
@@ -10380,7 +10402,7 @@ async def batch_import_lists(
             skipped += 1
             continue
         try:
-            refuse_malformed_taxes(rec.data)
+            refuse_malformed_input(rec.data)
             await _lock_imported_contact(session, company_id, "list", rec.data)
             await _assert_import_number_free(session, company_id, "list", rec.data)
             entry = await emit_event(

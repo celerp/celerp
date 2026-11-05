@@ -5,15 +5,25 @@ total, and a payment collects it, so once issued a save may change only a line's
 and account. Every other field of every stored line must come back unchanged: a field left
 out of the save counts as removed, and a line left out as every field removed. Revert to
 Draft is the way to change a line, which voids the entry and posts the new total on the next
-issue. Generated over every posted type and every key its lines store."""
+issue. Generated over every posted type and every key its lines store.
+
+Every writer that takes lines from outside refuses lines of another shape, or a line holding a
+value of the wrong type, naming the field. Generated over every writer (a save of each document
+type, each List type's create, save and page save, each import) and every field a line declares."""
 from __future__ import annotations
 
+import uuid
+
 import pytest
+from fastapi import HTTPException
+from pydantic import ValidationError
 from sqlalchemy import select
 
 from celerp.models.projections import Projection
+from celerp.services.list_behavior import DOC_SCAN_BEHAVIOR, LIST_TYPES
 from celerp.services.money import document_line_amount
 from celerp_docs.doc_constants import TOTAL_POSTED_DOC_TYPES
+from celerp_docs.routes import LineItem, refuse_malformed_input
 from test_invoice_unshipped_books import _ok
 from test_receipt_accounting import _doc, _finalize
 from test_reissued_invoice_cogs import _invoice, _line_ids, _ship, _state, _stones
@@ -142,17 +152,159 @@ def _hostile(lines: list[dict]) -> dict:
             "list of strings": ["a", "b"], "list with a null": [*lines, None], "list of lists": [lines]}
 
 
-@pytest.mark.parametrize("doc_type", sorted(_ISSUED))
-async def test_lines_that_are_not_a_list_of_objects_are_refused_naming_the_field(client, auth, doc_type):
-    """Whoever sends them (the agent, an import), lines in any other shape are refused before
-    any check reads them, naming the field, and nothing changes."""
-    doc = await _ISSUED[doc_type](client, auth, doc_type)
+# A value of every JSON type, as an agent, an import or a peer may send one.
+_JSON_VALUES = {"object": {"a": 1}, "list": ["x"], "integer": 1, "number": 1.5, "true": True, "text": "abc",
+                "numeric text": "10", "a choice": "stock", "object of texts": {"a": "b"}}
+# Every field a line declares; its taxes have their own guard (test_tax_value_shape).
+_LINE_FIELDS = sorted(set(LineItem.model_fields) - {"taxes"})
+
+
+def _line_model_takes(field: str, value) -> bool:
+    try:
+        LineItem.model_validate({field: value})
+        return True
+    except ValidationError:
+        return False
+
+
+def _refusal(values: dict) -> dict | None:
+    try:
+        refuse_malformed_input(values)
+    except HTTPException as exc:
+        return exc.detail
+    return None
+
+
+async def test_a_written_line_takes_each_value_exactly_as_the_line_model_does():
+    """Over every field a line declares and a value of every JSON type: a write refuses exactly
+    what the line model refuses, naming the field, and every field refuses some type."""
+    for field in _LINE_FIELDS:
+        refused = [kind for kind, value in _JSON_VALUES.items() if not _line_model_takes(field, value)]
+        assert refused, field
+        for kind, value in _JSON_VALUES.items():
+            detail = _refusal({"line_items": [{"description": "A"}, {field: value}]})
+            want = {"fields": f"line_items.{field}"} if kind in refused else None
+            assert (detail["params"] if detail else None) == want, (field, kind, detail)
+            assert detail is None or detail["message_key"] == "error.invalid_input_fields", (field, kind)
+        assert _refusal({"line_items": [{field: None, "an undeclared key": {"a": 1}}]}) is None, field
+
+
+def _wrong_lines(lines: list[dict]) -> dict[str, tuple[object, str]]:
+    """Lines of every wrong shape, and for every field a line declares the lines with one value
+    the line model refuses for it, each with the field the refusal must name."""
+    wrong = {shape: (bad, "line_items") for shape, bad in _hostile(lines).items()}
+    for field in _LINE_FIELDS:
+        value = next(v for v in _JSON_VALUES.values() if not _line_model_takes(field, v))
+        wrong[f"{field} {value!r}"] = ([*lines[:-1], {**lines[-1], field: value}], f"line_items.{field}")
+    return wrong
+
+
+def _refused_naming(r, field: str) -> bool:
+    """422 naming *field*: the line check's refusal, or the request model's own where it declares
+    the lines a list of objects."""
+    detail = r.json()["detail"]
+    if isinstance(detail, list):
+        return r.status_code == 422 and field == "line_items" and any(
+            e["loc"][:2] == ["body", "line_items"] for e in detail)
+    return (r.status_code, detail["message_key"], detail["params"]) == (
+        422, "error.invalid_input_fields", {"fields": field})
+
+
+_LINE = {"description": "S", "quantity": 1, "unit_price": 100.0}
+
+
+async def _get(client, auth, path: str):
+    r = await client.get(path, headers=auth["headers"])
+    return (r.json().get("version"), r.json().get("line_items"), r.json().get("total")) if r.status_code == 200 \
+        else r.status_code
+
+
+async def _doc_saves(client, auth, doc: str):
     st = {**await _state(client, auth, doc), "id": doc}
-    for shape, lines in _hostile(st["line_items"]).items():
-        r = await _save(client, auth, st, lines)
-        assert r.status_code == 422, (doc_type, shape, r.text)
-        detail = r.json()["detail"]
-        assert (detail["message_key"], detail["params"]) == ("error.invalid_input_fields", {"fields": "line_items"})
-        after = await _state(client, auth, doc)
-        assert (after["line_items"], after["total"], after["version"]) == (
-            st["line_items"], st["total"], st["version"]), (doc_type, shape)
+    return st["line_items"], lambda lines: _save(client, auth, st, lines), lambda: _get(client, auth, f"/docs/{doc}")
+
+
+async def _draft_saves(client, auth, doc_type: str):
+    return await _doc_saves(client, auth, await _doc(client, auth, doc_type, [_LINE, {**_LINE, "description": "T"}]))
+
+
+async def _issued_saves(client, auth, doc_type: str):
+    return await _doc_saves(client, auth, await _ISSUED[doc_type](client, auth, doc_type))
+
+
+async def _list(client, auth, list_type: str) -> dict:
+    r = await client.post("/lists", headers=auth["headers"], json={"list_type": list_type, "line_items": [_LINE]})
+    assert r.status_code == 200, r.text
+    return (await client.get(f"/lists/{r.json()['id']}", headers=auth["headers"])).json()
+
+
+async def _list_saves(client, auth, list_type: str):
+    st = await _list(client, auth, list_type)
+    return st["line_items"], lambda lines: client.patch(f"/lists/{st['id']}", headers=auth["headers"], json={
+        "fields_changed": {"line_items": {"new": lines}}, "expected_version": st.get("version")}), \
+        lambda: _get(client, auth, f"/lists/{st['id']}")
+
+
+async def _list_page_saves(client, auth, list_type: str):
+    st = await _list(client, auth, list_type)
+    return st["line_items"], lambda lines: client.patch(f"/lists/{st['id']}/line-page", headers=auth["headers"], json={
+        "line_items": lines, "offset": 0, "original_count": 1, "expected_version": st.get("version")}), \
+        lambda: _get(client, auth, f"/lists/{st['id']}")
+
+
+async def _list_creates(client, auth, list_type: str):
+    async def count():
+        return len((await client.get("/lists", headers=auth["headers"], params={"limit": 500})).json()["items"])
+    return [_LINE], lambda lines: client.post("/lists", headers=auth["headers"], json={
+        "list_type": list_type, "line_items": lines}), count
+
+
+def _record(kind: str, data: dict) -> dict:
+    return {"entity_id": f"{kind}:IMP-{uuid.uuid4().hex[:8]}", "event_type": f"{kind}.created", "source": "csv",
+            "idempotency_key": uuid.uuid4().hex, "data": {"status": "draft", **data}}
+
+
+async def _imports(client, auth, kind: str, batch: bool, data: dict):
+    sent: list[str] = []
+
+    async def send(lines):
+        rec = _record(kind, {**data, "line_items": lines})
+        sent.append(rec["entity_id"])
+        if not batch:
+            return await client.post(f"/{kind}s/import", headers=auth["headers"], json=rec)
+        r = await client.post(f"/{kind}s/import/batch", headers=auth["headers"], json={"records": [rec]})
+        assert r.status_code == 200 and r.json()["created"] == 0, r.text
+        return r
+
+    async def stored():  # every record a refused import sent is absent
+        return [e for e in sent if (await client.get(f"/{kind}s/{e}", headers=auth["headers"])).status_code != 404]
+    return [_LINE], send, stored
+
+
+_WRITERS = {
+    **{f"save issued {t}": (_issued_saves, t) for t in sorted(_ISSUED)},
+    **{f"save draft {t}": (_draft_saves, t) for t in sorted(DOC_SCAN_BEHAVIOR)},
+    **{f"{how} {t}": (writer, t) for t in LIST_TYPES
+       for how, writer in (("create list", _list_creates), ("save list", _list_saves),
+                           ("save list page", _list_page_saves))},
+    **{f"import {kind}{' batch' * batch}": (lambda c, a, d, kind=kind, batch=batch: _imports(c, a, kind, batch, d),
+                                            {"doc_type": "invoice"} if kind == "doc" else {"list_type": "quotation"})
+       for kind in ("doc", "list") for batch in (False, True)},
+}
+
+
+@pytest.mark.parametrize("writer", sorted(_WRITERS))
+async def test_every_line_writer_refuses_lines_of_a_wrong_shape_or_type_naming_the_field(client, auth, writer):
+    """Whoever sends them (the agent, an import, a peer), lines of another shape or a line
+    holding a value of the wrong type are refused before any check reads them, naming the
+    field, and nothing is stored."""
+    make, arg = _WRITERS[writer]
+    lines, send, stored = await make(client, auth, arg)
+    before = await stored()
+    for case, (bad, field) in _wrong_lines(lines).items():
+        r = await send(bad)
+        if writer.endswith("batch"):
+            assert field in str(r.json()["errors"]), (writer, case, r.text)
+        else:
+            assert _refused_naming(r, field), (writer, case, r.text)
+        assert await stored() == before, (writer, case)
