@@ -3569,6 +3569,31 @@ async def _sold_key(session, company_id, lot_id: str, state: dict, books: _Books
     return await sold_lot_key(session, company_id, lot_id, state)
 
 
+def _placed(shipments: _Shipments, doc_id: str, doc_state: dict):
+    """The invoice's lots out and back in its current issue, each with the index of the line
+    it is on (None when no line holds it)."""
+    def _line(lot: Projection) -> int | None:
+        line_id, recorded = shipments.recorded.get((doc_id, lot.entity_id), (None, None))
+        return line_of_lot(doc_state.get("line_items", []), lot.entity_id, lot.state or {}, recorded, line_id)
+
+    return ([(lot, _line(lot)) for lot in shipments.out.get(doc_id, [])],
+            [(lot, qty, _line(lot)) for lot, qty in shipments.back.get(doc_id, [])])
+
+
+def _unplaced_params(doc_id: str, doc_state: dict, lots) -> dict:
+    return {"doc": _doc_number(doc_id, doc_state),
+            "items": ", ".join(str((lot.state or {}).get("sku") or lot.entity_id) for lot in lots)}
+
+
+async def unplaced_shipments(session, company_id, doc_id: str, doc_state: dict) -> dict | None:
+    """The params of error.cogs_line_unknown_out when goods the invoice shipped or took back
+    in its current issue are on none of its lines, else None. Only data an earlier release
+    saved holds such goods: an issued invoice keeps its lines now."""
+    out, back = _placed(await _shipments(session, company_id, {doc_id}), doc_id, doc_state)
+    unknown = [lot for lot, idx in out if idx is None] + [lot for lot, _qty, idx in back if idx is None]
+    return _unplaced_params(doc_id, doc_state, unknown) if unknown else None
+
+
 async def _cogs_line_unknown_key(session, company_id, doc_id: str, doc_state: dict, still_out: bool) -> str:
     """The refusal for goods no line of the invoice holds, by the way out the app takes: a new
     issue (Revert to Draft, then Issue Invoice) places goods that came back, so its advice
@@ -3606,19 +3631,13 @@ async def _recognized_by_account(
         for code, amount in by_account.items():
             into[code] = into.get(code, 0.0) + amount
 
-    def _line(lot: Projection) -> int | None:
-        line_id, recorded = books.shipments.recorded.get((doc_id, lot.entity_id), (None, None))
-        return line_of_lot(doc_state.get("line_items", []), lot.entity_id, lot.state or {}, recorded, line_id)
-
     # Every lot shipped or returned must be on exactly one line; the refusal names them all.
-    out = [(lot, _line(lot)) for lot in books.shipments.out.get(doc_id, [])]
-    back = [(lot, qty, _line(lot)) for lot, qty in books.shipments.back.get(doc_id, [])]
+    out, back = _placed(books.shipments, doc_id, doc_state)
     unknown_out = [lot for lot, idx in out if idx is None]
     unknown = unknown_out + [lot for lot, _qty, idx in back if idx is None]
     if unknown:
         raise Refused(await _cogs_line_unknown_key(session, company_id, doc_id, doc_state, bool(unknown_out)),
-                      doc=_doc_number(doc_id, doc_state), items=", ".join(
-                          str((lot.state or {}).get("sku") or lot.entity_id) for lot in unknown))
+                      **_unplaced_params(doc_id, doc_state, unknown))
     shipped_qty: dict[int, float] = {}
     back_qty: dict[int, float] = {}
     for lot, idx in out:

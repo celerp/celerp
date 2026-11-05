@@ -122,6 +122,11 @@ def is_shareable(entity_type: str, state: dict) -> bool:
 # Production orders are internal demand (invoice-to-self) - never sent to a customer.
 NO_SEND_DOC_TYPES: frozenset[str] = frozenset({"bill", "consignment_in", "purchase_order", "production_order"})
 
+# Documents whose issue posts their stored total to the books. Once issued, a line can only be
+# removed from one through Revert to Draft, which voids that entry and posts the new total on
+# the next issue (routes.assert_finalized_edit).
+TOTAL_POSTED_DOC_TYPES: frozenset[str] = frozenset({"invoice", "bill", "credit_note", "debit_note"})
+
 # Internal demand documents: not a sale/purchase, so excluded from revenue/AR/AP/sales accounting.
 # A production order is "invoice-to-self" demand that feeds the manufacturing queue.
 NON_FINANCIAL_DOC_TYPES: frozenset[str] = frozenset({"production_order"})

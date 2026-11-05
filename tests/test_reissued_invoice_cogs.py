@@ -51,6 +51,19 @@ async def _invoice(client, auth, stones) -> str:
     return doc
 
 
+async def drop_lines_as_before(client, session, auth, doc: str, keep: int) -> None:
+    """Leave all but the first ``keep`` lines out of an issued invoice, as a save did before an
+    issued invoice kept its lines (routes.assert_finalized_edit): data such a save left behind."""
+    from celerp.events.engine import emit_event
+
+    st = await _state(client, auth, doc)
+    await emit_event(
+        session, company_id=auth["company_id"], entity_id=doc, entity_type="doc", event_type="doc.updated",
+        data={"fields_changed": {"line_items": {"old": st["line_items"], "new": st["line_items"][:keep]}}},
+        actor_id=None, location_id=None, source="api", idempotency_key=str(uuid.uuid4()), metadata_={})
+    await session.commit()
+
+
 async def _line_ids(client, auth, doc: str) -> list[str]:
     return [li["line_id"] for li in (await _state(client, auth, doc))["line_items"]]
 
@@ -213,11 +226,7 @@ async def test_returned_lot_with_no_line_names_revert_and_reissue(client, sessio
     r = await _ship(client, auth, doc, [second])
     assert r.status_code == 200, r.text
     await _ok(client, auth, f"/docs/{doc}/set-available", {"line_ids": [second]})
-    st = await _state(client, auth, doc)
-    r = await client.patch(f"/docs/{doc}", headers=auth["headers"], json={
-        "fields_changed": {"line_items": {"old": st["line_items"], "new": st["line_items"][:1]}},
-        "expected_version": st["version"]})
-    assert r.status_code == 200, r.text
+    await drop_lines_as_before(client, session, auth, doc, 1)
     before = await _per_doc(session, auth)
     r = await _ship(client, auth, doc, [first])
     assert r.status_code == 409, r.text
@@ -280,7 +289,7 @@ async def test_line_of_a_lot_still_out_cannot_be_dropped(client, session, auth):
         "fields_changed": {"line_items": {"old": st["line_items"], "new": st["line_items"][:1]}},
         "expected_version": st["version"]})
     assert r.status_code == 409, r.text
-    assert r.json()["detail"]["message_key"] == "lines.shipped_elsewhere"
+    assert r.json()["detail"]["message_key"] == "docs.edit_locked"
     assert len((await _state(client, auth, doc))["line_items"]) == 2
 
 
@@ -330,11 +339,7 @@ async def test_credit_note_on_the_refused_invoice_keeps_the_refusal_keyed(client
     r = await _ship(client, auth, doc, [second])
     assert r.status_code == 200, r.text
     await _ok(client, auth, f"/docs/{doc}/set-available", {"line_ids": [second]})
-    st = await _state(client, auth, doc)
-    r = await client.patch(f"/docs/{doc}", headers=auth["headers"], json={
-        "fields_changed": {"line_items": {"old": st["line_items"], "new": st["line_items"][:1]}},
-        "expected_version": st["version"]})
-    assert r.status_code == 200, r.text
+    await drop_lines_as_before(client, session, auth, doc, 1)
     lot, sku, _ = stones[0]
     r = await client.post("/docs", headers=auth["headers"], json={
         "doc_type": "credit_note", "original_doc_id": doc, "total": 1.0,

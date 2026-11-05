@@ -18,7 +18,7 @@ from ui.i18n import t
 from test_cost_follows_goods import _doc_number
 from test_credit_note_settlement_owned import _cn
 from test_invoice_unshipped_books import _ok
-from test_reissued_invoice_cogs import _invoice, _line_ids, _ship, _state, _stones
+from test_reissued_invoice_cogs import _invoice, _line_ids, _ship, _state, _stones, drop_lines_as_before
 from test_set_aside_goods_follow_the_lot import _per_doc
 from ui.routes.documents import _doc_detail
 
@@ -27,9 +27,10 @@ pytestmark = pytest.mark.asyncio
 _REVERT = "/action/revert_to_draft"
 
 
-async def _drop_returned_line(client, auth, n: int, out: int = 0, before_drop=None):
+async def _drop_returned_line(client, session, auth, n: int, out: int = 0, before_drop=None):
     """An issued invoice of ``n`` stones whose last line shipped, came back (Set as available)
-    and was then removed from the issued invoice, with ``out`` lines before it still shipped.
+    and was then removed from the issued invoice by an earlier release's save, with ``out``
+    lines before it still shipped.
     ``before_drop`` runs on the invoice just before the line is removed."""
     stones = (await _stones(client, auth))[:n]
     doc = await _invoice(client, auth, stones)
@@ -39,11 +40,7 @@ async def _drop_returned_line(client, auth, n: int, out: int = 0, before_drop=No
     await _ok(client, auth, f"/docs/{doc}/set-available", {"line_ids": ids[n - 1:]})
     if before_drop is not None:
         await before_drop(doc)
-    st = await _state(client, auth, doc)
-    r = await client.patch(f"/docs/{doc}", headers=auth["headers"], json={
-        "fields_changed": {"line_items": {"old": st["line_items"], "new": st["line_items"][:n - 1]}},
-        "expected_version": st["version"]})
-    assert r.status_code == 200, r.text
+    await drop_lines_as_before(client, session, auth, doc, n - 1)
     return doc, stones, ids
 
 
@@ -68,7 +65,7 @@ async def _revert_refused(client, auth, doc: str) -> list[str]:
 
 
 async def test_part_paid_invoice_names_voiding_the_payments_and_that_way_out_works(client, session, auth):
-    doc, stones, ids = await _drop_returned_line(client, auth, 2)
+    doc, stones, ids = await _drop_returned_line(client, session, auth, 2)
     await _pay(client, auth, doc, 1)
     await _refused_ship(client, session, auth, doc, ids[:1], stones, "error.cogs_line_unknown_paid")
     assert await _revert_refused(client, auth, doc) == ["payments"]
@@ -85,7 +82,7 @@ async def test_part_paid_invoice_names_voiding_the_payments_and_that_way_out_wor
 
 
 async def test_paid_invoice_names_voiding_the_payments(client, session, auth):
-    doc, stones, ids = await _drop_returned_line(client, auth, 2)
+    doc, stones, ids = await _drop_returned_line(client, session, auth, 2)
     await _pay(client, auth, doc, float((await _state(client, auth, doc))["amount_outstanding"]))
     assert (await _state(client, auth, doc))["status"] == "paid"
     await _refused_ship(client, session, auth, doc, ids[:1], stones, "error.cogs_line_unknown_paid")
@@ -96,25 +93,26 @@ async def test_credited_invoice_asks_for_a_report(client, session, auth):
     async def credit(doc):
         await _cn(client, auth, doc, 10.0)
 
-    doc, stones, ids = await _drop_returned_line(client, auth, 2, before_drop=credit)
+    doc, stones, ids = await _drop_returned_line(client, session, auth, 2, before_drop=credit)
     await _refused_ship(client, session, auth, doc, ids[:1], stones, "error.cogs_line_unknown_out")
     assert await _revert_refused(client, auth, doc) == ["credit_note"]
 
 
 async def test_another_line_still_out_asks_for_a_report_on_every_step(client, session, auth):
     """Line 2 is still out, so Revert to Draft is refused and Set as available on line 2 meets
-    the same refusal: no step the app takes clears it, and every answer says to report it."""
-    doc, stones, ids = await _drop_returned_line(client, auth, 3, out=1)
+    the same refusal: no step the app takes clears it, and every answer says to report it,
+    Revert to Draft's too, rather than sending the user to Set as available."""
+    doc, stones, ids = await _drop_returned_line(client, session, auth, 3, out=1)
     await _refused_ship(client, session, auth, doc, ids[:1], stones, "error.cogs_line_unknown_out")
     assert await _revert_refused(client, auth, doc) == ["out"]
     r = await client.post(f"/docs/{doc}/set-available", headers=auth["headers"], json={"line_ids": ids[1:2]})
     assert (r.status_code, r.json()["detail"]["message_key"]) == (409, "error.cogs_line_unknown_out"), r.text
     r = await client.post(f"/docs/{doc}/revert-to-draft", headers=auth["headers"], json={})
-    assert r.status_code == 409, r.text
+    assert (r.status_code, r.json()["detail"]["message_key"]) == (409, "error.cogs_line_unknown_out"), r.text
 
 
 async def test_nothing_refused_names_revert_and_reissue(client, session, auth):
-    doc, stones, ids = await _drop_returned_line(client, auth, 2)
+    doc, stones, ids = await _drop_returned_line(client, session, auth, 2)
     await _refused_ship(client, session, auth, doc, ids[:1], stones, "error.cogs_line_unknown")
     assert await _revert_refused(client, auth, doc) == []
 

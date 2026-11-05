@@ -79,7 +79,7 @@ from celerp_contacts.references import (
 )
 from celerp.output.document_context import prepare_document_output
 from celerp.output.doc_print import fmt_money
-from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, DRAFT_REVERT_RETURNED, DRAFT_REVERT_STATUSES, INBOUND_DRAFT_REVERT_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, CREDIT_APPLICATION_METHODS, CONVERTIBLE_STATUSES
+from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, DRAFT_REVERT_RETURNED, DRAFT_REVERT_STATUSES, INBOUND_DRAFT_REVERT_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, TOTAL_POSTED_DOC_TYPES, CREDIT_APPLICATION_METHODS, CONVERTIBLE_STATUSES
 from celerp.services.record_quantities import FULFILLABLE_STATUSES, QUOTATION_SPENT_STATUSES, RECEIVABLE_STATUSES, sent_out_by
 from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, MEMO_DRAW_STATUSES, doc_value, is_awaiting_payment, is_open_credit, is_overdue_document, is_owed, is_paid_document, outstanding_balance
 from celerp.services.list_behavior import (
@@ -2152,12 +2152,16 @@ _LI_FINALIZED_EDITABLE = frozenset({"description", "account_code"})
 
 def assert_finalized_edit(state: dict, fields_changed: dict) -> None:
     """Refuse (409) a change to a finalized document beyond its corrective fields, and a line
-    change beyond each line's description and account."""
+    change beyond each line's description and account. A document whose issue posted its total
+    keeps every line: removing one would leave that total, and what a payment collects, as posted."""
     if set(fields_changed) - _FINALIZED_EDITABLE_FIELDS:
         _assert_doc_editable(state)
     if "line_items" not in fields_changed:
         return
     existing_by_idx = {i: li for i, li in enumerate(state.get("line_items") or [])}
+    if (state.get("doc_type") in TOTAL_POSTED_DOC_TYPES
+            and len(fields_changed["line_items"].get("new") or []) < len(existing_by_idx)):
+        _assert_doc_editable(state)
     for i, incoming in enumerate(fields_changed["line_items"].get("new") or []):
         original = existing_by_idx.get(i, {})
         for k, v in incoming.items():
@@ -3707,8 +3711,13 @@ async def revert_check(session, company_id, entity_id: str, state: dict, units: 
             memo=memo, invoice=drawn[0][0]))
     # Fulfilled items are tracked in state["fulfilled_items"]; each entry with a non-null
     # item_id is an inventory item that is now out on memo or sold.
+    # When goods it shipped are on none of its lines, Set as available is refused too
+    # (auto_je._recognized_by_account), so the answer is that refusal's: report it.
     if any(fi.get("item_id") is not None for fi in state.get("fulfilled_items") or []):
-        _refuse(refusals, "out", refusal(
+        from celerp.services.auto_je import unplaced_shipments
+
+        unplaced = await unplaced_shipments(session, company_id, entity_id, state)
+        _refuse(refusals, "out", catalog_refusal("error.cogs_line_unknown_out", **unplaced) if unplaced else refusal(
             "docs.revert_lines_out",
             "Cannot revert to draft while lines are still out on memo or sold. "
             "Select those lines and use Set as available first, then revert."))
