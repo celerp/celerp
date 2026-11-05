@@ -2152,25 +2152,29 @@ _LI_FINALIZED_EDITABLE = frozenset({"description", "account_code"})
 
 def assert_finalized_edit(state: dict, fields_changed: dict) -> None:
     """Refuse (409) a change to a finalized document beyond its corrective fields, and a line
-    change beyond each line's description and account. A document whose issue posted its total
-    keeps every line: removing one would leave that total, and what a payment collects, as posted."""
+    change beyond each line's description and account. Each line is compared over every key
+    the stored line or the save holds, so a field the save leaves out counts as removed. A
+    document whose issue posted its total keeps every line too, a line left out counting as
+    every field removed: its total, and what a payment collects, follow the lines as issued."""
     if set(fields_changed) - _FINALIZED_EDITABLE_FIELDS:
         _assert_doc_editable(state)
     if "line_items" not in fields_changed:
         return
-    existing_by_idx = {i: li for i, li in enumerate(state.get("line_items") or [])}
-    if (state.get("doc_type") in TOTAL_POSTED_DOC_TYPES
-            and len(fields_changed["line_items"].get("new") or []) < len(existing_by_idx)):
-        _assert_doc_editable(state)
-    for i, incoming in enumerate(fields_changed["line_items"].get("new") or []):
-        original = existing_by_idx.get(i, {})
-        for k, v in incoming.items():
+    stored = state.get("line_items") or []
+    incoming = fields_changed["line_items"].get("new") or []
+    positions = max(len(stored), len(incoming)) if state.get("doc_type") in TOTAL_POSTED_DOC_TYPES else len(incoming)
+    for i in range(positions):
+        original = stored[i] if i < len(stored) else {}
+        line = incoming[i] if i < len(incoming) else {}
+        for k in [*original, *(k for k in line if k not in original)]:
             if k in _LI_FINALIZED_EDITABLE:
                 continue
-            orig_v = original.get(k)
-            if k == "line_id" and not orig_v:
+            if k == "line_id" and not original.get(k):
                 continue  # a legacy line is given its id on its first save
-            if v != orig_v:
+            if line.get(k) != original.get(k):
+                # Revert to Draft refuses a void document, which comes back through Unvoid.
+                if state.get("status") == "void":
+                    _assert_doc_editable(state)
                 raise HTTPException(
                     status_code=409,
                     detail=catalog_refusal("documents.err_line_field_finalized", field=k, line=i + 1),

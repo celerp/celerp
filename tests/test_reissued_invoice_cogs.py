@@ -280,16 +280,19 @@ async def _ship_in_two_batches(client, auth, stones):
     return doc, first, second
 
 
-async def test_line_of_a_lot_still_out_cannot_be_dropped(client, session, auth):
-    """An issued invoice keeps the line of goods still out on it: removing that line is refused."""
+async def test_the_engine_keeps_the_line_of_a_lot_still_out(client, session, auth):
+    """Any writer that reaches the engine keeps the line of goods still out on an invoice:
+    a line set leaving it out is refused and names the invoice to set them available on,
+    the API's own refusal of the save (routes.assert_finalized_edit) aside."""
+    from fastapi import HTTPException
+
     stones = (await _stones(client, auth))[:2]
     doc, _first, _second = await _ship_in_two_batches(client, auth, stones)
-    st = await _state(client, auth, doc)
-    r = await client.patch(f"/docs/{doc}", headers=auth["headers"], json={
-        "fields_changed": {"line_items": {"old": st["line_items"], "new": st["line_items"][:1]}},
-        "expected_version": st["version"]})
-    assert r.status_code == 409, r.text
-    assert r.json()["detail"]["message_key"] == "docs.edit_locked"
+    with pytest.raises(HTTPException) as refused:
+        await drop_lines_as_before(client, session, auth, doc, 1)
+    await session.rollback()
+    assert refused.value.status_code == 409
+    assert refused.value.detail["message_key"] == "lines.shipped_elsewhere"
     assert len((await _state(client, auth, doc))["line_items"]) == 2
 
 
