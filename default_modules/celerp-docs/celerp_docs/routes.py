@@ -55,7 +55,7 @@ from celerp.services.payments import lock_recorded_unmatched, recorded_unmatched
 from celerp.tax_regimes import default_line_taxes, set_new_line_taxes, side_taxes
 from celerp.services.business_time import business_date_at, business_date_of, company_today
 from celerp.services.landed_cost import compute_bill_landed_allocation
-from celerp.services.line_measures import (FULL, floor_to_unit, line_label, proposed_sell_qty, splitting_allowed,
+from celerp.services.line_measures import (FULL, floor_to_unit, line_label, line_name, proposed_sell_qty, splitting_allowed,
                                           splitting_off)
 from celerp.services.document_lines import (
     DrawnLine, MemoDraw, MemoReturn, assert_line_holds_respected, assert_new_references_eligible,
@@ -10400,11 +10400,6 @@ def _skipped_lines(line_items: list[dict], indices: list[int], kind: str) -> lis
             for i in indices]
 
 
-def _line_name(number: int, label: str) -> str:
-    """A line as a message names it: its number and, when it has one, its label in quotes."""
-    return f'{number} "{label}"' if label else str(number)
-
-
 def _skip_messages(action: str, skipped: list[dict], *, refuse: bool = False) -> list[dict]:
     """One message per kind in ``skipped`` naming its lines, as ``6 "GIA Certificate"``, in
     ``action``'s own words (LINE_SKIP_REASONS): the notice that they were left as they are, or
@@ -10416,7 +10411,7 @@ def _skip_messages(action: str, skipped: list[dict], *, refuse: bool = False) ->
         raise KeyError(f"{action} has no skip reason for {sorted(unknown)}")
     messages = []
     for kind, keys in reasons.items():
-        named = [_line_name(s["line"], s["name"]) for s in skipped if s["kind"] == kind]
+        named = [line_name(s["line"], s["name"]) for s in skipped if s["kind"] == kind]
         if named:
             key = f"{keys[refuse]}_{'one' if len(named) == 1 else 'many'}"
             messages.append(catalog_refusal(key, lines=", ".join(named)))

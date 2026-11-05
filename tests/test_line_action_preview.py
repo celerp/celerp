@@ -14,6 +14,7 @@ and names it, so the lines that can ship still ship.
 The records are the gemstones demo company's: demo stones and a "GIA Certificate"."""
 from __future__ import annotations
 
+import json
 import uuid
 
 import pytest
@@ -21,6 +22,10 @@ from sqlalchemy import func, select
 
 from celerp.models.ledger import LedgerEntry
 from test_item_less_line_actions import GIA, SVC, _act, _gems, _ids, _line, _list, _ok, _state, _status
+import test_item_less_line_actions
+
+# The page's client, shared with the item-less line tests.
+ui_client = test_item_less_line_actions.ui_client
 
 pytestmark = pytest.mark.asyncio
 
@@ -170,3 +175,114 @@ async def test_a_line_shipped_from_part_of_a_weight_lot_does_not_ship_again(clie
     mixed = await _act(client, g, owner, "fulfill-lines", [lid, gia])
     assert mixed.status_code == 422, mixed.text
     assert (await _ok(await client.get(f"/items/{lot['id']}", headers=g.h)))["quantity"] == left
+
+
+# case -> (ui.api_client call, the action's confirm key). The page asks its confirm from the
+# action's preview: the count of ``acted`` and the lines in ``skipped``, never a rule of its own.
+_PAGE = {"ship-mixed": ("fulfill_lines", "documents.confirm_set_shipped"),
+         "reserve-mixed": ("reserve_lines", "documents.confirm_set_reserved"),
+         "set-available-mixed": ("set_lines_available", "documents.confirm_set_available"),
+         "list-reserve-mixed": ("reserve_lines", "documents.confirm_set_reserved"),
+         "list-set-available-mixed": ("set_lines_available", "documents.confirm_set_available")}
+
+
+def _count(key: str, n: int, **params) -> str:
+    from ui.i18n import t
+    return t(f"{key}_{'one' if n == 1 else 'many'}", n=n, **params)
+
+
+async def _page_post(ui_client, call: str, answer: dict, url: str, data: dict):
+    from unittest.mock import AsyncMock, patch
+
+    from test_helpers import make_test_token
+    sent = AsyncMock(return_value=answer)
+    ui_client.cookies.update({"celerp_token": make_test_token(role="owner")})
+    with patch(f"ui.api_client.{call}", new=sent):
+        r = await ui_client.post(url, data=data)
+    return r, sent
+
+
+@pytest.mark.parametrize("case", list(_PAGE))
+async def test_the_page_confirm_is_the_actions_own_preview(client, session, ui_client, case):
+    """Red statement: the page counted the ticked rows itself (liLineConfirm) and asked "Set 2
+    lines as shipped?" for a sold line, an available line and the GIA Certificate, then the
+    server shipped one or refused the lot."""
+    from celerp.services.line_measures import line_name
+    from ui.i18n import t
+    call, confirm = _PAGE[case]
+    kind, path, extra, states, chosen, acts, kinds = _CASES[case]
+    g = await _gems(client)
+    owner, lids = await _record(client, g, kind, states)
+    send = [lids[s] for s in chosen]
+    base = "lists" if kind == "list" else "docs"
+    preview = await _ok(await client.post(f"/{base}/{owner}/{path}", headers=g.h, json={
+        "line_ids": send, "idempotency_key": "k-page", "dry_run": True, **extra}))
+    data = {"line_id": send, "idempotency_key": "k-page", **extra}
+    r, sent = await _page_post(ui_client, call, preview, f"/{base}/{owner}/{path}", {**data, "dry_run": "1"})
+    assert r.status_code == 200, r.text
+    assert sent.await_args.kwargs["dry_run"] is True
+    named = ", ".join(line_name(s["line"], s["name"]) for s in sorted(preview["skipped"], key=lambda s: s["line"]))
+    said = f"{_count(confirm, len(acts))} {_count('documents.will_skip', len(preview['skipped']), lines=named)}"
+    if preview.get("taken_back"):
+        said += " " + t("documents.sold_reserve_warn", n=len(preview["taken_back"]))
+    assert r.json() == {"confirm": said}
+    if case == "ship-mixed":
+        assert said == ('Set 2 lines as shipped? Lines 2 "DEMO-EMR-001", 3 "DEMO-MIN-001", '
+                        '4 "GIA Certificate" will be left as they are.')
+
+    # The action itself: its notice counts the lines it acted on.
+    real = await _ok(await client.post(f"/{base}/{owner}/{path}", headers=g.h, json={
+        "line_ids": send, "idempotency_key": "k-page", **extra}))
+    r, sent = await _page_post(ui_client, call, real, f"/{base}/{owner}/{path}", data)
+    assert r.status_code == 204, r.text
+    assert sent.await_args.kwargs.get("dry_run", False) is False
+    toast = json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"]
+    assert toast.startswith(_count(_DONE[path, extra.get("new_status")], len(acts)) + " ")
+
+
+_DONE = {("fulfill-lines", None): "documents.lines_shipped", ("reserve-lines", "reserved"): "documents.lines_reserved",
+         ("set-available", None): "documents.lines_available"}
+
+
+async def test_a_refused_preview_is_shown_and_nothing_is_asked(client, session, ui_client):
+    """A choice none of whose lines ships answers the preview with the action's refusal."""
+    import ui.api_client as api
+    from unittest.mock import AsyncMock, patch
+
+    from test_helpers import make_test_token
+    g = await _gems(client)
+    owner, lids = await _record(client, g, "invoice", {"DEMO-EMR-001": "shipped"})
+    r = await _act(client, g, owner, "fulfill-lines", [lids["DEMO-EMR-001"], lids["GIA"]], dry_run=True)
+    assert r.status_code == 422, r.text
+    ui_client.cookies.update({"celerp_token": make_test_token(role="owner")})
+    with patch("ui.api_client.fulfill_lines", new=AsyncMock(side_effect=api._api_error(422, r.json(), r.text))):
+        page = await ui_client.post(f"/docs/{owner}/fulfill-lines", data={
+            "line_id": [lids["DEMO-EMR-001"], lids["GIA"]], "idempotency_key": "k", "dry_run": "1"})
+    toast = json.loads(page.headers["HX-Trigger"])["celerpToast"]
+    assert toast["type"] == "error" and "set it as available first" in toast["message"]
+
+
+async def test_a_notice_naming_goods_another_invoice_had_leads_with_the_count(ui_client):
+    """Red statement: the notice opened with whose goods moved and never said how many lines shipped."""
+    answer = {"acted": ["a"], "taken_from": [{"sku": "DEMO-SAP-001", "doc_number": "INV-0001"}]}
+    r, _ = await _page_post(ui_client, "fulfill_lines", answer, "/docs/doc:1/fulfill-lines",
+                            {"line_id": ["a"], "idempotency_key": "k"})
+    assert r.status_code == 204, r.text
+    toast = json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"]
+    assert toast.startswith(_count("documents.lines_shipped", 1) + " ")
+    assert "INV-0001" in toast
+
+
+async def test_mark_as_scanned_counts_the_lines_the_list_changed(ui_client):
+    """The notice counts the rows the list says it changed. Red statement: Mark as scanned sent
+    again said "2 lines marked as scanned." when the list changed none."""
+    from unittest.mock import AsyncMock, patch
+
+    from test_helpers import make_test_token
+    ui_client.cookies.update({"celerp_token": make_test_token(role="owner")})
+    with patch("ui.api_client.set_scanned", new=AsyncMock(return_value={"changed": 0, "skipped": []})), \
+            patch("ui.api_client.get_list_page", new=AsyncMock(return_value={
+                "list": {"status": "finalized", "list_type": "audit"}, "items": [], "total": 0, "version": 1})):
+        r = await ui_client.post("/lists/list:1/set-scanned", data={"line_id": ["a", "b"], "scanned": "1"})
+    assert r.status_code == 200, r.text
+    assert json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"] == _count("documents.lines_scanned", 0)

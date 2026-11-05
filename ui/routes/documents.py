@@ -26,7 +26,7 @@ from celerp.downloads import content_disposition
 from celerp.services.units import (
     DEFAULT_UNITS, RECEIVE_KINDS, build_unit_map, default_receive_as, format_qty, line_receive_kind, plain_number, quantity_step,
 )
-from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, line_label, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
+from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, line_label, line_name, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
 from ui.components.shell import base_shell, page_header, refusal_fix, toast_header, page_title
 from ui.security import not_permitted_redirect
 from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, period_all_time_link, period_empty_text, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, empty_mark, display_enum, display_unit, doc_href, doc_status_badge, doc_status_shown
@@ -1167,6 +1167,24 @@ def _with_skipped(message: str, answer) -> tuple[str, bool]:
     whether the toast stays until it is closed, which it does when it names any."""
     notice = answer.get("skipped_notice") if isinstance(answer, dict) else None
     return (f"{message} {refusal_text(notice)}", True) if notice else (message, False)
+
+
+def _count_text(key: str, n: int, **params) -> str:
+    """The message ``key`` in the form that reads right for ``n``: its ``_one`` or ``_many``."""
+    return t(f"{key}_{'one' if n == 1 else 'many'}", n=n, **params)
+
+
+def _preview_confirm(confirm: str, answer: dict) -> str:
+    """The question a stock line action asks from its own preview ``answer``: how many lines
+    it acts on (``confirm``, a counted message key), the lines it leaves as they are, and the
+    shipped lines Set as reserved takes back into stock."""
+    parts = [_count_text(confirm, len(answer.get("acted") or []))]
+    if skipped := sorted(answer.get("skipped") or [], key=lambda s: s["line"]):
+        parts.append(_count_text("documents.will_skip", len(skipped),
+                                 lines=", ".join(line_name(s["line"], s["name"]) for s in skipped)))
+    if taken_back := answer.get("taken_back"):
+        parts.append(t("documents.sold_reserve_warn", n=len(taken_back)))
+    return " ".join(parts)
 
 
 def _reopened_toast(answer) -> dict:
@@ -3699,7 +3717,7 @@ celerpUpdateBulkAlloc();
         # Read on the new invoice: say what came over from which memo, and what stayed there.
         n = result.get("invoiced") or 0
         message, persist = _with_skipped(
-            t(f"documents.lines_invoiced_{'one' if n == 1 else 'many'}", n=n, memo=result.get("memo_ref") or ""), result)
+            _count_text("documents.lines_invoiced", n, memo=result.get("memo_ref") or ""), result)
         return _R("", status_code=204, headers={
             "HX-Redirect": doc_href(result.get("target_doc_id")), **toast_header(message, "info", persist=persist)})
 
@@ -3799,7 +3817,7 @@ celerpUpdateBulkAlloc();
                 return _action_error(error_message(e), celerpOpenReturnLots={"line": line})
             return _action_error(e)
         count = len({idx for idx, _, _ in picked_lots}) or len(lines)
-        done = t(f"documents.return_done_{'one' if count == 1 else 'many'}", n=count)
+        done = _count_text("documents.return_done", count)
         # Goods already paid for come back as a supplier credit note: say so until it is read.
         credit = (result or {}).get("supplier_credit_doc_number")
         if credit:
@@ -4312,8 +4330,11 @@ celerpUpdateBulkAlloc();
     async def _line_action_proxy(request: Request, call):
         """Send a line action and answer with a toast saying what it did, shown on the page
         the caller opens next. ``call`` returns the API call and its arguments, plus ``_done``:
-        the message key naming the action, with a ``_one`` and a ``_many`` form."""
-        from starlette.responses import Response as _R
+        the message key naming the action, with a ``_one`` and a ``_many`` form, and for a
+        stock action ``_confirm``, the key of its question. Such an action sent with
+        ``dry_run=1`` is the API's preview, answered with the question to ask (``confirm``)
+        or the action's refusal; nothing changes."""
+        from starlette.responses import JSONResponse, Response as _R
         token = _token(request)
         if not token:
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
@@ -4321,6 +4342,9 @@ celerpUpdateBulkAlloc();
         try:
             kwargs = call(form)
             send, entity_id, done = kwargs.pop("_send"), kwargs.pop("entity_id"), kwargs.pop("_done")
+            confirm = kwargs.pop("_confirm", None)
+            if preview := bool(confirm) and form.get("dry_run") == "1":
+                kwargs["dry_run"] = True
             answer = await send(token, entity_id, **kwargs)
         except ValueError as exc:
             return _action_error(str(exc))
@@ -4328,18 +4352,20 @@ celerpUpdateBulkAlloc();
             if e.status == 401:
                 raise
             return _action_error(e)
+        if preview:
+            return JSONResponse({"confirm": _preview_confirm(confirm, answer)})
+        said = _count_text(done, len(answer.get("acted") or []))
         # Goods another invoice named: say whose, and that it can no longer ship them, in a
         # notice that stays until it is closed.
-        moved = (answer.get("taken_from") or []) if isinstance(answer, dict) else []
+        moved = answer.get("taken_from") or []
         if reopened := _reopened_toast(answer):
             toast = reopened
         elif moved:
-            notice = " ".join(t("documents.cost_moved_with_goods", sku=m.get("sku") or m.get("lot_id"),
-                                doc=m.get("doc_number") or m.get("doc_id")) for m in moved)
+            notice = " ".join([said, *(t("documents.cost_moved_with_goods", sku=m.get("sku") or m.get("lot_id"),
+                                         doc=m.get("doc_number") or m.get("doc_id")) for m in moved)])
             toast = toast_header(_with_skipped(notice, answer)[0], "info", persist=True)
         else:
-            n = len(kwargs["line_ids"]) - len((answer.get("skipped") or []) if isinstance(answer, dict) else [])
-            message, persist = _with_skipped(t(f"{done}_{'one' if n == 1 else 'many'}", n=n), answer)
+            message, persist = _with_skipped(said, answer)
             toast = toast_header(message, "info", persist=persist)
         return _R("", status_code=204, headers=toast)
 
@@ -4347,7 +4373,7 @@ celerpUpdateBulkAlloc();
     async def doc_fulfill_lines(request: Request, entity_id: str):
         return await _line_action_proxy(
             request, lambda form: {"_send": api.fulfill_lines, "entity_id": entity_id, "_done": "documents.lines_shipped",
-                          **_line_action_form(form, "fulfil")})
+                                   "_confirm": "documents.confirm_set_shipped", **_line_action_form(form, "fulfil")})
 
     @app.post("/docs/{entity_id}/back-to-memo")
     async def doc_back_to_memo(request: Request, entity_id: str):
@@ -4368,7 +4394,7 @@ celerpUpdateBulkAlloc();
             except (TypeError, ValueError):
                 raise ValueError(t("documents.invalid_returned_quantity", id=m.group(1)))
         return {"_send": api.set_lines_available, "entity_id": entity_id, "_done": "documents.lines_available",
-                **_line_action_form(form, "set-available"),
+                "_confirm": "documents.confirm_set_available", **_line_action_form(form, "set-available"),
                 "quantities": quantities, "is_list": is_list}
 
     @app.post("/docs/{entity_id}/set-available")
@@ -4383,8 +4409,9 @@ celerpUpdateBulkAlloc();
 
     def _reserve_form(form, entity_id: str, is_list: bool) -> dict:
         new_status = form.get("new_status") or "reserved"
-        done = "documents.lines_reserved" if new_status == "reserved" else "documents.lines_available"
-        return {"_send": api.reserve_lines, "entity_id": entity_id, "_done": done, **_line_action_form(form, new_status),
+        word = "reserved" if new_status == "reserved" else "available"
+        return {"_send": api.reserve_lines, "entity_id": entity_id, "_done": f"documents.lines_{word}",
+                "_confirm": f"documents.confirm_set_{word}", **_line_action_form(form, new_status),
                 "new_status": new_status, "is_list": is_list}
 
     @app.post("/docs/{entity_id}/reserve-lines")
@@ -5381,10 +5408,8 @@ celerpUpdateBulkAlloc();
             result = await api.set_scanned(token, entity_id, list(form.getlist("line_id")), scanned)
         except APIError as e:
             return api.refusal_response(e)
-        line_ids = form.getlist("line_id")
-        n = len(line_ids) - len(result.get("skipped") or [])
         verb = "lines_scanned" if scanned else "lines_unscanned"
-        message, persist = _with_skipped(t(f"documents.{verb}_{'one' if n == 1 else 'many'}", n=n), result)
+        message, persist = _with_skipped(_count_text(f"documents.{verb}", result.get("changed") or 0), result)
         return HTMLResponse(to_xml(await _audit_line_tbody(token, entity_id, *_line_window(form))),
                             headers=toast_header(message, "info", persist=persist))
 
@@ -6565,7 +6590,7 @@ def _receive_summary(line_counts: dict | None) -> str:
 
     def _n(kind: str) -> str:
         n = int(line_counts.get(kind) or 0)
-        return t(f"documents.receive_summary_{kind}_{'one' if n == 1 else 'many'}", n=n) if n else ""
+        return _count_text(f"documents.receive_summary_{kind}", n) if n else ""
 
     parts = []
     if stock := _n("stock"):

@@ -225,6 +225,11 @@ def line_label(line: dict) -> str:
     return str(line.get("sku") or line.get("description") or line.get("name") or "")
 
 
+def line_name(number: int, label: str) -> str:
+    """A line as a message names it: its number and, when it has one, its label in quotes."""
+    return f'{number} "{label}"' if label else str(number)
+
+
 LINE_IDENTIFIER_MODES: tuple[str, ...] = ("sku", "barcode", "barcode_sku")
 
 

@@ -1719,33 +1719,37 @@ async def reopen_doc(token: str, entity_id: str, idempotency_key: str | None = N
 
 
 async def fulfill_lines(token: str, entity_id: str, *, line_ids: list[str] | None = None,
-                        idempotency_key: str | None = None) -> dict:
-    """Ship the chosen lines, named by line id."""
+                        idempotency_key: str | None = None, dry_run: bool = False) -> dict:
+    """Ship the chosen lines, named by line id. ``dry_run``: what it would do, changing nothing."""
     async with _api_client(token) as c:
         return _raise(await c.post(f"/docs/{entity_id}/fulfill-lines", json={
-            "line_ids": line_ids or [], "idempotency_key": idempotency_key})).json()
+            "line_ids": line_ids or [], "idempotency_key": idempotency_key, "dry_run": dry_run})).json()
 
 
 async def set_lines_available(token: str, entity_id: str, *, line_ids: list[str] | None = None,
                               quantities: dict[str, float] | None = None,
-                              idempotency_key: str | None = None, is_list: bool = False) -> dict:
+                              idempotency_key: str | None = None, is_list: bool = False,
+                              dry_run: bool = False) -> dict:
     """Set as available in one request: lines holding stock give it back, lines that shipped
     take their goods back. quantities={line_id: qty_coming_back} takes back only part of a
-    memo line; the rest stays out with the customer."""
+    memo line; the rest stays out with the customer. ``dry_run``: what it would do, changing nothing."""
     base = "/lists" if is_list else "/docs"
     async with _api_client(token) as c:
         return _raise(await c.post(f"{base}/{entity_id}/set-available", json={
-            "line_ids": line_ids or [], "quantities": quantities or None, "idempotency_key": idempotency_key})).json()
+            "line_ids": line_ids or [], "quantities": quantities or None, "idempotency_key": idempotency_key,
+            "dry_run": dry_run})).json()
 
 
 async def reserve_lines(token: str, entity_id: str, *, line_ids: list[str] | None = None, new_status: str,
-                        idempotency_key: str | None = None, is_list: bool = False) -> dict:
+                        idempotency_key: str | None = None, is_list: bool = False, dry_run: bool = False) -> dict:
     """Set lines reserved or available (ledger-neutral). is_list routes to the list router,
-    whose reserve-lines wrapper serves list rows (the docs router 404s them)."""
+    whose reserve-lines wrapper serves list rows (the docs router 404s them). ``dry_run``: what
+    it would do, changing nothing."""
     base = "/lists" if is_list else "/docs"
     async with _api_client(token) as c:
         return _raise(await c.post(f"{base}/{entity_id}/reserve-lines", json={
-            "line_ids": line_ids or [], "new_status": new_status, "idempotency_key": idempotency_key})).json()
+            "line_ids": line_ids or [], "new_status": new_status, "idempotency_key": idempotency_key,
+            "dry_run": dry_run})).json()
 
 
 async def receive_return(token: str, entity_id: str, items: list[dict], notes: str | None = None,
