@@ -217,15 +217,14 @@ async def guard_agreement_status(*, session, entry, transition) -> None:
     own page), where a mode coming into force asks for its consent and a mode stopping drops
     it. Every other writer (void, unvoid, finalize, revert, an import) is refused (409), and so
     is any that would leave an agreement a status outside AGREEMENT_STATUSES. A draft starts only
-    through Activate, which writes its schedule: a draft leaves draft elsewhere only by void, and
-    a new agreement starts active or paused only on a schedule. Those refusals name Activate."""
+    through Activate, which writes its schedule, so a draft leaves draft elsewhere only by void;
+    that refusal names Activate. An agreement without a schedule bills nothing (billable)."""
     if _WRITING.get() == entry.entity_id or transition.after.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
         return
     if modes_in_force(transition.before or {}) or modes_in_force(transition.after):
         raise HTTPException(status_code=409, detail=t("subscriptions.err_agreement_status_elsewhere"))
     status, was = transition.after.get("status"), (transition.before or {}).get("status")
-    if was in (None, "draft") and (status not in AGREEMENT_STATUSES or (was == "draft" and status != "void") or (
-            status in ("active", "paused") and not transition.after.get("anchor_date"))):
+    if was == "draft" and status not in ("draft", "void"):
         raise HTTPException(status_code=409, detail=t("subscriptions.err_agreement_activate"))
     if status not in AGREEMENT_STATUSES:
         raise HTTPException(status_code=409, detail=t("subscriptions.err_agreement_status_lifecycle"))

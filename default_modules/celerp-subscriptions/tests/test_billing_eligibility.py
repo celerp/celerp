@@ -166,27 +166,23 @@ async def test_a_door_bills_exactly_when_the_preview_lists_the_period(client, se
 
 
 async def test_documents_finalize_of_a_draft_agreement_is_refused_naming_activate(client, session, monkeypatch):
-    from ui.i18n import t
-
     freeze_day(monkeypatch, TODAY)
     hd = await register(client)
     eid = await agreement(client, hd, start=TODAY, activate=False)
     r = await _call(lambda: client.post(f"/docs/{eid}/finalize", headers=hd))
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == t("subscriptions.err_agreement_activate")
+    assert r.json()["detail"]["message_key"] == "subscriptions.err_agreement_activate", r.text
     assert (await template(client, hd, eid)).get("status") == "draft"
     assert (await client.post(f"/subscriptions/{eid}/activate", headers=hd)).status_code == 200
     assert (await generate_due(client, hd, eid)).status_code == 200
 
 
 async def test_a_voided_agreement_bills_nothing_until_it_is_unvoided(client, session, monkeypatch):
-    from ui.i18n import t
-
     hd, eid = await _manual(client, monkeypatch, TODAY)
     assert (await client.post(f"/docs/{eid}/void", headers=hd, json={"reason": "entered twice"})).status_code == 200
     assert not await _due_listed(client, hd, eid)
     r = await _call(lambda: generate_due(client, hd, eid))
-    assert r.status_code == 409 and r.json()["detail"] == t("subscriptions.err_bill_void"), r.text
+    assert r.status_code == 409 and r.json()["detail"]["message_key"] == "subscriptions.err_bill_void", r.text
     assert await billed_docs(session, eid) == []
     assert (await client.post(f"/docs/{eid}/unvoid", headers=hd, json={})).status_code == 200
     assert await _due_listed(client, hd, eid)
