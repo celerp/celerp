@@ -599,3 +599,27 @@ async def test_a_held_revision_sent_again_with_other_content_is_refused(monkeypa
             _Hashed(), grant=_grant(), source_entity_id="doc:source", source_revision=5,
             data={"doc_type": "invoice", "status": "draft"})
     assert err.value.status_code == 409 and err.value.detail == "Source revision already used"
+
+
+@pytest.mark.asyncio
+async def test_a_copied_shipment_with_a_line_the_receiver_cannot_ship_is_refused_whole(monkeypatch):
+    """The receiving document ships every line the source shipped or none: a line Set as
+    shipped would leave (its goods sold or held there) refuses the copy instead of shipping
+    the rest."""
+    from celerp_docs import routes
+
+    async def mapped(session, grant, entity_type, source_id):
+        return f"item:{source_id}"
+    async def get_doc(session, company_id, entity_id, for_update=False):
+        return SimpleNamespace(state={"line_items": [
+            {"line_id": "a", "item_id": "item:1"}, {"line_id": "b", "item_id": "item:2"}]})
+    async def fulfill(entity_id, indices, company_id, user, session, *, commit):
+        assert indices == [0, 1] and commit is False
+        return {"skipped": [{"line": 2, "name": "Ring", "kind": "unavailable",
+                             "line_id": "b"}]}
+    monkeypatch.setattr(documents, "_map_identity", mapped)
+    monkeypatch.setattr(routes, "_get_doc", get_doc)
+    monkeypatch.setattr(routes, "_fulfill_lines_impl", fulfill)
+    with pytest.raises(HTTPException) as refused:
+        await documents._replay_fulfilment(_Session(), _grant(), "doc:target", {"1", "2"}, uuid.uuid4())
+    assert refused.value.status_code == 422
