@@ -11617,23 +11617,26 @@ def _list_table(lists: list[dict], lang: str = "en", period: tuple[str, str, str
             id="list-table",
         )
 
+    # The Weight column shows only when some list on the page has a weighed line.
+    show_weight = any(d.get("has_weight") for d in lists)
+
     def _row(d: dict) -> FT:
         eid = d.get("entity_id") or d.get("id", "")
         ref = d.get("ref_id") or eid
-        # The listing endpoint carries the per-row rollups (item_count, total_weight)
-        # computed in SQL, so the table never materializes the line array. If a row
-        # omits them, degrade honestly to a dash / empty weight rather than a wrong 0.
+        # The listing endpoint carries the per-row rollups (item_count, total_weight and its
+        # weight_unit) computed in SQL, so the table never materializes the line array. A list
+        # whose lines do not all carry a weight in one unit has no total and shows a dash.
         raw_count = d.get("item_count")
         count_cell = str(int(raw_count)) if raw_count is not None else EMPTY
-        raw_weight = d.get("total_weight")
-        weight = float(raw_weight or 0) if raw_weight is not None else 0.0
+        weight = d.get("total_weight")
+        weight_cell = f"{float(weight):g} {display_unit(d.get('weight_unit'))}" if weight is not None else EMPTY
         return Tr(
             Td(A(ref, href=f"/lists/{eid}", cls="table-link")),
             Td(format_value(d.get("list_type"), "badge")),
             Td(format_value(d.get("customer"))),
             Td(format_value(d.get("date"), "date")),
             Td(count_cell, cls="cell--number"),
-            Td(f"{weight:.2f}" if weight else EMPTY, cls="cell--number"),
+            *((Td(weight_cell, cls="cell--number"),) if show_weight else ()),
             Td(format_value(d.get("total"), "money"), cls="cell--number"),
             # The label the list's own page shows (_list_status_label), computed by the index.
             Td(format_value(d.get("status_label") or d.get("status"), "badge", domain="doc_status")),
@@ -11643,7 +11646,8 @@ def _list_table(lists: list[dict], lang: str = "en", period: tuple[str, str, str
     return Table(
         Thead(Tr(
             Th(t("th.ref")), Th(t("th.doc_type")), Th(t("th.customer")),
-            Th(t("label.issue_date")), Th(t("th.items"), cls="cell--number"), Th(t("th.weight"), cls="cell--number"), Th(t("label.amount"), cls="cell--number"),
+            Th(t("label.issue_date")), Th(t("th.items"), cls="cell--number"),
+            *((Th(t("th.weight"), cls="cell--number"),) if show_weight else ()), Th(t("label.amount"), cls="cell--number"),
             Th(t("th.status")),
         )),
         Tbody(*[_row(d) for d in lists]),

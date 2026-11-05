@@ -54,8 +54,8 @@ from celerp.services.payments import lock_recorded_unmatched, recorded_unmatched
 from celerp.tax_regimes import default_line_taxes, set_new_line_taxes, side_taxes
 from celerp.services.business_time import business_date_at, business_date_of, company_today
 from celerp.services.landed_cost import compute_bill_landed_allocation
-from celerp.services.line_measures import (FULL, floor_to_unit, line_label, proposed_sell_qty, splitting_allowed,
-                                          splitting_off)
+from celerp.services.line_measures import (FULL, floor_to_unit, line_label, proposed_sell_qty, shared_unit_total,
+                                          splitting_allowed, splitting_off)
 from celerp.services.document_lines import (
     DrawnLine, MemoDraw, MemoReturn, assert_line_holds_respected, assert_new_references_eligible,
     line_id_counts, line_item_id, linked_items, memo_out_refusal, out_on_another_memo, received_line_index,
@@ -8780,18 +8780,21 @@ async def list_lists(
     # individual lines. Push the count and weight sum into SQL and select the header columns alone, so
     # a list with thousands of lines never drags its whole line_items array back into Python here.
     item_count = _func.coalesce(_func.json_array_length(Projection.state["line_items"]), 0)
-    # One line of unknown weight leaves the list's weight unknown (NULL), never short.
-    weight_sum = _sa.literal_column(
-        "(SELECT CASE WHEN BOOL_OR(w IS NULL) THEN NULL ELSE COALESCE(SUM(w), 0) END FROM ("
-        "SELECT COALESCE(NULLIF(elem ->> 'weight_ct', '')::numeric, NULLIF(elem ->> 'weight', '')::numeric) AS w "
-        "FROM json_array_elements(projections.state -> 'line_items') AS elem) AS lw)"
+    # The lines' (weight, unit) pairs, lines of equal weight and unit folded into one pair carrying
+    # their summed weight, so the page reads a handful of values per list. shared_unit_total decides
+    # the total from them, the same rule the printed documents use.
+    weight_pairs = _sa.literal_column(
+        "(SELECT json_agg(json_build_array(lw.w * lw.n, lw.u)) FROM ("
+        "SELECT NULLIF(elem ->> 'weight', '')::numeric AS w, elem ->> 'weight_unit' AS u, COUNT(*) AS n "
+        "FROM json_array_elements(projections.state -> 'line_items') AS elem GROUP BY 1, 2) AS lw)",
+        type_=_sa.JSON,
     )
     columns = _list_columns(sort_date)
     list_q = (
         select(
             *(expr.label(name) for name, expr in columns.items()),
             item_count.label("item_count"),
-            weight_sum.label("total_weight"),
+            weight_pairs.label("weight_pairs"),
             # What status_key reads beyond the columns above; only the page's rows carry them, the CSV never does.
             *(Projection.state[key].as_string().label(key) for key in _LIST_STATUS_KEY_FIELDS),
         )
@@ -8804,10 +8807,17 @@ async def list_lists(
     if limit is not None:
         list_q = list_q.limit(limit)
     rows = (await session.execute(list_q)).all()
+
+    def _weight(r) -> dict:
+        pairs = r.weight_pairs or []
+        total = shared_unit_total(pairs)
+        return {"total_weight": total[0] if total else None, "weight_unit": total[1] if total else None,
+                "has_weight": any(w not in (None, 0) for w, _ in pairs)}
+
     out = [{
         **{name: getattr(r, name) for name in columns},
         "item_count": r.item_count,
-        "total_weight": None if r.total_weight is None else float(r.total_weight),
+        **_weight(r),
         # The label the list's page shows (Issued, Sent, In transit, ...); status stays the raw
         # lifecycle value the filters and status cards use.
         "status_label": status_key({"status": r.status, "list_type": r.list_type,

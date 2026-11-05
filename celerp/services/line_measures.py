@@ -132,6 +132,21 @@ def _g(value) -> str:
     return f"{float(value):g}"
 
 
+def shared_unit_total(measures) -> tuple[float, str] | None:
+    """The sum of per-line ``(value, unit)`` measures and their unit, or None unless EVERY line
+    carries a value in one shared, named unit. A partial sum would understate the total and a
+    mixed one (kg plus carats) means nothing, so incomplete or mixed data has no total."""
+    values, units = [], set()
+    for value, unit in measures:
+        if value in (None, "", 0) or not unit:
+            return None
+        values.append(float(value))
+        units.add(unit)
+    if len(units) != 1:
+        return None
+    return sum(values), units.pop()
+
+
 def item_measure_meta(item: dict, unit_map: dict) -> dict:
     """Project a (flattened) inventory item to the measure-meta a doc line needs.
 

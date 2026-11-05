@@ -24,7 +24,7 @@ from fasthtml.common import (
 from celerp.output.branding import BRAND_TEXT as _BRAND_LABEL, brand_url as _brand_url
 from celerp.output.document_context import prepare_document_output
 from celerp.services.doc_balance import doc_tax, doc_value, is_awaiting_payment, outstanding_balance
-from celerp.services.line_measures import line_identifier as _line_identifier, measure_sublines, qty_label
+from celerp.services.line_measures import line_identifier as _line_identifier, measure_sublines, qty_label, shared_unit_total
 from celerp.services.list_behavior import DEFAULT_LIST_TYPE, LIST_BEHAVIOR, SUPPLIER_DOC_TYPES
 from celerp.services.money import document_line_amount, to_decimal
 from celerp.services.shipping import REASON_EXPORT_LABELS, SHIPPING_LIST_TYPE
@@ -394,16 +394,10 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
         return f"{float(w):g} {li.get('gross_weight_unit') or ''}".strip()
 
     def _weight_total(key: str, unit_key: str) -> str:
-        """Sum a per-line weight - but only when EVERY line carries it in one shared
-        unit. A partial sum would understate the shipment on customs paper, so
-        incomplete data prints blank instead."""
-        if not line_items or any(li.get(key) in (None, "", 0) for li in line_items):
-            return ""
-        units = {li.get(unit_key) or "" for li in line_items}
-        if len(units) != 1:
-            return ""
-        total = sum(float(li.get(key) or 0) for li in line_items)
-        return f"{total:g} {next(iter(units))}".strip() if total else ""
+        """A per-line weight summed by :func:`shared_unit_total`; blank when the lines do not
+        all carry it in one unit, so customs paper never shows a partial or mixed sum."""
+        total = shared_unit_total((li.get(key), li.get(unit_key)) for li in line_items)
+        return f"{total[0]:g} {total[1]}" if total else ""
 
     rows = []
     if ship_layout:
