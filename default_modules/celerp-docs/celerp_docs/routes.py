@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import bisect
 import hashlib
+import inspect
 import json
 import math
 import uuid
@@ -490,6 +491,51 @@ def outcome_binding(result: dict) -> str:
     return hashlib.sha256(json.dumps(shown, sort_keys=True).encode()).hexdigest()
 
 
+# What each key of a bulk line action's answer means, for the API reference (answers_with).
+LINE_ANSWER_KEYS = {
+    "acted": "the line ids of the chosen lines it acts on",
+    "skipped": "the chosen lines it leaves as they are, each with its number (``line``), name, ``kind`` and ``line_id``",
+    "skipped_notice": "the messages saying why it leaves those lines",
+    "taken_back": ("the shipped lines whose shipment it reverses, taking their goods back into stock, "
+                   "each with its number (``line``), name and ``line_id``"),
+    "taken_back_notice": "the message naming those lines",
+    "binding": ("this answer as one digest; send it back with the action to have the action refused "
+                "(409 ``lines.preview_differs``), changing nothing, if it would now do anything else"),
+    "fulfillment_status": "the record's shipping status after the action",
+    "fulfilled": "the items it ships",
+    "taken_from": ("the other invoices that had set the shipped goods' cost aside, each with "
+                   "``sku``, ``lot_id``, ``doc_id`` and ``doc_number``"),
+    "reverted": "the items it takes back whole",
+    "partially_returned": ("for each line returned in part, the new in-stock item split off, with its "
+                           "``item_id``, ``sku`` and ``quantity``"),
+    "new_status": "the status the lines are set to",
+    "reserved": "the items it holds for this record",
+    "released": "the items whose hold it gives back",
+    "removed": "the line ids it takes off the invoice",
+    "reopened_memos": "the memos the lines go back to",
+    "changed": "how many lines it changes",
+    "target_doc_id": "the invoice the goods are billed on",
+    "draw_id": "the draw's id on the memo",
+    "event_id": "the id of the event that records the draw",
+    "invoiced": "how many memo lines it bills",
+    "memo_ref": "the memo's number",
+}
+
+
+# Every stock line action answers these beside its own keys (_line_action_answer).
+_STOCK_ANSWER = ("acted", "skipped", "skipped_notice", "binding")
+
+
+def answers_with(*keys: str):
+    """Add to the decorated endpoint's API reference what each of ``keys`` in its answer means
+    (LINE_ANSWER_KEYS). Placed under the route decorator, which reads the reference."""
+    def describe(endpoint):
+        endpoint.__doc__ = (inspect.cleandoc(endpoint.__doc__ or "") + "\n\nThe answer: "
+                            + "; ".join(f"``{k}``: {LINE_ANSWER_KEYS[k]}" for k in keys) + ".")
+        return endpoint
+    return describe
+
+
 class MemoTaxRateBody(BaseModel):
     """A tax rate for an issued memo. ``dry_run`` returns the figures it gives with their
     ``binding``; the write sends that binding back and stores only that preview.
@@ -603,23 +649,19 @@ class DocBatchImportRequest(BaseModel):
 
 
 class FulfillLinesRequest(BaseModel):
-    """The lines an action applies to: ``line_ids`` names each line by its line id.
-
-    ``line_entity_ids`` picks lines by the item they bind; each item must be on exactly one
-    line. Send one of the two.
-    ``idempotency_key`` names one submission: sending it again returns the first result.
-    ``dry_run`` answers what the action would do, as the action itself decides it, and changes
-    nothing: the lines it would act on (``acted``) and the lines it would leave (``skipped``),
-    or the refusal it would give, with its ``binding`` (outcome_binding). Sending that
-    ``binding`` back with the action refuses it (409 ``lines.preview_differs``), changing
-    nothing, when the action would now act on, leave or take back other lines than the
-    preview said."""
-    line_ids: list[str] = Field(default_factory=list)
-    line_entity_ids: list[str] = Field(default_factory=list)
-    idempotency_key: str | None = None
+    """The lines an action applies to: send ``line_ids`` or ``line_entity_ids``."""
+    line_ids: list[str] = Field(default_factory=list, description="The chosen lines, each by its line id.")
+    line_entity_ids: list[str] = Field(default_factory=list, description=(
+        "The chosen lines, each by the item it binds; each item must be on exactly one line."))
+    idempotency_key: str | None = Field(default=None, description=(
+        "Names one submission: sending it again returns the first result."))
     # Not part of the request a key names: the preview and the action it confirms share one.
-    dry_run: bool = Field(default=False, exclude=True)
-    binding: str | None = Field(default=None, exclude=True)
+    dry_run: bool = Field(default=False, exclude=True, description=(
+        "Answer what the action would do, as the action itself decides it, and change nothing: "
+        "the lines it would act on, leave and take back, or the refusal it would give, with its binding."))
+    binding: str | None = Field(default=None, exclude=True, description=(
+        "The binding of the preview the user confirmed. The action is refused (409 lines.preview_differs), "
+        "changing nothing, when it would now act on, leave or take back other lines than that preview said."))
 
     @field_validator("line_ids", "line_entity_ids")
     @classmethod
@@ -630,32 +672,25 @@ class FulfillLinesRequest(BaseModel):
 
 
 class RevertLinesRequest(FulfillLinesRequest):
-    """Revert whole lines, or return part of one.
-
-    ``quantities`` maps a chosen line (its line id, or its item id when lines are chosen
-    by item) to the quantity coming back. Omit it, or give the whole quantity out, to take
-    it all back. A smaller quantity is a partial
-    return: that much is split off and comes back into stock, and the remainder stays out
-    with the customer, so goods still in their hands are never written off as returned.
-
-    ``weights`` / ``pieces`` carry the returned lot's measures for parcels tracked by a
-    measure the quantity does not imply (a piece-sold parcel that also carries a weight).
-    A measure not stated for a part-returned parcel is unknown on both sides, never guessed.
-    """
-    quantities: dict[str, FiniteFloat] | None = None
-    weights: dict[str, FiniteFloat] | None = None
-    pieces: dict[str, int] | None = None
+    """Revert whole lines, or return part of one. A partial return splits off what comes back
+    into stock and leaves the remainder out with the customer, so goods still in their hands
+    are never written off as returned."""
+    quantities: dict[str, FiniteFloat] | None = Field(default=None, description=(
+        "The quantity coming back per chosen line, by its line id (or its item id when lines are chosen by item). "
+        "Omitted, or the whole quantity out: it all comes back. A smaller quantity is a partial return."))
+    weights: dict[str, FiniteFloat] | None = Field(default=None, description=(
+        "The returned lot's weight per line, for a parcel whose quantity does not imply it. "
+        "Not stated for a part-returned parcel: unknown on both sides, never guessed."))
+    pieces: dict[str, int] | None = Field(default=None, description=(
+        "The returned lot's pieces per line, for a parcel whose quantity does not imply them. "
+        "Not stated for a part-returned parcel: unknown on both sides, never guessed."))
 
 
 class ReserveLinesRequest(FulfillLinesRequest):
-    """Set selected lines to a ledger-neutral stock status.
-
-    ``new_status`` is the target: ``reserved`` marks lines held for this document (stamps it as
-    owner); ``available`` releases lines this document reserved back to the pool. Neither draws
-    stock nor posts COGS - that is Set-as-shipped (fulfill-lines). Inherits the strip-empty /
-    de-duplicate validator from FulfillLinesRequest.
-    """
-    new_status: Literal["reserved", "available"]
+    """Set selected lines to a ledger-neutral stock status. Neither status draws stock nor posts
+    COGS - that is Set-as-shipped (fulfill-lines)."""
+    new_status: Literal["reserved", "available"] = Field(description=(
+        "reserved: hold the lines' goods for this record. available: give back what this record holds."))
 
 
 def _assert_date_order(patch: dict, current: dict | None = None) -> None:
@@ -9750,6 +9785,7 @@ async def finalize_list_record(entity_id: str, company_id: str, user, session: A
 
 
 @lists_router.post("/{entity_id}/reserve-lines")
+@answers_with("new_status", "reserved", "released", "taken_back", "taken_back_notice", *_STOCK_ANSWER)
 async def reserve_list_lines(
     entity_id: str,
     body: ReserveLinesRequest,
@@ -9775,6 +9811,7 @@ async def reserve_list_lines(
 
 
 @lists_router.post("/{entity_id}/set-available")
+@answers_with("new_status", "reserved", "released", *_STOCK_ANSWER)
 async def set_list_lines_available(
     entity_id: str,
     body: FulfillLinesRequest,
@@ -11192,6 +11229,7 @@ async def _line_action(session, company_id, user, owner: Projection, action: str
 
 
 @router.post("/{entity_id}/fulfill-lines")
+@answers_with("fulfillment_status", "fulfilled", "taken_from", *_STOCK_ANSWER)
 async def fulfill_lines(
     entity_id: str,
     body: FulfillLinesRequest,
@@ -11625,6 +11663,7 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
 
 
 @router.post("/{entity_id}/revert-lines")
+@answers_with("fulfillment_status", "reverted", "partially_returned", *_STOCK_ANSWER)
 async def revert_lines(
     entity_id: str,
     body: RevertLinesRequest,
@@ -11656,15 +11695,14 @@ async def revert_lines(
 
 
 class InvoiceLinesRequest(RevertLinesRequest):
-    """Invoice goods out on a memo. ``line_ids`` names the memo lines and ``quantities`` the
-    units of each to invoice, by line id (omitted: every unit the line has out).
-    ``target_doc_id`` names a draft invoice of the same customer to add them to; without it
-    a new invoice is made. ``dry_run`` returns what the draw would bill and leave on the memo
-    without writing anything, with its ``binding``; sending that ``binding`` back with the draw
-    refuses it unless it is exactly the draw the preview showed (preview_binding)."""
-    target_doc_id: str | None = None
-    dry_run: bool = False
-    binding: str | None = None
+    """Invoice goods out on a memo: ``line_ids`` names the memo lines and ``quantities`` the
+    units of each to invoice, by line id (omitted: every unit the line has out)."""
+    target_doc_id: str | None = Field(default=None, description=(
+        "A draft invoice of the same customer to add the goods to; without it a new invoice is made."))
+    dry_run: bool = Field(default=False, description=(
+        "Answer what the draw would bill and leave on the memo, with its binding, and write nothing."))
+    binding: str | None = Field(default=None, description=(
+        "The binding of the preview the user confirmed: the draw is refused unless it is exactly that draw."))
 
     @model_validator(mode="after")
     def _names_lines_by_id(self):
@@ -12051,6 +12089,7 @@ async def _write_draw(session, company_id, role: str, settings: dict, user, comp
 
 
 @router.post("/{entity_id}/invoice-lines")
+@answers_with("target_doc_id", "draw_id", "event_id", "invoiced", "memo_ref", "acted", "skipped", "skipped_notice")
 async def invoice_lines(
     entity_id: str,
     body: InvoiceLinesRequest,
@@ -12108,6 +12147,7 @@ async def _draw_from_memo(session, company_id, role: str, settings: dict, user, 
 
 
 @router.post("/{entity_id}/back-to-memo")
+@answers_with("removed", "reopened_memos", *_STOCK_ANSWER)
 async def back_to_memo(
     entity_id: str,
     body: FulfillLinesRequest,
@@ -12367,6 +12407,7 @@ async def _reserve_lines_impl(
 
 
 @router.post("/{entity_id}/reserve-lines")
+@answers_with("new_status", "reserved", "released", "taken_back", "taken_back_notice", *_STOCK_ANSWER)
 async def reserve_lines(
     entity_id: str,
     body: ReserveLinesRequest,
@@ -12420,6 +12461,8 @@ async def _set_available_impl(row: Projection, body: SetAvailableRequest, indice
 
 
 @router.post("/{entity_id}/set-available")
+@answers_with("fulfillment_status", "reverted", "partially_returned", "released", "taken_back",
+              "taken_back_notice", *_STOCK_ANSWER)
 async def set_lines_available(
     entity_id: str,
     body: SetAvailableRequest,
@@ -14158,11 +14201,12 @@ async def set_audit_count(
 
 
 class SetScannedBody(BaseModel):
-    line_ids: list[str] = Field(default_factory=list)
-    scanned: bool = True
+    line_ids: list[str] = Field(default_factory=list, description="The chosen audit lines, each by its line id.")
+    scanned: bool = Field(default=True, description="true: mark the lines as scanned. false: clear the mark.")
 
 
 @lists_router.post("/{entity_id}/set-scanned")
+@answers_with("changed", "skipped", "skipped_notice")
 async def set_scanned(
     entity_id: str, payload: SetScannedBody,
     company_id=Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user),

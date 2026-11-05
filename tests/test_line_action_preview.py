@@ -21,7 +21,7 @@ import pytest
 from sqlalchemy import func, select
 
 from celerp.models.ledger import LedgerEntry
-from test_item_less_line_actions import GIA, SVC, _act, _gems, _ids, _line, _list, _ok, _state, _status
+from test_item_less_line_actions import GIA, SVC, _act, _gems, _ids, _line, _list, _ok, _state, _status, assert_described
 import test_item_less_line_actions
 
 # The page's client, shared with the item-less line tests.
@@ -459,6 +459,7 @@ async def test_an_action_does_only_what_its_preview_said(client, session, race):
         assert fresh.json()["binding"] != preview["binding"]
         real = await client.post(url, headers=g.h, json={**body, "binding": fresh.json()["binding"]})
         assert (real.status_code, real.json()) == (200, fresh.json())
+        assert_described(("POST", f"/{base}/{{entity_id}}/{path}"), real.json())
     else:
         assert 400 <= bound.status_code < 500 and bound.status_code != 409, bound.text
 

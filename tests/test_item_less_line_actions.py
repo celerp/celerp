@@ -579,6 +579,26 @@ async def test_the_api_reference_describes_the_lines_a_stock_action_leaves(clien
     assert "all or nothing" not in said
 
 
+def assert_described(route: tuple[str, str], answer: dict) -> None:
+    """Every key of ``answer``, the answer to the bulk line action ``route``, is described in
+    the API reference of that route as ``key``."""
+    from celerp.main import app
+    said = app.openapi()["paths"][route[1]][route[0].lower()].get("description", "")
+    assert not (missing := [k for k in answer if f"``{k}``" not in said]), (route, missing)
+
+
+async def test_the_api_reference_describes_every_field_a_bulk_line_action_takes(client):
+    """Red statement: ``dry_run`` and ``binding`` of Set as reserved, Set as available and
+    Revert had no description in the reference."""
+    from celerp.main import app
+    spec = app.openapi()
+    schemas = spec["components"]["schemas"]
+    for method, path in _line_selection_routes():
+        ref = spec["paths"][path][method.lower()]["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+        props = schemas[ref.rsplit("/", 1)[-1]]["properties"]
+        assert not (missing := [f for f, p in props.items() if not p.get("description")]), (path, missing)
+
+
 async def test_the_page_never_decides_which_lines_a_stock_action_acts_on():
     """The page script carries no skip table for the stock actions: only Print labels, which
     runs in the page, names its skipped rows itself. No stock action on the toolbar asks a
@@ -622,6 +642,7 @@ async def test_a_mixed_choice_is_counted_then_named_in_the_actions_own_words(cli
               if not (li.get("item_id") or li.get("entity_id"))}
     item_less = list(before)
     answer = await _ok(await send(client, g, owner, [acting, *item_less]))
+    assert_described(next(k for k in _ALL_SKIPPED if k[1] == route), answer)
     # The lines it named as left are stored as they were, and it counts only the one it changed.
     after = {li["line_id"]: li for li in (await _state(client, g, owner))["line_items"]}
     assert {lid: after.get(lid) for lid in item_less} == before
