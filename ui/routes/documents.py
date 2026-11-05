@@ -27,7 +27,7 @@ from celerp.services.units import (
     DEFAULT_UNITS, RECEIVE_KINDS, build_unit_map, default_receive_as, format_qty, line_receive_kind, plain_number, quantity_step,
 )
 from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, line_label, line_name, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
-from ui.components.shell import base_shell, page_header, refusal_fix, toast_header, page_title
+from ui.components.shell import base_shell, page_header, toast_header, page_title
 from ui.security import not_permitted_redirect
 from ui.components.table import search_bar, search_results, EMPTY, pagination, per_page_value, server_pager, searchable_select, breadcrumbs, status_cards, empty_state_cta, period_all_time_link, period_empty_text, fmt_money, fmt_rate, format_value, currency_symbol, unwrap_address, col_resize_script, bank_account_options as _bank_account_options, display_cell, editable_cell, empty_mark, display_enum, display_unit, doc_href, doc_status_badge, doc_status_shown
 from celerp.services.background import spawn_background
@@ -1207,10 +1207,6 @@ def _action_error(msg: str | dict | APIError, *, persist: bool = False, action: 
     from starlette.responses import HTMLResponse as _HR
     if isinstance(msg, APIError):
         msg = msg.data if isinstance(msg.data, dict) and msg.data.get("message_key") else error_message(msg)
-    if isinstance(msg, dict) and msg.get("also"):
-        # A refusal of several kinds: its message, then each of the others.
-        action = action or refusal_fix(msg)
-        msg = f"{refusal_text(msg)} {refusal_text(msg['also'])}"
     return _HR(
         "",
         status_code=200,
@@ -3711,8 +3707,9 @@ celerpUpdateBulkAlloc();
             if e.status == 401:
                 raise
             also = (e.data.get("also") or []) if isinstance(e.data, dict) else []
-            msg = error_message(e)
-            return _action_error(f"{msg} {t('documents.draw_also')} {refusal_text(also)}" if also else msg)
+            if not also:
+                return _action_error(e)
+            return _action_error(f"{refusal_text({**e.data, 'also': []})} {t('documents.draw_also')} {refusal_text(also)}")
         # Read on the new invoice: say what came over from which memo, and what stayed there.
         n = result.get("invoiced") or 0
         message, persist = _with_notices(

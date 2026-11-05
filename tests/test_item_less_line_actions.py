@@ -689,6 +689,32 @@ async def test_a_mixed_choice_is_counted_then_named_in_the_actions_own_words(cli
             f"{said} {refusal_text(answer['skipped_notice'])}")
 
 
+@pytest.mark.parametrize("route", [r for r in _ROUTES if _case(r)[3]], ids=_route_id)
+async def test_a_refusal_of_several_kinds_shows_every_reason_on_the_page(client, session, ui_client, route):
+    """Red statement: Mark as scanned on line 1, already scanned, and the GIA Certificate was
+    refused for both, but the page showed only the GIA Certificate's reason."""
+    import ui.api_client as api
+    from test_helpers import make_test_token
+    from ui.components.preview_confirm import BINDING
+    from ui.i18n import refusal_text
+    kind, _action, _send, (path, call), _done = _case(route)
+    g = await _gems(client)
+    owner, acting = await _owner_for(client, g, kind)
+    first = {"message": 'Line 3 "GIA Certificate" isn\'t an inventory item.',
+             "message_key": "documents.scan_lines_skipped_one", "params": {"lines": '3 "GIA Certificate"'}}
+    second = {"message": 'Line 1 "DEMO-COL-002" was already marked as scanned.',
+              "message_key": "documents.scanned_lines_skipped_one", "params": {"lines": '1 "DEMO-COL-002"'}}
+    body = {"detail": {**first, "also": [second]}}
+    data = {"line_id": [acting], "idempotency_key": "k-also", "new_status": "reserved", "scanned": "1",
+            "pick_0": acting, BINDING: "b"}
+    ui_client.cookies.update({"celerp_token": make_test_token(role="owner")})
+    with patch(f"ui.api_client.{call}", new=AsyncMock(side_effect=api._api_error(422, body, json.dumps(body)))):
+        r = await ui_client.post(f"/{'lists' if owner.startswith('list:') else 'docs'}/{owner}/{path}", data=data)
+    trigger = r.headers.get("HX-Trigger")
+    shown = json.loads(trigger)["celerpToast"]["message"] if trigger else r.text
+    assert refusal_text(first) in shown and refusal_text(second) in shown, shown
+
+
 @pytest.mark.parametrize("route", _ROUTES, ids=_route_id)
 async def test_a_choice_of_only_item_less_lines_changes_nothing_and_is_refused(client, session, route):
     from celerp_docs.doc_constants import LINE_SKIP_REASONS
