@@ -24,6 +24,10 @@
       "params": [
         "fields"
       ]
+    },
+    "subscriptions.err_agreement_status_elsewhere": {
+      "en": "An agreement that bills or sends on its own changes status only on its own page: activate, pause, resume or cancel it there.",
+      "params": []
     }
   }
 }

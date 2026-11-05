@@ -44,6 +44,7 @@
     "posting.problems",
     "settings.tab_cloud_relay",
     "setup.cloud",
+    "subscriptions.err_agreement_status_elsewhere",
     "th.position",
     "th.sku"
   ],
@@ -80,6 +81,7 @@
     "posting.problems",
     "settings.tab_cloud_relay",
     "setup.cloud",
+    "subscriptions.err_agreement_status_elsewhere",
     "th.position",
     "th.sku"
   ],
@@ -184,6 +186,7 @@
     "settings_sales.line_ident_barcode_sku",
     "setup.cloud",
     "shell.update_details",
+    "subscriptions.err_agreement_status_elsewhere",
     "th.barcode",
     "th.code",
     "th.detail",
@@ -274,6 +277,7 @@
     "settings_general.breadcrumb_general",
     "setup.cloud",
     "status.final",
+    "subscriptions.err_agreement_status_elsewhere",
     "th.color",
     "th.editable",
     "th.factor",
@@ -398,6 +402,7 @@
     "settings.tab_cloud_relay",
     "setup.cloud",
     "status.final",
+    "subscriptions.err_agreement_status_elsewhere",
     "th.actions",
     "th.code",
     "th.contact",
@@ -517,6 +522,7 @@
     "settings.tab_cloud_relay",
     "setup.cloud",
     "status.final",
+    "subscriptions.err_agreement_status_elsewhere",
     "th.label",
     "th.memo",
     "th.position",
@@ -603,6 +609,7 @@
     "settings.tab_backup",
     "settings.tab_cloud_relay",
     "setup.cloud",
+    "subscriptions.err_agreement_status_elsewhere",
     "th.email",
     "th.file",
     "th.memo",
@@ -652,6 +659,7 @@
     "posting.problems",
     "settings.tab_cloud_relay",
     "setup.cloud",
+    "subscriptions.err_agreement_status_elsewhere",
     "th.position",
     "th.sku"
   ],
@@ -740,6 +748,7 @@
     "settings.tab_cloud_relay",
     "setup.cloud",
     "status.final",
+    "subscriptions.err_agreement_status_elsewhere",
     "th.item",
     "th.position",
     "th.sku",
@@ -789,6 +798,7 @@
     "posting.problems",
     "settings.tab_cloud_relay",
     "setup.cloud",
+    "subscriptions.err_agreement_status_elsewhere",
     "th.position",
     "th.sku"
   ],
@@ -845,6 +855,7 @@
     "posting.problems",
     "settings.tab_cloud_relay",
     "setup.cloud",
+    "subscriptions.err_agreement_status_elsewhere",
     "th.position",
     "th.sku"
   ]

@@ -18,10 +18,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.models.projections import Projection
-from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
+from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.business_time import company_today
 from celerp.services.company_lock import locked_company
-from celerp.services.permissions import missing_permission, require_permission, role_has_permission
+from celerp.services.permissions import require_permission
 from celerp_docs.doc_constants import NO_SEND_DOC_TYPES
 from celerp_subscriptions import billing, migration, summary
 from celerp_subscriptions.periods import (
@@ -446,17 +446,15 @@ def _build_router() -> APIRouter:
         body: ScheduleBody,
         company_id: uuid.UUID = Depends(get_current_company_id),
         _: None = require_permission("edit_documents"),
-        role: str = Depends(get_current_role),
         user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
         """Change the agreement's schedule terms and unattended modes. Bringing a mode into
-        force, or changing the terms of one that runs, needs its permission and records the
-        consent of the person who did; a mode that stops running loses its consent."""
+        force, or changing the terms of one that runs, asks for its consent where every
+        agreement write does (billing.write_agreement)."""
         sent = body.model_dump(include=body.model_fields_set)
         changes = {f: (v.isoformat() if isinstance(v, date) else v) for f, v in sent.items()}
-        company = await locked_company(session, company_id)
-        settings = company.settings or {}
+        await locked_company(session, company_id)
         proj = await billing.locked_agreement(session, company_id, entity_id, scheduled=False)
         if migration.is_legacy(proj.state):
             return await _move_with(session, company_id, proj, sent, user)
@@ -493,14 +491,6 @@ def _build_router() -> APIRouter:
         sending_off = sending_off and "generation_mode" in changes
         if sending_off:
             changes["auto_send"] = False
-        running = billing.modes_in_force(state)
-        in_force = billing.modes_in_force({**state, **changes})
-        needed = [m for m in in_force if m not in running or any(
-            f in changes and changes[f] != state.get(f) for f in billing.CONSENT_TERMS[m])]
-        for mode in needed:
-            for permission in (billing.MODE_PERMISSION[mode], billing.MODE_DOCUMENT_PERMISSION[mode]):
-                if not role_has_permission(settings, role, permission):
-                    raise missing_permission(permission)
         merged = {**state, **changes}
         try:
             schedule = Schedule.from_state(merged) if merged.get("anchor_date") else None
@@ -514,12 +504,7 @@ def _build_router() -> APIRouter:
             previous = Schedule.from_state(state)
             if any(schedule.service_end(k) != previous.service_end(k) for k in claimed):
                 raise HTTPException(status_code=409, detail=t("subscriptions.err_term_cuts_claimed"))
-        stamp = {"by": str(user.id), "at": billing.now_stamp()}
-        kept = state.get("consents") or {}
-        consents = {**{m: kept[m] for m in in_force if m in kept}, **{m: stamp for m in needed}}
-        if consents and consents != kept:
-            changes["consents"] = consents
-        await _write(session, company_id, entity_id, changes, user, drop=("consents",) if kept and not consents else ())
+        await _write(session, company_id, entity_id, changes, user)
         return {"ok": True, "next_bill_date": next_bill_date(merged), "sending_off": sending_off}
 
     @router.post("/{entity_id}/history/{doc_id}/confirm")

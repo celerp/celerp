@@ -7251,5 +7251,6 @@
   "subscriptions.doc_open_agreement": "เปิดข้อตกลง",
   "subscriptions.doc_void_period": "ตราบใดที่เอกสารนี้ยังถูกยกเลิก รอบดังกล่าวจะยังไม่ถือว่าออกใบแจ้งหนี้แล้ว ให้ยกเลิกสถานะการยกเลิกเอกสาร หรือเปิดรอบนั้นใหม่ในข้อตกลงเพื่อออกใบแจ้งหนี้อีกครั้ง",
   "documents.err_schedule_fields_removed": "Celerp no longer keeps {fields}: an agreement bills from its start date, and its periods name the documents it billed.",
-  "documents.err_schedule_fields_owned": "Only an agreement's own schedule actions can set {fields}."
+  "documents.err_schedule_fields_owned": "Only an agreement's own schedule actions can set {fields}.",
+  "subscriptions.err_agreement_status_elsewhere": "An agreement that bills or sends on its own changes status only on its own page: activate, pause, resume or cancel it there."
 }

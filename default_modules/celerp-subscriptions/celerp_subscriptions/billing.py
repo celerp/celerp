@@ -17,6 +17,7 @@ import json
 import logging
 import uuid
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -32,7 +33,7 @@ from celerp.models.subscription_email import SubscriptionEmailAttempt
 from celerp.services import email
 from celerp.services.business_time import business_today
 from celerp.services.company_lock import lock_projections, locked_company
-from celerp.services.permissions import role_has_permission
+from celerp.services.permissions import missing_permission, role_has_permission
 from celerp.services.record_quantities import template_label
 from celerp.services.terms import resolve_document_terms
 from celerp.services.units import require_moving_fits_units
@@ -54,6 +55,9 @@ CONSENT_TERMS = {"generation": ("generation_mode", "catchup_periods", *SCHEDULE_
 # A send handed over with no answer ("unconfirmed"), or cut off before one was recorded ("sending").
 UNCONFIRMED = ("sending", "unconfirmed")
 CATCHUP_CAP = 12
+# The agreement write_agreement is writing: the one writer allowed to change an agreement's
+# status (guard_agreement_status), set by nothing else (consent_census holds it).
+_WRITING: ContextVar[str | None] = ContextVar("agreement_write", default=None)
 MAX_EMAIL_PAYLOAD_BYTES = 2 * 1024 * 1024
 EMAIL_ATTEMPT_RETENTION = timedelta(days=2)
 RECOVERY_RETRY_AGE = timedelta(hours=12)
@@ -137,11 +141,30 @@ async def write_agreement(session: AsyncSession, company_id, entity_id: str, cha
     holds, or dropped while absent, is left out, and with nothing left no event is written,
     so History never shows a row that says nothing. Each field keeps its value before the
     change, and a change to periods keeps the dates of each period it touched, so History can
-    name them. Every agreement change in this module goes through here."""
+    name them. Every agreement change in this module goes through here.
+
+    It is also where an unattended mode comes into force: a mode in force after the change
+    that was not before, or whose consent terms change, needs both its permissions from the
+    actor's role (403 naming the first missing) and records the actor's consent; the consents
+    kept are exactly the modes in force after the change, so pausing or cancelling drops them."""
     before = (await session.execute(select(Projection.state).where(
         Projection.company_id == company_id, Projection.entity_id == entity_id))).scalar_one_or_none() or {}
     changes = {k: v for k, v in changes.items() if before.get(k) != v}
     drop = tuple(k for k in drop if k in before and k not in changes)
+    merged = {**{k: v for k, v in before.items() if k not in drop}, **changes}
+    running, in_force = modes_in_force(before), modes_in_force(merged)
+    needed = [m for m in in_force if m not in running or any(f in changes for f in CONSENT_TERMS[m])]
+    if needed:
+        company = await session.get(Company, company_id)
+        role = await _member_role(session, company_id, actor_id)
+        for mode in needed:
+            if (missing := missing_mode_permission((company.settings if company else None) or {}, role, mode)):
+                raise missing_permission(missing)
+    kept = before.get("consents") or {}
+    consents = {**{m: kept[m] for m in in_force if m in kept},
+                **{m: {"by": str(actor_id), "at": now_stamp()} for m in needed}}
+    if consents != kept:
+        changes, drop = ({**changes, "consents": consents}, drop) if consents else (changes, (*drop, "consents"))
     if not changes and not drop:
         return
     after = {**{k: v for k, v in before.items() if k not in drop}, **changes}
@@ -160,12 +183,27 @@ async def write_agreement(session: AsyncSession, company_id, entity_id: str, cha
         for k in ("periods", "billing_failure"):
             if dates and k in changes:
                 fields[k]["dates"] = dates
-    await emit_event(
-        session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.updated",
-        data={"fields_changed": fields},
-        actor_id=actor_id, location_id=None, source="subscription",
-        idempotency_key=key or str(uuid.uuid4()), metadata_=metadata,
-    )
+    writing = _WRITING.set(entity_id)
+    try:
+        await emit_event(
+            session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.updated",
+            data={"fields_changed": fields},
+            actor_id=actor_id, location_id=None, source="subscription",
+            idempotency_key=key or str(uuid.uuid4()), metadata_=metadata,
+        )
+    finally:
+        _WRITING.reset(writing)
+
+
+async def guard_agreement_status(*, session, entry, transition) -> None:
+    """doc_status_guard: the status of an agreement that runs an unattended mode, before or
+    after the change, changes only in write_agreement (activate, pause, resume, cancel on its
+    own page), where a mode coming into force asks for its consent and a mode stopping drops
+    it. Every other writer (void, unvoid, finalize, revert, an import) is refused (409)."""
+    if _WRITING.get() == entry.entity_id or transition.after.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
+        return
+    if modes_in_force(transition.before or {}) or modes_in_force(transition.after):
+        raise HTTPException(status_code=409, detail=t("subscriptions.err_agreement_status_elsewhere"))
 
 
 def refuse_status(state: dict) -> None:
@@ -554,17 +592,24 @@ async def authorizer(session, company_id, settings: dict, state: dict, mode: str
     """The member whose consent runs ``mode`` unattended, while they still hold its
     permission; None when the consent is missing or has lapsed."""
     by = ((state.get("consents") or {}).get(mode) or {}).get("by")
-    role = await _member_role(session, company_id, by)
-    if (role is None or not role_has_permission(settings, role, MODE_PERMISSION[mode])
-            or not role_has_permission(settings, role, MODE_DOCUMENT_PERMISSION[mode])):
+    if missing_mode_permission(settings, await _member_role(session, company_id, by), mode):
         return None
     return SimpleNamespace(id=uuid.UUID(str(by)))
 
 
+def missing_mode_permission(settings: dict, role: str | None, mode: str) -> str | None:
+    """The first permission running ``mode`` unattended needs that ``role`` lacks (no role
+    lacks them all), or None when it holds both."""
+    for permission in (MODE_PERMISSION[mode], MODE_DOCUMENT_PERMISSION[mode]):
+        if role is None or not role_has_permission(settings, role, permission):
+            return permission
+    return None
+
+
 def sends_itself(state: dict) -> bool:
-    """Whether a billed period's waiting email goes out on its own: the agreement is active
-    and automatic sending is in force. Otherwise it waits only for someone to send it."""
-    return state.get("status") == "active" and "sending" in modes_in_force(state)
+    """Whether a billed period's waiting email goes out on its own: automatic sending is in
+    force. Otherwise it waits only for someone to send it."""
+    return "sending" in modes_in_force(state)
 
 
 def send_status(state: dict, send: dict | None) -> str | None:
@@ -579,10 +624,10 @@ def send_status(state: dict, send: dict | None) -> str | None:
 
 
 def modes_in_force(state: dict) -> list[str]:
-    """The unattended modes that run for an agreement, by their consent key. Sending runs
-    only on what automatic billing makes, so Send automatically on a manual agreement is not
-    one of them."""
-    if state.get("generation_mode") not in AUTO_MODES:
+    """The unattended modes that run for an agreement, by their consent key. A mode runs only
+    while the agreement is active, and sending runs only on what automatic billing makes, so
+    Send automatically on a manual agreement is not one of them."""
+    if state.get("status") != "active" or state.get("generation_mode") not in AUTO_MODES:
         return []
     return ["generation", *(["sending"] if state.get("auto_send") else [])]
 

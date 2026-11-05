@@ -4,8 +4,8 @@
 
 A mode comes into force where an agreement becomes active with it chosen, or where a consent
 term of a running mode changes, so the check sits in the one writer of agreement fields
-(billing.write_agreement) and the status guard keeps every other writer from changing an
-agreement's status. The doors are read from the code (consent_census): each subscriptions
+(billing.write_agreement) and the status guard keeps every other writer from changing the
+status of an agreement that runs a mode before or after the change. The doors are read from the code (consent_census): each subscriptions
 route that writes status or a consent term is driven here by a role that may neither bill nor
 automate, so a new door fails until it is given a case below."""
 from __future__ import annotations
@@ -18,8 +18,6 @@ from agreement_kit import (
     agreement, billed_docs, company_id, freeze_day, member, register, revoke, schedule, template, tick,
 )
 from consent_census import marker_writers, outside_writes, route_doors, status_routes
-
-pytestmark = pytest.mark.asyncio
 
 
 async def _automatic(client, session, monkeypatch, *, activate: bool = True):
@@ -149,15 +147,28 @@ async def test_a_documents_route_cannot_bring_an_agreement_back_into_force(clien
     assert (await template(client, hd, eid))["status"] == "active"
 
 
-async def test_an_agreement_is_not_imported_active(client):
+async def test_an_agreement_is_not_imported_billing_on_its_own(client):
+    """An import that claims automatic billing, with a consent it names, is refused whole."""
     hd = await register(client)
-    record = {"entity_id": f"doc:{uuid.uuid4()}", "event_type": "doc.created", "source": "subscription",
+    eid = f"doc:{uuid.uuid4()}"
+    record = {"entity_id": eid, "event_type": "doc.created", "source": "subscription",
               "idempotency_key": uuid.uuid4().hex,
               "data": {"doc_type": "subscription_invoice", "contact_id": "contact:test-001", "status": "active",
-                       "frequency": "monthly", "start_date": "2026-03-01"}}
+                       "frequency": "monthly", "start_date": "2026-03-01", "generation_mode": "auto_invoice",
+                       "consents": {"generation": {"by": str(uuid.uuid4()), "at": "2026-03-01T00:00:00Z"}}}}
     r = await client.post("/docs/import", json=record, headers=hd)
-    assert r.status_code == 409, r.text
-    assert r.json()["detail"]["message_key"] == "subscriptions.err_agreement_status_elsewhere", r.text
+    assert r.status_code in (409, 422), r.text
+    assert (await client.get(f"/docs/{eid}", headers=hd)).status_code == 404
+
+
+async def test_a_manual_agreement_keeps_its_documents_actions(client, session, monkeypatch):
+    """Only an agreement that runs a mode is held to its own page: a manual one voids as before."""
+    freeze_day(monkeypatch, "2026-01-01")
+    hd = await register(client)
+    eid = await agreement(client, hd, start="2026-01-01")
+    r = await client.post(f"/docs/{eid}/void", headers=hd, json={"reason": "x", "idempotency_key": str(uuid.uuid4())})
+    assert r.status_code == 200, r.text
+    assert (await template(client, hd, eid))["status"] == "void"
 
 
 async def test_whoever_brings_billing_back_consents_to_it(client, session, monkeypatch):

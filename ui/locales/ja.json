@@ -7251,5 +7251,6 @@
   "subscriptions.doc_open_agreement": "契約を開く",
   "subscriptions.doc_void_period": "この伝票が無効になっている間、該当期間は請求済みになりません。伝票の無効化を取り消すか、契約でその期間を再開して再度請求してください。",
   "documents.err_schedule_fields_removed": "Celerp no longer keeps {fields}: an agreement bills from its start date, and its periods name the documents it billed.",
-  "documents.err_schedule_fields_owned": "Only an agreement's own schedule actions can set {fields}."
+  "documents.err_schedule_fields_owned": "Only an agreement's own schedule actions can set {fields}.",
+  "subscriptions.err_agreement_status_elsewhere": "An agreement that bills or sends on its own changes status only on its own page: activate, pause, resume or cancel it there."
 }

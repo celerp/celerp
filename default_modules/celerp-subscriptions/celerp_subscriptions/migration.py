@@ -301,8 +301,7 @@ async def reconcile_restored_company_schedules(*, session: AsyncSession, company
             await billing.locked_agreement(session, company_id, agreement.entity_id, scheduled=False)
             await billing.write_agreement(
                 session, company_id, agreement.entity_id,
-                {"generation_mode": "manual_due", "auto_send": False},
-                None, drop=("consents",))
+                {"generation_mode": "manual_due", "auto_send": False}, None)
 
 
 async def migrate_schedules_hook(*, session: AsyncSession) -> None:

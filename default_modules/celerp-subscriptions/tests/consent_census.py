@@ -13,10 +13,11 @@ consent term (billing.CONSENT_TERMS):
 - ``outside_writes()``: every write of an agreement in the module that does not go through
   write_agreement, with the status and consent-term keys it writes.
 - ``marker_writers()``: every function in the code that sets billing's write marker, the mark the
-  status guard reads to let an agreement's status change.
+  status guard reads to let the status of an agreement that runs a mode change.
 - ``status_routes()``: every Documents route that writes a document's status. The status guard
-  refuses each of them on an agreement; emit_event hands every live status change to it
-  (test_doc_status_guard_door holds that door shut).
+  refuses each of them on an agreement that runs a mode before or after the change;
+  emit_event hands every live status change to it (test_doc_status_guard_door holds that
+  door shut).
 
 Run as a script for the census table: ``python consent_census.py``.
 """
@@ -152,6 +153,6 @@ if __name__ == "__main__":
     for m in marks:
         print(f"MARKER {m}")
     routes = status_routes()
-    print(f"# Documents routes that write a status (refused on an agreement by the status guard): {len(routes)}")
+    print(f"# Documents routes that write a status (refused by the status guard on an agreement that runs a mode): {len(routes)}")
     for r in routes:
         print(f"STATUS {r}")

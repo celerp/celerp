@@ -7251,5 +7251,6 @@
   "subscriptions.doc_open_agreement": "Vereinbarung öffnen",
   "subscriptions.doc_void_period": "Solange dieses Dokument storniert ist, gilt der Zeitraum als nicht abgerechnet. Heben Sie die Stornierung auf oder öffnen Sie den Zeitraum in der Vereinbarung erneut, um ihn wieder abzurechnen.",
   "documents.err_schedule_fields_removed": "Celerp no longer keeps {fields}: an agreement bills from its start date, and its periods name the documents it billed.",
-  "documents.err_schedule_fields_owned": "Only an agreement's own schedule actions can set {fields}."
+  "documents.err_schedule_fields_owned": "Only an agreement's own schedule actions can set {fields}.",
+  "subscriptions.err_agreement_status_elsewhere": "An agreement that bills or sends on its own changes status only on its own page: activate, pause, resume or cancel it there."
 }

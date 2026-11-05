@@ -327,17 +327,18 @@ async def test_history_confirmation_refuses_another_agreements_document(client, 
 
 async def test_restored_automation_requires_new_consent(session, auth, monkeypatch):
     from celerp.modules.slots import fire_lifecycle
+    from celerp_subscriptions import billing
 
     _today(monkeypatch, "2026-03-15")
     tid = f"doc:SUBT-{uuid.uuid4().hex[:8]}"
     await _emit(session, auth["company_id"], auth["user_id"], tid, "doc.created", {
-        "doc_type": "subscription_invoice", "status": "active", "ref_id": tid[4:],
+        "doc_type": "subscription_invoice", "status": "draft", "ref_id": tid[4:],
         "frequency": "monthly", "start_date": "2026-03-01", "anchor_date": "2026-03-01",
         "generation_mode": "auto_invoice", "auto_send": True,
-        "consents": {"generation": {"by": str(auth["user_id"]), "at": "2026-03-01T00:00:00Z"},
-                     "sending": {"by": str(auth["user_id"]), "at": "2026-03-01T00:00:00Z"}},
         "contact_id": "contact:test-001", "line_items": [dict(LINE)], "currency": "USD"})
+    await billing.write_agreement(session, auth["company_id"], tid, {"status": "active"}, auth["user_id"])
     await session.commit()
+    assert set((await _state(session, auth["company_id"], tid))["consents"]) == {"generation", "sending"}
     failures = await fire_lifecycle("on_company_restored", session=session, company_id=auth["company_id"])
     assert not failures, failures
     await session.commit()

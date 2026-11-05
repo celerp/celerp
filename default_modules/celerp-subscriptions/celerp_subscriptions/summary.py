@@ -86,8 +86,6 @@ async def report(session: AsyncSession, company_id, user_id, *, everything: bool
             found.append({"entity_id": row.entity_id, "doc_id": row.entity_id,
                           "period_index": failure.get("period_index"),
                           "kind": "generation_failed", "at": failure["at"]})
-        if state.get("status") != "active":
-            continue
         for mode in billing.modes_in_force(state):
             if await billing.authorizer(session, company_id, settings, state, mode) is None:
                 found.append({"entity_id": row.entity_id, "doc_id": None, "period_index": None,

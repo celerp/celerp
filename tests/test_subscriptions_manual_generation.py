@@ -63,11 +63,14 @@ def test_the_subscriptions_module_bills_on_its_own_only_through_the_dispatcher()
     manifest = mod.PLUGIN_MANIFEST
     # Unattended billing runs only as the dispatcher's periodic operation, which bills an
     # agreement only in an automatic mode someone allowed to has turned on.
-    # The document status guard refuses a status change; it never bills.
+    # The document status guards refuse a status change and the period badge only renders;
+    # neither bills.
     assert set(manifest["slots"]) == {"nav", "search_provider", "periodic_operation", "doc_status_guard",
-                                      "on_modules_ready", "on_company_restored", "on_company_module_enabled"}
+                                      "doc_detail_badges", "on_modules_ready", "on_company_restored",
+                                      "on_company_module_enabled"}
     assert manifest["slots"]["periodic_operation"]["handler"] == "celerp_subscriptions.billing:run_due"
-    assert manifest["slots"]["doc_status_guard"]["handler"] == "celerp_subscriptions.billing:guard_bill_status"
+    assert [c["handler"] for c in manifest["slots"]["doc_status_guard"]] == [
+        "celerp_subscriptions.billing:guard_bill_status", "celerp_subscriptions.billing:guard_agreement_status"]
     assert manifest["slots"]["on_company_restored"][0]["handler"] == "celerp_subscriptions.migration:reconcile_restored_company_schedules"
     assert manifest["slots"]["on_company_module_enabled"][0]["handler"] == "celerp_subscriptions.migration:reconcile_company_schedules"
     assert "billed once" in manifest["description"].lower()
