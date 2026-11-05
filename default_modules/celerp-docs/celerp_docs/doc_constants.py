@@ -134,14 +134,17 @@ WRITEOFF_ACCOUNT_TYPES: frozenset[str] = frozenset({"expense", "equity"})
 # of the refusal when every chosen line is of a kind with one, so none was a line the action
 # could act on), each key with a _one and a _many form naming {lines}. A choice that held a line
 # the action could act on (an idle one) is refused with the notices instead: there was nothing
-# to change, and choosing again would not help. Every confirm, notice and refusal of an action
-# reads its own entry, so a line is never given another action's reason. The kinds an action
-# lists are the lines it leaves: Ship counts a service line shipped, so it lists none.
+# to change, and choosing again would not help. Every notice and refusal of an action, and the
+# confirm built from its preview, reads its own entry, so a line is never given another action's
+# reason. The kinds an action lists are the lines it leaves: Ship counts a service line shipped,
+# so it has no service kind, and leaves a line that has already shipped or whose goods are not
+# free to ship.
 _NO_ITEM = ("documents.lines_skipped", "lines.no_stock")
 _SERVICE = ("documents.service_lines_skipped", "lines.service_no_stock")
 _DRAW = {"memo_no_item": ("documents.memo_lines_skipped", "lines.memo_no_stock")}
 LINE_SKIP_REASONS: dict[str, dict[str, tuple[str, str | None]]] = {
-    "fulfill": {"no_item": _NO_ITEM},
+    "fulfill": {"no_item": _NO_ITEM, "shipped": ("documents.shipped_lines_skipped", None),
+                "unavailable": ("documents.unavailable_lines_skipped", None)},
     "reserve": {"no_item": _NO_ITEM, "service": _SERVICE},
     "revert": {"no_item": _NO_ITEM, "service": _SERVICE},
     "set-available": {"no_item": _NO_ITEM, "service": _SERVICE,

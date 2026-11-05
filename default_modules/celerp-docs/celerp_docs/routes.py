@@ -9,6 +9,7 @@ import hashlib
 import json
 import math
 import uuid
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, fields as _dc_fields, replace as _dc_replace
 from datetime import datetime, timezone, date as _date
 from decimal import Decimal
@@ -592,10 +593,15 @@ class FulfillLinesRequest(BaseModel):
 
     ``line_entity_ids`` picks lines by the item they bind; each item must be on exactly one
     line. Send one of the two.
-    ``idempotency_key`` names one submission: sending it again returns the first result."""
+    ``idempotency_key`` names one submission: sending it again returns the first result.
+    ``dry_run`` answers what the action would do, as the action itself decides it, and changes
+    nothing: the lines it would act on (``acted``) and the lines it would leave (``skipped``),
+    or the refusal it would give."""
     line_ids: list[str] = Field(default_factory=list)
     line_entity_ids: list[str] = Field(default_factory=list)
     idempotency_key: str | None = None
+    # Not part of the request a key names: the preview and the action it confirms share one.
+    dry_run: bool = Field(default=False, exclude=True)
 
     @field_validator("line_ids", "line_entity_ids")
     @classmethod
@@ -10813,8 +10819,11 @@ async def _fulfill_lines_impl(
 
     Each line ships what it holds and, when that is short of its quantity, free stock as a
     reservation would take it; a line holding more than its quantity is refused until it is
-    reserved again. Another line's hold is never shipped. A shortage on any line refuses the
-    whole request. Inbound doc types (bill, consignment_in) must use POST /receive instead.
+    reserved again. Another line's hold is never shipped. A line ships once: one that has
+    shipped is left as it is until its goods are taken back, and so is one whose goods are
+    sold, held or out on another record; both are named in ``skipped``, and a choice none of
+    whose lines ships is refused. A shortage on any line refuses the whole request. Inbound
+    doc types (bill, consignment_in) must use POST /receive instead.
     """
     from celerp.services import auto_je
 
@@ -10833,6 +10842,9 @@ async def _fulfill_lines_impl(
     line_items = state.get("line_items", [])
     locked, by_line = await _line_stock(session, company_id, entity_id, line_items, indices)
     indices, counted, left = _acting_lines(line_items, indices, locked, "fulfill")
+    _out, line_of = await _lots_out(session, company_id, entity_id, state, locked.values())
+    already = [i for i in indices if i in set(line_of.values())]
+    indices = [i for i in indices if i not in already]
     service_lines = set(counted)
     unit_map = await _get_unit_map(session, company_id)
     company = await session.get(Company, company_id)
@@ -10840,7 +10852,7 @@ async def _fulfill_lines_impl(
     ship_from = state.get("from_location_id") or None
 
     blocked: list[str] = []
-    unavailable: list[dict] = []
+    unavailable: list[int] = []
     remaining: dict[str, float] = {}
     # (line index, lot, quantity taken, whole lot) in plan order.
     shipments: list[tuple[int, Projection, float, bool]] = []
@@ -10860,6 +10872,7 @@ async def _fulfill_lines_impl(
                     f"{sku}: nothing left to ship: invoiced {invoiced:g}, credited {cut:g}, shipped 0"))
             line = plan_items[idx] = _less_credited_line(line, (invoiced - cut) / invoiced)
             line_qty = invoiced - cut
+        planned_before = dict(remaining)
         draws, short, own, skipped = _line_plan(
             plan_items, idx, locked, by_line, entity_id, company_settings, remaining, ship_from)
         held = sum(lot["quantity"] for lot in own)
@@ -10867,8 +10880,11 @@ async def _fulfill_lines_impl(
             blocked.append(f"{sku}: holds {held:g} for a line of {invoiced:g}; reserve the line again first")
             continue
         if short > 1e-9 or _stands_in(bound, entity_id, draws):
-            if reason := _unavailable(bound, entity_id):
-                unavailable.append(reason)
+            if _unavailable(bound, entity_id):
+                # Left as it is: what it planned to take stays free for the other lines.
+                unavailable.append(idx)
+                remaining.clear()
+                remaining.update(planned_before)
             elif skipped and short > 1e-9:
                 raise HTTPException(status_code=409, detail=splitting_off(
                     str(skipped[0]["state"].get("sku") or sku), "ship"))
@@ -10906,7 +10922,9 @@ async def _fulfill_lines_impl(
         reasons = "; ".join(blocked)
         raise HTTPException(status_code=409, detail=refusal(
             "lines.cannot_fulfil", f"Cannot fulfill: {reasons}", reasons=reasons))
-    _refuse_unavailable(unavailable)
+    left += _skipped_lines(line_items, already, "shipped") + _skipped_lines(line_items, unavailable, "unavailable")
+    if left and not shipments and not service_lines:
+        _refuse_skipped("fulfill", left)
 
     now_dt = datetime.now(timezone.utc)
     now = now_dt.isoformat()
@@ -11053,14 +11071,42 @@ async def _fulfill_lines_impl(
             "skipped": left}
 
 
+def _line_action_answer(action: str, result: dict, chosen: list[str]) -> dict:
+    """``result`` of the line action ``action`` on the lines ``chosen`` (their line ids), with
+    the lines it acted on (``acted``) and the notice naming the lines it left."""
+    left = {s["line_id"] for s in result.get("skipped") or []}
+    result["acted"] = [lid for lid in chosen if lid not in left]
+    if result.get("skipped"):
+        result["skipped_notice"] = _skip_messages(action, result["skipped"])
+    return result
+
+
+@contextmanager
+def _no_commit(session):
+    """Refuse any commit on ``session`` inside the block: a preview's writes are rolled back."""
+    def refuse(sync_session):
+        # A savepoint's release is not a commit: the rollback still undoes it.
+        if not sync_session.in_nested_transaction():
+            raise RuntimeError("a line action preview may not commit")
+    sync = session.sync_session
+    _sa.event.listen(sync, "before_commit", refuse)
+    try:
+        yield
+    finally:
+        _sa.event.remove(sync, "before_commit", refuse)
+
+
 async def _line_action(session, company_id, user, owner: Projection, action: str,
                        body: FulfillLinesRequest, run, select_lines=None,
                        operation: tuple[str, str] | None = None) -> dict:
     """Run one line action on ``owner`` once per key: resolve the chosen lines (with
     ``select_lines``, by default _selected_line_indices), call ``run(indices)`` and record
     the request and its result, even when it changed nothing, so the same key replays that
-    result and a different request under it is refused. ``operation``: the key and digest
-    of the caller's own request, when it is not ``body``."""
+    result and a different request under it is refused. The result names the lines it acted
+    on (``acted``) beside those it left (``skipped``). With ``body.dry_run`` the action runs
+    the same way and all it wrote is rolled back unrecorded, so a preview is the action's own
+    answer, never a second rule. ``operation``: the key and digest of the caller's own
+    request, when it is not ``body``."""
     key, digest = operation or _operation(f"{action}-lines", owner.entity_id, body)
     record_id = f"line_action:{_step_id(key)}"
     if (done := await _earlier_run(session, company_id, key, event_type="line_action.recorded",
@@ -11074,18 +11120,19 @@ async def _line_action(session, company_id, user, owner: Projection, action: str
     if owner.state.get("doc_type") == "memo" and action in ("fulfill", "reserve", "set-available", "revert"):
         numbers = await _current_doc_numbers(session, company_id, {t["invoice_id"] for t in memo_draws(owner.state)})
         refuse_drawn_memo_line_action(owner.state, indices, {i: n for i, (n, _) in numbers.items()})
-    result = await run(indices)
-    if result.get("skipped"):
-        result["skipped_notice"] = _skip_messages(action, result["skipped"])
-    # Read after the action; Back to memo takes its lines off, and only drawn lines go back.
-    if not removes:
-        line_items = owner.state.get("line_items", [])
-    left = {s["line_id"] for s in result.get("skipped") or []}
-    chosen = [str(lid) for i in indices if (lid := line_items[i].get("line_id")) and lid not in left]
+    # Read before the action: Back to memo takes its lines off.
+    chosen = [str(lid) for i in indices if (lid := line_items[i].get("line_id"))]
+    if body.dry_run:
+        with _no_commit(session):
+            try:
+                return _line_action_answer(action, await run(indices), chosen)
+            finally:
+                await session.rollback()
+    result = _line_action_answer(action, await run(indices), chosen)
     await emit_event(
         session, company_id=uuid.UUID(str(company_id)), entity_id=record_id,
         entity_type="line_action", event_type="line_action.recorded",
-        data={"owner_id": owner.entity_id, "action": action, "line_ids": chosen},
+        data={"owner_id": owner.entity_id, "action": action, "line_ids": result["acted"]},
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=key, metadata_={"request": digest, "result": result},
     )
@@ -11104,9 +11151,11 @@ async def fulfill_lines(
 ) -> dict:
     """Ship chosen lines of an invoice or memo in one request.
 
-    A service line counts as shipped. A line with no inventory item is left as it is and
-    listed in the answer's ``skipped`` (its number, name, kind and line id), with
-    ``skipped_notice`` saying why. A choice of only such lines is refused (422), naming them."""
+    A service line counts as shipped. A line with no inventory item, a line that has already
+    shipped and a line whose goods are sold, held or out on another record are left as they
+    are and listed in the answer's ``skipped`` (its number, name, kind and line id), with
+    ``skipped_notice`` saying why; ``acted`` lists the lines it ships. A choice of only such
+    lines is refused (422), naming them."""
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     return await _line_action(
         session, company_id, user, row, "fulfill", body,
@@ -12065,7 +12114,7 @@ async def _reserve_lines_impl(
     surplus goes back to stock last-picked first, so the line keeps its bound lot. Taking
     new stock needs ``may_acquire`` (the record's status allows reserving); keeping or
     giving back stock does not. A line this document already shipped is taken back into
-    stock and held again in the same request. Every line is planned before anything
+    stock and held again in the same request, and named in ``taken_back``. Every line is planned before anything
     changes, so a shortage or refusal on one line changes nothing on any line.
     """
     from celerp.services import auto_je
@@ -12254,7 +12303,8 @@ async def _reserve_lines_impl(
 
     if commit:
         await session.commit()
-    return {"new_status": new_status, "reserved": held, "released": released, "skipped": left}
+    return {"new_status": new_status, "reserved": held, "released": released, "skipped": left,
+            "taken_back": [line_items[i].get("line_id") for i in sorted(shipped)]}
 
 
 @router.post("/{entity_id}/reserve-lines")
