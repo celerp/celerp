@@ -101,6 +101,20 @@ def test_fill_line_ids_gives_only_idless_lines_their_derived_id():
     assert fill_line_ids({}, "doc:D-1") is False
 
 
+def test_no_action_gives_a_stored_line_an_id_of_its_own():
+    """A stored line always has its id, so no action falls back to a new one for a line that
+    lacks it: a random id there would differ from the derived id every hold names. Red
+    statement: a scan adding quantity to a List line gave it ``line.get("line_id") or uuid4``."""
+    import re
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    fallback = re.compile(r"""\.get\(\s*["']line_id["']\s*\)\s*or\s*(str\(\s*)?uuid""")
+    found = [f"{p.relative_to(root)}:{n}" for base in ("celerp", "ui", "default_modules")
+             for p in (root / base).rglob("*.py") if "tests" not in p.parts
+             for n, text in enumerate(p.read_text(encoding="utf-8").splitlines(), 1) if fallback.search(text)]
+    assert found == []
+
+
 def test_replay_of_legacy_document_derives_line_ids():
     from celerp.projections.engine import ProjectionEngine
     from celerp.services.document_lines import derived_line_id

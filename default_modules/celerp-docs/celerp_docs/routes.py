@@ -13898,7 +13898,6 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
                              else 1 if empty and sb.unstocked == "one" else on_hand)
             else:
                 line = {**lines[idx], "quantity": float(held + step)}
-                line["line_id"] = line.get("line_id") or uuid.uuid4().hex
             sku = lot.state.get("sku") or code
             if sb.unstocked != "snapshot":
                 # The same per-line rule as an ordinary writer: a stocked line carries a quantity its

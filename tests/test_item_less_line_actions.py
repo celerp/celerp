@@ -620,9 +620,14 @@ async def test_a_mixed_choice_is_counted_then_named_in_the_actions_own_words(cli
     kind, action, send, ui, done = _case(route)
     g = await _gems(client)
     owner, acting = await _owner_for(client, g, kind)
-    item_less = [li["line_id"] for li in (await _state(client, g, owner))["line_items"]
-                 if not (li.get("item_id") or li.get("entity_id"))]
+    before = {li["line_id"]: li for li in (await _state(client, g, owner))["line_items"]
+              if not (li.get("item_id") or li.get("entity_id"))}
+    item_less = list(before)
     answer = await _ok(await send(client, g, owner, [acting, *item_less]))
+    # The lines it named as left are stored as they were, and it counts only the one it changed.
+    after = {li["line_id"]: li for li in (await _state(client, g, owner))["line_items"]}
+    assert {lid: after.get(lid) for lid in item_less} == before
+    assert answer.get("changed", 1) == 1
     reasons = LINE_SKIP_REASONS[action]
     assert {s["kind"] for s in answer["skipped"]} <= set(reasons)
     assert [k for k, _ in _notice(answer)] == [f"{reasons[s['kind']][0]}_one" for s in answer["skipped"]]
