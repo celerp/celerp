@@ -37,6 +37,7 @@ class Unresolved(Exception):
 @dataclass
 class Write:
     where: str
+    through_sink: bool = True
     sets: set[str] = field(default_factory=set)
     drops: set[str] = field(default_factory=set)
     unresolved: list[str] = field(default_factory=list)
@@ -223,7 +224,7 @@ def writes() -> list[Write]:
         event = _kw(call, "event_type")
         if fn.name == SINK or not (isinstance(event, ast.Constant) and event.value == "doc.updated"):
             continue
-        row = Write(f"{path.relative_to(ROOT)}:{call.lineno} {fn.name}")
+        row = Write(f"{path.relative_to(ROOT)}:{call.lineno} {fn.name}", through_sink=False)
         data = _kw(call, "data")
         changed = next((v for k, v in zip(data.keys, data.values)
                         if isinstance(k, ast.Constant) and k.value == "fields_changed"), None) \

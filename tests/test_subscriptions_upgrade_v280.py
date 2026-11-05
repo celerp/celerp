@@ -357,3 +357,26 @@ async def test_a_template_a_restore_could_not_move_moves_at_the_next_start(clien
     await pre366.last_started_on_older_release(session, "2.8.0", semantics=2)
     await pre366.start()
     assert (await _state(session, old, "clean_monthly"))["anchor_date"] == _OLD["clean_monthly"]["next_run_date"]
+
+
+async def test_a_moved_template_s_history_names_only_what_the_move_changed(client, session, monkeypatch):
+    """The move onto a schedule records only fields whose shown value changes: billing by
+    hand and billing in advance, which a 2.8.0 template already reads as, are not named."""
+    import ui.routes.subscriptions  # noqa: F401  (registers the agreement's History describers)
+    from celerp.models.ledger import LedgerEntry
+    from ui.components.activity import _FIELD_DESCRIBERS
+
+    old = await _upgrade(session, monkeypatch, "2026-11-04")
+    said_nothing = []
+    for name, eid in old["runs"].items():
+        entries = (await session.execute(select(LedgerEntry).where(
+            LedgerEntry.company_id == old["company_id"], LedgerEntry.entity_id == eid))).scalars()
+        for entry in entries:
+            for f, c in ((entry.data or {}).get("fields_changed") or {}).items():
+                describe = _FIELD_DESCRIBERS.get(f)
+                if describe is None or not isinstance(c, dict) or c.get("drop"):
+                    continue
+                line = describe(c)
+                if line and line == describe({"old": c.get("new"), "new": c.get("new")}):
+                    said_nothing.append((name, line))
+    assert not said_nothing, said_nothing
