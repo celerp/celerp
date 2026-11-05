@@ -541,3 +541,36 @@ async def test_finalizing_reads_no_more_rows_after_many_invoices_elsewhere(clien
     assert rows == first_rows, (
         f"rows read: {first_rows} before, {rows} after {_HISTORY} invoices elsewhere (seeded in "
         f"{setup:.1f}s); finalize {first_seconds:.3f}s before, {seconds:.3f}s after")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("race", [False, True], ids=["at rest", "out between preview and action"])
+async def test_a_line_left_as_unavailable_leaves_what_its_plan_took_to_the_other_lines(client, session, auth, race):
+    """Lots L, K and F of one product. Invoice A has line 1 on L (1) and line 2 on K (2, so it
+    takes the free lot F too); invoice B ships L. Set as shipped on both of A's lines leaves
+    line 1 as shipped elsewhere and ships K and F to line 2: the stand-in line 1's plan took for
+    L is free again. Red statement: a skipped line kept its plan's stock, so line 2 was short
+    and the whole choice was refused. With ``race``, B ships L after A's preview: the action
+    bound to that preview changes nothing, and the fresh preview binds the action above."""
+    def _answer(r) -> dict:
+        assert r.status_code == 200, r.text
+        return r.json()
+    sku, (L, K, F) = await _lots(client, auth, 20.0, 25.0, 30.0)
+    a = await _invoice(client, auth, [(L, sku, 1), (K, sku, 2)])
+    b = await _invoice(client, auth, [(L, sku, 1)])
+    url, body = f"/docs/{a}/fulfill-lines", {"line_entity_ids": [L, K]}
+    if race:
+        stale = _answer(await client.post(url, headers=auth["headers"], json={**body, "dry_run": True}))
+        assert stale.get("skipped") == [], stale
+    await _ship(client, auth, b, L)
+    if race:
+        r = await client.post(url, headers=auth["headers"], json={**body, "binding": stale["binding"]})
+        assert r.status_code == 409, r.text
+        assert [(_answer(await client.get(f"/items/{lot}", headers=auth["headers"])))["status"]
+                for lot in (K, F)] == ["available", "available"]
+    preview = _answer(await client.post(url, headers=auth["headers"], json={**body, "dry_run": True}))
+    real = _answer(await client.post(url, headers=auth["headers"], json={**body, "binding": preview["binding"]}))
+    assert real == preview
+    assert [(s["line"], s["kind"]) for s in real["skipped"]] == [(1, "unavailable")]
+    assert [(_answer(await client.get(f"/items/{lot}", headers=auth["headers"])))["status"]
+            for lot in (K, F)] == ["sold", "sold"]
