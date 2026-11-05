@@ -2154,18 +2154,19 @@ def assert_finalized_edit(state: dict, fields_changed: dict) -> None:
     """Refuse (409) a change to a finalized document beyond its corrective fields, and a line
     change beyond each line's description and account. Each line is compared over every key
     the stored line or the save holds, so a field the save leaves out counts as removed. A
-    document whose issue posted its total keeps every line too, a line left out counting as
-    every field removed: its total, and what a payment collects, follow the lines as issued."""
+    document whose issue posted its total keeps every line too, and a save that leaves one out
+    is refused as a structural edit: its total, and what a payment collects, follow the lines
+    as issued."""
     if set(fields_changed) - _FINALIZED_EDITABLE_FIELDS:
         _assert_doc_editable(state)
     if "line_items" not in fields_changed:
         return
     stored = state.get("line_items") or []
     incoming = fields_changed["line_items"].get("new") or []
-    positions = max(len(stored), len(incoming)) if state.get("doc_type") in TOTAL_POSTED_DOC_TYPES else len(incoming)
-    for i in range(positions):
+    if state.get("doc_type") in TOTAL_POSTED_DOC_TYPES and len(incoming) < len(stored):
+        _assert_doc_editable(state)
+    for i, line in enumerate(incoming):
         original = stored[i] if i < len(stored) else {}
-        line = incoming[i] if i < len(incoming) else {}
         for k in [*original, *(k for k in line if k not in original)]:
             if k in _LI_FINALIZED_EDITABLE:
                 continue

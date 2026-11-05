@@ -99,6 +99,8 @@ async def test_an_issued_document_keeps_every_stored_field_of_every_line(client,
         for label, key, lines in saves:
             r = await _save(client, auth, st, lines)
             assert r.status_code == 409, (doc_type, label, r.text)
+            if label.startswith("drop"):  # a line left out is a structural edit: Revert to Draft removes it
+                assert r.json()["detail"]["message_key"] == "docs.edit_locked", (doc_type, label, r.text)
             if label.startswith("omit"):
                 detail = r.json()["detail"]
                 assert (detail["message_key"], detail["params"]) == (
