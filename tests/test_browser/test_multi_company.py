@@ -6,6 +6,8 @@ import uuid
 
 import pytest
 
+from .conftest import set_session_cookies, sign_in_session_user
+
 pytestmark = pytest.mark.browser
 
 
@@ -68,12 +70,7 @@ def test_switch_company_changes_context(playwright, ui_server, api_server, seede
     # Open browser with new company token
     browser = playwright.chromium.launch(headless=True)
     ctx = browser.new_context(base_url=ui_server)
-    ctx.add_cookies([{
-        "name": "celerp_token",
-        "value": new_token,
-        "domain": "127.0.0.1",
-        "path": "/",
-    }])
+    set_session_cookies(ctx, new_token)
     page = ctx.new_page()
     try:
         resp = page.goto(f"{ui_server}/", wait_until="domcontentloaded")
@@ -110,12 +107,7 @@ def test_switch_company_post_redirects(playwright, ui_server, api_server, seeded
     # Isolated context — switch does not mutate the shared session cookie
     browser = playwright.chromium.launch(headless=True)
     ctx = browser.new_context(base_url=ui_server)
-    ctx.add_cookies([{
-        "name": "celerp_token",
-        "value": seeded_user["access_token"],
-        "domain": "127.0.0.1",
-        "path": "/",
-    }])
+    sign_in_session_user(ctx, seeded_user)
     page = ctx.new_page()
     try:
         page.goto(f"{ui_server}/", wait_until="domcontentloaded")

@@ -13,6 +13,7 @@ import re
 
 import pytest
 
+from .conftest import set_session_cookies
 from .test_from_items_tax_e2e import _COMPOUND_AFTER_VAT, _demo_company
 
 pytestmark = pytest.mark.browser
@@ -41,7 +42,7 @@ def _stored(company, doc_id: str, kind: str = "docs") -> dict:
 
 def _open(page, ui_server, token: str, doc_id: str, kind: str = "docs"):
     ctx = page.context.browser.new_context(base_url=ui_server)
-    ctx.add_cookies([{"name": "celerp_token", "value": token, "domain": "127.0.0.1", "path": "/"}])
+    set_session_cookies(ctx, token)
     tab = ctx.new_page()
     tab.goto(f"/{kind}/{doc_id}", wait_until="domcontentloaded")
     tab.wait_for_selector('table.doc-lines tbody tr input[data-name="unit_price"]', timeout=8000)

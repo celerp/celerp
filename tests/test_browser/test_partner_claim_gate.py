@@ -14,16 +14,9 @@ import uuid
 import httpx
 import pytest
 
-from .conftest import clear_session_registry
+from .conftest import clear_session_registry, set_session_cookies, sign_in_session_user
 
 pytestmark = pytest.mark.browser
-
-
-def _set_cookie(browser_context, token: str) -> None:
-    browser_context.clear_cookies()
-    browser_context.add_cookies([{
-        "name": "celerp_token", "value": token, "domain": "127.0.0.1", "path": "/",
-    }])
 
 
 _CARD = "#partner-claim-card"
@@ -41,7 +34,7 @@ def test_partner_claim_card_visible_to_owner(
 
     monkeypatch.setattr(sc, "_relay_state", _disconnected_existing_identity)
     monkeypatch.setattr(gw_state, "get_commercial_mode", lambda: "celerp_direct")
-    _set_cookie(browser_context, seeded_user["access_token"])
+    sign_in_session_user(browser_context, seeded_user)
     try:
         page.goto(f"{ui_server}/settings/cloud", wait_until="domcontentloaded")
         page.wait_for_selector('a[href="/settings/cloud?tab=partner"]', timeout=8000)
@@ -55,7 +48,7 @@ def test_partner_claim_card_visible_to_owner(
         assert page.locator(".cloud-plans").count() == 0
         assert page.locator("#cloud-relay-tab").count() == 0
     finally:
-        _set_cookie(browser_context, seeded_user["access_token"])
+        sign_in_session_user(browser_context, seeded_user)
 
 
 def test_partner_claim_tab_hidden_without_existing_cloud_identity(
@@ -70,14 +63,14 @@ def test_partner_claim_tab_hidden_without_existing_cloud_identity(
 
     monkeypatch.setattr(sc, "_relay_state", _tokenless_state)
     monkeypatch.setattr(gw_state, "get_commercial_mode", lambda: "celerp_direct")
-    _set_cookie(browser_context, seeded_user["access_token"])
+    sign_in_session_user(browser_context, seeded_user)
     try:
         page.goto(f"{ui_server}/settings/cloud", wait_until="domcontentloaded")
         page.wait_for_selector("#cloud-connect-btn", timeout=8000)
         assert page.locator('a[href="/settings/cloud?tab=partner"]').count() == 0
         assert page.locator(_CARD).count() == 0
     finally:
-        _set_cookie(browser_context, seeded_user["access_token"])
+        sign_in_session_user(browser_context, seeded_user)
 
 
 def test_partner_claim_card_hidden_from_non_owner_admin(
@@ -97,7 +90,7 @@ def test_partner_claim_card_hidden_from_non_owner_admin(
     viewer_token = lr.json()["access_token"]
 
     try:
-        _set_cookie(browser_context, viewer_token)
+        set_session_cookies(browser_context, viewer_token)
         page.goto(f"{ui_server}/settings/cloud", wait_until="domcontentloaded")
         # Give the page a moment to render, then assert the card is absent.
         page.wait_for_timeout(500)
@@ -113,4 +106,4 @@ def test_partner_claim_card_hidden_from_non_owner_admin(
             assert resp.status_code == 403, f"{path} -> {resp.status_code}"
     finally:
         clear_session_registry()
-        _set_cookie(browser_context, seeded_user["access_token"])
+        sign_in_session_user(browser_context, seeded_user)

@@ -77,7 +77,7 @@ def recovery(page, ui_server, api, tmp_path, monkeypatch):
     from celerp.config import settings
     from celerp.services import backup, backup_export, session_tracker
 
-    from .conftest import _set_auth_cookie
+    from .conftest import set_session_cookies
 
     url = settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
     names = _company_names(url)
@@ -107,7 +107,7 @@ def recovery(page, ui_server, api, tmp_path, monkeypatch):
         with psycopg2.connect(url) as conn, conn.cursor() as cur:
             for name in names:
                 cur.execute("UPDATE companies SET name = %s WHERE name = %s", (name, _RENAMED))
-        _set_auth_cookie(page.context, api.headers["Authorization"].split(" ", 1)[1])
+        set_session_cookies(page.context, api.headers["Authorization"].split(" ", 1)[1], api.auth.refresh_token)
 
 
 def test_system_recovery_safety_failure_confirm_browser(page, recovery, tmp_path):
@@ -192,7 +192,7 @@ def test_failed_recovery_shows_its_outcome_after_signing_in_again_browser(
     from celerp.config import settings
     from celerp.services import backup, backup_import
 
-    from .conftest import _set_auth_cookie, clear_session_registry
+    from .conftest import clear_session_registry, set_session_cookies
 
     url = settings.database_url.replace("postgresql+asyncpg://", "postgresql://")
     names = _company_names(url)
@@ -249,4 +249,4 @@ def test_failed_recovery_shows_its_outcome_after_signing_in_again_browser(
             page.wait_for_selector("#main-content", timeout=_WAIT_MS)
             assert "did not complete" not in page.locator("#main-content").inner_text()
         finally:
-            _set_auth_cookie(page.context, api.headers["Authorization"].split(" ", 1)[1])
+            set_session_cookies(page.context, api.headers["Authorization"].split(" ", 1)[1], api.auth.refresh_token)

@@ -8,6 +8,8 @@ from urllib.parse import quote
 
 import pytest
 
+from .conftest import set_session_cookies, sign_in_session_user
+
 pytestmark = pytest.mark.browser
 
 
@@ -19,8 +21,7 @@ def test_an_edit_after_the_session_ends_goes_to_sign_in(page, browser_context, u
     page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
     cell = page.locator('table.doc-lines tbody tr input[data-name="quantity"]').first
     cell.wait_for(timeout=8000)
-    browser_context.clear_cookies()
-    browser_context.add_cookies([{"name": "celerp_token", "value": "ended", "domain": "127.0.0.1", "path": "/"}])
+    set_session_cookies(browser_context, "ended")
     try:
         with page.expect_navigation(url=lambda u: "/login" in u, timeout=10000):
             cell.fill("5")
@@ -29,7 +30,5 @@ def test_an_edit_after_the_session_ends_goes_to_sign_in(page, browser_context, u
             cell.blur()
         assert page.url.endswith("/login?reason=expired&next=" + quote(f"/docs/{doc_id}", safe=""))
     finally:
-        browser_context.clear_cookies()
-        browser_context.add_cookies([{"name": "celerp_token", "value": seeded_user["access_token"],
-                                      "domain": "127.0.0.1", "path": "/"}])
+        sign_in_session_user(browser_context, seeded_user)
     assert api.get(f"/docs/{doc_id}").json()["line_items"][0]["quantity"] == 1

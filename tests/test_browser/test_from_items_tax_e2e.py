@@ -33,7 +33,7 @@ import pytest
 from celerp_docs.doc_money import draft_route
 from ui.i18n import t
 
-from .conftest import _API_LIMITS
+from .conftest import _API_LIMITS, set_session_cookies
 from .test_demo_items_link import _seed_demo_items
 from .test_reserved_conflict_modal import _picker_add
 
@@ -164,7 +164,7 @@ def test_a_line_picked_in_the_editor_is_taxed_once(page, api_server, ui_server, 
         doc_id = r.json()["id"]
         ctx = page.context.browser.new_context(base_url=ui_server)
         try:
-            ctx.add_cookies([{"name": "celerp_token", "value": token, "domain": "127.0.0.1", "path": "/"}])
+            set_session_cookies(ctx, token)
             ctx.route("**/health/system", lambda route: route.fulfill(json={"overall": "ok"}))
             tab = ctx.new_page()
             tab.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
@@ -212,7 +212,7 @@ def _add_line(path: str, page, ui_server, company, ui, token: str, doc_id: str, 
         lines = len(company.get(f"/docs/{doc_id}").json().get("line_items") or [])
         ctx = page.context.browser.new_context(base_url=ui_server)
         try:
-            ctx.add_cookies([{"name": "celerp_token", "value": token, "domain": "127.0.0.1", "path": "/"}])
+            set_session_cookies(ctx, token)
             ctx.route("**/health/system", lambda route: route.fulfill(json={"overall": "ok"}))
             tab = ctx.new_page()
             tab.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
@@ -343,7 +343,7 @@ def test_a_line_left_for_the_user_shows_its_tax_is_to_be_chosen_after_a_reload(p
 def _editor(page, ui_server, token: str, doc_id: str):
     """A fresh signed-in tab on the draft's editor, its totals drawn."""
     ctx = page.context.browser.new_context(base_url=ui_server)
-    ctx.add_cookies([{"name": "celerp_token", "value": token, "domain": "127.0.0.1", "path": "/"}])
+    set_session_cookies(ctx, token)
     ctx.route("**/health/system", lambda route: route.fulfill(json={"overall": "ok"}))
     tab = ctx.new_page()
     tab.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
@@ -468,7 +468,7 @@ def test_the_editor_gives_a_new_line_the_defaults_once_the_document_taxes_are_re
         doc_id = r.json()["id"]
         ctx = page.context.browser.new_context(base_url=ui_server)
         try:
-            ctx.add_cookies([{"name": "celerp_token", "value": token, "domain": "127.0.0.1", "path": "/"}])
+            set_session_cookies(ctx, token)
             ctx.route("**/health/system", lambda route: route.fulfill(json={"overall": "ok"}))
             tab = ctx.new_page()
             tab.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
@@ -522,7 +522,7 @@ def test_the_editor_keeps_a_tax_it_cannot_read_until_it_is_removed(page, api_ser
                          [{**_VAT_WHOLE, "amount": 7.0}, "Levy 5%"], 12.0, 112.0)
         ctx = page.context.browser.new_context(base_url=ui_server)
         try:
-            ctx.add_cookies([{"name": "celerp_token", "value": token, "domain": "127.0.0.1", "path": "/"}])
+            set_session_cookies(ctx, token)
             ctx.route("**/health/system", lambda route: route.fulfill(json={"overall": "ok"}))
             tab = ctx.new_page()
             tab.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")

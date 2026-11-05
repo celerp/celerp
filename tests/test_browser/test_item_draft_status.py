@@ -12,16 +12,11 @@ import httpx
 import pytest
 from playwright.sync_api import expect
 
-from .conftest import clear_session_registry, css_class
+from .conftest import clear_session_registry, css_class, set_session_cookies, sign_in_session_user
 
 pytestmark = pytest.mark.browser
 
 
-def _set_cookie(browser_context, token: str) -> None:
-    browser_context.clear_cookies()
-    browser_context.add_cookies([{
-        "name": "celerp_token", "value": token, "domain": "127.0.0.1", "path": "/",
-    }])
 
 def _persisted(api, item_id: str, field: str, expected, timeout: float = 8.0):
     """Poll the item until the inline edit has been saved, returning the last value seen."""
@@ -87,7 +82,7 @@ def test_draft_amounts_editable_for_restricted_role(page, ui_server, api, api_se
                     json={"email": f"op-{tag}@celerp.test", "password": "pw12345a"}, timeout=10)
     assert lr.status_code == 200, lr.text
     try:
-        _set_cookie(browser_context, lr.json()["access_token"])
+        set_session_cookies(browser_context, lr.json()["access_token"])
 
         page.goto(f"{ui_server}/inventory?q={draft_sku}", wait_until="domcontentloaded")
         page.wait_for_selector(".badge--draft", timeout=8000)
@@ -103,7 +98,7 @@ def test_draft_amounts_editable_for_restricted_role(page, ui_server, api, api_se
         expect(qty2).to_have_class(css_class("paired-primary--readonly"))
         assert qty2.get_attribute("title") is None
     finally:
-        _set_cookie(browser_context, seeded_user["access_token"])
+        sign_in_session_user(browser_context, seeded_user)
         api.patch("/companies/me/role-permissions",
                   json={"perm_key": "edit_inventory_amounts", "role_key": "operator",
                         "granted": True})
@@ -139,7 +134,7 @@ def test_draft_pieces_editable_on_list_for_restricted_role(page, ui_server, api,
                     json={"email": f"opp-{tag}@celerp.test", "password": "pw12345a"}, timeout=10)
     assert lr.status_code == 200, lr.text
     try:
-        _set_cookie(browser_context, lr.json()["access_token"])
+        set_session_cookies(browser_context, lr.json()["access_token"])
 
         page.goto(f"{ui_server}/inventory?q={draft_sku}", wait_until="domcontentloaded")
         page.wait_for_selector(".badge--draft", timeout=8000)
@@ -155,7 +150,7 @@ def test_draft_pieces_editable_on_list_for_restricted_role(page, ui_server, api,
         assert pcs2.get_attribute("title") is None
         expect(pcs2).not_to_have_class(css_class("cell--clickable"))
     finally:
-        _set_cookie(browser_context, seeded_user["access_token"])
+        sign_in_session_user(browser_context, seeded_user)
         api.patch("/companies/me/role-permissions",
                   json={"perm_key": "edit_inventory_amounts", "role_key": "operator",
                         "granted": True})
@@ -189,7 +184,7 @@ def test_draft_amounts_editable_on_detail_page_for_restricted_role(page, ui_serv
                     json={"email": f"opd-{tag}@celerp.test", "password": "pw12345a"}, timeout=10)
     assert lr.status_code == 200, lr.text
     try:
-        _set_cookie(browser_context, lr.json()["access_token"])
+        set_session_cookies(browser_context, lr.json()["access_token"])
 
         page.goto(f"{ui_server}/inventory/{item_ids[draft_sku]}", wait_until="domcontentloaded")
         qty = page.locator('tr:has-text("Qty") .paired-primary').first
@@ -203,7 +198,7 @@ def test_draft_amounts_editable_on_detail_page_for_restricted_role(page, ui_serv
         expect(qty2).to_have_class(css_class("paired-primary--readonly"))
         assert qty2.get_attribute("title") is None
     finally:
-        _set_cookie(browser_context, seeded_user["access_token"])
+        sign_in_session_user(browser_context, seeded_user)
         api.patch("/companies/me/role-permissions",
                   json={"perm_key": "edit_inventory_amounts", "role_key": "operator",
                         "granted": True})
@@ -232,7 +227,7 @@ def test_draft_cost_edit_on_pricing_tab_persists(page, ui_server, api, api_serve
                     json={"email": f"op-{tag}@celerp.test", "password": "pw12345a"}, timeout=10)
     assert lr.status_code == 200, lr.text
     try:
-        _set_cookie(browser_context, lr.json()["access_token"])
+        set_session_cookies(browser_context, lr.json()["access_token"])
         page.goto(f"{ui_server}/inventory/{item_id}?tab=pricing", wait_until="domcontentloaded")
         cost_input = page.locator('input[name="cost_price"]')
         cost_input.wait_for(timeout=8000)
@@ -240,7 +235,7 @@ def test_draft_cost_edit_on_pricing_tab_persists(page, ui_server, api, api_serve
         cost_input.first.press("Tab")
         assert _persisted(api, item_id, "cost_price", 88.0) == 88.0, "cost edit did not persist"
     finally:
-        _set_cookie(browser_context, seeded_user["access_token"])
+        sign_in_session_user(browser_context, seeded_user)
 
 
 def test_draft_cost_enterable_before_any_value_set(page, ui_server, api, api_server,
@@ -266,7 +261,7 @@ def test_draft_cost_enterable_before_any_value_set(page, ui_server, api, api_ser
                     json={"email": f"op2-{tag}@celerp.test", "password": "pw12345a"}, timeout=10)
     assert lr.status_code == 200, lr.text
     try:
-        _set_cookie(browser_context, lr.json()["access_token"])
+        set_session_cookies(browser_context, lr.json()["access_token"])
         page.goto(f"{ui_server}/inventory/{item_id}?tab=pricing", wait_until="domcontentloaded")
         cost_input = page.locator('input[name="cost_price"]')
         cost_input.wait_for(timeout=8000)
@@ -274,4 +269,4 @@ def test_draft_cost_enterable_before_any_value_set(page, ui_server, api, api_ser
         cost_input.first.press("Tab")
         assert _persisted(api, item_id, "cost_price", 120.0) == 120.0, "first-time cost entry did not persist"
     finally:
-        _set_cookie(browser_context, seeded_user["access_token"])
+        sign_in_session_user(browser_context, seeded_user)

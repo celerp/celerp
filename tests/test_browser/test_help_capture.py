@@ -26,7 +26,7 @@ from celerp.help.checks import CAPTURE_MARKER, MAX_IMAGE_BYTES, shipped_pages
 from celerp_labels.presets import PRESET_TEMPLATES
 from ui.i18n import t
 
-from .conftest import _set_auth_cookie
+from .conftest import set_session_cookies, sign_in_session_user
 
 pytestmark = pytest.mark.browser
 
@@ -89,9 +89,9 @@ def demo_token(api_server, api):
 
 @pytest.fixture
 def demo_page(page, browser_context, seeded_user, demo_token):
-    _set_auth_cookie(browser_context, demo_token)
+    set_session_cookies(browser_context, demo_token)
     yield page
-    _set_auth_cookie(browser_context, seeded_user["access_token"])
+    sign_in_session_user(browser_context, seeded_user)
 
 
 def _run(page, action: dict) -> None:
