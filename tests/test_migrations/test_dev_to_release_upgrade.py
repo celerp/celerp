@@ -8,8 +8,8 @@ schema is at head but no migration `upgrade()` ever ran. The auto-stamp walker
 (`_auto_stamp.find_safe_stamp`) then deliberately stamps near head and skips
 every migration with no verifiable DDL signature — i.e. all data backfills.
 That is fine for throwaway dev data, but the develop→release in-place upgrade
-must preserve real data, so `_data_reconcile.replay_data_backfills` re-runs
-those backfills.
+must preserve real data, so `_apply_migrations` records the backfills the stamp
+skips and `_data_reconcile.replay_data_backfills` runs each of them once.
 
 Probe migration: `n8o9p0q1r2s3_backfill_payment_date`, a pure `op.execute`
 backfill on the AUTHORITATIVE `ledger.data` (not a rebuildable projection).
@@ -33,8 +33,10 @@ from alembic_support import history_by_hand, run_migrations as _run_migrations
 from celerp.cli import _reconcile_after_migrate
 from celerp.migrations._data_reconcile import (
     BACKFILL_VERSION_KEY,
+    PENDING_BACKFILLS_KEY,
     get_meta,
     replay_data_backfills,
+    set_meta,
 )
 from celerp.models.base import Base
 
@@ -96,11 +98,11 @@ def _reconcile(sync_url: str) -> list[str]:
         eng.dispose()
 
 
-def _marker(sync_url: str) -> str | None:
+def _marker(sync_url: str, key: str = BACKFILL_VERSION_KEY) -> str | None:
     eng = create_engine(sync_url)
     try:
         with eng.connect() as conn:
-            return get_meta(conn, BACKFILL_VERSION_KEY)
+            return get_meta(conn, key)
     finally:
         eng.dispose()
 
@@ -143,35 +145,36 @@ def test_reconcile_applies_authoritative_backfill(fresh_db, stamp_at_head):
     assert _payment_date(sync_url) == _EXPECTED_DATE
 
 
-def test_reconcile_is_idempotent(fresh_db):
-    """Replaying the backfills twice converges (each backfill is guarded), so a
-    second dev→release reconcile is a safe no-op."""
+def test_reconcile_replays_each_backfill_once(fresh_db):
+    """A second replay replays nothing: each backfill left the pending list in
+    the transaction that applied it."""
     async_url, sync_url = fresh_db
     _build_dev_schema(sync_url, stamp=None)
     _run_migrations(async_url)
 
     first = _reconcile(sync_url)
-    after_first = _payment_date(sync_url)
     second = _reconcile(sync_url)
-    after_second = _payment_date(sync_url)
 
-    assert first == second  # same set of migrations replayed
-    assert after_first == after_second == _EXPECTED_DATE
+    assert "n8o9p0q1r2s3" in first
+    assert second == []
+    assert _payment_date(sync_url) == _EXPECTED_DATE
 
 
 def test_reconcile_after_migrate_applies_and_marks(fresh_db):
-    """The migrate-time orchestration applies the backfill and records the
-    version marker so it won't redo the work next time."""
+    """The migrate step records the backfills the develop build's stamp skips and
+    marks the database tracked; the reconcile applies them and clears the list."""
     async_url, sync_url = fresh_db
     _build_dev_schema(sync_url, stamp=None)
-    _run_migrations(async_url)
-
     assert _marker(sync_url) is None  # develop build never wrote a marker
+
+    _run_migrations(async_url)
+    assert _marker(sync_url) == __version__
+    assert "n8o9p0q1r2s3" in _marker(sync_url, PENDING_BACKFILLS_KEY).split(",")
 
     _reconcile_after_migrate(async_url)
 
     assert _payment_date(sync_url) == _EXPECTED_DATE
-    assert _marker(sync_url) == __version__
+    assert _marker(sync_url, PENDING_BACKFILLS_KEY) == ""
 
 
 def _seed_dev_origin(sync_url: str) -> uuid.UUID:
@@ -238,18 +241,21 @@ async def test_golden_dev_to_release_end_to_end(fresh_db):
         await engine.dispose()
 
 
-def test_reconcile_after_migrate_gated_by_version(fresh_db):
-    """Once reconciled for a version, a second call is skipped (gated by the
-    marker). Proven by corrupting the data and confirming it is NOT re-fixed."""
+def test_reconcile_never_reruns_an_applied_backfill(fresh_db, monkeypatch):
+    """Once applied, a backfill does not run again, at the same version or a new
+    one. Proven by clearing the field it writes and confirming it is NOT re-set."""
+    import celerp
+
     async_url, sync_url = fresh_db
     _build_dev_schema(sync_url, stamp=None)
     _run_migrations(async_url)
     _reconcile_after_migrate(async_url)
     assert _payment_date(sync_url) == _EXPECTED_DATE
 
-    # Marker now == current version. Corrupt the data; a gated rerun must NOT
-    # touch it (same version → skip), proving the gate actually short-circuits.
     _clear_payment_date(sync_url)
+    _reconcile_after_migrate(async_url)
+    monkeypatch.setattr(celerp, "__version__", "99.0.0")
+    _run_migrations(async_url)
     _reconcile_after_migrate(async_url)
 
     assert _payment_date(sync_url) is None
@@ -294,10 +300,16 @@ def _good_upgrade():
 
 
 def test_poison_backfill_isolated_and_durable(fresh_db, monkeypatch, caplog):
-    """Two backfills where the FIRST raises: its own transaction rolls back (no
-    row 99), the SECOND still commits durably (row 42), the failure is logged at
-    ERROR, and the version marker is NOT advanced so the next boot retries."""
+    """Two pending backfills where the FIRST raises: its own transaction rolls
+    back (no row 99), the SECOND still commits durably (row 42), the failure is
+    logged at ERROR, and it stays pending so the next boot retries it."""
     async_url, sync_url = fresh_db
+    eng = create_engine(sync_url)
+    try:
+        with eng.begin() as conn:
+            set_meta(conn, PENDING_BACKFILLS_KEY, "poison,good")
+    finally:
+        eng.dispose()
 
     import celerp.migrations._data_reconcile as dr
 
@@ -318,7 +330,7 @@ def test_poison_backfill_isolated_and_durable(fresh_db, monkeypatch, caplog):
         eng.dispose()
 
     assert [r[0] for r in rows] == [42]  # good durable, poison rolled back
-    assert _marker(sync_url) is None  # failure -> marker unset -> retried next boot
+    assert _marker(sync_url, PENDING_BACKFILLS_KEY) == "poison"  # retried next boot
     assert any(r.levelno == logging.ERROR for r in caplog.records)
 
 

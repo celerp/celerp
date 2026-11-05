@@ -1,22 +1,24 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
-"""Replay data-backfill migrations on a develop-origin (create_all) database.
+"""Replay data-backfill migrations a stamp skipped.
 
 The auto-stamp walker (`_auto_stamp.find_safe_stamp`) deliberately stamps a
 `create_all`-built database to near-head and skips every migration with no
-verifiable DDL signature — which is exactly the set of data backfills, seeds,
-and no-ops. That is the right call for the normal `celerp migrate` path (a
-develop database is usually throwaway scratch data), but the develop→release
+verifiable DDL signature, which is exactly the set of data backfills, seeds,
+and no-ops. That is the right call for the schema, but the develop->release
 in-place upgrade must *preserve* real data, so those backfills have to run.
 
-A `create_all` database has the head schema but never ran any migration's
-`upgrade()`, so its data backfills never happened. Every such migration is
-written idempotently (guarded by `WHERE ... IS NULL` / `ON CONFLICT`) or is a
-no-op, so replaying them on an already-at-head schema is safe and converges.
+Each data backfill runs once per database: by alembic upgrade, or here when a
+stamp moved past it without running it. Never twice: a backfill converts data
+as it stood when it was written, and run again it would convert data a user set
+since (the category-unit backfill turns a stone sold by the carat into one sold
+by the gram). So `_apply_migrations` records the backfills a stamp skips
+(`track_restamp`) and the reconcile replays exactly those, removing each in
+the transaction that applies it; one a stamp moves back below is stamped past.
 
 We re-run each one's `upgrade()` against a live connection through a real
-alembic Operations context — the same `op` proxy the migration was written
-against — so no SQL is duplicated and nothing is monkeypatched.
+alembic Operations context (the same `op` proxy the migration was written
+against), so no SQL is duplicated and nothing is monkeypatched.
 """
 from __future__ import annotations
 
@@ -32,17 +34,19 @@ if TYPE_CHECKING:
 _log = logging.getLogger(__name__)
 
 # ── Instance metadata marker ────────────────────────────────────────────────
-# A tiny key/value table recording which celerp version last applied each
-# upgrade phase. The develop build never persists a version (it has no marker),
-# so the first release boot always reconciles; afterwards each phase is gated to
-# run once per version. Managed here (CREATE TABLE IF NOT EXISTS) rather than as
-# a model/migration so it works on any database, including a create_all one.
+# A tiny key/value table of installation markers. Managed here (CREATE TABLE IF
+# NOT EXISTS) rather than as a model/migration so it works on any database,
+# including a create_all one.
 _META_TABLE = "instance_meta"
 
-# Marker keys: the backfill replay runs at `celerp migrate` time (no handlers
-# needed); the projection rebuild runs in the API lifespan (handlers loaded), so
-# each is gated by its own key.
+# BACKFILL_VERSION_KEY marks a database whose skipped backfills are tracked in
+# PENDING_BACKFILLS_KEY (a comma list of revision ids, oldest first); its value
+# is the version that began tracking. A database without it (a develop build, or
+# one no release has reconciled) has run none of the backfills in its stamp's
+# history. The projection rebuild runs in the API lifespan (handlers loaded),
+# gated by its own key.
 BACKFILL_VERSION_KEY = "backfill_version"
+PENDING_BACKFILLS_KEY = "backfills_pending"
 PROJECTION_VERSION_KEY = "projection_version"
 
 
@@ -95,15 +99,54 @@ def data_backfill_scripts():
     return out
 
 
-def replay_data_backfills(engine: "Engine") -> tuple[list[str], list[str]]:
-    """Re-run every data-backfill migration's `upgrade()`, each in its OWN
-    transaction, against `engine`.
+def pending_backfills(conn: "Connection") -> list[str]:
+    """The data backfills a stamp skipped and no replay has applied yet."""
+    raw = get_meta(conn, PENDING_BACKFILLS_KEY)
+    return [rev for rev in raw.split(",") if rev] if raw else []
 
-    A per-backfill top-level transaction (not a savepoint inside one outer
-    transaction) is what makes the replay durable: each backfill that succeeds
-    commits on its own, so a later backfill failure, or a failed marker write
-    afterwards, cannot silently undo work that already converged. One failing
-    backfill is logged loudly and skipped; the rest still run.
+
+def _lineage(script, revision: str | None) -> set[str]:
+    """Every revision in `revision`'s history, itself included. Empty for no
+    stamp, and for a stamp this build does not know (alembic refuses it)."""
+    from alembic.script.revision import RevisionError
+
+    if revision is None:
+        return set()
+    try:
+        return {sc.revision for sc in script.iterate_revisions(revision, "base")}
+    except RevisionError:
+        return set()
+
+
+def track_restamp(conn: "Connection", script, *, ran_to: str | None, stamped_to: str | None) -> frozenset:
+    """Keep each data backfill to one run across a stamp moving from `ran_to` to
+    `stamped_to` (`ran_to` None: the database ran none, as create_all built it).
+
+    A backfill the stamp moves past without running it is added to the pending
+    list, for the reconcile; one it moves back below is the upgrade's: if it is
+    pending, the upgrade runs it and it leaves the list; if it already ran, it is
+    returned, and the upgrade stamps past it instead of running it again.
+    """
+    before, after = _lineage(script, ran_to), _lineage(script, stamped_to)
+    listed = pending_backfills(conn)
+    was_pending = set(listed)
+    backfills = [sc.revision for sc in data_backfill_scripts()]
+    pending = [rev for rev in backfills if rev in after and (rev in was_pending or rev not in before)]
+    if pending != listed:
+        set_meta(conn, PENDING_BACKFILLS_KEY, ",".join(pending))
+    return frozenset(rev for rev in backfills if rev in before - after and rev not in was_pending)
+
+
+def replay_data_backfills(engine: "Engine") -> tuple[list[str], list[str]]:
+    """Run each pending data backfill's `upgrade()`, in apply order, each in its
+    OWN transaction against `engine`, which also removes it from the pending list.
+
+    The removal shares the backfill's transaction, so a backfill is applied and
+    struck off together or neither: it runs once. A per-backfill top-level
+    transaction (not a savepoint inside one outer transaction) makes the replay
+    durable: each backfill that succeeds commits on its own, so a later failure
+    cannot undo work that already converged. One failing backfill is logged
+    loudly and stays pending, so the next start retries it; the rest still run.
 
     Returns `(replayed, failures)`: the revision ids that applied cleanly and
     the ids that raised, both in apply order.
@@ -111,10 +154,13 @@ def replay_data_backfills(engine: "Engine") -> tuple[list[str], list[str]]:
     from alembic.operations import Operations
     from alembic.runtime.migration import MigrationContext
 
-    scripts = data_backfill_scripts()
+    with engine.begin() as conn:
+        pending = set(pending_backfills(conn))
     replayed: list[str] = []
     failures: list[str] = []
-    for sc in scripts:
+    for sc in data_backfill_scripts():
+        if sc.revision not in pending:
+            continue
         try:
             with engine.begin() as conn:
                 ctx = MigrationContext.configure(conn)
@@ -124,8 +170,10 @@ def replay_data_backfills(engine: "Engine") -> tuple[list[str], list[str]]:
                 # on any exception.
                 with Operations.context(ctx):
                     sc.module.upgrade()
+                set_meta(conn, PENDING_BACKFILLS_KEY,
+                         ",".join(rev for rev in pending_backfills(conn) if rev != sc.revision))
             replayed.append(sc.revision)
         except Exception:
-            _log.exception("data backfill %s failed to replay; skipping it", sc.revision)
+            _log.exception("data backfill %s failed to replay; it stays pending", sc.revision)
             failures.append(sc.revision)
     return replayed, failures

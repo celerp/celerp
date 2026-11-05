@@ -514,9 +514,11 @@ def ensure_database(cfg: dict, *, own: bool = False) -> None:
         cfg.setdefault("backup", {}).setdefault("pg_bin_dir", bd)
 
 
-def _run_upgrade_with_auto_stamp(alembic_cfg, engine_url: str) -> None:
+def _run_upgrade_with_auto_stamp(alembic_cfg, engine_url: str, ran: frozenset = frozenset()) -> None:
     """Upgrade to head one revision at a time, stamping past any revision whose DDL
-    is already present.
+    is already present, and past each data backfill in `ran` (it already ran on
+    this database before a restamp moved the stamp back below it, and a data
+    backfill runs once).
 
     When a migration's DDL was applied outside Alembic (e.g. dev testing before
     a formal release), the DB has the tables but the version stamp is behind.
@@ -545,6 +547,9 @@ def _run_upgrade_with_auto_stamp(alembic_cfg, engine_url: str) -> None:
     pending = ids[ids.index(current) + 1:] if current is not None else ids
 
     for revision in pending:
+        if revision in ran:
+            command.stamp(alembic_cfg, revision)
+            continue
         try:
             command.upgrade(alembic_cfg, revision)
         except Exception as exc:
@@ -602,6 +607,13 @@ def _apply_migrations(db_url: str) -> None:
             else:
                 stamped = None
 
+            from celerp import __version__
+            from celerp.migrations._data_reconcile import (
+                BACKFILL_VERSION_KEY, get_meta, set_meta, track_restamp,
+            )
+            with engine.begin() as conn:
+                tracked = get_meta(conn, BACKFILL_VERSION_KEY) is not None
+            ran: frozenset = frozenset()
             if "companies" in existing_tables:
                 from celerp.migrations._auto_stamp import (
                     extract_signatures, find_safe_stamp, load_kernel_metadata,
@@ -623,13 +635,29 @@ def _apply_migrations(db_url: str) -> None:
                     revs_newest_first, sigs_by_rev, inspector,
                     expected_metadata=load_kernel_metadata(),
                 )
-                if safe != "base" and safe != stamped:
+                restamp = safe != "base" and safe != stamped
+                # Recorded before the stamp moves, so each data backfill runs
+                # once: one the stamp skips is left to the reconcile, one it moves
+                # back below is stamped past by the upgrade. An untracked database
+                # ran none in its stamp's history (create_all built it).
+                with engine.begin() as conn:
+                    ran = track_restamp(
+                        conn, script, ran_to=stamped if tracked else None,
+                        stamped_to=safe if restamp else stamped,
+                    )
+                    if not tracked:
+                        set_meta(conn, BACKFILL_VERSION_KEY, __version__)
+                if restamp:
                     click.echo(
                         f"  · Live schema matches revision {safe}: "
                         f"restamping (was {stamped or 'unstamped'})..."
                     )
                     command.stamp(alembic_cfg, safe, purge=True)
-        _run_upgrade_with_auto_stamp(alembic_cfg, engine_url=sync_url)
+            elif not tracked:
+                # No schema yet: alembic upgrade runs every backfill itself.
+                with engine.begin() as conn:
+                    set_meta(conn, BACKFILL_VERSION_KEY, __version__)
+        _run_upgrade_with_auto_stamp(alembic_cfg, engine_url=sync_url, ran=ran)
 
 
 def _run_migrations(db_url: str) -> None:
@@ -732,45 +760,27 @@ def _migrate_to_head(db_url: str) -> bool:
 
 
 def _reconcile_after_migrate(db_url: str) -> None:
-    """Replay data-backfill migrations the auto-stamp walker skips on a develop
-    (create_all) database, so a develop→release in-place upgrade preserves data.
+    """Replay the data-backfill migrations a stamp skipped, so a develop->release
+    in-place upgrade preserves data.
 
-    Gated by an instance_meta marker so it runs once per version; the backfills
-    are idempotent, so a redundant run would be a no-op anyway. The projection
+    `_apply_migrations` records them as it stamps past them; each replays once,
+    in its own transaction, which also strikes it off, so a new version alone
+    replays nothing and a backfill never converts data a user set after it ran.
+    One that fails stays pending and retries on the next start. The projection
     rebuild (the other half of the version-change reconcile) runs in the API
     lifespan, where module projection handlers are loaded.
-
-    Each backfill replays in its own transaction; the version marker is written
-    in a SEPARATE final transaction, and only when every backfill succeeded, so
-    a backfill that fails is retried on the next start instead of being marked
-    done for this version's lifetime. The marker write no longer shares a
-    transaction with the replay, so its own failure cannot roll back committed
-    backfills.
     """
-    from celerp import __version__
-    from celerp.migrations._data_reconcile import (
-        BACKFILL_VERSION_KEY,
-        get_meta,
-        replay_data_backfills,
-        set_meta,
-    )
+    from celerp.migrations._data_reconcile import replay_data_backfills
 
     with _db_engine(db_url, pool_pre_ping=True) as engine:
-        with engine.begin() as conn:
-            if get_meta(conn, BACKFILL_VERSION_KEY) == __version__:
-                return  # already reconciled for this version
         replayed, failures = replay_data_backfills(engine)
         if failures:
             click.echo(
-                f"  ! {len(failures)} data-backfill migration(s) failed to reconcile for "
-                f"{__version__}; leaving the version marker unset so they retry next start: "
-                f"{', '.join(failures)}"
+                f"  ! {len(failures)} data-backfill migration(s) failed to reconcile; "
+                f"they retry next start: {', '.join(failures)}"
             )
-        else:
-            with engine.begin() as conn:
-                set_meta(conn, BACKFILL_VERSION_KEY, __version__)
         if replayed:
-            click.echo(f"  · Reconciled {len(replayed)} data-backfill migration(s) for {__version__}")
+            click.echo(f"  · Reconciled {len(replayed)} data-backfill migration(s)")
 
 
 def _wipe_attachment_dirs(purge_dirs: list) -> None:
