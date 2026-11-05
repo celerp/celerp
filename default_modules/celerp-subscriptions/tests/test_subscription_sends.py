@@ -66,13 +66,14 @@ async def test_a_send_the_mail_server_never_took_is_failed_and_can_be_retried(cl
         with smtp_settings(working.port):
             retried = await client.post(row["retry_url"], headers=hd)
             assert retried.status_code == 200, retried.text
-            assert retried.json()["state"] == "sent" and len(working.messages) == 1
+            assert retried.json()["send"] == "sent" and len(working.messages) == 1
     assert [d["status"] for d in await billed_docs(session, eid)] == ["sent"]
 
 
-async def test_a_send_cut_off_after_the_hand_over_may_have_arrived_and_is_not_resent(client, session, monkeypatch):
+async def test_a_send_cut_off_after_the_hand_over_is_sent_again_only_when_asked(client, session, monkeypatch):
     """The server took the message and the connection dropped before its answer: the email
-    may have arrived, so it stays unconfirmed, with no Retry, and a retry is refused by key."""
+    may have arrived, so it stays unconfirmed. A plain retry is refused by key; the row offers
+    Send again, and asking for it sends a new message whose answer is read back as stored."""
     freeze_day(monkeypatch, "2026-07-01")
     async with SmtpStub(drop_after_message=True) as stub:
         with smtp_settings(stub.port):
@@ -82,10 +83,17 @@ async def test_a_send_cut_off_after_the_hand_over_may_have_arrived_and_is_not_re
             await tick(session, cid, "2026-07-01")
             assert (await template(client, hd, eid))["periods"]["0"]["send"]["state"] == "unconfirmed"
             row = await _send_row(client, hd, eid)
-            assert row["kind"] == "send_unconfirmed" and row["retry_url"] is None
-            refused = await client.post(f"/subscriptions/{eid}/periods/0/send", headers=hd)
+            assert row["kind"] == "send_unconfirmed" and row["again"] is True
+            assert row["retry_url"] == f"/subscriptions/{eid}/periods/0/send"
+            refused = await client.post(row["retry_url"], headers=hd)
     assert refused.status_code == 409
     assert refused.json()["detail"]["message_key"] == "subscriptions.err_send_unverified"
+    async with SmtpStub() as working:
+        with smtp_settings(working.port):
+            again = await client.post(row["retry_url"], headers=hd, json={"again": True})
+    assert again.status_code == 200, again.text
+    assert again.json()["send"] == "sent" and len(working.messages) == 1
+    assert (await template(client, hd, eid))["periods"]["0"]["send"]["state"] == "sent"
 
 
 async def test_a_reused_request_key_is_refused_by_key(client, monkeypatch):
@@ -233,7 +241,7 @@ async def test_an_email_waiting_after_the_app_stopped_is_shown_and_never_sent_la
             row = await _send_row(client, hd, eid, all=1)
             assert row["kind"] == "send_pending" and row["period_index"] == 0
             sent = await client.post(row["retry_url"], headers=hd)
-            assert sent.status_code == 200 and sent.json()["state"] == "sent"
+            assert sent.status_code == 200 and sent.json()["send"] == "sent"
 
 
 async def test_an_email_waiting_inside_the_window_goes_on_the_next_pass(client, session, monkeypatch):
@@ -355,7 +363,8 @@ def test_every_recorded_send_state_reads_the_same_on_the_summary_the_periods_and
     for state in recorded:
         assert f"subscriptions.history_send_{state}" in en, state
         for agreement_state in (sending_on, {**sending_on, "auto_send": False}):
-            status = billing.send_status(agreement_state, {"state": state})
+            stored = {**agreement_state, "periods": {"0": {"state": billing.BILLED, "send": {"state": state}}}}
+            status = billing.send_status(stored, 0, date(2026, 7, 1))
             assert status in summary_module._SEND_KINDS, (state, status)
             assert status == "sent" or _SEND_BADGE[status][0] in en, (state, status)
 

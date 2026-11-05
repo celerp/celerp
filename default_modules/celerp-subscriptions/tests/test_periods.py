@@ -134,12 +134,14 @@ def test_future_skip_does_not_hide_earlier_periods():
 
 
 @pytest.mark.asyncio
-async def test_period_history_can_reach_oldest_open_without_unbounded_rows():
+async def test_period_history_can_reach_oldest_open_without_unbounded_rows(session):
+    import uuid
     from celerp_subscriptions.billing import period_list
 
+    company = uuid.uuid4()
     state = {"anchor_date": "2020-01-01", "frequency": "monthly", "status": "active"}
     today = date(2026, 7, 1)
-    first = await period_list(None, None, state, today)
+    first = await period_list(session, company, state, today)
     assert len(first["rows"]) == 24
     assert first["oldest_due_row"]["period_index"] == 0
     assert first["older_before"] == first["rows"][-1]["period_index"]
@@ -147,7 +149,7 @@ async def test_period_history_can_reach_oldest_open_without_unbounded_rows():
     seen = [r["period_index"] for r in first["rows"]]
     cursor = first["older_before"]
     while cursor is not None:
-        page = await period_list(None, None, state, today, before=cursor)
+        page = await period_list(session, company, state, today, before=cursor)
         assert len(page["rows"]) <= 24
         assert all(r["period_index"] < cursor for r in page["rows"])
         assert page["oldest_due_row"] is None

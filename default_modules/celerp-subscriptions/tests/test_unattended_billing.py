@@ -274,10 +274,11 @@ async def test_an_interrupted_send_is_shown_with_a_retry(client, session, monkey
     with pytest.raises(asyncio.CancelledError):
         await tick(session, cid, "2026-07-01")
     [row] = [r for r in (await summary(client, hd))["rows"] if r["kind"] == "send_unconfirmed"]
-    assert row["entity_id"] == stopped and row["retry_url"] is None
+    # A self-hosted transport cannot replay an outcome it did not confirm: the row offers
+    # Send again, a new message behind a confirm, instead of a plain retry.
+    assert row["entity_id"] == stopped and row["again"] is True
+    assert row["retry_url"] == f"/subscriptions/{stopped}/periods/0/send"
     monkeypatch.setattr(email, "send_email", mail)
-    # A self-hosted transport cannot safely retry an outcome it did not confirm.
-    assert row["retry_url"] is None
     assert mail.sent == []
 
     async def broken(*_, **__):
@@ -499,8 +500,8 @@ async def test_missing_private_payload_refuses_uncertain_retry(client, session, 
         SubscriptionEmailAttempt.operation_id == attempt_id))
     await session.commit()
     row = next(r for r in (await summary(client, hd))["rows"] if r["kind"] == "send_unconfirmed")
-    assert row["retry_url"] is None
-    assert (await client.post(f"/subscriptions/{eid}/periods/0/send", headers=hd)).status_code == 409
+    assert row["again"] is True
+    assert (await client.post(row["retry_url"], headers=hd)).status_code == 409
 
 
 async def test_uncertain_send_replay_window_enforced_at_api(client, session, monkeypatch, mail):
@@ -532,9 +533,9 @@ async def test_uncertain_send_replay_window_enforced_at_api(client, session, mon
     await session.commit()
 
     row = next(r for r in (await summary(client, hd))["rows"] if r["kind"] == "send_unconfirmed")
-    assert row["retry_url"] is None
+    assert row["again"] is True
     monkeypatch.setattr(email, "send_email", mail)
-    refused = await client.post(f"/subscriptions/{eid}/periods/0/send", headers=hd)
+    refused = await client.post(row["retry_url"], headers=hd)
     assert refused.status_code == 409
     assert mail.sent == []
 

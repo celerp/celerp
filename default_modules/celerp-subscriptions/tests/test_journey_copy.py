@@ -219,13 +219,19 @@ async def test_a_bill_names_its_period_and_leads_back_to_its_agreement(owner_ui,
     def back(page) -> list[str]:
         return [a["href"] for a in page.select(f'a[href="/subscriptions/{eid}"]')]
 
+    async def shown(page) -> str:
+        """The page's text with the note it loads from the agreement."""
+        [note] = page.select(".doc-period-badge [hx-get]")
+        return page.get_text(" ", strip=True) + " " + (await owner_ui.get(note["hx-get"])).text
+
     page = BeautifulSoup((await owner_ui.get(f"/docs/{doc_id}")).text, "html.parser")
-    assert bills in page.get_text(" ", strip=True) and back(page)
-    assert t("subscriptions.doc_void_period") not in page.get_text(" ", strip=True)
+    text = await shown(page)
+    assert bills in text and back(page)
+    assert t("subscriptions.doc_void_period") not in text
     assert (await owner_ui.api.post(f"/docs/{doc_id}/void", json={"reason": "x", **_key()})).status_code == 200
     page = BeautifulSoup((await owner_ui.get(f"/docs/{doc_id}")).text, "html.parser")
-    text = page.get_text(" ", strip=True)
-    assert bills in text and t("subscriptions.doc_void_period") in text and back(page)
+    text = await shown(page)
+    assert bills in text and t("subscriptions.doc_void_period") in text and back(page), text[-600:]
 
 
 _CHANGED = {"anchor_date": "2026-04-05", "frequency": "weekly", "custom_interval_days": "10", "billing_timing": "arrears",

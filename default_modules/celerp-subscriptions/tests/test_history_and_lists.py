@@ -68,7 +68,9 @@ async def test_history_names_each_change_as_the_agreement_page_does(owner_ui, mo
 async def test_history_names_the_period_billed_skipped_and_opened_again(owner_ui, monkeypatch):
     eid = await _changed_agreement(owner_ui, monkeypatch)
     text = await _history(owner_ui, eid)
-    assert sentence("subscriptions.history_billed", "en", start="2026-01-01", end="2026-01-31") in text
+    rows = (await owner_ui.api.get(f"/subscriptions/{eid}/periods")).json()["rows"]
+    ref = next(r["ref_id"] for r in rows if r["period_index"] == 0)
+    assert sentence("subscriptions.history_billed_ref", "en", start="2026-01-01", end="2026-01-31", ref=ref) in text
     assert sentence("subscriptions.history_skipped", "en", start="2026-02-01", end="2026-02-28",
              reason="Closed for the holiday") in text
     assert sentence("subscriptions.done_unskipped", "en", start="2026-02-01", end="2026-02-28") in text
