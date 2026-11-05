@@ -463,6 +463,8 @@ class DocReopenBody(BaseModel):
 # ── Preview, then confirm ─────────────────────────────────────────────────────
 # A write with a preview (``dry_run``) confirms only the preview shown: the preview answers
 # with a binding, and the write refuses a binding that differs from what it would write now.
+# A stock line action is the one exception (FulfillLinesRequest.frames_confirm): its preview
+# only words the confirm, and the action decides again when it runs and answers what it did.
 
 # Request fields that never change what a write does; every other field is bound to its preview.
 PREVIEW_UNBOUND_FIELDS = frozenset({"idempotency_key", "dry_run", "binding"})
@@ -602,6 +604,9 @@ class FulfillLinesRequest(BaseModel):
     idempotency_key: str | None = None
     # Not part of the request a key names: the preview and the action it confirms share one.
     dry_run: bool = Field(default=False, exclude=True)
+    # The preview takes no binding: the lines it names are re-checked when the action runs, and
+    # the action's answer says which it acted on and which it left.
+    frames_confirm: ClassVar[bool] = True
 
     @field_validator("line_ids", "line_entity_ids")
     @classmethod
@@ -10411,10 +10416,11 @@ def _skip_messages(action: str, skipped: list[dict], *, refuse: bool = False) ->
         raise KeyError(f"{action} has no skip reason for {sorted(unknown)}")
     messages = []
     for kind, keys in reasons.items():
-        named = [line_name(s["line"], s["name"]) for s in skipped if s["kind"] == kind]
-        if named:
-            key = f"{keys[refuse]}_{'one' if len(named) == 1 else 'many'}"
-            messages.append(catalog_refusal(key, lines=", ".join(named)))
+        of_kind = [s for s in skipped if s["kind"] == kind]
+        if of_kind:
+            key = f"{keys[refuse]}_{'one' if len(of_kind) == 1 else 'many'}"
+            messages.append(catalog_refusal(key, lines=", ".join(line_name(s["line"], s["name"]) for s in of_kind)))
+            messages += _merged_reasons([s["reason"] for s in of_kind if s.get("reason")])
     return messages
 
 
@@ -10521,18 +10527,21 @@ def _stands_in(bound: Projection, owner_id: str, draws: list) -> bool:
             and any(lot.get("claim") != "reserved" for lot, _take, _full in draws))
 
 
+def _merged_reasons(reasons: list[dict]) -> list[dict]:
+    """``reasons`` (each _unavailable's) with the goods other documents shipped named in one
+    reason, each document with its own lines, placed last so they end with the next step."""
+    by_doc: dict[str, list[str]] = {}
+    for r in reasons:
+        for went in (r["params"]["went"] if r.get("message_key") == "lines.shipped_elsewhere" else ()):
+            by_doc.setdefault(went["params"]["doc"], []).append(went["params"]["lines"])
+    merged = [r for r in reasons if r.get("message_key") != "lines.shipped_elsewhere"]
+    return merged + [shipped_elsewhere(by_doc)] if by_doc else merged
+
+
 def _refuse_unavailable(reasons: list[dict]) -> None:
-    """Refuse lines that cannot be taken. Goods other documents shipped are named in one
-    reason, each document with its own lines, placed last so the refusal ends with the
-    next step."""
+    """Refuse lines that cannot be taken, each with why (_merged_reasons)."""
     if reasons:
-        by_doc: dict[str, list[str]] = {}
-        for r in reasons:
-            for went in (r["params"]["went"] if r.get("message_key") == "lines.shipped_elsewhere" else ()):
-                by_doc.setdefault(went["params"]["doc"], []).append(went["params"]["lines"])
-        reasons = [r for r in reasons if r.get("message_key") != "lines.shipped_elsewhere"]
-        if by_doc:
-            reasons.append(shipped_elsewhere(by_doc))
+        reasons = _merged_reasons(reasons)
         text = " ".join(r["message"] for r in reasons)
         raise HTTPException(status_code=422, detail=refusal(
             "lines.unavailable", f"Not available: {text}", reasons=reasons))
@@ -10816,7 +10825,8 @@ async def _fulfill_lines_impl(
     reservation would take it; a line holding more than its quantity is refused until it is
     reserved again. Another line's hold is never shipped. A line ships once: one that has
     shipped is left as it is until its goods are taken back, and so is one whose goods are
-    sold, held or out on another record; both are named in ``skipped``, and a choice none of
+    sold, held or out on another record; both are named in ``skipped`` (the latter with why,
+    as _unavailable says it), and a choice none of
     whose lines ships is refused. A shortage on any line refuses the whole request. Inbound
     doc types (bill, consignment_in) must use POST /receive instead.
     """
@@ -10847,7 +10857,8 @@ async def _fulfill_lines_impl(
     ship_from = state.get("from_location_id") or None
 
     blocked: list[str] = []
-    unavailable: list[int] = []
+    # Lines whose goods are not free to ship, each with why (_unavailable).
+    unavailable: dict[int, dict] = {}
     remaining: dict[str, float] = {}
     # (line index, lot, quantity taken, whole lot) in plan order.
     shipments: list[tuple[int, Projection, float, bool]] = []
@@ -10875,9 +10886,9 @@ async def _fulfill_lines_impl(
             blocked.append(f"{sku}: holds {held:g} for a line of {invoiced:g}; reserve the line again first")
             continue
         if short > 1e-9 or _stands_in(bound, entity_id, draws):
-            if _unavailable(bound, entity_id):
+            if reason := _unavailable(bound, entity_id):
                 # Left as it is: what it planned to take stays free for the other lines.
-                unavailable.append(idx)
+                unavailable[idx] = reason
                 remaining.clear()
                 remaining.update(planned_before)
             elif skipped and short > 1e-9:
@@ -10917,7 +10928,8 @@ async def _fulfill_lines_impl(
         reasons = "; ".join(blocked)
         raise HTTPException(status_code=409, detail=refusal(
             "lines.cannot_fulfil", f"Cannot fulfill: {reasons}", reasons=reasons))
-    left += _skipped_lines(line_items, already, "shipped") + _skipped_lines(line_items, unavailable, "unavailable")
+    left += _skipped_lines(line_items, already, "shipped") + [
+        {**s, "reason": unavailable[s["line"] - 1]} for s in _skipped_lines(line_items, list(unavailable), "unavailable")]
     if left and not shipments and not service_lines:
         _refuse_skipped("fulfill", left)
 
@@ -11149,7 +11161,8 @@ async def fulfill_lines(
     A service line counts as shipped. A line with no inventory item, a line that has already
     shipped and a line whose goods are sold, held or out on another record are left as they
     are and listed in the answer's ``skipped`` (its number, name, kind and line id), with
-    ``skipped_notice`` saying why; ``acted`` lists the lines it ships. A choice of only such
+    ``skipped_notice`` saying why, and for goods not free to ship where they are and what to do
+    first; ``acted`` lists the lines it ships. A choice of only such
     lines is refused (422), naming them."""
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     return await _line_action(
@@ -11601,6 +11614,7 @@ class InvoiceLinesRequest(RevertLinesRequest):
     target_doc_id: str | None = None
     dry_run: bool = False
     binding: str | None = None
+    frames_confirm: ClassVar[bool] = False
 
     @model_validator(mode="after")
     def _names_lines_by_id(self):

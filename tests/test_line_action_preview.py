@@ -177,6 +177,56 @@ async def test_a_line_shipped_from_part_of_a_weight_lot_does_not_ship_again(clie
     assert (await _ok(await client.get(f"/items/{lot['id']}", headers=g.h)))["quantity"] == left
 
 
+async def test_every_stock_line_preview_is_held_to_its_action():
+    """Each route whose preview only words its confirm (``frames_confirm``) has cases above (or
+    below, for Back to memo), so a new one is held to its action's answer too."""
+    import typing
+
+    from celerp_docs.routes import lists_router, router
+    from pydantic import BaseModel
+
+    found = {("lists" if r in lists_router.routes else "docs", r.path.rsplit("/", 1)[-1])
+             for r in [*router.routes, *lists_router.routes]
+             for hint in typing.get_type_hints(getattr(r, "endpoint", None) or (lambda: None)).values()
+             if isinstance(hint, type) and issubclass(hint, BaseModel) and getattr(hint, "frames_confirm", False)}
+    covered = {("lists" if kind == "list" else "docs", path) for kind, path, *_ in _CASES.values()}
+    assert found == covered | {("docs", "back-to-memo")}
+
+
+async def test_the_preview_of_back_to_memo_is_what_it_then_does(client, session):
+    from test_item_less_line_actions import _drawn_invoice_with_own_certificate
+    g = await _gems(client)
+    _memo, invoice, drawn, own = await _drawn_invoice_with_own_certificate(client, g)
+    for chosen in ([own], [drawn, own]):
+        key = uuid.uuid4().hex
+        before = await _state(client, g, invoice)
+        preview = await client.post(f"/docs/{invoice}/back-to-memo", headers=g.h,
+                                    json={"line_ids": chosen, "idempotency_key": key, "dry_run": True})
+        assert await _state(client, g, invoice) == before, "the preview changed something"
+        real = await client.post(f"/docs/{invoice}/back-to-memo", headers=g.h,
+                                 json={"line_ids": chosen, "idempotency_key": key})
+        assert (preview.status_code, preview.json()) == (real.status_code, real.json())
+    answer = await _ok(real)
+    assert answer["acted"] == [drawn] and [s["line_id"] for s in answer["skipped"]] == [own]
+
+
+async def test_a_line_whose_goods_went_out_elsewhere_says_where_they_went(client, session):
+    """Shipping an available stone with one another invoice shipped: the available one ships,
+    and the notice names the other line, the invoice its goods went out on and the next step.
+    Red statement: the notice only said the line was sold, held or out on another record."""
+    g = await _gems(client)
+    owner, lids = await _record(client, g, "invoice", {"DEMO-MIN-001": "elsewhere"})
+    answer = await _ok(await _act(client, g, owner, "fulfill-lines", [lids["DEMO-SAP-001"], lids["DEMO-MIN-001"]]))
+    assert answer["acted"] == [lids["DEMO-SAP-001"]]
+    went = g.items["DEMO-MIN-001"]
+    other = (await _ok(await client.get(f"/items/{went['id']}", headers=g.h)))["status_doc_number"]
+    notice, reason = answer["skipped_notice"]
+    assert (notice["message_key"], notice["params"]) == ("documents.unavailable_lines_skipped_one",
+                                                         {"lines": '3 "DEMO-MIN-001"'})
+    assert reason["message_key"] == "lines.shipped_elsewhere" and reason["params"]["docs"] == other
+    assert reason["message"].endswith(f"Revert fulfillment first: set the goods as available on {other}.")
+
+
 # case -> (ui.api_client call, the action's confirm key). The page asks its confirm from the
 # action's preview: the count of ``acted`` and the lines in ``skipped``, never a rule of its own.
 _PAGE = {"ship-mixed": ("fulfill_lines", "documents.confirm_set_shipped"),

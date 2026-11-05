@@ -110,13 +110,13 @@
       ]
     },
     "documents.unavailable_lines_skipped_one": {
-      "en": "Line {lines} is sold, held or out on another record, so it was not shipped. Open its item to see where it is.",
+      "en": "Line {lines} was not shipped.",
       "params": [
         "lines"
       ]
     },
     "documents.unavailable_lines_skipped_many": {
-      "en": "Lines {lines} are sold, held or out on other records, so they were not shipped. Open their items to see where they are.",
+      "en": "Lines {lines} were not shipped.",
       "params": [
         "lines"
       ]

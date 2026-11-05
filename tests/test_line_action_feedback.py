@@ -44,7 +44,8 @@ def _toast(r) -> dict:
 ])
 async def test_a_line_action_says_what_it_did(ui_client, path, send, fields, lines, expected):
     ui_client.cookies.update(_cookies())
-    with patch(f"ui.api_client.{send}", new=AsyncMock(return_value={})):
+    # The API answers the lines it acted on; the toast counts those.
+    with patch(f"ui.api_client.{send}", new=AsyncMock(return_value={"acted": lines})):
         r = await ui_client.post(path,
                                  data={"line_id": lines, "idempotency_key": "k", **fields})
     toast = _toast(r)

@@ -384,7 +384,7 @@ async def test_the_ship_notice_says_the_other_invoice_cannot_ship_it():
     from ui.i18n import t
 
     moved = [{"sku": "LOT-1", "lot_id": "item:1", "doc_id": "doc:A", "doc_number": "INV-A"}]
-    answer = {"fulfillment_status": "fulfilled", "fulfilled": ["item:1"], "taken_from": moved}
+    answer = {"fulfillment_status": "fulfilled", "fulfilled": ["item:1"], "taken_from": moved, "acted": ["ln-1"]}
     with patch("ui.api_client.fulfill_lines", new=AsyncMock(return_value=answer)):
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as ui:
             ui.cookies.update(authed_cookies())
@@ -393,9 +393,10 @@ async def test_the_ship_notice_says_the_other_invoice_cannot_ship_it():
     # The page reloads itself, as after every line action, and shows the notice it kept.
     assert "HX-Redirect" not in r.headers
     toast = json.loads(r.headers["HX-Trigger"])["celerpToast"]
-    assert toast == {"message": t("documents.cost_moved_with_goods", sku="LOT-1", doc="INV-A"),
+    assert toast == {"message": t("documents.lines_shipped_one", n=1) + " "
+                     + t("documents.cost_moved_with_goods", sku="LOT-1", doc="INV-A"),
                      "type": "info", "persist": True}
-    assert toast["message"] == ("Lot LOT-1 was on invoice INV-A, which can no longer ship it. "
+    assert toast["message"] == ("1 line set as shipped. Lot LOT-1 was on invoice INV-A, which can no longer ship it. "
                                 "Invoice INV-A is costed when it ships other stock.")
 
 

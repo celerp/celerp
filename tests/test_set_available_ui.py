@@ -121,9 +121,9 @@ async def test_the_api_client_posts_the_selection_quantities_and_key():
         await api.set_lines_available("t", "list:1", line_ids=[_L0], idempotency_key="k2", is_list=True)
     assert posted == [
         ("/docs/doc:1/set-available", {"line_ids": [_L0], "quantities": {_L0: 1.5},
-                                        "idempotency_key": "k"}),
+                                        "idempotency_key": "k", "dry_run": False}),
         ("/lists/list:1/set-available", {"line_ids": [_L0], "quantities": None,
-                                          "idempotency_key": "k2"}),
+                                          "idempotency_key": "k2", "dry_run": False}),
     ]
 
 

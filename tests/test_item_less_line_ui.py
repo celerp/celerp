@@ -65,7 +65,7 @@ def test_line_checkboxes_never_disabled(doc_type, status):
 @pytest.mark.parametrize("branch", ["reopened", "moved", "done"])
 async def test_line_action_toast_names_skipped_lines_on_every_branch(ui_client, branch):
     from ui.i18n import refusal_text, t
-    answer = {"skipped": _SKIPPED, "skipped_notice": _NOTICE}
+    answer = {"acted": [_L0], "skipped": _SKIPPED, "skipped_notice": _NOTICE}
     if branch == "reopened":
         answer["reopened_memos"] = [{"id": "doc:M-1", "doc_number": "M-1"}]
     elif branch == "moved":
@@ -77,7 +77,7 @@ async def test_line_action_toast_names_skipped_lines_on_every_branch(ui_client, 
     skipped = refusal_text(_NOTICE)
     assert toast["message"].count(skipped) == 1 and toast["message"].endswith(skipped), toast
     assert toast.get("persist") is True
-    if branch == "done":
+    if branch != "reopened":
         assert toast["message"].startswith(t("documents.lines_shipped_one", n=1)), toast
 
 
