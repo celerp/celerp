@@ -196,11 +196,11 @@ def test_create_contact_via_form(page, ui_server, api):
     _assert_no_crash(page, "after blank-create redirect")
     entity_id = page.url.rsplit("/contacts/", 1)[1]
 
-    # Assert via API
-    r = api.get("/crm/contacts", params={"limit": 5, "sort": "created_at", "dir": "desc"})
-    assert r.status_code == 200
-    contacts = r.json().get("items", [])
-    assert entity_id in {c.get("entity_id") or c.get("id") for c in contacts}, "The new contact is not listed"
+    # Assert via API, by id: the contact list is ordered by name, so the newest contact is not
+    # on its first page once earlier tests have added others.
+    r = api.get(f"/crm/contacts/{entity_id}")
+    assert r.status_code == 200, "The new contact was not created"
+    assert r.json().get("contact_type") == "customer"
 
 
 # ── CREATE-08: list via the New List button ───────────────────────────────────
