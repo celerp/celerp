@@ -134,3 +134,25 @@ async def test_a_void_document_names_unvoid_for_a_line_change(client, session, a
     for lines in (st["line_items"][:-1], [{**st["line_items"][0], "quantity": 2}, st["line_items"][1]]):
         r = await _save(client, auth, st, lines)
         assert (r.status_code, r.json()["detail"]["message_key"]) == (409, "docs.edit_void"), r.text
+
+
+def _hostile(lines: list[dict]) -> dict:
+    """Lines in every shape that is not a list of objects."""
+    return {"object": dict(enumerate(lines)), "string": "lines", "number": 1, "null": None,
+            "list of strings": ["a", "b"], "list with a null": [*lines, None], "list of lists": [lines]}
+
+
+@pytest.mark.parametrize("doc_type", sorted(_ISSUED))
+async def test_lines_that_are_not_a_list_of_objects_are_refused_naming_the_field(client, auth, doc_type):
+    """Whoever sends them (the agent, an import), lines in any other shape are refused before
+    any check reads them, naming the field, and nothing changes."""
+    doc = await _ISSUED[doc_type](client, auth, doc_type)
+    st = {**await _state(client, auth, doc), "id": doc}
+    for shape, lines in _hostile(st["line_items"]).items():
+        r = await _save(client, auth, st, lines)
+        assert r.status_code == 422, (doc_type, shape, r.text)
+        detail = r.json()["detail"]
+        assert (detail["message_key"], detail["params"]) == ("error.invalid_input_fields", {"fields": "line_items"})
+        after = await _state(client, auth, doc)
+        assert (after["line_items"], after["total"], after["version"]) == (
+            st["line_items"], st["total"], st["version"]), (doc_type, shape)

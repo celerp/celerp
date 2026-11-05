@@ -328,6 +328,15 @@ def _refuse_protected_fields(fields_changed: dict) -> None:
         )
 
 
+def _refuse_malformed_lines(fields_changed: dict) -> None:
+    """Refuse (422, naming the field) lines that are not a list of objects, before any check
+    reads them as one."""
+    if "line_items" in fields_changed and not (
+            isinstance(lines := fields_changed["line_items"].get("new"), list)
+            and all(isinstance(line, dict) for line in lines)):
+        raise HTTPException(status_code=422, detail=catalog_refusal("error.invalid_input_fields", fields="line_items"))
+
+
 def _stale_doc(key: str) -> HTTPException:
     """A document or list edit refused because it was made from an older copy; the code lets the page
     keep the user's rows and offer Try again instead of an ordinary error."""
@@ -2214,6 +2223,7 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     fields_changed = dict(payload.fields_changed)
     require_currency_code((fields_changed.get("currency") or {}).get("new"))
     _refuse_protected_fields(fields_changed)
+    _refuse_malformed_lines(fields_changed)
     refuse_malformed_taxes({k: (v or {}).get("new") for k, v in fields_changed.items()})
     if scan_runs is not None:
         fields_changed[SCAN_RUNS_FIELD] = {"new": scan_runs}
@@ -9158,6 +9168,7 @@ async def write_list_patch(session: AsyncSession, company_id, role: str, setting
     fields_changed = dict(payload.fields_changed)
     require_currency_code((fields_changed.get("currency") or {}).get("new"))
     _refuse_protected_fields(fields_changed)
+    _refuse_malformed_lines(fields_changed)
     refuse_malformed_taxes({k: (v or {}).get("new") for k, v in fields_changed.items()})
     selecting = "contact_id" in fields_changed
     new_contact_id = str((fields_changed.get("contact_id") or {}).get("new") or "")
