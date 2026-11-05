@@ -587,20 +587,29 @@ test("before the swap, setup closes a Celerp the user opened during the update a
     expect(fn.slice(check - 3, check + 4)).toEqual([
       "${IfNot} ${Silent}", "SetDetailsPrint textonly", "${EndIf}", "!insertmacro CHECK_APP_RUNNING",
       "${IfNot} ${Silent}", "SetDetailsPrint none", "${EndIf}"]);
-    const closed = "Closed the Celerp that was opened during the update. It opens again when the update is done.";
-    // the notice is written once and both the progress line and the update log read it
-    expect(fn.filter((line) => line.includes(closed))).toEqual([`StrCpy $R0 "${closed}"`]);
-    const set = at(`StrCpy $R0 "${closed}"`);
-    const said = at('!insertmacro installStage "$R0"');
-    const logged = at('!insertmacro celerpUpdateLog "$R0"');
-    expect(fn[set - 1]).toBe("${If} $celerpFound == 0");
-    expect(find < check && check < set && set < said && said < logged).toBe(true);
+    // the progress line gets the short notice, the update log the full one
+    const said = at('!insertmacro installStage "Closed Celerp. It opens again after the update."');
+    const logged = at('!insertmacro celerpUpdateLog "Closed the Celerp that was opened during the update. ' +
+      'It opens again when the update is done."');
+    expect(fn[said - 2]).toBe("${If} $celerpFound == 0");
+    expect(find < check && check < said && said < logged).toBe(true);
     // the registers the stock check uses are the caller's again afterwards
     const pushed = fn.filter((line) => line.startsWith("Push "));
     expect(pushed.length).toBeGreaterThan(0);
     expect(fn.filter((line) => line.startsWith("Pop ")).reverse()).toEqual(pushed.map((l) => l.replace("Push", "Pop")));
     // the stock check stays once in the install section; its labels are plain, so a second copy there would clash
     expect(template("installSection.nsh").split("!insertmacro CHECK_APP_RUNNING").length).toBe(3);   // one-click and assisted
+  });
+
+test("every notice setup puts on its progress line fits the line, about 75 characters",
+  function test_progress_line_notices_fit_the_status_line() {
+    // installStage and DetailPrint write the one-line status above the progress bar, which
+    // cuts a longer text off; a notice there is a literal so its length is known here
+    const notices = [...include().matchAll(/^\s*(?:!insertmacro installStage|DetailPrint) (["`])(.*)\1\s*$/gm)]
+      .map((m) => m[2]);
+    expect(notices).toContain("Closed Celerp. It opens again after the update.");
+    expect(notices.filter((text) => text.replace(/\$\w+/g, "").length > 75)).toEqual([]);
+    expect(include().match(/!insertmacro installStage (?!")/g)).toBeNull();
   });
 
 test("setup logs an update to install.log in the user's own logs folder, in UTF-16",
