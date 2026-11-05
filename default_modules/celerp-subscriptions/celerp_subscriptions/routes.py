@@ -25,7 +25,7 @@ from celerp.services.permissions import require_permission
 from celerp_docs.doc_constants import NO_SEND_DOC_TYPES
 from celerp_subscriptions import billing, migration, summary
 from celerp_subscriptions.periods import (
-    BILLED, CLAIMED_STATES, FREQUENCIES, RELEASED, SKIPPED, TIMINGS, Schedule, ScheduleError, UNRESOLVED,
+    BILLED, CLAIMED_STATES, FREQUENCIES, RELEASED, SKIPPED, TIMINGS, Schedule, ScheduleError, UNRESOLVED, shown,
 )
 from celerp_subscriptions.search import SUBSCRIPTION_DOC_TYPES, search_subscription_templates
 from ui.i18n import t
@@ -464,7 +464,7 @@ def _build_router() -> APIRouter:
         recorded = [int(k) for k in (state.get("periods") or {})]
         claimed = [int(k) for k, e in (state.get("periods") or {}).items() if e.get("state") in CLAIMED_STATES]
         if (recorded or state.get("history_review") or state.get("history_set_aside")) and any(
-            f in changes and changes[f] != state.get(f) for f in PLACING_FIELDS
+            f in changes and shown(f, changes[f]) != shown(f, state.get(f)) for f in PLACING_FIELDS
         ):
             raise HTTPException(status_code=409, detail=t("subscriptions.err_schedule_claimed"))
         if sent.get("auto_send") and billing.doc_kind(state) in NO_SEND_DOC_TYPES:

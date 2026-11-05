@@ -95,11 +95,6 @@ DOORS = {
     "pause_subscription": _pause,
     "cancel_subscription": _cancel,
 }
-# Agreement writes in the module that bypass write_agreement, and why none brings a mode into force.
-NOT_A_DOOR = {
-    "_migrate_template": "moves an earlier release's template: one it ran bills by hand from then on, "
-                         "and a draft or paused one runs nothing",
-}
 
 
 def test_the_census_reads_every_route_door():
@@ -113,8 +108,8 @@ async def test_every_door_that_writes_status_or_a_consent_term_asks_for_consent(
     await DOORS[door](client, session, monkeypatch)
 
 
-def test_every_write_outside_write_agreement_is_named_with_why_it_runs_nothing():
-    assert {name for name, keys in outside_writes().items() if keys} == set(NOT_A_DOOR)
+def test_no_agreement_write_outside_write_agreement_touches_a_mode():
+    assert {name: keys for name, keys in outside_writes().items() if keys} == {}
 
 
 @pytest.mark.parametrize("status", ["active", "paused", "draft"])

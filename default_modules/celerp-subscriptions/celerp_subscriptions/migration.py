@@ -31,13 +31,12 @@ from datetime import date
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.events.engine import emit_event
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.business_time import company_today
 from celerp_docs.doc_constants import SCHEDULE_REMOVED_FIELDS
 from celerp_subscriptions import billing
-from celerp_subscriptions.periods import BILLED, RELEASED, UNRESOLVED, Schedule, ScheduleError
+from celerp_subscriptions.periods import BILLED, RELEASED, UNRESOLVED, Schedule, ScheduleError, shown
 
 log = logging.getLogger(__name__)
 
@@ -68,7 +67,7 @@ def legacy_schedule(state: dict) -> dict:
     fields = {"anchor_date": anchor}
     if ran:
         fields.update(generation_mode="manual_due", billing_timing="advance")
-    if (state.get("frequency") or "monthly") == "custom":
+    if shown("frequency", state.get("frequency")) == "custom":
         days = state.get("custom_interval_days")
         days = int(days) if isinstance(days, str) and days.strip().isdigit() else days
         if days and type(days) is not int:
@@ -147,13 +146,9 @@ async def _migrate_template(session: AsyncSession, company_id, proj: Projection,
         changes["resume_restarts"] = True
     if review:
         changes["history_review"] = review
-    await emit_event(
-        session, company_id=company_id, entity_id=proj.entity_id, entity_type="doc", event_type="doc.updated",
-        data={"fields_changed": {**{k: {"new": v} for k, v in changes.items()},
-                                 **{f: {"drop": True} for f in sorted(SCHEDULE_REMOVED_FIELDS) if f in state}}},
-        actor_id=None, location_id=None, source="system", idempotency_key=f"{_KEY}{proj.entity_id}",
-        metadata_={"next_run_date": old_next},
-    )
+    await billing.write_agreement(session, company_id, proj.entity_id, changes, None,
+                                  drop=tuple(sorted(SCHEDULE_REMOVED_FIELDS)), key=f"{_KEY}{proj.entity_id}",
+                                  metadata={"next_run_date": old_next})
     return bool(review)
 
 

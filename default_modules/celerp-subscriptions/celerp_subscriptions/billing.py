@@ -140,8 +140,9 @@ async def write_agreement(session: AsyncSession, company_id, entity_id: str, cha
     """Record a change to the agreement's own fields (``{field: new value}``); ``drop``
     removes fields from its state. Only what changes as the agreement reads it is recorded
     (periods.shown: a field not stored reads as its unset value): a field given a value that
-    reads as the one it holds, or dropped while what it holds reads as unset, is left out, and
-    with nothing left no event is written, so History never shows a row that says nothing. Each field keeps its value before the
+    reads as the one it holds is left out, a field dropped while what it holds reads as unset is
+    cleared only beside a change that is recorded, and with nothing left no event is written,
+    so History never shows a row that says nothing. Each field keeps its value before the
     change, and a change to periods keeps the dates of each period it touched, so History can
     name them. Every agreement change in this module goes through here.
 
@@ -152,7 +153,9 @@ async def write_agreement(session: AsyncSession, company_id, entity_id: str, cha
     before = (await session.execute(select(Projection.state).where(
         Projection.company_id == company_id, Projection.entity_id == entity_id))).scalar_one_or_none() or {}
     changes = {k: v for k, v in changes.items() if shown(k, before.get(k)) != shown(k, v)}
-    drop = tuple(k for k in drop if k not in changes and shown(k, before.get(k)) != shown(k, None))
+    drop = tuple(k for k in drop if k in before and k not in changes)
+    if not changes and all(shown(k, before[k]) == shown(k, None) for k in drop):
+        drop = ()
     merged = {**{k: v for k, v in before.items() if k not in drop}, **changes}
     running, in_force = modes_in_force(before), modes_in_force(merged)
     needed = [m for m in in_force if m not in running or any(f in changes for f in CONSENT_TERMS[m])]
@@ -543,7 +546,7 @@ def outside_window(state: dict, schedule: Schedule, due: list[int], today: date)
     # present schedule index, not only its final eligible period.
     bill_index = schedule.current(today) - int(schedule.timing == "arrears")
     age = max(bill_index, latest if latest is not None else bill_index) - due[0]
-    return bool(due) and age > int(state.get("catchup_periods") or 0)
+    return bool(due) and age > int(shown("catchup_periods", state.get("catchup_periods")))
 
 
 def waiting_sends(state: dict, today: date) -> list[int]:

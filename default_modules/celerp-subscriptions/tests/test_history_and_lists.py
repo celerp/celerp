@@ -248,11 +248,10 @@ async def test_every_bill_path_records_only_what_changed(owner_ui, session, monk
 
 def test_only_the_one_writer_records_an_agreement_change():
     """Class guard: inside celerp_subscriptions an agreement's doc.updated event is written
-    only by billing.write_agreement (which drops what did not change), and by the one-off
-    move of an earlier release's template."""
+    only by billing.write_agreement (which drops what did not change)."""
     import ast
 
-    allowed = {("billing.py", "write_agreement"), ("migration.py", "_migrate_template")}
+    allowed = {("billing.py", "write_agreement")}
     found = set()
     for path in (REPO / "default_modules/celerp-subscriptions/celerp_subscriptions").glob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))

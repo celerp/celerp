@@ -347,9 +347,11 @@ def register_fields(describers: dict[str, Callable[[dict], str | None]]) -> None
     _FIELD_DESCRIBERS.update(describers)
 
 
-def change_text(label: str, old: str | None, new: str | None) -> str:
-    """'Label: old → new', an empty side read as none."""
-    return f"{label}: {old or t('activity.none')} → {new or t('activity.none')}"
+def change_text(label: str, old: str | None, new: str | None) -> str | None:
+    """'Label: old → new', an empty side read as none; None when both sides read the same,
+    so History never shows a change the page would not."""
+    old, new = old or t("activity.none"), new or t("activity.none")
+    return None if old == new else f"{label}: {old} → {new}"
 
 
 # ID fields that carry a raw entity-ID value; suppressed when a companion
@@ -896,8 +898,9 @@ def _fields_changed_summary(fields_changed: dict, currency: str | None = None,
 
         label = _field_name(k)
         if not _empty(new):
-            scalar_parts.append(change_text(label, None if _empty(old) else _fmt_field_value(k, old, currency, category_names),
-                                            _fmt_field_value(k, new, currency, category_names)))
+            if line := change_text(label, None if _empty(old) else _fmt_field_value(k, old, currency, category_names),
+                                   _fmt_field_value(k, new, currency, category_names)):
+                scalar_parts.append(line)
         else:
             scalar_parts.append(label)
 

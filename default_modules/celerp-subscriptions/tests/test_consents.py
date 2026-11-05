@@ -14,6 +14,7 @@ from fasthtml.common import to_xml
 from agreement_kit import (
     agreement, billed_docs, company_id, freeze_day, member, register, revoke, schedule, template, tick,
 )
+from celerp_subscriptions.periods import shown
 from ui.routes.subscriptions import _billing_section
 
 pytestmark = pytest.mark.asyncio
@@ -39,7 +40,7 @@ async def test_a_role_without_the_automation_permission_cannot_widen_the_catch_u
     widen = await schedule(client, op, eid, catchup_periods=12)
     assert widen.status_code == 403, widen.text
     assert widen.json()["detail"]["params"]["label"]["message_key"] == "perm.name.automate_billing"
-    assert (await template(client, hd, eid))["catchup_periods"] == 0
+    assert shown("catchup_periods", (await template(client, hd, eid)).get("catchup_periods")) == 0
     await tick(session, cid, "2026-07-15")
     assert await billed_docs(session, eid) == []
 

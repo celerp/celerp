@@ -59,8 +59,6 @@ SERVER_BUILT = {
     "default_modules/celerp-manufacturing/celerp_manufacturing/movements.py::emit": "the manufacturing movements it builds",
     "default_modules/celerp-subscriptions/celerp_subscriptions/billing.py::write_agreement": "the schedule, the owner",
     "default_modules/celerp-subscriptions/celerp_subscriptions/billing.py::_bill": "the schedule's own bill, the owner",
-    "default_modules/celerp-subscriptions/celerp_subscriptions/migration.py::_migrate_template":
-        "the move onto a schedule, the owner",
 }
 # Every key a caller's data is refused for: what the schedule writes, the owned set and the removed fields.
 REFUSED = sorted((written_keys() - SCHEDULE_TERM_FIELDS - set(CALLER_KEYS)) | SCHEDULE_OWNED_FIELDS | SCHEDULE_REMOVED_FIELDS)

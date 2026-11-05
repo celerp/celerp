@@ -4,8 +4,9 @@
 
 ``registrations()`` finds every ``register_fields`` call (the History describers a module
 names). ``fields()`` takes every field the subscriptions module's writers record on an
-agreement (``owned_fields_census.writes()``: each ``write_agreement`` call and the
-migration's own move) and names how History renders it:
+agreement (``owned_fields_census.writes()``: each ``write_agreement`` call, and any agreement
+event written outside it, which ``writers_outside_write_agreement()`` reports) and names how
+History renders it:
 
 - described: the registered describer renders the change;
 - generic: no describer, History's generic field line renders it (named in GENERIC);
@@ -18,7 +19,6 @@ once it is named here. Run as a script for the census table: ``python history_ce
 """
 from __future__ import annotations
 
-import ast
 import importlib
 import re
 import sys
@@ -118,22 +118,9 @@ def companions_alone() -> list[str]:
     return alone
 
 
-def moves_not_through_changed_fields() -> list[str]:
-    """Each agreement writer outside write_agreement whose function does not build its
-    fields through billing.changed_fields."""
-    trees = {p: ast.parse(p.read_text(encoding="utf-8")) for p in sorted(PACKAGE.glob("*.py"))}
-    missing = []
-    for w in writes():
-        if w.through_sink:
-            continue
-        path, rest = w.where.split(":", 1)
-        fn_name = rest.split(" ", 1)[1]
-        fn = next(n for n in ast.walk(trees[ROOT / path])
-                  if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == fn_name)
-        calls = {getattr(c.func, "attr", getattr(c.func, "id", None)) for c in ast.walk(fn) if isinstance(c, ast.Call)}
-        if "changed_fields" not in calls:
-            missing.append(w.where)
-    return missing
+def writers_outside_write_agreement() -> list[str]:
+    """Each agreement write in the module that does not go through billing.write_agreement."""
+    return [w.where for w in writes() if not w.through_sink]
 
 
 def main() -> None:
@@ -155,8 +142,8 @@ def main() -> None:
         print(f"unwritten {f}")
     for line in companions_alone():
         print(f"companion-alone {line}")
-    for line in moves_not_through_changed_fields():
-        print(f"move-not-through-changed_fields {line}")
+    for line in writers_outside_write_agreement():
+        print(f"writer-outside-write_agreement {line}")
     print(f"# {len(rows)} fields, {len(registrations())} registrations")
 
 

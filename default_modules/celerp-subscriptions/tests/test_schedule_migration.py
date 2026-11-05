@@ -18,6 +18,7 @@ from celerp.models.company import Company
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 
+from celerp_subscriptions.periods import shown
 from agreement_kit import LINE, billed_docs, freeze_instant, generate_due, next_bill_date
 
 pytestmark = pytest.mark.asyncio
@@ -85,7 +86,7 @@ async def test_migration_clean_history_gets_claims(session, auth, monkeypatch):
     state = await _state(session, auth["company_id"], tid)
     assert {k: (v["state"], v["doc_id"]) for k, v in state["periods"].items()} == {
         "-3": ("billed", docs[0]), "-2": ("billed", docs[1]), "-1": ("billed", docs[2])}
-    assert state["anchor_date"] == "2026-04-01" and state["billing_timing"] == "advance"
+    assert state["anchor_date"] == "2026-04-01" and shown("billing_timing", state.get("billing_timing")) == "advance"
     assert "next_run_date" not in state and "generated_doc_ids" not in state
     assert not state.get("history_review")
 
@@ -119,7 +120,7 @@ async def test_migration_all_templates_manual_due(session, auth, monkeypatch):
     b, _ = await _legacy(session, auth, next_run="2026-02-01", doc_dates=[])
     await _migrate(session, auth["company_id"])
     for tid in (a, b):
-        assert (await _state(session, auth["company_id"], tid))["generation_mode"] == "manual_due"
+        assert shown("generation_mode", (await _state(session, auth["company_id"], tid)).get("generation_mode")) == "manual_due"
     report = await run_due(session=session, company_id=auth["company_id"], today=date(2026, 6, 15), budget=10)
     await session.commit()
     assert report.done == 0

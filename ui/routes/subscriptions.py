@@ -22,6 +22,7 @@ from starlette.responses import RedirectResponse, Response
 import ui.api_client as api
 from celerp.output.document_context import prepare_document_output
 from celerp.services.record_quantities import template_label
+from celerp_subscriptions.periods import shown
 from ui.components.activity import change_text, format_timestamp, register_fields
 from ui.components.icons import import_icon
 from ui.components.operation_key import FIELD, operation_key_vals, operation_key_input, required_operation_key, submitted_operation_key
@@ -103,20 +104,21 @@ def _yes_no(on) -> str:
     return t("settings.yes") if on else t("settings.no")
 
 
-# Each agreement field the page sets: its label key and how its value reads, as unset
-# values are shown. The page's controls and the agreement's History both read it.
+# Each agreement field the page sets: its label key and how its value reads. Both read the
+# value through celerp_subscriptions.periods.shown (an unset value as the agreement holds it),
+# as write_agreement compares it, so the page's controls, the event and History agree.
 _FIELD_TEXT = {
-    "frequency": ("th.frequency", lambda v: display_enum(v or "monthly", "subscription_frequency")),
+    "frequency": ("th.frequency", lambda v: display_enum(v, "subscription_frequency")),
     "custom_interval_days": ("subscriptions.custom_interval_title", lambda v: str(v) if v else None),
     "anchor_date": ("label.first_bill_date", lambda v: v),
     "start_date": ("label.start_date", lambda v: v),
-    "billing_timing": ("subscriptions.billing_timing", lambda v: t(f"subscriptions.timing_{v or 'advance'}")),
+    "billing_timing": ("subscriptions.billing_timing", lambda v: t(f"subscriptions.timing_{v}")),
     "term_start": ("subscriptions.term_start", lambda v: v),
     "term_end": ("subscriptions.term_end", lambda v: v),
     "cancel_at_period_end": ("subscriptions.stop_at_period_end", lambda v: _yes_no(v is not None)),
-    "generation_mode": ("subscriptions.billing_mode", lambda v: t(f"subscriptions.mode_{v or 'manual_due'}")),
+    "generation_mode": ("subscriptions.billing_mode", lambda v: t(f"subscriptions.mode_{v}")),
     "auto_send": ("subscriptions.auto_send", _yes_no),
-    "catchup_periods": ("subscriptions.catchup_window", lambda v: str(v or 0)),
+    "catchup_periods": ("subscriptions.catchup_window", lambda v: str(v)),
 }
 
 
@@ -125,7 +127,7 @@ def _label(field: str) -> str:
 
 
 def _value_text(field: str, value) -> str | None:
-    return _FIELD_TEXT[field][1](value)
+    return _FIELD_TEXT[field][1](shown(field, value))
 
 
 def _term_change(field: str):
@@ -158,8 +160,10 @@ def _period_change(old: dict, new: dict, start: str, end: str) -> str | None:
     return None
 
 
-def _periods_change(c: dict) -> str:
+def _periods_change(c: dict) -> str | None:
     old, new = c.get("old") or {}, c.get("new") or {}
+    if old == new:
+        return None
     lines = [_period_change(old.get(k) or {}, new.get(k) or {}, *span)
              for k, span in sorted((c.get("dates") or {}).items(), key=lambda kv: int(kv[0]))]
     return ", ".join(x for x in lines if x) or t("activity.generic_updated", field=t("subscriptions.periods_heading"))
@@ -175,7 +179,11 @@ def _billing_failure_change(c: dict) -> str | None:
 
 
 def _count_change(label: str):
-    return lambda c: f"{t(label)}: {len(c.get('new') or [])}"
+    """The number of entries after the change; nothing when the number does not change."""
+    def describe(c: dict) -> str | None:
+        old, new = len(c.get("old") or []), len(c.get("new") or [])
+        return None if old == new else f"{t(label)}: {new}"
+    return describe
 
 
 register_fields({
@@ -297,9 +305,9 @@ def _schedule_section(entity_id: str, sub: dict) -> FT:
     every element showing the schedule again (_schedule_views)."""
     base = f"/subscriptions/{entity_id}/schedule"
     attrs = {**_SCHEDULE_CONTROL, "cls": "form-input form-input--inline"}
-    freq = sub.get("frequency") or "monthly"
+    freq = shown("frequency", sub.get("frequency"))
     interval = str(sub.get("custom_interval_days") or "")
-    timing = sub.get("billing_timing") or "advance"
+    timing = shown("billing_timing", sub.get("billing_timing"))
     stops = sub.get("cancel_at_period_end") is not None
 
     def _date(field: str) -> FT:
@@ -714,7 +722,7 @@ def _billing_section(entity_id: str, sub: dict) -> FT:
     mode names when it was authorized; setting it back to manual undoes it."""
     base = f"/subscriptions/{entity_id}/schedule"
     attrs = {**_SCHEDULE_CONTROL, "cls": "form-input form-input--inline"}
-    mode = sub.get("generation_mode") or "manual_due"
+    mode = shown("generation_mode", sub.get("generation_mode"))
     consents = sub.get("consents") or {}
     return Div(
         H3(t("subscriptions.billing_heading")),
@@ -727,7 +735,7 @@ def _billing_section(entity_id: str, sub: dict) -> FT:
                          Option(_yes_no(True), value="true", selected=bool(sub.get("auto_send"))),
                          name="value", hx_patch=f"{base}/auto_send", **attrs)),
             Label(_label("catchup_periods"),
-                  Input(type="number", name="value", min="0", max="12", value=str(sub.get("catchup_periods") or 0),
+                  Input(type="number", name="value", min="0", max="12", value=str(shown("catchup_periods", sub.get("catchup_periods"))),
                         hx_patch=f"{base}/catchup_periods", style="width:80px", **attrs),
                   title=t("subscriptions.catchup_window_title")),
             style="display:flex;gap:1rem;flex-wrap:wrap;align-items:center",
@@ -1276,8 +1284,8 @@ def setup_routes(app) -> None:
             value = _SCHEDULE_EDITS[field](raw) if raw else None
         except ValueError:
             return _action_error(t(_FIELD_ERRORS[field]))
-        # The days box is the custom frequency: entering days chooses it.
-        changes = {field: value, **({"frequency": "custom"} if field == "custom_interval_days" else {})}
+        # The days box is the custom frequency: entering days chooses it (an empty box chooses nothing).
+        changes = {field: value, **({"frequency": "custom"} if field == "custom_interval_days" and value else {})}
         try:
             saved = await api.update_subscription_schedule(token, entity_id, changes)
             sub = await api.get_subscription(token, entity_id)

@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 import uuid
 
+import pytest
+
 from bs4 import BeautifulSoup
 from sqlalchemy import func, select
 
@@ -30,7 +32,7 @@ def test_no_change_history_shows_nothing_of_is_recorded_alone():
 
 
 def test_every_agreement_writer_records_what_changes_through_the_one_rule():
-    assert history_census.moves_not_through_changed_fields() == []
+    assert history_census.writers_outside_write_agreement() == []
 
 
 def _values(changes: list[dict], state: dict, f: str, unset) -> list:
@@ -62,6 +64,7 @@ async def test_a_change_is_recorded_exactly_when_history_shows_it(owner_ui, sess
     a line. A companion records exactly when its value changes."""
     from celerp.models.ledger import LedgerEntry
     from celerp.models.projections import Projection
+    from celerp.services.company_lock import locked_company
     from celerp_subscriptions import billing
     from celerp_subscriptions.periods import UNSET, shown
     from test_history_and_lists import _changed_fields
@@ -84,6 +87,7 @@ async def test_a_change_is_recorded_exactly_when_history_shows_it(owner_ui, sess
             .order_by(LedgerEntry.id.desc()).limit(1))).scalar_one()
 
     async def write(f: str, held, change: dict, drop: tuple = ()) -> str | None:
+        await locked_company(session, cid)
         row = await session.get(Projection, {"company_id": cid, "entity_id": eid})
         row.state = {k: v for k, v in base.items() if k != f} | ({} if held is None else {f: held})
         await session.flush()
@@ -92,7 +96,7 @@ async def test_a_change_is_recorded_exactly_when_history_shows_it(owner_ui, sess
         if await count() == before:
             return None
         entry = await latest()
-        return detail_from_entry(entry.event_type, entry.data) or ""
+        return detail_from_entry(entry.data, entry.event_type) or ""
 
     rows = history_census.fields()
     sets = {f for w in history_census.writes() if w.through_sink for f in w.sets} - set(history_census.DERIVED)
@@ -130,14 +134,19 @@ async def test_a_change_is_recorded_exactly_when_history_shows_it(owner_ui, sess
     assert rows and not wrong, wrong
 
 
+@pytest.mark.parametrize("billed", [False, True])
 async def test_saving_what_the_page_shows_on_an_agreement_created_without_its_settings_records_nothing(
-        owner_ui, monkeypatch):
+        owner_ui, monkeypatch, billed):
     """An agreement made through Documents stores none of its billing settings; saving each
-    control on its page with the value it shows adds no event and no History row."""
+    control on its page with the value it shows adds no event and no History row, and once a
+    period is billed it is not refused as a change to the schedule."""
     from test_history_and_lists import _history
 
     freeze_day(monkeypatch, "2026-03-15")
     eid = await agreement(owner_ui.api, {}, start="2026-03-01")
+    if billed:
+        r = await owner_ui.api.post(f"/subscriptions/{eid}/generate-due", json={"request_key": "due-1"})
+        assert r.status_code == 200, r.text
     stored = (await owner_ui.api.get(f"/docs/{eid}")).json()
     assert not {"generation_mode", "auto_send", "catchup_periods", "billing_timing"} & set(stored)
     soup = BeautifulSoup((await owner_ui.get(f"/subscriptions/{eid}")).text, "html.parser")
@@ -153,7 +162,7 @@ async def test_saving_what_the_page_shows_on_an_agreement_created_without_its_se
     history = await _history(owner_ui, eid)
     for field, value in shows.items():
         r = await owner_ui.patch(f"/subscriptions/{eid}/schedule/{field}", data={"value": value})
-        assert r.status_code == 200, (field, value, r.text[:300])
+        assert r.status_code == 200 and r.headers.get("HX-Reswap") != "none", (field, value, r.headers.get("HX-Trigger"))
     after = (await owner_ui.api.get("/ledger", params={"entity_id": eid, "limit": 200})).json()["items"]
     assert len(after) == ledger, [e["data"] for e in after[:len(after) - ledger]]
     assert await _history(owner_ui, eid) == history
