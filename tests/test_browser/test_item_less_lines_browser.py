@@ -66,6 +66,11 @@ def _posted(req, name: str) -> list[str]:
     return [v for k, v in parse_qsl(body, keep_blank_values=True) if k == name]
 
 
+def _sent(path: str):
+    """Matches the request that runs the line action at ``path``, not its preview (dry_run)."""
+    return lambda q: q.method == "POST" and q.url.endswith(path) and _posted(q, "dry_run") != ["1"]
+
+
 def _persistent_toast(page, text: str) -> str:
     toast = page.locator(".toast-container .toast--persist", has_text=text).first
     toast.wait_for(state="visible", timeout=10000)
@@ -125,7 +130,7 @@ def test_set_available_sends_held_and_item_less_rows(page, ui_server, api):
     page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
     page.check("#li-select-all")
     page.locator("#li-bulk-select").select_option(value="li-revert")
-    with page.expect_request(lambda q: q.method == "POST" and q.url.endswith("/set-available")) as sent:
+    with page.expect_request(_sent("/set-available")) as sent:
         page.locator("#li-bulk-revert-btn").click()
     # The confirm counts the one line it acts on and names the two it leaves up front.
     assert asked[-1] == (f'Set 1 line as available? Lines 2 "{free["sku"]}", 3 "GIA Certificate" '
@@ -139,7 +144,7 @@ def test_set_available_sends_held_and_item_less_rows(page, ui_server, api):
     # Reserve on the finalized invoice posts every ticked row, the certificate included.
     page.check("#li-select-all")
     page.locator("#li-bulk-select").select_option(value="li-reserve")
-    with page.expect_request(lambda q: q.method == "POST" and q.url.endswith("/reserve-lines")) as sent:
+    with page.expect_request(_sent("/reserve-lines")) as sent:
         page.evaluate("liBulkReserveConfirmed()")
     assert asked[-1] == 'Set 2 lines as reserved? Line 3 "GIA Certificate" will be left as it is.'
     assert _posted(sent.value, "line_id") == [held_id, free_id, gia_id]
@@ -153,7 +158,7 @@ def test_set_available_sends_held_and_item_less_rows(page, ui_server, api):
     assert _status(api, stone) == "reserved"
     page.goto(f"{ui_server}/lists/{list_id}", wait_until="domcontentloaded")
     page.check("#li-select-all")
-    with page.expect_request(lambda q: q.method == "POST" and q.url.endswith("/set-available")) as sent:
+    with page.expect_request(_sent("/set-available")) as sent:
         page.evaluate("liBulkAvailableConfirmed()")
     assert asked[-1] == 'Set 1 line as available? Line 2 "GIA Certificate" will be left as it is.'
     assert _posted(sent.value, "line_id") == [stone_line, gia_line]
@@ -162,7 +167,7 @@ def test_set_available_sends_held_and_item_less_rows(page, ui_server, api):
 
     # The List status action Reserve posts every ticked row too.
     page.check("#li-select-all")
-    with page.expect_request(lambda q: q.method == "POST" and q.url.endswith("/reserve-lines")) as sent:
+    with page.expect_request(_sent("/reserve-lines")) as sent:
         page.evaluate("liBulkReserveConfirmed()")
     assert _posted(sent.value, "line_id") == [stone_line, gia_line]
 
@@ -210,6 +215,29 @@ def test_every_stock_action_confirms_the_count_and_names_the_lines_it_leaves(pag
     assert [_status(api, s) for s in stones] == [expected, expected]
 
 
+def test_set_as_shipped_asks_about_the_lines_it_ships_and_names_the_rest(page, ui_server, api):
+    """An invoice with a shipped stone, an available stone and a certificate, all ticked: Set as
+    shipped asks about the one line it ships and names the other two, then ships it. Red
+    statement: the page counted the shipped stone too ("Set 2 lines as shipped?") and the
+    server then refused the whole request, the available stone included."""
+    asked: list[str] = []
+    answer_confirms(page, lambda question: asked.append(question) or True)
+    shipped, free = _stone(api), _stone(api)
+    doc_id = _invoice(api, [_stone_line(shipped), _stone_line(free), dict(_GIA)])
+    shipped_id = _line_ids(api, f"/docs/{doc_id}")[0]
+    r = api.post(f"/docs/{doc_id}/fulfill-lines", json={"line_ids": [shipped_id]})
+    assert r.status_code in (200, 201), r.text
+    page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
+    page.check("#li-select-all")
+    page.locator("#li-bulk-select").select_option(value="li-fulfill")
+    page.locator("#li-bulk-fulfill-btn").click()
+    notice = _persistent_toast(page, "GIA Certificate")
+    assert asked == [f'Set 1 line as shipped? Lines 1 "{shipped["sku"]}", 3 "GIA Certificate" '
+                     'will be left as they are.']
+    assert notice.startswith("1 line set as shipped.")
+    assert _status(api, free) == "sold"
+
+
 def test_set_available_on_lines_with_nothing_out_does_not_send_the_user_back(page, ui_server, api):
     """A List of stones that are all available, and a certificate: Set as available has
     nothing to change. Red statement: the refusal said "Choose the inventory lines instead"
@@ -236,6 +264,7 @@ def test_line_selection_sends_an_empty_id_for_a_row_without_one(page, ui_server,
     page.check("#li-select-all")
     page.locator("tbody .li-select").nth(1).evaluate("cb => cb.removeAttribute('data-line-id')")
     page.locator("#li-bulk-select").select_option(value="li-fulfill")
+    # The preview names the rows as the action would; it is refused, so the action never runs.
     with page.expect_request(lambda q: q.method == "POST" and q.url.endswith("/fulfill-lines")) as sent:
         page.locator("#li-bulk-fulfill-btn").click()
     assert _posted(sent.value, "line_id") == [first_id, ""]
@@ -261,7 +290,7 @@ def test_set_scanned_and_print_labels_name_skipped_rows(page, ui_server, api):
     page.goto(f"{ui_server}/lists/{audit_id}", wait_until="domcontentloaded")
     page.check("#li-select-all")
     gia_row = _row_number(page, "GIA Certificate")
-    with page.expect_request(lambda q: q.method == "POST" and q.url.endswith("/set-scanned")) as sent:
+    with page.expect_request(_sent("/set-scanned")) as sent:
         page.evaluate("liBulkSetScanned(true)")
     lids = [li["line_id"] for li in api.get(f"/lists/{audit_id}").json()["line_items"]]
     assert sorted(_posted(sent.value, "line_id")) == sorted(lids)

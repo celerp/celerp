@@ -581,15 +581,16 @@ async def test_the_api_reference_describes_the_lines_a_stock_action_leaves(clien
     assert "all or nothing" not in said
 
 
-async def test_the_page_confirms_every_stock_action_from_the_same_table():
-    """The page script's confirm reads each action's kinds from the skip table, and no stock
-    action on the toolbar asks a fixed question of its own. Red statement: Set as shipped
-    asked "Set the selected lines as shipped?" and named no line it would leave."""
+async def test_the_page_never_decides_which_lines_a_stock_action_acts_on():
+    """The page script carries no skip table for the stock actions: only Print labels, which
+    runs in the page, names its skipped rows itself. No stock action on the toolbar asks a
+    fixed question of its own; each asks its preview (test_line_action_preview). Red
+    statement: the page counted the ticked rows by kinds of its own and asked about lines
+    the server then refused."""
     from fasthtml.common import to_xml
 
-    from celerp_docs.doc_constants import LINE_SKIP_REASONS
     from ui.routes.documents import _li_bulk_toolbar, _line_skip_strings
-    assert _line_skip_strings()["skip_kinds"] == {a: list(k) for a, k in LINE_SKIP_REASONS.items()}
+    assert set(_line_skip_strings()) == {"labels_skipped"}
     html = to_xml(_li_bulk_toolbar("doc:1", False, show_fulfill=True, show_reserve=True))
     assert "hx-confirm" not in html
     assert 'onclick="liBulkFulfillConfirmed(event)"' in html
@@ -659,8 +660,9 @@ def _boxes(html: str, scope: str = "") -> list:
 async def test_every_line_renderer_gives_its_checkbox_the_line_id_and_label(client, session):
     """The draft rows and the empty row a draft adds, the finalized rows, the audit's rows and
     the audit tbody a scan swaps in: each checkbox carries the line id an action sends and the
-    label a notice names it by, a row a stock action leaves as it is says why (no item, or a
-    service), and the swapped audit row has a cell under every heading."""
+    label a notice names it by, and nothing the page could judge a line by (its status, a
+    kind of skip); every stock action asks its preview; the swapped audit row has a cell under
+    every heading."""
     from bs4 import BeautifulSoup
     from test_helpers import ui_signed_in
     g = await _gems(client)
@@ -681,10 +683,8 @@ async def test_every_line_renderer_gives_its_checkbox_the_line_id_and_label(clie
         got = {(b.get("data-line-id"), b.get("data-label")) for b in _boxes(html, "tbody")
                if b.get("data-line-id")}
         assert got == want, name
-        skips = {li["line_id"]: None if li.get("item_id") and li.get("sku") != SVC
-                 else "service" if li.get("item_id") else "no_item" for li in state["line_items"]}
-        assert {b["data-line-id"]: b.get("data-skip") for b in _boxes(html, "tbody")
-                if b.get("data-line-id")} == skips, name
+        assert not any(b.has_attr("data-skip") or b.has_attr("data-item-status") for b in _boxes(html)), name
+        assert "liLineConfirm" not in html and "skip_kinds" not in html, name
         assert all(b.has_attr("data-line-id") and b.has_attr("data-label") for b in _boxes(html)), name
     heads = BeautifulSoup(pages["audit"], "html.parser").select("table:has(#line-body) thead tr")[0].find_all("th")
     assert heads

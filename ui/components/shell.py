@@ -129,27 +129,47 @@ function celerpFetch(url, opts) {
 // Post one line action for the chosen rows (their .li-select checkboxes) as ONE request.
 // Each row is named by its line id. ``fields`` are extra [name, value] pairs. The request carries
 // the operation key the page was rendered with, so the same action sent again after a lost
-// answer is recorded once. Resolves true on success, keeping the server's toast for the
-// page the caller opens next; otherwise the reason is shown.
-async function celerpLineAction(url, rows, fields, key, fallbackMsg) {
+// answer is recorded once. Answers the response with its HX-Trigger, or null when it was not sent.
+async function _celerpLinePost(url, rows, fields, key) {
   var fd = new FormData();
   celerpLineSelection(rows).forEach(function(kv) { fd.append(kv[0], kv[1]); });
   (fields || []).forEach(function(kv) { fd.append(kv[0], kv[1]); });
   if (key) fd.append('idempotency_key', key);
-  var msg = fallbackMsg;
   try {
     var resp = await celerpFetch(url, {method: 'POST', body: fd});
     var t = null;
     try { t = JSON.parse(resp.headers.get('HX-Trigger') || 'null'); } catch (e) {}
-    if (resp.status === 204) {
-      if (t && t.celerpToast) _celerpKeepToast(t.celerpToast);
-      return true;
-    }
-    if (t && t.celerpToast && t.celerpToast.message) msg = t.celerpToast.message;
+    return {resp: resp, trigger: t};
   } catch (e) {
+    return null;
   }
-  celerpToast(msg, 'error');
+}
+// Show why a line action was refused: the server's reason, else ``fallbackMsg``.
+function _celerpLineRefused(sent, fallbackMsg) {
+  var t = sent && sent.trigger;
+  celerpToast((t && t.celerpToast && t.celerpToast.message) || fallbackMsg, 'error');
+}
+// Run one line action. Resolves true on success, keeping the server's toast for the page the
+// caller opens next; otherwise the reason is shown.
+async function celerpLineAction(url, rows, fields, key, fallbackMsg) {
+  var sent = await _celerpLinePost(url, rows, fields, key);
+  if (sent && sent.resp.status === 204) {
+    if (sent.trigger && sent.trigger.celerpToast) _celerpKeepToast(sent.trigger.celerpToast);
+    return true;
+  }
+  _celerpLineRefused(sent, fallbackMsg);
   return false;
+}
+// The question a stock line action asks before it runs, from the action's own preview
+// (dry_run): how many lines it acts on and which it leaves as they are. Nothing changes. Null
+// when the action would be refused, after showing why, so nothing is asked.
+async function celerpLinePreview(url, rows, fields, key, fallbackMsg) {
+  var sent = await _celerpLinePost(url, rows, (fields || []).concat([['dry_run', '1']]), key);
+  if (sent && sent.resp.ok && (sent.resp.headers.get('Content-Type') || '').indexOf('json') >= 0) {
+    try { return (await sent.resp.json()).confirm; } catch (e) {}
+  }
+  _celerpLineRefused(sent, fallbackMsg);
+  return null;
 }
 // One line action at a time: the second click of a double click, or a click while another
 // action's confirm or request is open, does nothing. ``run`` resolves true when the page is
@@ -210,22 +230,6 @@ function liNameLines(rows, forms) {
 // Name the ticked rows an action left out in a notice that stays.
 function liSkipNotice(rows, forms) {
   if (rows.length && window.celerpToast) celerpToast(liNameLines(rows, forms), 'info', true);
-}
-// The confirm for a stock line action: it counts the rows the action acts on (countForms,
-// each with {n}) and names up front the rows it will leave as they are (skipForms). Which
-// those are is the action's own entry of the skip table (``kinds``, LINE_SKIP_REASONS): a row
-// whose data-skip (no item, or a service) is one of them, and with "idle" a row with nothing
-// held or out. Empty when no row acts: the request goes without a confirm and the server's
-// refusal names the rows.
-function liLineConfirm(rows, countForms, skipForms, kinds) {
-  var left = rows.filter(function(cb) {
-    var st = cb.getAttribute('data-item-status') || '';
-    return kinds.indexOf(cb.getAttribute('data-skip')) >= 0
-      || (kinds.indexOf('idle') >= 0 && st !== 'reserved' && st !== 'sold' && st !== 'memo_out');
-  });
-  if (left.length === rows.length) return '';
-  var msg = celerpCount(countForms, rows.length - left.length);
-  return left.length ? msg + ' ' + liNameLines(left, skipForms) : msg;
 }
 // A count message in the form that reads right for n: forms is {one, many}, each with {n}.
 function celerpCount(forms, n) {

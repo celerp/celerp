@@ -193,9 +193,7 @@ def test_fulfilled_line_reads_sold_and_offers_set_as_available(page, ui_server, 
     _assert_no_crash(page, "fulfilled doc")
     _save_screenshot(page, "04-fulfilled-doc-set-available")
 
-    statuses = page.locator(".li-select").evaluate_all(
-        "els => els.map(e => e.getAttribute('data-item-status'))")
-    assert "sold" in statuses, f"Fulfilled line must read as sold, got {statuses}"
+    assert page.locator(".col-item-status .badge--sold").count() >= 1, "Fulfilled line must read as sold"
     assert page.locator("#li-bulk-select option[value='li-revert']").count() == 1, \
         "Line actions must offer Set as available on a fulfilled doc"
     assert page.locator("#li-bulk-revert-btn").count() == 1
@@ -222,9 +220,8 @@ def test_revert_fulfillment_restores_fulfill_button(page, ui_server, api, final_
     page.goto(f"{ui_server}/docs/{final_doc_id}", wait_until="domcontentloaded")
     _assert_no_crash(page, "post-revert")
 
-    statuses = page.locator(".li-select").evaluate_all(
-        "els => els.map(e => e.getAttribute('data-item-status'))")
-    assert statuses and "sold" not in statuses, f"No line may read as sold after revert, got {statuses}"
+    assert page.locator(".col-item-status").count() and not page.locator(".col-item-status .badge--sold").count(), \
+        "No line may read as sold after revert"
 
 
 def test_no_fulfill_button_on_service_only_doc(page, ui_server, service_doc_id):
