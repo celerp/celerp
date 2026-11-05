@@ -8940,7 +8940,7 @@ async def export_lists_csv(
     )
 
 
-@lists_router.get("/{entity_id}")
+@lists_router.get("/{entity_id}", dependencies=[require_permission("view_documents")])
 async def get_list(
     entity_id: str,
     company_id: str = Depends(get_current_company_id),
@@ -8973,7 +8973,7 @@ def _page_bounds(offset: str, limit: str) -> tuple[int, int]:
     return off, min(lim, _PAGE_LIMIT_MAX)
 
 
-@lists_router.get("/{entity_id}/page")
+@lists_router.get("/{entity_id}/page", dependencies=[require_permission("view_documents")])
 async def get_list_page(
     entity_id: str,
     offset: str = "0",
@@ -9930,7 +9930,7 @@ async def restore_list_total(
     return {"event_id": entry.id}
 
 
-@lists_router.get("/{entity_id}/old-rule-total")
+@lists_router.get("/{entity_id}/old-rule-total", dependencies=[require_permission("view_documents")])
 async def get_list_old_rule_total(
     entity_id: str,
     company_id: str = Depends(get_current_company_id),
@@ -10081,7 +10081,7 @@ async def duplicate_list(
     return {"event_id": entry.id, "id": new_entity_id}
 
 
-@lists_router.get("/{entity_id}/notes")
+@lists_router.get("/{entity_id}/notes", dependencies=[require_permission("view_documents")])
 async def list_list_notes(
     entity_id: str,
     company_id: str = Depends(get_current_company_id),
@@ -10244,7 +10244,7 @@ async def import_list(
     return {"event_id": entry.id, "id": entry.entity_id, "idempotency_hit": False}
 
 
-@lists_router.get("/import/template", include_in_schema=False)
+@lists_router.get("/import/template", include_in_schema=False, dependencies=[require_permission("view_documents")])
 async def import_lists_template():
     from fastapi.responses import PlainTextResponse
     return PlainTextResponse(
