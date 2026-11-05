@@ -61,6 +61,25 @@ async def _refused_ship(client, session, auth, doc: str, line_ids: list[str], st
     assert await _per_doc(session, auth) == before
 
 
+# The buttons each refusal's advice names, by their own labels.
+_NAMED_BUTTONS = {
+    "error.cogs_line_unknown_paid": ("documents.void_this_payment", "doc.revert_to_draft",
+                                     "documents.finalize_label_invoice"),
+    "docs.revert_lines_out": ("documents.set_as_available",),
+}
+_LANGS = sorted(p.stem for p in (Path(ui.i18n.__file__).parent / "locales").glob("*.json"))
+
+
+@pytest.mark.parametrize("lang", _LANGS)
+@pytest.mark.parametrize("refusal", sorted(_NAMED_BUTTONS))
+async def test_a_refusal_names_each_button_by_its_label_in_every_language(refusal, lang):
+    """Generated over every refusal that names a button and every language: the advice
+    carries the button's label exactly as the page shows it, so the user can find it."""
+    advice = t(refusal, lang, doc="X", items="Y")
+    for label in _NAMED_BUTTONS[refusal]:
+        assert t(label, lang) in advice, (label, t(label, lang))
+
+
 async def _revert_refused(client, auth, doc: str) -> list[str]:
     return (await _state(client, auth, doc))["revert_refused"]
 
@@ -70,9 +89,6 @@ async def test_part_paid_invoice_names_voiding_the_payments_and_that_way_out_wor
     await _pay(client, auth, doc, 1)
     await _refused_ship(client, session, auth, doc, ids[:1], stones, "error.cogs_line_unknown_paid")
     assert await _revert_refused(client, auth, doc) == ["payments"]
-    for lang in [p.stem for p in (Path(ui.i18n.__file__).parent / "locales").glob("*.json")]:
-        for label in ("documents.void_this_payment", "doc.revert_to_draft", "documents.finalize_label_invoice"):
-            assert t(label, lang) in t("error.cogs_line_unknown_paid", lang, doc="X", items="Y"), (lang, label)
     payment = (await _state(client, auth, doc))["payments"][0]["index"]
     await _ok(client, auth, f"/docs/{doc}/void-payment", {"payment_index": payment})
     assert await _revert_refused(client, auth, doc) == []
