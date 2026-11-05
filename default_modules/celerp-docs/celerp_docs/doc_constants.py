@@ -73,13 +73,18 @@ LEGACY_CONTACT_FIELDS: dict[str, str] = {
 }
 
 # What an agreement's schedule operations write (celerp-subscriptions): on a billed
-# document, the agreement and period it bills; on the agreement, its period claims,
-# history review and the unattended modes with their consents.
+# document, the agreement and period it bills; on the agreement, its period claims, the
+# bills it let go, history review, the restart a template paused on an earlier release
+# owes, and the unattended modes with their consents. The module's owned_fields_census
+# test reads every key it writes and fails on one missing here.
 SCHEDULE_OWNED_FIELDS: frozenset[str] = frozenset({
     "source_agreement", "period_index", "service_start", "service_end",
-    "periods", "history_review", "history_set_aside", "consents", "generation_mode", "auto_send",
-    "billing_failure",
+    "periods", "released_bills", "history_review", "history_set_aside", "resume_restarts",
+    "consents", "generation_mode", "auto_send", "billing_failure",
 })
+# What an earlier release kept on a template instead of a schedule. Only data that release
+# wrote holds them, and moving the template onto a schedule removes them; no writer takes them.
+SCHEDULE_REMOVED_FIELDS: frozenset[str] = frozenset({"next_run_date", "generated_doc_ids"})
 # An agreement's schedule terms: changed only through its schedule, which checks them
 # against the periods already claimed. A draft may carry them when it is created.
 SCHEDULE_TERM_FIELDS: frozenset[str] = frozenset({

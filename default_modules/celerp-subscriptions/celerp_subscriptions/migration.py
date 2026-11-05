@@ -34,6 +34,7 @@ from celerp.events.engine import emit_event
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from celerp.services.business_time import company_today
+from celerp_docs.doc_constants import SCHEDULE_REMOVED_FIELDS
 from celerp_subscriptions import billing
 from celerp_subscriptions.periods import BILLED, RELEASED, UNRESOLVED, Schedule, ScheduleError
 
@@ -41,7 +42,6 @@ log = logging.getLogger(__name__)
 
 _MARKER = "subscription_schedules:{}"
 _KEY = "subscription-schedule-migration:"
-_LEGACY = ("next_run_date", "generated_doc_ids")
 _NOTICE = "subscriptions.notice_schedule_check"
 # The document types a claimed period may point at: a purchase order finalizes into a bill.
 _DOC_TYPES = {"invoice": {"invoice"}, "purchase_order": {"purchase_order", "bill"}}
@@ -49,7 +49,7 @@ _DOC_TYPES = {"invoice": {"invoice"}, "purchase_order": {"purchase_order", "bill
 
 def is_legacy(state: dict) -> bool:
     """The template still holds an earlier release's fields instead of a schedule."""
-    return "anchor_date" not in state and any(f in state for f in _LEGACY)
+    return "anchor_date" not in state and any(f in state for f in SCHEDULE_REMOVED_FIELDS)
 
 
 def legacy_schedule(state: dict) -> dict:
@@ -58,9 +58,10 @@ def legacy_schedule(state: dict) -> dict:
     interval typed as text ("14") is that many days. A template it ran is anchored on its
     next run date (or start date), is billed by hand from here on, and with a custom interval
     left empty bills the 30 days it billed on; a draft is anchored on its start date and keeps
-    its own settings. ScheduleError saying why when they describe no schedule."""
-    ran = is_legacy(state)
-    anchor = state.get("anchor_date") or state.get("next_run_date") or state.get("start_date")
+    its own settings, even when it holds a next run date, which the earlier release's activate
+    never read. ScheduleError saying why when they describe no schedule."""
+    ran = is_legacy(state) and state.get("status") != "draft"
+    anchor = state.get("anchor_date") or (ran and state.get("next_run_date")) or state.get("start_date")
     if not anchor:
         raise ScheduleError("subscriptions.not_moved_no_date")
     fields = {"anchor_date": anchor}
@@ -148,7 +149,7 @@ async def _migrate_template(session: AsyncSession, company_id, proj: Projection,
     await emit_event(
         session, company_id=company_id, entity_id=proj.entity_id, entity_type="doc", event_type="doc.updated",
         data={"fields_changed": {**{k: {"new": v} for k, v in changes.items()},
-                                 **{f: {"drop": True} for f in _LEGACY if f in state}}},
+                                 **{f: {"drop": True} for f in sorted(SCHEDULE_REMOVED_FIELDS) if f in state}}},
         actor_id=None, location_id=None, source="system", idempotency_key=f"{_KEY}{proj.entity_id}",
         metadata_={"next_run_date": old_next},
     )
