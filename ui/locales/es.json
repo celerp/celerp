@@ -7272,5 +7272,11 @@
   "subscriptions.runs_sending_lapsed": "Automatic sending is on but does not run: {name}, who authorized it, no longer has permission to. Someone who does can turn it off and on again to authorize it.",
   "subscriptions.runs_by_hand": "Nothing runs automatically: bill each period from this page.",
   "subscriptions.runs_former_member": "a former member",
-  "subscriptions.summary_sent_by_hand": "Sent {ref} by hand"
+  "subscriptions.summary_sent_by_hand": "Sent {ref} by hand",
+  "country.ES": "Spain",
+  "country.IT": "Italy",
+  "country.PT": "Portugal",
+  "country.MX": "Mexico",
+  "country.AE": "United Arab Emirates",
+  "country.SA": "Saudi Arabia"
 }

@@ -8,7 +8,13 @@ import json
 import uuid
 from pathlib import Path
 
-from celerp.tax_regimes import TAX_REGIMES
+import copy
+
+import pytest
+
+from celerp.services.currencies import CURRENCIES
+from celerp.tax_regimes import TAX_COUNTRIES, TAX_REGIMES
+from ui.i18n import t
 
 _GENERIC = TAX_REGIMES["_default"]["taxes"]
 _CUSTOM_STANDARD = [{**_GENERIC[0], "rate": 12.0}, _GENERIC[1]]
@@ -173,6 +179,29 @@ async def test_seeded_taxes_follow_a_country_change_and_stay_on_repeated_edits(c
     await _set_country(client, h, "AU")
     s = await _settings(client, h)
     assert (s["taxes"], s["taxes_seeded_for"]) == (TAX_REGIMES["AU"]["taxes"], "AU")
+
+
+@pytest.mark.parametrize("country", TAX_COUNTRIES)
+async def test_every_tax_country_starts_with_exactly_its_catalog(client, country):
+    regime = TAX_REGIMES[country]
+    assert t(f"country.{country}") != f"country.{country}"
+    assert regime["currency"] in CURRENCIES
+    assert len([x for x in regime["taxes"] if x.get("is_default")]) == 1
+    h = await _register(client, f"catalog-{country.lower()}@test.example")
+    await _set_country(client, h, country)
+    s = await _settings(client, h)
+    assert (s["taxes"], s["currency"], s["taxes_seeded_for"]) == (regime["taxes"], regime["currency"], country)
+
+
+async def test_a_catalog_change_never_changes_the_taxes_of_a_company_seeded_before_it(client, monkeypatch):
+    h = await _register(client, "catalog-moved@test.example")
+    await _set_country(client, h, "TH")
+    before = (await _settings(client, h))["taxes"]
+    newer = copy.deepcopy(TAX_REGIMES["TH"])
+    newer["taxes"].append({**newer["taxes"][1], "name": "VAT 0% (later)"})
+    monkeypatch.setitem(TAX_REGIMES, "TH", newer)
+    await _set_country(client, h, "TH")
+    assert (await _settings(client, h))["taxes"] == before
 
 
 async def test_taxes_stored_before_their_source_was_recorded_are_kept(client, session):

@@ -66,6 +66,30 @@
       "params": [
         "ref"
       ]
+    },
+    "country.ES": {
+      "en": "Spain",
+      "params": []
+    },
+    "country.IT": {
+      "en": "Italy",
+      "params": []
+    },
+    "country.PT": {
+      "en": "Portugal",
+      "params": []
+    },
+    "country.MX": {
+      "en": "Mexico",
+      "params": []
+    },
+    "country.AE": {
+      "en": "United Arab Emirates",
+      "params": []
+    },
+    "country.SA": {
+      "en": "Saudi Arabia",
+      "params": []
     }
   }
 }

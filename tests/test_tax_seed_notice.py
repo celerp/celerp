@@ -22,8 +22,8 @@ pytestmark = pytest.mark.asyncio
 
 
 async def _company(session, *, sales: list[dict] | None = None, purchasing: list[dict] | None = None,
-                   active: bool = True, staged: bool = False) -> uuid.UUID:
-    settings: dict = {}
+                   active: bool = True, staged: bool = False, currency: str | None = None) -> uuid.UUID:
+    settings: dict = {"currency": currency} if currency else {}
     if sales is not None:
         settings["taxes"] = copy.deepcopy(sales)
     if purchasing is not None:
@@ -55,7 +55,7 @@ async def test_tax_seed_notice_one_per_entry_and_idempotent(session):
     from celerp.tax_regimes import TAX_REGIMES
 
     old = await _company(session, sales=_OLD_ET)
-    fresh = await _company(session, sales=TAX_REGIMES["TH"]["taxes"])
+    fresh = await _company(session, sales=TAX_REGIMES["TH"]["taxes"], currency=TAX_REGIMES["TH"]["currency"])
 
     await _run(session)
     notices = await _notices(session, old)

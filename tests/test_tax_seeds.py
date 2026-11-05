@@ -24,6 +24,46 @@ def test_every_regime_has_exactly_one_default():
         assert len(defaults) == 1, (country, defaults)
 
 
+# The rows each country's catalog must carry: (rate, tax_type, is_default).
+_IN_FORCE = {
+    "TH": {"VAT 0% (export)": (0.0, "both", False), "WHT 1%": (-1.0, "purchase", False),
+           "WHT 2%": (-2.0, "purchase", False)},
+    "SG": {"Zero-rated": (0.0, "both", False)},
+    "PH": {"EWT 1%": (-1.0, "purchase", False)},
+    "VN": {"VAT 0% (export)": (0.0, "both", False)},
+    "GB": {"Exempt": (0.0, "both", False)},
+    "FR": {"TVA 2.1%": (2.1, "both", False)},
+    "CA": {"HST 13%": (13.0, "both", False), "HST 14%": (14.0, "both", False),
+           "HST 15%": (15.0, "both", False)},
+    "IN": {"CGST 2.5%": (2.5, "both", False), "SGST 2.5%": (2.5, "both", False),
+           "IGST 5%": (5.0, "both", False)},
+    "ES": {"IVA 21%": (21.0, "both", True), "IVA 10%": (10.0, "both", False),
+           "IVA 4%": (4.0, "both", False), "Exento": (0.0, "both", False)},
+    "IT": {"IVA 22%": (22.0, "both", True), "IVA 10%": (10.0, "both", False), "IVA 5%": (5.0, "both", False),
+           "IVA 4%": (4.0, "both", False), "Esente": (0.0, "both", False)},
+    "PT": {"IVA 23%": (23.0, "both", True), "IVA 13%": (13.0, "both", False),
+           "IVA 6%": (6.0, "both", False), "Isento": (0.0, "both", False)},
+    "MX": {"IVA 16%": (16.0, "both", True), "IVA 0%": (0.0, "both", False), "Exento": (0.0, "both", False)},
+    "AE": {"VAT 5%": (5.0, "both", True), "Zero-rated": (0.0, "both", False), "Exempt": (0.0, "both", False)},
+    "SA": {"VAT 15%": (15.0, "both", True), "Zero-rated": (0.0, "both", False), "Exempt": (0.0, "both", False)},
+}
+_NEW_COUNTRY_CURRENCY = {"ES": "EUR", "IT": "EUR", "PT": "EUR", "MX": "MXN", "AE": "AED", "SA": "SAR"}
+
+
+@pytest.mark.parametrize("country", sorted(_IN_FORCE))
+def test_the_catalog_carries_the_rates_in_force(country):
+    rows = _rows(country) if country in TAX_REGIMES else {}
+    assert {name: (rows[name]["rate"], rows[name]["tax_type"], rows[name]["is_default"])
+            for name in _IN_FORCE[country] if name in rows} == _IN_FORCE[country]
+    if country in _NEW_COUNTRY_CURRENCY:
+        assert TAX_REGIMES[country]["currency"] == _NEW_COUNTRY_CURRENCY[country]
+        assert [x["name"] for x in TAX_REGIMES[country]["taxes"]] == list(_IN_FORCE[country])
+
+
+def test_india_reduced_rate_follows_the_2025_slabs():
+    assert "GST 5%" not in _rows("IN")
+
+
 def test_india_default_is_igst():
     taxes = TAX_REGIMES["IN"]["taxes"]
     assert [t["code"] for t in default_line_taxes(taxes, "invoice", doc=None)] == ["IGST 18%"]
@@ -263,4 +303,13 @@ def test_retired_seed_rows_finds_no_match_on_any_fresh_seed():
 
     for country, regime in TAX_REGIMES.items():
         taxes = regime["taxes"]
-        assert retired_seed_rows(_settings(taxes, taxes)) == [], country
+        seeded = {**_settings(taxes, taxes), "currency": regime["currency"]}
+        assert retired_seed_rows(seeded) == [], country
+
+
+def test_a_retired_row_of_one_country_is_not_read_in_the_books_of_another():
+    from celerp.tax_regimes import retired_seed_rows
+
+    old = _settings(_OLD_ET)
+    assert {m["id"] for m in retired_seed_rows({**old, "currency": "ETB"})} == {"et-wht-2025", "et-tot-2025"}
+    assert {m["id"] for m in retired_seed_rows({**old, "currency": "THB"})} == {"et-tot-2025"}
