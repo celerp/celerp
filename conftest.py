@@ -14,6 +14,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pytest
+
 # Bytecode goes to a cache outside the source tree. Every xdist worker shares the module
 # folders, and loading a module removes the bytecode in its folder and then checks none is
 # left: a worker that imported module code and wrote bytecode there at that moment made
@@ -33,8 +35,8 @@ assert os.path.dirname(os.path.dirname(os.path.abspath(celerp.__file__))) == _CH
     f"the tests import celerp from {celerp.__file__}, not from this checkout ({_CHECKOUT})")
 
 from conftest_support import (
-    is_own_test_config, provision_worker_db, resolve_worker_config, resolve_worker_data_dir, skip_relay_check_in,
-    worker_label)
+    RefusedTestDatabase, is_own_test_config, provision_test_database, resolve_worker_config, resolve_worker_data_dir,
+    skip_relay_check_in, worker_label)
 
 # No event loop is current until a test makes one. Otherwise the first async test's
 # runner asks for the current loop and asyncio makes one on the spot; the runner puts
@@ -85,75 +87,41 @@ def _remove_own_temp_files() -> None:
 
 # ── Postgres for the whole test suite ──────────────────────────────────────────
 # Both production targets (the server and the Electron embedded-postgres build)
-# run Postgres, so the tests run on Postgres too. A pre-set DATABASE_URL (e.g. a
-# CI services container) is honored; otherwise we start a throwaway Postgres via
-# testcontainers (Docker), tuned for throwaway speed (fsync/synchronous_commit/
-# full_page_writes off — safe because the data is discarded). Each pytest-xdist
-# worker gets its own database. MUST run before celerp.db / test_helpers import.
+# run Postgres, so the tests run on Postgres too. The run starts a throwaway Postgres
+# via testcontainers (Docker), with durability guards off at start (fsync/
+# synchronous_commit/full_page_writes; the data is discarded). CELERP_TEST_DATABASE_URL
+# points it at an existing local test database instead (conftest_support.
+# opted_in_test_database). Each pytest-xdist worker gets its own database. MUST run
+# before celerp.db / test_helpers import.
 _PG_CONTAINER = None
 
 
-def _tune_pg_server(url: str) -> None:
-    """Turn off durability guards on a preset (CI) Postgres — mirrors the testcontainers
-    tuning. The test DB is throwaway, so fsync / synchronous_commit / full_page_writes off is
-    safe and removes the per-commit disk syncs that dominate a commit-heavy suite on CI's stock
-    Postgres service. Server-wide (covers every xdist worker DB) and applied via pg_reload_conf
-    (all three GUCs are reloadable — no restart). Best-effort: a no-op if the role lacks the
-    superuser needed for ALTER SYSTEM, which only costs speed, never correctness."""
-    from urllib.parse import urlsplit
-    import psycopg2
-
-    parts = urlsplit(url.replace("+asyncpg", ""))
-    try:
-        conn = psycopg2.connect(host=parts.hostname, port=parts.port, user=parts.username,
-                                password=parts.password, dbname=parts.path.lstrip("/") or "postgres")
-        conn.autocommit = True
-        try:
-            with conn.cursor() as cur:
-                cur.execute("ALTER SYSTEM SET fsync = off")
-                cur.execute("ALTER SYSTEM SET synchronous_commit = off")
-                cur.execute("ALTER SYSTEM SET full_page_writes = off")
-                cur.execute("SELECT pg_reload_conf()")
-        finally:
-            conn.close()
-    except Exception:
-        pass
+def _start_pg_container() -> str:
+    from testcontainers.community.postgres import PostgresContainer
+    global _PG_CONTAINER
+    _PG_CONTAINER = PostgresContainer("postgres:16-alpine").with_command(
+        "-c fsync=off -c synchronous_commit=off -c full_page_writes=off")
+    _PG_CONTAINER.start()
+    host = _PG_CONTAINER.get_container_host_ip()
+    port = _PG_CONTAINER.get_exposed_port(5432)
+    return (f"postgresql+asyncpg://{_PG_CONTAINER.username}:{_PG_CONTAINER.password}"
+            f"@{host}:{port}/{_PG_CONTAINER.dbname}")
 
 
-def _provision_test_database() -> None:
-    url = os.environ.get("DATABASE_URL", "")
-    if url.startswith("postgresql"):
-        _tune_pg_server(url)
-        worker = os.environ.get("PYTEST_XDIST_WORKER")
-        if worker:
-            url = provision_worker_db(url, worker)
-    else:
-        from testcontainers.community.postgres import PostgresContainer
-        global _PG_CONTAINER
-        # Throwaway DB → turn off durability guards for speed (data is discarded).
-        _PG_CONTAINER = PostgresContainer("postgres:16-alpine").with_command(
-            "-c fsync=off -c synchronous_commit=off -c full_page_writes=off")
-        _PG_CONTAINER.start()
-        host = _PG_CONTAINER.get_container_host_ip()
-        port = _PG_CONTAINER.get_exposed_port(5432)
-        url = (f"postgresql+asyncpg://{_PG_CONTAINER.username}:{_PG_CONTAINER.password}"
-               f"@{host}:{port}/{_PG_CONTAINER.dbname}")
-    os.environ["DATABASE_URL"] = url
-    if url.startswith("postgresql"):
-        # Make the app's own engine (celerp.db.engine) use NullPool too: a pooled
-        # asyncpg connection is bound to the event loop that created it, but
-        # pytest-asyncio gives each test a fresh loop — so a pooled connection
-        # reused/closed in a later test's loop raises "attached to a different
-        # loop" / "Event loop is closed". NullPool opens+closes a connection per
-        # use within the current loop, sidestepping it entirely.
-        os.environ["CELERP_TEST_NULLPOOL"] = "1"
-
-
-_provision_test_database()
+try:
+    provision_test_database(os.environ, _start_pg_container)
+except RefusedTestDatabase as refused:
+    pytest.exit(str(refused), returncode=4)
+# Make the app's own engine (celerp.db.engine) use NullPool too: a pooled
+# asyncpg connection is bound to the event loop that created it, but
+# pytest-asyncio gives each test a fresh loop — so a pooled connection
+# reused/closed in a later test's loop raises "attached to a different
+# loop" / "Event loop is closed". NullPool opens+closes a connection per
+# use within the current loop, sidestepping it entirely.
+os.environ["CELERP_TEST_NULLPOOL"] = "1"
 
 import uuid
 
-import pytest
 import pytest_asyncio
 from sqlalchemy import event as sa_event, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine

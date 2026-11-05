@@ -55,12 +55,22 @@ jobs:
       - name: Install deps
         run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split -c constraints.txt
 
+      - name: Tune the disposable Postgres service for speed
+        # The service container is thrown away with the job, so its durability guards go off
+        # here (the test harness never changes a server's settings).
+        env:
+          PGPASSWORD: celerp
+        run: >-
+          psql -h localhost -U celerp -d celerp_test -v ON_ERROR_STOP=1
+          -c "ALTER SYSTEM SET fsync = off" -c "ALTER SYSTEM SET synchronous_commit = off"
+          -c "ALTER SYSTEM SET full_page_writes = off" -c "SELECT pg_reload_conf()"
+
       - name: Run tests (shard ${{ matrix.group }}/32)
         env:
           ALLOW_INSECURE_JWT: "true"
           CELERP_LOCK_RANK_DIR: lockgraph
           # Run on the Postgres service (each xdist worker gets its own database).
-          DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
+          CELERP_TEST_DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
           # Each test process writes what the write observer saw here; the census job reads all shards.
           CELERP_MUTATION_CENSUS: ${{ runner.temp }}/mutation-census
         # ubuntu-latest has 2 vCPUs, so a single `-n auto` run can't keep up.
@@ -174,12 +184,22 @@ jobs:
       - name: Install deps
         run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split -c constraints.txt
 
+      - name: Tune the disposable Postgres service for speed
+        # The service container is thrown away with the job, so its durability guards go off
+        # here (the test harness never changes a server's settings).
+        env:
+          PGPASSWORD: celerp
+        run: >-
+          psql -h localhost -U celerp -d celerp_test -v ON_ERROR_STOP=1
+          -c "ALTER SYSTEM SET fsync = off" -c "ALTER SYSTEM SET synchronous_commit = off"
+          -c "ALTER SYSTEM SET full_page_writes = off" -c "SELECT pg_reload_conf()"
+
       - name: Run process tests
         env:
           ALLOW_INSECURE_JWT: "true"
           CELERP_LOCK_RANK_DIR: lockgraph
           # Run on the Postgres service (each xdist worker gets its own database).
-          DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
+          CELERP_TEST_DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
           CELERP_MUTATION_CENSUS: ${{ runner.temp }}/mutation-census
         run: >
           timeout 600 pytest tests/ default_modules/*/tests/ -m "process and not integration" -n auto -q --tb=short --no-cov
@@ -261,11 +281,21 @@ jobs:
       - name: Install deps
         run: pip install uv && uv pip install --system -e ".[dev]" -c constraints.txt
 
+      - name: Tune the disposable Postgres service for speed
+        # The service container is thrown away with the job, so its durability guards go off
+        # here (the test harness never changes a server's settings).
+        env:
+          PGPASSWORD: celerp
+        run: >-
+          psql -h localhost -U celerp -d celerp_test -v ON_ERROR_STOP=1
+          -c "ALTER SYSTEM SET fsync = off" -c "ALTER SYSTEM SET synchronous_commit = off"
+          -c "ALTER SYSTEM SET full_page_writes = off" -c "SELECT pg_reload_conf()"
+
       - name: Run the integration suite
         env:
           ALLOW_INSECURE_JWT: "true"
           # Each installation the suite starts gets a database of its own on this service.
-          DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
+          CELERP_TEST_DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
         run: >
           timeout 900 pytest tests/test_integration_validation.py -m integration -o addopts="" -q --tb=short
           --timeout=600
@@ -311,12 +341,22 @@ jobs:
       - name: Install Chromium for Playwright
         run: python -m playwright install --with-deps chromium
 
+      - name: Tune the disposable Postgres service for speed
+        # The service container is thrown away with the job, so its durability guards go off
+        # here (the test harness never changes a server's settings).
+        env:
+          PGPASSWORD: celerp
+        run: >-
+          psql -h localhost -U celerp -d celerp_test -v ON_ERROR_STOP=1
+          -c "ALTER SYSTEM SET fsync = off" -c "ALTER SYSTEM SET synchronous_commit = off"
+          -c "ALTER SYSTEM SET full_page_writes = off" -c "SELECT pg_reload_conf()"
+
       - name: Run browser tests (shard ${{ matrix.group }}/6)
         env:
           ALLOW_INSECURE_JWT: "true"
           # Each xdist worker gets its own database AND its own server ports (see
           # tests/test_browser/conftest.py), so -n parallelism is safe.
-          DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
+          CELERP_TEST_DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
           # The servers run in the test process, so the write observer sees every request.
           CELERP_MUTATION_CENSUS: ${{ runner.temp }}/mutation-census
         # Clear the default `-m 'not browser'` addopts, select browser tests, and shard them across
