@@ -47,7 +47,7 @@ COMPANION_DROPS = {
 }
 COMPANIONS = {**COMPANION_DROPS, **COMPANION_SETS}
 # Fields write_agreement computes from the change itself, never taken from a caller.
-DERIVED = {"consents": "write_agreement keeps exactly the consents of the modes in force"}
+DERIVED = {"consents": "write_agreement keeps exactly the consents of the modes the terms choose"}
 
 
 @dataclass

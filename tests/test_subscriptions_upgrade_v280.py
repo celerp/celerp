@@ -267,7 +267,8 @@ async def test_only_the_one_mover_moves_templates_and_only_the_one_reader_reads_
     assert callers["_migrate_template"] == {"migrate_company", "move_template"}
     assert callers["migrate_company"] == {"migrate_schedules_hook", "reconcile_company_schedules"}
     assert callers["move_template"] == {"_move_with"}
-    assert callers["legacy_schedule"] == {"_migrate_template", "not_moved", "activate_subscription"}
+    assert callers["legacy_schedule"] == {"_migrate_template", "not_moved", "_first_schedule"}
+    assert callers["_first_schedule"] == {"activate_subscription", "change_schedule"}
     # Every lifecycle slot that reaches the mover is one test_every_way_in_moves_... runs.
     from celerp.modules import loader
 

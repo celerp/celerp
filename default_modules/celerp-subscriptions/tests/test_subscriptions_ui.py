@@ -208,6 +208,19 @@ class TestSubscriptionActions:
         assert r.status_code == 204 and r.headers["HX-Redirect"] == f"/subscriptions/{eid}"
         assert (await owner_ui.api.get(f"/docs/{eid}")).json()["status"] == "paused"
 
+    async def test_resume_toast_says_what_now_runs_automatically(self, owner_ui):
+        eid = await _active_subscription(owner_ui)
+        r = await owner_ui.api.patch(f"/subscriptions/{eid}/schedule", json={"generation_mode": "auto_invoice"})
+        assert r.status_code == 200, r.text
+        assert (await owner_ui.api.post(f"/subscriptions/{eid}/pause")).status_code == 200
+        r = await owner_ui.post(f"/subscriptions/{eid}/resume")
+        assert r.status_code == 204, r.text
+        toast = json.loads(r.headers["HX-Trigger"])["celerpToast"]
+        answer = (await owner_ui.api.get(f"/docs/{eid}")).json()
+        assert answer["status"] == "active" and set(answer["consents"]) == {"generation"}
+        assert t("subscriptions.done_resumed", "en") in toast["message"] and "Owner" in toast["message"], toast
+        assert toast["type"] == "success", toast
+
 
 class TestBillingPages:
     """Generate all due, the catch-up page, the summary, the Billing section and history
