@@ -7252,5 +7252,14 @@
   "subscriptions.doc_void_period": "ይህ ሰነድ የተሰረዘ እስከሆነ ድረስ ለዚያ ጊዜ የክፍያ መጠየቂያ አልተዘጋጀም። ስረዛውን ይቀልብሱ ወይም በስምምነቱ ውስጥ ጊዜውን እንደገና ይክፈቱ።",
   "documents.err_schedule_fields_removed": "Celerp no longer keeps {fields}: an agreement bills from its start date, and its periods name the documents it billed.",
   "documents.err_schedule_fields_owned": "Only an agreement's own schedule actions can set {fields}.",
-  "subscriptions.err_agreement_status_elsewhere": "An agreement that bills or sends on its own changes status only on its own page: activate, pause, resume or cancel it there."
+  "subscriptions.err_agreement_status_elsewhere": "An agreement that bills or sends on its own changes status only on its own page: activate, pause, resume or cancel it there.",
+  "btn.send_again": "Send again",
+  "subscriptions.send_again_confirm": "Sending was cut off, so this email may already have arrived. Send it again anyway?",
+  "subscriptions.done_not_redrawn": "That worked, but the page could not refresh. Reload it to see the change.",
+  "subscriptions.doc_period_rebilled": "That period was reopened on the agreement and is now billed on {newer}, so this document no longer bills it.",
+  "subscriptions.doc_period_reopened": "That period was reopened on the agreement, so this document no longer bills it. Use Generate due on the agreement to bill the period.",
+  "subscriptions.history_billed_ref": "Billed {start} to {end} on {ref}.",
+  "subscriptions.history_reopened_ref": "Reopened {start} to {end}, taking it off {ref}.",
+  "subscriptions.history_send_settled": "The bill for {start} to {end} was sent from its own page.",
+  "subscriptions.period_earlier_bills": "Earlier bills:"
 }

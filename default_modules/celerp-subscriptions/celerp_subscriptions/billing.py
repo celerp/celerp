@@ -143,8 +143,8 @@ async def write_agreement(session: AsyncSession, company_id, entity_id: str, cha
     reads as the one it holds is left out, a field dropped while what it holds reads as unset is
     cleared only beside a change that is recorded, and with nothing left no event is written,
     so History never shows a row that says nothing. Each field keeps its value before the
-    change, and a change to periods keeps the dates of each period it touched, so History can
-    name them. Every agreement change in this module goes through here.
+    change, and a change to periods keeps the dates and the document number of each period it
+    touched, so History can name them. Every agreement change in this module goes through here.
 
     It is also where an unattended mode comes into force: a mode in force after the change
     that was not before, or whose consent terms change, needs both its permissions from the
@@ -188,6 +188,12 @@ async def write_agreement(session: AsyncSession, company_id, entity_id: str, cha
         for k in ("periods", "billing_failure"):
             if dates and k in changes:
                 fields[k]["dates"] = dates
+    if "periods" in changes:
+        # The document each touched period was billed on, by its number then, so History names it.
+        claimed = {k: (new_periods.get(k) or {}).get("doc_id") or (old_periods.get(k) or {}).get("doc_id")
+                   for k in touched}
+        if refs := {k: await doc_ref(session, company_id, d) for k, d in claimed.items() if d}:
+            fields["periods"]["refs"] = refs
     writing = _WRITING.set(entity_id)
     try:
         await emit_event(
@@ -263,7 +269,7 @@ async def guard_bill_status(*, session, entry, transition) -> None:
         schedule = Schedule.from_state(agreement.state)
         newer = (schedule.periods.get(k) or {}).get("doc_id") if schedule.state(k) == BILLED else None
         newer_doc = await doc_state(session, entry.company_id, newer) if newer else None
-        params = {"ref": transition.after.get("ref_id") or doc_id, "agreement": template_label(agreement.state, agreement.entity_id),
+        params = {"ref": transition.before.get("ref_id") or doc_id, "agreement": template_label(agreement.state, agreement.entity_id),
                   "start": schedule.start(k).isoformat(), "end": schedule.service_end(k).isoformat()}
         if bills(newer_doc):
             raise HTTPException(status_code=409, detail=t(
@@ -461,16 +467,37 @@ def period_status(state: str | None, doc: dict | None, bill_date: date, today: d
     return "overdue" if bill_date < today else "due" if bill_date == today else "upcoming"
 
 
-async def _listed_row(session, company_id, state: dict, schedule: Schedule, k: int, today: date) -> dict:
-    """Period ``k`` as the Periods table lists it: dates, claim, status, document, send state."""
+async def replayable_operations(session, company_id) -> set[str]:
+    """The email attempts whose durable payload is still inside the transport's retry window."""
+    attempts = (await session.execute(select(
+        SubscriptionEmailAttempt.operation_id, SubscriptionEmailAttempt.created_at).where(
+            SubscriptionEmailAttempt.company_id == company_id))).all()
+    return {str(operation_id) for operation_id, created_at in attempts if retryable_attempt_time(created_at)}
+
+
+def sends_again(send: dict | None, replayable: set[str]) -> bool:
+    """A cut-off send is sent again as a new message, behind a confirm that it may already have
+    arrived, unless the relay replays the same message (it cannot arrive twice)."""
+    send = send or {}
+    return send.get("state") in UNCONFIRMED and not (
+        send.get("deduplicated") and email.relay_send_is_idempotent() and send.get("operation_id") in replayable)
+
+
+async def _listed_row(session, company_id, state: dict, schedule: Schedule, k: int, today: date,
+                      replayable: set[str]) -> dict:
+    """Period ``k`` as the Periods table lists it: dates, claim, status, document, the earlier
+    documents it let go, send state, and whether sending it again is a new message."""
     entry = schedule.periods.get(k) or {}
     doc_id = entry.get("doc_id")
     doc = (await doc_state(session, company_id, doc_id)) if doc_id else None
+    send = send_status(state, k, today, doc)
+    released = [{"doc_id": d, "ref_id": await doc_ref(session, company_id, d)}
+                for d, held in sorted((state.get("released_bills") or {}).items()) if int(held) == k]
     return {**period_row(schedule, k), "state": entry.get("state"), "reopened": entry.get("state") == RELEASED and bool(entry.get("reopened")),
             "status": period_status(entry.get("state"), doc, schedule.bill_date(k), today),
             "doc_id": doc_id, "ref_id": ((doc or {}).get("ref_id") or doc_id) if doc_id else None,
-            "reason": entry.get("reason"), "history": bool(entry.get("history")),
-            "send": send_status(state, entry.get("send"))}
+            "reason": entry.get("reason"), "history": bool(entry.get("history")), "released": released,
+            "send": send, "again": send == "unconfirmed" and sends_again(entry.get("send"), replayable)}
 
 
 async def period_list(session: AsyncSession, company_id, state: dict, today: date, *,
@@ -486,6 +513,7 @@ async def period_list(session: AsyncSession, company_id, state: dict, today: dat
     schedule = Schedule.from_state(state)
     nxt = schedule.next_bill_date(floor=review_floor(state))
     first = schedule.first()
+    replayable = await replayable_operations(session, company_id)
     rows = []
     if first is not None:
         top = max([schedule.current(today) + 1, *schedule.periods])
@@ -497,14 +525,14 @@ async def period_list(session: AsyncSession, company_id, state: dict, today: dat
         k = min(top, before - 1) if before is not None else top
         while k >= first and len(rows) < limit:
             if schedule.exists(k):
-                rows.append(await _listed_row(session, company_id, state, schedule, k, today))
+                rows.append(await _listed_row(session, company_id, state, schedule, k, today, replayable))
             k -= 1
     older_before = rows[-1]["period_index"] if rows and first is not None and k >= first else None
     oldest_open = schedule.oldest_open(floor=review_floor(state))
     oldest_due_row = None
     if (before is None and oldest_open is not None and oldest_open not in
             {r["period_index"] for r in rows} and schedule.bill_date(oldest_open) <= today):
-        oldest_due_row = await _listed_row(session, company_id, state, schedule, oldest_open, today)
+        oldest_due_row = await _listed_row(session, company_id, state, schedule, oldest_open, today, replayable)
     review = [{"doc_id": r.get("doc_id"), "ref_id": await doc_ref(session, company_id, r.get("doc_id")),
                "candidates": [period_row(schedule, c) for c in r.get("candidates") or []]}
               for r in state.get("history_review") or []]
@@ -617,14 +645,19 @@ def sends_itself(state: dict) -> bool:
     return "sending" in modes_in_force(state)
 
 
-def send_status(state: dict, send: dict | None) -> str | None:
-    """How a period's email reads, for the summary and the Periods table alike: "waiting"
-    while Send is in force (it goes on the next pass inside the catch-up window), "not_sent"
-    (Send is off, so it waits only for someone to send it), "sent", "failed",
-    or "unconfirmed" (it may not have arrived). None when the period has no email."""
-    recorded = (send or {}).get("state")
+def send_status(state: dict, k, today: date, doc: dict | None = None) -> str | None:
+    """How period ``k``'s email reads, for the Periods table, the summary and the send answer
+    alike: "sent" once its record or its document says it went (the document's own page can
+    send it), "waiting" while the next pass sends it (waiting_sends), "not_sent" when nothing
+    will send it unless someone does, "failed", or "unconfirmed" (it may not have arrived).
+    None when the period has no email."""
+    recorded = ((periods_of(state).get(str(k)) or {}).get("send") or {}).get("state")
+    if recorded is None:
+        return None
+    if recorded == "sent" or (doc or {}).get("sent_via"):
+        return "sent"
     if recorded == "pending":
-        return "waiting" if sends_itself(state) else "not_sent"
+        return "waiting" if int(k) in waiting_sends(state, today) else "not_sent"
     return "unconfirmed" if recorded in UNCONFIRMED else recorded
 
 
@@ -731,8 +764,11 @@ def _deliverer(company_id, template_id: str, k: int):
     return _run
 
 
-async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=None) -> dict:
-    """Send a period's document using one immutable message per transport attempt."""
+async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=None, again: bool = False) -> dict:
+    """Send a period's document using one immutable message per transport attempt. A send
+    that was cut off is replayed as the same attempt, or with ``again`` (the user confirmed
+    it may already have arrived) sent as a new one. A document already sent from its own
+    page settles the period's email instead of sending it twice."""
     from celerp.modules.registry import uses_module
     from celerp_docs.doc_constants import NO_SEND_DOC_TYPES
     from celerp_docs.routes import DocSendBody, doc_email, mark_doc_sent
@@ -755,11 +791,18 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
         if send.get("state") not in (("pending", "failed", *UNCONFIRMED) if retry_by else ("pending",)):
             return send
 
-        uncertain = send.get("state") in UNCONFIRMED
+        uncertain = send.get("state") in UNCONFIRMED and not again
         if uncertain and not (relay_idempotent and send.get("deduplicated")):
             raise HTTPException(status_code=409, detail=t("subscriptions.err_send_unverified"))
         doc_id = entry["doc_id"]
         doc = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
+        via = (doc.state or {}).get("sent_via") if doc is not None else None
+        if via and not again:
+            send = {"state": "sent", "n": int(send.get("n") or 0), "at": now_stamp(), "via": via}
+            periods[str(k)]["send"] = send
+            await write_agreement(session, company_id, template_id, {"periods": periods}, retry_by)
+            await session.commit()
+            return send
         if uncertain and (doc is None or (doc.state or {}).get("status") == "void"):
             raise HTTPException(status_code=409, detail=t("subscriptions.err_send_unverified"))
         by = retry_by or ((proj.state.get("consents") or {}).get("sending") or {}).get("by") or entry.get("by")

@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.models.company import Company
 from celerp.models.projections import Projection
-from celerp.models.subscription_email import SubscriptionEmailAttempt
+from celerp.services.business_time import company_today
 from celerp.services.company_lock import locked_company
 from celerp_subscriptions import billing
 from ui.i18n import t
@@ -44,12 +44,31 @@ async def acknowledge(session: AsyncSession, company_id, user_id) -> str:
     return at
 
 
-async def _refs(session, company_id, doc_ids: set[str]) -> dict[str, str]:
-    if not doc_ids:
+async def _states(session, company_id, entity_ids: set[str]) -> dict[str, dict]:
+    """Each entity's state as stored now (read past the session's identity map)."""
+    if not entity_ids:
         return {}
     rows = (await session.execute(select(Projection.entity_id, Projection.state).where(
-        Projection.company_id == company_id, Projection.entity_id.in_(doc_ids)))).all()
-    return {eid: (state or {}).get("ref_id") or eid for eid, state in rows}
+        Projection.company_id == company_id, Projection.entity_id.in_(entity_ids)))).all()
+    return {eid: state or {} for eid, state in rows}
+
+
+def _message(kind: str, ref: str | None, error_key: str | None) -> str:
+    return t(f"subscriptions.summary_{kind}", ref=ref or "", error=t(error_key) if error_key else "")
+
+
+async def send_answer(session: AsyncSession, company_id, entity_id: str, k: int) -> dict:
+    """What a send from the page did, read after it from the agreement and its document as
+    stored: the period's email as billing.send_status reads it and the summary's sentence for it."""
+    state = (await _states(session, company_id, {entity_id})).get(entity_id) or {}
+    entry = billing.periods_of(state).get(str(k)) or {}
+    doc_id = entry.get("doc_id")
+    doc = (await _states(session, company_id, {doc_id})).get(doc_id) if doc_id else None
+    status = billing.send_status(state, k, await company_today(session, company_id), doc)
+    kind = _SEND_KINDS.get(status)
+    return {"ok": True, "period_index": k, "send": status,
+            "message": _message(kind, (doc or {}).get("ref_id") or doc_id,
+                                (entry.get("send") or {}).get("error_key")) if kind else None}
 
 
 async def report(session: AsyncSession, company_id, user_id, *, everything: bool = False) -> dict:
@@ -57,29 +76,29 @@ async def report(session: AsyncSession, company_id, user_id, *, everything: bool
     company = await session.get(Company, company_id)
     settings = (company.settings or {}) if company else {}
     since = "" if everything else ((settings.get(ACK_SETTING) or {}).get(str(user_id)) or "")
-    # Only a live, durable payload within the transport retry window permits replay.
-    attempts = (await session.execute(select(
-        SubscriptionEmailAttempt.operation_id, SubscriptionEmailAttempt.created_at).where(
-            SubscriptionEmailAttempt.company_id == company_id))).all()
-    retryable = {str(operation_id) for operation_id, created_at in attempts
-                 if billing.retryable_attempt_time(created_at)}
+    replayable = await billing.replayable_operations(session, company_id)
+    today = await company_today(session, company_id)
+    agreement_rows = await billing.agreements(session, company_id)
+    docs = await _states(session, company_id, {e["doc_id"] for row in agreement_rows
+                                               for e in billing.periods_of(row.state).values() if e.get("doc_id")})
     found = []
-    for row in await billing.agreements(session, company_id):
+    for row in agreement_rows:
         state = row.state
         for k, entry in (state.get("periods") or {}).items():
             base = {"entity_id": row.entity_id, "doc_id": entry.get("doc_id"), "period_index": int(k)}
             if entry.get("state") == billing.BILLED and entry.get("auto") and (entry.get("at") or "") > since:
                 found.append({**base, "kind": "generated", "at": entry["at"]})
             send = entry.get("send") or {}
-            status = billing.send_status(state, send)
+            status = billing.send_status(state, k, today, docs.get(entry.get("doc_id")))
+            # A document sent from its own page settles its email; that send is the page's, not this summary's.
+            if status == "sent" and send.get("state") != "sent":
+                continue
             kind = _SEND_KINDS.get(status)
             if kind and (status == "waiting" or (send.get("at") or "") > since):
                 found.append({**base, "kind": kind, "at": send.get("at"), "error_key": send.get("error_key"),
+                              "again": status == "unconfirmed" and billing.sends_again(send, replayable),
                               "retry_url": (f"/subscriptions/{row.entity_id}/periods/{k}/send"
-                                            if kind in ("send_failed", "send_pending") or (
-                                                kind == "send_unconfirmed" and send.get("deduplicated")
-                                                and billing.email.relay_send_is_idempotent()
-                                                and send.get("operation_id") in retryable)
+                                            if kind in ("send_failed", "send_pending", "send_unconfirmed")
                                             else None)})
         failure = state.get("billing_failure") or {}
         if failure.get("at") and failure["at"] > since:
@@ -90,13 +109,13 @@ async def report(session: AsyncSession, company_id, user_id, *, everything: bool
             if await billing.authorizer(session, company_id, settings, state, mode) is None:
                 found.append({"entity_id": row.entity_id, "doc_id": None, "period_index": None,
                               "kind": _LAPSED[mode], "at": None})
-    refs = await _refs(session, company_id, {r["doc_id"] for r in found if r["doc_id"]})
+    named = {**docs, **await _states(session, company_id, {r["doc_id"] for r in found
+                                                            if r["doc_id"] and r["doc_id"] not in docs})}
     rows = []
     for r in found:
-        params = {"ref": refs.get(r["doc_id"], r["doc_id"]),
-                  "error": t(r["error_key"]) if r.get("error_key") else ""}
-        rows.append({"retry_url": None, **r, "ref_id": params["ref"] if r["doc_id"] else None,
-                     "message": t(f"subscriptions.summary_{r['kind']}", **params)})
+        ref = (named.get(r["doc_id"]) or {}).get("ref_id") or r["doc_id"]
+        rows.append({"retry_url": None, "again": False, **r, "ref_id": ref if r["doc_id"] else None,
+                     "message": _message(r["kind"], ref, r.get("error_key"))})
     rows.sort(key=lambda r: r["at"] or "", reverse=True)
     counts = {kind: sum(1 for r in rows if r["kind"] == kind) for kind in KINDS}
     return {"counts": counts, "rows": rows}

@@ -22,6 +22,7 @@ from starlette.responses import RedirectResponse, Response
 import ui.api_client as api
 from celerp.output.document_context import prepare_document_output
 from celerp.services.record_quantities import template_label
+from celerp_subscriptions.billing import bills
 from celerp_subscriptions.periods import shown
 from ui.components.activity import change_text, format_timestamp, register_fields
 from ui.components.icons import import_icon
@@ -52,9 +53,34 @@ def _refused(e: APIError):
     return _action_error(e)
 
 
-def _done(back: str, message: str) -> Response:
+def _done(back: str, message: str, kind: str = "success") -> Response:
     """An action that worked: go back to *back* and say what it did there."""
-    return Response(status_code=204, headers={"HX-Redirect": back, **toast_header(message, "success")})
+    return Response(status_code=204, headers={"HX-Redirect": back, **toast_header(message, kind)})
+
+
+async def _redrawn(draw, fallback=None, said: str = ""):
+    """What a done action shows next, read after it: ``draw()``'s answer. When a read fails,
+    the action is still done: ``fallback()`` and ``said`` (what the action's own answer says)
+    with a warning to reload the page, never a refusal."""
+    try:
+        return await draw()
+    except APIError as e:
+        _signed_out(e)
+        warning = f"{said} {t('subscriptions.done_not_redrawn')}".strip()
+        return HTMLResponse(to_xml(fallback() if fallback else ""), headers=toast_header(warning, "warning"))
+
+
+# How a send from the page reads after it, by billing.send_status: the toast it answers with.
+_SEND_TOAST = {"sent": "success", "failed": "error"}
+
+
+def _send_button(url: str, send: str | None, again: bool, **vals) -> FT:
+    """Send a billed period's email: Retry after a failure, Send again (behind a confirm that it
+    may already have arrived) after a cut-off send, Send otherwise."""
+    label = "btn.send_again" if again else "btn.retry" if send in ("failed", "unconfirmed") else "btn.send"
+    confirm = {"hx_confirm": t("subscriptions.send_again_confirm")} if again else {}
+    return Button(t(label), cls="btn btn--secondary btn--sm", hx_post=url, hx_swap="none",
+                  hx_vals={**vals, **({"again": "1"} if again else {})}, **confirm)
 
 _FREQUENCIES = ["weekly", "biweekly", "monthly", "quarterly", "annually", "custom"]
 _TIMINGS = ("advance", "arrears")
@@ -142,12 +168,15 @@ def _consents_change(c: dict) -> str:
         + [t(f"subscriptions.consent_{m}_withdrawn") for m in _CONSENTS if m in old and m not in new])
 
 
-def _period_change(old: dict, new: dict, start: str, end: str) -> str | None:
-    """What happened to one period: billed, skipped, opened again, held for review, or its email."""
+def _period_change(old: dict, new: dict, start: str, end: str, ref: str | None = None) -> str | None:
+    """What happened to one period: billed, skipped, opened again, held for review, or its
+    email; a billed or reopened period names its document."""
     was, now = old.get("state"), new.get("state")
     dates = {"start": start, "end": end}
     if now == "billed" and was != "billed":
-        return sentence("subscriptions.history_billed", **dates)
+        return sentence("subscriptions.history_billed_ref" if ref else "subscriptions.history_billed", ref=ref, **dates)
+    if now == "released" and was == "billed" and ref:
+        return sentence("subscriptions.history_reopened_ref", ref=ref, **dates)
     if now == "skipped" and was != "skipped":
         return sentence("subscriptions.history_skipped", reason=new.get("reason") or "", **dates)
     if now == "released" and was in ("billed", "skipped"):
@@ -156,7 +185,9 @@ def _period_change(old: dict, new: dict, start: str, end: str) -> str | None:
         return sentence("subscriptions.history_unresolved", **dates)
     send = (new.get("send") or {}).get("state")
     if send and new.get("send") != old.get("send"):
-        return sentence(f"subscriptions.history_send_{send}", **dates)
+        # Sent from the document's own page (by email or marked sent there), which settles it.
+        settled = send == "sent" and (new.get("send") or {}).get("via")
+        return sentence("subscriptions.history_send_settled" if settled else f"subscriptions.history_send_{send}", **dates)
     return None
 
 
@@ -164,7 +195,8 @@ def _periods_change(c: dict) -> str | None:
     old, new = c.get("old") or {}, c.get("new") or {}
     if old == new:
         return None
-    lines = [_period_change(old.get(k) or {}, new.get(k) or {}, *span)
+    refs = c.get("refs") or {}
+    lines = [_period_change(old.get(k) or {}, new.get(k) or {}, *span, refs.get(k))
              for k, span in sorted((c.get("dates") or {}).items(), key=lambda kv: int(kv[0]))]
     return ", ".join(x for x in lines if x) or t("activity.generic_updated", field=t("subscriptions.periods_heading"))
 
@@ -199,7 +231,8 @@ register_fields({
 # Escape clears an inline preview or result panel (GDR 2j).
 _PANEL_ESC_JS = Script("""
 document.addEventListener('keydown', function(e) {
-  if (e.key !== 'Escape') return;
+  // Only a key the user pressed: a refusal's restore step sends its own Escape.
+  if (e.key !== 'Escape' || !e.isTrusted) return;
   document.querySelectorAll('[data-esc-clear]').forEach(function(p) { p.innerHTML = ''; });
 });
 """)
@@ -459,8 +492,8 @@ def _sub_action_controls(entity_id: str, sub: dict, next_bill: str | None = None
 
 def _period_actions(entity_id: str, row: dict) -> FT:
     """Skip an open period with a reason; un-skip a skipped one; reopen a billed one whose
-    document no longer bills it (void, or back in draft). The server refuses any that does
-    not apply and says why."""
+    document no longer bills it (void, or back in draft), or send its email when it has not
+    gone. The server refuses any that does not apply and says why."""
     k, state = row["period_index"], row.get("state")
     base = f"/subscriptions/{entity_id}/periods/{k}"
     if state == "skipped":
@@ -468,11 +501,12 @@ def _period_actions(entity_id: str, row: dict) -> FT:
     if state == "billed":
         reopen = Button(t("btn.reopen"), cls="btn btn--secondary btn--sm", hx_post=f"{base}/reopen", hx_swap="none",
                         title=t("subscriptions.reopen_title"))
-        if not row.get("history"):
-            return reopen
-        withdraw = Button(t("subscriptions.history_withdraw"), cls="btn btn--secondary btn--sm", hx_swap="none",
-                          hx_post=f"/subscriptions/{entity_id}/history/{row['doc_id']}/withdraw")
-        return Div(withdraw, reopen, style="display:flex;gap:.25rem")
+        send = (_send_button(f"{base}/send", row["send"], bool(row.get("again")))
+                if row.get("send") in _SEND_BADGE else "")
+        withdraw = (Button(t("subscriptions.history_withdraw"), cls="btn btn--secondary btn--sm", hx_swap="none",
+                           hx_post=f"/subscriptions/{entity_id}/history/{row['doc_id']}/withdraw")
+                    if row.get("history") else "")
+        return Div(send, withdraw, reopen, style="display:flex;gap:.25rem")
     if state == "unresolved":
         return A(t("subscriptions.review_open"), href=f"/subscriptions/{entity_id}#history-review")
     return Form(
@@ -486,7 +520,7 @@ def _period_actions(entity_id: str, row: dict) -> FT:
 def _periods_table(entity_id: str, schedule: dict, *, historical_page: bool = False) -> FT:
     """The agreement's periods (``schedule`` is the API's period list), newest first: dates,
     status (with a reopened period and an email not sent, failed or unconfirmed marked), the document
-    that billed it."""
+    that billed it and any earlier ones it let go."""
     rows, oldest_due_row = schedule.get("rows") or [], schedule.get("oldest_due_row")
     older_before = schedule.get("older_before")
     attrs = {"id": "sub-periods", "cls": "mt-lg"}
@@ -503,6 +537,12 @@ def _periods_table(entity_id: str, schedule: dict, *, historical_page: bool = Fa
             key, badge = _SEND_BADGE[r["send"]]
             label = Span(label, " ", Span(t(key), cls=f"badge {badge}"))
         doc = A(r["ref_id"], href=f"/docs/{r['doc_id']}") if r.get("doc_id") else (r.get("reason") or "--")
+        if r.get("released"):
+            earlier: list = []
+            for d in r["released"]:
+                earlier += [", "] if earlier else []
+                earlier.append(A(d["ref_id"], href=f"/docs/{d['doc_id']}"))
+            doc = Div(doc, Div(t("subscriptions.period_earlier_bills"), " ", *earlier, cls="text-muted"))
         return Tr(Td(f"{r['service_start']} - {r['service_end']}"), Td(r["bill_date"]), Td(label), Td(doc),
                   Td(_period_actions(entity_id, r)))
 
@@ -691,21 +731,22 @@ _FIXED_IN_WEB_ACCESS = ("email.err_no_transport", "email.err_relay_refused")
 
 def _summary_table(rows: list[dict], subs: dict[str, dict]) -> FT:
     """What ran unattended, newest first, each row linked to its agreement and document;
-    a failed send offers Retry and an email still waiting offers Send, each sending once.
-    A failure the email settings fix links to that page."""
+    an email not sent offers Send, Retry or Send again beside what happened to it, so the
+    action is in view without scrolling. A failure the email settings fix links to that page."""
     def _row(r: dict) -> FT:
         eid = r["entity_id"]
         doc = A(r.get("ref_id") or r["doc_id"], href=f"/docs/{r['doc_id']}") if r.get("doc_id") else "--"
-        label = t("btn.send") if r.get("kind") == "send_pending" else t("btn.retry")
-        retry = (Button(label, cls="btn btn--secondary btn--sm", hx_post=r["retry_url"],
-                        hx_vals={"back": "summary"}, hx_swap="none") if r.get("retry_url") else "")
+        send = {"send_failed": "failed", "send_unconfirmed": "unconfirmed"}.get(r.get("kind"))
+        retry = (_send_button(r["retry_url"], send, bool(r.get("again")), back="summary")
+                 if r.get("retry_url") else "")
         fix = (A(t("doc.send_relay_error_link"), href="/settings/cloud")
                if r.get("error_key") in _FIXED_IN_WEB_ACCESS else "")
         return Tr(Td(format_timestamp(r.get("at") or "") or "--"),
                   Td(A(template_label(subs.get(eid) or {}, eid), href=f"/subscriptions/{eid}")),
-                  Td(r.get("message") or "", " " if fix else "", fix), Td(doc), Td(retry))
+                  Td(r.get("message") or "", " " if fix else "", fix,
+                     Div(retry, cls="mt-xs") if retry else ""), Td(doc))
 
-    return _data_table(Thead(Tr(Th(t("th.date")), Th(t("th.name")), Th(t("th.description")), Th(t("th.document")), Th(""))),
+    return _data_table(Thead(Tr(Th(t("th.date")), Th(t("th.name")), Th(t("th.description")), Th(t("th.document")))),
                  Tbody(*[_row(r) for r in rows]))
 
 
@@ -910,18 +951,47 @@ def setup_routes(app) -> None:
             for item in items:
                 item["request_key"] = f"{key}:{item['period_index']}"
             result = await api.generate_all_due(token, items)
-            subs = await _agreements(token)
-            answer = _due_results(result, subs, str(form[FIELD]))
+        except APIError as e:
+            return _refused(e)
+
+        async def draw():
+            answer = _due_results(result, await _agreements(token), str(form[FIELD]))
             # Run from the list: its cards and rows show what the run changed.
             page = urlsplit(request.headers.get("HX-Current-URL", ""))
             if page.path != "/subscriptions":
                 return answer
             state = _list_state(QueryParams(page.query))
             listed = await _all_agreements(token, state["direction"], review=state["review"])
+            cards, table, _ = _list_views(listed, state)
+            return answer, cards(hx_swap_oob="true"), table(hx_swap_oob="true")
+        return await _redrawn(draw, lambda: _due_results(result, {}, str(form[FIELD])))
+
+    @app.get("/subscriptions/{entity_id}/doc-note/{doc_id}")
+    async def subscription_doc_note(request: Request, entity_id: str, doc_id: str):
+        """What a document's page says of the period it was made for, read from the agreement as
+        stored: billed again on a newer document, reopened, or void while it still holds the
+        period. Nothing while it bills the period, or when the agreement cannot be read."""
+        token = _token(request)
+        if not token:
+            return ""
+        try:
+            sub = await api.get_subscription(token, entity_id)
+            doc = await api.get_doc(token, doc_id)
+            k = (sub.get("released_bills") or {}).get(doc_id)
+            entry = ((sub.get("periods") or {}).get(str(k)) or {}) if k is not None else {}
+            newer_id = entry.get("doc_id") if entry.get("state") == "billed" else None
+            newer = await api.get_doc(token, newer_id) if newer_id and newer_id != doc_id else None
         except APIError as e:
-            return _refused(e)
-        cards, table, _ = _list_views(listed, state)
-        return answer, cards(hx_swap_oob="true"), table(hx_swap_oob="true")
+            _signed_out(e)
+            return ""
+        if k is not None:
+            text = (sentence("subscriptions.doc_period_rebilled", newer=newer.get("ref_id") or newer_id)
+                    if bills(newer) else t("subscriptions.doc_period_reopened"))
+        elif doc.get("status") == "void":
+            text = t("subscriptions.doc_void_period")
+        else:
+            return ""
+        return P(text, cls="text-muted")
 
     @app.get("/subscriptions/catch-up")
     async def subscriptions_catch_up_page(request: Request):
@@ -970,11 +1040,13 @@ def setup_routes(app) -> None:
                     except APIError as e:
                         _signed_out(e)
                         results.append({**item, "ok": False, "error": error_message(e)})
-            items = (await api.subscriptions_catch_up(token)).get("items") or []
-            subs = await _agreements(token)
         except APIError as e:
             return _refused(e)
-        return _catch_up_card(items, subs, results)
+
+        async def draw():
+            items = (await api.subscriptions_catch_up(token)).get("items") or []
+            return _catch_up_card(items, await _agreements(token), results)
+        return await _redrawn(draw, lambda: Div(_outcome_table(results, {}), id="catchup-card"))
 
     @app.get("/subscriptions/summary")
     async def subscriptions_summary_page(request: Request, all: bool = False):
@@ -1244,12 +1316,15 @@ def setup_routes(app) -> None:
             return Response(status_code=401, headers={"HX-Redirect": "/login"})
         form = await request.form()
         reason = str(form.get("reason", "")).strip()
+        body = {"reason": reason} if action == "skip" else {"again": True} if form.get("again") else None
         try:
-            done = await api.subscription_period_action(token, entity_id, k, action,
-                                                        {"reason": reason} if action == "skip" else None)
+            done = await api.subscription_period_action(token, entity_id, k, action, body)
         except APIError as e:
             return _refused(e)
         back = "/subscriptions/summary" if form.get("back") == "summary" else f"/subscriptions/{entity_id}"
+        if action == "send":
+            # The API reads the period's email after the attempt; the toast says what is stored.
+            return _done(back, done.get("message") or "", _SEND_TOAST.get(done.get("send"), "warning"))
         if action not in _PERIOD_DONE:
             return Response(status_code=204, headers={"HX-Redirect": back})
         period = done["period"]
@@ -1288,11 +1363,14 @@ def setup_routes(app) -> None:
         changes = {field: value, **({"frequency": "custom"} if field == "custom_interval_days" and value else {})}
         try:
             saved = await api.update_subscription_schedule(token, entity_id, changes)
-            sub = await api.get_subscription(token, entity_id)
-            schedule = await api.get_subscription_periods(token, entity_id)
         except APIError as e:
             return _refused(e)
-        views = tuple(v(hx_swap_oob="true") for v in _schedule_views(entity_id, sub, schedule) if v != "")
-        if saved.get("sending_off"):
-            return HTMLResponse(to_xml(views), headers=toast_header(t("subscriptions.sending_off_manual"), "success"))
-        return views
+
+        async def draw():
+            sub = await api.get_subscription(token, entity_id)
+            schedule = await api.get_subscription_periods(token, entity_id)
+            views = tuple(v(hx_swap_oob="true") for v in _schedule_views(entity_id, sub, schedule) if v != "")
+            if saved.get("sending_off"):
+                return HTMLResponse(to_xml(views), headers=toast_header(t("subscriptions.sending_off_manual"), "success"))
+            return views
+        return await _redrawn(draw, said=t("subscriptions.sending_off_manual") if saved.get("sending_off") else "")
