@@ -516,9 +516,9 @@ def ensure_database(cfg: dict, *, own: bool = False) -> None:
 
 def _run_upgrade_with_auto_stamp(alembic_cfg, engine_url: str, ran: frozenset = frozenset()) -> None:
     """Upgrade to head one revision at a time, stamping past any revision whose DDL
-    is already present, and past each data backfill in `ran` (it already ran on
-    this database before a restamp moved the stamp back below it, and a data
-    backfill runs once).
+    is already present, and past each revision in `ran` (it already ran on this
+    database before a restamp moved the stamp back below it, its changes are all
+    there, and its data rewrites run once).
 
     When a migration's DDL was applied outside Alembic (e.g. dev testing before
     a formal release), the DB has the tables but the version stamp is behind.
@@ -611,7 +611,7 @@ def _apply_migrations(db_url: str) -> None:
             ran: frozenset = frozenset()
             if "companies" in existing_tables:
                 from celerp.migrations._auto_stamp import (
-                    extract_signatures, find_safe_stamp, load_kernel_metadata,
+                    extract_signatures, find_safe_stamp, held_revisions, load_kernel_metadata,
                 )
                 from pathlib import Path as _Path
                 script = ScriptDirectory.from_config(alembic_cfg)
@@ -626,18 +626,18 @@ def _apply_migrations(db_url: str) -> None:
                 # walk_revisions() yields head→base, the order the walker
                 # requires.
                 revs_newest_first = list(script.walk_revisions())
-                safe = find_safe_stamp(
-                    revs_newest_first, sigs_by_rev, inspector,
-                    expected_metadata=load_kernel_metadata(),
-                )
+                kernel = load_kernel_metadata()
+                safe = find_safe_stamp(revs_newest_first, sigs_by_rev, inspector, expected_metadata=kernel)
                 restamp = safe != "base" and safe != stamped
-                # Recorded before the stamp moves, so each data backfill runs
-                # once: one the stamp skips is left to the reconcile, one it moves
-                # back below is stamped past by the upgrade. The stamp is the record
-                # of what ran: alembic ran every backfill in its history.
+                # Recorded before the stamp moves, so each revision runs once: a
+                # data backfill the stamp skips is left to the reconcile, and a
+                # revision it moves back below whose changes are all there is
+                # stamped past by the upgrade. The stamp is the record of what ran:
+                # alembic ran every revision in its history.
+                still_there = held_revisions(revs_newest_first, sigs_by_rev, inspector, expected_metadata=kernel)
                 with engine.begin() as conn:
                     ran = track_restamp(
-                        conn, script, ran_to=stamped, stamped_to=safe if restamp else stamped,
+                        conn, script, ran_to=stamped, stamped_to=safe if restamp else stamped, held=still_there,
                     )
                 if restamp:
                     click.echo(

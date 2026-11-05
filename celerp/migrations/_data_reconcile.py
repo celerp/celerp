@@ -115,16 +115,20 @@ def _lineage(script, revision: str | None) -> set[str]:
         return set()
 
 
-def track_restamp(conn: "Connection", script, *, ran_to: str | None, stamped_to: str | None) -> frozenset:
-    """Keep each data backfill to one run across a stamp moving from `ran_to` to
+def track_restamp(
+    conn: "Connection", script, *, ran_to: str | None, stamped_to: str | None, held: frozenset,
+) -> frozenset:
+    """Keep each revision to one run across a stamp moving from `ran_to` to
     `stamped_to`. `ran_to` is the stamp the database had: alembic ran every
-    backfill in its history; None, an unstamped database (create_all built it),
-    ran none.
+    revision in its history; None, an unstamped database (create_all built it),
+    ran none. `held` is every revision whose own schema changes the live schema
+    holds (``_auto_stamp.held_revisions``), a data backfill always.
 
-    A backfill the stamp moves past without running it is added to the pending
-    list, for the reconcile; one it moves back below is the upgrade's: if it is
-    pending, the upgrade runs it and it leaves the list; if it already ran, it is
-    returned, and the upgrade stamps past it instead of running it again.
+    A data backfill the stamp moves past without running it is added to the pending
+    list, for the reconcile. A revision it moves back below is the upgrade's: one
+    that ran and whose changes are all still there is returned, and the upgrade
+    stamps past it instead of running its data rewrites again; one with a change
+    missing, or a backfill still pending (it leaves the list), the upgrade runs.
     """
     before, after = _lineage(script, ran_to), _lineage(script, stamped_to)
     listed = pending_backfills(conn)
@@ -133,7 +137,7 @@ def track_restamp(conn: "Connection", script, *, ran_to: str | None, stamped_to:
     pending = [rev for rev in backfills if rev in after and (rev in was_pending or rev not in before)]
     if pending != listed:
         set_meta(conn, PENDING_BACKFILLS_KEY, ",".join(pending))
-    return frozenset(rev for rev in backfills if rev in before - after and rev not in was_pending)
+    return frozenset(rev for rev in before - after if rev in held and rev not in was_pending)
 
 
 def replay_data_backfills(engine: "Engine") -> tuple[list[str], list[str]]:

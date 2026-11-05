@@ -186,15 +186,16 @@ def test_a_stamp_moved_back_below_a_backfill_never_runs_it_twice(fresh_db):
     _, sync_url = fresh_db
     script = ScriptDirectory.from_config(build_alembic_config())
     head = head_rev()
+    held = frozenset(_BACKFILLS)  # a data backfill has no change to miss
     eng = create_engine(sync_url)
     try:
         for sc in data_backfill_scripts():
             below = sc.down_revision
             with eng.begin() as conn:
                 set_meta(conn, PENDING_BACKFILLS_KEY, "")
-                assert sc.revision in track_restamp(conn, script, ran_to=head, stamped_to=below)
+                assert sc.revision in track_restamp(conn, script, ran_to=head, stamped_to=below, held=held)
                 set_meta(conn, PENDING_BACKFILLS_KEY, sc.revision)
-                assert sc.revision not in track_restamp(conn, script, ran_to=head, stamped_to=below)
+                assert sc.revision not in track_restamp(conn, script, ran_to=head, stamped_to=below, held=held)
                 assert sc.revision not in pending_backfills(conn)
     finally:
         eng.dispose()
