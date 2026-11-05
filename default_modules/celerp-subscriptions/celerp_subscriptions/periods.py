@@ -43,6 +43,23 @@ def add_months(d: date, months: int) -> date:
 SCHEDULE_FIELDS = ("anchor_date", "frequency", "custom_interval_days", "billing_timing", "term_start", "term_end",
                    "cancel_at_period_end")
 
+# What each field an agreement event records holds while the agreement does not store it, as
+# its page and History read it: an agreement made through Documents, an import or an earlier
+# release stores few of them. Every field a writer sets is named here.
+UNSET = {
+    "anchor_date": None, "start_date": None, "frequency": "monthly", "custom_interval_days": None,
+    "billing_timing": "advance", "term_start": None, "term_end": None, "cancel_at_period_end": None,
+    "generation_mode": "manual_due", "auto_send": False, "catchup_periods": 0, "status": None,
+    "periods": {}, "consents": {}, "history_review": [], "history_set_aside": [], "billing_failure": None,
+    "released_bills": {}, "resume_restarts": False,
+}
+
+
+def shown(field: str, value):
+    """``value`` of an agreement's ``field`` as the agreement reads it: unset (None or an empty
+    text) reads as its UNSET value."""
+    return UNSET.get(field) if value is None or value == "" else value
+
 
 class ScheduleError(ValueError):
     """Why settings describe no schedule, as a catalog key and its params, so whoever refuses
@@ -97,9 +114,9 @@ class Schedule:
         ScheduleError saying why when they describe none."""
         return cls(
             anchor=_date(state["anchor_date"]),
-            frequency=state.get("frequency") or "monthly",
+            frequency=shown("frequency", state.get("frequency")),
             custom_days=state.get("custom_interval_days"),
-            timing=state.get("billing_timing") or "advance",
+            timing=shown("billing_timing", state.get("billing_timing")),
             term_start=_opt_date(state.get("term_start")),
             term_end=_opt_date(state.get("term_end")),
             last=state.get("cancel_at_period_end"),

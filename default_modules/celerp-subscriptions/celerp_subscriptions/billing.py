@@ -39,7 +39,8 @@ from celerp.services.terms import resolve_document_terms
 from celerp.services.units import require_moving_fits_units
 from celerp_docs.doc_money import HEADER_MONEY_FIELDS, document_money
 from celerp_docs.periodic import OperationReport
-from celerp_subscriptions.periods import BILLED, RELEASED, SCHEDULE_FIELDS, SKIPPED, UNRESOLVED, Schedule, ScheduleError
+from celerp_subscriptions.periods import (BILLED, RELEASED, SCHEDULE_FIELDS, SKIPPED, UNRESOLVED, Schedule, ScheduleError,
+                                          shown)
 from celerp_subscriptions.search import SUBSCRIPTION_DOC_TYPES
 from ui.i18n import t
 
@@ -137,9 +138,10 @@ def not_moved(state: dict) -> str | None:
 async def write_agreement(session: AsyncSession, company_id, entity_id: str, changes: dict, actor_id, *,
                           drop: tuple[str, ...] = (), key: str | None = None, metadata: dict | None = None) -> None:
     """Record a change to the agreement's own fields (``{field: new value}``); ``drop``
-    removes fields from its state. Only what changes is recorded: a field given the value it
-    holds, or dropped while absent, is left out, and with nothing left no event is written,
-    so History never shows a row that says nothing. Each field keeps its value before the
+    removes fields from its state. Only what changes as the agreement reads it is recorded
+    (periods.shown: a field not stored reads as its unset value): a field given a value that
+    reads as the one it holds, or dropped while what it holds reads as unset, is left out, and
+    with nothing left no event is written, so History never shows a row that says nothing. Each field keeps its value before the
     change, and a change to periods keeps the dates of each period it touched, so History can
     name them. Every agreement change in this module goes through here.
 
@@ -149,8 +151,8 @@ async def write_agreement(session: AsyncSession, company_id, entity_id: str, cha
     kept are exactly the modes in force after the change, so pausing or cancelling drops them."""
     before = (await session.execute(select(Projection.state).where(
         Projection.company_id == company_id, Projection.entity_id == entity_id))).scalar_one_or_none() or {}
-    changes = {k: v for k, v in changes.items() if before.get(k) != v}
-    drop = tuple(k for k in drop if k in before and k not in changes)
+    changes = {k: v for k, v in changes.items() if shown(k, before.get(k)) != shown(k, v)}
+    drop = tuple(k for k in drop if k not in changes and shown(k, before.get(k)) != shown(k, None))
     merged = {**{k: v for k, v in before.items() if k not in drop}, **changes}
     running, in_force = modes_in_force(before), modes_in_force(merged)
     needed = [m for m in in_force if m not in running or any(f in changes for f in CONSENT_TERMS[m])]
