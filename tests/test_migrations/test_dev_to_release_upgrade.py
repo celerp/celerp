@@ -28,11 +28,9 @@ import uuid
 import pytest
 from sqlalchemy import create_engine, text
 
-from celerp import __version__
 from alembic_support import history_by_hand, run_migrations as _run_migrations
 from celerp.cli import _reconcile_after_migrate
 from celerp.migrations._data_reconcile import (
-    BACKFILL_VERSION_KEY,
     PENDING_BACKFILLS_KEY,
     get_meta,
     replay_data_backfills,
@@ -98,7 +96,7 @@ def _reconcile(sync_url: str) -> list[str]:
         eng.dispose()
 
 
-def _marker(sync_url: str, key: str = BACKFILL_VERSION_KEY) -> str | None:
+def _marker(sync_url: str, key: str = PENDING_BACKFILLS_KEY) -> str | None:
     eng = create_engine(sync_url)
     try:
         with eng.connect() as conn:
@@ -133,16 +131,16 @@ def test_run_migrations_alone_skips_authoritative_backfill(fresh_db):
 @pytest.mark.parametrize("stamp_at_head", [False, True], ids=["unstamped", "stamped_at_head"])
 def test_reconcile_applies_authoritative_backfill(fresh_db, stamp_at_head):
     """After schema migrate + reconcile, the authoritative ledger backfill is
-    applied — for both realistic develop-origin states: a never-stamped
-    create_all DB, and one already stamped at head."""
+    applied to a never-stamped create_all DB. A stamp is the record of what ran,
+    so one stamped at head counts it as run and nothing converts its data again."""
     async_url, sync_url = fresh_db
     _build_dev_schema(sync_url, stamp=_head_rev() if stamp_at_head else None)
 
     _run_migrations(async_url)
     replayed = _reconcile(sync_url)
 
-    assert "n8o9p0q1r2s3" in replayed
-    assert _payment_date(sync_url) == _EXPECTED_DATE
+    assert ("n8o9p0q1r2s3" in replayed) is not stamp_at_head
+    assert _payment_date(sync_url) == (None if stamp_at_head else _EXPECTED_DATE)
 
 
 def test_reconcile_replays_each_backfill_once(fresh_db):
@@ -161,20 +159,19 @@ def test_reconcile_replays_each_backfill_once(fresh_db):
 
 
 def test_reconcile_after_migrate_applies_and_marks(fresh_db):
-    """The migrate step records the backfills the develop build's stamp skips and
-    marks the database tracked; the reconcile applies them and clears the list."""
+    """The migrate step records the backfills the develop build's stamp skips; the
+    reconcile applies them and clears the list."""
     async_url, sync_url = fresh_db
     _build_dev_schema(sync_url, stamp=None)
-    assert _marker(sync_url) is None  # develop build never wrote a marker
+    assert _marker(sync_url) is None  # develop build never wrote the list
 
     _run_migrations(async_url)
-    assert _marker(sync_url) == __version__
-    assert "n8o9p0q1r2s3" in _marker(sync_url, PENDING_BACKFILLS_KEY).split(",")
+    assert "n8o9p0q1r2s3" in _marker(sync_url).split(",")
 
     _reconcile_after_migrate(async_url)
 
     assert _payment_date(sync_url) == _EXPECTED_DATE
-    assert _marker(sync_url, PENDING_BACKFILLS_KEY) == ""
+    assert _marker(sync_url) == ""
 
 
 def _seed_dev_origin(sync_url: str) -> uuid.UUID:
@@ -330,7 +327,7 @@ def test_poison_backfill_isolated_and_durable(fresh_db, monkeypatch, caplog):
         eng.dispose()
 
     assert [r[0] for r in rows] == [42]  # good durable, poison rolled back
-    assert _marker(sync_url, PENDING_BACKFILLS_KEY) == "poison"  # retried next boot
+    assert _marker(sync_url) == "poison"  # retried next boot
     assert any(r.levelno == logging.ERROR for r in caplog.records)
 
 

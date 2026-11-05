@@ -39,13 +39,10 @@ _log = logging.getLogger(__name__)
 # including a create_all one.
 _META_TABLE = "instance_meta"
 
-# BACKFILL_VERSION_KEY marks a database whose skipped backfills are tracked in
-# PENDING_BACKFILLS_KEY (a comma list of revision ids, oldest first); its value
-# is the version that began tracking. A database without it (a develop build, or
-# one no release has reconciled) has run none of the backfills in its stamp's
-# history. The projection rebuild runs in the API lifespan (handlers loaded),
-# gated by its own key.
-BACKFILL_VERSION_KEY = "backfill_version"
+# PENDING_BACKFILLS_KEY lists the data backfills a stamp moved past without
+# running them (a comma list of revision ids, oldest first). Every other backfill
+# in the stamp's history ran under alembic. The projection rebuild runs in the API
+# lifespan (handlers loaded), gated by its own key.
 PENDING_BACKFILLS_KEY = "backfills_pending"
 PROJECTION_VERSION_KEY = "projection_version"
 
@@ -120,7 +117,9 @@ def _lineage(script, revision: str | None) -> set[str]:
 
 def track_restamp(conn: "Connection", script, *, ran_to: str | None, stamped_to: str | None) -> frozenset:
     """Keep each data backfill to one run across a stamp moving from `ran_to` to
-    `stamped_to` (`ran_to` None: the database ran none, as create_all built it).
+    `stamped_to`. `ran_to` is the stamp the database had: alembic ran every
+    backfill in its history; None, an unstamped database (create_all built it),
+    ran none.
 
     A backfill the stamp moves past without running it is added to the pending
     list, for the reconcile; one it moves back below is the upgrade's: if it is

@@ -453,16 +453,9 @@ def test_older_schema_with_older_marker_migrates_forward(scratch, monkeypatch):
     after = snapshot(url)
     assert after["alembic_version"] == [(_head(),)]
     assert after["sentinel"] == [(1, "sentinel-before")]
-    # A data-only revision one behind head has no schema of its own to find, so the
-    # restamp lands below it and it replays, leaving the marker that makes it run once.
-    replayed = {"company_modules_chosen_per_company"}
-    # Built by create_all and never reconciled, so the data backfills in its stamp's
-    # history never ran: the migrate marks it tracked and leaves them to the reconcile.
-    tracking = {"backfill_version", "backfills_pending"}
-    meta = dict(after["instance_meta"])
-    assert meta["backfill_version"] == RUNNING and meta["backfills_pending"]
-    assert [m for m in after["instance_meta"] if m[0] not in replayed | tracking] == [
-        (OPENED_KEY, RUNNING), ("projection_version", "2.5.3")]
+    # The stamp is the record of what ran: every data backfill in its history counts as
+    # run, so the restamp below the data-only revisions leaves none pending and none replays.
+    assert after["instance_meta"] == [(OPENED_KEY, RUNNING), ("projection_version", "2.5.3")]
 
 
 def test_older_backup_restored_and_migrated_forward(scratch, tmp_path, monkeypatch):

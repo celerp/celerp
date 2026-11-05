@@ -607,12 +607,7 @@ def _apply_migrations(db_url: str) -> None:
             else:
                 stamped = None
 
-            from celerp import __version__
-            from celerp.migrations._data_reconcile import (
-                BACKFILL_VERSION_KEY, get_meta, set_meta, track_restamp,
-            )
-            with engine.begin() as conn:
-                tracked = get_meta(conn, BACKFILL_VERSION_KEY) is not None
+            from celerp.migrations._data_reconcile import track_restamp
             ran: frozenset = frozenset()
             if "companies" in existing_tables:
                 from celerp.migrations._auto_stamp import (
@@ -638,25 +633,18 @@ def _apply_migrations(db_url: str) -> None:
                 restamp = safe != "base" and safe != stamped
                 # Recorded before the stamp moves, so each data backfill runs
                 # once: one the stamp skips is left to the reconcile, one it moves
-                # back below is stamped past by the upgrade. An untracked database
-                # ran none in its stamp's history (create_all built it).
+                # back below is stamped past by the upgrade. The stamp is the record
+                # of what ran: alembic ran every backfill in its history.
                 with engine.begin() as conn:
                     ran = track_restamp(
-                        conn, script, ran_to=stamped if tracked else None,
-                        stamped_to=safe if restamp else stamped,
+                        conn, script, ran_to=stamped, stamped_to=safe if restamp else stamped,
                     )
-                    if not tracked:
-                        set_meta(conn, BACKFILL_VERSION_KEY, __version__)
                 if restamp:
                     click.echo(
                         f"  · Live schema matches revision {safe}: "
                         f"restamping (was {stamped or 'unstamped'})..."
                     )
                     command.stamp(alembic_cfg, safe, purge=True)
-            elif not tracked:
-                # No schema yet: alembic upgrade runs every backfill itself.
-                with engine.begin() as conn:
-                    set_meta(conn, BACKFILL_VERSION_KEY, __version__)
         _run_upgrade_with_auto_stamp(alembic_cfg, engine_url=sync_url, ran=ran)
 
 
