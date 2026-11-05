@@ -2931,6 +2931,15 @@ async def void_document(entity_id: str, payload: DocVoidBody, company_id: str, u
         raise HTTPException(status_code=409, detail=refusal(
             "docs.void_already_void",
             "This document is already void. To bring it back, unvoid it."))
+    # Goods must be back before the paper can go void, or the stock records point
+    # at a dead document with no UI path to bring the items home (the fulfillment
+    # toolbar only renders on live statuses). Mirrors the revert-to-draft guards.
+    delivered = None
+    if row.state.get("fulfillment_status") in ("fulfilled", "partial"):
+        delivered = HTTPException(status_code=409, detail=await goods_out_refusal(
+            session, company_id, entity_id, row.state, catalog_refusal("documents.err_void_delivered")))
+        if _unclearable(delivered.detail):
+            raise delivered
     _reject_if_closed(row.state, "void it")
     if drawn := await _drawn_on(session, company_id, row.state):
         memo = _ref(row)
@@ -2948,12 +2957,8 @@ async def void_document(entity_id: str, payload: DocVoidBody, company_id: str, u
     current_status = row.state.get("status")
     if current_status in ("paid", "partial") and not settled_by_credit_only(row.state):
         raise HTTPException(status_code=409, detail="Cannot void a document with payments; void the payments first")
-    # Goods must be back before the paper can go void, or the stock records point
-    # at a dead document with no UI path to bring the items home (the fulfillment
-    # toolbar only renders on live statuses). Mirrors the revert-to-draft guards.
-    if row.state.get("fulfillment_status") in ("fulfilled", "partial"):
-        raise HTTPException(status_code=409, detail=await goods_out_refusal(
-            session, company_id, entity_id, row.state, catalog_refusal("documents.err_void_delivered")))
+    if delivered is not None:
+        raise delivered
     # Goods the document was imported with are opening stock: no receipt here brought them in,
     # so no void takes them back, whether they are still held or went back by return.
     if row.state.get("received_items") and await _imported_receipt_held(session, company_id, entity_id):
@@ -3646,6 +3651,15 @@ def _refuse(refusals: list, reason: str, detail) -> None:
     refusals.append((reason, HTTPException(status_code=409, detail=detail)))
 
 
+# The refusal no step clears: report it. It answers ahead of every refusal a step clears, so
+# the user is never sent to take a step (voiding a payment) that still ends at it.
+_UNCLEARABLE = "error.cogs_line_unknown_out"
+
+
+def _unclearable(detail) -> bool:
+    return isinstance(detail, dict) and detail.get("message_key") == _UNCLEARABLE
+
+
 async def goods_out_refusal(session, company_id, entity_id: str, state: dict, refused: dict) -> dict:
     """``refused``, the refusal of Void or Revert to Draft naming the step that clears it (Set
     as available, voiding a credit note), unless goods the document shipped are on none of its
@@ -3654,12 +3668,13 @@ async def goods_out_refusal(session, company_id, entity_id: str, state: dict, re
     from celerp.services.auto_je import unplaced_shipments
 
     unplaced = await unplaced_shipments(session, company_id, entity_id, state)
-    return catalog_refusal("error.cogs_line_unknown_out", **unplaced) if unplaced else refused
+    return catalog_refusal(_UNCLEARABLE, **unplaced) if unplaced else refused
 
 
 async def revert_check(session, company_id, entity_id: str, state: dict, units: list[dict],
                        as_locked: bool = False) -> RevertCheck:
-    """The one rule for Revert to Draft. The route answers the first refusal, GET /docs/{id}
+    """The one rule for Revert to Draft. The route answers the first refusal (one no step clears
+    comes first), GET /docs/{id}
     lists the reasons (``revert_refused``) and the document page offers the button from them
     (REVERT_HIDDEN_BY), and a refusal that would send the user to Revert to Draft picks its
     advice from them (auto_je._recognized_by_account). Only the freight a returned bill folded
@@ -3745,6 +3760,7 @@ async def revert_check(session, company_id, entity_id: str, state: dict, units: 
         await require_moving_fits(session, company_id, entity_id, "doc", {**state, "status": "draft"}, units)
     except HTTPException as exc:
         refusals.append(("units", exc))
+    refusals.sort(key=lambda reason: not _unclearable(reason[1].detail))
     return RevertCheck(tuple(refusals), to_order=to_order, emptied=emptied)
 
 
