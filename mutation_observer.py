@@ -843,9 +843,10 @@ _RELATIVE: dict[str, str | None] = {}
 
 def _relative(filename: str) -> str | None:
     """The app source file a frame runs in, relative to the repository; None for tests,
-    the test harness (conftest.py), this observer, and anything outside the repository."""
+    the test harness (conftest.py), this observer, anything outside the repository, and
+    installed packages (a virtual environment kept inside the checkout)."""
     if filename not in _RELATIVE:
-        mine = filename.startswith(_ROOT) and "/tests/" not in filename \
+        mine = filename.startswith(_ROOT) and "/tests/" not in filename and "/site-packages/" not in filename \
             and not filename.endswith(("mutation_observer.py", "conftest.py"))
         _RELATIVE[filename] = os.path.relpath(filename, _ROOT) if mine else None
     return _RELATIVE[filename]

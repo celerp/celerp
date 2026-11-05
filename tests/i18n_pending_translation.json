@@ -37,10 +37,6 @@
       "en": "Sending was cut off, so this email may already have arrived. Send it again anyway?",
       "params": []
     },
-    "subscriptions.done_not_redrawn": {
-      "en": "That worked, but the page could not refresh. Reload it to see the change.",
-      "params": []
-    },
     "subscriptions.doc_period_rebilled": {
       "en": "That period was reopened on the agreement and is now billed on {newer}, so this document no longer bills it.",
       "params": [

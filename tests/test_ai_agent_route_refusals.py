@@ -306,7 +306,7 @@ class _Walk:
             return "errors" in fields and isinstance(fields["errors"], ast.Name) \
                 and self._list_keyed(fields["errors"].id, fn, scope, tree)
         if isinstance(node, ast.Name):
-            values = [n.value for n in ast.walk(tree) if isinstance(n, (ast.Assign, ast.AnnAssign)) and n.value
+            values = [n.value for n in ast.walk(tree) if isinstance(n, (ast.Assign, ast.AnnAssign, ast.NamedExpr)) and n.value
                       and any(isinstance(target, ast.Name) and target.id == node.id
                               for target in getattr(n, "targets", [getattr(n, "target", None)]))]
             if not values and node.id in scope:
