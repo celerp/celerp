@@ -14170,33 +14170,28 @@ async def set_scanned(
 ) -> dict:
     """Toggle the scanned/accounted-for highlight (audited_at) on the audit lines ``line_ids``
     names. scanned=True marks the rows as scanned (stamps audited_at), scanned=False clears it.
-    A line with no inventory item is left as it is and named; a choice of only such lines is
-    refused. The highlight otherwise persists indefinitely."""
+    A line with no inventory item, or one already marked (clearing: not marked), is left as it
+    is and named in ``skipped``; a choice of only such lines is refused (422) and changes
+    nothing. The highlight otherwise persists indefinitely."""
     row = await _get_audit(session, company_id, entity_id, for_update=True)
     if row.state.get("status") != FINALIZED:
         raise HTTPException(status_code=409, detail=t("documents.err_count_finalize_first"))
     lines = [dict(l) for l in (row.state.get("line_items") or [])]
     indices = _selected_line_indices(lines, FulfillLinesRequest(line_ids=payload.line_ids))
-    skipped = _skipped_lines(lines, [i for i in indices if not line_item_id(lines[i])], "no_item")
+    no_item = [i for i in indices if not line_item_id(lines[i])]
+    already = [i for i in indices if i not in no_item and (lines[i].get("audited_at") is not None) == payload.scanned]
+    skipped = sorted(_skipped_lines(lines, no_item, "no_item")
+                     + _skipped_lines(lines, already, "scanned" if payload.scanned else "not_scanned"),
+                     key=lambda s: s["line"])
     if len(skipped) == len(indices):
         _refuse_skipped("set-scanned", skipped)
     stamp = datetime.now(timezone.utc).isoformat() if payload.scanned else None
-    changed = 0
-    for i in indices:
-        l = lines[i]
-        if not line_item_id(l):
-            continue
-        already = l.get("audited_at") is not None
-        if payload.scanned and not already:
-            l["audited_at"] = stamp
-            changed += 1
-        elif not payload.scanned and already:
-            l["audited_at"] = None
-            changed += 1
-    if changed:
-        await _set_list_fields(session, company_id, entity_id, user, {"line_items": lines})
-        await session.commit()
-    result = {"changed": changed, "skipped": skipped}
+    changed = [i for i in indices if i not in no_item and i not in already]
+    for i in changed:
+        lines[i]["audited_at"] = stamp
+    await _set_list_fields(session, company_id, entity_id, user, {"line_items": lines})
+    await session.commit()
+    result = {"changed": len(changed), "skipped": skipped}
     if skipped:
         result["skipped_notice"] = _skip_messages("set-scanned", skipped)
     return result

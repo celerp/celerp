@@ -513,9 +513,7 @@ async def _owner_for(client, g, kind: str) -> tuple[str, str]:
     lines = [*(_line(g, s) for s in STONES[:2]), GIA]
     if kind == "audit":
         owner = await _audit_with_certificate(client, g)
-        lids = await _ids(client, g, owner)
-        await _ok(await _scan(client, g, owner, lids, False))
-        return owner, lids[0]
+        return owner, (await _ids(client, g, owner))[0]
     if kind == "drawn":
         _memo, owner, drawn_id, _own = await _drawn_invoice_with_own_certificate(client, g)
         return owner, drawn_id
@@ -653,6 +651,38 @@ async def test_a_choice_of_only_item_less_lines_changes_nothing_and_is_refused(c
     assert _detail(r)["message_key"] == f"{LINE_SKIP_REASONS[action][skip_kind][1]}_one"
     after = await _state(client, g, owner)
     assert after["version"] == before["version"] and after["line_items"] == before["line_items"]
+
+
+async def test_mark_and_clear_scanned_name_the_lines_already_so_and_a_no_op_says_why(client, session):
+    """A chosen line already marked as scanned (or, clearing, not marked) is left as it is and
+    named, like a line with nothing held to Set as available; a choice of only such lines is
+    refused with that notice and changes nothing. Red statement: Mark as scanned on all three
+    lines, line 1 already scanned, said "1 line marked as scanned." and named only the GIA
+    Certificate; on line 1 alone it said "0 lines marked as scanned." with no reason."""
+    g = await _gems(client)
+    audit = await _audit_with_certificate(client, g)
+    lines = (await _state(client, g, audit))["line_items"]
+    lids = [li["line_id"] for li in lines]
+    gia = next(i for i, li in enumerate(lines) if not li.get("item_id"))
+    first, second, third = [i for i in range(len(lines)) if i != gia][:3]
+    assert not any(li.get("audited_at") for li in lines)
+    await _ok(await _scan(client, g, audit, [lids[first]], True))
+
+    answer = await _ok(await _scan(client, g, audit, [lids[first], lids[second], lids[gia]], True))
+    assert answer["changed"] == 1
+    assert [(s["line"], s["kind"]) for s in answer["skipped"]] == sorted(
+        [(first + 1, "scanned"), (gia + 1, "no_item")])
+    assert [k for k, _ in _notice(answer)] == ["documents.scan_lines_skipped_one", "documents.scanned_lines_skipped_one"]
+
+    for chosen, scanned, key in (([first], True, "documents.scanned_lines_skipped_one"),
+                                 ([third], False, "documents.unscanned_lines_skipped_one"),
+                                 ([first, gia], True, "documents.scan_lines_skipped_one")):
+        before = await _state(client, g, audit)
+        r = await _scan(client, g, audit, [lids[i] for i in chosen], scanned)
+        assert r.status_code == 422, r.text
+        refused = [_detail(r)["message_key"], *(m["message_key"] for m in _detail(r).get("also") or [])]
+        assert key in refused, refused
+        assert (await _state(client, g, audit))["version"] == before["version"]
 
 
 # ── Class guard: every line table's checkbox names its line the same way ─────

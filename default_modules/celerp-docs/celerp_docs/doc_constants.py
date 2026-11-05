@@ -138,7 +138,7 @@ WRITEOFF_ACCOUNT_TYPES: frozenset[str] = frozenset({"expense", "equity"})
 # confirm built from its preview, reads its own entry, so a line is never given another action's
 # reason. The kinds an action lists are the lines it leaves: Ship counts a service line shipped,
 # so it has no service kind, and leaves a line that has already shipped or whose goods are not
-# free to ship.
+# free to ship. Mark as scanned leaves a line already marked, and Clear scanned one not marked.
 _NO_ITEM = ("documents.lines_skipped", "lines.no_stock")
 _SERVICE = ("documents.service_lines_skipped", "lines.service_no_stock")
 _DRAW = {"memo_no_item": ("documents.memo_lines_skipped", "lines.memo_no_stock")}
@@ -152,7 +152,9 @@ LINE_SKIP_REASONS: dict[str, dict[str, tuple[str, str | None]]] = {
     "invoice": _DRAW,
     "convert": _DRAW,
     "back_to_memo": {"own": ("documents.own_lines_skipped", "docs.back_to_memo_not_drawn")},
-    "set-scanned": {"no_item": ("documents.scan_lines_skipped", "lines.scan_no_stock")},
+    "set-scanned": {"no_item": ("documents.scan_lines_skipped", "lines.scan_no_stock"),
+                    "scanned": ("documents.scanned_lines_skipped", None),
+                    "not_scanned": ("documents.unscanned_lines_skipped", None)},
     # Print labels runs in the page; a choice of only such lines keeps its own error.
     "labels": {"no_item": ("documents.labels_skipped", None)},
 }

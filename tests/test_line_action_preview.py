@@ -309,18 +309,24 @@ async def test_a_notice_naming_goods_another_invoice_had_leads_with_the_count(ui
 
 
 async def test_mark_as_scanned_counts_the_lines_the_list_changed(ui_client):
-    """The notice counts the rows the list says it changed. Red statement: Mark as scanned sent
-    again said "2 lines marked as scanned." when the list changed none."""
+    """The notice counts the rows the list says it changed, then names the row it left. Red
+    statement: Mark as scanned on two rows, one already scanned, said "2 lines marked as
+    scanned."."""
     from unittest.mock import AsyncMock, patch
 
+    from celerp_docs.routes import _skip_messages
     from test_helpers import make_test_token
+    from ui.i18n import refusal_text
+    skipped = [{"line": 1, "name": "DEMO-SAP-001", "line_id": "a", "kind": "scanned"}]
+    answer = {"changed": 1, "skipped": skipped, "skipped_notice": _skip_messages("set-scanned", skipped)}
     ui_client.cookies.update({"celerp_token": make_test_token(role="owner")})
-    with patch("ui.api_client.set_scanned", new=AsyncMock(return_value={"changed": 0, "skipped": []})), \
+    with patch("ui.api_client.set_scanned", new=AsyncMock(return_value=answer)), \
             patch("ui.api_client.get_list_page", new=AsyncMock(return_value={
                 "list": {"status": "finalized", "list_type": "audit"}, "items": [], "total": 0, "version": 1})):
         r = await ui_client.post("/lists/list:1/set-scanned", data={"line_id": ["a", "b"], "scanned": "1"})
     assert r.status_code == 200, r.text
-    assert json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"] == _count("documents.lines_scanned", 0)
+    assert json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"] == (
+        f'{_count("documents.lines_scanned", 1)} {refusal_text(answer["skipped_notice"])}')
 
 
 # ── Bound to its preview ──────────────────────────────────────────────────────
