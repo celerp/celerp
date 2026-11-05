@@ -18,7 +18,6 @@ from celerp_docs.doc_constants import (
 from agreement_kit import LINE, agreement, freeze_day, register
 from owned_fields_census import doors, writes, written_keys
 
-pytestmark = pytest.mark.asyncio
 
 # Keys the schedule writes that a caller may send too, and why.
 CALLER_KEYS = {
