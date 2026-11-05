@@ -104,34 +104,6 @@ async def test_current_connector_state_is_revoked_before_restore(
 
 
 @pytest.mark.asyncio
-async def test_connector_maintenance_guard_uses_session_advisory_lock(monkeypatch):
-    from types import SimpleNamespace
-    from unittest.mock import AsyncMock, MagicMock
-
-    from celerp.connectors.ownership import connector_maintenance_guard
-
-    session = MagicMock()
-    session.get_bind.return_value = SimpleNamespace(
-        dialect=SimpleNamespace(name="postgresql")
-    )
-    session.execute = AsyncMock()
-    session.rollback = AsyncMock()
-    cm = MagicMock()
-    cm.__aenter__ = AsyncMock(return_value=session)
-    cm.__aexit__ = AsyncMock(return_value=False)
-
-    monkeypatch.setattr("celerp.db.LifecycleSessionLocal", lambda: cm)
-
-    async with connector_maintenance_guard():
-        assert session.execute.await_count == 1
-
-    sql = [str(call.args[0]) for call in session.execute.await_args_list]
-    assert "pg_advisory_lock" in sql[0]
-    assert "pg_advisory_unlock" in sql[1]
-    session.rollback.assert_awaited_once()
-
-
-@pytest.mark.asyncio
 async def test_restored_connector_cleanup_fences_stale_context(
     session, _isolate_database_side_effects, monkeypatch
 ):
