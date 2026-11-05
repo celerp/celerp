@@ -2941,9 +2941,8 @@ async def void_document(entity_id: str, payload: DocVoidBody, company_id: str, u
     # at a dead document with no UI path to bring the items home (the fulfillment
     # toolbar only renders on live statuses). Mirrors the revert-to-draft guards.
     if row.state.get("fulfillment_status") in ("fulfilled", "partial"):
-        raise HTTPException(
-            status_code=409,
-            detail=t("documents.err_void_delivered"))
+        raise HTTPException(status_code=409, detail=await goods_out_refusal(
+            session, company_id, entity_id, row.state, catalog_refusal("documents.err_void_delivered")))
     # Goods the document was imported with are opening stock: no receipt here brought them in,
     # so no void takes them back, whether they are still held or went back by return.
     if row.state.get("received_items") and await _imported_receipt_held(session, company_id, entity_id):
@@ -3451,10 +3450,10 @@ async def _undo_under_credit_note(session, company_id, state: dict, invoice_id: 
             f"docs.{action}_under_supplier_credit_note",
             f"This document cannot be {undone}: supplier credit notes {listed} are issued against it. "
             f"Void those supplier credit notes first, then try again.", numbers=listed))
-    return HTTPException(status_code=409, detail=refusal(
+    return HTTPException(status_code=409, detail=await goods_out_refusal(session, company_id, invoice_id, state, refusal(
         f"docs.{action}_under_credit_note",
         f"This invoice cannot be {undone}: credit notes {listed} are issued against it. Void those "
-        f"credit notes first, then try again.", numbers=listed))
+        f"credit notes first, then try again.", numbers=listed)))
 
 
 @router.post("/{entity_id}/close")
@@ -3636,6 +3635,17 @@ def _refuse(refusals: list, reason: str, detail) -> None:
     refusals.append((reason, HTTPException(status_code=409, detail=detail)))
 
 
+async def goods_out_refusal(session, company_id, entity_id: str, state: dict, refused: dict) -> dict:
+    """``refused``, the refusal of Void or Revert to Draft naming the step that clears it (Set
+    as available, voiding a credit note), unless goods the document shipped are on none of its
+    lines. That step books their cost again and is refused then too
+    (auto_je._recognized_by_account), so the answer is that refusal's: report it."""
+    from celerp.services.auto_je import unplaced_shipments
+
+    unplaced = await unplaced_shipments(session, company_id, entity_id, state)
+    return catalog_refusal("error.cogs_line_unknown_out", **unplaced) if unplaced else refused
+
+
 async def revert_check(session, company_id, entity_id: str, state: dict, units: list[dict],
                        as_locked: bool = False) -> RevertCheck:
     """The one rule for Revert to Draft. The route answers the first refusal, GET /docs/{id}
@@ -3715,16 +3725,11 @@ async def revert_check(session, company_id, entity_id: str, state: dict, units: 
             memo=memo, invoice=drawn[0][0]))
     # Fulfilled items are tracked in state["fulfilled_items"]; each entry with a non-null
     # item_id is an inventory item that is now out on memo or sold.
-    # When goods it shipped are on none of its lines, Set as available is refused too
-    # (auto_je._recognized_by_account), so the answer is that refusal's: report it.
     if any(fi.get("item_id") is not None for fi in state.get("fulfilled_items") or []):
-        from celerp.services.auto_je import unplaced_shipments
-
-        unplaced = await unplaced_shipments(session, company_id, entity_id, state)
-        _refuse(refusals, "out", catalog_refusal("error.cogs_line_unknown_out", **unplaced) if unplaced else refusal(
+        _refuse(refusals, "out", await goods_out_refusal(session, company_id, entity_id, state, refusal(
             "docs.revert_lines_out",
             "Cannot revert to draft while lines are still out on memo or sold. "
-            "Select those lines and use Set as available first, then revert."))
+            "Select those lines and use Set as available first, then revert.")))
     try:
         await require_moving_fits(session, company_id, entity_id, "doc", {**state, "status": "draft"}, units)
     except HTTPException as exc:

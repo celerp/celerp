@@ -18,7 +18,8 @@ from ui.i18n import t
 from test_cost_follows_goods import _doc_number
 from test_credit_note_settlement_owned import _cn
 from test_invoice_unshipped_books import _ok
-from test_reissued_invoice_cogs import _invoice, _line_ids, _ship, _state, _stones, drop_lines_as_before
+from test_reissued_invoice_cogs import (_invoice, _line_ids, _rewrite_lines, _rewrite_state, _ship,
+                                        _ship_in_two_batches, _state, _stones, drop_lines_as_before)
 from test_set_aside_goods_follow_the_lot import _per_doc
 from ui.routes.documents import _doc_detail
 
@@ -152,3 +153,105 @@ async def test_the_button_and_the_api_agree_on_every_state(client, session, auth
         if not offered:
             assert r.status_code == 409, name
 
+
+
+# ── Every refusal names a step the app takes in that state ─────────────────────────────────
+
+async def _legacy(client, session, auth, name: str) -> dict:
+    """A document in one of the states an earlier release's saves left behind, with the
+    lines still out on it and the credit notes raised on it."""
+    notes: list[str] = []
+
+    async def credit(doc):
+        notes.append(await _cn(client, auth, doc, 10.0))
+
+    if name == "lot_out_off_lines":
+        stones = (await _stones(client, auth))[:2]
+        doc, first, _second = await _ship_in_two_batches(client, auth, stones)
+        await _ok(client, auth, f"/docs/{doc}/set-available", {"line_ids": [first]})
+        await _rewrite_state(session, auth, doc, lambda st: {"fulfilled_items": [], "fulfillment_status": "unfulfilled"})
+        await _ok(client, auth, f"/docs/{doc}/revert-to-draft")
+        await _rewrite_lines(session, auth, doc, lambda lines: lines[:1])
+        await _ok(client, auth, f"/docs/{doc}/finalize")
+        return {"doc": doc, "out": [], "notes": notes}
+    out = 1 if name == "another_out" else 0
+    doc, _stones_, ids = await _drop_returned_line(client, session, auth, 3 if out else 2, out=out,
+                                                   before_drop=credit if name == "credited" else None)
+    if name in ("part_paid", "paid"):
+        await _pay(client, auth, doc, 1 if name == "part_paid"
+                   else float((await _state(client, auth, doc))["amount_outstanding"]))
+    return {"doc": doc, "out": ids[1:2] if out else [], "notes": notes}
+
+
+async def _post_action(client, auth, path: str, body: dict):
+    return await client.post(path, headers=auth["headers"], json=body)
+
+
+async def _void_payments(client, auth, s: dict) -> bool:
+    for payment in (await _state(client, auth, s["doc"])).get("payments") or []:
+        r = await _post_action(client, auth, f"/docs/{s['doc']}/void-payment", {"payment_index": payment["index"]})
+        if r.status_code != 200:
+            return False
+    return True
+
+
+# The refused actions, each as the page sends it.
+_ACTIONS = {
+    "ship": lambda c, a, s, ids: _ship(c, a, s["doc"], ids[:1]),
+    "set_available": lambda c, a, s, ids: _post_action(c, a, f"/docs/{s['doc']}/set-available", {"line_ids": s["out"]}),
+    "revert": lambda c, a, s, ids: _post_action(c, a, f"/docs/{s['doc']}/revert-to-draft", {}),
+    "void": lambda c, a, s, ids: _post_action(c, a, f"/docs/{s['doc']}/void", {"reason": "test"}),
+}
+
+# The step each refusal's advice names. A refusal missing here fails the guard until its
+# advice is classified; REPORT is the report text, which names no step.
+REPORT = "report"
+_STEPS = {
+    "error.cogs_line_unknown": "revert",
+    "error.cogs_line_unknown_paid": "void_payments",
+    "documents.err_revert_has_payments": "void_payments",
+    "Cannot void a document with payments; void the payments first": "void_payments",
+    "docs.revert_under_credit_note": "void_credit_notes",
+    "docs.void_under_credit_note": "void_credit_notes",
+    "docs.revert_lines_out": "set_available",
+    "documents.err_void_delivered": "set_available",
+    "error.cogs_line_unknown_out": REPORT,
+}
+
+
+async def _take(client, auth, step: str, s: dict, ids: list[str]) -> bool:
+    if step == "void_payments":
+        return await _void_payments(client, auth, s)
+    if step == "void_credit_notes":
+        return [(await _post_action(client, auth, f"/docs/{cn}/void", {"reason": "test"})).status_code
+                for cn in s["notes"]] == [200] * len(s["notes"])
+    return (await _ACTIONS[step](client, auth, s, ids)).status_code == 200
+
+
+def _refusal_id(detail) -> str:
+    return detail["message_key"] if isinstance(detail, dict) else detail
+
+
+@pytest.mark.parametrize("name", ["nothing", "part_paid", "paid", "credited", "another_out", "lot_out_off_lines"])
+async def test_every_refusal_names_a_step_accepted_in_that_state(client, session, auth, name):
+    """Generated over the legacy states and every action the document page offers on them:
+    each refusal's advice, followed one step, is accepted there, or the refusal asks for a
+    report. A new refusal fails here until its advice is classified."""
+    s = None
+    for action in _ACTIONS:
+        s = s or await _legacy(client, session, auth, name)
+        if action == "set_available" and not s["out"]:
+            continue
+        ids = await _line_ids(client, auth, s["doc"])
+        r = await _ACTIONS[action](client, auth, s, ids)
+        if r.status_code == 200:
+            s = None
+            continue
+        assert r.status_code == 409, (name, action, r.text)
+        refused = _refusal_id(r.json()["detail"])
+        assert refused in _STEPS, f"{name}/{action}: classify the advice of {refused!r}"
+        step = _STEPS[refused]
+        if step == REPORT:
+            continue
+        assert await _take(client, auth, step, s, ids), (name, action, refused, step)
+        s = None
