@@ -10,7 +10,8 @@ import uuid
 
 import pytest
 
-from agreement_kit import agreement, company_id, freeze_day, generate_due, register, schedule, template, tick
+from agreement_kit import (agreement, company_id, freeze_day, generate_due, next_bill_date, register, schedule,
+                           template, tick)
 from schedule_census import direct_writers, doc_doors, loop_readers, term_fields
 
 pytestmark = pytest.mark.asyncio
@@ -124,6 +125,37 @@ async def test_every_document_event_the_code_writes_keeps_an_agreement_on_a_sche
         if not _builds(after):
             broken.append(event_type)
     assert not broken, broken
+
+
+@pytest.mark.parametrize("cleared", [None, ""], ids=["null", "empty"])
+async def test_a_raw_event_never_takes_an_agreement_off_its_schedule(client, session, monkeypatch, cleared):
+    """A document event clearing a scheduled agreement's first bill date, written past every
+    route, is refused naming why (the agreement keeps its first bill date: pause or cancel it to
+    stop billing), and its next bill date stays."""
+    from fastapi import HTTPException
+
+    from celerp.events.engine import emit_event
+    from celerp_subscriptions.billing import refuse_unbuildable_terms
+
+    freeze_day(monkeypatch, TODAY)
+    hd = await register(client)
+    cid = uuid.UUID(await company_id(client, hd))
+    eid = await agreement(client, hd, start="2026-03-01")
+    before = await _stored(session, eid)
+    nxt = await next_bill_date(client, hd, eid)
+    data = {**before, "anchor_date": cleared,
+            "fields_changed": {"anchor_date": {"old": before["anchor_date"], "new": cleared}}}
+    with pytest.raises(HTTPException) as refused:
+        await emit_event(session, company_id=cid, entity_id=eid, entity_type="doc", event_type="doc.updated",
+                         data=data, actor_id=None, location_id=None, source="test", **_key())
+    await session.rollback()
+    assert (refused.value.status_code, refused.value.detail["message_key"]) == (422, "subscriptions.err_schedule_removed")
+    assert ((await template(client, hd, eid))["anchor_date"], await next_bill_date(client, hd, eid)) == (
+        before["anchor_date"], nxt)
+    # The same rule read directly: only a write clearing a stored first bill date is refused by it.
+    with pytest.raises(HTTPException):
+        refuse_unbuildable_terms(before, {**before, "anchor_date": cleared})
+    refuse_unbuildable_terms({**before, "anchor_date": None}, {**before, "anchor_date": None})
 
 
 async def test_every_reader_that_loops_agreements_asks_first():

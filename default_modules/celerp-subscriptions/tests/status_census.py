@@ -21,6 +21,12 @@ the action from what is stored, never from what the action intended.
   person's behalf (``retry_by``) names the attempt that person saw (``attempt``).
 - ``emailed_readers()``: every function of the module that reads a document's ``sent_via``,
   and every emitter of ``doc.sent`` in the code (the projection records how it went).
+- ``review_doors()``: every API action route on one document in an agreement's history review
+  (the doors the way-out guard of test_history_way_out runs over every agreement status);
+- ``claim_refusals()``: every route that refuses a claimed period through ``_refuse_claimed``
+  (the one refusal naming the door that frees each kind of claim);
+- ``ack_doors()``: every function of the module or its UI that reads or writes the summary
+  acknowledgment (only ``summary.acknowledge`` writes it, from the page's read time);
 - ``badge_renders()``: every ``doc_detail_badges`` render a module registers, and whether it
   reads a document's status itself (a document cannot tell how its agreement bills it now).
 
@@ -287,6 +293,49 @@ def api_actions() -> list[ApiAction]:
     return rows
 
 
+def review_doors() -> list[ApiAction]:
+    """The API action routes on one history review document of an agreement."""
+    return [a for a in api_actions() if "/history/{doc_id}/" in a.path]
+
+
+CLAIM_REFUSAL = "_refuse_claimed"
+
+
+def claim_refusals() -> list[tuple[str, str]]:
+    """(route path, where) of every module API route that calls ``_refuse_claimed``, directly or
+    through a helper of routes.py."""
+    routes = PACKAGE / "routes.py"
+    tree = ast.parse(routes.read_text(encoding="utf-8"))
+    defs = {n.name: n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+    def calls(fn, seen=frozenset()) -> bool:
+        names = {getattr(c.func, "id", getattr(c.func, "attr", None)) for c in ast.walk(fn) if isinstance(c, ast.Call)}
+        return CLAIM_REFUSAL in names or any(calls(defs[n], seen | {n}) for n in names
+                                             if n in defs and n not in seen and n != CLAIM_REFUSAL)
+    return sorted(("/subscriptions" + found[1], f"{_rel(routes)}:{fn.lineno}") for fn in defs.values()
+                  if (found := _route(fn)) and calls(fn))
+
+
+ACK = "ACK_SETTING"
+
+
+def ack_doors() -> list[tuple[str, str, str]]:
+    """(where, function, reads|writes) of every use of the summary acknowledgment setting."""
+    rows = []
+    for path in [*sorted(PACKAGE.glob("*.py")), *ui_files()]:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            uses = [n for n in ast.walk(fn) if isinstance(n, (ast.Name, ast.Attribute))
+                    and getattr(n, "id", getattr(n, "attr", None)) == ACK]
+            if uses:
+                writes = any(isinstance(t, ast.Subscript) and ACK in ast.unparse(t.slice)
+                             for a in ast.walk(fn) if isinstance(a, ast.Assign) for t in a.targets)
+                rows.append((f"{_rel(path)}:{fn.lineno}", fn.name, "writes" if writes else "reads"))
+    return rows
+
+
 @dataclass
 class SendWriter:
     where: str
@@ -462,6 +511,18 @@ def main() -> None:
     print(f"\n# Emitters of doc.sent ({len(emitters)})")
     for e in emitters:
         print(e)
+    review = review_doors()
+    print(f"\n# History review doors ({len(review)})")
+    for a in review:
+        print(f"{a.verb.upper()} {a.path:52} {a.where}")
+    refusals = claim_refusals()
+    print(f"\n# Routes refusing a claimed period through {CLAIM_REFUSAL} ({len(refusals)})")
+    for path, where in refusals:
+        print(f"{path:52} {where}")
+    acks = ack_doors()
+    print(f"\n# Uses of the summary acknowledgment ({len(acks)})")
+    for where, fn, how in acks:
+        print(f"{fn:36} {where:70} {how}")
     badges = badge_renders()
     print(f"\n# doc_detail_badges renders ({len(badges)})")
     for b in badges:

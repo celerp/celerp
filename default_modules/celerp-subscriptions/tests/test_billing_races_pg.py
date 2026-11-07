@@ -374,3 +374,92 @@ async def test_a_send_cut_off_after_the_summary_was_read_is_listed_again(committ
         # Read again, it is covered until its reading changes once more.
         assert (await client.post("/subscriptions/summary/ack", headers=owner)).status_code == 200
         assert (await client.get("/subscriptions/summary", headers=owner)).json()["rows"] == []
+
+
+async def _auto_send_billed(committed_engine, monkeypatch, address: str):
+    """A company whose agreement bills itself and emails each bill; its first period billed."""
+    from agreement_kit import contact
+    from celerp_subscriptions import billing
+
+    freeze_day(monkeypatch, "2026-07-01")
+    factory = _factory(committed_engine)
+    seeded = await _company(factory)
+    owner, cid = seeded["h"]["owner"], seeded["company_id"]
+    async with _app_client(factory) as (client, _pending):
+        eid = await agreement(client, owner, start="2026-07-01", contact_id=await contact(client, owner, address))
+        assert (await schedule(client, owner, eid, generation_mode="auto_invoice", auto_send=True)).status_code == 200
+    async with factory() as s:
+        assert (await billing.run_due(session=s, company_id=cid, today=date(2026, 7, 1), budget=1)).done == 1
+        await s.commit()
+    return factory, owner, cid, eid
+
+
+def _clock(monkeypatch, by: timedelta) -> None:
+    """Move the module's wall clock (billing.datetime) ``by`` ahead of the real one."""
+    from datetime import datetime as real_datetime
+
+    from celerp_subscriptions import billing
+
+    class Later(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return real_datetime.now(tz) + by
+    monkeypatch.setattr(billing, "datetime", Later)
+
+
+def _send_kinds(body: dict) -> list[str]:
+    return [r["kind"] for r in body["rows"] if r["kind"].startswith("send")]
+
+
+async def test_mark_as_read_after_waiting_leaves_a_send_cut_off_since_the_page_was_read(committed_engine, monkeypatch):
+    """The page says a bill is being emailed and to check again in a few minutes. The owner waits
+    that long and presses Mark as read on the page as loaded: the send, cut off by age since the
+    page was read, is still listed (the acknowledgment covers what the page showed, P2h-1)."""
+    from celerp.services import email
+    from celerp_subscriptions import billing
+
+    factory, owner, cid, eid = await _auto_send_billed(committed_engine, monkeypatch, "waited@example.test")
+    started = asyncio.Event()
+
+    async def hangs(**_kwargs):
+        started.set()
+        await asyncio.Event().wait()
+    monkeypatch.setattr(email, "send_email", hangs)
+    task = asyncio.create_task(billing.deliver(factory, cid, eid, 0))
+    await asyncio.wait_for(started.wait(), 30)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    async with _app_client(factory) as (client, _pending):
+        shown = (await client.get("/subscriptions/summary", headers=owner)).json()
+        assert _send_kinds(shown) == ["send_sending"]
+        _clock(monkeypatch, billing.SEND_TIMEOUT + timedelta(minutes=1))
+        ack = await client.post("/subscriptions/summary/ack", headers=owner, json={"read_at": shown["read_at"]})
+        assert ack.status_code == 200, ack.text
+        assert _send_kinds((await client.get("/subscriptions/summary", headers=owner)).json()) == ["send_unconfirmed"]
+
+
+async def test_mark_as_read_leaves_a_failure_that_arrived_after_the_page_was_read(committed_engine, monkeypatch):
+    """The owner loads the summary; the unattended pass then fails to email a bill; Mark as read
+    on the page as loaded leaves that failure listed, it was never shown (P2h-1)."""
+    from celerp.services import email
+    from celerp_subscriptions import billing
+
+    factory, owner, cid, eid = await _auto_send_billed(committed_engine, monkeypatch, "refused@example.test")
+    async with _app_client(factory) as (client, _pending):
+        first = (await client.get("/subscriptions/summary", headers=owner)).json()
+        assert (await client.post("/subscriptions/summary/ack", headers=owner,
+                                  json={"read_at": first["read_at"]})).status_code == 200
+        _clock(monkeypatch, timedelta(seconds=5))
+        shown = (await client.get("/subscriptions/summary", headers=owner)).json()
+        assert "send_failed" not in _send_kinds(shown)
+
+        async def refused(**_kwargs):
+            return email.EmailResult(False, "connection refused", reason="email.err_smtp_unreachable")
+        monkeypatch.setattr(email, "send_email", refused)
+        _clock(monkeypatch, timedelta(seconds=10))
+        await billing.deliver(factory, cid, eid, 0)
+        _clock(monkeypatch, timedelta(seconds=20))
+        ack = await client.post("/subscriptions/summary/ack", headers=owner, json={"read_at": shown["read_at"]})
+        assert ack.status_code == 200, ack.text
+        assert "send_failed" in _send_kinds((await client.get("/subscriptions/summary", headers=owner)).json())

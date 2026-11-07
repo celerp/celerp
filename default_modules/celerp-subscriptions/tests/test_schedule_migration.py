@@ -547,3 +547,72 @@ async def test_a_template_whose_page_fixes_one_reason_says_the_one_left(client, 
     assert (await _state(session, auth["company_id"], tid))["frequency"] == "custom"
 
 
+
+
+# Each route refusing a claimed period (status_census.claim_refusals) and each kind of claim it
+# meets there: a history placement (freed by Withdraw placement), a bill made here that still
+# bills (freed by voiding it, then Reopen) and one that no longer does (freed by Reopen). A route
+# the census finds that is not named here fails the census test.
+CLAIM_CASES = {"skip": ("placed", "billed", "voided"), "unskip": ("placed", "billed", "voided"),
+               "reopen": ("placed", "billed"), "confirm": ("placed",)}
+CLAIM_KEYS = {"placed": "subscriptions.err_period_placed", "billed": "subscriptions.err_period_billed",
+              "voided": "subscriptions.err_period_voided"}
+
+
+def test_every_route_refusing_a_claimed_period_is_named():
+    import status_census
+
+    assert {path.rsplit("/", 1)[-1] for path, _ in status_census.claim_refusals()} == set(CLAIM_CASES)
+
+
+@pytest.mark.parametrize(("route", "kind"), [(r, k) for r, kinds in CLAIM_CASES.items() for k in kinds])
+async def test_a_refused_claimed_period_names_the_door_that_frees_it(client, session, auth, monkeypatch, route, kind):
+    """A period holding a history placement is refused naming Withdraw placement, never Void (the
+    placement is a choice on this page, nothing on the books); one billed by a bill made here
+    names Void, and once that bill is void, Reopen. The doors the refusal names succeed and free
+    the period."""
+    from ui.i18n import t
+
+    _today(monkeypatch, "2026-04-15")
+    hd = auth["headers"]
+    tid, (jan, jan2, mar) = await _legacy(session, auth, next_run="2026-04-01",
+                                          doc_dates=["2026-01-01", "2026-01-15", "2026-03-01"])
+    await _migrate(session, auth["company_id"])
+    base = f"/subscriptions/{tid}"
+
+    def post(path, **body):
+        return client.post(f"{base}{path}", headers=hd, json=body or None)
+
+    def void(doc):
+        return client.post(f"/docs/{doc}/void", headers=hd,
+                           json={"reason": "Wrong amount", "idempotency_key": str(uuid.uuid4())})
+
+    assert (await post(f"/history/{jan}/confirm", period_index=-3)).status_code == 200
+    assert (await post(f"/history/{mar}/confirm", period_index=-1)).status_code == 200
+    if kind == "placed":
+        k, doc = -3, jan
+    else:
+        assert (await post(f"/history/{jan2}/set-aside")).status_code == 200
+        billed = (await generate_due(client, hd, tid)).json()
+        doc, k = billed["doc_id"], billed["period_index"]
+        if kind == "voided":
+            assert (await void(doc)).status_code == 200
+    ref = (await client.get(f"/docs/{doc}", headers=hd)).json()["ref_id"]
+    r = await (post(f"/history/{jan2}/confirm", period_index=k) if route == "confirm"
+               else post(f"/periods/{k}/{route}", reason="Not billed"))
+    assert r.status_code == 409, r.text
+    key = CLAIM_KEYS[kind]
+    assert r.json()["detail"]["message_key"] == key
+    assert r.json()["detail"]["message"] == t(key, "en", ref=ref)
+    if kind == "placed":
+        assert t("subscriptions.history_withdraw", "en") in r.json()["detail"]["message"]
+        assert (await post(f"/history/{jan}/withdraw")).status_code == 200
+    else:
+        if kind == "billed":
+            assert (await void(doc)).status_code == 200
+        assert t("btn.reopen", "en") in t(CLAIM_KEYS["voided"], "en", ref=ref)
+        assert (await post(f"/periods/{k}/reopen")).status_code == 200
+    entry = (await _state(session, auth["company_id"], tid))["periods"].get(str(k)) or {}
+    assert entry.get("state") not in ("billed", "skipped"), entry
+    if route == "confirm":
+        assert (await post(f"/history/{jan2}/confirm", period_index=k)).status_code == 200

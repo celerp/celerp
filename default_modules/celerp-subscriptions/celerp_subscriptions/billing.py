@@ -41,8 +41,8 @@ from celerp.services.terms import resolve_document_terms
 from celerp.services.units import require_moving_fits_units
 from celerp_docs.doc_money import HEADER_MONEY_FIELDS, document_money
 from celerp_docs.periodic import OperationReport
-from celerp_subscriptions.periods import (AUTO_MODES, BILLED, RELEASED, SCHEDULE_FIELDS, SKIPPED, UNRESOLVED,
-                                          TERMS, Schedule, ScheduleError, check_terms, shown, term_error)
+from celerp_subscriptions.periods import (AUTO_MODES, BILLED, CLAIMED_STATES, RELEASED, SCHEDULE_FIELDS, SKIPPED,
+                                          UNRESOLVED, TERMS, Schedule, ScheduleError, check_terms, shown, term_error)
 from celerp_subscriptions.search import SUBSCRIPTION_DOC_TYPES
 from ui.i18n import t
 
@@ -231,9 +231,9 @@ async def write_agreement(session: AsyncSession, company_id, entity_id: str, cha
     do) also needs that mode's permissions from the actor, and moves no consent for it. A void
     agreement leaves void only through Documents unvoid, so a status write here on one is refused
     (409 naming unvoid) and the void is never rewritten as another status. An ENDED agreement
-    bills no period again, so a person's write that changes what its periods claim (claims:
-    skip, un-skip, reopen, history placement) is refused (409 naming why), whichever action
-    makes it; its terms and a period's send record still change."""
+    bills no period again, so a person's write that changes what its periods claim is refused
+    (ended_refusal), whichever action makes it; its terms, a period's send record and its history
+    review (set aside, withdraw) still change."""
     before = (await session.execute(select(Projection.state).where(
         Projection.company_id == company_id, Projection.entity_id == entity_id))).scalar_one_or_none() or {}
     changes = {k: v for k, v in changes.items() if shown(k, before.get(k)) != shown(k, v)}
@@ -241,10 +241,9 @@ async def write_agreement(session: AsyncSession, company_id, entity_id: str, cha
         raise HTTPException(status_code=409, detail=t(
             "subscriptions.err_status_void", ref=before.get("ref_id") or entity_id))
     drop = tuple(k for k in drop if k in before and k not in changes)
-    if before.get("status") in ENDED and actor_id is not None and claims(before) != claims(
-            {**{k: v for k, v in before.items() if k not in drop}, **changes}):
-        raise HTTPException(status_code=409, detail=catalog_refusal(
-            ENDED[before["status"]], ref=before.get("ref_id") or entity_id))
+    if actor_id is not None and (key := ended_refusal(
+            before, {**{k: v for k, v in before.items() if k not in drop}, **changes})):
+        raise HTTPException(status_code=409, detail=catalog_refusal(key, ref=before.get("ref_id") or entity_id))
     if not changes and all(shown(k, before[k]) == shown(k, None) for k in drop):
         drop = ()
     merged = {**{k: v for k, v in before.items() if k not in drop}, **changes}
@@ -349,16 +348,36 @@ _UNBILLABLE = {"draft": "subscriptions.err_bill_draft", "paused": "subscriptions
 # refused. Such an agreement bills no period again, so its page shows no bill date and its
 # unclaimed periods read "not_billing".
 ENDED = {"cancelled": "subscriptions.err_ended_cancelled", "void": "subscriptions.err_ended_void"}
+# Why placing an earlier document in a period of one is refused, naming Set aside: the way its
+# history review still finishes.
+ENDED_PLACE = {"cancelled": "subscriptions.err_ended_place_cancelled", "void": "subscriptions.err_ended_place_void"}
 
 
 def claims(state: dict) -> tuple:
-    """What an agreement's periods claim: each period without its send record, the documents
-    waiting for history review or set aside, and the bills periods let go."""
+    """What an agreement's periods claim: each period holding a bill or a skip (CLAIMED_STATES),
+    without its send record, and the bills periods let go. A period waiting for history review
+    or open again claims nothing, nor do the review's own lists."""
     periods = state.get("periods")
-    if isinstance(periods, dict):
-        periods = {k: {f: v for f, v in e.items() if f != "send"} if isinstance(e, dict) else e
-                   for k, e in periods.items()}
-    return (periods, state.get("history_review"), state.get("history_set_aside"), state.get("released_bills"))
+    claimed = {k: {f: v for f, v in e.items() if f != "send"} for k, e in (periods.items() if isinstance(periods, dict) else ())
+               if isinstance(e, dict) and e.get("state") in CLAIMED_STATES}
+    return claimed, state.get("released_bills")
+
+
+def ended_refusal(before: dict, after: dict) -> str | None:
+    """Why a write turning ``before`` into ``after`` is refused on an ENDED agreement, or None.
+    The one claim change it may make is letting go of a history placement (Withdraw placement:
+    no money moves), so its history review always finishes; placing a document refuses naming
+    Set aside, any other change to what its periods claim naming why it ended."""
+    status = before.get("status")
+    if status not in ENDED:
+        return None
+    (was, released), (now, released_after) = claims(before), claims(after)
+    kept = {k: e for k, e in was.items() if k in now or not e.get("history")}
+    if (kept, released) == (now, released_after):
+        return None
+    placing = released == released_after and all(
+        e.get("history") for k, e in now.items() if kept.get(k) != e) and all(k in now for k in kept)
+    return ENDED_PLACE[status] if placing else ENDED[status]
 
 
 def refuse_unbillable(state: dict) -> None:
