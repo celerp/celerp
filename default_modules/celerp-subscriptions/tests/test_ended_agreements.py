@@ -80,7 +80,7 @@ _SKIP = {"state": "skipped", "reason": "Holiday"}
 # (periods before, periods after, released bills after, the answer on an ENDED agreement)
 _WRITES = [
     ({"0": _BILL}, {"0": _BILL}, None, None),  # nothing claimed changes (set aside, a send)
-    ({"0": _BILL, "1": _PLACED}, {"0": _BILL}, None, None),  # Withdraw placement
+    ({"0": _BILL, "1": _PLACED}, {"0": _BILL}, None, "ended"),  # Withdraw placement: final like a bill
     ({"0": _BILL}, {"0": _BILL, "1": _PLACED}, None, "place"),  # placing beside a bill it keeps
     ({}, {"1": _PLACED}, None, "place"),
     ({"1": _PLACED}, {"1": {**_PLACED, "doc_id": "other"}}, None, "place"),  # another document placed
@@ -94,11 +94,11 @@ _WRITES = [
 
 @pytest.mark.parametrize("status", ["active", "paused", "draft", *ENDED])
 @pytest.mark.parametrize("before,after,released,answer", _WRITES)
-def test_an_ended_agreement_lets_go_of_placements_and_refuses_placing_naming_set_aside(
+def test_an_ended_agreement_keeps_its_claims_and_refuses_placing_naming_set_aside(
         status, before, after, released, answer):
     """ended_refusal over every kind of claim change: an agreement still running is never refused
-    here; an ended one lets go of a history placement, refuses placing one with the key naming
-    Set aside, and refuses any other claim change naming why it ended."""
+    here; an ended one refuses placing a history document with the key naming Set aside, and any
+    other claim change (a placement's withdrawal included) naming why it ended."""
     from celerp_subscriptions.billing import ENDED as KEYS, ENDED_PLACE, ended_refusal
 
     got = ended_refusal({"status": status, "periods": before},

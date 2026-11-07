@@ -139,9 +139,10 @@ async def _summary_ack(ui, session, monkeypatch, arm):
     eid = await agreement(ui.api, {}, start="2026-07-01", contact_id=await contact(ui.api, {}, "m@example.test"))
     await schedule(ui.api, {}, eid, generation_mode="auto_invoice", auto_send=True)
     await tick(session, await company_id(ui.api, {}), "2026-07-01")
-    read_at = (await ui.api.get("/subscriptions/summary")).json()["read_at"]
+    keys = [row["key"] for row in (await ui.api.get("/subscriptions/summary")).json()["rows"] if row["key"]]
+    assert keys
     arm()
-    r = await ui.post("/subscriptions/summary/ack", data={"read_at": read_at})
+    r = await ui.post("/subscriptions/summary/ack", data={"key": keys})
     _not_refused(r)
     assert r.headers["HX-Redirect"] == "/subscriptions/summary" and _toast(r)["type"] == "success"
     assert (await ui.api.get("/subscriptions/summary")).json()["rows"] == []

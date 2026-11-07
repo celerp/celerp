@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from agreement_kit import (
-    agreement, billed_docs, company_id, contact, freeze_day, register, schedule, summary, template, tick,
+    agreement, billed_docs, company_id, contact, freeze_day, mark_read, register, schedule, summary, template, tick,
 )
 from smtp_support import SmtpStub, smtp_settings
 from ui.i18n import sentence, t
@@ -324,8 +324,7 @@ async def test_an_email_the_user_stopped_reads_as_not_sent_and_is_acknowledged_l
     assert (await _send_row(api, {}, eid))["kind"] == "send_pending"
     assert (await schedule(api, {}, eid, **stop)).status_code == 200
     assert (await _send_row(api, {}, eid))["kind"] == "send_pending"  # listed until it is read
-    assert (await api.post("/subscriptions/summary/ack",
-                           json={"read_at": (await summary(api, {}))["read_at"]})).status_code == 200
+    assert (await mark_read(api, {}, await summary(api, {}))).status_code == 200
     freeze_day(monkeypatch, "2026-12-01")
     await tick(session, cid, "2026-12-01")
     sm = await summary(api, {})
@@ -373,8 +372,7 @@ async def test_an_email_the_next_pass_will_not_send_reads_as_not_sent_and_is_ack
     status = _period_status((await owner_ui.get(f"/subscriptions/{eid}")).text, "2026-07-01")
     assert t("subscriptions.period_send_not_sent") in status
     assert t("subscriptions.period_send_pending") not in status
-    assert (await api.post("/subscriptions/summary/ack",
-                           json={"read_at": (await summary(api, {}))["read_at"]})).status_code == 200
+    assert (await mark_read(api, {}, await summary(api, {}))).status_code == 200
     sm = await summary(api, {})
     assert sm["counts"]["send_pending"] == 0 and not [r for r in sm["rows"] if r["entity_id"] == eid]
 

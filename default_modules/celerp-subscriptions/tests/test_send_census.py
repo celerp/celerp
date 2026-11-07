@@ -51,9 +51,18 @@ def _readings():
         yield (record, emailed, waits, now, *billing.send_state(record, now, emailed=emailed, waits=waits))
 
 
-def _listed(state, since, ack: str) -> bool:
-    """summary.report's rule: a waiting email until it goes, any other until read after it began."""
-    return state == "waiting" or (since or "") > ack
+def _key(state, since) -> str | None:
+    """The summary row key of a reading (None: a waiting email, shown until it goes)."""
+    from celerp_subscriptions import summary
+    if state == "waiting":
+        return None
+    return summary._key({"kind": summary._SEND_KINDS[state], "entity_id": "e", "period_index": 0, "at": since})
+
+
+def _listed(reading, shown) -> bool:
+    """summary.report's rule: a waiting email until it goes, any other until the page that showed
+    its row (its key) is marked read."""
+    return _key(*reading) is None or _key(*reading) != _key(*shown)
 
 
 def test_every_state_a_send_record_can_hold_is_one_the_census_can_read():
@@ -86,11 +95,10 @@ def test_a_reading_that_changes_after_the_summary_was_read_is_listed_again():
         for read_at, later in itertools.combinations(_moments(), 2):
             before = billing.send_state(record, read_at, emailed=emailed, waits=waits)
             after = billing.send_state(record, later, emailed=emailed, waits=waits)
-            ack = read_at.isoformat()
             if after[0] != before[0]:
-                assert _listed(*after, ack), (record, read_at, later, before, after)
+                assert _listed(after, before), (record, read_at, later, before, after)
             elif after[0] != "waiting":
-                assert not _listed(*after, ack), (record, read_at, later, after)
+                assert not _listed(after, before), (record, read_at, later, after)
 
 
 def _expected(record: dict, emailed: bool, waits: bool, now: datetime) -> tuple:

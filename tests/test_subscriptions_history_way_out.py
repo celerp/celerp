@@ -21,7 +21,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "default_modules" / "celerp-subscriptions" / "tests"))
 import status_census  # noqa: E402
 from celerp_subscriptions.billing import AGREEMENT_STATUSES  # noqa: E402
-from test_subscriptions_upgrade_v280 import _page, _state, _upgrade, _url  # noqa: E402
+from test_subscriptions_upgrade_v280 import _generate, _on, _page, _state, _upgrade, _url  # noqa: E402
 from ui.i18n import t  # noqa: E402
 
 
@@ -90,14 +90,21 @@ async def test_every_review_door_answers_by_the_rule_and_review_always_finishes(
     assert not await _review(client, old) and not await _in_review_list(client, old)
     await _to(client, old, status)
     ref = (await _state(session, old, NAME))["ref_id"]
-    # Withdraw from both states is open on every status: it moves no money and claims nothing.
+    # Return of a set-aside is open on every status: it claims nothing. On an ended agreement a
+    # placement is final like a bill: Withdraw placement is refused naming why it ended.
     for doc in (placed, aside):
         r = await door("withdraw", doc)
-        assert r.status_code == 200, (status, doc, r.text)
-    assert {r["doc_id"] for r in await _review(client, old)} == {placed, aside}
+        if status in ENDED and doc == placed:
+            assert r.status_code == 409, r.text
+            assert r.json()["detail"]["message_key"] == ENDED[status]
+            assert r.json()["detail"]["message"] == t(ENDED[status], "en", ref=ref)
+        else:
+            assert r.status_code == 200, (status, doc, r.text)
+    waiting = {aside} if status in ENDED else {placed, aside}
+    assert {r["doc_id"] for r in await _review(client, old)} == waiting
     assert await _in_review_list(client, old)
     # Placing claims a period: refused on an ended agreement, naming the way out.
-    r = await door("confirm", placed, period_index=k)
+    r = await door("confirm", aside if status in ENDED else placed, period_index=k)
     if status in ENDED:
         assert r.status_code == 409, r.text
         key = f"subscriptions.err_ended_place_{status}"
@@ -136,3 +143,100 @@ async def test_a_draft_cannot_be_reached_from_history_review(client, session, mo
     r = await client.post(f"/docs/{old['runs'][NAME]}/revert-to-draft", headers=old["headers"], json={})
     assert r.status_code >= 400, r.text
     assert (await _state(session, old, NAME))["status"] == "active"
+
+
+async def _two_in_one_period(session, old):
+    """A 2.8.0 user issued two documents in one period: the second gets the first one's issue
+    date, so both wait for review with a candidate period in common."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from celerp.models.projections import Projection
+    tpl = await session.get(Projection, {"company_id": old["company_id"], "entity_id": old["runs"][NAME]})
+    docs = [await session.get(Projection, {"company_id": old["company_id"], "entity_id": d})
+            for d in tpl.state["generated_doc_ids"]]
+    docs[-1].state = {**docs[-1].state, "issue_date": docs[-2].state["issue_date"]}
+    flag_modified(docs[-1], "state")
+    await session.commit()
+
+
+# What each claim door answers on a cancelled or void agreement, per kind of claim it acts on:
+# "ended" refuses naming why it ended, "place" refuses naming Set aside, None is open (it changes
+# no claim). A door the census finds that is not named here fails the guard.
+WAY_OUT = {
+    "skip": {"open": "ended", "billed": "ended", "void_bill": "ended", "placed": "ended"},
+    "unskip": {"skipped": "ended"},
+    "reopen": {"billed": "ended", "void_bill": "ended"},
+    "send": {"billed": None},
+    "confirm": {"placed": "place", "open": "place"},
+    "set-aside": {"in_review": None},
+    "withdraw": {"placed": "ended", "set_aside": None},
+}
+
+
+def test_every_claim_door_has_its_ended_answer():
+    assert {_door(a.path) for a in status_census.claim_doors()} == set(WAY_OUT)
+
+
+@pytest.mark.parametrize("status", ["cancelled", "void"])
+async def test_an_ended_agreement_answers_its_rule_first_and_the_door_it_names_can_be_undone(
+        client, session, monkeypatch, status):
+    """Over every claim door x every kind of claim it acts on: the ended rule answers before any
+    claimed-period refusal (a document placed in a period by another reads Set aside, never
+    Withdraw placement or Reopen), and Set aside, the door it names, succeeds and its Return
+    succeeds too, with a later period billed."""
+    from celerp_subscriptions.billing import BILLED, ENDED, ENDED_PLACE
+
+    old = await _upgrade(session, monkeypatch, "2026-11-04", before_start=_two_in_one_period)
+    hd, eid = old["headers"], old["runs"][NAME]
+    (a, ca), (b, cb) = ((r["doc_id"], [c["period_index"] for c in r["candidates"]]) for r in await _review(client, old))
+    k = min(set(ca) & set(cb))
+
+    def post(path, **body):
+        return client.post(_url(old, NAME, path), headers=hd, json=body or None)
+
+    # The claims, made while the agreement still runs.
+    assert (await post(f"/history/{a}/confirm", period_index=k)).status_code == 200
+    for day in ("2026-11-04", "2026-12-20"):  # two bills of this release, after the documents placed
+        _on(monkeypatch, day)
+        assert (await _generate(client, old, NAME)).status_code == 200
+    periods = (await _state(session, old, NAME))["periods"]
+    bills = sorted(int(i) for i, e in periods.items() if e.get("state") == BILLED and not e.get("history"))
+    assert len(bills) >= 2 and bills[-1] > max(cb), (bills, cb)
+    void_bill, billed = bills[0], bills[-1]
+    r = await client.post(f"/docs/{periods[str(void_bill)]['doc_id']}/void", headers=hd,
+                          json={"reason": "Entered by mistake", "idempotency_key": str(uuid.uuid4())})
+    assert r.status_code == 200, r.text
+    open_k = max(int(i) for i in periods) + 1
+    assert (await post(f"/periods/{open_k + 1}/skip", reason="Closed")).status_code == 200
+    await _to(client, old, status)
+    ref = (await _state(session, old, NAME))["ref_id"]
+    claims = {"open": open_k, "billed": billed, "void_bill": void_bill, "placed": k, "skipped": open_k + 1}
+    answers = {"ended": ENDED[status], "place": ENDED_PLACE[status]}
+
+    for door, kinds in WAY_OUT.items():
+        for kind, answer in kinds.items():
+            if door in ("set-aside", "withdraw") and answer is None:
+                continue  # the way out, walked below
+            if door == "confirm":
+                r = await post(f"/history/{b}/confirm", period_index=claims[kind])
+            elif door == "withdraw":
+                r = await post(f"/history/{a}/withdraw")
+            elif door == "send":
+                r = await post(f"/periods/{claims[kind]}/send", attempt=0)
+            else:
+                r = await post(f"/periods/{claims[kind]}/{door}", reason="Closed")
+            got = r.json().get("detail") if r.status_code >= 400 else None
+            key = got.get("message_key") if isinstance(got, dict) else None
+            if answer is None:
+                assert key not in (*ENDED.values(), *ENDED_PLACE.values()), (door, kind, r.text)
+            else:
+                assert r.status_code == 409 and key == answers[answer], (door, kind, r.text)
+                assert got["message"] == t(answers[answer], "en", ref=ref)
+    assert t("subscriptions.history_set_aside", "en") in t(ENDED_PLACE[status], "en", ref=ref)
+    # The door named: Set aside finishes review, Return undoes it although a later period is
+    # billed, and Set aside finishes it again.
+    for path in (f"/history/{b}/set-aside", f"/history/{b}/withdraw", f"/history/{b}/set-aside"):
+        r = await post(path)
+        assert r.status_code == 200, (path, r.text)
+    assert not await _review(client, old) and not await _in_review_list(client, old)
+    assert (await _state(session, old, NAME))["periods"][str(k)]["doc_id"] == a
