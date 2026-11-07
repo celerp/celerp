@@ -234,6 +234,10 @@ async def test_history_confirm_and_withdraw(client, session, auth, monkeypatch):
     assert w.status_code == 200
     state = await _state(session, auth["company_id"], tid)
     assert state["periods"]["-1"]["state"] == "unresolved" and mar in [r["doc_id"] for r in state["history_review"]]
+    in_review = await client.post(f"/subscriptions/{tid}/periods/-1/skip", headers=hd, json={"reason": "Not billed"})
+    assert in_review.status_code == 409, in_review.text
+    assert in_review.json()["detail"]["message_key"] == "subscriptions.err_period_in_review"
+    assert (await _state(session, auth["company_id"], tid))["periods"]["-1"]["state"] == "unresolved"
     assert (await confirm(mar, -1)).status_code == 200
     assert (await client.post(f"/subscriptions/{tid}/periods/-2/skip", headers=hd, json={"reason": "Not billed"})).status_code == 200
     assert (await generate_due(client, hd, tid)).json()["period_index"] == 0
@@ -522,3 +526,21 @@ async def test_a_template_moves_onto_a_schedule_when_its_page_sets_the_frequency
     assert r.json()["next_bill_date"] == "2026-04-01"
     state = await _state(session, auth["company_id"], tid)
     assert state["anchor_date"] and "next_run_date" not in state
+
+
+async def test_a_template_whose_page_fixes_one_reason_says_the_one_left(client, session, auth, monkeypatch):
+    """A template that cannot move for two reasons (an interval that is not a number of days, a
+    next run date that is not a date), sent a frequency that clears the first, is refused naming
+    the reason still left."""
+    _today(monkeypatch, "2026-03-15")
+    tid, _ = await _legacy(session, auth, next_run="2026-04-01", start="", doc_dates=[], frequency="custom")
+    proj = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": tid})
+    # as the earlier release stored them
+    proj.state = {**proj.state, "custom_interval_days": "every other week", "next_run_date": "soon"}
+    await session.commit()
+    r = await client.patch(f"/subscriptions/{tid}/schedule", headers=auth["headers"], json={"frequency": "weekly"})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["params"]["reason"]["message_key"] == "subscriptions.err_schedule_date", r.text
+    assert (await _state(session, auth["company_id"], tid))["frequency"] == "custom"
+
+

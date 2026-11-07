@@ -74,6 +74,15 @@ def test_nothing_is_due_before_the_first_bill_date():
     assert schedule.latest_due(date(2026, 8, 1)) == 0
 
 
+def test_an_agreement_whose_term_holds_no_period_has_none_due():
+    # Cancelled at the end of period 0, then its term start moved past that period.
+    schedule = Schedule.from_state({"anchor_date": "2026-01-01", "frequency": "monthly",
+                                    "term_start": "2026-03-01", "cancel_at_period_end": 0})
+    assert schedule.first() is None
+    assert schedule.latest_due(date(2026, 4, 5)) is None
+    assert schedule.due(date(2026, 4, 5)) == []
+
+
 @pytest.mark.asyncio
 async def test_a_run_by_no_member_reads_as_a_former_member(session):
     from ui.i18n import t

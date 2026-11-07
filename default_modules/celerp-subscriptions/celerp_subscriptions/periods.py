@@ -267,7 +267,7 @@ class Schedule:
     def latest_due(self, today: date) -> int | None:
         """The newest existing period whose bill date has come."""
         first = self.first()
-        if first is None or self.bill_date(first) > today:
+        if first is None:
             return None
         k = self.current(today) - (1 if self.timing == "arrears" else 0)
         if self.term_end is not None:
