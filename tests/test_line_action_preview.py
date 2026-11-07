@@ -536,6 +536,21 @@ def assert_the_question_is_bound(confirm: str, answer: dict) -> None:
     assert unbound == [], f"the question changes but its binding does not: {unbound[0]}"
 
 
+async def test_the_question_names_a_lot_taken_from_another_invoice_by_sku_and_number(client, session):
+    """The sentence saying goods are taken from another invoice names the lot by its SKU and
+    the invoice by its number, the words the user knows them by, never by their ids."""
+    from ui.i18n import t
+    from ui.routes.documents import _preview_confirm
+    g = await _gems(client)
+    owner, lids = await _record(client, g, "invoice", {_SAP: "aside"})
+    preview = await _ok(await _act(client, g, owner, "fulfill-lines", [lids[_SAP], lids["GIA"]], dry_run=True))
+    other = g.aside[_SAP]
+    (taken,) = preview["taken_from"]
+    asked = _preview_confirm(_CONFIRMS["fulfill-lines"], preview)
+    assert t("documents.will_take_from", sku=_SAP, doc=(await _state(client, g, other))["doc_number"]) in asked
+    assert taken["lot_id"] not in asked and other not in asked
+
+
 def _previewed_line_actions():
     """Every docs and lists route a stock line action runs on: its body names lines by line id
     and has a preview (``dry_run``). The memo draw binds its own preview (test_preview_binding)."""
