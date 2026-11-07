@@ -135,9 +135,9 @@ WRITEOFF_ACCOUNT_TYPES: frozenset[str] = frozenset({"expense", "equity"})
 # action could act on, followed by the action's next step, LINE_REFUSAL_NEXT), each key with a
 # _one and a _many form naming {lines}. A choice that held a line
 # the action could act on (an idle one) is refused with the notices instead: there was nothing
-# to change, and choosing again would not help. Every notice and refusal of an action, and the
-# confirm built from its preview, reads its own entry, so a line is never given another action's
-# reason. The kinds an action lists are the lines it leaves: Ship counts a service line shipped,
+# to change, and choosing again would not help. Every notice and refusal of an action reads its
+# own entry, so a line is never given another action's reason; the confirm built from its preview
+# words each kind it leaves with documents.will_skip_<kind>. The kinds an action lists are the lines it leaves: Ship counts a service line shipped,
 # so it has no service kind, and leaves a line that has already shipped (one invoiced from a
 # memo, whose goods went out on the memo, as drawn) or whose goods are not free to ship. Mark as scanned leaves a line already marked, and Clear scanned one not marked.
 _NO_ITEM = ("documents.lines_skipped", "lines.no_stock")
