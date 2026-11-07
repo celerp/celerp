@@ -11398,7 +11398,8 @@ def _doc_gl_impact_section(data: dict, entity_id: str, currency: str | None) -> 
         body = P(t(key), cls="empty-state-msg")
         return Div(heading, body, id=_gl_impact_dom_id(entity_id), cls="doc-section")
     tables = []
-    for e in entries:
+    # Newest first, as the Journal the headings link to lists them (the API answers oldest first).
+    for e in reversed(entries):
         voided = e.get("status") == "void"
         rows = []
         for ln in e.get("lines") or []:

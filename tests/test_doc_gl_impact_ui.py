@@ -80,6 +80,13 @@ def test_each_entry_is_headed_by_what_happened_and_the_document_number():
     assert "je:auto" not in html
 
 
+def test_entries_read_newest_first_as_the_journal_lists_them():
+    """The API answers oldest first; the panel lists the newest entry on top, like the Journal
+    the heading links to."""
+    html = to_xml(_doc_gl_impact_section(_POSTED, "doc:inv-1", "USD"))
+    assert html.index("2026-02-02") < html.index("2026-02-01")
+
+
 def test_an_entry_with_no_event_label_is_headed_by_its_memo():
     entry = {**_POSTED["entries"][0], "trigger": "writeoff.adjusted", "memo": "Inventory write-off WO-1",
              "source_doc": {"doc_id": "list:wo-1", "doc_ref": "WO-1"}}
