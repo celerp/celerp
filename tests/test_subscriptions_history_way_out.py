@@ -113,7 +113,9 @@ async def test_every_review_door_answers_by_the_rule_and_review_always_finishes(
     assert not await _review(client, old)
     assert not await _in_review_list(client, old)
     assert (await _state(session, old, NAME)).get("history_review") in (None, [])
-    assert t("subscriptions.history_set_aside", "en") not in await _page(monkeypatch, old, NAME)
+    # The page asks for nothing more: no document offers Place or Set aside.
+    page = await _page(monkeypatch, old, NAME)
+    assert "/set-aside\"" not in page and "/confirm\"" not in page, status
 
 
 async def test_an_agreement_in_review_can_be_cancelled_and_still_finishes(client, session, monkeypatch):

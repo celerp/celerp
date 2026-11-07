@@ -7299,5 +7299,8 @@
   "subscriptions.done_created": "Bozza di contratto creata. Imposta le condizioni, poi attivalo.",
   "subscriptions.err_ended_cancelled": "{ref} è annullato, quindi i suoi periodi non possono più cambiare. Crea un nuovo abbonamento se devi fatturare di nuovo.",
   "subscriptions.err_ended_void": "{ref} è invalidato, quindi i suoi periodi non possono essere modificati qui. Annulla prima l'invalidamento in Documenti se deve essere riattivato.",
-  "subscriptions.period_not_billing": "Non verrà fatturato"
+  "subscriptions.period_not_billing": "Non verrà fatturato",
+  "subscriptions.err_period_placed": "Questo periodo contiene {ref}, assegnato da una fatturazione precedente. Usa prima Revoca assegnazione sulla sua riga nell'elenco dei periodi.",
+  "subscriptions.err_ended_place_cancelled": "{ref} è annullato, quindi questo documento non può essere assegnato a uno dei suoi periodi. Usa Metti da parte per completare la revisione dei documenti precedenti.",
+  "subscriptions.err_ended_place_void": "{ref} è invalidato, quindi qui questo documento non può essere assegnato a uno dei suoi periodi. Usa Metti da parte per completare la revisione dei documenti precedenti, oppure annulla prima l'invalidamento di {ref} in Documenti."
 }

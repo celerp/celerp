@@ -7299,5 +7299,8 @@
   "subscriptions.done_created": "Đã tạo bản nháp thỏa thuận. Hãy thiết lập điều khoản rồi kích hoạt.",
   "subscriptions.err_ended_cancelled": "{ref} đã bị hủy nên các kỳ không thể thay đổi nữa. Hãy tạo gói đăng ký mới nếu bạn cần lập hóa đơn lại.",
   "subscriptions.err_ended_void": "{ref} đã bị vô hiệu nên không thể thay đổi các kỳ tại đây. Hãy bỏ trạng thái vô hiệu trong mục Chứng từ trước nếu muốn tiếp tục sử dụng.",
-  "subscriptions.period_not_billing": "Sẽ không lập hóa đơn"
+  "subscriptions.period_not_billing": "Sẽ không lập hóa đơn",
+  "subscriptions.err_period_placed": "Kỳ này đang giữ {ref}, được gán từ lần lập hóa đơn trước. Hãy dùng Thu hồi việc gán ở dòng của kỳ đó trong danh sách kỳ trước.",
+  "subscriptions.err_ended_place_cancelled": "{ref} đã bị hủy nên không thể gán chứng từ này vào kỳ nào của nó. Hãy dùng Để riêng để hoàn tất việc rà soát chứng từ cũ.",
+  "subscriptions.err_ended_place_void": "{ref} đã bị vô hiệu nên không thể gán chứng từ này vào kỳ nào của nó tại đây. Hãy dùng Để riêng để hoàn tất việc rà soát chứng từ cũ, hoặc bỏ trạng thái vô hiệu của {ref} trong mục Chứng từ trước."
 }

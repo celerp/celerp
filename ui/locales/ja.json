@@ -7299,5 +7299,8 @@
   "subscriptions.done_created": "契約の下書きを作成しました。条件を設定してから有効化してください。",
   "subscriptions.err_ended_cancelled": "{ref} はキャンセル済みのため、期間を変更できません。再度請求する必要がある場合は、新しいサブスクリプションを作成してください。",
   "subscriptions.err_ended_void": "{ref} は無効になっているため、ここでは期間を変更できません。再開する場合は、まず書類で無効化を解除してください。",
-  "subscriptions.period_not_billing": "請求されません"
+  "subscriptions.period_not_billing": "請求されません",
+  "subscriptions.err_period_placed": "この期間には過去の請求から割り当てた{ref}があります。先に期間一覧の該当行で「割り当てを取り消す」を使ってください。",
+  "subscriptions.err_ended_place_cancelled": "{ref} はキャンセル済みのため、この書類をその期間に割り当てることはできません。過去の書類の確認を終えるには「対象外にする」を使ってください。",
+  "subscriptions.err_ended_place_void": "{ref} は無効になっているため、ここではこの書類をその期間に割り当てることはできません。過去の書類の確認を終えるには「対象外にする」を使うか、先に書類で{ref}の無効化を解除してください。"
 }

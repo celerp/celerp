@@ -49,7 +49,7 @@ def test_the_census_finds_the_doors_that_write_an_agreement():
 @pytest.mark.parametrize("door", DOORS)
 async def test_no_door_changes_what_an_ended_agreements_periods_claim(owner_ui, monkeypatch, status, door):
     """Generated over every action route on one agreement (census) and each ended status: every
-    period claims what it did, and so do history review and the bills periods let go."""
+    period holding a bill or a skip claims what it did, and so do the bills periods let go."""
     from celerp_subscriptions.billing import claims
 
     eid, bill = await _ended(owner_ui.api, monkeypatch, status)
@@ -64,14 +64,14 @@ async def test_no_door_changes_what_an_ended_agreements_periods_claim(owner_ui, 
 
 def test_a_send_record_is_no_claim_and_an_agreement_without_periods_claims_none():
     """Sending a period's bill again changes no claim, so it stays open on an ended agreement;
-    any other change to a period does, and an agreement with no periods yet has a claim too."""
+    any other change to a billed period does, and an agreement with no periods claims nothing."""
     from celerp_subscriptions.billing import claims
 
     billed = {"status": "void", "periods": {"0": {"state": "billed", "doc_id": "d1"}}}
     resent = {**billed, "periods": {"0": {**billed["periods"]["0"], "send": {"state": "sent"}}}}
     assert claims(resent) == claims(billed)
     assert claims({**billed, "periods": {"0": {"state": "skipped"}}}) != claims(billed)
-    assert claims({"status": "void"}) == (None, None, None, None)
+    assert claims({"status": "void"}) == ({}, None)
 
 
 @pytest.mark.parametrize("status", ENDED)

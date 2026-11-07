@@ -7299,5 +7299,8 @@
   "subscriptions.done_created": "Brouillon de contrat créé. Définissez ses conditions, puis activez-le.",
   "subscriptions.err_ended_cancelled": "{ref} est résilié : ses périodes ne peuvent plus changer. Créez un nouvel abonnement si vous devez facturer à nouveau.",
   "subscriptions.err_ended_void": "{ref} est invalidé : ses périodes ne peuvent pas être modifiées ici. Annulez d'abord son invalidation dans Documents s'il doit reprendre.",
-  "subscriptions.period_not_billing": "Ne sera pas facturé"
+  "subscriptions.period_not_billing": "Ne sera pas facturé",
+  "subscriptions.err_period_placed": "Cette période porte {ref}, affecté depuis une facturation antérieure. Utilisez d'abord Retirer l'affectation sur sa ligne dans la liste des périodes.",
+  "subscriptions.err_ended_place_cancelled": "{ref} est résilié : ce document ne peut être affecté à aucune de ses périodes. Utilisez Mettre de côté pour terminer la revue des anciens documents.",
+  "subscriptions.err_ended_place_void": "{ref} est invalidé : ce document ne peut être affecté ici à aucune de ses périodes. Utilisez Mettre de côté pour terminer la revue des anciens documents, ou annulez d'abord l'invalidation de {ref} dans Documents."
 }

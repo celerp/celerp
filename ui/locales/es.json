@@ -7299,5 +7299,8 @@
   "subscriptions.done_created": "Borrador de acuerdo creado. Defina sus condiciones y luego actívelo.",
   "subscriptions.err_ended_cancelled": "{ref} está cancelada, así que sus períodos ya no pueden cambiar. Cree una suscripción nueva si necesita volver a facturar.",
   "subscriptions.err_ended_void": "{ref} está anulada, por lo que sus períodos no pueden cambiarse aquí. Quite primero la anulación en Documentos si debe volver a ejecutarse.",
-  "subscriptions.period_not_billing": "No se facturará"
+  "subscriptions.period_not_billing": "No se facturará",
+  "subscriptions.err_period_placed": "Este período tiene asignado {ref}, de una facturación anterior. Use primero Retirar asignación en su fila de la lista de períodos.",
+  "subscriptions.err_ended_place_cancelled": "{ref} está cancelada, así que este documento no puede asignarse a uno de sus períodos. Use Apartar para terminar la revisión de documentos anteriores.",
+  "subscriptions.err_ended_place_void": "{ref} está anulada, así que este documento no puede asignarse aquí a uno de sus períodos. Use Apartar para terminar la revisión de documentos anteriores, o quite primero la anulación de {ref} en Documentos."
 }

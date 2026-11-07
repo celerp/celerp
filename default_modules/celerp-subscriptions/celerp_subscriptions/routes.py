@@ -130,9 +130,13 @@ def _period_answer(state: dict, k: int) -> dict:
 
 
 async def _refuse_claimed(session, company_id, entry: dict) -> None:
-    """409 naming the document when the period is billed."""
+    """409 when the period is billed, naming the door that frees it: Withdraw placement for a
+    history placement, Reopen for a bill that no longer bills it (billing_doc), else Void."""
     if entry.get("state") == BILLED:
         ref = await billing.doc_ref(session, company_id, entry["doc_id"])
+        if entry.get("history"):
+            raise HTTPException(status_code=409, detail=t("subscriptions.err_period_placed", ref=ref))
+        await billing.billing_doc(session, company_id, entry["doc_id"])
         raise HTTPException(status_code=409, detail=t("subscriptions.err_period_billed", ref=ref))
 
 

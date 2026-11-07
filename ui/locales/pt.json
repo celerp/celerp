@@ -7299,5 +7299,8 @@
   "subscriptions.done_created": "Rascunho de contrato criado. Defina os termos e depois ative-o.",
   "subscriptions.err_ended_cancelled": "{ref} está cancelado, portanto seus períodos não podem mais mudar. Crie uma nova assinatura se precisar cobrar novamente.",
   "subscriptions.err_ended_void": "{ref} está anulado, portanto seus períodos não podem ser alterados aqui. Desfaça primeiro a anulação em Documentos se precisar retomá-lo.",
-  "subscriptions.period_not_billing": "Não será faturado"
+  "subscriptions.period_not_billing": "Não será faturado",
+  "subscriptions.err_period_placed": "Este período tem {ref}, associado a partir de uma faturação anterior. Use primeiro Retirar associação na linha dele na lista de períodos.",
+  "subscriptions.err_ended_place_cancelled": "{ref} está cancelado, portanto este documento não pode ser associado a um dos seus períodos. Use Colocar de parte para concluir a revisão dos documentos anteriores.",
+  "subscriptions.err_ended_place_void": "{ref} está anulado, portanto este documento não pode ser associado aqui a um dos seus períodos. Use Colocar de parte para concluir a revisão dos documentos anteriores, ou desfaça primeiro a anulação de {ref} em Documentos."
 }

@@ -7299,5 +7299,8 @@
   "subscriptions.done_created": "Draf perjanjian dibuat. Atur ketentuannya, lalu aktifkan.",
   "subscriptions.err_ended_cancelled": "{ref} dibatalkan, jadi periodenya tidak dapat berubah lagi. Buat langganan baru jika Anda perlu menagih lagi.",
   "subscriptions.err_ended_void": "{ref} berstatus tidak berlaku, sehingga periodenya tidak dapat diubah di sini. Batalkan status tidak berlakunya di Dokumen terlebih dahulu jika perlu dijalankan kembali.",
-  "subscriptions.period_not_billing": "Tidak akan ditagih"
+  "subscriptions.period_not_billing": "Tidak akan ditagih",
+  "subscriptions.err_period_placed": "Periode ini memuat {ref}, ditetapkan dari penagihan sebelumnya. Gunakan Batalkan penetapan pada barisnya di daftar periode terlebih dahulu.",
+  "subscriptions.err_ended_place_cancelled": "{ref} dibatalkan, jadi dokumen ini tidak dapat ditetapkan ke salah satu periodenya. Gunakan Sisihkan untuk menyelesaikan peninjauan dokumen lama.",
+  "subscriptions.err_ended_place_void": "{ref} berstatus tidak berlaku, jadi dokumen ini tidak dapat ditetapkan ke salah satu periodenya di sini. Gunakan Sisihkan untuk menyelesaikan peninjauan dokumen lama, atau batalkan status tidak berlaku {ref} di Dokumen terlebih dahulu."
 }

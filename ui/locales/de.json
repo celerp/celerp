@@ -7299,5 +7299,8 @@
   "subscriptions.done_created": "Vertragsentwurf erstellt. Legen Sie die Bedingungen fest und aktivieren Sie ihn dann.",
   "subscriptions.err_ended_cancelled": "{ref} ist gekündigt, daher können sich seine Zeiträume nicht mehr ändern. Legen Sie ein neues Abonnement an, wenn Sie erneut abrechnen müssen.",
   "subscriptions.err_ended_void": "{ref} wurde ungültig gesetzt, daher können seine Zeiträume hier nicht geändert werden. Heben Sie die Ungültigerklärung zuerst unter Dokumente auf, wenn es wieder ausgeführt werden soll.",
-  "subscriptions.period_not_billing": "Wird nicht abgerechnet"
+  "subscriptions.period_not_billing": "Wird nicht abgerechnet",
+  "subscriptions.err_period_placed": "Diesem Zeitraum ist {ref} aus einer früheren Abrechnung zugeordnet. Verwenden Sie zuerst Zuordnung zurücknehmen in seiner Zeile der Zeitraumliste.",
+  "subscriptions.err_ended_place_cancelled": "{ref} ist gekündigt, daher kann dieser Beleg keinem seiner Zeiträume zugeordnet werden. Verwenden Sie Zurückstellen, um die Prüfung der früheren Belege abzuschließen.",
+  "subscriptions.err_ended_place_void": "{ref} wurde ungültig gesetzt, daher kann dieser Beleg hier keinem seiner Zeiträume zugeordnet werden. Verwenden Sie Zurückstellen, um die Prüfung der früheren Belege abzuschließen, oder heben Sie zuerst die Ungültigerklärung von {ref} unter Dokumente auf."
 }

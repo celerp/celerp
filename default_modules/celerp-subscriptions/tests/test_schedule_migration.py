@@ -556,10 +556,10 @@ async def test_a_template_whose_page_fixes_one_reason_says_the_one_left(client, 
 CLAIM_CASES = {"skip": ("placed", "billed", "voided"), "unskip": ("placed", "billed", "voided"),
                "reopen": ("placed", "billed"), "confirm": ("placed",)}
 CLAIM_KEYS = {"placed": "subscriptions.err_period_placed", "billed": "subscriptions.err_period_billed",
-              "voided": "subscriptions.err_period_voided"}
+              "voided": "subscriptions.err_period_void"}
 
 
-def test_every_route_refusing_a_claimed_period_is_named():
+async def test_every_route_refusing_a_claimed_period_is_named():
     import status_census
 
     assert {path.rsplit("/", 1)[-1] for path, _ in status_census.claim_refusals()} == set(CLAIM_CASES)

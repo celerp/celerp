@@ -7299,5 +7299,8 @@
   "subscriptions.done_created": "ረቂቅ ስምምነት ተፈጥሯል። ውሎቹን ያቀናብሩ፣ ከዚያም ያንቁት።",
   "subscriptions.err_ended_cancelled": "{ref} ተሰርዟል፣ ስለዚህ ወቅቶቹ ከእንግዲህ ሊቀየሩ አይችሉም። እንደገና ማስከፈል ከፈለጉ አዲስ የደንበኝነት ምዝገባ ይፍጠሩ።",
   "subscriptions.err_ended_void": "{ref} ተሽሯል፣ ስለዚህ ወቅቶቹ እዚህ ሊቀየሩ አይችሉም። እንደገና መሥራት ካለበት መጀመሪያ በሰነዶች ውስጥ ሽረቱን ይቀልብሱ።",
-  "subscriptions.period_not_billing": "ደረሰኝ አይወጣም"
+  "subscriptions.period_not_billing": "ደረሰኝ አይወጣም",
+  "subscriptions.err_period_placed": "ይህ ወቅት ከቀድሞ ክፍያ የተዛመደውን {ref} ይዟል። መጀመሪያ በወቅቶች ዝርዝር ውስጥ ባለው ረድፉ ላይ ማዛመድን ቀልብስ ይጠቀሙ።",
+  "subscriptions.err_ended_place_cancelled": "{ref} ተሰርዟል፣ ስለዚህ ይህ ሰነድ ከወቅቶቹ በአንዱ ሊዛመድ አይችልም። የቀድሞ ሰነዶቹን ግምገማ ለመጨረስ ወደ ጎን አስቀምጥ ይጠቀሙ።",
+  "subscriptions.err_ended_place_void": "{ref} ተሽሯል፣ ስለዚህ ይህ ሰነድ እዚህ ከወቅቶቹ በአንዱ ሊዛመድ አይችልም። የቀድሞ ሰነዶቹን ግምገማ ለመጨረስ ወደ ጎን አስቀምጥ ይጠቀሙ፣ ወይም መጀመሪያ በሰነዶች ውስጥ የ{ref}ን ሽረት ይቀልብሱ።"
 }
