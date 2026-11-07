@@ -19,17 +19,22 @@ ask first whether the row's stored terms build one, or one bad row answers 500 f
 
 - ``loop_readers()``: every function in the subscriptions module that loops over a source of
   many agreements (billing.agreements, search_subscription_templates, or a Projection query
-  over SUBSCRIPTION_DOC_TYPES) and, from the loop, reaches ``Schedule.from_state`` through the
-  module's functions; each with the paths that reach it without passing a gate (a function
+  over SUBSCRIPTION_DOC_TYPES) and, from the loop, reaches ``Schedule.from_state`` or a read of
+  a schedule term through the module's functions; each with the paths that reach it without passing a gate (a function
   that asks on_schedule, unscheduled, billable or refuse_unscheduled, a scheduled lock, a gate
-  asked earlier in the same loop body, or a try that catches the ScheduleError). An empty path
+  asked earlier in the same loop body, or a try that catches any error). An empty path
   list means the reader is guarded.
+
+Terms. ``term_fields()`` is every term a writer may set or a consent covers; each must be
+declared in ``periods.TERMS`` (``declared_terms()``), and no request model bounds one ahead
+of the builder (``request_bounds()``), so every bad term gets the builder's keyed refusal.
 
 Run as a script for the census table: ``python schedule_census.py``.
 """
 from __future__ import annotations
 
 import ast
+import functools
 import sys
 from pathlib import Path
 
@@ -42,14 +47,74 @@ from owned_fields_census import PACKAGE, ROOT, _callee, _event_types, _kw, _Pack
 SOURCES = {"agreements", "search_subscription_templates"}
 # What asks whether stored terms build a schedule before one is built.
 GATES = {"on_schedule", "unscheduled", "billable", "refuse_unscheduled", "locked_agreement"}
-# What a try must catch to stand for a gate (ScheduleError is a ValueError).
-CAUGHT = {"Exception", "ValueError", "ScheduleError", "BaseException"}
+# What a try must catch to stand for a gate: any error, since a stored value of the wrong
+# type fails with TypeError or AttributeError as readily as with the ScheduleError.
+CAUGHT = {"Exception", "BaseException"}
 
 
-def term_fields() -> set[str]:
+@functools.cache
+def term_fields() -> frozenset[str]:
+    """Every term an agreement's schedule or unattended billing reads off its stored state:
+    the terms a writer may set (SCHEDULE_TERM_FIELDS) and the ones a consent covers."""
     from celerp_docs.doc_constants import SCHEDULE_TERM_FIELDS
+    from celerp_subscriptions.billing import CONSENT_TERMS
 
-    return set(SCHEDULE_TERM_FIELDS)
+    return frozenset(SCHEDULE_TERM_FIELDS) | {f for fields in CONSENT_TERMS.values() for f in fields}
+
+
+def declared_terms() -> dict:
+    """periods.TERMS: the declared type and range of each term the schedule builder checks."""
+    from celerp_subscriptions import periods
+
+    return dict(getattr(periods, "TERMS", {}))
+
+
+_BOUNDS = {"gt", "ge", "lt", "le", "multiple_of", "pattern", "min_length", "max_length", "strict"}
+
+
+def _required_only(fn) -> bool:
+    """A validator whose every refusal sits under ``if <value> is None``: it asks for a value,
+    it bounds none."""
+    raises = [n for n in ast.walk(fn) if isinstance(n, ast.Raise)]
+    pkg_parent = {c: n for n in ast.walk(fn) for c in ast.iter_child_nodes(n)}
+
+    def under_none(node) -> bool:
+        while (node := pkg_parent.get(node)) is not None:
+            if isinstance(node, ast.If) and isinstance(node.test, ast.Compare) \
+                    and isinstance(node.test.ops[0], ast.Is) and getattr(node.test.comparators[0], "value", 0) is None:
+                return True
+        return False
+
+    return bool(raises) and all(under_none(r) for r in raises)
+
+
+def request_bounds() -> list[tuple[str, str, str]]:
+    """[(file:line, Model.field, what)] for every bound a request model of the code puts on a
+    schedule term before the schedule builder sees it: a Field constraint, a Literal, or a
+    field_validator that refuses more than a missing value. Each answers a generic 422 where
+    the builder's TERMS give the term's own keyed refusal, so the list must stay empty."""
+    terms, found = term_fields(), []
+    for path, tree in _sources():
+        for cls in (n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)):
+            if not any("BaseModel" in ast.unparse(b) for b in cls.bases):
+                continue
+            where = f"{path.relative_to(ROOT)}"
+            for node in cls.body:
+                if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id in terms:
+                    name = node.target.id
+                    if isinstance(node.value, ast.Call) and _callee(node.value) == "Field" \
+                            and (bound := sorted(k.arg for k in node.value.keywords if k.arg in _BOUNDS)):
+                        found.append((f"{where}:{node.lineno}", f"{cls.name}.{name}", f"Field({', '.join(bound)})"))
+                    if "Literal" in ast.unparse(node.annotation):
+                        found.append((f"{where}:{node.lineno}", f"{cls.name}.{name}", "Literal"))
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not _required_only(node):
+                    for dec in node.decorator_list:
+                        if isinstance(dec, ast.Call) and _callee(dec) == "field_validator":
+                            for arg in dec.args:
+                                if isinstance(arg, ast.Constant) and arg.value in terms:
+                                    found.append((f"{where}:{node.lineno}", f"{cls.name}.{arg.value}",
+                                                  f"field_validator {node.name}"))
+    return found
 
 
 def doc_doors() -> list[tuple[str, str, str]]:
@@ -109,9 +174,27 @@ def _module_callee(call: ast.Call) -> str | None:
     return None
 
 
+def _term_read(node) -> str | None:
+    """The schedule term (or the periods, which the schedule is built from too) ``node`` reads
+    off a stored state (``x.get("term")``, ``x["term"]``, ``shown("term", ...)``), or None."""
+    if isinstance(node, ast.Call) and node.args and isinstance(node.args[0], ast.Constant) \
+            and ((isinstance(node.func, ast.Attribute) and node.func.attr == "get") or _callee(node) == "shown"):
+        name = node.args[0].value
+    elif isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant) and isinstance(node.ctx, ast.Load):
+        name = node.slice.value
+    else:
+        return None
+    return name if isinstance(name, str) and name in term_fields() | {"periods"} else None
+
+
+def _from_state(node) -> bool:
+    return isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "from_state" \
+        and getattr(node.func.value, "id", None) == "Schedule"
+
+
 def _builds(fn) -> bool:
-    return any(isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "from_state"
-               and getattr(n.func.value, "id", None) == "Schedule" for n in ast.walk(fn))
+    """``fn`` builds a schedule or reads a schedule term off a stored state."""
+    return any(_from_state(n) or _term_read(n) for n in ast.walk(fn))
 
 
 def _gated_call(call: ast.Call) -> bool:
@@ -139,20 +222,26 @@ def _caught(pkg: _Package, node) -> bool:
 def _open_paths(pkg: _Package, nodes, fn_name: str, seen: frozenset) -> list[str]:
     """The call paths from ``nodes`` (inside ``fn_name``) to Schedule.from_state that pass no gate."""
     paths = []
-    # A gate asked earlier in the same body guards what comes after it.
-    asked = min((n.lineno for node in nodes for n in ast.walk(node) if isinstance(n, ast.Call) and _gated_call(n)),
-                default=None)
+    # A gate asked earlier in the same body, itself or through a module function that asks
+    # one, guards what comes after it.
+    asked = min((n.lineno for node in nodes for n in ast.walk(node) if isinstance(n, ast.Call) and (
+        _gated_call(n) or any(_gated(f) for f in pkg.functions.get(_module_callee(n), ())))), default=None)
     for node in nodes:
+        for read in (n for n in ast.walk(node) if isinstance(n, ast.Subscript)):
+            if (term := _term_read(read)) and not _caught(pkg, read) and not (asked is not None and read.lineno > asked):
+                paths.append(f"{fn_name} -> reads {term}")
         for call in (n for n in ast.walk(node) if isinstance(n, ast.Call)):
             if _caught(pkg, call) or (asked is not None and call.lineno > asked):
                 continue
-            if isinstance(call.func, ast.Attribute) and call.func.attr == "from_state" \
-                    and getattr(call.func.value, "id", None) == "Schedule":
+            if _from_state(call):
                 paths.append(f"{fn_name} -> Schedule.from_state")
                 continue
-            name = _module_callee(call)
-            if name not in pkg.functions or name in seen or name in SOURCES:
+            if term := _term_read(call):
+                paths.append(f"{fn_name} -> reads {term}")
                 continue
+            name = _module_callee(call)
+            if name not in pkg.functions or name in seen or name in SOURCES or name in GATES:
+                continue  # a gate is where the path stops: gate_catches() checks the one they ask
             for callee in pkg.functions[name]:
                 if _gated(callee):
                     continue
@@ -177,6 +266,19 @@ def _is_source(pkg: _Package, expr) -> bool:
                 and "SUBSCRIPTION_DOC_TYPES" in ast.unparse(pkg.parent.get(pkg.parent.get(n)) or n):
             return True
     return False
+
+
+def gate_catches() -> dict[str, bool]:
+    """{gate: whether every schedule build and term check in it sits in a try that catches any
+    error} for the gates that build: the one test the others ask (unscheduled) turns any stored
+    value into the row's honest error, never an exception out of a reader."""
+    pkg, found = _Package(PACKAGE), {}
+    for name in sorted(GATES):
+        for fn in pkg.functions.get(name, ()):
+            builds = [n for n in ast.walk(fn) if isinstance(n, ast.Call) and (_from_state(n) or _callee(n) == "check_terms")]
+            if builds:
+                found[name] = all(_caught(pkg, n) for n in builds)
+    return found
 
 
 def loop_readers() -> dict[str, tuple[int, list[str]]]:
@@ -222,6 +324,15 @@ def _reaches(pkg: _Package, nodes, seen: frozenset) -> bool:
 
 
 if __name__ == "__main__":
+    declared = declared_terms()
+    terms = sorted(term_fields() | set(declared))
+    print(f"# schedule terms (each declared in periods.TERMS, which the schedule builder checks): {len(terms)}")
+    for name in terms:
+        print(f"TERM {name} {declared[name] if name in declared else 'MISSING'}")
+    bounds = request_bounds()
+    print(f"# request-model bounds on a term ahead of the builder (each must go): {len(bounds)}")
+    for where, field, what in bounds:
+        print(f"BOUND {where} {field} {what}")
     doors = doc_doors()
     print(f"# document write doors (each reaches emit_event, whose doc_status_guard handlers check the terms): {len(doors)}")
     for where, fn, event in doors:
@@ -230,7 +341,11 @@ if __name__ == "__main__":
     print(f"# projection writers outside emit_event (replays and backfills; each must name no schedule term): {len(direct)}")
     for name, terms in sorted(direct.items()):
         print(f"DIRECT {name} terms={terms}")
+    gates = gate_catches()
+    print(f"# gates that build a schedule (each must catch any error): {len(gates)}")
+    for name, catches in gates.items():
+        print(f"GATE {name} catches_any={catches}")
     readers = loop_readers()
-    print(f"# readers that loop over many agreements and build a schedule (each must pass a gate first): {len(readers)}")
+    print(f"# readers that loop over many agreements and build a schedule or read a term (each must pass a gate first): {len(readers)}")
     for name, (loops, open_paths) in sorted(readers.items()):
         print(f"READER {name} loops={loops} open={open_paths}")

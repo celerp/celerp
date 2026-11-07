@@ -25,13 +25,12 @@ from celerp.services.permissions import require_permission
 from celerp_docs.doc_constants import NO_SEND_DOC_TYPES
 from celerp_subscriptions import billing, migration, summary
 from celerp_subscriptions.periods import (
-    BILLED, CLAIMED_STATES, FREQUENCIES, RELEASED, SKIPPED, TIMINGS, Schedule, ScheduleError, UNRESOLVED, shown,
+    BILLED, CLAIMED_STATES, RELEASED, SKIPPED, Schedule, ScheduleError, UNRESOLVED, shown,
 )
 from celerp_subscriptions.search import SUBSCRIPTION_DOC_TYPES, search_subscription_templates
 from ui.i18n import t
 
 BATCH_CAP = 50
-GENERATION_MODES = frozenset({"manual_due"}) | billing.AUTO_MODES
 # Schedule terms that place the periods: fixed once any period is claimed.
 PLACING_FIELDS = ("anchor_date", "frequency", "custom_interval_days", "billing_timing")
 # What a template not yet on a schedule may change: the terms that let it move onto one.
@@ -104,7 +103,7 @@ class CatchUpBody(BaseModel):
 class ScheduleBody(BaseModel):
     anchor_date: date | None = None
     frequency: str | None = None
-    custom_interval_days: int | None = Field(None, gt=0, le=36500)
+    custom_interval_days: int | None = None
     billing_timing: str | None = None
     term_start: date | None = None
     term_end: date | None = None
@@ -112,27 +111,6 @@ class ScheduleBody(BaseModel):
     catchup_periods: int | None = None
     generation_mode: str | None = None
     auto_send: bool | None = None
-
-    @field_validator("frequency")
-    @classmethod
-    def _frequency(cls, v):
-        if v is not None and v not in FREQUENCIES:
-            raise ValueError(f"Unknown frequency {v!r}")
-        return v
-
-    @field_validator("billing_timing")
-    @classmethod
-    def _timing(cls, v):
-        if v is not None and v not in TIMINGS:
-            raise ValueError(f"Unknown billing timing {v!r}")
-        return v
-
-    @field_validator("generation_mode")
-    @classmethod
-    def _mode(cls, v):
-        if v is not None and v not in GENERATION_MODES:
-            raise ValueError(f"Unknown generation mode {v!r}")
-        return v
 
     @field_validator("anchor_date", "generation_mode", "frequency", "billing_timing", "catchup_periods", mode="before")
     @classmethod
@@ -501,8 +479,6 @@ def _build_router() -> APIRouter:
         if migration.is_legacy(proj.state):
             return await _move_with(session, company_id, proj, sent, user)
         state = proj.state
-        if "catchup_periods" in changes and not 0 <= changes["catchup_periods"] <= billing.CATCHUP_CAP:
-            raise HTTPException(status_code=422, detail=t("subscriptions.err_catchup_window"))
         recorded = [int(k) for k in (state.get("periods") or {})]
         claimed = [int(k) for k, e in (state.get("periods") or {}).items() if e.get("state") in CLAIMED_STATES]
         if (recorded or state.get("history_review") or state.get("history_set_aside")) and any(
@@ -538,12 +514,9 @@ def _build_router() -> APIRouter:
             # Activate would give it in the same write, so Activate never changes a consent term.
             changes = {**(await _first_schedule(session, company_id, {**state, **changes})), **changes}
         merged = {**state, **changes}
-        try:
-            schedule = Schedule.from_state(merged) if merged.get("anchor_date") else None
-        except ScheduleError as exc:
+        if (exc := billing.unscheduled(merged)) is not None:
             raise billing.schedule_refusal(422, exc) from exc
-        if merged.get("term_start") and merged.get("term_end") and merged["term_start"] >= merged["term_end"]:
-            raise HTTPException(status_code=422, detail=t("subscriptions.err_term_order"))
+        schedule = Schedule.from_state(merged) if merged.get("anchor_date") else None
         if schedule is not None and any(not schedule.exists(k) for k in recorded):
             raise HTTPException(status_code=409, detail=t("subscriptions.err_term_cuts_claimed"))
         if schedule is not None and claimed and state.get("anchor_date"):

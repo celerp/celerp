@@ -16,6 +16,10 @@ from datetime import date, timedelta
 
 FREQUENCIES = frozenset({"weekly", "biweekly", "monthly", "quarterly", "annually", "custom"})
 TIMINGS = frozenset({"advance", "arrears"})
+AUTO_MODES = frozenset({"auto_invoice"})
+GENERATION_MODES = frozenset({"manual_due"}) | AUTO_MODES
+MAX_INTERVAL_DAYS = 36500
+CATCHUP_CAP = 12
 _MONTHS = {"monthly": 1, "quarterly": 3, "annually": 12}
 _DAYS = {"weekly": 7, "biweekly": 14}
 
@@ -70,6 +74,66 @@ class ScheduleError(ValueError):
         self.key, self.params = key, params
 
 
+@dataclass(frozen=True)
+class Term:
+    """What a stored schedule term must hold: a date (ISO text), one of ``choices``, a whole
+    number from ``low`` to ``high`` (an open end is unbounded), or a flag; ``key`` says why
+    when it does not."""
+    kind: str
+    key: str
+    choices: frozenset = frozenset()
+    low: int | None = None
+    high: int | None = None
+
+    def holds(self, value) -> bool:
+        if self.kind == "date":
+            try:
+                date.fromisoformat(value)
+            except (TypeError, ValueError):
+                return False
+            return True
+        if self.kind == "choice":
+            return isinstance(value, str) and value in self.choices
+        if self.kind == "whole":
+            return type(value) is int and (self.low is None or value >= self.low) \
+                and (self.high is None or value <= self.high)
+        return type(value) is bool
+
+
+# Every term an agreement's schedule and its unattended billing read off its stored state, and
+# what each must hold. Unset (None or empty text) reads as its UNSET value. The schedule builder
+# checks them all (check_terms), so every writer and reader holds the same rule.
+TERMS = {
+    "anchor_date": Term("date", "subscriptions.err_schedule_date"),
+    "frequency": Term("choice", "subscriptions.err_schedule_frequency", choices=FREQUENCIES),
+    "custom_interval_days": Term("whole", "subscriptions.err_custom_interval", low=1, high=MAX_INTERVAL_DAYS),
+    "billing_timing": Term("choice", "subscriptions.err_schedule_timing", choices=TIMINGS),
+    "term_start": Term("date", "subscriptions.err_schedule_date"),
+    "term_end": Term("date", "subscriptions.err_schedule_date"),
+    "cancel_at_period_end": Term("whole", "subscriptions.err_cancel_period"),
+    "catchup_periods": Term("whole", "subscriptions.err_catchup_window", low=0, high=CATCHUP_CAP),
+    "generation_mode": Term("choice", "subscriptions.err_generation_mode", choices=GENERATION_MODES),
+    "auto_send": Term("flag", "subscriptions.err_auto_send"),
+}
+
+
+def check_terms(state: dict) -> None:
+    """ScheduleError naming the first stored term that does not hold what TERMS declares. The
+    custom interval is read only for a custom frequency, so only then is it checked, and then
+    it is required."""
+    for name, term in TERMS.items():
+        value = state.get(name)
+        if name == "custom_interval_days":
+            if shown("frequency", state.get("frequency")) != "custom":
+                continue
+        elif value is None or value == "":
+            continue
+        if not term.holds(value):
+            raise ScheduleError(term.key, **({"day": value} if term.kind == "date" else {}))
+    if state.get("term_start") and state.get("term_end") and state["term_start"] >= state["term_end"]:
+        raise ScheduleError("subscriptions.err_term_order")
+
+
 def _date(value) -> date:
     try:
         return date.fromisoformat(value)
@@ -93,13 +157,6 @@ class Schedule:
     periods: dict[int, dict] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if self.frequency not in FREQUENCIES:
-            raise ScheduleError("subscriptions.err_schedule_frequency")
-        if self.frequency == "custom" and not (
-                type(self.custom_days) is int and 0 < self.custom_days <= 36500):
-            raise ScheduleError("subscriptions.err_custom_interval")
-        if self.timing not in TIMINGS:
-            raise ScheduleError("subscriptions.err_schedule_timing")
         if self.term_end is not None and self.term_end <= self.anchor:
             raise ScheduleError("subscriptions.err_term_before_first_period")
         try:
@@ -111,7 +168,12 @@ class Schedule:
     @classmethod
     def from_state(cls, state: dict) -> Schedule:
         """The schedule an agreement's stored state describes (its SCHEDULE_FIELDS and periods);
-        ScheduleError saying why when they describe none."""
+        ScheduleError saying why when its terms (TERMS) describe none. Periods that are not a
+        mapping of indexes to records fail as they are read."""
+        check_terms(state)
+        periods = {int(k): v for k, v in (state.get("periods") or {}).items()}
+        if not all(isinstance(v, dict) for v in periods.values()):
+            raise TypeError("a recorded period is not a record")
         return cls(
             anchor=_date(state["anchor_date"]),
             frequency=shown("frequency", state.get("frequency")),
@@ -120,7 +182,7 @@ class Schedule:
             term_start=_opt_date(state.get("term_start")),
             term_end=_opt_date(state.get("term_end")),
             last=state.get("cancel_at_period_end"),
-            periods={int(k): v for k, v in (state.get("periods") or {}).items()},
+            periods=periods,
         )
 
     def start(self, k: int) -> date:

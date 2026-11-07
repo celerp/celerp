@@ -41,15 +41,14 @@ from celerp.services.terms import resolve_document_terms
 from celerp.services.units import require_moving_fits_units
 from celerp_docs.doc_money import HEADER_MONEY_FIELDS, document_money
 from celerp_docs.periodic import OperationReport
-from celerp_subscriptions.periods import (BILLED, RELEASED, SCHEDULE_FIELDS, SKIPPED, UNRESOLVED, Schedule, ScheduleError,
-                                          shown)
+from celerp_subscriptions.periods import (AUTO_MODES, BILLED, RELEASED, SCHEDULE_FIELDS, SKIPPED, UNRESOLVED,
+                                          Schedule, ScheduleError, check_terms, shown)
 from celerp_subscriptions.search import SUBSCRIPTION_DOC_TYPES
 from ui.i18n import t
 
 log = logging.getLogger(__name__)
 
 MODULE = "celerp-subscriptions"
-AUTO_MODES = frozenset({"auto_invoice"})
 # Each unattended mode and the permission its authorizer must keep holding.
 MODE_PERMISSION = {"generation": "automate_billing", "sending": "automate_sending"}
 MODE_DOCUMENT_PERMISSION = {"generation": "finalize_documents", "sending": "edit_documents"}
@@ -62,7 +61,6 @@ UNCONFIRMED = ("sending", "unconfirmed")
 # answer: a "sending" record younger than SEND_TIMEOUT may still be with the mail server.
 TRANSPORT_TIMEOUT = timedelta(minutes=4)
 SEND_TIMEOUT = TRANSPORT_TIMEOUT + timedelta(minutes=1)
-CATCHUP_CAP = 12
 # The agreement write_agreement is writing: the one writer allowed to change an agreement's
 # status (guard_agreement_status), set by nothing else (consent_census holds it).
 _WRITING: ContextVar[str | None] = ContextVar("agreement_write", default=None)
@@ -135,17 +133,19 @@ def refuse_unscheduled(state: dict, entity_id: str) -> None:
 
 
 def unscheduled(state: dict) -> ScheduleError | None:
-    """Why the agreement's stored terms build no schedule, or None when they build one or it
-    has no start of its schedule yet. The one test every writer and every reader of the stored
-    terms asks; stored values no writer gives today (a period key that is not a number) read as
-    unreadable, never as a server error."""
-    if not state.get("anchor_date"):
-        return None
+    """Why the agreement's stored terms build no schedule, or None when they build one or, with
+    no start of its schedule yet, every term holds what TERMS declares. The one test every
+    writer and every reader of the stored terms asks; anything else that fails reading them
+    (a period key that is not a number, a period that is not a record) reads as unreadable,
+    never as a server error."""
     try:
-        Schedule.from_state(state)
+        if state.get("anchor_date"):
+            Schedule.from_state(state)
+        else:
+            check_terms(state)
     except ScheduleError as exc:
         return exc
-    except (ValueError, TypeError, AttributeError):
+    except Exception:
         return ScheduleError("subscriptions.err_schedule_unreadable")
     return None
 
@@ -556,8 +556,11 @@ async def require_history_document(session: AsyncSession, company_id, template_i
                    for field in ("source_agreement", "subscription_id"))):
         raise HTTPException(status_code=409, detail=t("subscriptions.err_history_not_candidate"))
     for agreement in await agreements(session, company_id):
-        if any(entry.get("state") == BILLED and entry.get("doc_id") == doc_id
-               for entry in (agreement.state.get("periods") or {}).values()):
+        # One whose stored schedule can't be read holds no claim a reader can trust; its page
+        # and the list name it (unscheduled).
+        if unscheduled(agreement.state) is None and any(
+                entry.get("state") == BILLED and entry.get("doc_id") == doc_id
+                for entry in (agreement.state.get("periods") or {}).values()):
             raise HTTPException(status_code=409, detail=t("subscriptions.err_history_not_candidate"))
 
 
@@ -712,7 +715,7 @@ def waiting_sends(state: dict, today: date) -> list[int]:
 def unattended_due(state: dict, today: date) -> tuple[Schedule, list[int]] | None:
     """The schedule and due periods of an agreement that bills itself, with no earlier
     document waiting for review; None when it is not one or nothing is due."""
-    if state.get("generation_mode") not in AUTO_MODES or state.get("history_review"):
+    if not billable(state) or state.get("generation_mode") not in AUTO_MODES or state.get("history_review"):
         return None
     found = due_periods(state, today)
     return found if found and found[1] else None

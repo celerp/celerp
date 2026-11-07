@@ -116,7 +116,9 @@ async def report(session: AsyncSession, company_id, user_id, *, everything: bool
     since = "" if everything else ((settings.get(ACK_SETTING) or {}).get(str(user_id)) or "")
     replayable = await billing.replayable_operations(session, company_id)
     today = await company_today(session, company_id)
-    agreement_rows = await billing.agreements(session, company_id)
+    # One whose stored schedule can't be read reports nothing here; the list and its page name it.
+    rows = await billing.agreements(session, company_id)
+    agreement_rows = [row for row in rows if billing.unscheduled(row.state) is None]
     docs = await _states(session, company_id, {e["doc_id"] for row in agreement_rows
                                                for e in billing.periods_of(row.state).values() if e.get("doc_id")})
     found = []

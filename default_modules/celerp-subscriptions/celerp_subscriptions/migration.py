@@ -190,6 +190,9 @@ async def check_template_schedule_integrity(session: AsyncSession, company_id) -
     old_next = await _old_next_dates(session, company_id)
     for row in await billing.agreements(session, company_id):
         state, tid = row.state, row.entity_id
+        if (exc := billing.unscheduled(state)) is not None:
+            problems.append(f"{tid} has schedule terms that build no schedule ({exc.key})")
+            continue
         kinds = _DOC_TYPES[billing.doc_kind(state)]
         for k, entry in (state.get("periods") or {}).items():
             doc_id = entry.get("doc_id")
@@ -204,9 +207,6 @@ async def check_template_schedule_integrity(session: AsyncSession, company_id) -
             if doc_id in claimed:
                 problems.append(f"{doc_id} is claimed by {claimed[doc_id]} and {here}")
             claimed.setdefault(doc_id, here)
-        if (exc := billing.unscheduled(state)) is not None:
-            problems.append(f"{tid} has schedule terms that build no schedule ({exc.key})")
-            continue
         before = old_next.get(tid)
         if not before or not state.get("anchor_date") or state["anchor_date"] != before:
             continue
@@ -295,6 +295,10 @@ async def reconcile_restored_company_schedules(*, session: AsyncSession, company
     await reconcile_company_schedules(session=session, company_id=company_id)
     for agreement in await billing.agreements(session, company_id):
         state = agreement.state
+        if billing.unscheduled(state) is not None:
+            # Its stored terms build no schedule, so it runs no mode (billable); setting it
+            # again on its page asks for consent as every agreement write does.
+            continue
         if (state.get("generation_mode") in billing.AUTO_MODES or state.get("auto_send")
                 or state.get("consents")):
             await billing.locked_agreement(session, company_id, agreement.entity_id, scheduled=False)
