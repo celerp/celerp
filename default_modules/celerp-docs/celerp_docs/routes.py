@@ -1426,8 +1426,9 @@ async def get_doc_summary(
     company = await session.get(Company, company_id)
     base_currency = (company.settings or {}).get("currency", "USD") if company else "USD"
     cards_f = _dc_replace(filters, **{k: _DOC_FILTER_DEFAULTS[k] for k in _DOC_SPLIT_FILTERS})
-    where, keep = await _doc_list_filter(session, company_id, filters)
-    card_where, card_keep = await _doc_list_filter(session, company_id, cards_f)
+    tz = await _company_tz(session, company_id)
+    where, keep = await _doc_list_filter(session, company_id, filters, tz)
+    card_where, card_keep = await _doc_list_filter(session, company_id, cards_f, tz)
     rows = (await session.execute(
         select(Projection.state, _sa.and_(*where).label("listed")).where(*card_where))).all()
 

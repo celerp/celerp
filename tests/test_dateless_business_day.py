@@ -40,7 +40,7 @@ async def _dateless_records(client, session) -> dict:
     assert r.status_code == 200, r.text
     await session.execute(update(Projection).where(Projection.entity_id.in_(("doc:IMP-TZ", "list:IMP-TZ")))
                           .values(created_at=CREATED))
-    await session.commit()
+    await session.flush()
     return h
 
 

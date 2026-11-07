@@ -217,8 +217,8 @@ async def require_number_free(session: AsyncSession, company_id, number: str, *,
                                  doc_type=doc_type)
     if holder is not None:
         kind, shown = holder
-        key = "documents.err_doc_number_taken" if kind == "doc" else "documents.err_list_number_taken"
-        raise HTTPException(status_code=409, detail=catalog_refusal(key, number=shown))
+        raise HTTPException(status_code=409, detail=catalog_refusal(
+            "documents.err_doc_number_taken" if kind == "doc" else "documents.err_list_number_taken", number=shown))
 
 
 async def claim_number(session: AsyncSession, company: Company, counter: str) -> str:

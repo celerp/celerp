@@ -28,7 +28,7 @@ async def test_weight_sold_lines_total_in_their_sell_by_unit(client, session):
     h = auth["headers"]
     from celerp.services.demo import seed_demo_items
     await seed_demo_items(session, auth["company_id"], auth["user_id"], vertical="gemstones")
-    await session.commit()
+    await session.flush()
     items = _items((await client.get("/items?limit=200", headers=h)).json())
     lots = [i for i in items if i.get("sell_by") == "carat" and float(i.get("quantity") or 0) > 0][:2]
     assert len(lots) == 2
