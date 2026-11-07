@@ -222,8 +222,7 @@ async def test_every_term_the_schedule_route_takes_is_refused_by_its_own_reason(
                                 spec.high + 1 if spec.high is not None else None) if v is not None]
                    if spec.kind == "whole" else ["bogus"] if spec.kind == "choice" else [])
         for value in outside:
-            change = {term: value, **({"frequency": "custom"} if term == "custom_interval_days" else {})}
-            r = await schedule(client, hd, eid, **change)
+            r = await schedule(client, hd, eid, **{term: value})
             tried.append(term)
             key = (r.json().get("detail") or {}).get("message_key") if r.status_code == 422 else None
             if key != spec.key:

@@ -99,6 +99,18 @@ async def test_entering_custom_days_bills_on_that_interval(owner_ui, monkeypatch
     assert (state["frequency"], state["custom_interval_days"]) == ("custom", 10)
 
 
+@pytest.mark.parametrize("days", ["0", "40000"])
+async def test_custom_days_outside_the_range_are_refused_by_the_modules_reason(owner_ui, monkeypatch, days):
+    """Any number of days entered chooses the custom frequency, so one outside the range gets
+    the schedule's own message with the range, never a stored value or a field name."""
+    freeze_day(monkeypatch, "2026-03-15")
+    eid = await agreement(owner_ui.api, {}, start="2026-03-01", activate=False)
+    r = await owner_ui.patch(f"/subscriptions/{eid}/schedule/custom_interval_days", data={"value": days})
+    assert _toast(r).get("message") == t("subscriptions.err_custom_interval", "en"), r.text[:300]
+    state = await template(owner_ui.api, {}, eid)
+    assert (state["frequency"], state.get("custom_interval_days")) == ("monthly", None)
+
+
 # --- Period status -----------------------------------------------------------
 
 async def test_periods_say_overdue_due_today_and_upcoming(owner_ui, monkeypatch):

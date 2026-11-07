@@ -383,3 +383,19 @@ async def test_restored_company_hook_reconciles_legacy_schedule_before_commit(se
     assert await _events(session, auth["company_id"]) == before
     conn = await session.connection()
     assert await conn.run_sync(lambda c: get_meta(c, marker)) == "done"
+
+
+@pytest.mark.parametrize("days", ["14", "", "x", 0, 40000])
+async def test_an_interval_a_schedule_that_is_not_custom_never_read_does_not_stop_the_move(days):
+    """An earlier release kept whatever the interval box held when the frequency changed from
+    custom; a monthly template's interval is never read, so the move keeps it only when it holds
+    and the moved schedule builds."""
+    from celerp_subscriptions.migration import legacy_schedule
+    from celerp_subscriptions.periods import Schedule
+
+    for status in ("active", "draft"):
+        state = {"status": status, "frequency": "monthly", "custom_interval_days": days, "start_date": "2026-01-01",
+                 "next_run_date": "2026-02-01"}
+        moved = {**state, **legacy_schedule(state), "periods": {}}
+        assert Schedule.from_state(moved).frequency == "monthly"
+        assert moved["custom_interval_days"] in (14, None, "")

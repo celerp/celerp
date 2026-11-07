@@ -284,7 +284,10 @@ async def test_a_2_8_0_draft_activates_with_the_interval_it_holds(client, sessio
     days; with the interval emptied, activation names the interval, not the frequency."""
     from ui.i18n import t
 
-    old = await _upgrade(session, monkeypatch, "2026-11-04")
+    async def interval_emptied(session, old):
+        await _set(session, old, "draft", frequency="custom", custom_interval_days="")
+
+    old = await _upgrade(session, monkeypatch, "2026-11-04", before_start=interval_emptied)
     r = await client.post(_url(old, "custom_typed", "/activate"), headers=old["headers"], json={})
     assert r.status_code == 200, r.text
     state = await _state(session, old, "custom_typed")
@@ -292,7 +295,6 @@ async def test_a_2_8_0_draft_activates_with_the_interval_it_holds(client, sessio
     starts = [row["service_start"] for row in (await _periods(client, old, "custom_typed"))["rows"]]
     assert "2026-10-15" in starts and "2026-10-29" in starts, starts
 
-    await _set(session, old, "draft", frequency="custom", custom_interval_days="")
     r = await client.post(_url(old, "draft", "/activate"), headers=old["headers"], json={})
     assert r.status_code == 422 and r.json()["detail"]["message"] == t("subscriptions.err_custom_interval"), r.text
 

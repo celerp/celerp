@@ -1378,7 +1378,7 @@ def setup_routes(app) -> None:
         except ValueError:
             return _action_error(t(_FIELD_ERRORS[field]))
         # The days box is the custom frequency: entering days chooses it (an empty box chooses nothing).
-        changes = {field: value, **({"frequency": "custom"} if field == "custom_interval_days" and value else {})}
+        changes = {field: value, **({"frequency": "custom"} if field == "custom_interval_days" and value is not None else {})}
         try:
             saved = await api.update_subscription_schedule(token, entity_id, changes)
         except APIError as e:

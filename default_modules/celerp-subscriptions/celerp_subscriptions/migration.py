@@ -36,7 +36,8 @@ from celerp.models.projections import Projection
 from celerp.services.business_time import company_today
 from celerp_docs.doc_constants import SCHEDULE_REMOVED_FIELDS
 from celerp_subscriptions import billing
-from celerp_subscriptions.periods import AUTO_MODES, BILLED, RELEASED, UNRESOLVED, Schedule, ScheduleError, shown
+from celerp_subscriptions.periods import (AUTO_MODES, BILLED, RELEASED, TERMS, UNRESOLVED, Schedule, ScheduleError,
+                                          shown)
 
 log = logging.getLogger(__name__)
 
@@ -67,13 +68,17 @@ def legacy_schedule(state: dict) -> dict:
     fields = {"anchor_date": anchor}
     if ran:
         fields.update(generation_mode="manual_due", billing_timing="advance")
+    days = state.get("custom_interval_days")
+    days = int(days) if isinstance(days, str) and days.strip().isdigit() else days
     if shown("frequency", state.get("frequency")) == "custom":
-        days = state.get("custom_interval_days")
-        days = int(days) if isinstance(days, str) and days.strip().isdigit() else days
         if days and type(days) is not int:
             raise ScheduleError("subscriptions.not_moved_custom_days" if ran else "subscriptions.err_custom_days",
                                 days=days)
         fields["custom_interval_days"] = days or (30 if ran else None)
+    elif days not in (None, ""):
+        # Only a custom frequency reads the interval: one left from an earlier choice is kept
+        # only when it holds.
+        fields["custom_interval_days"] = days if TERMS["custom_interval_days"].holds(days) else None
     Schedule.from_state({**state, **fields, "periods": {}})
     return fields
 

@@ -118,15 +118,12 @@ TERMS = {
 
 
 def check_terms(state: dict) -> None:
-    """ScheduleError naming the first stored term that does not hold what TERMS declares. The
-    custom interval is read only for a custom frequency, so only then is it checked, and then
-    it is required."""
+    """ScheduleError naming the first stored term that does not hold what TERMS declares. Every
+    set term is checked; the custom interval is also required for a custom frequency."""
     for name, term in TERMS.items():
         value = state.get(name)
-        if name == "custom_interval_days":
-            if shown("frequency", state.get("frequency")) != "custom":
-                continue
-        elif value is None or value == "":
+        required = name == "custom_interval_days" and shown("frequency", state.get("frequency")) == "custom"
+        if (value is None or value == "") and not required:
             continue
         if not term.holds(value):
             raise ScheduleError(term.key, **({"day": value} if term.kind == "date" else {}))
