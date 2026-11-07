@@ -138,10 +138,10 @@ async def test_legacy_numbering_rows_preview_what_each_record_takes(client, sess
     assert "list" not in await _rows(client, h), "a new company draws nothing from the shared counter"
     await _legacy(session, auth["company_id"])
     rows = await _rows(client, h)
-    quotation, shared, transfer = rows["quotation"]["preview"], rows["list"]["preview"], rows["transfer"]["preview"]
-    assert await _ref(client, h, (await _quote_doc(client, h, contacts)).json()["id"]) == quotation
-    assert await _ref(client, h, await _list(client, h, contacts, "quotation")) == shared
-    assert transfer == (await _rows(client, h))["list"]["preview"]
+    assert rows["transfer"]["preview"] == rows["list"]["preview"], "transfers draw the shared counter"
+    assert await _ref(client, h, (await _quote_doc(client, h, contacts)).json()["id"]) == rows["quotation"]["preview"]
+    assert await _ref(client, h, await _list(client, h, contacts, "quotation")) == rows["list"]["preview"]
+    transfer = (await _rows(client, h))["transfer"]["preview"]
     assert await _ref(client, h, await _list(client, h, contacts, "transfer")) == transfer
 
 

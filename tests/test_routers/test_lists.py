@@ -23,6 +23,12 @@ def _h(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
+async def _next_number(client, token, doc_type: str) -> str:
+    """The number the Numbering page says the next ``doc_type`` record takes."""
+    rows = (await client.get("/docs/sequences", headers=_h(token))).json()
+    return next(r["preview"] for r in rows if r["doc_type"] == doc_type)
+
+
 async def _create_list(client, token, **overrides) -> str:
     payload = {
         "list_type": "sale",
@@ -651,36 +657,38 @@ class TestListPrefixes:
             r = await client.patch(f"/docs/sequences/{doc_type}", headers=_h(token), json=body)
             assert r.status_code == 200, r.text
         assert (await _create_list(client, token, list_type="audit")).startswith("list:CNT-")
-        # A type with no setting of its own keeps drawing from the shared counter, so its
-        # numbers do not restart; setting the type splits it off under its own prefix.
+        # Quotation, transfer and untyped Lists keep drawing from the shared counter, so their
+        # numbers do not restart; saving the transfer row splits transfers off under their own
+        # prefix. The quotation row is the documents' counter, so quotation Lists stay shared.
         old = await _create_list(client, token, list_type="quotation")
         assert old.startswith("list:OLD-") and old.endswith("-0001")
+        assert (await _create_list(client, token, list_type="transfer")).startswith("list:OLD-")
+        r = await client.patch("/docs/sequences/transfer", headers=_h(token), json={})
+        assert r.status_code == 200, r.text
+        split = await _create_list(client, token, list_type="transfer")
+        assert split.startswith("list:TRF-") and split.endswith("-0003")
         r = await client.patch("/docs/sequences/quotation", headers=_h(token), json={})
         assert r.status_code == 200, r.text
-        split = await _create_list(client, token, list_type="quotation")
-        assert split.startswith("list:QUO-") and split.endswith("-0002")
+        assert (await _create_list(client, token, list_type="quotation")).startswith("list:OLD-")
 
     @pytest.mark.asyncio
     async def test_a_number_another_list_type_took_is_skipped_not_refused(self, client):
-        """Every List type has its own counter but all share the list: ids. A type whose
-        counter reaches a number another type already took draws the next free one."""
+        """Every List type has its own counter but all share one number space. A counter
+        reaching a number another List was given draws the next free one."""
         token = await _register(client)
-        r = await client.patch("/docs/sequences/transfer", headers=_h(token), json={"prefix": "QUO"})
-        assert r.status_code == 200, r.text
-        transfer = await _create_list(client, token, list_type="transfer")
+        taken = await _next_number(client, token, "quotation")
+        transfer = await _create_list(client, token, list_type="transfer", ref_id=taken)
         quote = await _create_list(client, token, list_type="quotation")
-        assert transfer.endswith("-0001") and quote.endswith("-0002") and quote != transfer
+        assert transfer == f"list:{taken}" and quote != transfer and quote.endswith("-0002")
         state = (await client.get(f"/lists/{transfer}", headers=_h(token))).json()
         assert state["list_type"] == "transfer"
 
     @pytest.mark.asyncio
     async def test_a_duplicate_never_takes_another_lists_number(self, client):
         token = await _register(client)
-        r = await client.patch("/docs/sequences/transfer", headers=_h(token), json={"prefix": "QUO", "next": 2})
-        assert r.status_code == 200, r.text
-        transfer = await _create_list(client, token, list_type="transfer")
         quote = await _create_list(client, token, list_type="quotation")
-        assert transfer.endswith("-0002") and quote.endswith("-0001")
+        transfer = await _create_list(client, token, list_type="transfer",
+                                      ref_id=await _next_number(client, token, "quotation"))
         r = await client.post(f"/lists/{quote}/duplicate", headers=_h(token))
         assert r.status_code == 200, r.text
         assert r.json()["id"] not in {quote, transfer}
@@ -688,24 +696,15 @@ class TestListPrefixes:
         assert state["list_type"] == "transfer"
 
     @pytest.mark.asyncio
-    async def test_a_number_a_quotation_document_holds_is_skipped(self, client):
-        """Quotation documents and quotation Lists draw one counter. After a reset, the next
-        List skips the number a document holds, so no document and List share a number."""
-        token = await _register(client)
-        r = await client.post("/docs", headers=_h(token), json={"doc_type": "quotation"})
-        assert r.status_code == 200, r.text
-        doc_ref = r.json()["id"].removeprefix("doc:")
-        r = await client.patch("/docs/sequences/quotation", headers=_h(token), json={"next": 1})
-        assert r.status_code == 200, r.text
-        quote = await _create_list(client, token, list_type="quotation")
-        assert quote.removeprefix("list:") != doc_ref
-        assert quote.endswith("-0002")
-
-    @pytest.mark.asyncio
     async def test_the_old_list_counter_is_still_in_the_api(self, client):
         token = await _register(client)
         rows = (await client.get("/docs/sequences", headers=_h(token))).json()
-        assert {"list", "quotation", "transfer", "audit", "writeoff", "shipping_doc"} <= {r["doc_type"] for r in rows}
+        assert {"quotation", "transfer", "audit", "writeoff", "shipping_doc"} <= {r["doc_type"] for r in rows}
+        assert "list" not in {r["doc_type"] for r in rows}, "a new company draws nothing from it"
+        r = await client.patch("/docs/sequences/list", headers=_h(token), json={"prefix": "OLD"})
+        assert r.status_code == 200, r.text
+        rows = (await client.get("/docs/sequences", headers=_h(token))).json()
+        assert "list" in {r["doc_type"] for r in rows}
 
 
 # ---------------------------------------------------------------------------

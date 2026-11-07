@@ -174,38 +174,51 @@ def draft_counter(doc_type: str) -> str:
 
 
 async def number_holder(session: AsyncSession, company_id, number: str, *,
-                        exclude_entity_id: str | None = None, doc_type: str | None = None) -> str | None:
-    """"doc" or "list" for the Document or List that shows ``number`` or is stored under it,
-    ignoring case as imports do; None when the number is free. Documents and Lists share one
-    number space, so every number is checked against this one rule. ``doc_type`` narrows the
-    Documents that count to that type, for imported books, where another system's bill and
-    invoice may carry the same number; every List still counts."""
+                        exclude_entity_id: str | None = None,
+                        doc_type: str | None = None) -> tuple[str, str] | None:
+    """(kind, number shown) for the Document or List ("doc" or "list") that shows ``number``, or
+    for a new record (no ``exclude_entity_id``) is stored under it, ignoring case as imports do;
+    None when the number is free. Documents and Lists share one number space, so every number
+    is checked against this one rule. ``doc_type`` narrows the Documents that count to that
+    type, for imported books, where another system's bill and invoice may carry the same
+    number; every List still counts."""
     wanted = number.strip().lower()
-    query = select(Projection.entity_type).where(
+    shown = Projection.state["ref_id"].as_string()
+    doc_number = Projection.state["doc_number"].as_string()
+    matches = [func.lower(shown) == wanted, func.lower(doc_number) == wanted]
+    if not exclude_entity_id:
+        # A new record is stored under its number, so a key another record is stored under counts too.
+        matches.append(func.lower(Projection.entity_id).in_((f"doc:{wanted}", f"list:{wanted}")))
+    query = select(Projection.entity_type, Projection.entity_id, shown, doc_number).where(
         Projection.company_id == company_id,
         Projection.entity_type.in_(("doc", "list")),
-        or_(func.lower(Projection.entity_id).in_((f"doc:{wanted}", f"list:{wanted}")),
-            func.lower(Projection.state["ref_id"].as_string()) == wanted,
-            func.lower(Projection.state["doc_number"].as_string()) == wanted),
+        or_(*matches),
     )
     if exclude_entity_id:
+        # The record taking the number keeps its own storage key, so only shown numbers count.
         query = query.where(Projection.entity_id != exclude_entity_id)
     if doc_type:
         query = query.where(or_(Projection.entity_type == "list",
                                 Projection.state["doc_type"].as_string() == doc_type))
-    return await session.scalar(query.limit(1))
+    row = (await session.execute(query.limit(1))).first()
+    if row is None:
+        return None
+    kind, entity_id, ref_id, number_shown = row
+    return kind, ref_id or number_shown or entity_id.split(":", 1)[1]
 
 
 async def require_number_free(session: AsyncSession, company_id, number: str, *,
                               exclude_entity_id: str | None = None, doc_type: str | None = None) -> None:
     """Refuse ``number`` while another Document or List shows it (number_holder), naming which
-    kind holds it. The company lock serializes the check with every other numbering write."""
+    kind holds it and the number as that record shows it. The company lock serializes the
+    check with every other numbering write."""
     await lock_company(session, company_id)
     holder = await number_holder(session, company_id, number, exclude_entity_id=exclude_entity_id,
                                  doc_type=doc_type)
     if holder is not None:
-        key = "documents.err_doc_number_taken" if holder == "doc" else "documents.err_list_number_taken"
-        raise HTTPException(status_code=409, detail=catalog_refusal(key, number=number.strip()))
+        kind, shown = holder
+        key = "documents.err_doc_number_taken" if kind == "doc" else "documents.err_list_number_taken"
+        raise HTTPException(status_code=409, detail=catalog_refusal(key, number=shown))
 
 
 async def claim_number(session: AsyncSession, company: Company, counter: str) -> str:

@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
+from celerp.accounting_roles import Refused
 from celerp_docs.sequences import (
     next_doc_ref,
     validate_pattern,
@@ -200,11 +201,25 @@ def test_types_that_drew_the_shared_counter_continue_it(list_type):
 def test_explicit_typed_list_counter_overrides_legacy_configuration():
     c = _company(sequences={
         "list": {"prefix": "OLD", "pattern": "{PREFIX}-{####}", "next": 40},
+        "transfer": {"prefix": "TRF", "pattern": "{PREFIX}-{####}", "next": 3},
+    })
+    assert list_sequence_key("transfer", c.settings) == "transfer"
+    assert list_sequence_key("quotation", c.settings) == "list"
+    assert next_doc_ref(c, list_sequence_key("transfer", c.settings)) == "TRF-0003"
+    assert c.settings["sequences"]["list"]["next"] == 40
+
+
+def test_quotation_lists_stay_on_the_legacy_counter_after_a_quotation_document():
+    """The quotation counter is the documents' counter: issuing a quotation document or
+    saving the quotation row never moves quotation Lists off the shared counter."""
+    c = _company(sequences={
+        "list": {"prefix": "OLD", "pattern": "{PREFIX}-{####}", "next": 40},
         "quotation": {"prefix": "QUO", "pattern": "{PREFIX}-{####}", "next": 3},
     })
-    assert list_sequence_key("quotation", c.settings) == "quotation"
-    assert list_sequence_key("transfer", c.settings) == "list"
-    assert next_doc_ref(c, list_sequence_key("quotation", c.settings)) == "QUO-0003"
+    assert list_sequence_key("quotation", c.settings) == "list"
+    assert list_sequence_key(None, c.settings) == "list"
+    update_sequence(c, "quotation", prefix="QTE")
+    assert list_sequence_key("quotation", c.settings) == "list"
     assert c.settings["sequences"]["list"]["next"] == 40
 
 
@@ -213,46 +228,44 @@ def test_legacy_sequence_preview_and_type_configuration_do_not_reset_numbering()
         "list": {"prefix": "OLD", "pattern": "{PREFIX}-{####}", "next": 40},
     })
     previews = {row["doc_type"]: row["preview"] for row in get_all_sequences(c)}
-    assert previews["quotation"] == "OLD-0040"
+    assert previews["list"] == "OLD-0040"
     assert previews["transfer"] == "OLD-0040"
-    update_sequence(c, "quotation", prefix="QUO")
-    assert list_sequence_key("quotation", c.settings) == "quotation"
-    assert next_doc_ref(c, "quotation") == "QUO-0040"
+    update_sequence(c, "transfer", prefix="TRF")
+    assert list_sequence_key("transfer", c.settings) == "transfer"
+    assert next_doc_ref(c, "transfer") == "TRF-0040"
     assert c.settings["sequences"]["list"]["next"] == 40
-
 
 
 def test_legacy_split_preserves_old_count_but_uses_new_type_prefix():
     c = _company(sequences={"list": {
         "prefix": "LEGACY", "pattern": "{PREFIX}-{####}", "next": 41,
     }})
-    changed = update_sequence(c, "quotation")
-    assert changed["preview"] == "QUO-0041"
-    assert list_sequence_key("quotation", c.settings) == "quotation"
-    assert next_doc_ref(c, "quotation") == "QUO-0041"
+    changed = update_sequence(c, "transfer")
+    assert changed["preview"] == "TRF-0041"
+    assert list_sequence_key("transfer", c.settings) == "transfer"
+    assert next_doc_ref(c, "transfer") == "TRF-0041"
     assert next_doc_ref(c, "list") == "LEGACY-0041"
 
 
 def test_split_refuses_same_namespace_as_legacy_counter_without_mutation():
     c = _company(sequences={"list": {
-        "prefix": "QUO", "pattern": "{PREFIX}-{####}", "next": 41,
+        "prefix": "TRF", "pattern": "{PREFIX}-{####}", "next": 41,
     }})
     before = dict(c.settings["sequences"])
-    with pytest.raises(ValueError, match="overlaps"):
-        update_sequence(c, "quotation")
-    assert c.settings["sequences"] == before
-
-    with pytest.raises(ValueError, match="overlaps"):
-        update_sequence(c, "quotation", prefix="QUO")
-    assert c.settings["sequences"] == before
-    assert update_sequence(c, "quotation", prefix="QUOTE")["preview"] == "QUOTE-0041"
+    for kwargs in ({}, {"prefix": "TRF"}):
+        with pytest.raises(Refused) as refused:
+            update_sequence(c, "transfer", **kwargs)
+        assert refused.value.detail["message_key"] == "documents.err_numbering_overlap"
+        assert c.settings["sequences"] == before
+    assert update_sequence(c, "transfer", prefix="XFER")["preview"] == "XFER-0041"
 
 
 def test_distinct_list_counters_cannot_be_configured_with_same_format():
     c = _company(sequences={"quotation": {
         "prefix": "SHARED", "pattern": "{PREFIX}-{####}", "next": 6,
     }})
-    with pytest.raises(ValueError, match="overlaps"):
+    with pytest.raises(Refused) as refused:
         update_sequence(c, "transfer", prefix="SHARED", pattern="{PREFIX}-{####}")
+    assert refused.value.detail["message_key"] == "documents.err_numbering_overlap"
     assert "transfer" not in c.settings["sequences"]
     assert update_sequence(c, "transfer", prefix="TRF", pattern="{PREFIX}-{####}")["prefix"] == "TRF"

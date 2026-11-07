@@ -433,12 +433,14 @@ def test_country_picker_list_is_usable():
 
 @pytest.mark.asyncio
 async def test_a_shipment_never_takes_another_lists_number(client):
-    """The shipment's counter reaching a number a transfer already took draws the next free
-    one rather than writing the shipment over that transfer."""
+    """The shipment's counter reaching a number a transfer was given draws the next free one
+    rather than writing the shipment over that transfer."""
     tok = await _token(client)
-    r = await client.patch("/docs/sequences/transfer", headers=_h(tok), json={"prefix": "SHIP"})
+    rows = (await client.get("/docs/sequences", headers=_h(tok))).json()
+    taken = next(r["preview"] for r in rows if r["doc_type"] == "shipping_doc")
+    r = await client.post("/lists", headers=_h(tok), json={"list_type": "transfer", "ref_id": taken})
     assert r.status_code == 200, r.text
-    transfer = (await _make_list(client, tok, "transfer"))["id"]
+    transfer = r.json()["id"]
     invoice = await _issued_doc(client, tok, "invoice")
     r = await _ship_docs(client, tok, [invoice])
     assert r.status_code == 200, r.text
