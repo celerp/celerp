@@ -164,3 +164,18 @@ def test_a_worker_uses_the_container_the_run_started(monkeypatch):
         conftest_support.provision_test_database(
             {**controller, TEST_DATABASE_VAR: "postgresql://u@db.example.com/celerp_test",
              "PYTEST_XDIST_WORKER": "gw0"}, no_container)
+
+
+async def test_maintenance_never_runs_on_the_tables_the_run_builds(session):
+    """Maintenance (VACUUM, ANALYZE) holds a table in a mode a company reset's no-wait locks
+    refuse as busy, at a moment the server picks, so it is off on every table the run builds."""
+    from sqlalchemy import text
+
+    from celerp.models.base import Base
+
+    rows = dict((await session.execute(text(
+        "SELECT relname, coalesce(reloptions, '{}') FROM pg_class "
+        "WHERE relkind = 'r' AND relnamespace = 'public'::regnamespace"))).all())
+    built = [name for name in Base.metadata.tables if name in rows]
+    assert len(built) > 50
+    assert [name for name in built if "autovacuum_enabled=false" not in rows[name]] == []

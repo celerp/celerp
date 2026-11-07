@@ -848,6 +848,14 @@ async def _db_engine():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(pacing_guard.install)
+        # Maintenance holds a table SHARE UPDATE EXCLUSIVE, which the locks a company reset
+        # takes without waiting refuse as busy. Its timing is the server's, never the
+        # test's, so it does not run on this run's tables.
+        await conn.execute(text(
+            "DO $$ DECLARE r record; BEGIN FOR r IN SELECT oid::regclass AS t FROM pg_class "
+            "WHERE relkind = 'r' AND relnamespace = 'public'::regnamespace LOOP "
+            "EXECUTE format('ALTER TABLE %s SET (autovacuum_enabled = false, "
+            "toast.autovacuum_enabled = false)', r.t); END LOOP; END $$"))
     yield engine
     await engine.dispose()
 
