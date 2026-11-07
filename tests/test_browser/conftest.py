@@ -206,21 +206,43 @@ def seeded_user(api_server):
 
 # ── Playwright fixtures ────────────────────────────────────────────────────────
 
+def session_cookies(seeded_user) -> list[dict]:
+    """The suite's session as a browser holds it: the access cookie and, as a sign-in sets
+    both, the refresh one beside it, so the session outlives the access token's few minutes
+    for the length of the suite, the way a signed-in user's does."""
+    return [{"name": name, "value": seeded_user[key], "domain": "127.0.0.1", "path": "/"}
+            for name, key in (("celerp_token", "access_token"), ("celerp_refresh", "refresh_token"))]
+
+
 @pytest.fixture(scope="session")
 def browser_context(playwright, ui_server, seeded_user):
-    """Chromium session context with the session cookies pre-set. The refresh cookie is set
-    beside the access one, as a sign-in sets both, so the session outlives the access token's
-    few minutes for the length of the suite, the way a signed-in user's does."""
+    """Chromium session context signed in with the suite's session cookies."""
     browser = playwright.chromium.launch(headless=True)
     ctx = browser.new_context(base_url=ui_server)
-    ctx.add_cookies([{"name": name, "value": seeded_user[key], "domain": "127.0.0.1", "path": "/"}
-                     for name, key in (("celerp_token", "access_token"), ("celerp_refresh", "refresh_token"))])
+    ctx.add_cookies(session_cookies(seeded_user))
     # The health banner reports the real host's RAM/CPU/disk. Under a parallel suite the CPU
     # passes its warning line, and the banner, shown just after load, pushes the page down
     # under whatever a test is hovering. No browser test is about the host's load.
     ctx.route("**/health/system", lambda route: route.fulfill(json={"overall": "ok"}))
     yield ctx
     browser.close()
+
+
+@pytest.fixture(autouse=True)
+def _shared_session_kept(request):
+    """Every test that uses the shared browser leaves it signed in as it found it: its cookies
+    are put back after the test, whoever the test signed the browser in as. A test's own
+    restore could only write back the tokens the suite started with, and with no refresh
+    cookie beside it the session ends once that access token expires, a few minutes into a
+    run; every test after it then lands on the sign-in page."""
+    if "browser_context" not in request.fixturenames:
+        yield
+        return
+    ctx = request.getfixturevalue("browser_context")
+    saved = ctx.cookies()
+    yield
+    ctx.clear_cookies()
+    ctx.add_cookies(saved)
 
 
 @pytest.fixture
@@ -470,13 +492,13 @@ def _set_auth_cookie(browser_context, token: str) -> None:
 
 
 @pytest.fixture
-def fresh_company(api_server, seeded_user, browser_context, api):
+def fresh_company(api_server, browser_context, api):
     """A brand-new, empty company for tests that need a clean slate, isolated from
     the shared session company's accumulated data (drafts/finals/contacts).
 
     Creates the company (POST /companies), points BOTH the browser page (auth
-    cookie) and the returned API client at it, and restores the session company
-    afterward so other tests are unaffected.
+    cookie) and the returned API client at it; _shared_session_kept puts the browser
+    back on the session company afterward.
     """
     import uuid as _uuid
     r = api.post("/companies", json={"name": f"Isolated {_uuid.uuid4().hex[:6]}"})
@@ -488,11 +510,8 @@ def fresh_company(api_server, seeded_user, browser_context, api):
         base_url=api_server, headers={"Authorization": f"Bearer {new_token}"}, timeout=10,
         limits=_API_LIMITS,
     )
-    try:
+    with client:
         yield client
-    finally:
-        client.close()
-        _set_auth_cookie(browser_context, seeded_user["access_token"])
 
 
 @pytest.fixture(scope="session", autouse=True)

@@ -88,10 +88,9 @@ def demo_token(api_server, api):
 
 
 @pytest.fixture
-def demo_page(page, browser_context, seeded_user, demo_token):
+def demo_page(page, browser_context, demo_token):
     _set_auth_cookie(browser_context, demo_token)
-    yield page
-    _set_auth_cookie(browser_context, seeded_user["access_token"])
+    return page
 
 
 def _run(page, action: dict) -> None:

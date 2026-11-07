@@ -4,7 +4,6 @@ Visual Playwright test for file management UI - screenshot-only, no uploads.
 from __future__ import annotations
 import os
 import pytest
-import httpx
 from urllib.parse import quote
 from playwright.sync_api import Page
 
@@ -20,17 +19,15 @@ def ss(page: Page, name: str):
     print(f"\n  SCREENSHOT: {path}")
 
 
-def test_contact_files_section(page: Page, seeded_user: dict, api_server, ui_server):
+def test_contact_files_section(page: Page, api, ui_server):
     # Use the per-worker server URLs (fixtures), not hardcoded ports, so the suite can shard.
-    _API_BASE, _UI_BASE = api_server, ui_server
-    token = seeded_user["access_token"]
-    hdrs = {"Authorization": f"Bearer {token}"}
+    _UI_BASE = ui_server
 
-    r = httpx.post(f"{_API_BASE}/crm/contacts", json={
+    r = api.post("/crm/contacts", json={
         "name": "File Test Contact",
         "type": "customer",
         "email": "filestest@example.com"
-    }, headers=hdrs)
+    })
     assert r.status_code in (200, 201), f"contact: {r.status_code} {r.text[:200]}"
     data = r.json()
     raw_id = data.get("entity_id") or data.get("id")
@@ -57,30 +54,28 @@ def test_contact_files_section(page: Page, seeded_user: dict, api_server, ui_ser
     print(f"  Table headers: {headers}")
 
 
-def test_doc_files_accordion(page: Page, seeded_user: dict, api_server, ui_server):
-    _API_BASE, _UI_BASE = api_server, ui_server
-    token = seeded_user["access_token"]
-    hdrs = {"Authorization": f"Bearer {token}"}
+def test_doc_files_accordion(page: Page, api, ui_server):
+    _UI_BASE = ui_server
 
     # Get or create contact
-    r = httpx.get(f"{_API_BASE}/crm/contacts", headers=hdrs, params={"limit": 1})
+    r = api.get("/crm/contacts", params={"limit": 1})
     contacts_data = r.json()
     if isinstance(contacts_data, list) and contacts_data:
         contact_id = contacts_data[0].get("entity_id") or contacts_data[0].get("id")
     elif isinstance(contacts_data, dict) and contacts_data.get("items"):
         contact_id = contacts_data["items"][0].get("entity_id") or contacts_data["items"][0].get("id")
     else:
-        r2 = httpx.post(f"{_API_BASE}/crm/contacts", json={"name": "Doc Test", "type": "customer"}, headers=hdrs)
+        r2 = api.post("/crm/contacts", json={"name": "Doc Test", "type": "customer"})
         contact_id = r2.json().get("entity_id") or r2.json().get("id")
 
     # Create draft invoice
-    r = httpx.post(f"{_API_BASE}/docs", json={
+    r = api.post("/docs", json={
         "doc_type": "invoice",
         "entity_id": contact_id,
         "issue_date": "2026-05-01",
         "due_date": "2026-05-31",
         "line_items": []
-    }, headers=hdrs)
+    })
     assert r.status_code in (200, 201), f"doc: {r.status_code} {r.text[:200]}"
     doc_id = r.json().get("entity_id") or r.json().get("id")
     print(f"\n  Doc ID: {doc_id}")
