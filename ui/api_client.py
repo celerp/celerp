@@ -2192,9 +2192,9 @@ async def subscriptions_summary(token: str, everything: bool = False) -> dict:
         return _raise(await c.get("/subscriptions/summary", params={"all": "true"} if everything else {})).json()
 
 
-async def acknowledge_subscriptions_summary(token: str) -> dict:
+async def acknowledge_subscriptions_summary(token: str, read_at: str | None) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post("/subscriptions/summary/ack")).json()
+        return _raise(await c.post("/subscriptions/summary/ack", json={"read_at": read_at})).json()
 
 
 # ---------------------------------------------------------------------------

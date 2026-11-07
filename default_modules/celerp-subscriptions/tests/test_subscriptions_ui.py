@@ -22,6 +22,11 @@ def _loads_with(r, page: str, message: str) -> None:
     assert json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"] == message
 
 
+def _hx_vals(page: str, post: str) -> dict:
+    """What the page's button posting to ``post`` sends with it, as the browser would."""
+    return json.loads(BeautifulSoup(page, "html.parser").find(attrs={"hx-post": post})["hx-vals"])
+
+
 def _authed(role: str = "owner") -> dict:
     return {"celerp_token": make_test_token(role=role)}
 
@@ -355,7 +360,7 @@ class TestBillingPages:
         assert t("subscriptions.summary_banner", "en", generated=1, sent=0, failed=0) in listing
         page = (await owner_ui.get("/subscriptions/summary")).text
         assert f'href="/subscriptions/{eid}"' in page and t("subscriptions.summary_ack", "en") in page
-        r = await owner_ui.post("/subscriptions/summary/ack")
+        r = await owner_ui.post("/subscriptions/summary/ack", data=_hx_vals(page, "/subscriptions/summary/ack"))
         _loads_with(r, "/subscriptions/summary", t("subscriptions.done_summary_read", "en"))
         assert t("subscriptions.summary_empty", "en") in (await owner_ui.get("/subscriptions/summary")).text
         assert f'href="/subscriptions/{eid}"' in (await owner_ui.get("/subscriptions/summary?all=1")).text

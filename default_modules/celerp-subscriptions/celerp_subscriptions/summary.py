@@ -4,7 +4,8 @@
 
 Nothing is copied: a billed period records when and whether it was billed unattended,
 and its send records each attempt. A user's acknowledgment is a wall-clock time kept in
-the company settings per user; the summary shows what was recorded after it. An
+the company settings per user, the time the page they marked read was read; the summary shows
+what was recorded after it. An
 unattended mode whose authorizer no longer holds its permission, and an email waiting to go
 out on its own, are shown while they last; an email that will not go on its own is a row like
 any other. A failed send keeps its reason as a catalog key, worded
@@ -13,6 +14,8 @@ in the reader's language when read.
 from __future__ import annotations
 
 import uuid
+from contextlib import suppress
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,11 +40,17 @@ TO_CHECK = tuple(dict.fromkeys(kind for kind in _SEND_KINDS.values() if kind != 
 _LAPSED = {"generation": "billing_lapsed", "sending": "sending_lapsed"}
 
 
-async def acknowledge(session: AsyncSession, company_id, user_id) -> str:
-    """Record that ``user_id`` has read the summary up to now."""
+async def acknowledge(session: AsyncSession, company_id, user_id, read_at: datetime) -> str:
+    """Record that ``user_id`` has read the summary as it was at ``read_at`` (the time report
+    answered for the page they read): never later than now, and never earlier than what they
+    had already read."""
     company = await locked_company(session, company_id)
-    at = billing.now_stamp()
     settings = dict(company.settings or {})
+    at = min(read_at.astimezone(timezone.utc), billing.now())
+    previous = (settings.get(ACK_SETTING) or {}).get(str(user_id))
+    with suppress(TypeError, ValueError):
+        at = max(at, datetime.fromisoformat(previous).astimezone(timezone.utc))
+    at = at.isoformat()
     settings[ACK_SETTING] = {**(settings.get(ACK_SETTING) or {}), str(user_id): at}
     company.settings = settings
     await session.flush()
@@ -113,7 +122,9 @@ async def modes_answer(session: AsyncSession, company_id, entity_id: str) -> dic
 
 
 async def report(session: AsyncSession, company_id, user_id, *, everything: bool = False) -> dict:
-    """Counts by kind and the rows behind them, newest first."""
+    """Counts by kind and the rows behind them, newest first, and ``read_at``: the time taken
+    before any row is read, which Mark as read on this answer acknowledges up to."""
+    read_at = billing.now_stamp()
     company = await session.get(Company, company_id)
     settings = (company.settings or {}) if company else {}
     since = "" if everything else ((settings.get(ACK_SETTING) or {}).get(str(user_id)) or "")
@@ -159,4 +170,4 @@ async def report(session: AsyncSession, company_id, user_id, *, everything: bool
                      "message": _message(r["kind"], ref, r.get("error_key"))})
     rows.sort(key=lambda r: r["at"] or "", reverse=True)
     counts = {kind: sum(1 for r in rows if r["kind"] == kind) for kind in KINDS}
-    return {"counts": counts, "rows": rows}
+    return {"counts": counts, "rows": rows, "read_at": read_at}

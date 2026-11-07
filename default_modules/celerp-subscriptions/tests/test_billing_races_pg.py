@@ -358,7 +358,8 @@ async def test_a_send_cut_off_after_the_summary_was_read_is_listed_again(committ
     async with _app_client(factory) as (client, _pending):
         fresh = (await client.get("/subscriptions/summary", headers=owner)).json()
         assert [r["kind"] for r in fresh["rows"] if r["kind"].startswith("send")] == ["send_sending"]
-        assert (await client.post("/subscriptions/summary/ack", headers=owner)).status_code == 200
+        assert (await client.post("/subscriptions/summary/ack", headers=owner,
+                                  json={"read_at": fresh["read_at"]})).status_code == 200
 
         class Later(real_datetime):
             @classmethod
@@ -372,7 +373,8 @@ async def test_a_send_cut_off_after_the_summary_was_read_is_listed_again(committ
         assert [r["kind"] for r in later["rows"] if r["kind"].startswith("send")] == ["send_unconfirmed"]
         assert later["counts"]["send_unconfirmed"] == 1
         # Read again, it is covered until its reading changes once more.
-        assert (await client.post("/subscriptions/summary/ack", headers=owner)).status_code == 200
+        assert (await client.post("/subscriptions/summary/ack", headers=owner,
+                                  json={"read_at": later["read_at"]})).status_code == 200
         assert (await client.get("/subscriptions/summary", headers=owner)).json()["rows"] == []
 
 

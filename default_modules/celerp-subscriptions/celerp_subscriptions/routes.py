@@ -13,7 +13,7 @@ import uuid
 from datetime import date
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AwareDatetime, BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
@@ -61,6 +61,10 @@ async def refused_period(session, company_id, entity_id: str, k: int | None) -> 
         return {}
     schedule = Schedule.from_state(state)
     return {"service_start": schedule.start(k).isoformat(), "service_end": schedule.service_end(k).isoformat()}
+
+
+class AckBody(BaseModel):
+    read_at: AwareDatetime  # the summary answer's read_at: what the page marked read showed
 
 
 class RequestBody(BaseModel):
@@ -312,13 +316,15 @@ def _build_router() -> APIRouter:
 
     @router.post("/summary/ack")
     async def ack_summary(
+        body: AckBody,
         company_id: uuid.UUID = Depends(get_current_company_id),
         _: None = require_permission("view_subscriptions"),
         user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
-        """Mark the summary read up to now (the server's clock, never the client's)."""
-        at = await summary.acknowledge(session, company_id, user.id)
+        """Mark the summary read as the page showed it (``read_at`` from GET /summary), held to
+        the server's clock: never later than now."""
+        at = await summary.acknowledge(session, company_id, user.id, body.read_at)
         await session.commit()
         return {"ok": True, "at": at}
 

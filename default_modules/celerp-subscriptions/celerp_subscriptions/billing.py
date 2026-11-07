@@ -241,9 +241,9 @@ async def write_agreement(session: AsyncSession, company_id, entity_id: str, cha
         raise HTTPException(status_code=409, detail=t(
             "subscriptions.err_status_void", ref=before.get("ref_id") or entity_id))
     drop = tuple(k for k in drop if k in before and k not in changes)
-    if actor_id is not None and (key := ended_refusal(
+    if actor_id is not None and (refusal := ended_refusal(
             before, {**{k: v for k, v in before.items() if k not in drop}, **changes})):
-        raise HTTPException(status_code=409, detail=catalog_refusal(key, ref=before.get("ref_id") or entity_id))
+        raise HTTPException(status_code=409, detail=catalog_refusal(refusal, ref=before.get("ref_id") or entity_id))
     if not changes and all(shown(k, before[k]) == shown(k, None) for k in drop):
         drop = ()
     merged = {**{k: v for k, v in before.items() if k not in drop}, **changes}

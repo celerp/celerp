@@ -1092,7 +1092,7 @@ def setup_routes(app) -> None:
         content = Div(
             page_header(title,
                         Button(t("subscriptions.summary_ack"), hx_post="/subscriptions/summary/ack", hx_swap="none",
-                               cls="btn btn--primary") if rows and not all else "",
+                               hx_vals={"read_at": summary.get("read_at")}, cls="btn btn--primary") if rows and not all else "",
                         toggle),
             P(t("subscriptions.summary_counts", generated=counts.get("generated", 0), sent=counts.get("sent", 0),
                 failed=_sends_to_check(counts)), cls="text-muted"),
@@ -1108,7 +1108,7 @@ def setup_routes(app) -> None:
         if not token:
             return Response(status_code=401, headers={"HX-Redirect": "/login"})
         try:
-            await api.acknowledge_subscriptions_summary(token)
+            await api.acknowledge_subscriptions_summary(token, (await request.form()).get("read_at"))
         except APIError as e:
             return _refused(e)
         return _done("/subscriptions/summary", t("subscriptions.done_summary_read"))
