@@ -45,6 +45,8 @@ _META_TABLE = "instance_meta"
 # lifespan (handlers loaded), gated by its own key.
 PENDING_BACKFILLS_KEY = "backfills_pending"
 PROJECTION_VERSION_KEY = "projection_version"
+# Markers an earlier release wrote that nothing reads now: the reconcile deletes them.
+RETIRED_META_KEYS = ("backfill_version",)
 
 
 def _ensure_meta_table(conn: "Connection") -> None:
@@ -151,14 +153,19 @@ def replay_data_backfills(engine: "Engine") -> tuple[list[str], list[str]]:
     cannot undo work that already converged. One failing backfill is logged
     loudly and stays pending, so the next start retries it; the rest still run.
 
+    Markers no version reads any more (RETIRED_META_KEYS) are deleted first.
+
     Returns `(replayed, failures)`: the revision ids that applied cleanly and
     the ids that raised, both in apply order.
     """
     from alembic.operations import Operations
     from alembic.runtime.migration import MigrationContext
+    from sqlalchemy import bindparam, text
 
     with engine.begin() as conn:
         pending = set(pending_backfills(conn))
+        conn.execute(text(f"DELETE FROM {_META_TABLE} WHERE key IN :keys").bindparams(
+            bindparam("keys", expanding=True)), {"keys": list(RETIRED_META_KEYS)})
     replayed: list[str] = []
     failures: list[str] = []
     for sc in data_backfill_scripts():

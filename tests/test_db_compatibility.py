@@ -23,6 +23,7 @@ from sqlalchemy.pool import NullPool
 from alembic_support import alembic_run, history_by_hand
 
 from celerp.db_url import sync_url
+from celerp.migrations._data_reconcile import RETIRED_META_KEYS
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 UNKNOWN = "ffff00c0ffee"
@@ -539,10 +540,27 @@ def test_current_database_start_changes_nothing(scratch, tmp_path, monkeypatch):
     from celerp.cli import _migrate_to_head
     from celerp.config import settings
     monkeypatch.setattr(settings, "data_dir", tmp_path)
-    url = scratch("head", RUNNING, backfill=RUNNING, opened=RUNNING)
+    url = scratch("head", RUNNING, opened=RUNNING)
     before = snapshot(url)
     assert _migrate_to_head(url) is True
     assert snapshot(url) == before
+
+
+@pytest.mark.parametrize("key", RETIRED_META_KEYS)
+def test_a_start_removes_each_marker_no_version_reads_any_more(scratch, tmp_path, monkeypatch, key):
+    """A marker an earlier release wrote and nothing reads now goes on the next start;
+    every marker this version reads stays as it was."""
+    from celerp.cli import _migrate_to_head
+    from celerp.config import settings
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    url = scratch("head", RUNNING, opened=RUNNING)
+    kept = snapshot(url)["instance_meta"]
+    engine = sa.create_engine(sync_url(url), poolclass=NullPool)
+    with engine.begin() as conn:
+        conn.execute(sa.text("INSERT INTO instance_meta VALUES (:k, '2.5.0')"), {"k": key})
+    engine.dispose()
+    assert _migrate_to_head(url) is True
+    assert snapshot(url)["instance_meta"] == kept
 
 
 # ── The newest Celerp that began opening the database ────────────────────────
