@@ -3059,6 +3059,7 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None, s
             cls="sidebar-footer",
         ),
         Script(_SIDEBAR_JS),
+        id="sidebar",
         cls="sidebar",
     )
 

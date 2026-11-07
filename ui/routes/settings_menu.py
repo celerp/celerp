@@ -16,7 +16,7 @@ from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import base_shell, flash, module_nav, page_header, page_title
+from ui.components.shell import _sidebar, base_shell, flash, module_nav, page_header, page_title
 from ui.config import get_role as _get_role, get_token as _token
 from ui.i18n import get_lang, t
 from ui.nav_overrides import apply_nav_overrides, entry_id, group_id, protected
@@ -163,26 +163,39 @@ def setup_routes(app):
             return flash(t("settings_menu.owner_only")), None
         return token, settings
 
-    async def _save(request: Request, change) -> FT:
-        """Apply ``change(chosen, settings)`` to the saved choices and redraw the editor."""
+    def _redrawn(request: Request, settings: dict, notice: FT | str = "") -> tuple[FT, FT]:
+        """The editor, and the side menu swapped in beside it so the page shows the saved menu."""
+        menu = _sidebar("settings", lang=get_lang(request), role=_get_role(request), request=request, settings=settings)
+        return _editor(settings, notice), menu(hx_swap_oob="true")
+
+    async def _write(request: Request, write) -> tuple[FT, FT] | FT:
+        """Run ``write(token, current, settings)`` on the latest saved choices and redraw.
+
+        A write that loses to a save made elsewhere (412) is retried on a fresh read. After three
+        losses in a row the page says the change was not saved and shows the menu as it is now.
+        """
         token, settings = await _gate(request)
         if settings is None:
             return token
-        form = await request.form()
-        for attempt in range(3):
+        for _attempt in range(3):
             try:
                 current = await api.get_nav_overrides(token)
-                chosen = _current(current)
-                change(chosen, settings, form)
-                saved = await api.patch_nav_overrides(
-                    token, chosen, etag=current["_etag"]
-                )
-                return _editor(_after(settings, saved))
+                return _redrawn(request, _after(settings, await write(token, current, settings)))
             except APIError as e:
-                if e.status == 412 and attempt < 2:
-                    continue
-                return _editor(settings, flash(str(e.detail)))
-        raise AssertionError("menu retry exhausted")
+                if e.status != 412:
+                    return _redrawn(request, settings, flash(str(e.detail)))
+        latest = _after(settings, _current(await api.get_nav_overrides(token)))
+        return _redrawn(request, latest, flash(t("settings_menu.changed_elsewhere")))
+
+    async def _save(request: Request, change) -> tuple[FT, FT] | FT:
+        """Apply ``change(chosen, settings, form)`` to the saved choices."""
+        form = await request.form()
+
+        async def write(token: str, current: dict, settings: dict) -> dict:
+            chosen = _current(current)
+            change(chosen, settings, form)
+            return await api.patch_nav_overrides(token, chosen, etag=current["_etag"])
+        return await _write(request, write)
 
     @app.get("/settings/menu")
     async def settings_menu_page(request: Request):
@@ -230,16 +243,6 @@ def setup_routes(app):
 
     @app.post("/settings/menu/reset")
     async def settings_menu_reset(request: Request):
-        token, settings = await _gate(request)
-        if settings is None:
-            return token
-        for attempt in range(3):
-            try:
-                current = await api.get_nav_overrides(token)
-                await api.reset_nav_overrides(token, etag=current["_etag"])
-                break
-            except APIError as e:
-                if e.status == 412 and attempt < 2:
-                    continue
-                return _editor(settings, flash(str(e.detail)))
-        return _editor({k: v for k, v in settings.items() if k != KEY})
+        async def write(token: str, current: dict, settings: dict) -> dict:
+            return await api.reset_nav_overrides(token, etag=current["_etag"])
+        return await _write(request, write)

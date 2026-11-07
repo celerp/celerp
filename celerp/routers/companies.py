@@ -524,6 +524,24 @@ async def get_nav_overrides(
     return {field: list(stored.get(field) or []) for field in nav_overrides.FIELDS}
 
 
+async def _nav_overrides_for_write(request: Request, session: AsyncSession, company_id) -> tuple[Company, dict]:
+    """The locked company and a copy of its settings, once the write names the revision it replaces.
+
+    A write without If-Match is refused with 428 and one naming an older revision with 412, each
+    saying what to do, so a second tab or API client cannot overwrite choices it never read.
+    """
+    expected = request.headers.get("if-match")
+    if expected is None:
+        raise HTTPException(status_code=428, detail=t("settings_menu.err_version_required"))
+    company = await locked_company(session, company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
+    settings = dict(company.settings or {})
+    if expected != nav_overrides.revision(settings.get(nav_overrides.KEY)):
+        raise HTTPException(status_code=412, detail=t("settings_menu.err_changed"))
+    return company, settings
+
+
 @router.patch("/me/nav-overrides")
 async def patch_nav_overrides(
     payload: NavOverridesPatch,
@@ -540,15 +558,7 @@ async def patch_nav_overrides(
     choices at all is the same as a reset.
     """
     cleaned = nav_overrides.normalize(payload.model_dump())
-    expected = request.headers.get("if-match")
-    if expected is None:
-        raise HTTPException(status_code=428)
-    company = await locked_company(session, company_id)
-    if company is None:
-        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
-    settings = dict(company.settings or {})
-    if expected != nav_overrides.revision(settings.get(nav_overrides.KEY)):
-        raise HTTPException(status_code=412)
+    company, settings = await _nav_overrides_for_write(request, session, company_id)
     if cleaned:
         settings[nav_overrides.KEY] = cleaned
     else:
@@ -566,15 +576,7 @@ async def reset_nav_overrides(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Put the side menu back to its default entries and order."""
-    expected = request.headers.get("if-match")
-    if expected is None:
-        raise HTTPException(status_code=428)
-    company = await locked_company(session, company_id)
-    if company is None:
-        raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
-    settings = dict(company.settings or {})
-    if expected != nav_overrides.revision(settings.get(nav_overrides.KEY)):
-        raise HTTPException(status_code=412)
+    company, settings = await _nav_overrides_for_write(request, session, company_id)
     settings.pop(nav_overrides.KEY, None)
     company.settings = settings
     await session.commit()

@@ -12,5 +12,18 @@
     "th",
     "vi"
   ],
-  "keys": {}
+  "keys": {
+    "settings_menu.err_version_required": {
+      "en": "This change must say which version of the side menu it replaces. Read the side menu first and send its ETag in an If-Match header.",
+      "params": []
+    },
+    "settings_menu.err_changed": {
+      "en": "The side menu changed after you read it, so this change was not saved. Read it again and make the change on the current version.",
+      "params": []
+    },
+    "settings_menu.changed_elsewhere": {
+      "en": "Someone else changed the side menu while you were saving, so your change was not saved. The list below shows the menu as it is now. Make your change again.",
+      "params": []
+    }
+  }
 }

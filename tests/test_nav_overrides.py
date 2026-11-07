@@ -433,3 +433,87 @@ async def test_the_page_saves_through_the_api(client, session):
     assert reset.status_code == 200, reset.text
     await session.refresh(company)
     assert KEY not in company.settings
+
+
+# ── Refusals and the menu beside the editor ───────────────────────────────
+
+def _sidebar_of(html: str) -> str:
+    """The side menu swapped in beside the editor (out of band), or fail."""
+    found = re.search(r'<nav[^>]*id="sidebar"[^>]*hx-swap-oob="true"[^>]*>.*?</nav>', html, re.S)
+    assert found, "no side menu swapped in beside the editor"
+    return found.group(0)
+
+
+@pytest.mark.asyncio
+async def test_the_api_says_why_it_refuses_a_menu_write_without_or_with_an_old_version(client):
+    from ui.i18n import refusal_text, t
+
+    h = {"Authorization": f"Bearer {await register_admin(client)}"}
+    old = await _versioned(client, h)
+    assert (await client.patch("/companies/me/nav-overrides", json={"hidden_entries": ["customers"]}, headers=old)).status_code == 200
+
+    missing = [await client.patch("/companies/me/nav-overrides", json={}, headers=h),
+               await client.delete("/companies/me/nav-overrides", headers=h)]
+    stale = [await client.patch("/companies/me/nav-overrides", json={}, headers=old),
+             await client.delete("/companies/me/nav-overrides", headers=old)]
+
+    def said(r):
+        return r.status_code, r.json()["detail"]["message_key"], refusal_text(r.json()["detail"])
+
+    assert [said(r) for r in missing] == [(428, "settings_menu.err_version_required", t("settings_menu.err_version_required"))] * 2
+    assert [said(r) for r in stale] == [(412, "settings_menu.err_changed", t("settings_menu.err_changed"))] * 2
+
+
+def _conflicting_patches(theirs: dict):
+    """Every save loses to another tab that keeps saving ``theirs``; reads see the other tab's menu."""
+    from ui.api_client import APIError
+
+    calls, patches = _page_patches(saved=theirs)
+    attempts: list[str] = []
+
+    async def lose(*_a, **_k):
+        attempts.append("write")
+        raise APIError(412, "Precondition Failed")
+
+    return attempts, (patches[0], patches[1], patch_("patch_nav_overrides", lose), patch_("reset_nav_overrides", lose))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["hide", "reset"])
+async def test_a_save_that_keeps_losing_says_so_and_shows_the_menu_as_it_is_now(ui_client, action):
+    from ui.i18n import t
+
+    gid, ids = _a_group_of_three()
+    attempts, patches = _conflicting_patches({"hidden_entries": [ids[0]]})
+    ui_client.cookies.update({"celerp_token": make_test_token(role="owner")})
+    with patches[0], patches[1], patches[2], patches[3]:
+        if action == "hide":
+            r = await ui_client.post("/settings/menu/hide", data={"kind": "entry", "id": ids[1], "hidden": "1"})
+        else:
+            r = await ui_client.post("/settings/menu/reset")
+
+    assert r.status_code == 200 and len(attempts) == 3
+    assert t("settings_menu.changed_elsewhere") in r.text and "Precondition" not in r.text
+    # The editor shows the other tab's choice, so the owner redoes the change on the real menu.
+    assert re.search(rf'data-entry="{re.escape(ids[0])}" class="[^"]*menu-editor__row--hidden', r.text)
+    assert not re.search(rf'data-entry="{re.escape(ids[1])}" class="[^"]*menu-editor__row--hidden', r.text)
+    assert _href_of(ids[0]) not in _hrefs(_sidebar_of(r.text))
+
+
+@pytest.mark.asyncio
+async def test_hide_move_and_reset_redraw_the_side_menu_on_the_same_page(ui_client):
+    gid, ids = _a_group_of_three()
+    calls, patches = _page_patches()
+    ui_client.cookies.update({"celerp_token": make_test_token(role="owner")})
+    with patches[0], patches[1], patches[2], patches[3]:
+        page = (await ui_client.get("/settings/menu")).text
+        moved = (await ui_client.post("/settings/menu/move", data={"kind": "entry", "id": ids[1], "direction": "up"})).text
+        hidden = (await ui_client.post("/settings/menu/hide", data={"kind": "entry", "id": ids[2], "hidden": "1"})).text
+        reset = (await ui_client.post("/settings/menu/reset")).text
+
+    assert re.search(r'<nav[^>]*id="sidebar"', page)
+    assert _href_of(ids[2]) in _hrefs(page)
+    after_move = _hrefs(_sidebar_of(moved))
+    assert after_move.index(_href_of(ids[1])) < after_move.index(_href_of(ids[0]))
+    assert _href_of(ids[2]) not in _hrefs(_sidebar_of(hidden))
+    assert _hrefs(_sidebar_of(reset)) == _hrefs(re.search(r'<nav[^>]*id="sidebar".*?</nav>', page, re.S).group(0))
