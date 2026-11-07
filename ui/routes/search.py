@@ -62,13 +62,24 @@ def _safe_local_search_href(href) -> str | None:
     return href if is_app_local_path(href) else None
 
 
-def _status_tag(status: str, domain: str | None):
-    """Trailing ` - {status}` chip for a result row. The status is shown via its
-    display label (resolved in the request language through display_enum); the raw
-    value stays canonical for the active/inactive split done by the caller. An empty
-    status renders no chip."""
-    label = display_enum(status, domain)
+def _status_tag(label: str):
+    """Trailing ` - {label}` chip for a result row; an empty label renders no chip."""
     return Span(f" - {label}", cls="search-result-status") if label else ""
+
+
+def _enum_status(domain: str | None):
+    """A row's status label from its raw status, in the request language (display_enum)."""
+    return lambda record, status: display_enum(status, domain) if domain else ""
+
+
+def _doc_status(record: dict, status: str) -> str:
+    """The status a document or List reads as on its own page and in its table, so one state
+    carries one label wherever it is listed (an issued quotation reads Issued, an unpaid invoice
+    Awaiting Payment)."""
+    from ui.routes.documents import _doc_status_label, _list_status_label
+    if record.get("kind") == "list":
+        return _list_status_label(record)
+    return _doc_status_label(record.get("doc_type") or "", status) if status else ""
 
 
 def _doc_type_name(record: dict) -> str:
@@ -121,9 +132,9 @@ def setup_routes(app):
         degraded = data.get("degraded_modules") or []
 
         # (module, result_key, icon, label_fn, href_fn, sub_fn, inactive_statuses,
-        # status_domain). module is the aggregator's key (the module folder name);
+        # status_fn). module is the aggregator's key (the module folder name);
         # result_key is the list field that module's provider returns its rows under.
-        # status_domain resolves each result's status label in the request language
+        # status_fn gives each result's status label in the request language
         # (display only - the raw status stays canonical for the inactive split).
         # inactive_statuses render greyed and sort after active results. Every
         # provider returns each record's entity id under "id"; detail hrefs link
@@ -134,43 +145,43 @@ def setup_routes(app):
              lambda r: f"/inventory/{r.get('id', '')}",
              lambda r: r.get("sku") or "",
              frozenset({"sold", "archived", "merged", "expired", "disposed"}),
-             "item_status"),
+             _enum_status("item_status")),
             ("celerp-contacts", "items", "👤",
              lambda r: r.get("name") or r.get("contact_name") or "",
              lambda r: f"/contacts/{r.get('id', '')}",
              lambda r: "",
              frozenset(),
-             "contact_status"),
+             _enum_status("contact_status")),
             ("celerp-docs", "items", "📄",
              lambda r: r.get("doc_number") or r.get("ref_id") or r.get("ref") or "",
              lambda r: f"/{'lists' if r.get('kind') == 'list' else 'docs'}/{r.get('id', '')}",
              _doc_type_name,
              frozenset({"void"}),
-             "doc_status"),
+             _doc_status),
             ("celerp-manufacturing", "items", "🏭",
              lambda r: r.get("description") or r.get("id") or "",
              lambda r: f"/manufacturing/production?q={quote(q)}",
              lambda r: "",
              frozenset({"cancelled"}),
-             "mfg_run_status"),
+             _enum_status("mfg_run_status")),
             ("celerp-subscriptions", "items", "🔁",
              lambda r: r.get("name") or r.get("doc_number") or r.get("ref_id") or r.get("id") or "",
              lambda r: f"/subscriptions/{r.get('id', '')}",
              lambda r: "",
              frozenset({"cancelled"}),
-             "subscription_status"),
+             _enum_status("subscription_status")),
             ("celerp-accounting", "entries", "📒",
              lambda r: r.get("memo") or ((r.get("lines") or [{}])[0].get("name") or ""),
              lambda r: "/accounting",
              lambda r: "",
              frozenset(),
-             None),
+             _enum_status(None)),
         ]
 
         # (is_inactive, rendered) pairs; the stable sort below floats every active
         # result above the inactive ones while keeping module order within each group.
         rendered: list[tuple[bool, FT]] = []
-        for module, key, icon, label_fn, href_fn, sub_fn, inactive_statuses, status_domain in descriptors:
+        for module, key, icon, label_fn, href_fn, sub_fn, inactive_statuses, status_fn in descriptors:
             bucket = (results_by_module.get(module) or {}).get(key) or []
             for record in bucket[:5]:
                 label = label_fn(record)
@@ -183,7 +194,7 @@ def setup_routes(app):
                     f"{icon} {label}",
                     Small(f" ({sub})") if sub else "",
                     *_match_tags(record, ("name", "sku")),
-                    _status_tag(status, status_domain),
+                    _status_tag(status_fn(record, status)),
                     href=href_fn(record),
                     cls="search-result-item search-result-item--inactive" if inactive else "search-result-item",
                 )))
