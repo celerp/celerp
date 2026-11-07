@@ -52,10 +52,10 @@ from celerp.services.physical_codes import lock_item_code_namespace
 from celerp.services.peer_import import SourceRevision, peer_batch, receive_file
 from celerp.services.payments import lock_recorded_unmatched, recorded_unmatched, return_unmatched
 from celerp.tax_regimes import default_line_taxes, set_new_line_taxes, side_taxes
-from celerp.services.business_time import business_date_at, business_date_of, company_today
+from celerp.services.business_time import business_date_at, business_date_of, company_timezone, company_today
 from celerp.services.landed_cost import compute_bill_landed_allocation
-from celerp.services.line_measures import (FULL, floor_to_unit, line_label, proposed_sell_qty, shared_unit_total,
-                                          splitting_allowed, splitting_off)
+from celerp.services.line_measures import (FULL, floor_to_unit, item_measure_meta, line_label, proposed_sell_qty,
+                                          resolve_line_measures, shared_unit_total, splitting_allowed, splitting_off)
 from celerp.services.document_lines import (
     DrawnLine, MemoDraw, MemoReturn, assert_line_holds_respected, assert_new_references_eligible,
     line_id_counts, line_item_id, linked_items, memo_out_refusal, out_on_another_memo, received_line_index,
@@ -72,7 +72,7 @@ from celerp_docs.sequences import (
     require_number_free, update_sequence,
 )
 from celerp_docs.search import doc_q_clause
-from celerp.services.units import build_unit_map, default_receive_as, get_company_units, is_non_stock_line, is_pieces_unit, is_weight_unit, line_receive_kind, require_moving_fits_units, sum_quantities, unit_decimals, validate_line_quantity
+from celerp.services.units import build_unit_map, default_receive_as, get_company_units, is_non_stock_line, is_pieces_unit, is_weight_unit, line_receive_kind, read_company_units, require_moving_fits_units, sum_quantities, unit_decimals, validate_line_quantity
 from celerp.services.money import allocate_pro_rata, books_currency, checked_exchange_rate, discount_from_inputs, doc_rate, document_line_amount, document_line_unit, require_doc_rate, received_share, round_basis, round_money, round_rate, to_base, to_decimal, to_stored_float
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, line_price_list, price_keys_in, resolve_price
 from celerp.services.terms import resolve_document_terms
@@ -1073,15 +1073,27 @@ _DOC_SORT_FIELDS = {
 _DOC_NUMERIC_SORT_FIELDS = frozenset({"total", "amount_outstanding"})
 
 
-def _doc_issue_date():
-    """A document's effective issue date: its own issue_date, else the day it was created. A
-    document made without one (a conversion before issue dates were set) stays inside the date
-    windows and sorts by the day it was made, as _list_sort_date does for lists."""
+def _created_business_day(tz: str):
+    """The business day, in the company timezone ``tz`` (an IANA name), the projection was
+    created on, as YYYY-MM-DD: the date a record stored without an issue_date is shown by."""
+    return _func.to_char(_func.timezone(tz, Projection.created_at), "YYYY-MM-DD")
+
+
+async def _company_tz(session: AsyncSession, company_id) -> str:
+    """The company's business timezone name, for ``_created_business_day``."""
+    return (await company_timezone(session, company_id)).key
+
+
+def _doc_issue_date(tz: str):
+    """A document's effective issue date: its own issue_date, else the business day it was
+    created (``_created_business_day``). A document made without one (an import, or a conversion
+    before issue dates were set) is shown, windowed, sorted and exported by that one date, as
+    _list_sort_date does for lists."""
     issue = _func.nullif(_func.substr(Projection.state["issue_date"].as_string(), 1, 10), "")
-    return _func.coalesce(issue, _func.substr(_sa.cast(Projection.created_at, _sa.Text), 1, 10))
+    return _func.coalesce(issue, _created_business_day(tz))
 
 
-def _doc_sql_where(company_id: str, f: DocListFilters) -> list:
+def _doc_sql_where(company_id: str, f: DocListFilters, tz: str) -> list:
     """The SQL WHERE for ``f`` (company scope included): every filter the DB can evaluate. The
     flag filters (``_doc_flag_rules``) are not here; they run row by row (``_doc_filter``), and
     ``_doc_list_filter`` pairs the two."""
@@ -1116,9 +1128,9 @@ def _doc_sql_where(company_id: str, f: DocListFilters) -> list:
     if id_list:
         base_where.append(Projection.entity_id.in_(id_list))
     if f.date_from:
-        base_where.append(_doc_issue_date() >= f.date_from)
+        base_where.append(_doc_issue_date(tz) >= f.date_from)
     if f.date_to:
-        base_where.append(_doc_issue_date() <= f.date_to)
+        base_where.append(_doc_issue_date(tz) <= f.date_to)
     if f.due_from:
         base_where.append(Projection.state["due_date"].as_string() >= f.due_from)
     if f.due_to:
@@ -1151,14 +1163,14 @@ def _sql_number(expr):
     return _sa.case((expr.op("~")(_SQL_NUMBER_PATTERN), _sa.cast(expr, _sa.Numeric)), else_=None)
 
 
-def _doc_sql_order(field: str, descending: bool) -> list:
+def _doc_sql_order(field: str, descending: bool, tz: str) -> list:
     """ORDER BY for a sort field, with the unique entity_id tiebreak so the sort is a TOTAL order.
     Without it, rows sharing a value come back in an arbitrary order that differs between the
     per-page queries, so a row on a page boundary can be skipped (or duplicated) by OFFSET."""
     if field == "_updated_at":
         expr = Projection.updated_at
     elif field == "issue_date":
-        expr = _doc_issue_date()
+        expr = _doc_issue_date(tz)
     elif field == "contact_name":
         expr = party_name_sql()
     else:
@@ -1180,14 +1192,14 @@ def _doc_display(state: dict) -> dict:
     return state | {field: doc_value(state, field) for field in DOC_FIELD_FALLBACKS}
 
 
-def _doc_row(r: Projection, contact_name: str | None) -> dict:
+def _doc_row(r: Projection, contact_name: str | None, issue_date: str | None) -> dict:
     """The list row for a document: its displayed state (``_doc_display``) with ``id``,
     ``_updated_at`` and the ``contact_name`` the list shows (``party_name_sql``). A document with
-    no issue_date shows the day it was created, the date ``_doc_issue_date`` windows and sorts it by."""
+    no issue_date shows ``issue_date``, the ``_doc_issue_date`` it is windowed and sorted by."""
     row = r.state | {"id": r.entity_id, "_updated_at": r.updated_at.isoformat() if r.updated_at else None,
                      "contact_name": contact_name}
-    if not row.get("issue_date") and r.created_at:
-        row["issue_date"] = r.created_at.date().isoformat()
+    if not row.get("issue_date") and issue_date:
+        row["issue_date"] = issue_date
     return _doc_display(row)
 
 
@@ -1246,11 +1258,11 @@ async def _doc_filter(session: AsyncSession, company_id: str, f: DocListFilters)
     return lambda x: all(c(x) for c in checks)
 
 
-async def _doc_list_filter(session: AsyncSession, company_id: str, f: DocListFilters):
+async def _doc_list_filter(session: AsyncSession, company_id: str, f: DocListFilters, tz: str):
     """The list's filter step for ``f``: its SQL WHERE (``_doc_sql_where``) and the row-by-row
     predicate over displayed rows (``_doc_filter``, None when no such filter is set). The list,
     its CSV export and its summary all select their rows through this, so they cannot drift."""
-    return _doc_sql_where(company_id, f), await _doc_filter(session, company_id, f)
+    return _doc_sql_where(company_id, f, tz), await _doc_filter(session, company_id, f)
 
 
 # The filters the status cards split the list by. The cards count the set the other filters
@@ -1317,11 +1329,13 @@ async def query_docs(session: AsyncSession, company_id: str, f: DocListFilters, 
     the index passes its page."""
     # Every single-field filter is in the SQL WHERE. The multi-field filters (``_doc_filter``) run
     # in Python over the SQL-ordered rows, so both paths share one ORDER BY.
-    base_where, keep = await _doc_list_filter(session, company_id, f)
-    order_by = _doc_sql_order(_doc_sort_field(f), f.dir == "desc")
+    tz = await _company_tz(session, company_id)
+    base_where, keep = await _doc_list_filter(session, company_id, f, tz)
+    order_by = _doc_sql_order(_doc_sort_field(f), f.dir == "desc", tz)
+    row_cols = (Projection, party_name_sql(), _doc_issue_date(tz))
 
     if keep is not None:
-        rows = (await session.execute(select(Projection, party_name_sql()).where(*base_where).order_by(*order_by))).all()
+        rows = (await session.execute(select(*row_cols).where(*base_where).order_by(*order_by))).all()
         out = [x for x in (_doc_row(*row) for row in rows) if keep(x)]
         total = len(out)
         if offset:
@@ -1335,7 +1349,7 @@ async def query_docs(session: AsyncSession, company_id: str, f: DocListFilters, 
     total = (await session.execute(count_q)).scalar_one()
 
     list_q = (
-        select(Projection, party_name_sql())
+        select(*row_cols)
         .where(*base_where)
         .order_by(*order_by)
         .offset(offset)
@@ -8528,23 +8542,27 @@ async def export_docs_csv(
     """The document list as CSV: the same filters, order and displayed values as the index, every
     matching row (no page), and the columns the screen asked for via ``cols``."""
     out_cols = resolve_export_cols(cols, _DOC_EXPORT_COLS, _DOC_EXPORT_COLS)
-    base_where, keep = await _doc_list_filter(session, company_id, filters)
-    order_by = _doc_sql_order(_doc_sort_field(filters), filters.dir == "desc")
+    tz = await _company_tz(session, company_id)
+    base_where, keep = await _doc_list_filter(session, company_id, filters, tz)
+    order_by = _doc_sql_order(_doc_sort_field(filters), filters.dir == "desc", tz)
     # Read only the state keys the exported columns and the row filters need, never whole documents.
     fields = {c for c in out_cols if c not in ("entity_id", "contact_name")} | (set(_DOC_FILTER_KEYS) if keep else set())
     keys = sorted(fields | {k for field in fields for k in DOC_FIELD_FALLBACKS.get(field, ())})
 
     async def _rows():
         stmt = (
-            select(Projection.entity_id, party_name_sql(), *(Projection.state[k] for k in keys))
+            select(Projection.entity_id, party_name_sql(), _doc_issue_date(tz), *(Projection.state[k] for k in keys))
             .where(*base_where)
             .order_by(*order_by)
             .execution_options(yield_per=500)
         )
         result = await session.stream(stmt)
         try:
-            async for entity_id, contact_name, *values in result:
-                row = _doc_display({k: v for k, v in zip(keys, values) if v is not None} | {"contact_name": contact_name})
+            async for entity_id, contact_name, issue_date, *values in result:
+                state = {k: v for k, v in zip(keys, values) if v is not None}
+                if not state.get("issue_date") and issue_date:
+                    state["issue_date"] = issue_date
+                row = _doc_display(state | {"contact_name": contact_name})
                 if keep is None or keep(row):
                     yield row | {"entity_id": entity_id}
         finally:
@@ -8656,15 +8674,14 @@ def _list_base_where(company_id) -> list:
     return [Projection.company_id == company_id, Projection.entity_type == "list"]
 
 
-def _list_sort_date():
-    """The list's effective sort/window date, matching the Python order issue_date > created_at
-    column > date with the historic [:10] truncation. A list's state carries no date of its own,
-    so the projection's created_at column is the fallback. Written once and reused by the index
-    ORDER BY, the index date_from/date_to bounds, and the page/export ordering."""
+def _list_sort_date(tz: str):
+    """The list's effective sort/window date: its issue_date, else the business day it was
+    created in the company timezone ``tz`` (``_created_business_day``), else its legacy ``date``,
+    each cut to YYYY-MM-DD. Written once and reused by the index ORDER BY, the index
+    date_from/date_to bounds, the page and the export."""
     issue = _func.nullif(_func.substr(Projection.state["issue_date"].as_string(), 1, 10), "")
-    created = _func.substr(_sa.cast(Projection.created_at, _sa.Text), 1, 10)
     date = _func.nullif(_func.substr(Projection.state["date"].as_string(), 1, 10), "")
-    return _func.coalesce(issue, created, date)
+    return _func.coalesce(issue, _created_business_day(tz), date)
 
 
 async def _fill_list_issue_date(session: AsyncSession, company_id, entity_id: str, state: dict) -> dict:
@@ -8674,7 +8691,8 @@ async def _fill_list_issue_date(session: AsyncSession, company_id, entity_id: st
     if state.get("issue_date"):
         return state
     effective = (await session.execute(
-        select(_list_sort_date()).where(*_list_base_where(company_id), Projection.entity_id == entity_id)
+        select(_list_sort_date(await _company_tz(session, company_id)))
+        .where(*_list_base_where(company_id), Projection.entity_id == entity_id)
     )).scalar_one_or_none()
     return state | {"issue_date": effective} if effective else state
 
@@ -8722,7 +8740,7 @@ class ListIndexFilters:
 
 def _list_index_where(company_id, f: ListIndexFilters, sort_date) -> list:
     """The index's full WHERE for ``f`` (company scope included); ``sort_date`` is the
-    ``_list_sort_date()`` expression the caller also orders by."""
+    ``_list_sort_date`` expression the caller also orders by."""
     base_where = _list_base_where(company_id)
     if f.list_type:
         base_where.append(Projection.state["list_type"].as_string() == f.list_type)
@@ -8762,6 +8780,32 @@ def _list_columns(sort_date) -> dict:
     }
 
 
+def _list_weight(lines: list, state: dict, items: dict, unit_map: dict) -> dict:
+    """A list's weight total for its row in the index, by the print's rule: each line's weight
+    comes from its item (``issued_item``, else the item as it is now) through
+    ``resolve_line_measures``; a line with no item keeps its own weight and unit. The total is
+    ``shared_unit_total`` of those. ``lines`` are (line, count) pairs of equal lines. A line
+    whose stored measures are not numbers has no known weight, so the list has no total."""
+    measures = []
+    for line, count in lines:
+        item = issued_item(line, state) or items.get(line.get("item_id"))
+        if item is None:
+            weight, unit = line.get("weight"), line.get("weight_unit")
+        else:
+            try:
+                _, weight, unit, _, _ = resolve_line_measures(line, item_meta=item_measure_meta(item, unit_map))
+            except (TypeError, ValueError):
+                weight, unit = None, None
+        try:
+            weight = float(weight) * count if weight not in (None, "") else None
+        except (TypeError, ValueError):
+            weight = None
+        measures.append((weight, unit))
+    total = shared_unit_total(measures)
+    return {"total_weight": total[0] if total else None, "weight_unit": total[1] if total else None,
+            "has_weight": any(w not in (None, 0) for w, _ in measures)}
+
+
 @lists_router.get("", dependencies=[require_permission("view_documents")])
 async def list_lists(
     filters: ListIndexFilters = Depends(),
@@ -8770,7 +8814,7 @@ async def list_lists(
     company_id: str = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    sort_date = _list_sort_date()
+    sort_date = _list_sort_date(await _company_tz(session, company_id))
     base_where = _list_index_where(company_id, filters, sort_date)
 
     total = (await session.execute(
@@ -8779,13 +8823,15 @@ async def list_lists(
     # individual lines. Push the count and weight sum into SQL and select the header columns alone, so
     # a list with thousands of lines never drags its whole line_items array back into Python here.
     item_count = _func.coalesce(_func.json_array_length(Projection.state["line_items"]), 0)
-    # The lines' (weight, unit) pairs, lines of equal weight and unit folded into one pair carrying
-    # their summed weight, so the page reads a handful of values per list. shared_unit_total decides
-    # the total from them, the same rule the printed documents use.
-    weight_pairs = _sa.literal_column(
-        "(SELECT json_agg(json_build_array(lw.w * lw.n, lw.u)) FROM ("
-        "SELECT NULLIF(elem ->> 'weight', '')::numeric AS w, elem ->> 'weight_unit' AS u, COUNT(*) AS n "
-        "FROM json_array_elements(projections.state -> 'line_items') AS elem GROUP BY 1, 2) AS lw)",
+    # Only the line fields the weight rule reads (_list_weight), equal lines folded into one with
+    # their count, so the page reads a handful of small values per list.
+    weight_lines = _sa.literal_column(
+        "(SELECT json_agg(json_build_array(lw.line, lw.n)) FROM ("
+        "SELECT jsonb_build_object('item_id', COALESCE(elem ->> 'item_id', elem ->> 'entity_id'), "
+        "'quantity', elem -> 'quantity', 'unit', elem -> 'unit', 'sell_by', elem -> 'sell_by', "
+        "'weight', elem -> 'weight', 'weight_unit', elem -> 'weight_unit', "
+        f"'{ITEM_AT_ISSUE}', elem -> '{ITEM_AT_ISSUE}') AS line, COUNT(*) AS n "
+        "FROM json_array_elements(projections.state -> 'line_items') AS elem GROUP BY 1) AS lw)",
         type_=_sa.JSON,
     )
     columns = _list_columns(sort_date)
@@ -8793,7 +8839,8 @@ async def list_lists(
         select(
             *(expr.label(name) for name, expr in columns.items()),
             item_count.label("item_count"),
-            weight_pairs.label("weight_pairs"),
+            weight_lines.label("weight_lines"),
+            Projection.state["customs_saved"].as_boolean().label("customs_saved"),
             # What status_key reads beyond the columns above; only the page's rows carry them, the CSV never does.
             *(Projection.state[key].as_string().label(key) for key in _LIST_STATUS_KEY_FIELDS),
         )
@@ -8806,17 +8853,15 @@ async def list_lists(
     if limit is not None:
         list_q = list_q.limit(limit)
     rows = (await session.execute(list_q)).all()
-
-    def _weight(r) -> dict:
-        pairs = r.weight_pairs or []
-        total = shared_unit_total(pairs)
-        return {"total_weight": total[0] if total else None, "weight_unit": total[1] if total else None,
-                "has_weight": any(w not in (None, 0) for w, _ in pairs)}
+    lines = [line for r in rows for line, _ in (r.weight_lines or [])]
+    items = await _page_item_meta(session, company_id, lines) if lines else {}
+    unit_map = build_unit_map(await read_company_units(session, company_id)) if items else {}
 
     out = [{
         **{name: getattr(r, name) for name in columns},
         "item_count": r.item_count,
-        **_weight(r),
+        **_list_weight(r.weight_lines or [], {"status": r.status, "customs_saved": r.customs_saved},
+                       items, unit_map),
         # The label the list's page shows (Issued, Sent, In transit, ...); status stays the raw
         # lifecycle value the filters and status cards use.
         "status_label": status_key({"status": r.status, "list_type": r.list_type,
@@ -8845,7 +8890,7 @@ async def get_list_summary(
     so the cards count the rows the page shows. The status filters are ignored: the cards split
     the filtered set by status. draft_count is never date-windowed, because the drafts view the
     card opens is not."""
-    sort_date = _list_sort_date()
+    sort_date = _list_sort_date(await _company_tz(session, company_id))
     unsplit = _dc_replace(filters, status=None, exclude_status=None, all_issued=False, converted_to_type=None)
     base_where = _list_index_where(company_id, unsplit, sort_date)
     status_expr = _func.coalesce(Projection.state["status"].as_string(), "")
@@ -8907,7 +8952,7 @@ async def export_lists_csv(
     """The list index as CSV: the index's filters and order, every matching row (no page), and the
     columns the screen asked for via ``cols``."""
     out_cols = resolve_export_cols(cols, _LIST_EXPORT_COLS, _LIST_EXPORT_COLS)
-    sort_date = _list_sort_date()
+    sort_date = _list_sort_date(await _company_tz(session, company_id))
     base_where = _list_index_where(company_id, filters, sort_date)
     # Select only the exported columns, from the same expressions the index rows use, so a list's
     # whole line_items array is never deserialized just to write its row.
