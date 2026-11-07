@@ -11,6 +11,7 @@ import uuid
 from contextlib import asynccontextmanager
 
 from celerp.services import background
+from celerp.services.email import EmailResult
 from test_helpers import settle_background
 
 
@@ -25,7 +26,7 @@ async def test_an_emailed_document_receipt_is_held_until_it_is_written(monkeypat
     receipts = []
 
     async def _refused(**kwargs):
-        return False, "refused"
+        return EmailResult(False, "refused")
 
     async def _create(session, company_id, kind, title, body, **kwargs):
         receipts.append(title)

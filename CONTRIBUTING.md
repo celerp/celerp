@@ -32,6 +32,7 @@ Trademarks are not licensed by any code license; see `legal/TRADEMARK.md`.
 | `JWT_SECRET` | _(required)_ | Fatal on startup if unset or default in production |
 | `ALLOW_INSECURE_JWT` | `false` | Set `true` in dev/CI |
 | `CELERP_PUBLIC_URL` | _(optional)_ | Base URL for share links |
+| `CELERP_TEST_DATABASE_URL` | _(optional, tests only)_ | A local Postgres database with "test" in its name for the test suite; unset, the tests start a throwaway container. The tests never read `DATABASE_URL` |
 | `MODULE_DIR` | `default_modules` | Module package directory |
 | `ENABLED_MODULES` | _(all)_ | Comma-separated list to load |
 

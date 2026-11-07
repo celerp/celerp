@@ -619,7 +619,7 @@ async def test_full_online_payment_journey(client, session, payments_on, monkeyp
     async def _fake_send(to, subject, body_html, body_text="", **kw):
         sent.update(html=body_html, text=body_text, subject=subject)
         email_done.set()
-        return True, None
+        return EmailResult(True, "")
     monkeypatch.setattr("celerp.services.email.send_email", _fake_send)
 
     checkout = {}
@@ -826,7 +826,7 @@ async def test_send_email_includes_pay_link(client, payments_on, monkeypatch):
     async def _fake(to, subject, body_html, body_text="", **kw):
         captured.update(html=body_html, text=body_text)
         done.set()
-        return True
+        return EmailResult(True, "")
     monkeypatch.setattr("celerp.services.email.send_email", _fake)
 
     tok = await _register(client)

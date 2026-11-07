@@ -35,6 +35,12 @@ projection_handler Maps event-type prefixes to a handler function. Each event ty
                    "permission" names the one its events are read with: activity
                    and ledger feeds leave them out for a role without it
 on_company_created Async callback(session, company_id) fired after a new company is persisted
+on_company_restored
+                   First-party callback(session, company_id) after backup rows are restored,
+                   before commit; failure aborts the restore
+on_company_module_enabled
+                   First-party callback(session, company_id) for a newly enabled, already-running
+                   module, before the module-setting change commits; failure aborts activation
 on_modules_ready   Async callback(session) fired once after every module has loaded
 on_books_currency_set
                    Async callback(session, company_id) fired, before commit, whenever a
@@ -54,6 +60,11 @@ item_lineage_guard {"handler": "module.path:function"} naming
                    with exactly those keyword arguments on every live item event, after
                    it is applied and before its effects are booked; raising refuses the
                    event
+doc_status_guard   {"handler": "module.path:function"} naming
+                   `async def handler(*, session, entry, transition) -> None`, called
+                   with exactly those keyword arguments on every live document event
+                   that changes the document (its status or any other field), after it
+                   is applied and before it commits; raising refuses the event
 demo_records       {"handler": "module.path:function"} naming
                    `async def handler(*, session, company_id, user_id) -> None`, called
                    with exactly those keyword arguments whenever a company's demo data
@@ -66,6 +77,15 @@ background_loop    {"handler": "module.path:function"} naming `async def handler
                    stored records current, never while they are held back. It runs for the
                    life of the process and decides itself which companies it serves
                    (uses_module). Filled by Celerp's own modules only (FIRST_PARTY_SLOTS)
+periodic_operation {"handler": "module.path:function", "module": name} naming
+                   `async def handler(*, session, company_id, today, budget) ->
+                   OperationReport` (celerp_docs.periodic), called with exactly those
+                   keyword arguments by the periodic dispatcher every hour, for each
+                   company that uses the named module and is not staged for a migration,
+                   in its own transaction under a try-lock per operation and company.
+                   It does at most ``budget`` units of unattended work found in its own
+                   records and returns what it did and the steps to take after commit.
+                   Filled by Celerp's own modules only (FIRST_PARTY_SLOTS)
 doc_asset_lines    {"handler": "module.path:function"} naming
                    `async def handler(*, session, company_id, user_id, doc_id, doc, change)
                    -> None`, called with exactly those keyword arguments when a document
@@ -129,7 +149,7 @@ a dict, catalog_channel "can_create" true or false; category_schema "category" n
 app-local paths; and every
 callable an entry names is the module's own code, async exactly where core awaits it,
 and takes exactly the keyword arguments core passes where the slot names them
-(inventory_in_production, item_lineage_guard, demo_records, doc_asset_lines,
+(inventory_in_production, item_lineage_guard, doc_status_guard, demo_records, doc_asset_lines,
 label_source, import_target, turn_off_preflight). A nav entry with a "probe_href" is shown only when that page,
 loaded with the sidebar, answers with the link: for an entry whose audience
 depends on the records themselves (the assets in a member's care), not on a
@@ -162,16 +182,17 @@ from typing import Callable
 SLOT_NAMES = frozenset({
     "nav", "bulk_action", "send_to_targets", "catalog_channel", "item_action",
     "pricing_action", "doc_detail_actions", "doc_detail_badges", "category_schema",
-    "projection_handler", "on_company_created", "on_modules_ready", "on_books_currency_set", "doc_finalize_hook",
+    "projection_handler", "on_company_created", "on_company_restored", "on_company_module_enabled", "on_modules_ready", "on_books_currency_set", "doc_finalize_hook",
     "on_doc_payment", "search_provider", "inventory_in_production", "item_lineage_guard",
-    "demo_records", "background_loop", "doc_asset_lines", "fixed_asset_rules", "label_source",
-    "import_target", "turn_off_preflight",
+    "doc_status_guard", "demo_records", "background_loop", "doc_asset_lines", "fixed_asset_rules", "label_source",
+    "import_target", "turn_off_preflight", "periodic_operation",
 })
 
 # Slots only Celerp's own (first-party) modules may fill; admission refuses any
 # other module that fills one.
 FIRST_PARTY_SLOTS = frozenset({"inventory_in_production", "demo_records", "background_loop",
-                               "doc_asset_lines", "turn_off_preflight", "on_books_currency_set"})
+                               "doc_asset_lines", "turn_off_preflight", "on_books_currency_set",
+                               "periodic_operation", "on_company_restored", "on_company_module_enabled"})
 
 # projection_handler prefixes core handles itself: system events (registered at
 # startup, celerp.main) and the core-folded connectors' declared prefixes.
@@ -204,7 +225,7 @@ def resolve_handler(dotted: str) -> Callable:
 
 # Slots whose handler core calls directly: a contribution without a
 # "module.path:function" handler would fail every such call, so it is refused here.
-_HANDLER_SLOTS = frozenset({"inventory_in_production", "item_lineage_guard", "demo_records",
+_HANDLER_SLOTS = frozenset({"inventory_in_production", "item_lineage_guard", "doc_status_guard", "demo_records",
                             "doc_asset_lines", "label_source", "import_target", "turn_off_preflight"})
 
 
@@ -264,7 +285,7 @@ async def _company_hooks(slot: str, kwargs: dict) -> list[dict]:
     return [c for c in contributions if uses_module(settings, c.get("_module"))]
 
 
-async def fire_lifecycle(slot: str, **kwargs) -> list[tuple[str, str]]:
+async def fire_lifecycle(slot: str, *, only_modules: set[str] | None = None, **kwargs) -> list[tuple[str, str]]:
     """Invoke all async callbacks registered under a lifecycle slot.
 
     Each contribution must have a "handler" key pointing to a dotted path
@@ -283,6 +304,8 @@ async def fire_lifecycle(slot: str, **kwargs) -> list[tuple[str, str]]:
     failed: list[tuple[str, str]] = []
 
     for contrib in await _company_hooks(slot, kwargs):
+        if only_modules is not None and contrib.get("_module") not in only_modules:
+            continue
         try:
             async with (session.begin_nested() if session is not None
                         else contextlib.nullcontext()):

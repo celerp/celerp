@@ -44,6 +44,7 @@ async def search_subscription_templates(
     direction: str | None = None,
     status: str | None = None,
     q: str | None = None,
+    review: bool = False,
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[list[dict], int]:
@@ -58,6 +59,9 @@ async def search_subscription_templates(
     where = _base_where(company_id, direction)
     if status:
         where.append(Projection.state["status"].as_string() == status)
+    if review:
+        # history_review is present only while earlier documents wait for review.
+        where.append(Projection.state["history_review"].as_string().isnot(None))
     if q and q.strip():
         terms = [t.strip().lower() for t in q.split(",") if t.strip()]
         where.append(_or(*[

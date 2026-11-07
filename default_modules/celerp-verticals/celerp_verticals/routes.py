@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.db import get_session
 from celerp.models.company import Company
 from celerp.modules.boundary import take_company_locks
-from celerp.modules.registry import commit_with_load_set, enable_for_company, hold_module_state
+from celerp.modules.registry import commit_with_load_set, enable_for_company, hold_module_state, restart_needed
 from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.company_lock import locked_company
 from celerp.services.permissions import require_permission
@@ -92,7 +92,8 @@ def _build_router() -> APIRouter:
         modules = installed_preset_modules(preset)
 
         [company] = await take_company_locks(session, lambda: _company(session, company_id))
-        settings, categories = merge_missing_preset_categories(dict(company.settings or {}), preset)
+        before = dict(company.settings or {})
+        settings, categories = merge_missing_preset_categories(before, preset)
         await check_units_change(session, company_id, settings_units(company.settings), settings_units(settings))
         for name in modules:
             settings, _deps = enable_for_company(settings, name)
@@ -100,9 +101,10 @@ def _build_router() -> APIRouter:
         extra = {k: v for k, v in (preset.get("company_settings") or {}).items() if k not in settings}
         settings.update(extra)
         company.settings = settings
-        await commit_with_load_set(session)
+        await commit_with_load_set(session, activated=[(company, before)])
 
-        return {"applied": vertical, "categories": len(categories), "modules": modules, "company_settings": extra}
+        return {"applied": vertical, "categories": len(categories), "modules": modules,
+                "company_settings": extra, "restart_required": restart_needed(modules)}
 
     @router.post("/me/apply-category", dependencies=write_deps)
     async def apply_category(

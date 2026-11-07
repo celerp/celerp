@@ -127,43 +127,46 @@ def test_install_owner_migration_prefers_usable_owner_over_oldest_user(monkeypat
     from celerp.migrations.versions import h5c6d7e8f9a0_backfill_install_owner as data_migration
 
     engine = sa.create_engine("sqlite:///:memory:")
-    meta = sa.MetaData()
-    users = sa.Table(
-        "users", meta,
-        sa.Column("id", sa.String, primary_key=True),
-        sa.Column("is_active", sa.Boolean, nullable=False),
-        sa.Column("created_at", sa.DateTime, nullable=False),
-    )
-    links = sa.Table(
-        "user_companies", meta,
-        sa.Column("id", sa.String, primary_key=True),
-        sa.Column("user_id", sa.String, nullable=False),
-        sa.Column("company_id", sa.String, nullable=False),
-        sa.Column("role", sa.String, nullable=False),
-        sa.Column("is_active", sa.Boolean, nullable=False),
-    )
-    meta.create_all(engine)
-    now = dt.datetime(2026, 1, 1)
-    with engine.begin() as conn:
-        conn.execute(users.insert(), [
-            {"id": "old", "is_active": False, "created_at": now},
-            {"id": "admin", "is_active": True, "created_at": now + dt.timedelta(seconds=1)},
-            {"id": "owner", "is_active": True, "created_at": now + dt.timedelta(seconds=2)},
-        ])
-        conn.execute(links.insert(), [
-            {"id": "a", "user_id": "admin", "company_id": "c", "role": "admin", "is_active": True},
-            {"id": "o", "user_id": "owner", "company_id": "c", "role": "owner", "is_active": True},
-        ])
-        ctx = MigrationContext.configure(conn)
-        operations = Operations(ctx)
-        monkeypatch.setattr(schema_migration, "op", operations)
-        monkeypatch.setattr(data_migration, "op", operations)
-        schema_migration.upgrade()
-        data_migration.upgrade()
-        data_migration.upgrade()
-        selected = conn.execute(sa.text(
-            "SELECT id FROM users WHERE is_install_owner IS TRUE"
-        )).scalars().all()
+    try:
+        meta = sa.MetaData()
+        users = sa.Table(
+            "users", meta,
+            sa.Column("id", sa.String, primary_key=True),
+            sa.Column("is_active", sa.Boolean, nullable=False),
+            sa.Column("created_at", sa.DateTime, nullable=False),
+        )
+        links = sa.Table(
+            "user_companies", meta,
+            sa.Column("id", sa.String, primary_key=True),
+            sa.Column("user_id", sa.String, nullable=False),
+            sa.Column("company_id", sa.String, nullable=False),
+            sa.Column("role", sa.String, nullable=False),
+            sa.Column("is_active", sa.Boolean, nullable=False),
+        )
+        meta.create_all(engine)
+        now = dt.datetime(2026, 1, 1)
+        with engine.begin() as conn:
+            conn.execute(users.insert(), [
+                {"id": "old", "is_active": False, "created_at": now},
+                {"id": "admin", "is_active": True, "created_at": now + dt.timedelta(seconds=1)},
+                {"id": "owner", "is_active": True, "created_at": now + dt.timedelta(seconds=2)},
+            ])
+            conn.execute(links.insert(), [
+                {"id": "a", "user_id": "admin", "company_id": "c", "role": "admin", "is_active": True},
+                {"id": "o", "user_id": "owner", "company_id": "c", "role": "owner", "is_active": True},
+            ])
+            ctx = MigrationContext.configure(conn)
+            operations = Operations(ctx)
+            monkeypatch.setattr(schema_migration, "op", operations)
+            monkeypatch.setattr(data_migration, "op", operations)
+            schema_migration.upgrade()
+            data_migration.upgrade()
+            data_migration.upgrade()
+            selected = conn.execute(sa.text(
+                "SELECT id FROM users WHERE is_install_owner IS TRUE"
+            )).scalars().all()
+    finally:
+        engine.dispose()
     assert selected == ["owner"]
 
 

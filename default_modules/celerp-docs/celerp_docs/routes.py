@@ -79,7 +79,7 @@ from celerp_contacts.references import (
 )
 from celerp.output.document_context import prepare_document_output
 from celerp.output.doc_print import fmt_money
-from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, DRAFT_REVERT_RETURNED, DRAFT_REVERT_STATUSES, INBOUND_DRAFT_REVERT_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, CREDIT_APPLICATION_METHODS, CONVERTIBLE_STATUSES
+from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, DRAFT_REVERT_RETURNED, DRAFT_REVERT_STATUSES, INBOUND_DRAFT_REVERT_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, SCHEDULE_OWNED_FIELDS, SCHEDULE_REMOVED_FIELDS, SCHEDULE_TERM_FIELDS, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, CREDIT_APPLICATION_METHODS, CONVERTIBLE_STATUSES
 from celerp.services.record_quantities import FULFILLABLE_STATUSES, QUOTATION_SPENT_STATUSES, RECEIVABLE_STATUSES, sent_out_by
 from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, MEMO_DRAW_STATUSES, doc_value, is_awaiting_payment, is_open_credit, is_overdue_document, is_owed, is_paid_document, outstanding_balance
 from celerp.services.list_behavior import (
@@ -211,10 +211,24 @@ def _require_doc_rate_http(doc: dict, base_currency: str) -> Decimal:
         raise HTTPException(status_code=422, detail=exc.detail) from exc
 
 
+def schedule_fields_refusal(keys) -> dict | None:
+    """Why a caller's data may not hold these keys, or None: a field an earlier release kept
+    on a template, which no writer takes, or one only an agreement's schedule writes. Every
+    create, edit and import of a document asks it first."""
+    keys = set(keys)
+    if removed := sorted(keys & SCHEDULE_REMOVED_FIELDS):
+        return catalog_refusal("documents.err_schedule_fields_removed", fields=", ".join(removed))
+    if owned := sorted(keys & SCHEDULE_OWNED_FIELDS):
+        return catalog_refusal("documents.err_schedule_fields_owned", fields=", ".join(owned))
+    return None
+
+
 def _reject_lifecycle_fields(data):
     """Creation owns no lifecycle or settlement state. Status is checked on its
     own (it may say draft); anything else lifecycle-owned is refused by name."""
     if isinstance(data, dict):
+        if (refused := schedule_fields_refusal(data)) is not None:
+            raise ValueError(refused["message"])
         if "credited" in data:
             raise ValueError(
                 "credited cannot be set when creating. The credited amount is set by issuing "
@@ -316,10 +330,13 @@ async def _earlier_run(session: AsyncSession, company_id, key: str, *, event_typ
 
 
 _PROTECTED_FIELDS = frozenset({"status", "entity_type", "company_id", "source_memo_id", "invoiced_on",
-                              "received_items", "received_item_ids", "credited", SCAN_RUNS_FIELD})
+                              "received_items", "received_item_ids", "credited", SCAN_RUNS_FIELD}
+                             ) | SCHEDULE_OWNED_FIELDS | SCHEDULE_REMOVED_FIELDS | SCHEDULE_TERM_FIELDS
 
 
 def _refuse_protected_fields(fields_changed: dict) -> None:
+    if (refused := schedule_fields_refusal(fields_changed)) is not None:
+        raise HTTPException(status_code=422, detail=refused)
     attempted = _PROTECTED_FIELDS & set(fields_changed)
     if attempted:
         raise HTTPException(
@@ -2413,11 +2430,11 @@ def _email_with_receipt(company_id, doc_label: str, sent_to: str, action_url: st
         from celerp.db import SessionLocal
         from celerp.notifications import service as notif_service
         from celerp.services.email import send_email
-        ok, detail = await send_email(**send_kwargs)
+        result = await send_email(**send_kwargs)
         cid = company_id if isinstance(company_id, _uuid_mod.UUID) else _uuid_mod.UUID(str(company_id))
         try:
             async with SessionLocal() as s:
-                if ok:
+                if result.ok:
                     tip = await _payments_tip_suffix(s, cid) if payable else ""
                     await notif_service.create(
                         s, cid, "email", f"Email delivered to {sent_to}",
@@ -2426,7 +2443,7 @@ def _email_with_receipt(company_id, doc_label: str, sent_to: str, action_url: st
                 else:
                     await notif_service.create(
                         s, cid, "email", f"Email to {sent_to} failed",
-                        f"{doc_label} could not be delivered: {detail}",
+                        f"{doc_label} could not be delivered: {result.detail}",
                         action_url=action_url, priority="high")
                 await s.commit()
         except Exception:
@@ -2468,50 +2485,57 @@ async def mark_doc_sent(session: AsyncSession, company_id, entity_id: str, user,
     return row, entry, None
 
 
+async def doc_email(session: AsyncSession, company_id, entity_id: str, state: dict, sent_to: str, user, *,
+                    subject: str | None = None, message: str | None = None, cc: str = "", bcc: str = "") -> dict:
+    """The email that sends a document to ``sent_to``, as keyword arguments for send_email.
+    Activates the document's share link (and its pay link while something is owed), so the
+    caller commits before sending."""
+    from celerp_docs.doc_email import compose_doc_email
+    from celerp_docs.routes_share import send_pay_url, send_view_url
+
+    doc_type = state.get("doc_type", "")
+    amount_due = float(outstanding_balance(state) or 0)
+    # Emailing a document always shares it (an email with no viewable document is
+    # pointless); send_view_url returns None only when no link can be minted (a
+    # self-hosted instance with no relay). Pay button only while something is owed: it
+    # charges the remaining balance (net of applied payments/credits), never the face total.
+    view_url = await send_view_url(session, company_id, entity_id)
+    pay_url = (await send_pay_url(session, company_id, entity_id)
+               if doc_type in ("invoice", "proforma") and amount_due > 0 else None)
+    doc_number = state.get("ref_id") or entity_id.split(":")[-1][:8].upper()
+    type_label = doc_type_label(doc_type or "document")
+    company_row = await session.get(Company, company_id)
+    sender_name = company_row.name if company_row else "Your supplier"
+    body_html, body_text = compose_doc_email(
+        doc_type_label=type_label, doc_number=doc_number, sender_name=sender_name,
+        contact_name=state.get("contact_name") or "there", total=state.get("total", 0),
+        currency=state.get("currency", "USD"), message=message, view_url=view_url, pay_url=pay_url,
+        amount_due=amount_due,
+    )
+    return {"to": sent_to, "subject": (subject or "").strip() or f"{type_label} #{doc_number} from {sender_name}",
+            "body_html": body_html, "body_text": body_text,
+            "reply_to": await _sender_reply_to(session, company_id, user),
+            "from_name": sender_name, "cc": cc, "bcc": bcc}
+
+
 @router.post("/{entity_id}/send")
 async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row, entry, prior = await mark_doc_sent(session, company_id, entity_id, user, payload)
     if prior is not None:
         return prior
-    doc_type = row.state.get("doc_type", "")
-
     sent_to = payload.sent_to
-    view_url = pay_url = None
-    amount_due = float(outstanding_balance(row.state) or 0)
-    if sent_to:
-        # Emailing a document always shares it (an email with no viewable
-        # document is pointless); send_view_url returns None only when no link
-        # can be minted (a self-hosted instance with no relay).
-        from celerp_docs.routes_share import send_pay_url, send_view_url
-        view_url = await send_view_url(session, company_id, entity_id)
-        # Pay button only while something is owed: it charges the remaining
-        # balance (net of applied payments/credits), never the face total.
-        if doc_type in ("invoice", "proforma") and amount_due > 0:
-            pay_url = await send_pay_url(session, company_id, entity_id)
+    email = (await doc_email(session, company_id, entity_id, row.state, sent_to, user, subject=payload.subject,
+                             message=payload.message, cc=payload.cc or "", bcc=payload.bcc or "")
+             if sent_to else None)
     await session.commit()
 
     # Fire-and-forget email notification if a recipient was supplied
-    if sent_to:
-        from celerp_docs.doc_email import compose_doc_email
+    if email:
         doc_number = row.state.get("ref_id") or entity_id.split(":")[-1][:8].upper()
-        doc_type = doc_type_label(row.state.get("doc_type", "document"))
-        contact_name = row.state.get("contact_name") or "there"
-        company_row = await session.get(Company, company_id)
-        sender_name = company_row.name if company_row else "Your supplier"
-        subject = (payload.subject or "").strip() or f"{doc_type} #{doc_number} from {sender_name}"
-        body_html, body_text = compose_doc_email(
-            doc_type_label=doc_type, doc_number=doc_number, sender_name=sender_name,
-            contact_name=contact_name, total=row.state.get("total", 0),
-            currency=row.state.get("currency", "USD"),
-            message=payload.message, view_url=view_url, pay_url=pay_url,
-            amount_due=amount_due,
-        )
-        reply_to = await _sender_reply_to(session, company_id, user)
+        doc_label = f"{doc_type_label(row.state.get('doc_type', 'document'))} #{doc_number}"
         _email_with_receipt(
-            company_id, f"{doc_type} #{doc_number}", sent_to, f"/docs/{entity_id}",
-            payable=row.state.get("doc_type") in ("invoice", "proforma"),
-            to=sent_to, subject=subject, body_html=body_html, body_text=body_text,
-            reply_to=reply_to, from_name=sender_name, cc=payload.cc or "", bcc=payload.bcc or "",
+            company_id, doc_label, sent_to, f"/docs/{entity_id}",
+            payable=row.state.get("doc_type") in ("invoice", "proforma"), **email,
         )
 
     return {"event_id": entry.id}

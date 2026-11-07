@@ -292,6 +292,15 @@ document.addEventListener('htmx:afterRequest', function(e) {
     if (obj.celerpToast && e.detail.xhr.getResponseHeader('HX-Redirect')) _celerpKeepToast(obj.celerpToast);
     else if (obj.celerpToast) celerpToast(obj.celerpToast.message, obj.celerpToast.type || 'error', obj.celerpToast.persist, obj.celerpToast.action);
     if (obj.celerpRestoreCell) {
+      // A refused change made in an always-open control shows the saved value again
+      var elt = e.detail.elt;
+      if (elt && elt.tagName === 'SELECT') {
+        Array.prototype.forEach.call(elt.options, function(o) { o.selected = o.defaultSelected; });
+      } else if (elt && (elt.type === 'checkbox' || elt.type === 'radio')) {
+        elt.checked = elt.defaultChecked;
+      } else if (elt && (elt.tagName === 'INPUT' || elt.tagName === 'TEXTAREA')) {
+        elt.value = elt.defaultValue;
+      }
       // Close any open editable cell: trigger ESC on focused element, then blur
       var active = document.activeElement;
       if (active && active !== document.body) {

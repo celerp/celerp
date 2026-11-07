@@ -9,7 +9,7 @@ import pytest
 
 from memo_draw_support import back_to_memo, draft, draw, drawn, drawn_lines, memo_out, owner, pay, state
 from test_draft_delete_races_pg import _factory, _seed
-from test_fresh_authority_races_pg import _app_client, _http, _race
+from race_support import _app_client, _http, _race
 
 pytestmark = pytest.mark.asyncio
 

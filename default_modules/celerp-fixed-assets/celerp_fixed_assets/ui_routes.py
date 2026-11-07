@@ -55,7 +55,7 @@ import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.operation_key import FIELD as OP_KEY_FIELD, operation_key_input
 from ui.components.shell import base_shell, page_header, page_title, toast_header
-from ui.components.table import (EMPTY, breadcrumbs, bulk_toolbar, display_cell, editable_cell, empty_mark, empty_state_cta,
+from ui.components.table import (EMPTY, select_all_th, breadcrumbs, bulk_toolbar, display_cell, editable_cell, empty_mark, empty_state_cta,
                                  fmt_money, pagination, party_options, row_menu, searchable_select,
                                  PARTY_PRELOAD, PARTY_SEARCH_URL)
 from ui.config import get_company_id, get_role, get_token
@@ -1057,8 +1057,7 @@ def _register_table(items: list[dict], classes: dict[str, str], currency: str) -
                *[_money_td(a.get(k), currency) for k in _REGISTER_MONEY],
                Td(t(f"fixed_assets.status.{a.get('status')}")), cls="data-row")
             for a in items]
-    return Div(Table(Thead(Tr(Th(Input(type="checkbox", cls="bulk-select-all", title=t("label.select_all")),
-                                 cls="col-checkbox"),
+    return Div(Table(Thead(Tr(select_all_th(),
                               Th(t("fixed_assets.number")), Th(t("fixed_assets.name")), Th(t("fixed_assets.class")),
                               Th(t("fixed_assets.available_date")),
                               *[_money_th(t(f"fixed_assets.{k}")) for k in _REGISTER_MONEY],

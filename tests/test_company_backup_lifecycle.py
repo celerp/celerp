@@ -85,6 +85,247 @@ async def test_copy_beside_same_name_gets_distinct_default_name(real_client, rea
     assert again.json()["destination_name"] == "Alpha Trading (Restored 2)"
 
 
+async def test_restoration_runs_module_reconciliation_before_activation(real_client, real_engine, monkeypatch):
+    from celerp.modules import slots
+
+    _user, _cid, token_ = await _setup(real_engine)
+    data = await download(real_client, token_)
+    original = slots.fire_lifecycle
+    seen = []
+
+    async def observe(slot, **kwargs):
+        if slot == "on_company_restored":
+            seen.append(str(kwargs["company_id"]))
+        return await original(slot, **kwargs)
+
+    monkeypatch.setattr(slots, "fire_lifecycle", observe)
+    response = await restore(real_client, token_, data)
+    assert response.status_code == 201, response.text
+    assert seen == [response.json()["company_id"]]
+
+
+@pytest.mark.parametrize("invalid", [False, True], ids=["migrates", "keeps-unmigratable-unmoved"])
+async def test_restored_legacy_subscription_is_upgraded_before_activation(real_client, real_engine, monkeypatch, invalid):
+    """A restored template is moved onto a schedule as a start moves it; one that cannot move
+    does not stop the restore: it stays unmoved, refused by name until fixed from its page."""
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import AsyncSession
+    from celerp.events.engine import emit_event
+    from celerp.models.projections import Projection
+
+    from celerp.modules.registry import enable_for_company, hold_module_state
+    from celerp.services.company_lock import locked_company
+
+    uid, cid, tok = await _setup(real_engine)
+    async with AsyncSession(real_engine) as session:
+        await hold_module_state(session)
+        company = await locked_company(session, cid)
+        company.settings, _ = enable_for_company(company.settings, "celerp-subscriptions")
+        await session.commit()
+
+    eid = f"doc:SUBT-{uuid.uuid4().hex[:8]}"
+    async with AsyncSession(real_engine) as session:
+        await emit_event(
+            session, company_id=cid, entity_id=eid, entity_type="doc", event_type="doc.created",
+            data={"doc_type": "subscription_invoice", "status": "active", "ref_id": eid[4:],
+                  "frequency": "monthly", "start_date": "" if invalid else "2026-01-01",
+                  "next_run_date": "" if invalid else "2026-04-01", "generated_doc_ids": [],
+                  "contact_id": "contact:test-001",
+                  "line_items": [{"description": "Service", "quantity": 1, "unit_price": 100}],
+                  "currency": "USD"},
+            actor_id=uid, location_id=None, source="test", idempotency_key=str(uuid.uuid4()),
+        )
+        await session.commit()
+
+    # The test harness registers routes and hooks without starting the module loader.
+    # Model the loaded manifest, as the other company-backup tests do, so both running
+    # status and running version are checked by the real restore requirements boundary.
+    from celerp.modules import loader, requirements
+    module = "celerp-subscriptions"
+    path = loader.resolve_runtime_module_path(module, loader.module_search_path())
+    assert path is not None
+    manifest = loader.read_manifest(path)
+    assert manifest["name"] == module and manifest.get("version")
+    monkeypatch.setattr(loader, "_loaded", [*(m for m in loader._loaded if m["name"] != module), manifest])
+    assert requirements.plan_requirements({module: manifest["version"]}).ready
+
+    response = await restore(real_client, tok, await download(real_client, tok))
+    assert response.status_code == 201, response.text
+    new_id = uuid.UUID(response.json()["company_id"])
+    async with AsyncSession(real_engine) as session:
+        rows = (await session.execute(select(Projection).where(Projection.company_id == new_id))).scalars().all()
+    states = [row.state for row in rows if row.state.get("doc_type") == "subscription_invoice"]
+    assert len(states) == 1
+    if invalid:
+        assert "anchor_date" not in states[0] and states[0]["next_run_date"] == ""
+        r = await real_client.get(f"/subscriptions/{eid}/periods", headers=auth(await token(real_engine, uid, new_id)))
+        assert r.status_code == 200 and r.json()["not_moved"], r.text
+        return
+    assert states[0]["anchor_date"] == "2026-04-01"
+    assert "next_run_date" not in states[0]
+
+
+@pytest.mark.parametrize("case", ["reconciled", "unmigratable-stays-unmoved", "rollback-on-failure"])
+@pytest.mark.parametrize("activation", ["direct", "business_type", "preset"])
+async def test_enabling_subscriptions_reconciles_existing_company_atomically(
+    real_client, real_engine, monkeypatch, case, activation,
+):
+    """Turning Subscriptions on moves existing templates as a start does; a template that
+    cannot move stays unmoved without stopping the rest, and a move that fails undoes the
+    whole change."""
+    invalid = case == "unmigratable-stays-unmoved"
+    from sqlalchemy import func, select
+    from sqlalchemy.ext.asyncio import AsyncSession
+    from celerp.events.engine import emit_event
+    from celerp.models.company import Company
+    from celerp.models.ledger import LedgerEntry
+    from celerp.models.projections import Projection
+    from celerp.modules import loader
+    from celerp.modules.registry import get_enabled, hold_module_state, set_enabled
+    from celerp.services.company_lock import locked_company
+    from celerp_subscriptions.migration import migrate_company
+
+    user, cid, tok = await _setup(real_engine)
+    async with AsyncSession(real_engine) as session:
+        await hold_module_state(session)
+        company = await locked_company(session, cid)
+        company.settings = set_enabled(company.settings or {}, {
+            "celerp-contacts", "celerp-docs", "celerp-inventory",
+        })
+        await session.commit()
+
+    eid = f"doc:SUBT-{uuid.uuid4().hex[:8]}"
+    async with AsyncSession(real_engine) as session:
+        await emit_event(
+            session, company_id=cid, entity_id=eid, entity_type="doc",
+            event_type="doc.created",
+            data={"doc_type": "subscription_invoice", "status": "active", "ref_id": eid[4:],
+                  "frequency": "monthly", "start_date": "" if invalid else "2026-01-01",
+                  "next_run_date": "" if invalid else "2026-04-01",
+                  "generated_doc_ids": [], "contact_id": "contact:test-001",
+                  "line_items": [{"description": "Service", "quantity": 1, "unit_price": 100}],
+                  "currency": "USD"},
+            actor_id=user, location_id=None, source="test",
+            idempotency_key=str(uuid.uuid4()),
+        )
+        await session.commit()
+    async with AsyncSession(real_engine) as session:
+        assert await migrate_company(session, cid) is None
+        await session.rollback()
+
+    path = loader.resolve_runtime_module_path("celerp-subscriptions", loader.module_search_path())
+    assert path is not None
+    manifest = loader.read_manifest(path)
+    assert manifest["version"]
+    monkeypatch.setattr(loader, "_loaded", [
+        *(m for m in loader._loaded if m["name"] != "celerp-subscriptions"), manifest,
+    ])
+    monkeypatch.setattr("celerp.config.replace_enabled_modules", lambda names: None)
+
+    async def state():
+        async with AsyncSession(real_engine) as session:
+            company = await session.get(Company, cid)
+            proj = await session.get(Projection, {"company_id": cid, "entity_id": eid})
+            count = await session.scalar(select(func.count()).select_from(LedgerEntry).where(
+                LedgerEntry.company_id == cid,
+            ))
+            return get_enabled(company.settings), proj.state, count
+
+    before_modules, before_state, before_count = await state()
+    assert "celerp-subscriptions" not in before_modules
+    assert "anchor_date" not in before_state
+    async def enable():
+        if activation == "business_type":
+            return await real_client.post("/companies/me/business-type", headers=auth(tok),
+                                          json={"vertical": "consulting"})
+        if activation == "preset":
+            return await real_client.post("/companies/me/apply-preset", headers=auth(tok),
+                                          params={"vertical": "consulting"})
+        return await real_client.post("/companies/me/modules/celerp-subscriptions/enable",
+                                      headers=auth(tok))
+
+    if case == "rollback-on-failure":
+        import celerp_subscriptions.migration as migration
+
+        async def fails(*args, **kwargs):
+            raise RuntimeError("move failed")
+        monkeypatch.setattr(migration, "migrate_company", fails)
+    response = await enable()
+    modules, agreement, count = await state()
+    if case == "rollback-on-failure":
+        assert response.status_code == 409, response.text
+        assert modules == before_modules and agreement == before_state
+        assert count == before_count
+    elif invalid:
+        assert response.status_code == 200, response.text
+        assert "celerp-subscriptions" in modules and agreement == before_state
+    else:
+        assert response.status_code == 200, response.text
+        if activation == "preset":
+            assert isinstance(response.json()["restart_required"], bool)
+        assert "celerp-subscriptions" in modules
+        assert agreement["anchor_date"] == "2026-04-01"
+        assert "next_run_date" not in agreement
+        if activation != "business_type":
+            assert count == before_count + 1
+        second = await enable()
+        assert second.status_code == 200, second.text
+        assert (await state())[2] == count
+
+
+async def test_enabling_subscriptions_refuses_outdated_running_version(real_client, real_engine, monkeypatch):
+    from sqlalchemy.ext.asyncio import AsyncSession
+    from celerp.models.company import Company
+    from celerp.modules import loader
+    from celerp.modules.registry import get_enabled, hold_module_state, set_enabled
+    from celerp.services.company_lock import locked_company
+
+    _user, cid, tok = await _setup(real_engine)
+    async with AsyncSession(real_engine) as session:
+        await hold_module_state(session)
+        company = await locked_company(session, cid)
+        company.settings = set_enabled(company.settings or {}, {
+            "celerp-contacts", "celerp-docs", "celerp-inventory",
+        })
+        await session.commit()
+
+    path = loader.resolve_runtime_module_path("celerp-subscriptions", loader.module_search_path())
+    assert path is not None
+    manifest = loader.read_manifest(path)
+    assert manifest["version"] != "1.0.0"
+    monkeypatch.setattr(loader, "_loaded", [
+        *(m for m in loader._loaded if m["name"] != "celerp-subscriptions"),
+        {**manifest, "version": "1.0.0"},
+    ])
+    response = await real_client.post("/companies/me/modules/celerp-subscriptions/enable",
+                                       headers=auth(tok))
+    assert response.status_code == 409, response.text
+    assert "Restart" in response.json()["detail"]
+    async with AsyncSession(real_engine) as session:
+        company = await session.get(Company, cid)
+        assert "celerp-subscriptions" not in get_enabled(company.settings)
+
+
+async def test_restoration_refuses_failed_module_reconciliation(real_client, real_engine, monkeypatch):
+    from celerp.modules import slots
+
+    _user, _cid, token_ = await _setup(real_engine)
+    data = await download(real_client, token_)
+    before = await _companies(real_engine)
+    original = slots.fire_lifecycle
+
+    async def reject(slot, **kwargs):
+        if slot == "on_company_restored":
+            return [("synthetic", "failed")]
+        return await original(slot, **kwargs)
+
+    monkeypatch.setattr(slots, "fire_lifecycle", reject)
+    preview = await read(real_client, token_, data)
+    response = await real_client.post("/company-backups/restore", json=confirm(preview), headers=auth(token_))
+    assert response.status_code == 422, response.text
+    assert await _companies(real_engine) == before
+
+
 async def test_unambiguous_name_is_kept(real_client, real_engine):
     """A backup restored by someone without a company of that name keeps its name."""
     _, _, tok = await _setup(real_engine)

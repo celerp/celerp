@@ -334,9 +334,9 @@ async def test_a_failure_after_the_replace_committed_keeps_the_backup(real_clien
     finished: list[int] = []
     load_set = registry.commit_with_load_set
 
-    async def counted(session):
+    async def counted(session, *, activated):
         finished.append(1)
-        return await load_set(session)
+        return await load_set(session, activated=activated)
 
     r = await real_client.post("/company-backups/replace", json=_replace_request(preview), headers=auth(tok))
     assert r.status_code == 500, r.text
@@ -369,7 +369,7 @@ async def test_a_cancellation_after_the_replace_committed_keeps_the_backup(real_
     user_id = jwt.get_unverified_claims(tok)["sub"]
     stage = files.stage_path(user_id, preview["upload_token"])
 
-    async def cancelled(session):
+    async def cancelled(session, *, activated):
         raise asyncio.CancelledError
 
     monkeypatch.setattr(cb, "commit_with_load_set", cancelled)

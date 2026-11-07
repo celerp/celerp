@@ -113,6 +113,7 @@ EXCLUDED_TABLES = {
     "connector_execution_heartbeats": "connector sync runs in progress",
     "outbound_queue": "messages waiting to leave this installation",
     "doc_share_tokens": "share links issued by this installation",
+    "subscription_email_attempts": "in-flight email messages belong to this installation",
     "connector_media_tokens": "image links issued by this installation",
     "notifications": "per-user notices",
     "ai_conversations": "per-user assistant history",
@@ -128,6 +129,7 @@ EXCLUDED_TABLES = {
 DROPPED_SETTINGS = frozenset({
     "ai_memory", "reorder_alert_email", "column_prefs",
     "pay_tip_shown", "reorder_last_scan_at", "restored_backup", "lineage_id", "firm_locks",
+    "subscription_summary_ack",
 }) | SET_BY_KEYS
 
 # The company a restored company descends from, carried in the manifest, never remapped.
@@ -1887,6 +1889,12 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 await _rebind_actors(session, new_id)
             await _turn_off_shop_sync(session, new_id, user.id)
             await place_company_stock(session, new_id)
+            # Restored data must satisfy each enabled first-party module's current schema
+            # before this new company is committed or can replace an existing one.
+            from celerp.modules.slots import fire_lifecycle
+            failures = await fire_lifecycle("on_company_restored", session=session, company_id=new_id)
+            if failures:
+                raise BackupError(422, t(UNSAVABLE))
             team = await _add_team(session, new_id, team_to_add) if team_to_add else 0
             if replacing is not None:
                 # Last, once its team has the new company, so no one is signed out by it.
@@ -1908,7 +1916,7 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
         try:
             await _settle_replaced(session, closure, task_id)
             # The restore has committed: rewriting the load set's mirror never undoes it.
-            await commit_with_load_set(session)
+            await commit_with_load_set(session, activated=[])
             if stored:
                 await asyncio.to_thread(attachments.clear_landing, str(new_id))
         except Exception:
@@ -1928,7 +1936,7 @@ async def finish_restore() -> None:
     settled by their own retries."""
     await reconcile_landings()
     async with AsyncSession(bind=celerp.db.engine) as session:
-        await commit_with_load_set(session)
+        await commit_with_load_set(session, activated=[])
 
 
 async def reopen_restored(company_id, *, user_id=None, owner_account: dict | None = None,

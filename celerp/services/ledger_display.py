@@ -5,7 +5,8 @@
 
 One place decides how an entry reads to a person: the time in the company's
 business timezone, the record's name and document type, and who made the change
-(a user of this installation, or the name a company backup carried for it).
+(a user of this installation, the name a company backup carried for it, or the app itself
+for work nobody started by hand).
 Stored entries are never changed.
 """
 
@@ -51,9 +52,12 @@ def entry_ts(entry, settings: dict | None) -> str:
 
 
 def _actor(entry, actor_map: dict[str, str]) -> dict:
+    metadata = entry.metadata_ if isinstance(entry.metadata_, dict) else {}
+    if metadata.get("automatic"):
+        return {"actor_name": actor_map.get(str(entry.actor_id), ""), "actor_automatic": True}
     if entry.actor_id and str(entry.actor_id) in actor_map:
         return {"actor_name": actor_map[str(entry.actor_id)]}
-    carried = ((entry.metadata_ or {}).get("backup_actor") or {}) if isinstance(entry.metadata_, dict) else {}
+    carried = metadata.get("backup_actor") or {}
     if not entry.actor_id and isinstance(carried, dict) and carried.get("name"):
         return {"actor_name": str(carried["name"]), "actor_historical": True}
     return {"actor_name": str(entry.actor_id) if entry.actor_id else ""}

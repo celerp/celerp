@@ -86,6 +86,7 @@ async def test_the_upgrade_guard_locks_every_company_before_its_replay(real_engi
         # would end the guard before its rebuild; this start comes from an older release.
         conn = await s.connection()
         await conn.run_sync(lambda c: set_meta(c, PROJECTION_VERSION_KEY, "0.0.0"))
-        await dev_release_guard.run_upgrade_guard(s)
+        result = await dev_release_guard.run_upgrade_guard(s)
         await s.rollback()
+    assert result["rebuilt"], result
     assert seen == [(True, True)]

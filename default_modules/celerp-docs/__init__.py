@@ -33,6 +33,7 @@ PLUGIN_MANIFEST = {
             {"handler": "celerp_docs.customs_freeze:customs_freeze_hook"},
             {"handler": "celerp_docs.legacy_credit_notes:legacy_credit_notes_hook"},
         ],
+        "background_loop": {"handler": "celerp_docs.periodic:loop"},
         "projection_handler": [
             {"prefix": "doc.", "handler": "celerp_docs.doc_projections:apply_documents_event"},
             {"prefix": "list.", "handler": "celerp_docs.doc_projections:apply_documents_event"},

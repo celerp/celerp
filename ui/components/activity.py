@@ -11,6 +11,8 @@ All activity/history sections should use ``activity_table()`` for DRY rendering.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from decimal import Decimal, InvalidOperation
 
 from fasthtml.common import *
@@ -334,6 +336,24 @@ def _field_name(key: str) -> str:
     field = _ITEM_FIELDS.get(key)
     return field_label(field) if field else key.replace("_", " ").title()
 
+# Fields a module names itself in History: each describer reads the field's change
+# ({"old", "new"} or {"old", "drop"}) and returns its line, or None to leave it out.
+# Checked before the generic rendering, so no such field reads as its internal name.
+_FIELD_DESCRIBERS: dict[str, Callable[[dict], str | None]] = {}
+
+
+def register_fields(describers: dict[str, Callable[[dict], str | None]]) -> None:
+    """Name how History shows each of a module's own fields."""
+    _FIELD_DESCRIBERS.update(describers)
+
+
+def change_text(label: str, old: str | None, new: str | None) -> str | None:
+    """'Label: old → new', an empty side read as none; None when both sides read the same,
+    so History never shows a change the page would not."""
+    old, new = old or t("activity.none"), new or t("activity.none")
+    return None if old == new else f"{label}: {old} → {new}"
+
+
 # ID fields that carry a raw entity-ID value; suppressed when a companion
 # human-readable field is present in the same changeset.
 _ID_FIELD_COMPANIONS: dict[str, str] = {
@@ -569,6 +589,8 @@ def _fmt_field_value(key: str, value, currency: str | None, category_names: dict
     currency money, ISO dates as dates; anything else falls back to capped text."""
     if value is None:
         return t("activity.none")
+    if isinstance(value, bool):
+        return t("settings.yes") if value else t("settings.no")
     if key in QTY_FIELD_KEYS:
         return fmt_qty(value)
     if is_money_field(key):
@@ -775,6 +797,13 @@ def _fields_changed_summary(fields_changed: dict, currency: str | None = None,
     complex_labels: list[str] = []
 
     for k, change in user_fields.items():
+        if k in _FIELD_DESCRIBERS:
+            if isinstance(change, dict) and "old" in change and change.get("old") == change.get("new") \
+                    and not change.get("drop"):
+                continue
+            if text := _FIELD_DESCRIBERS[k](change if isinstance(change, dict) else {"new": change}):
+                scalar_parts.append(text)
+            continue
         if isinstance(change, dict):
             old = change.get("old")
             new = change.get("new")
@@ -867,11 +896,11 @@ def _fields_changed_summary(fields_changed: dict, currency: str | None = None,
         if old == new:
             continue
 
-        old_str = _fmt_field_value(k, old, currency, category_names) if not _empty(old) else t("activity.none")
-        new_str = _fmt_field_value(k, new, currency, category_names) if not _empty(new) else t("activity.none")
         label = _field_name(k)
         if not _empty(new):
-            scalar_parts.append(f"{label}: {old_str} → {new_str}")
+            if line := change_text(label, None if _empty(old) else _fmt_field_value(k, old, currency, category_names),
+                                   _fmt_field_value(k, new, currency, category_names)):
+                scalar_parts.append(line)
         else:
             scalar_parts.append(label)
 
@@ -931,8 +960,10 @@ def _is_uuid(s: str) -> bool:
 
 
 def actor_label(e: dict) -> str:
-    """Who made a change, for display: a name, a name carried in from a company backup
-    marked as such, or "--" when there is none to show."""
+    """Who made a change, for display: "Automatically" for work nobody started by hand, a name,
+    a name carried in from a company backup marked as such, or "--" when there is none to show."""
+    if e.get("actor_automatic"):
+        return t("activity.actor_automatic")
     actor = str(e.get("actor_name") or e.get("actor") or e.get("actor_id") or "")
     if not actor or _is_uuid(actor):
         return "--"

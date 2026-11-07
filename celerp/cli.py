@@ -1647,10 +1647,11 @@ async def _enable_for_every_company(db_url: str, names: list[str]) -> int:
             company_ids = (await session.scalars(select(Company.id).order_by(Company.id))).all()
             companies = await take_company_locks(
                 session, *(functools.partial(locked_company, session, company_id) for company_id in company_ids))
+            activated = [(company, dict(company.settings or {})) for company in companies]
             for company in companies:
                 for name in names:
                     company.settings, _deps = enable_for_company(company.settings, name)
-            await commit_with_load_set(session)
+            await commit_with_load_set(session, activated=activated)
             return len(company_ids)
     finally:
         await engine.dispose()

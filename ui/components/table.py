@@ -211,9 +211,13 @@ BULK_TOOLBAR_JS = """
     bar.classList.toggle('is-active',n>0);
     var clr=bar.querySelector('.bulk-clear');if(clr)clr.style.visibility=n>0?'visible':'hidden';
     if(n===0)closeFields(bar);
-    var all=t.querySelector('thead .bulk-select-all');if(all){all.checked=n>0&&n===b.length;all.indeterminate=n>0&&n<b.length;}
   }
-  function refreshAll(){document.querySelectorAll('.bulkbar').forEach(refresh);}
+  // Every select-all header shows whether its table's visible rows are all, some or none
+  // ticked, with or without a toolbar.
+  function syncHead(all){var b=visBoxes(all.closest('table')),n=b.filter(function(c){return c.checked}).length;
+    all.checked=n>0&&n===b.length;all.indeterminate=n>0&&n<b.length;}
+  function refreshAll(){document.querySelectorAll('.bulkbar').forEach(refresh);
+    document.querySelectorAll('thead .bulk-select-all').forEach(syncHead);}
   window.celerpBulkRefresh=refreshAll;
   function findAction(bar,val){
     var sel=bar.querySelector('.bulk-action-select');if(!sel)return null;
@@ -279,14 +283,21 @@ BULK_TOOLBAR_JS = """
 """
 
 
+def select_all_th(lang: str | None = None) -> FT:
+    """The header cell that ticks or clears every visible `.bulk-select` row of its table
+    (rows are `tr.data-row`), named for screen readers and hover, with the script that runs it."""
+    return Th(Input(type="checkbox", cls="bulk-select-all", title=t("label.select_all", lang)),
+              Script(BULK_TOOLBAR_JS), cls="col-checkbox")
+
+
 def bulk_toolbar(table_id: str, actions: list[dict], fields: list | None = None) -> FT:
     """Standard bulk-action toolbar: [N selected] [Action ▾] [Clear] [fields…].
     Hidden until at least one row is ticked (the JS toggles `is-active`), so the
     action list appears only when there is a selection for it to act on.
     actions: [{value, label, method('post'|'open'), url, confirm?, target?, swap?}].
     POST actions submit the selected ids (name='selected') via htmx; 'open' actions open
-    url?ids=<csv> in a new tab. A table carrying `operation_key_attrs()` has its key posted too. Pair with `.bulk-select` row checkboxes + a `.bulk-select-all`
-    header checkbox in #table_id. `data-table` lives on the outer Div (the JS reads it there).
+    url?ids=<csv> in a new tab. A table carrying `operation_key_attrs()` has its key posted too. Pair with `.bulk-select` row checkboxes + a `select_all_th()`
+    header in #table_id. `data-table` lives on the outer Div (the JS reads it there).
 
     `confirm` text may contain `{n}`, replaced with the number selected at click time.
     `fields` are extra inputs for an action that takes a value (a void reason). They

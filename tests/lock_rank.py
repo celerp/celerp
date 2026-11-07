@@ -62,7 +62,7 @@ RANKS: dict[str, int] = {
     "row:password_resets": 18, "row:password_reset_notices": 19,
     # Connector guard (R0, R1), the run lock and the outbound identity lock (taken with no
     # transaction open in the task, on its own connection).
-    "adv:connector-runtime": 20, "adv:connector-owner": 21, "adv:sync-run": 22, "adv:outbound": 23,
+    "adv:connector-runtime": 20, "adv:connector-owner": 21, "adv:sync-run": 22, "adv:outbound": 23, "adv:periodic": 24,
     # Execution lease (fence, KEY SHARE) and its heartbeat. Every FOR UPDATE on either table runs
     # in a transaction that holds nothing else, and acquire/takeover use NOWAIT.
     "row:connector_execution_leases": 25, "row:connector_execution_heartbeats": 26,
@@ -99,7 +99,7 @@ RANKS: dict[str, int] = {
     "row:user_auth_state": 83, "row:session_registry": 84, "row:doc_share_tokens": 85, "row:label_templates": 86,
     "row:connector_media_tokens": 82,
     "row:marketplace_configs": 87, "row:work_centers": 88, "row:supporter_badges": 89, "row:ai_usage": 90,
-    "row:ai_job_steps": 91,
+    "row:ai_job_steps": 91, "row:subscription_email_attempts": 92,
     # Notices, written as their transaction's last statements (celerp/notifications/service.py
     # _defer): after every other lock and parent key, their own key with their row.
     "adv:notices": 95, "row:notifications": 96, "row:notification_reads": 97,
