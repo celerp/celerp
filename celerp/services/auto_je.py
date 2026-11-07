@@ -3638,6 +3638,17 @@ class LotTaken(str, Enum):
     PART = "part"
 
 
+def taken_entry(*, sku, name, takes, lot_id, doc_id, doc_number) -> dict:
+    """One lot a shipment takes from another open invoice (create_for_cost_moves, and the
+    fulfill route for a lot shipped whole): the lot's ``sku`` and ``name``, ``takes`` (a
+    LotTaken value) and the ``doc_number`` of the invoice it is taken from, with their ids. Every
+    leaf is text, or None when the record holds nothing there, whatever type the stored lot or
+    invoice holds (an item PATCH keeps a SKU sent as a number), so the entries sort and are
+    worded alike."""
+    leaves = {"sku": sku, "name": name, "takes": takes, "lot_id": lot_id, "doc_id": doc_id, "doc_number": doc_number}
+    return {k: None if v is None or v == "" else str(v) for k, v in leaves.items()}
+
+
 def _on_hand_value(row: Projection) -> _Dec | None:
     """The value goods a lot holds in stock carry, or None when it holds none: owned
     stock at its value on the books (held_value), consigned goods of a stock type at
@@ -4084,9 +4095,8 @@ async def create_for_cost_moves(session, *, company_id, user_id, doc_id: str, do
     Cr cost of goods sold for the other, at the cost that invoice set them aside at.
     Inventory is not touched: it gave the goods up once, when they were set aside. The
     other invoice holds that many fewer units (recognized_cogs) and is costed for them
-    when it ships. Returns the invoices the goods were taken from, for the notice:
-    {sku, name, takes, lot_id, doc_id, doc_number}, ``takes`` a LotTaken (all the invoice held
-    of the lot, or part of it), ``sku`` and ``name`` the lot's own (None when it has none)."""
+    when it ships. Returns the invoices the goods were taken from, for the notice: a
+    taken_entry for each lot, ``takes`` all the invoice held of it or part."""
     if not moving:
         return []
     cogs_code = await resolve(session, company_id, R.COGS)
@@ -4118,8 +4128,8 @@ async def create_for_cost_moves(session, *, company_id, user_id, doc_id: str, do
         for lot_id in dict.fromkeys(c.lot_id for c in claims):
             lot = (rows[lot_id].state or {}) if lot_id in rows else {}
             takes = LotTaken.PART if any(c.left > 1e-9 for c in claims if c.lot_id == lot_id) else LotTaken.ALL
-            notice.append({"sku": lot.get("sku") or None, "name": lot.get("name") or None, "takes": takes.value,
-                           "lot_id": lot_id, "doc_id": from_doc, "doc_number": from_number})
+            notice.append(taken_entry(sku=lot.get("sku"), name=lot.get("name"), takes=takes.value,
+                                      lot_id=lot_id, doc_id=from_doc, doc_number=from_number))
     return notice
 
 

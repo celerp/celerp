@@ -531,6 +531,24 @@ def _variants(value, *, absent: bool = False):
             yield f"{value}x"
 
 
+# A value of every other type a stored record can hold where text is expected.
+_TYPED = (7, 2.5, True, {"a": 1}, [1])
+
+
+def _typed(answer: dict):
+    """The answer with one more ``taken_from`` entry, the copy of one it has with one leaf of
+    another type (_TYPED), made by the producer (auto_je.taken_entry) from the leaves it takes:
+    two entries that differ only in that leaf's type, so the question's order compares them. An
+    entry carrying a leaf the producer does not make cannot be copied, and fails."""
+    import inspect
+
+    from celerp.services.auto_je import taken_entry
+    for e in answer.get("taken_from") or []:
+        for leaf in inspect.signature(taken_entry).parameters:
+            yield from ({**answer, "taken_from": [*answer["taken_from"], taken_entry(**{**e, leaf: w})]}
+                        for w in _TYPED)
+
+
 def assert_the_question_is_bound(confirm: str, answer: dict) -> None:
     """Whatever the question words is bound: every change to a preview's answer that alters
     the question it asks alters its binding too, so the confirm the user answered can never
@@ -538,12 +556,13 @@ def assert_the_question_is_bound(confirm: str, answer: dict) -> None:
     the producer's own answer, every field of every part, not from a list of parts kept here,
     so a part the question comes to word without a binding fails; and every leaf of every part
     of OUTCOME_SHOWN is also tried as None, as missing and (a number) as 0, so a field that can be
-    empty never breaks the question or the binding (each must answer, never raise)."""
+    empty never breaks the question or the binding (each must answer, never raise); and every
+    leaf of a lot taken from another invoice is also stored as another type (_typed)."""
     from celerp_docs.doc_constants import OUTCOME_SHOWN
     from celerp_docs.routes import outcome_binding
     from ui.routes.documents import _preview_confirm
     asked, bound = _preview_confirm(confirm, answer), outcome_binding(answer)
-    changes = [*_variants(answer),
+    changes = [*_variants(answer), *_typed(answer),
                *({**answer, part: w} for part in OUTCOME_SHOWN if answer.get(part) is not None
                  for w in _variants(answer[part], absent=True))]
     unbound = [v for v in changes if _preview_confirm(confirm, v) != asked and outcome_binding(v) == bound]
@@ -587,6 +606,49 @@ async def test_a_lot_with_no_sku_taken_from_another_invoice_ships_and_is_named_b
     assert_the_question_is_bound(_CONFIRMS["fulfill-lines"], preview)
     shipped = await _ok(await _act(client, g, owner, "fulfill-lines", lids, binding=preview["binding"]))
     assert len(shipped["acted"]) == 2
+
+
+@pytest.mark.parametrize("sku", [12345, 12.5])
+async def test_a_lot_whose_sku_is_a_number_taken_from_another_invoice_ships_and_is_named_by_it(client, session, sku):
+    """An item PATCH stores a SKU sent as a JSON number as a number. A lot taken from another
+    invoice beside a lot with a text SKU is named by that number in the question, and Set as
+    shipped previews and ships both. Red statement: the preview and the action answered 500
+    (the question's order compared the number with the text SKU)."""
+    from ui.routes.documents import _preview_confirm
+    g = await _gems(client)
+    await _doc_of(client, g, [_line(g, _SAP), _line(g, _EMR)])
+    owner = await _doc_of(client, g, [_line(g, _SAP), _line(g, _EMR), dict(GIA)])
+    emr = g.items[_EMR]["id"]
+    await _ok(await client.patch(f"/items/{emr}", headers=g.h,
+                                 json={"fields_changed": {"sku": {"old": _EMR, "new": sku}}}))
+    assert (await client.get(f"/items/{emr}", headers=g.h)).json()["sku"] == sku
+    lids = await _ids(client, g, owner)
+    preview = await _ok(await _act(client, g, owner, "fulfill-lines", lids, dry_run=True))
+    assert sorted(m["sku"] for m in preview["taken_from"]) == sorted([str(sku), _SAP])
+    asked = _preview_confirm(_CONFIRMS["fulfill-lines"], preview)
+    assert str(sku) in asked and _SAP in asked, asked
+    assert_the_question_is_bound(_CONFIRMS["fulfill-lines"], preview)
+    shipped = await _ok(await _act(client, g, owner, "fulfill-lines", lids, binding=preview["binding"]))
+    assert len(shipped["acted"]) == 2
+
+
+async def test_every_leaf_of_a_lot_taken_from_another_invoice_is_text_whatever_type_the_record_holds():
+    """The producer writes every leaf of a ``taken_from`` entry (auto_je.taken_entry) as text or
+    None, whatever type the stored lot or invoice holds, so two entries that differ only in the
+    type of one leaf sort, word and bind like any other two. Red statement: a lot whose SKU was
+    stored as a number sorted against a text SKU and raised TypeError."""
+    import inspect
+
+    from celerp.services.auto_je import taken_entry
+    from celerp_docs.doc_constants import outcome_shown
+    from celerp_docs.routes import outcome_binding
+    from ui.routes.documents import _preview_confirm
+    entry = {k: f"{k}-1" for k in inspect.signature(taken_entry).parameters}
+    for leaf in entry:
+        for typed in _TYPED:
+            answer = {"acted": ["a"], "taken_from": [taken_entry(**entry), taken_entry(**{**entry, leaf: typed})]}
+            assert [v for e in answer["taken_from"] for v in e.values() if not isinstance(v, (str, type(None)))] == []
+            outcome_shown(answer), outcome_binding(answer), _preview_confirm(_CONFIRMS["fulfill-lines"], answer)
 
 
 async def test_every_way_a_lot_is_taken_from_another_invoice_has_its_own_words():
