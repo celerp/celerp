@@ -395,6 +395,8 @@ const SWAP_STEPS = [
 // the setup mutex, so the mutex is only ever another setup's: alive while that setup runs.
 const WRITERS = {
   "alive": { handle: "1234", error: "0" },
+  // A call that succeeds leaves the thread's last error as it was.
+  "alive, stale last error": { handle: "1234", error: "2" },
   "alive, not openable by this account": { handle: "0", error: "5" },
   "gone": { handle: "0", error: "2" },
 };
@@ -451,7 +453,7 @@ test("a setup or uninstaller started by a running setup works on the folder it w
       }
     }
     expect(cases.filter((c) => !c[4])).toEqual([]);
-    expect(cases.length).toBe(3 * 3 * 2 * SWAP_STEPS.length);
+    expect(cases.length).toBe(Object.keys(ROLES).length * Object.keys(WRITERS).length * 2 * SWAP_STEPS.length);
     // the uninstaller a running setup started must have been handed the moved-aside folder
     // through the very InstallLocation value modelled at that step
     expect(macro(include(), "celerpOldVersionLocation")).toContain("StrCpy $installationDir $celerpOld");
