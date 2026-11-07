@@ -83,6 +83,34 @@ async def test_a_list_skips_the_number_a_renumbered_document_shows(client, sessi
     assert await _ref(client, h, await _list(client, h, contacts, "quotation")) != shown
 
 
+async def test_a_document_after_a_reset_skips_the_number_a_renumbered_document_is_stored_under(client, session):
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    doc = (await _quote_doc(client, h, contacts)).json()["id"]
+    stored = doc.split(":", 1)[1]
+    assert (await client.post(f"/docs/{doc}/renumber", headers=h, json={"ref_id": stored[:-4] + "0050"})).status_code == 200
+    assert (await client.patch("/docs/sequences/quotation", headers=h, json={"next": 1})).status_code == 200
+    r = await _quote_doc(client, h, contacts)
+    assert r.status_code == 200, r.text
+    assert await _ref(client, h, r.json()["id"]) != stored
+
+
+async def test_the_draw_preview_names_the_invoice_number_the_draw_gives(client, session):
+    from memo_draw_support import auth as books_auth, draw, lot, ok, state
+    h = await books_auth(session)
+    item = await lot(client, h, "PV-1", 1, price=10.0)
+    memo = (await ok(await client.post("/docs", headers=h, json={"doc_type": "memo", "line_items": [
+        {"item_id": item, "sku": "PV-1", "description": "PV-1", "quantity": 1, "unit_price": 10.0,
+         "sell_by": "piece"}]})))["id"]
+    await ok(await client.post(f"/docs/{memo}/finalize", headers=h))
+    lids = [li["line_id"] for li in (await state(client, h, memo))["line_items"]]
+    await ok(await client.post(f"/docs/{memo}/fulfill-lines", headers=h, json={"line_ids": lids}))
+    preview = await ok(await draw(client, h, memo, line_ids=lids, dry_run=True))
+    assert not preview["problems"], preview["problems"]
+    done = await ok(await draw(client, h, memo, line_ids=lids, binding=preview["binding"]))
+    assert await _ref(client, h, done["target_doc_id"]) == preview["target"]["ref_id"]
+
+
 async def test_a_document_cannot_be_renumbered_to_a_number_a_list_holds(client, session):
     auth, contacts = await _demo_company(client, session, "USD")
     h = auth["headers"]

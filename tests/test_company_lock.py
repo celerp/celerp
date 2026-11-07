@@ -106,3 +106,14 @@ async def test_locking_for_deletion_proves_only_a_company_that_is_there(session)
     assert await lock_company_for_deletion(session, company_id) is True
     assert noted(session, "deleting") == [company_id]
     await session.rollback()
+
+
+async def test_checking_a_number_holds_the_lock_to_the_write(session):
+    """A number checked free stays free until the write that takes it commits: the check takes
+    the company lock, so a second writer checking the same number waits for the first."""
+    from celerp_docs.sequences import require_number_free
+
+    company_id = await _company(session)
+    await require_number_free(session, company_id, "INV-0001")
+    assert holds_company_lock(session, company_id) is True
+    await session.rollback()
