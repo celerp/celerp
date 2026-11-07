@@ -468,14 +468,19 @@ def _conflicting_patches(theirs: dict):
     """Every save loses to another tab that keeps saving ``theirs``; reads see the other tab's menu."""
     from ui.api_client import APIError
 
-    calls, patches = _page_patches(saved=theirs)
+    _calls, patches = _page_patches(saved=theirs)
     attempts: list[str] = []
 
     async def lose(*_a, **_k):
         attempts.append("write")
         raise APIError(412, "Precondition Failed")
 
-    return attempts, (patches[0], patches[1], patch_("patch_nav_overrides", lose), patch_("reset_nav_overrides", lose))
+    async def before_theirs(token):
+        """The company as this page read it, before the other tab saved."""
+        return {"settings": {}}
+
+    return attempts, (patch_("get_company", before_theirs), patches[1],
+                      patch_("patch_nav_overrides", lose), patch_("reset_nav_overrides", lose))
 
 
 @pytest.mark.asyncio
