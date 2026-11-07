@@ -4755,7 +4755,9 @@ celerpUpdateBulkAlloc();
             _new_btn = Button(t("page.new_shipping_doc"), hx_post="/lists/create-blank?type=shipping_doc",
                               hx_swap="none", cls="btn btn--primary", title=t("documents.new_shipping_doc_tooltip"))
         else:
-            _new_btn = Button(t("page.new_list"), hx_post="/lists/create-blank", hx_swap="none", cls="btn btn--primary", title=t("documents.new_list_tooltip"))
+            # On a page filtered to one type, New List makes that type, numbered from its counter.
+            _type_q = f"?type={list_type}" if list_type in _LIST_TYPES else ""
+            _new_btn = Button(t("page.new_list"), hx_post=f"/lists/create-blank{_type_q}", hx_swap="none", cls="btn btn--primary", title=t("documents.new_list_tooltip"))
         export_link = _export_link("lists", state, role_has_permission(_settings, _role, "import_export_data"))
         return await base_shell(
             Div(
