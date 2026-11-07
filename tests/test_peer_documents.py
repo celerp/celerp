@@ -623,3 +623,144 @@ async def test_a_copied_shipment_with_a_line_the_receiver_cannot_ship_is_refused
     with pytest.raises(HTTPException) as refused:
         await documents._replay_fulfilment(_Session(), _grant(), "doc:target", {"1", "2"}, uuid.uuid4())
     assert refused.value.status_code == 422
+
+
+async def _copy_of_issued_invoice(client, session, kind: str):
+    """An issued invoice and the copy another company holds of it, by how the copy's lines came
+    by their ids: given at its own import ("born"), or derived for both records by the fill of
+    lines stored before line ids ("legacy_filled").
+    Returns (grant, source token, source id, copy id)."""
+    from sqlalchemy.orm.attributes import flag_modified
+    from celerp.models.projections import Projection
+    from celerp.services.document_lines import fill_line_ids, strip_line_ids
+    from celerp.services.peer_documents import _FIELDS
+    from celerp.services.peer_identity import new_target_identity
+    from test_payments_stripe import _register, _payable_invoice, _h, _company_id
+
+    token = await _register(client)
+    source_company = uuid.UUID(_company_id(token))
+    source_doc, _ = await _payable_invoice(client, token)
+    state = (await client.get(f"/docs/{source_doc}", headers=_h(token))).json()
+    revision = (await session.get(Projection, (source_company, source_doc), populate_existing=True)).version
+    receiver = await client.post("/companies", json={"name": "Firm"}, headers=_h(token))
+    grant = SimpleNamespace(company_id=uuid.UUID(_company_id(receiver.json()["access_token"])),
+                            source_company_id=source_company, label="Books")
+    assert await documents.receive_document(
+        session, grant=grant, source_entity_id=source_doc, source_revision=revision,
+        data={k: state[k] for k in _FIELDS if k in state}) == "created"
+    copy = new_target_identity(source_company, "doc", source_doc)
+    held = (await session.get(Projection, (grant.company_id, copy), populate_existing=True)).state
+    assert not {li["line_id"] for li in held["line_items"]} & {li["line_id"] for li in state["line_items"]}
+    for company, doc in [(source_company, source_doc), (grant.company_id, copy)] if kind == "legacy_filled" else []:
+        row = await session.get(Projection, (company, doc), populate_existing=True)
+        row.state = {**row.state, "line_items": strip_line_ids(row.state["line_items"])}
+        fill_line_ids(row.state, doc)
+        flag_modified(row, "state")
+    await session.commit()
+    return grant, token, source_doc, copy
+
+
+async def _source_payload(client, session, grant, token, source_doc, sender_ids: bool):
+    from celerp.connectors.celerp import _account_codes
+    from celerp.models.projections import Projection
+    from celerp.services import peer_accounts
+    from celerp.services.peer_documents import _FIELDS
+    from test_payments_stripe import _h
+
+    state = (await client.get(f"/docs/{source_doc}", headers=_h(token))).json()
+    payload = {k: state[k] for k in _FIELDS if k in state}
+    if not sender_ids:
+        # A sender on a version before line ids sends its lines without them.
+        payload["line_items"] = [{k: v for k, v in li.items() if k != "line_id"}
+                                 for li in payload["line_items"]]
+    # The accounts block the connector adds to every document it sends.
+    payload["accounts"] = await peer_accounts.outgoing(
+        session, grant.source_company_id, grant.company_id, _account_codes(payload))
+    row = await session.get(Projection, (grant.source_company_id, source_doc), populate_existing=True)
+    return payload, row.version
+
+
+def _other(value):
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, (int, float)):
+        return value + 7
+    if isinstance(value, str):
+        return str(uuid.uuid4()) if len(value) == 36 else f"{value}-changed"
+    return "changed"
+
+
+def _copy_line_ids(state):
+    return [li.get("line_id") for li in state["line_items"]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["born", "legacy_filled"])
+async def test_a_copy_keeps_its_own_line_ids_and_compares_the_source_by_content(client, session, kind):
+    """A line id names a line within its own record, so the source's ids are never the copy's
+    and never a difference between them: every sender (with or without ids) x every key of the
+    sent line, unchanged or changed, is judged by the line's content alone."""
+    from celerp.models.projections import Projection
+    from celerp_docs.routes import LineItem
+    from pydantic import ValidationError
+
+    grant, token, source_doc, copy = await _copy_of_issued_invoice(client, session, kind)
+    held = (await session.get(Projection, (grant.company_id, copy), populate_existing=True)).state
+    ids_before = _copy_line_ids(held)
+    for sender_ids in (True, False):
+        payload, revision = await _source_payload(client, session, grant, token, source_doc, sender_ids)
+        sent = payload["line_items"][0]
+        cases = [(None, None)] + [(k, _other(v)) for k, v in sent.items()]
+        if "line_id" not in sent:
+            cases.append(("line_id", str(uuid.uuid4())))
+        for key, value in cases:
+            line = dict(sent) if key is None else {**sent, key: value}
+            data = {**payload, "line_items": [line, *payload["line_items"][1:]]}
+            label = f"{kind} sender_ids={sender_ids} {key}={value!r}"
+            async with session.begin_nested() as savepoint:
+                try:
+                    outcome = await documents.receive_document(
+                        session, grant=grant, source_entity_id=source_doc,
+                        source_revision=revision + 1, data=data)
+                except HTTPException as exc:
+                    outcome = exc
+                state = (await session.get(Projection, (grant.company_id, copy), populate_existing=True)).state
+                await savepoint.rollback()
+            if key in (None, "line_id", "quantity_received"):
+                assert outcome == "skipped", label
+                assert _copy_line_ids(state) == ids_before, label
+            elif key in ("description", "account_code"):
+                assert outcome == "updated", label
+                assert _copy_line_ids(state) == ids_before, label
+                assert state["line_items"][0][key] == value, label
+            else:
+                try:
+                    LineItem.model_validate(line)
+                except ValidationError:
+                    assert isinstance(outcome, HTTPException) and outcome.status_code == 422, label
+                    continue
+                assert isinstance(outcome, HTTPException) and outcome.status_code == 409, label
+                assert outcome.detail == documents.ISSUED_IN_COPY, label
+                assert outcome.__cause__.detail["params"]["field"] == key, label
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sender_ids", [True, False], ids=["sender_ids", "sender_without_ids"])
+@pytest.mark.parametrize("kind", ["born", "legacy_filled"])
+async def test_a_payment_on_the_source_reaches_the_copy_at_the_next_revision(client, session, kind, sender_ids):
+    from celerp.models.projections import Projection
+    from test_payments_stripe import _h
+
+    grant, token, source_doc, copy = await _copy_of_issued_invoice(client, session, kind)
+    before = (await session.get(Projection, (grant.company_id, copy), populate_existing=True)).state
+    paid = await client.post(f"/docs/{source_doc}/payment", headers=_h(token), json={
+        "amount": 100, "method": "cash", "payment_date": "2026-03-02", "bank_account": "1111"})
+    assert paid.status_code == 200, paid.text
+    payload, revision = await _source_payload(client, session, grant, token, source_doc, sender_ids)
+    assert await documents.receive_document(
+        session, grant=grant, source_entity_id=source_doc, source_revision=revision,
+        data=payload) == "skipped"
+    await session.commit()
+    after = (await session.get(Projection, (grant.company_id, copy), populate_existing=True)).state
+    assert after["amount_outstanding"] == pytest.approx(before["amount_outstanding"] - 100)
+    assert _copy_line_ids(after) == _copy_line_ids(before)
