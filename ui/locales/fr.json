@@ -2618,7 +2618,7 @@
   "documents.scanning": "Scan en cours...",
   "documents.search_contacts": "Recherche de contacts…",
   "documents.search_doc_ref": "Recherche d’un numéro de document ou d’une référence…",
-  "documents.search_docs_placeholder": "Rechercher un numéro de document, un contact...",
+  "documents.search_docs_placeholder": "Numéro de document, contact...",
   "documents.search_lists": "Rechercher dans les listes",
   "documents.search_location": "Rechercher un lieu...",
   "documents.search_ref_customer": "Rechercher par référence, client...",

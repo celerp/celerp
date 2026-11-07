@@ -1,10 +1,12 @@
 # Copyright (c) 2026 Noah Severs. All rights reserved.
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""The documents search in the filters panel fits a phone in English and German: the placeholder
+"""The documents search in the filters panel fits a phone in every UI language: the placeholder
 shows whole (not cut, not ellipsed), the box, Apply and Reset sit on screen and the page does not
 scroll sideways. The box is named for what it searches, so a screen reader hears the whole meaning
 however short the placeholder is."""
 from __future__ import annotations
+
+from pathlib import Path
 
 import pytest
 from playwright.sync_api import Page
@@ -12,6 +14,9 @@ from playwright.sync_api import Page
 from .conftest import wait_for_topbar
 
 pytestmark = pytest.mark.browser
+
+# Every language the UI ships, so a new locale is checked the day it is added.
+_LOCALES = sorted(p.stem for p in (Path(__file__).resolve().parents[2] / "ui" / "locales").glob("*.json"))
 
 _FIT_JS = """async (main) => {
   await document.fonts.ready;
@@ -35,7 +40,7 @@ _FIT_JS = """async (main) => {
 }"""
 
 
-@pytest.mark.parametrize("lang", ["en", "de"])
+@pytest.mark.parametrize("lang", _LOCALES)
 @pytest.mark.parametrize("width", [320, 375, 390])
 def test_docs_search_fits_a_phone(page: Page, fresh_company, ui_server, lang, width):
     page.context.add_cookies([{"name": "celerp_lang", "value": lang, "url": ui_server}])
