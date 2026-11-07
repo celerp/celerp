@@ -13,9 +13,13 @@ from agreement_kit import (
     agreement, bill_early, billed_docs, claim_events, freeze_day, generate_due, member,
     next_bill_date, register, schedule, template,
 )
+from consent_census import scheduled_callers
 from ui.i18n import t
 
 pytestmark = pytest.mark.asyncio
+
+# Every route that reaches a locked_agreement call asking for a schedule, read from the code.
+SCHEDULE_DOORS = sorted({e for *_, entries in scheduled_callers() for e in entries if not e.startswith("SLOT ")})
 
 def _bulk_item(entity_id: str, period_index: int = 0) -> dict:
     """The same command identity represents a replay of the same selected period."""
@@ -601,3 +605,36 @@ async def test_schedule_rejects_invalid_calendar_range(client, monkeypatch):
                    {"anchor_date": "9999-12-31"}, {"term_end": "2026-02-01"}):
         r = await schedule(client, hd, eid, **change)
         assert r.status_code == 422, (change, r.text)
+
+
+async def test_every_lock_that_asks_for_a_schedule_is_reached_from_a_door():
+    """The census reaches every locked_agreement(scheduled=True) call from a route or a
+    manifest handler, so the door test below drives each one a person can press."""
+    assert SCHEDULE_DOORS and {where: fn for where, fn, entries in scheduled_callers() if not entries} == {}
+
+
+@pytest.mark.parametrize("door", SCHEDULE_DOORS)
+async def test_a_schedule_door_refuses_an_agreement_without_a_schedule(client, session, monkeypatch, door):
+    """Generated over every door to a schedule lock (census) with a draft, which has no
+    schedule until Activate gives it one: never a 500, nothing bills and the draft is
+    unchanged. A door addressed to the draft that reads its schedule answers 409 naming
+    Activate."""
+    import uuid
+
+    freeze_day(monkeypatch, "2026-03-01")
+    hd = await register(client)
+    eid = await agreement(client, hd, start="2026-04-01", activate=False)
+    before = await template(client, hd, eid)
+    method, path = door.split(" ", 1)
+    key = str(uuid.uuid4())
+    body = {"request_key": key, "period_index": 0, "reason": "r", "attempt": 0,
+            "items": [{"entity_id": eid, "period_index": 0, "request_key": key}]}
+    r = await client.request(method, "/subscriptions" + path.format(entity_id=eid, k=0, doc_id=eid),
+                             headers=hd, json=body)
+    assert r.status_code < 500, (door, r.text)
+    assert await template(client, hd, eid) == before and await billed_docs(session, eid) == []
+    if "{entity_id}" not in path:
+        assert r.status_code == 200 and not any(item["ok"] for item in r.json()["results"]), (door, r.text)
+    elif r.status_code != 200:
+        assert r.status_code == 409 and r.json()["detail"]["message_key"] == "subscriptions.err_no_periods", (
+            door, r.text)

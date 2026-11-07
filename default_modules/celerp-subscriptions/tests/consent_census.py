@@ -27,6 +27,20 @@ Consent belongs to whoever sets the automatic terms, so the census also reads:
 - ``documents_gaps()``: every automatic field a Documents create or edit would take (each must be
   refused there, so write_agreement is the only writer of them).
 
+A mode also comes into force when a status change makes the agreement billable with it chosen,
+whoever presses it. So the census reads the doors to that, each with the entry points (the
+module's routes and its manifest handlers) that reach it:
+
+- ``agreement_writes()``: every write_agreement call in the module, with the status and consent-term
+  keys it writes; write_agreement asks whoever writes for the modes the write brings into force.
+- ``status_routes()`` and ``outside_writes()`` above: every other status change, which the status
+  guard asks the same of.
+
+and the doors that read an agreement's schedule:
+
+- ``scheduled_callers()``: every locked_agreement call that asks for an agreement on a schedule
+  (``scheduled`` not False), each refused with a 409 when its stored terms build none.
+
 Run as a script for the census table: ``python consent_census.py``.
 """
 from __future__ import annotations
@@ -44,6 +58,8 @@ from owned_fields_census import (  # noqa: E402
 
 ROUTES = PACKAGE / "routes.py"
 MARKER = "_WRITING"
+LOCK = "locked_agreement"
+VERBS = ("get", "post", "put", "patch", "delete")
 
 
 def mode_fields() -> set[str]:
@@ -118,6 +134,68 @@ def _routes(pkg: _Package):
                 if (isinstance(d, ast.Call) and getattr(d.func, "attr", None) in ("post", "put", "patch", "delete")
                         and d.args and isinstance(d.args[0], ast.Constant)):
                     yield f"{d.func.attr.upper()} {d.args[0].value}", fn
+
+
+def entry_points(pkg: _Package) -> dict[str, str]:
+    """{function name: how it is reached} for every way into the module: each route (method and
+    path) in any of its files, and each handler its manifest names (slot and handler)."""
+    found = {}
+    for tree in pkg.trees.values():
+        for fn in (n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))):
+            for d in fn.decorator_list:
+                if (isinstance(d, ast.Call) and getattr(d.func, "attr", None) in VERBS
+                        and d.args and isinstance(d.args[0], ast.Constant)):
+                    found[fn.name] = f"{d.func.attr.upper()} {d.args[0].value}"
+    manifest = next(n.value for n in ast.parse((PACKAGE.parent / "__init__.py").read_text(encoding="utf-8")).body
+                    if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", None) == "PLUGIN_MANIFEST")
+    for slot, entries in ast.literal_eval(manifest)["slots"].items():
+        for entry in entries if isinstance(entries, list) else [entries]:
+            for ref in (entry.get("handler"), entry.get("render")):
+                if ref and ref.startswith(PACKAGE.name):
+                    found[ref.rsplit(":", 1)[1]] = f"SLOT {slot} {ref}"
+    return found
+
+
+def _callees(pkg: _Package, name: str, seen: set[str]) -> set[str]:
+    """Every module function ``name`` calls, followed through the ones it calls."""
+    for fn in pkg.functions.get(name, []):
+        for call in ast.walk(fn):
+            if isinstance(call, ast.Call) and (callee := _callee(call)) in pkg.functions and callee not in seen:
+                seen.add(callee)
+                _callees(pkg, callee, seen)
+    return seen
+
+
+def _entries(pkg: _Package, entries: dict[str, str], function: str) -> list[str]:
+    return sorted(label for name, label in entries.items() if name == function or function in _callees(pkg, name, set()))
+
+
+def agreement_writes() -> list[tuple[str, str, list[str], list[str], list[str]]]:
+    """[(file:line, function, status and consent-term keys, unresolved, entry points)] for every
+    write_agreement call in the module (owned_fields_census resolves the keys)."""
+    pkg, fields = _Package(PACKAGE), mode_fields()
+    entries = entry_points(pkg)
+    found = []
+    for row in writes():
+        if row.through_sink:
+            where, function = row.where.split(" ")
+            found.append((where.rsplit("/", 1)[1], function, sorted((row.sets | row.drops) & fields), row.unresolved,
+                          _entries(pkg, entries, function)))
+    return found
+
+
+def scheduled_callers() -> list[tuple[str, str, list[str]]]:
+    """[(file:line, function, entry points)] for every locked_agreement call that asks for an
+    agreement on a schedule: ``scheduled`` left out or anything but False."""
+    pkg, found = _Package(PACKAGE), []
+    entries = entry_points(pkg)
+    for path, call in pkg.calls(LOCK):
+        flag = _kw(call, "scheduled")
+        if isinstance(flag, ast.Constant) and flag.value is False:
+            continue
+        fn = pkg.enclosing(call)
+        found.append((f"{path.name}:{call.lineno}", fn.name, _entries(pkg, entries, fn.name)))
+    return found
 
 
 def route_doors() -> dict[str, tuple[str, list[str], list[str]]]:
@@ -247,6 +325,14 @@ if __name__ == "__main__":
     print(f"# automatic fields a Documents door would take: {len(gaps)}")
     for door, fields in sorted(gaps.items()):
         print(f"DOCS-GAP {door} {fields}")
+    calls = agreement_writes()
+    print(f"# write_agreement calls (each asks the writer for the modes it brings into force): {len(calls)}")
+    for where, fn, keys, unresolved, reached in calls:
+        print(f"WRITE {where} {fn} writes={keys} entries={reached}" + (f" UNRESOLVED={unresolved}" if unresolved else ""))
+    locks = scheduled_callers()
+    print(f"# locked_agreement calls that need a schedule (each refuses an agreement without one): {len(locks)}")
+    for where, fn, reached in locks:
+        print(f"SCHEDULED {where} {fn} entries={reached}")
     routes = status_routes()
     print(f"# Documents routes that write a status (refused by the status guard on an agreement that runs a mode): {len(routes)}")
     for r in routes:

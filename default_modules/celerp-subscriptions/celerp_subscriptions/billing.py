@@ -106,14 +106,34 @@ async def locked_agreement(session: AsyncSession, company_id, entity_id: str, *,
                            scheduled: bool = True) -> Projection:
     """The agreement under the company lock and its own row lock, as the previous writer
     committed it: every schedule operation reads and writes it under this lock. With
-    ``scheduled`` (every operation that reads the schedule; pause and cancel do not), a
-    template not yet moved onto one is refused with a 409 naming it and why."""
+    ``scheduled`` (every operation that reads the schedule; pause, cancel and Activate do not),
+    an agreement its stored terms build no schedule from is refused (refuse_unscheduled)."""
     proj = (await lock_projections(session, company_id, [entity_id])).get(entity_id)
     if not proj or proj.state.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
         raise HTTPException(status_code=404, detail=t("subscriptions.err_not_found"))
-    if scheduled and (reason := not_moved(proj.state)) is not None:
-        raise not_moved_refusal(proj.state, entity_id, reason)
+    if scheduled:
+        refuse_unscheduled(proj.state, entity_id)
     return proj
+
+
+def refuse_unscheduled(state: dict, entity_id: str) -> None:
+    """A 409 naming why, unless the agreement's stored terms build a schedule: a template not
+    yet moved onto one (refuse_not_moved), an agreement with no start of its schedule yet (a
+    draft, until Activate gives it one), or terms that describe none (the schedule's reason)."""
+    refuse_not_moved(state, entity_id)
+    if not state.get("anchor_date"):
+        raise HTTPException(status_code=409, detail=t(
+            "subscriptions.err_no_periods", ref=state.get("ref_id") or entity_id))
+    try:
+        Schedule.from_state(state)
+    except ScheduleError as exc:
+        raise HTTPException(status_code=409, detail=t(exc.key, **exc.params)) from exc
+
+
+def refuse_not_moved(state: dict, entity_id: str) -> None:
+    """A 409 naming the template and why, while it is not yet moved onto a schedule."""
+    if (reason := not_moved(state)) is not None:
+        raise not_moved_refusal(state, entity_id, reason)
 
 
 def not_moved_refusal(state: dict, entity_id: str, reason: str) -> HTTPException:
@@ -152,7 +172,9 @@ async def write_agreement(session: AsyncSession, company_id, entity_id: str, cha
     needs both its permissions from the actor's role (403 naming the first missing) and records
     the actor's consent; the consents kept are exactly the modes chosen after the change, so
     turning a mode off drops its consent and a status change keeps it. A write that changes the
-    status may not move a consent (ValueError): status and terms are written apart."""
+    status may not move a consent (ValueError): status and terms are written apart. Whatever
+    it changes, a write that brings a mode into force (entering_modes, as Resume and Activate
+    do) also needs that mode's permissions from the actor, and moves no consent for it."""
     before = (await session.execute(select(Projection.state).where(
         Projection.company_id == company_id, Projection.entity_id == entity_id))).scalar_one_or_none() or {}
     changes = {k: v for k, v in changes.items() if shown(k, before.get(k)) != shown(k, v)}
@@ -162,12 +184,8 @@ async def write_agreement(session: AsyncSession, company_id, entity_id: str, cha
     merged = {**{k: v for k, v in before.items() if k not in drop}, **changes}
     chosen, choosing = configured_modes(before), configured_modes(merged)
     needed = [m for m in choosing if m not in chosen or any(f in changes for f in CONSENT_TERMS[m])]
-    if needed:
-        company = await session.get(Company, company_id)
-        role = await _member_role(session, company_id, actor_id)
-        for mode in needed:
-            if (missing := missing_mode_permission((company.settings if company else None) or {}, role, mode)):
-                raise missing_permission(missing)
+    await require_mode_permissions(session, company_id, actor_id,
+                                   [*needed, *(m for m in entering_modes(before, merged) if m not in needed)])
     kept = before.get("consents") or {}
     consents = {**{m: kept[m] for m in choosing if m in kept},
                 **{m: {"by": str(actor_id), "at": now_stamp()} for m in needed}}
@@ -223,7 +241,9 @@ async def guard_agreement_status(*, session, entry, transition) -> None:
     is any that would leave an agreement a status outside AGREEMENT_STATUSES. A draft starts only
     through Activate, which writes its schedule, so a draft leaves draft elsewhere only by void;
     that refusal names Activate. An agreement without a schedule bills nothing (billable). A
-    company that turned the module off runs no mode, so Documents can stop its agreements."""
+    company that turned the module off runs no mode, so Documents can stop its agreements; a
+    change that brings a mode into force for when it is turned on again (an unvoid) needs that
+    mode's permissions from whoever makes it, as in write_agreement."""
     from celerp.modules.registry import uses_module
 
     if _WRITING.get() == entry.entity_id or transition.after.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
@@ -237,6 +257,8 @@ async def guard_agreement_status(*, session, entry, transition) -> None:
         raise HTTPException(status_code=409, detail=t("subscriptions.err_agreement_activate"))
     if status not in AGREEMENT_STATUSES:
         raise HTTPException(status_code=409, detail=t("subscriptions.err_agreement_status_lifecycle"))
+    await require_mode_permissions(session, entry.company_id, entry.actor_id,
+                                   entering_modes(transition.before or {}, transition.after))
 
 
 def billable(state: dict) -> bool:
@@ -665,6 +687,18 @@ async def authorizer(session, company_id, settings: dict, state: dict, mode: str
     return SimpleNamespace(id=uuid.UUID(str(by)))
 
 
+async def require_mode_permissions(session, company_id, actor_id, modes: list[str]) -> None:
+    """403 naming the first permission running any of ``modes`` unattended needs that the
+    actor's role lacks (no member lacks them all)."""
+    if not modes:
+        return
+    company = await session.get(Company, company_id)
+    role = await _member_role(session, company_id, actor_id)
+    for mode in modes:
+        if (missing := missing_mode_permission((company.settings if company else None) or {}, role, mode)):
+            raise missing_permission(missing)
+
+
 def missing_mode_permission(settings: dict, role: str | None, mode: str) -> str | None:
     """The first permission running ``mode`` unattended needs that ``role`` lacks (no role
     lacks them all), or None when it holds both."""
@@ -721,6 +755,13 @@ def configured_modes(state: dict) -> list[str]:
 def modes_in_force(state: dict) -> list[str]:
     """The chosen modes that run now: only while the agreement can bill (billable)."""
     return configured_modes(state) if billable(state) else []
+
+
+def entering_modes(before: dict, after: dict) -> list[str]:
+    """The modes a change brings into force: in force after it and not before, whatever moved
+    them (the status, the start of the schedule, a term)."""
+    running = modes_in_force(before)
+    return [m for m in modes_in_force(after) if m not in running]
 
 
 async def run_due(*, session: AsyncSession, company_id, today: date, budget: int) -> OperationReport:

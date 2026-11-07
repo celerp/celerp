@@ -7,10 +7,13 @@ automatic mode, or changes a term of one chosen, needs the mode's permissions fr
 role and records that writer's consent; it happens in the one writer of agreement fields
 (billing.write_agreement), which reads the terms as configured, never whether they run now.
 Resume and Activate change the status only, keep the consent where it is, and say what now runs
-automatically and under whose authorization. The doors are read from the code (consent_census):
-each subscriptions route that writes status or a consent term is driven here by a role that may
-neither bill nor automate, so a new door fails until it is given a case below, and the grid at
-write_agreement is generated over every status and every automatic field."""
+automatically and under whose authorization. A change that brings a chosen mode into force (a status
+that makes the agreement bill, whoever writes it) also asks whoever makes it for that mode's
+permissions, at write_agreement for the module's writes and at the status guard for every other.
+The doors are read from the code (consent_census): each subscriptions route that writes status or
+a consent term is driven here by a role that may neither bill nor automate, so a new door fails
+until it is given a case below, and the grids at write_agreement and the status guard are
+generated over every status, every pair of statuses and every automatic field."""
 from __future__ import annotations
 
 import uuid
@@ -22,11 +25,14 @@ from agreement_kit import (
     agreement, billed_docs, company_id, freeze_day, member, register, revoke, schedule, template, tick,
 )
 from consent_census import (
-    automatic_fields, automatic_writers, consent_writers, documents_gaps, marker_writers, outside_writes, route_doors,
-    status_routes,
+    agreement_writes, automatic_fields, automatic_writers, consent_writers, documents_gaps, marker_writers,
+    outside_writes, route_doors, status_routes,
 )
 
 from celerp_subscriptions.billing import AGREEMENT_STATUSES  # noqa: E402
+
+# The route doors that write a status, read from the code.
+STATUS_DOORS = sorted(name for name, (_, keys, _) in route_doors().items() if "status" in keys)
 
 WRITE_AGREEMENT = "default_modules/celerp-subscriptions/celerp_subscriptions/billing.py::write_agreement"
 
@@ -68,12 +74,16 @@ async def _owner_name(client, hd) -> str:
 
 
 async def _resume(client, session, monkeypatch):
-    """Anyone who may edit resumes; the owner's consent stays, billing catches up under it, and
-    the answer names what now runs and whose authorization it runs under."""
+    """Resuming brings the chosen modes back into force, so it asks whoever presses it for their
+    permissions: a role that may not bill is refused and nothing changes. The owner resumes; the
+    consent stays, billing catches up under it, and the answer names what now runs and whose
+    authorization it runs under."""
     hd, cid, eid, operator = await _configured(client, session, monkeypatch, status="paused", send=True)
     before = (await template(client, hd, eid))["consents"]
     freeze_day(monkeypatch, "2026-03-15")
-    r = await client.post(f"/subscriptions/{eid}/resume", headers=operator)
+    _refused(await client.post(f"/subscriptions/{eid}/resume", headers=operator))
+    assert (await template(client, hd, eid))["status"] == "paused"
+    r = await client.post(f"/subscriptions/{eid}/resume", headers=hd)
     assert r.status_code == 200, r.text
     after = await template(client, hd, eid)
     assert after["status"] == "active" and after["consents"] == before
@@ -88,7 +98,9 @@ async def _activate(client, session, monkeypatch):
     hd, cid, eid, operator = await _configured(client, session, monkeypatch, status="draft")
     before = (await template(client, hd, eid))["consents"]
     freeze_day(monkeypatch, "2026-03-15")
-    r = await client.post(f"/subscriptions/{eid}/activate", headers=operator)
+    _refused(await client.post(f"/subscriptions/{eid}/activate", headers=operator))
+    assert (await template(client, hd, eid))["status"] == "draft"
+    r = await client.post(f"/subscriptions/{eid}/activate", headers=hd)
     assert r.status_code == 200, r.text
     after = await template(client, hd, eid)
     assert after["status"] == "active" and after["consents"] == before
@@ -319,3 +331,129 @@ def test_consent_is_written_only_where_every_automatic_field_is():
     assert writers and {name: u for name, (_, u) in writers.items() if u} == {}
     assert {name: keys for name, keys in outside_writes().items() if set(keys) & automatic_fields()} == {}
     assert documents_gaps() == {}
+
+
+def test_every_agreement_write_asks_the_one_rule():
+    """Census of every write_agreement call: each one's keys are read from the code and each is
+    reached from a route or a manifest handler, and no agreement write in the module goes around
+    it, so the rule below (write_agreement asks the writer for every mode a write brings into
+    force) is asked at every door."""
+    rows = agreement_writes()
+    assert rows and {where: unresolved for where, _, _, unresolved, _ in rows if unresolved} == {}
+    assert {where: fn for where, fn, _, _, entries in rows if not entries} == {}
+    assert outside_writes() == {}
+
+
+async def _standing(client, session, monkeypatch, status: str):
+    """An agreement whose automatic terms (billing and sending) the owner set, standing ``status``
+    through its own page, with the owner's and an operator's ids."""
+    hd, cid, eid, operator = await _configured(client, session, monkeypatch, send=True)
+    owner = _uid(await _user(client, hd, "owner"))
+    await _write(session, cid, eid, {"status": status}, owner)
+    await session.commit()
+    return hd, cid, eid, operator, owner
+
+
+def _running(state: dict) -> set[str]:
+    from celerp_subscriptions import billing
+
+    return set(billing.modes_in_force(state))
+
+
+@pytest.mark.parametrize("status", sorted(AGREEMENT_STATUSES))
+@pytest.mark.parametrize("door", STATUS_DOORS)
+async def test_no_status_door_brings_a_mode_into_force_for_a_role_without_its_permissions(
+        client, session, monkeypatch, door, status):
+    """Generated over every route that writes a status (census) and every status it can start
+    from: a role that may neither bill nor automate never leaves more running than before."""
+    hd, cid, eid, operator, _ = await _standing(client, session, monkeypatch, status)
+    before = await template(client, hd, eid)
+    method, path = route_doors()[door][0].split(" ", 1)
+    r = await client.request(method, "/subscriptions" + path.format(entity_id=eid), headers=operator, json={})
+    after = await template(client, hd, eid)
+    assert not _running(after) - _running(before), (door, status, r.status_code, r.text)
+    assert after.get("consents") == before.get("consents")
+
+
+@pytest.mark.parametrize("to", sorted(AGREEMENT_STATUSES))
+async def test_a_status_write_asks_the_writer_for_every_mode_it_brings_into_force(client, session, monkeypatch, to):
+    """Class guard at write_agreement, generated over every pair of statuses: a status write that
+    makes an agreement with automatic terms bill (it becomes active) is refused to a writer
+    without the permissions (an operator, or no member) and changes nothing; the owner makes it,
+    and the consent stays with whoever set the terms. Every other status write is anyone's."""
+    hd, cid, eid, operator, owner = await _standing(client, session, monkeypatch, "active")
+    operator_id = _uid(await _user(client, hd, "operator"))
+    for was in sorted(AGREEMENT_STATUSES - {to}):
+        await _write(session, cid, eid, {"status": was}, owner)
+        await session.commit()
+        before = await template(client, hd, eid)
+        if to == "active":
+            for actor in (operator_id, None):
+                with pytest.raises(HTTPException) as refused:
+                    await _write(session, cid, eid, {"status": to}, actor)
+                assert refused.value.status_code == 403, (was, actor, refused.value.detail)
+            assert await template(client, hd, eid) == before
+            await _write(session, cid, eid, {"status": to}, owner)
+        else:
+            await _write(session, cid, eid, {"status": to}, operator_id)
+        await session.commit()
+        after = await template(client, hd, eid)
+        assert after["status"] == to and after["consents"] == before["consents"], (was, to)
+
+
+@pytest.mark.parametrize("module_on", [True, False])
+async def test_the_status_guard_asks_the_actor_for_every_mode_a_change_brings_into_force(
+        client, session, monkeypatch, module_on):
+    """Every status change outside write_agreement (each Documents status route, an import) goes
+    through the status guard (test_doc_status_guard_door). Generated over every pair of statuses,
+    with the module on or off: a change that makes an agreement with automatic terms bill never
+    passes for an actor without the modes' permissions; with the module off, the owner's does."""
+    from types import SimpleNamespace
+
+    from celerp_subscriptions import billing
+    from test_module_off_census import _turn_off
+
+    hd, cid, eid, _ = await _configured(client, session, monkeypatch, send=True)
+    if not module_on:
+        await _turn_off(client, hd, monkeypatch)
+    state = await template(client, hd, eid)
+    owner, operator = _uid(await _user(client, hd, "owner")), _uid(await _user(client, hd, "operator"))
+    for was in sorted(AGREEMENT_STATUSES):
+        for to in sorted(AGREEMENT_STATUSES - {was}):
+            transition = SimpleNamespace(before={**state, "status": was}, after={**state, "status": to})
+            answers = {}
+            for name, actor in (("operator", operator), ("none", None), ("owner", owner)):
+                entry = SimpleNamespace(entity_id=eid, company_id=uuid.UUID(cid), actor_id=actor)
+                try:
+                    await billing.guard_agreement_status(session=session, entry=entry, transition=transition)
+                    answers[name] = 200
+                except HTTPException as exc:
+                    answers[name] = exc.status_code
+            if to == "active":
+                assert answers["operator"] != 200 and answers["none"] != 200, (was, to, answers)
+                if not module_on and was in ("paused", "cancelled", "void"):
+                    assert answers == {"operator": 403, "none": 403, "owner": 200}, (was, to, answers)
+
+
+async def test_documents_unvoid_with_the_module_off_asks_for_the_modes_permissions(client, session, monkeypatch):
+    """With the module off, an agreement that billed on its own is voided. A role that may unvoid
+    (finalize_documents) but may not turn automatic billing on cannot bring it back into force,
+    so turning the module on again cannot bill under the old consent; the owner can."""
+    from test_module_off_census import _turn_off
+
+    freeze_day(monkeypatch, "2026-01-01")
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    eid = await agreement(client, hd, start="2026-01-01")
+    assert (await schedule(client, hd, eid, generation_mode="auto_invoice", catchup_periods=6)).status_code == 200
+    await tick(session, cid, "2026-01-01")
+    await _turn_off(client, hd, monkeypatch)
+    void = await client.post(f"/docs/{eid}/void", headers=hd, json={"reason": "stop it"})
+    assert void.status_code == 200, void.text
+    manager, _ = await member(client, session, hd, "manager")
+    await revoke(client, hd, "automate_billing", "manager")
+    r = await client.post(f"/docs/{eid}/unvoid", headers=manager, json={})
+    _refused(r)
+    assert (await template(client, hd, eid))["status"] == "void"
+    assert (await client.post(f"/docs/{eid}/unvoid", headers=hd, json={})).status_code == 200
+    assert (await template(client, hd, eid))["status"] == "active"

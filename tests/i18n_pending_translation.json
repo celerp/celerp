@@ -90,6 +90,12 @@
     "country.SA": {
       "en": "Saudi Arabia",
       "params": []
+    },
+    "subscriptions.err_no_periods": {
+      "en": "{ref} is still a draft, so it has no billing periods yet. Activate it on this page to start its schedule.",
+      "params": [
+        "ref"
+      ]
     }
   }
 }

@@ -707,8 +707,12 @@ def _build_router() -> APIRouter:
     ) -> dict:
         """Promote a draft agreement to active. Its first period starts on the start date,
         which is also its first bill date when billed in advance. The status changes only: any
-        automatic terms keep the consent of whoever set them, and the answer says what now runs."""
-        proj = await billing.locked_agreement(session, company_id, entity_id)
+        automatic terms keep the consent of whoever set them, and the answer says what now runs.
+        Activate gives the draft its schedule, so it asks only that the agreement is not a
+        template still waiting to move onto one; whoever presses it needs the permissions of any
+        mode it brings into force (billing.write_agreement)."""
+        proj = await billing.locked_agreement(session, company_id, entity_id, scheduled=False)
+        billing.refuse_not_moved(proj.state, entity_id)
         if proj.state.get("status") != "draft":
             raise HTTPException(status_code=409, detail=t("subscriptions.err_activate_not_draft"))
         changes = {"status": "active", **await _first_schedule(session, company_id, proj.state)}
