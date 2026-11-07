@@ -179,6 +179,22 @@ def test_every_kind_of_maker_is_found():
 # resolved by hand against the dict or call graph that actually supplies the key, so a
 # rename of the source dict/constant without updating this list fails loudly here
 # rather than silently passing an unchecked key.
+def _schedule_error_keys() -> list[str]:
+    """The literal key of every ScheduleError the subscriptions module raises; one built from
+    anything else fails here, so the keys a schedule refusal can carry are all checked."""
+    keys = []
+    for path in sorted((_ROOT / "default_modules" / "celerp-subscriptions" / "celerp_subscriptions").glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "ScheduleError":
+                key = node.args[0] if node.args else None
+                options = [key.body, key.orelse] if isinstance(key, ast.IfExp) else [key]
+                assert all(isinstance(k, ast.Constant) for k in options), \
+                    f"{path.name}:{node.lineno} ScheduleError key is not a literal"
+                keys += [k.value for k in options]
+    assert keys
+    return sorted(set(keys))
+
+
 _DYNAMIC_KEY_SITES = {
     # celerp/services/lot_origin.py: _refused(status, key, message) wraps refusal(key, ...)
     # for the older-stock move, undo and adjustment refusals
@@ -254,6 +270,9 @@ _DYNAMIC_KEY_SITES = {
     # nested in a refusal; the core rules' labels (a module's own are its own catalog's)
     "default_modules/celerp-fixed-assets/celerp_fixed_assets/calc/rules.py": [
         entry.label_key for entries in CORE.values() for entry in entries],
+    # celerp_subscriptions/billing.py: schedule_refusal(status, exc) for the key of each
+    # ScheduleError the module raises
+    "default_modules/celerp-subscriptions/celerp_subscriptions/billing.py": _schedule_error_keys(),
 }
 
 
