@@ -91,6 +91,7 @@ def test_a_write_made_in_a_lambda_counts_for_the_function_it_is_written_in(tmp_p
     assert _passed(sites, (23, "<lambda>", 19)) == set()
 
 
+@pytest.mark.timeout(240)  # walks every bundled module with ast: about 15 s alone, four times that under coverage
 def test_a_driven_add_site_of_the_bundled_source_counts_on_its_own_line(tmp_path):
     """A work center is added on one line and sent at the commit after it: the observer
     records the add's line, and the commit's line alone counts nothing."""
