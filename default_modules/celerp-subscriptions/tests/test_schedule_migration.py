@@ -296,13 +296,16 @@ async def test_migration_reviews_shared_historical_document(session, auth, monke
         assert not any(e.get("state") == "billed" for e in (state.get("periods") or {}).values())
 
 
-async def test_migration_missing_anchor_keeps_legacy_state_for_repair(session, auth, monkeypatch):
+async def test_migration_missing_anchor_keeps_legacy_state_for_repair(client, session, auth, monkeypatch):
     _today(monkeypatch, "2026-03-15")
     tid, _ = await _legacy(session, auth, next_run="", start="", doc_dates=[])
     result = await _migrate(session, auth["company_id"])
     assert result["failed"] == 1 and not result["marked"]
     state = await _state(session, auth["company_id"], tid)
     assert "anchor_date" not in state and "next_run_date" in state
+    shown = await client.get(f"/subscriptions/{tid}/periods", headers=auth["headers"])
+    assert shown.status_code == 200 and not shown.json()["rows"], shown.text
+    assert "no next run date or start date" in shown.json()["not_moved"]
 
     from celerp.models.notification import Notification
     from ui.i18n import t

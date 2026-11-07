@@ -271,6 +271,27 @@ def test_every_ui_action_answers_by_loading_its_page_redrawing_or_refusing():
             if a.split("@")[0] not in status_census.ALLOWED_ANSWERS] == []
 
 
+@pytest.mark.parametrize("source, answer", [
+    ("return _done(page, 'subscriptions.done_created')", "_done"),
+    ("return _done(f'/subscriptions/{eid}#periods', 'subscriptions.done_created')", "fragment"),
+    ("return await _redrawn(request, eid)", status_census.REDRAW),
+    ("return _refused(exc)", "_refused"),
+    ("return base_shell(title, body)", "page"),
+    ("return wizard_step(request)", "wizard"),
+    ("return RedirectResponse('/login', status_code=302)", "signed_out"),
+    ("return HTMLResponse('', status_code=404)", "other"),
+    ("return HTMLResponse(status_code=404)", "not_found"),
+    ("return HTMLResponse('', headers={'HX-Redirect': page})", "other"),
+    ("return None", "other"),
+])
+def test_the_census_names_each_way_a_route_can_answer(source, answer):
+    """The census tells a full page load from a fragment the page does not reload for, a page
+    from a wizard step, and anything else (a redirect the browser does not follow, no answer)
+    from the answers it allows."""
+    import ast
+    assert status_census._answer(ast.parse(source).body[0], {"wizard_step"}) == answer
+
+
 def test_every_api_action_is_shown_through_a_ui_route():
     """Each API action's answer reaches the user through a UI route the scenarios cover."""
     assert [a.path for a in status_census.api_actions() if not a.reached_by] == []

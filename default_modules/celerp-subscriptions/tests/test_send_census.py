@@ -25,11 +25,15 @@ _EN = json.loads((send_census.ROOT / "ui/locales/en.json").read_text(encoding="u
 _T0 = datetime(2026, 7, 1, 9, 0, tzinfo=timezone.utc)
 
 
+_T0_TIMES = (_T0.isoformat(), _T0.replace(tzinfo=None).isoformat(),
+             _T0.astimezone(timezone(timedelta(hours=7))).isoformat())
+
+
 def _records() -> list[dict]:
-    """Every stored state the census finds, written at _T0, with no time, and with a time that
-    cannot be read."""
+    """Every stored state the census finds, written at _T0 (in UTC, with no zone, read as UTC,
+    and in another zone), with no time, and with a time that cannot be read."""
     return [{"state": state, **at} for state in sorted(send_census.written_states())
-            for at in ({"at": _T0.isoformat()}, {}, {"at": "not a time"})]
+            for at in (*({"at": t} for t in _T0_TIMES), {}, {"at": "not a time"})]
 
 
 def _moments() -> list[datetime]:
@@ -66,7 +70,7 @@ def test_a_send_record_reads_one_state_with_the_time_it_began_at_every_moment():
     seen: dict[tuple, tuple] = {}
     for record, emailed, waits, now, state, since in _readings():
         assert state is not None, record
-        if since and record.get("at") == _T0.isoformat():
+        if since and record.get("at") in _T0_TIMES:
             assert datetime.fromisoformat(since) <= now, (record, now, since)
         key = (repr(record), emailed, waits, state)
         assert seen.setdefault(key, since) == since, (record, now, state, since)
@@ -77,7 +81,7 @@ def test_a_reading_that_changes_after_the_summary_was_read_is_listed_again():
     moment is listed again, whatever its state, age, document and next pass (P2g-1)."""
     from celerp_subscriptions import billing
     for record, emailed, waits in itertools.product(_records(), (False, True), (False, True)):
-        if record.get("at") != _T0.isoformat():
+        if record.get("at") not in _T0_TIMES:
             continue
         for read_at, later in itertools.combinations(_moments(), 2):
             before = billing.send_state(record, read_at, emailed=emailed, waits=waits)
@@ -87,6 +91,33 @@ def test_a_reading_that_changes_after_the_summary_was_read_is_listed_again():
                 assert _listed(*after, ack), (record, read_at, later, before, after)
             elif after[0] != "waiting":
                 assert not _listed(*after, ack), (record, read_at, later, after)
+
+
+def _expected(record: dict, emailed: bool, waits: bool, now: datetime) -> tuple:
+    """The reading each stored state should give, written out per state: a sent document reads
+    sent whatever was stored; a sending record with a readable time reads sending until its
+    cut-off and unconfirmed from the cut-off on, and one whose time cannot be read is
+    unconfirmed from the start. A readable time reads in UTC, however it was stored."""
+    from celerp_subscriptions import billing
+    at = _T0.isoformat() if record.get("at") in _T0_TIMES else record.get("at")  # in UTC
+    cut = _T0 + billing.SEND_TIMEOUT
+    if emailed:
+        return "sent", at
+    return {
+        "sent": lambda: ("sent", at),
+        "pending": lambda: ("waiting" if waits else "not_sent", at),
+        "sending": lambda: ("unconfirmed", at) if at != _T0.isoformat() else
+        ("sending", at) if now < cut else ("unconfirmed", cut.isoformat()),
+        "failed": lambda: ("failed", at),
+        "unconfirmed": lambda: ("unconfirmed", at),
+    }[record["state"]]()
+
+
+def test_every_stored_state_reads_as_the_table_says():
+    """Each row of the table gives the state and start time written out for it; a stored state
+    with no row fails here until someone says how it reads."""
+    for record, emailed, waits, now, state, since in _readings():
+        assert (state, since) == _expected(record, emailed, waits, now), (record, emailed, waits, now)
 
 
 def _statuses() -> set[str]:

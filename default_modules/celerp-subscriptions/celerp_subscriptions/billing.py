@@ -830,21 +830,27 @@ def send_state(send: dict | None, now: datetime, *, emailed: bool = False,
     still be with the mail server (recorded as sending less than SEND_TIMEOUT ago), or
     "unconfirmed" (it may not have arrived). Since is when that state began: the time the
     record was written, except that a send cut off by age reads "unconfirmed" from the moment
-    it could no longer be with the mail server. (None, None) when there is no record."""
+    it could no longer be with the mail server. A readable time is given in UTC (one with no
+    zone is read as UTC), so since compares with the summary's acknowledgment as text.
+    (None, None) when there is no record."""
     send = send or {}
     recorded, at = send.get("state"), send.get("at")
     if recorded is None:
         return None, None
+    try:
+        began = datetime.fromisoformat(str(at))
+        began = began.astimezone(timezone.utc) if began.tzinfo else began.replace(tzinfo=timezone.utc)
+        at = began.isoformat()
+    except ValueError:
+        began = None
     if recorded == "sent" or emailed:
         return "sent", at
     if recorded == "pending":
         return ("waiting" if waits else "not_sent"), at
     if recorded == "sending":
-        try:
-            began = datetime.fromisoformat(str(at))
-        except ValueError:
+        if began is None:
             return "unconfirmed", at
-        cut_off = (began if began.tzinfo else began.replace(tzinfo=timezone.utc)) + SEND_TIMEOUT
+        cut_off = began + SEND_TIMEOUT
         return ("sending", at) if cut_off > now else ("unconfirmed", cut_off.isoformat())
     return recorded, at
 

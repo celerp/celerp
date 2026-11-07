@@ -62,6 +62,18 @@ async def test_no_door_changes_what_an_ended_agreements_periods_claim(owner_ui, 
     assert claims(await template(owner_ui.api, {}, eid)) == claims(before), (r.status_code, r.text)
 
 
+def test_a_send_record_is_no_claim_and_an_agreement_without_periods_claims_none():
+    """Sending a period's bill again changes no claim, so it stays open on an ended agreement;
+    any other change to a period does, and an agreement with no periods yet has a claim too."""
+    from celerp_subscriptions.billing import claims
+
+    billed = {"status": "void", "periods": {"0": {"state": "billed", "doc_id": "d1"}}}
+    resent = {**billed, "periods": {"0": {**billed["periods"]["0"], "send": {"state": "sent"}}}}
+    assert claims(resent) == claims(billed)
+    assert claims({**billed, "periods": {"0": {"state": "skipped"}}}) != claims(billed)
+    assert claims({"status": "void"}) == (None, None, None, None)
+
+
 @pytest.mark.parametrize("status", ENDED)
 async def test_skip_and_hand_back_on_an_ended_agreement_are_refused_naming_why(owner_ui, monkeypatch, status):
     """Skip, Un-skip and Reopen are refused like Cancel on a void one: 409 with the status's reason."""
