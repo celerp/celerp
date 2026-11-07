@@ -608,16 +608,24 @@ async def test_a_lot_with_no_sku_taken_from_another_invoice_ships_and_is_named_b
     assert len(shipped["acted"]) == 2
 
 
+@pytest.mark.parametrize("held_first", [True, False], ids=["held at a cost", "named only"])
 @pytest.mark.parametrize("sku", [12345, 12.5])
-async def test_a_lot_whose_sku_is_a_number_taken_from_another_invoice_ships_and_is_named_by_it(client, session, sku):
+async def test_a_lot_whose_sku_is_a_number_taken_from_another_invoice_ships_and_is_named_by_it(
+        client, session, sku, held_first):
     """An item PATCH stores a SKU sent as a JSON number as a number. A lot taken from another
     invoice beside a lot with a text SKU is named by that number in the question, and Set as
-    shipped previews and ships both. Red statement: the preview and the action answered 500
-    (the question's order compared the number with the text SKU)."""
+    shipped previews and ships both, whether the other invoice, finalized first, held the lots at
+    a cost (auto_je.create_for_cost_moves) or, finalized after, only names them (the fulfill
+    route's lots shipped whole). Red statement: the preview and the action answered 500 (the
+    question's order compared the number with the text SKU)."""
     from ui.routes.documents import _preview_confirm
     g = await _gems(client)
-    await _doc_of(client, g, [_line(g, _SAP), _line(g, _EMR)])
+    other = [_line(g, _SAP), _line(g, _EMR)]
+    if held_first:
+        await _doc_of(client, g, other)
     owner = await _doc_of(client, g, [_line(g, _SAP), _line(g, _EMR), dict(GIA)])
+    if not held_first:
+        await _doc_of(client, g, other)
     emr = g.items[_EMR]["id"]
     await _ok(await client.patch(f"/items/{emr}", headers=g.h,
                                  json={"fields_changed": {"sku": {"old": _EMR, "new": sku}}}))
@@ -635,7 +643,7 @@ async def test_a_lot_whose_sku_is_a_number_taken_from_another_invoice_ships_and_
 async def test_every_leaf_of_a_lot_taken_from_another_invoice_is_text_whatever_type_the_record_holds():
     """The producer writes every leaf of a ``taken_from`` entry (auto_je.taken_entry) as text or
     None, whatever type the stored lot or invoice holds, so two entries that differ only in the
-    type of one leaf sort, word and bind like any other two. Red statement: a lot whose SKU was
+    type of one leaf sort, word and bind like any other two, and an empty leaf reads as None. Red statement: a lot whose SKU was
     stored as a number sorted against a text SKU and raised TypeError."""
     import inspect
 
@@ -645,6 +653,7 @@ async def test_every_leaf_of_a_lot_taken_from_another_invoice_is_text_whatever_t
     from ui.routes.documents import _preview_confirm
     entry = {k: f"{k}-1" for k in inspect.signature(taken_entry).parameters}
     for leaf in entry:
+        assert taken_entry(**{**entry, leaf: ""})[leaf] is None
         for typed in _TYPED:
             answer = {"acted": ["a"], "taken_from": [taken_entry(**entry), taken_entry(**{**entry, leaf: typed})]}
             assert [v for e in answer["taken_from"] for v in e.values() if not isinstance(v, (str, type(None)))] == []
