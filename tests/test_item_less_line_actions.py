@@ -110,6 +110,15 @@ def _detail(r) -> dict:
     return detail if isinstance(detail, dict) else {}
 
 
+def _reason(r) -> tuple[str, dict]:
+    """The one reason a refusal of every chosen line gives, ahead of its next step in the same
+    message."""
+    detail = _detail(r)
+    assert detail["message_key"] == "lines.reasons_then_next" and not detail.get("also"), detail
+    (reason,) = detail["params"]["reasons"]
+    return reason["message_key"], reason["params"]
+
+
 def _notice(answer: dict) -> list[tuple[str, dict]]:
     return [(n["message_key"], n["params"]) for n in answer.get("skipped_notice") or []]
 
@@ -203,14 +212,12 @@ async def test_stock_line_actions_refuse_when_only_item_less_lines(client, sessi
     r = await (draw(client, g.h, owner, line_ids=chosen) if kind == "memo"
                else _act(client, g, owner, path, chosen, **extra))
     assert r.status_code == (409 if kind == "memo" else 422), r.text
-    detail = _detail(r)
     # Invoice selected says the line stays on the memo; the status actions, that it has no status.
     key = "lines.memo_no_stock" if kind == "memo" else "lines.no_stock"
     if many:
-        assert (detail["message_key"], detail["params"]) == (
-            f"{key}_many", {"lines": '6 "GIA Certificate", 7 "Engraving"'})
+        assert _reason(r) == (f"{key}_many", {"lines": '6 "GIA Certificate", 7 "Engraving"'})
     else:
-        assert (detail["message_key"], detail["params"]) == (f"{key}_one", {"lines": '6 "GIA Certificate"'})
+        assert _reason(r) == (f"{key}_one", {"lines": '6 "GIA Certificate"'})
     after = await _state(client, g, owner)
     assert after["version"] == before["version"] and after["line_items"] == before["line_items"]
 
@@ -258,14 +265,16 @@ async def test_service_lines_get_their_own_wording(client, session, ui_client):
 
     r = await _act(client, g, d, "reserve-lines", [svc], new_status="reserved")
     assert r.status_code == 422, r.text
-    assert (_detail(r)["message_key"], _detail(r)["params"]) == ("lines.service_no_stock_one", {"lines": f'2 "{SVC}"'})
+    assert _reason(r) == ("lines.service_no_stock_one", {"lines": f'2 "{SVC}"'})
 
     r = await _act(client, g, d, "reserve-lines", [svc, gia], new_status="reserved")
     assert r.status_code == 422, r.text
     detail = _detail(r)
-    assert detail["message_key"] == "lines.no_stock_one" and detail["params"] == {"lines": '3 "GIA Certificate"'}
-    assert [(a["message_key"], a["params"]) for a in detail["also"]] == [
-        ("lines.service_no_stock_one", {"lines": f'2 "{SVC}"'}), ("lines.choose_stock_many", {})]
+    assert detail["message_key"] == "lines.reasons_then_next" and not detail.get("also"), detail
+    assert [(m["message_key"], m["params"]) for m in detail["params"]["reasons"]] == [
+        ("lines.no_stock_one", {"lines": '3 "GIA Certificate"'}),
+        ("lines.service_no_stock_one", {"lines": f'2 "{SVC}"'})]
+    assert detail["params"]["next"]["message_key"] == "lines.choose_stock_many"
 
     # The page shows both sentences in its toast.
     refused = AsyncMock(side_effect=api._api_error(422, r.json(), r.text))
@@ -274,7 +283,7 @@ async def test_service_lines_get_their_own_wording(client, session, ui_client):
         page = await ui_client.post(f"/docs/{d}/reserve-lines", data={
             "line_id": [svc, gia], "new_status": "reserved", "idempotency_key": "k-svc"})
     toast = json.loads(page.headers["HX-Trigger"])["celerpToast"]["message"]
-    assert refusal_text(detail) in toast and refusal_text(detail["also"]) in toast
+    assert refusal_text(detail) in toast
 
 
 # ── Callers outside the page ─────────────────────────────────────────────────
@@ -490,7 +499,7 @@ async def test_back_to_memo_refuses_when_only_own_item_less_lines(client, sessio
     assert r.status_code == 409, r.text
     detail = _detail(r)
     n = [li["line_id"] for li in before["line_items"]].index(own) + 1
-    assert (detail["message_key"], detail["params"]) == ("docs.back_to_memo_not_drawn_one", {"lines": f'{n} "GIA Certificate"'})
+    assert _reason(r) == ("docs.back_to_memo_not_drawn_one", {"lines": f'{n} "GIA Certificate"'})
     assert detail["message"].startswith(f'Line {n} "GIA Certificate" did not come from a memo')
     assert (await _state(client, g, invoice))["line_items"] == before["line_items"]
 
@@ -717,16 +726,18 @@ async def test_a_refusal_of_several_kinds_shows_every_reason_on_the_page(client,
 
 async def test_a_refusal_gives_one_next_step_after_the_reason_for_each_kind():
     """Whatever kinds of line a refusal of every chosen line names (every kind of every action
-    in LINE_SKIP_REASONS that has a refusal, alone and together), each reason is said once and
-    the next step once, after them all, as the action's own. Red statement: a service line and
-    the GIA Certificate refused together said "Choose the inventory lines instead." twice, the
-    second time about the service line, which the table shows as an inventory item."""
+    in LINE_SKIP_REASONS that has a refusal, alone and together), it is one message: each reason
+    once, then the action's own next step once, after them all. As one message, no page can show
+    the next step apart from the reasons or under a label of its own. Red statements: a service
+    line and the GIA Certificate refused together said "Choose the inventory lines instead."
+    twice; then the next step was a message of its own, which the memo's Invoice selected showed
+    as "Also needed: Choose a line that holds stock instead."."""
     import re
     from itertools import combinations
 
-    from celerp_docs.doc_constants import LINE_SKIP_REASONS
+    from celerp_docs.doc_constants import LINE_REFUSAL_NEXT, LINE_SKIP_REASONS
     from celerp_docs.routes import _skip_messages
-    from ui.i18n import refusal_text
+    from ui.i18n import refusal_text, t
     refusals = {}
     for action, reasons in LINE_SKIP_REASONS.items():
         refusing = [kind for kind, (_notice_key, refusal_key) in reasons.items() if refusal_key]
@@ -735,16 +746,18 @@ async def test_a_refusal_gives_one_next_step_after_the_reason_for_each_kind():
                 skipped = [{"line": i + 1, "name": f"Line {i}", "line_id": f"l{i}", "kind": kind}
                            for i, kind in enumerate(k for k in kinds for _ in range(per_kind))]
                 refusals[action, kinds, per_kind] = _skip_messages(action, skipped, refuse=True)
+    split = {case: msgs for case, msgs in refusals.items() if len(msgs) != 1}
+    assert split == {}, f"a refusal in more than one message: {next(iter(split.items()))}"
     repeated = {case: said for case, msgs in refusals.items()
                 if len(set(said := re.split(r"(?<=\.) ", refusal_text(msgs)))) != len(said)}
     assert repeated == {}, f"a sentence said twice: {next(iter(repeated.items()))}"
-    from celerp_docs.doc_constants import LINE_REFUSAL_NEXT
-    steps = {f"{LINE_REFUSAL_NEXT[a]}_{n}" for a in LINE_REFUSAL_NEXT for n in ("one", "many")}
-    for (action, kinds, per_kind), (*reasons, step) in refusals.items():
+    for (action, kinds, per_kind), (refusal,) in refusals.items():
         n = "one" if len(kinds) * per_kind == 1 else "many"
-        assert step["message_key"] == f"{LINE_REFUSAL_NEXT[action]}_{n}", (action, kinds)
-        assert [m["message_key"] for m in reasons if m["message_key"] in steps] == []
-        assert len(reasons) == len(kinds) and step["message"] not in refusal_text(reasons), (action, kinds)
+        step = t(f"{LINE_REFUSAL_NEXT[action]}_{n}")
+        said = refusal_text(refusal)
+        assert said.endswith(" " + step) and said.count(step) == 1, (action, kinds, said)
+        reasons = [LINE_SKIP_REASONS[action][k][1] for k in kinds]
+        assert [r["message_key"].rsplit("_", 1)[0] for r in refusal["params"]["reasons"]] == reasons, (action, kinds)
 
 
 @pytest.mark.parametrize("route", _ROUTES, ids=_route_id)
@@ -760,7 +773,10 @@ async def test_a_choice_of_only_item_less_lines_changes_nothing_and_is_refused(c
     assert r.status_code in (409, 422), r.text
     # The kind an item-less line is to this action: a line of the invoice's own to Back to memo.
     skip_kind = {"back_to_memo": "own", "invoice": "memo_no_item"}.get(action, "no_item")
-    assert _detail(r)["message_key"] == f"{LINE_SKIP_REASONS[action][skip_kind][1]}_one"
+    # One message, the reason then the next step, on every route: none sends the step apart.
+    detail = _detail(r)
+    assert [m["message_key"] for m in detail["params"]["reasons"]] == [f"{LINE_SKIP_REASONS[action][skip_kind][1]}_one"]
+    assert not detail.get("also"), detail
     after = await _state(client, g, owner)
     assert after["version"] == before["version"] and after["line_items"] == before["line_items"]
 

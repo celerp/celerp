@@ -591,6 +591,7 @@
   "lines.scan_no_stock_many": "Le righe {lines} non sono articoli di magazzino, quindi non c'è nulla da scansionare.",
   "lines.choose_stock_one": "Scelga invece una riga che contiene merce a magazzino.",
   "lines.choose_stock_many": "Scelga invece righe che contengono merce a magazzino.",
+  "lines.reasons_then_next": "{reasons} {next}",
   "lines.cannot_split": "Impossibile dividere {sku}: {reason}",
   "lines.lot_already_invoiced": "{sku} è già fatturato su {docs} e non ancora spedito, quindi non può essere fatturato di nuovo. Spedisci o annulla prima quella fattura, oppure fattura altro stock.",
   "date.months_short": "gen feb mar apr mag giu lug ago set ott nov dic",

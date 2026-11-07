@@ -591,6 +591,7 @@
   "lines.scan_no_stock_many": "As linhas {lines} não são itens de estoque, então não há nada para escanear.",
   "lines.choose_stock_one": "Escolha uma linha que contenha produtos em estoque.",
   "lines.choose_stock_many": "Escolha linhas que contenham produtos em estoque.",
+  "lines.reasons_then_next": "{reasons} {next}",
   "lines.cannot_split": "Não é possível dividir {sku}: {reason}",
   "lines.lot_already_invoiced": "{sku} já está faturado em {docs} e ainda não foi enviado, por isso não pode ser faturado novamente. Envie ou anule essa fatura primeiro, ou fature outro estoque.",
   "date.months_short": "jan fev mar abr mai jun jul ago set out nov dez",

@@ -591,6 +591,7 @@
   "lines.scan_no_stock_many": "Các dòng {lines} không phải mặt hàng tồn kho nên không có gì để quét.",
   "lines.choose_stock_one": "Thay vào đó, hãy chọn một dòng có hàng tồn kho.",
   "lines.choose_stock_many": "Thay vào đó, hãy chọn các dòng có hàng tồn kho.",
+  "lines.reasons_then_next": "{reasons} {next}",
   "lines.cannot_split": "Không thể tách {sku}: {reason}",
   "lines.lot_already_invoiced": "{sku} đã được lập hóa đơn trên {docs} và chưa giao, nên không thể lập hóa đơn lại. Hãy giao hoặc hủy hóa đơn đó trước, hoặc lập hóa đơn cho hàng tồn khác.",
   "date.months_short": "1 2 3 4 5 6 7 8 9 10 11 12",

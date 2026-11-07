@@ -628,6 +628,7 @@
   "lines.scan_no_stock_many": "መስመሮች {lines} የክምችት እቃዎች አይደሉም፣ ስለዚህ የሚቃኝ ነገር የለም።",
   "lines.choose_stock_one": "በምትኩ እቃ ያለበትን መስመር ይምረጡ።",
   "lines.choose_stock_many": "በምትኩ እቃ ያለባቸውን መስመሮች ይምረጡ።",
+  "lines.reasons_then_next": "{reasons} {next}",
   "lines.cannot_split": "{sku}ን መከፋፈል አልተቻለም፦ {reason}",
   "lines.lot_already_invoiced": "{sku} በ{docs} ላይ አስቀድሞ ደረሰኝ ተሰጥቶበታል እና ገና አልተላከም፣ ስለዚህ እንደገና ደረሰኝ ሊሰጥበት አይችልም። መጀመሪያ ያንን ደረሰኝ ይላኩ ወይም ይሰርዙ፣ ወይም ሌላ ክምችት ደረሰኝ ይስጡ።",
   "date.months_short": "ጃንዩ ፌብሩ ማርች ኤፕሪ ሜይ ጁን ጁላይ ኦገስ ሴፕቴ ኦክቶ ኖቬም ዲሴም",

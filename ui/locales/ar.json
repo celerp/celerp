@@ -591,6 +591,7 @@
   "lines.scan_no_stock_many": "الأسطر {lines} ليست أصناف مخزون، لذا لا يوجد ما يمكن مسحه ضوئيًا.",
   "lines.choose_stock_one": "اختر بدلًا من ذلك سطرًا يحتوي على مخزون.",
   "lines.choose_stock_many": "اختر بدلًا من ذلك أسطرًا تحتوي على مخزون.",
+  "lines.reasons_then_next": "{reasons} {next}",
   "lines.cannot_split": "تعذر تقسيم {sku}: {reason}",
   "lines.lot_already_invoiced": "{sku} مفوتر بالفعل في {docs} ولم يُشحن بعد، لذا لا يمكن فوترته مرة أخرى. اشحن تلك الفاتورة أو ألغها أولا، أو قم بفوترة مخزون آخر.",
   "date.months_short": "يناير فبراير مارس أبريل مايو يونيو يوليو أغسطس سبتمبر أكتوبر نوفمبر ديسمبر",

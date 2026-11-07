@@ -10458,10 +10458,11 @@ def _skipped_lines(line_items: list[dict], indices: list[int], kind: str) -> lis
 
 def _skip_messages(action: str, skipped: list[dict], *, refuse: bool = False) -> list[dict]:
     """One message per kind in ``skipped`` naming its lines, as ``6 "GIA Certificate"``, in
-    ``action``'s own words (LINE_SKIP_REASONS): the notice that they were left as they are, or
-    with ``refuse`` the reason none of the chosen lines is one the action acts on, then the
-    action's next step once (LINE_REFUSAL_NEXT). A kind the action has no reason for is a
-    KeyError, never another action's wording."""
+    ``action``'s own words (LINE_SKIP_REASONS): the notice that they were left as they are. With
+    ``refuse``, one message: the reason for each kind that none of the chosen lines is one the
+    action acts on, then the action's next step once (LINE_REFUSAL_NEXT), so no page can show
+    the step apart from its reasons. A kind the action has no reason for is a KeyError, never
+    another action's wording."""
     reasons = LINE_SKIP_REASONS[action]
     unknown = {s["kind"] for s in skipped} - set(reasons)
     if unknown:
@@ -10474,7 +10475,8 @@ def _skip_messages(action: str, skipped: list[dict], *, refuse: bool = False) ->
             messages.append(catalog_refusal(key, lines=", ".join(line_name(s["line"], s["name"]) for s in of_kind)))
             messages += _merged_reasons([s["reason"] for s in of_kind if s.get("reason")])
     if refuse:
-        messages.append(catalog_refusal(f"{LINE_REFUSAL_NEXT[action]}_{'one' if len(skipped) == 1 else 'many'}"))
+        step = catalog_refusal(f"{LINE_REFUSAL_NEXT[action]}_{'one' if len(skipped) == 1 else 'many'}")
+        return [catalog_refusal("lines.reasons_then_next", reasons=messages, next=step)]
     return messages
 
 
@@ -10507,8 +10509,8 @@ def _acting_lines(line_items: list[dict], indices: list[int], locked: dict[str, 
 
 def _refuse_skipped(action: str, skipped: list[dict], status_code: int = 422) -> None:
     """Refuse a choice every line of which ``action`` leaves as it is, naming them: with the
-    action's refusal and its next step when no chosen line was one it could act on;
-    otherwise with its notices, as there was nothing to change."""
+    action's refusal, its next step in the same message, when no chosen line was one it could
+    act on; otherwise with its notices, as there was nothing to change."""
     reasons = LINE_SKIP_REASONS[action]
     msgs = _skip_messages(action, skipped, refuse=all(reasons[s["kind"]][1] for s in skipped))
     raise HTTPException(status_code=status_code, detail={**msgs[0], "also": msgs[1:]})

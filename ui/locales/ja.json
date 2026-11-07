@@ -591,6 +591,7 @@
   "lines.scan_no_stock_many": "{lines} 行目は在庫品目ではないため、スキャンするものがありません。",
   "lines.choose_stock_one": "代わりに在庫品目のある行を選択してください。",
   "lines.choose_stock_many": "代わりに在庫品目のある行を選択してください。",
+  "lines.reasons_then_next": "{reasons} {next}",
   "lines.cannot_split": "{sku} を分割できません: {reason}",
   "lines.lot_already_invoiced": "{sku} は {docs} で請求済みでまだ出荷されていないため、再度請求できません。先にその請求書を出荷または無効にするか、別の在庫を請求してください。",
   "date.months_short": "1月 2月 3月 4月 5月 6月 7月 8月 9月 10月 11月 12月",

@@ -30,6 +30,13 @@
     "documents.lot_no_sku": {
       "en": "(no SKU)",
       "params": []
+    },
+    "lines.reasons_then_next": {
+      "en": "{reasons} {next}",
+      "params": [
+        "next",
+        "reasons"
+      ]
     }
   }
 }

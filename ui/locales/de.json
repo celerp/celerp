@@ -591,6 +591,7 @@
   "lines.scan_no_stock_many": "Die Zeilen {lines} sind keine Lagerartikel; es gibt daher nichts zu scannen.",
   "lines.choose_stock_one": "Wählen Sie stattdessen eine Zeile mit Lagerware.",
   "lines.choose_stock_many": "Wählen Sie stattdessen Zeilen mit Lagerware.",
+  "lines.reasons_then_next": "{reasons} {next}",
   "lines.cannot_split": "{sku} kann nicht geteilt werden: {reason}",
   "lines.lot_already_invoiced": "{sku} ist bereits auf {docs} fakturiert und noch nicht versendet, daher kann es nicht erneut fakturiert werden. Versenden oder stornieren Sie zuerst diese Rechnung, oder fakturieren Sie anderen Bestand.",
   "date.months_short": "Jan. Feb. März Apr. Mai Juni Juli Aug. Sept. Okt. Nov. Dez.",

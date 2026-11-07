@@ -591,6 +591,7 @@
   "lines.scan_no_stock_many": "Les lignes {lines} ne sont pas des articles en stock, il n'y a donc rien à scanner.",
   "lines.choose_stock_one": "Choisissez plutôt une ligne comportant du stock.",
   "lines.choose_stock_many": "Choisissez plutôt des lignes comportant du stock.",
+  "lines.reasons_then_next": "{reasons} {next}",
   "lines.cannot_split": "Impossible de diviser {sku} : {reason}",
   "lines.lot_already_invoiced": "{sku} est déjà facturé sur {docs} et pas encore expédié, il ne peut donc pas être facturé à nouveau. Expédiez ou annulez d'abord cette facture, ou facturez un autre stock.",
   "date.months_short": "janv. févr. mars avr. mai juin juil. août sept. oct. nov. déc.",

@@ -185,6 +185,26 @@ def test_removed_line_keys_absent_from_catalogs():
             assert "{lines}" in catalog[key], (path.name, key)
 
 
+@pytest.mark.asyncio
+async def test_the_memo_draw_shows_a_refusal_of_only_item_less_lines_with_its_next_step_as_one_message(ui_client):
+    """Invoice selected with only a line with no item chosen: the toast is the refusal as one
+    message, the reason then the next step, as the panel shows it. Red statement: the toast read
+    "... stays on the memo. Also needed: Choose a line that holds stock instead.", so the next
+    step read as one more thing to do."""
+    from celerp_docs.routes import _skip_messages
+    from ui.api_client import APIError
+    from ui.i18n import refusal_text, t
+    (refusal,) = _skip_messages("invoice", [{**_SKIPPED[0], "kind": "memo_no_item"}], refuse=True)
+    detail = {**refusal, "also": []}
+    refused = AsyncMock(side_effect=APIError(409, refusal["message"], detail))
+    with patch("ui.api_client.invoice_lines", new=refused):
+        r = await ui_client.post("/docs/doc:m/invoice-lines",
+                                 data={"pick_0": _L1, "binding": "b", "idempotency_key": "k"})
+    message = _toast(r)["message"]
+    assert message == refusal_text(detail) and t("documents.draw_also") not in message, message
+    assert message.endswith(t("lines.choose_stock_one")), message
+
+
 def test_draw_panel_row_of_a_line_with_no_item_says_it_stays_on_the_memo():
     """Invoice selected leaves a line with no item on the memo, so its row in the panel says
     that, as the preview's note does, and never "Not shipped", which points at shipping it."""

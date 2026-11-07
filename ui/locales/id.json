@@ -591,6 +591,7 @@
   "lines.scan_no_stock_many": "Baris {lines} bukan barang persediaan, jadi tidak ada yang perlu dipindai.",
   "lines.choose_stock_one": "Pilih baris yang memuat barang persediaan sebagai gantinya.",
   "lines.choose_stock_many": "Pilih baris yang memuat barang persediaan sebagai gantinya.",
+  "lines.reasons_then_next": "{reasons} {next}",
   "lines.cannot_split": "Tidak dapat memecah {sku}: {reason}",
   "lines.lot_already_invoiced": "{sku} sudah ditagih pada {docs} dan belum dikirim, jadi tidak dapat ditagih lagi. Kirim atau batalkan faktur itu terlebih dahulu, atau tagih stok lain.",
   "date.months_short": "Jan Feb Mar Apr Mei Jun Jul Agu Sep Okt Nov Des",

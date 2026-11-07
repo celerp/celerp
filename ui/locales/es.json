@@ -591,6 +591,7 @@
   "lines.scan_no_stock_many": "Las líneas {lines} no son artículos de inventario, así que no hay nada que escanear.",
   "lines.choose_stock_one": "Elija en su lugar una línea que contenga existencias.",
   "lines.choose_stock_many": "Elija en su lugar líneas que contengan existencias.",
+  "lines.reasons_then_next": "{reasons} {next}",
   "lines.cannot_split": "No se puede dividir {sku}: {reason}",
   "lines.lot_already_invoiced": "{sku} ya está facturado en {docs} y aún no se ha enviado, así que no se puede facturar de nuevo. Envíe o anule primero esa factura, o facture otro inventario.",
   "date.months_short": "ene feb mar abr may jun jul ago sept oct nov dic",
