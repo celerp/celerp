@@ -328,7 +328,9 @@ if __name__ == "__main__":
     terms = sorted(term_fields() | set(declared))
     print(f"# schedule terms (each declared in periods.TERMS, which the schedule builder checks): {len(terms)}")
     for name in terms:
-        print(f"TERM {name} {declared[name] if name in declared else 'MISSING'}")
+        term = declared.get(name)
+        print(f"TERM {name} " + ("MISSING" if term is None else
+              f"{term.kind} {term.key} choices={sorted(term.choices)} low={term.low} high={term.high}"))
     bounds = request_bounds()
     print(f"# request-model bounds on a term ahead of the builder (each must go): {len(bounds)}")
     for where, field, what in bounds:
