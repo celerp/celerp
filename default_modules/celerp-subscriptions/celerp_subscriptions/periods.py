@@ -117,16 +117,22 @@ TERMS = {
 }
 
 
+def term_error(name: str, value) -> ScheduleError | None:
+    """The ScheduleError naming term ``name`` when ``value`` does not hold what TERMS declares."""
+    term = TERMS[name]
+    return None if term.holds(value) else ScheduleError(term.key, **({"day": value} if term.kind == "date" else {}))
+
+
 def check_terms(state: dict) -> None:
     """ScheduleError naming the first stored term that does not hold what TERMS declares. Every
     set term is checked; the custom interval is also required for a custom frequency."""
-    for name, term in TERMS.items():
+    for name in TERMS:
         value = state.get(name)
         required = name == "custom_interval_days" and shown("frequency", state.get("frequency")) == "custom"
         if (value is None or value == "") and not required:
             continue
-        if not term.holds(value):
-            raise ScheduleError(term.key, **({"day": value} if term.kind == "date" else {}))
+        if exc := term_error(name, value):
+            raise exc
     if state.get("term_start") and state.get("term_end") and state["term_start"] >= state["term_end"]:
         raise ScheduleError("subscriptions.err_term_order")
 

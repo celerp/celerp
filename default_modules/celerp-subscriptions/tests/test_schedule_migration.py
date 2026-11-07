@@ -489,6 +489,31 @@ async def test_a_template_whose_terms_build_no_schedule_says_why_when_its_page_m
     assert state["frequency"] == "monthly" and "anchor_date" not in state
 
 
+async def test_an_interval_sent_to_a_template_is_read_as_sent_not_as_the_earlier_release_read_it(
+        client, session, auth, monkeypatch):
+    """The earlier release billed an empty or 0 custom interval as 30 days, and a template it
+    left so still moves that way; 0 sent now is refused with the interval's own reason, never
+    stored and read as 30 days."""
+    _today(monkeypatch, "2026-03-15")
+    tid, _ = await _legacy(session, auth, next_run="2026-04-01", doc_dates=["2026-03-01"])
+    r = await client.patch(f"/subscriptions/{tid}/schedule", headers=auth["headers"],
+                           json={"frequency": "custom", "custom_interval_days": 0})
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["message_key"] == "subscriptions.err_custom_interval", r.text
+    state = await _state(session, auth["company_id"], tid)
+    assert state["frequency"] == "monthly" and "custom_interval_days" not in state and "anchor_date" not in state
+
+
+async def test_a_template_moves_with_the_frequency_its_page_chose(client, session, auth, monkeypatch):
+    """The move reads the template as the page's write left it, not as it was before."""
+    _today(monkeypatch, "2026-03-15")
+    tid, _ = await _legacy(session, auth, next_run="2026-04-01", doc_dates=[])
+    r = await client.patch(f"/subscriptions/{tid}/schedule", headers=auth["headers"], json={"frequency": "weekly"})
+    assert r.status_code == 200, r.text
+    state = await _state(session, auth["company_id"], tid)
+    assert (state["frequency"], state["anchor_date"]) == ("weekly", "2026-04-01")
+
+
 async def test_a_template_moves_onto_a_schedule_when_its_page_sets_the_frequency(client, session, auth, monkeypatch):
     _today(monkeypatch, "2026-03-15")
     tid, _ = await _legacy(session, auth, next_run="2026-04-01", doc_dates=["2026-03-01"])

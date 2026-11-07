@@ -24,6 +24,10 @@
     "subscriptions.err_auto_send": {
       "en": "Send automatically is either on or off. Set it on the agreement's page.",
       "params": []
+    },
+    "subscriptions.err_schedule_removed": {
+      "en": "This agreement is on a schedule, so it keeps its first bill date. To stop billing it, pause or cancel it.",
+      "params": []
     }
   }
 }

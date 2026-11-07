@@ -45,6 +45,7 @@
     "subscriptions.err_auto_send",
     "subscriptions.err_cancel_period",
     "subscriptions.err_generation_mode",
+    "subscriptions.err_schedule_removed",
     "th.position",
     "th.sku"
   ],
@@ -82,6 +83,7 @@
     "subscriptions.err_auto_send",
     "subscriptions.err_cancel_period",
     "subscriptions.err_generation_mode",
+    "subscriptions.err_schedule_removed",
     "th.position",
     "th.sku"
   ],
@@ -188,6 +190,7 @@
     "subscriptions.err_auto_send",
     "subscriptions.err_cancel_period",
     "subscriptions.err_generation_mode",
+    "subscriptions.err_schedule_removed",
     "th.barcode",
     "th.code",
     "th.detail",
@@ -280,6 +283,7 @@
     "subscriptions.err_auto_send",
     "subscriptions.err_cancel_period",
     "subscriptions.err_generation_mode",
+    "subscriptions.err_schedule_removed",
     "th.color",
     "th.editable",
     "th.factor",
@@ -406,6 +410,7 @@
     "subscriptions.err_auto_send",
     "subscriptions.err_cancel_period",
     "subscriptions.err_generation_mode",
+    "subscriptions.err_schedule_removed",
     "th.actions",
     "th.code",
     "th.contact",
@@ -527,6 +532,7 @@
     "subscriptions.err_auto_send",
     "subscriptions.err_cancel_period",
     "subscriptions.err_generation_mode",
+    "subscriptions.err_schedule_removed",
     "th.label",
     "th.memo",
     "th.position",
@@ -614,6 +620,7 @@
     "subscriptions.err_auto_send",
     "subscriptions.err_cancel_period",
     "subscriptions.err_generation_mode",
+    "subscriptions.err_schedule_removed",
     "th.email",
     "th.file",
     "th.memo",
@@ -664,6 +671,7 @@
     "subscriptions.err_auto_send",
     "subscriptions.err_cancel_period",
     "subscriptions.err_generation_mode",
+    "subscriptions.err_schedule_removed",
     "th.position",
     "th.sku"
   ],
@@ -754,6 +762,7 @@
     "subscriptions.err_auto_send",
     "subscriptions.err_cancel_period",
     "subscriptions.err_generation_mode",
+    "subscriptions.err_schedule_removed",
     "th.item",
     "th.position",
     "th.sku",
@@ -804,6 +813,7 @@
     "subscriptions.err_auto_send",
     "subscriptions.err_cancel_period",
     "subscriptions.err_generation_mode",
+    "subscriptions.err_schedule_removed",
     "th.position",
     "th.sku"
   ],
@@ -862,6 +872,7 @@
     "subscriptions.err_auto_send",
     "subscriptions.err_cancel_period",
     "subscriptions.err_generation_mode",
+    "subscriptions.err_schedule_removed",
     "th.position",
     "th.sku"
   ]

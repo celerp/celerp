@@ -99,6 +99,32 @@ async def _emit(session, cid, eid: str, event_type: str, changes: dict) -> None:
         await session.rollback()
 
 
+def _not_as_sent(term: str, before: dict | None, stored: dict) -> str | None:
+    """Why the term a write left stored is not one it may hold: changed by the write (or newly
+    stored) and not what TERMS declares, as sent."""
+    value = stored.get(term)
+    if value in (None, "") or (before is not None and value == before.get(term)) or declared_terms()[term].holds(value):
+        return None
+    return f"{term} stored as {value!r}"
+
+
+@pytest.mark.asyncio
+async def _earlier_template(session, cid) -> str:
+    """A template an earlier release ran: a custom interval, next_run_date, no schedule yet."""
+    from celerp.events.engine import emit_event
+
+    eid = f"doc:SUBT-H-{uuid.uuid4().hex[:8]}"
+    await emit_event(session, company_id=cid, entity_id=eid, entity_type="doc", event_type="doc.created",
+                     data={"doc_type": "subscription_invoice", "status": "active", "ref_id": eid[4:],
+                           "frequency": "custom", "custom_interval_days": 14, "start_date": "2026-01-01",
+                           "next_run_date": "2026-04-01", "generated_doc_ids": [],
+                           "contact_id": "contact:test-001", "currency": "USD",
+                           "line_items": [{"description": "S", "quantity": 1, "unit_price": 10.0, "line_total": 10.0}]},
+                     actor_id=None, location_id=None, source="test", **_key())
+    await session.commit()
+    return eid
+
+
 @pytest.mark.asyncio
 async def _readers(client, hd) -> dict:
     from celerp_subscriptions import routes
@@ -124,7 +150,10 @@ def test_every_term_is_declared_bounded_once_and_read_behind_a_gate():
 @pytest.mark.asyncio
 async def test_a_hostile_term_through_any_door_is_refused_or_stored_readable(client, session, monkeypatch, door):
     """Every term x every hostile value through one writer door: refused (never a 500), or
-    stored as terms that build a schedule; the company's list and previews still read."""
+    stored as sent holding what TERMS declares, as terms that build a schedule; the company's
+    list and previews still read. The doors that write to a stored agreement are tried on one
+    on a schedule and on a template an earlier release ran, whose stored terms are read the way
+    that release read them, so a value sent now is never read the earlier release's way."""
     freeze_day(monkeypatch, TODAY)
     hd = await register(client)
     cid = uuid.UUID(await company_id(client, hd))
@@ -139,10 +168,12 @@ async def test_a_hostile_term_through_any_door_is_refused_or_stored_readable(cli
             if why := _unreadable(await _stored(session, eid)):
                 broken.append(f"{term}={label}: stored {why}")
     else:
-        target = None
+        targets = {"": None}
         if door == "schedule" or door.startswith("event:"):
-            target = await agreement(client, hd, start="2026-03-01")
-        for term, label, value in cases:
+            targets = {"scheduled ": await agreement(client, hd, start="2026-03-01"),
+                       "earlier template ": await _earlier_template(session, cid)}
+        for (on, target), (term, label, value) in ((t, c) for t in targets.items() for c in cases):
+            before = await _stored(session, target) if target else None
             if door == "create":
                 r = await _call(client.post("/docs", headers=hd, json={
                     "doc_type": "subscription_invoice", "contact_id": "contact:test-001", "start_date": "2026-03-01",
@@ -161,13 +192,14 @@ async def test_a_hostile_term_through_any_door_is_refused_or_stored_readable(cli
                 eid = target
                 await _emit(session, cid, target, door.split(":", 1)[1], {term: value})
                 r = None
+            stored = await _stored(session, eid) if eid else None
             if r is not None and r.status_code >= 500:
-                broken.append(f"{term}={label}: {r.status_code} {r.text[:120]}")
-            elif eid and (why := _unreadable(await _stored(session, eid))):
-                broken.append(f"{term}={label}: stored {why}")
+                broken.append(f"{on}{term}={label}: {r.status_code} {r.text[:120]}")
+            elif stored is not None and (why := _unreadable(stored) or _not_as_sent(term, before, stored)):
+                broken.append(f"{on}{term}={label}: stored {why}")
     answers = await _readers(client, hd)
     assert all(code < 500 for code in answers.values()), answers
-    assert not broken, broken
+    assert not broken, "\n".join(broken)
 
 
 @pytest.mark.asyncio

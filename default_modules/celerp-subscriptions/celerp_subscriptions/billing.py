@@ -42,7 +42,7 @@ from celerp.services.units import require_moving_fits_units
 from celerp_docs.doc_money import HEADER_MONEY_FIELDS, document_money
 from celerp_docs.periodic import OperationReport
 from celerp_subscriptions.periods import (AUTO_MODES, BILLED, RELEASED, SCHEDULE_FIELDS, SKIPPED, UNRESOLVED,
-                                          Schedule, ScheduleError, check_terms, shown)
+                                          TERMS, Schedule, ScheduleError, check_terms, shown, term_error)
 from celerp_subscriptions.search import SUBSCRIPTION_DOC_TYPES
 from ui.i18n import t
 
@@ -160,9 +160,18 @@ def on_schedule(state: dict) -> bool:
 def refuse_unbuildable_terms(before: dict, after: dict) -> None:
     """A 422 naming the schedule's reason when a write leaves an agreement's stored terms
     building no schedule where they built one before (or nothing was stored): no writer stores
-    such terms. A write to terms an earlier release left unbuildable is not refused, so voiding
-    or repairing the agreement still works."""
-    if (exc := unscheduled(after)) is not None and unscheduled(before) is None:
+    such terms. Every term the write sets is checked as sent, so a value only an earlier
+    release's reading accepts (an interval of 0, which it billed as 30 days) is refused when
+    sent now, and no write takes an agreement off its schedule. A write to terms an earlier
+    release left unbuildable is not refused, so voiding or repairing the agreement still works."""
+    written = [f for f in TERMS if after.get(f) not in (None, "") and after.get(f) != before.get(f)]
+    if before.get("anchor_date") and not after.get("anchor_date"):
+        exc = ScheduleError("subscriptions.err_schedule_removed")
+    else:
+        exc = next((e for f in written if (e := term_error(f, after[f]))), None)
+    if exc is None and unscheduled(before) is None:
+        exc = unscheduled(after)
+    if exc is not None:
         raise schedule_refusal(422, exc) from exc
 
 
