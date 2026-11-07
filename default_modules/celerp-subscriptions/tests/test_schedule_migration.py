@@ -399,3 +399,101 @@ async def test_an_interval_a_schedule_that_is_not_custom_never_read_does_not_sto
         moved = {**state, **legacy_schedule(state), "periods": {}}
         assert Schedule.from_state(moved).frequency == "monthly"
         assert moved["custom_interval_days"] in (14, None, "")
+
+
+@pytest.mark.parametrize("change", [
+    {"doc_type": "quotation"}, "void", {"subscription_id": "doc:SUBT-another"},
+], ids=["not-an-invoice", "void", "another-agreement"])
+async def test_history_confirmation_refuses_a_document_that_stopped_being_a_candidate(
+        client, session, auth, monkeypatch, change):
+    """Review listed the document when the template moved; by the time a person confirms it,
+    it became another kind of document, was voided or was taken by another agreement."""
+    _today(monkeypatch, "2026-04-15")
+    tid, (_, mar) = await _legacy(session, auth, next_run="2026-04-01", doc_dates=["2026-01-01", "2026-03-01"])
+    await _migrate(session, auth["company_id"])
+    assert mar in [r["doc_id"] for r in (await _state(session, auth["company_id"], tid))["history_review"]]
+    if change == "void":
+        voided = await client.post(f"/docs/{mar}/void", headers=auth["headers"], json={"reason": "Wrong customer"})
+        assert voided.status_code == 200, voided.text
+    else:
+        await _emit(session, auth["company_id"], auth["user_id"], mar, "doc.updated",
+                    {"fields_changed": {f: {"new": v} for f, v in change.items()}})
+        await session.commit()
+    r = await client.post(f"/subscriptions/{tid}/history/{mar}/confirm", headers=auth["headers"],
+                          json={"period_index": -1})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["message_key"] == "subscriptions.err_history_not_candidate"
+
+
+async def test_a_shared_document_with_no_owner_is_confirmed_on_one_agreement_only(client, session, auth, monkeypatch):
+    """Two templates listed one document and it names neither: the first to confirm it claims
+    it, and the other is refused because a period of the first now bills it."""
+    _today(monkeypatch, "2026-03-15")
+    first, docs = await _legacy(session, auth, next_run="2026-04-01", doc_dates=["2026-03-01"])
+    second, _ = await _legacy(session, auth, next_run="2026-04-01", doc_dates=["2026-03-01"])
+    await _emit(session, auth["company_id"], auth["user_id"], second, "doc.updated",
+                {"fields_changed": {"generated_doc_ids": {"new": docs}}})
+    await _emit(session, auth["company_id"], auth["user_id"], docs[0], "doc.updated",
+                {"fields_changed": {"subscription_id": {"new": None}}})
+    await session.commit()
+    await _migrate(session, auth["company_id"])
+    url = lambda eid: f"/subscriptions/{eid}/history/{docs[0]}/confirm"
+    assert (await client.post(url(first), headers=auth["headers"], json={"period_index": -1})).status_code == 200
+    r = await client.post(url(second), headers=auth["headers"], json={"period_index": -1})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["message_key"] == "subscriptions.err_history_not_candidate"
+
+
+async def test_a_document_with_an_unreadable_date_waits_for_review_and_the_template_moves(session, auth, monkeypatch):
+    _today(monkeypatch, "2026-03-15")
+    tid, (doc,) = await _legacy(session, auth, next_run="2026-04-01", doc_dates=["not a date"])
+    result = await _migrate(session, auth["company_id"])
+    assert result["failed"] == 0 and result["review"] == 1, result
+    state = await _state(session, auth["company_id"], tid)
+    assert state["anchor_date"]
+    assert [r["doc_id"] for r in state["history_review"]] == [doc]
+
+
+async def test_a_company_whose_move_fails_does_not_stop_the_others(session, auth, monkeypatch):
+    from celerp_subscriptions import migration
+
+    _today(monkeypatch, "2026-03-15")
+    tid, _ = await _legacy(session, auth, next_run="2026-04-01", doc_dates=["2026-03-01"])
+    broken = uuid.uuid4()
+    session.add(Company(id=broken, name="Another company", slug=f"another-{broken.hex[:8]}"))
+    await session.commit()
+    real, tried = migration.migrate_company, []
+
+    async def one_company_breaks(session, cid):
+        # Other tests' companies share the database: only these two are moved here.
+        if cid == broken:
+            tried.append(cid)
+            raise RuntimeError("synthetic failure moving one company")
+        return await real(session, cid) if cid == auth["company_id"] else None
+
+    monkeypatch.setattr(migration, "migrate_company", one_company_breaks)
+    await migration.migrate_schedules_hook(session=session)
+    await session.commit()
+    assert tried == [broken]
+    assert "anchor_date" in await _state(session, auth["company_id"], tid)
+
+
+async def test_a_template_whose_terms_build_no_schedule_says_why_when_its_page_moves_it(client, session, auth, monkeypatch):
+    """Choosing a frequency on a template that cannot move yet (no next date, no start date)
+    is refused naming the template and why, and leaves it as it was."""
+    _today(monkeypatch, "2026-03-15")
+    tid, _ = await _legacy(session, auth, next_run="", start="", doc_dates=[])
+    r = await client.patch(f"/subscriptions/{tid}/schedule", headers=auth["headers"], json={"frequency": "weekly"})
+    assert r.status_code == 409, r.text
+    state = await _state(session, auth["company_id"], tid)
+    assert state["frequency"] == "monthly" and "anchor_date" not in state
+
+
+async def test_a_template_moves_onto_a_schedule_when_its_page_sets_the_frequency(client, session, auth, monkeypatch):
+    _today(monkeypatch, "2026-03-15")
+    tid, _ = await _legacy(session, auth, next_run="2026-04-01", doc_dates=["2026-03-01"])
+    r = await client.patch(f"/subscriptions/{tid}/schedule", headers=auth["headers"], json={"frequency": "monthly"})
+    assert r.status_code == 200, r.text
+    assert r.json()["next_bill_date"] == "2026-04-01"
+    state = await _state(session, auth["company_id"], tid)
+    assert state["anchor_date"] and "next_run_date" not in state

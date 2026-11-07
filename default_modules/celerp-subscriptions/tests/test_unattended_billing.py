@@ -331,6 +331,7 @@ async def test_purchase_agreements_are_not_emailed_unattended(client, session, m
     eid = await agreement(client, hd, start="2026-07-01", doc_type="subscription_po")
     r = await schedule(client, hd, eid, auto_send=True)
     assert r.status_code == 422, r.text
+    assert r.json()["detail"]["message_key"] == "subscriptions.err_send_purchase"
     assert not (await template(client, hd, eid)).get("auto_send")
 
 async def test_delayed_mail_completion_cannot_change_reopened_period(client, session, monkeypatch, mail):
@@ -605,3 +606,142 @@ async def test_revoked_document_permission_stops_automated_generation(client, se
     assert "authorization lapsed" in str(await summary(client, owner))
     denied = await agreement(client, owner, start="2026-07-01")
     assert (await schedule(client, manager, denied, generation_mode="auto_invoice")).status_code == 403
+
+
+async def test_a_period_not_billed_has_no_email_to_send(client, session, monkeypatch, mail):
+    freeze_day(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    eid = await _auto(client, hd, start="2026-08-01", send=True,
+                      contact_id=await contact(client, hd, "member@example.test"))
+    r = await client.post(f"/subscriptions/{eid}/periods/0/send", headers=hd, json={"attempt": 0})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["message_key"] == "subscriptions.err_send_not_billed"
+    assert mail.sent == []
+
+
+async def _cut_off_send(client, session, monkeypatch) -> tuple[dict, str, str]:
+    """An auto-sent invoice whose send the relay took and was cut off before its answer,
+    long enough ago that it reads as cut off: (headers, company id, agreement id)."""
+    import asyncio
+    from celerp.services import email
+
+    monkeypatch.setattr(email, "relay_send_is_idempotent", lambda: True)
+    freeze_day(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    eid = await _auto(client, hd, start="2026-07-01", send=True,
+                      contact_id=await contact(client, hd, "member@example.test"))
+
+    async def cut_off(*args, **kwargs):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(email, "send_email", cut_off)
+    with pytest.raises(asyncio.CancelledError):
+        await tick(session, cid, "2026-07-01")
+    _stopped_long_ago(monkeypatch)
+    return hd, cid, eid
+
+
+@pytest.mark.parametrize("change", ["void", "no-operation", "unreadable-operation", "other-payload"])
+async def test_a_cut_off_send_is_retried_only_as_the_same_message_to_a_live_document(
+        client, session, monkeypatch, mail, change):
+    """Retrying a cut-off send repeats the stored message under its stored operation. When the
+    document was voided since, or the stored operation or message no longer match the send,
+    a plain retry is refused by key and nothing is sent."""
+    import uuid
+    from celerp.services import email
+    from celerp_subscriptions import billing
+
+    hd, cid, eid = await _cut_off_send(client, session, monkeypatch)
+    [doc] = await billed_docs(session, eid)
+    if change == "void":
+        r = await client.post(f"/docs/{doc['entity_id']}/void", headers=hd, json={"reason": "Wrong customer"})
+        assert r.status_code == 200, r.text
+    else:
+        periods = (await template(client, hd, eid))["periods"]
+        periods["0"]["send"] |= {"no-operation": {"operation_id": ""},
+                                 "unreadable-operation": {"operation_id": "not-an-operation"},
+                                 "other-payload": {"payload_digest": "0" * 64}}[change]
+        await billing.write_agreement(session, uuid.UUID(cid), eid, {"periods": periods}, None)
+        await session.commit()
+    monkeypatch.setattr(email, "send_email", mail)
+    n = (await template(client, hd, eid))["periods"]["0"]["send"]["n"]
+    r = await client.post(f"/subscriptions/{eid}/periods/0/send", headers=hd, json={"attempt": n})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["message_key"] == "subscriptions.err_send_unverified"
+    assert mail.sent == []
+
+
+async def test_an_email_too_large_to_send_is_a_failed_send(client, session, monkeypatch, mail):
+    from celerp_subscriptions import billing
+
+    monkeypatch.setattr(billing, "MAX_EMAIL_PAYLOAD_BYTES", 10)
+    freeze_day(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    eid = await _auto(client, hd, start="2026-07-01", send=True,
+                      contact_id=await contact(client, hd, "member@example.test"))
+    await tick(session, cid, "2026-07-01")
+    send = (await template(client, hd, eid))["periods"]["0"]["send"]
+    assert send["state"] == "failed" and send["error_key"] == "subscriptions.err_send_preparation"
+    assert mail.sent == []
+
+
+async def test_an_emailed_document_that_cannot_be_marked_sent_still_reads_as_emailed(
+        client, session, monkeypatch, mail):
+    """The email went; the document refused its sent mark. The period says the email was
+    sent (it was), and the document keeps the status it had."""
+    from fastapi import HTTPException
+    from celerp_docs import routes as docs_routes
+
+    freeze_day(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    eid = await _auto(client, hd, start="2026-07-01", send=True,
+                      contact_id=await contact(client, hd, "member@example.test"))
+    mail.result = _REFUSED
+    await tick(session, cid, "2026-07-01")
+    send = (await template(client, hd, eid))["periods"]["0"]["send"]
+    assert send["state"] == "failed"
+
+    async def refuses(*args, **kwargs):
+        raise HTTPException(status_code=409, detail="refused")
+
+    monkeypatch.setattr(docs_routes, "mark_doc_sent", refuses)
+    mail.result = EmailResult(True, "accepted")
+    r = await client.post(f"/subscriptions/{eid}/periods/0/send", headers=hd, json={"attempt": send["n"]})
+    assert r.status_code == 200, r.text
+    assert r.json()["send"] == "sent" and mail.sent == ["member@example.test"] * 2
+    assert [d["status"] for d in await billed_docs(session, eid)] == ["final"]
+
+
+async def test_a_failure_recording_a_failed_run_does_not_stop_the_pass(client, session, monkeypatch):
+    """Billing one agreement failed and so did recording that failure: the pass still ends
+    and bills the company's other agreements."""
+    import uuid
+    from datetime import date
+    from celerp_subscriptions import billing
+
+    freeze_day(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid = uuid.UUID(await company_id(client, hd))
+    broken = await _auto(client, hd, start="2026-07-01")
+    healthy = await _auto(client, hd, start="2026-07-01")
+    real_bill, real_write = billing._bill, billing.write_agreement
+
+    async def bill(session, company, company_id, entity_id, *args, **kwargs):
+        if entity_id == broken:
+            raise RuntimeError("synthetic billing failure")
+        return await real_bill(session, company, company_id, entity_id, *args, **kwargs)
+
+    async def write(session, company_id, entity_id, changes, *args, **kwargs):
+        if "billing_failure" in changes:
+            raise RuntimeError("synthetic failure recording it")
+        return await real_write(session, company_id, entity_id, changes, *args, **kwargs)
+
+    monkeypatch.setattr(billing, "_bill", bill)
+    monkeypatch.setattr(billing, "write_agreement", write)
+    report = await billing.run_due(session=session, company_id=cid, today=date(2026, 7, 1), budget=10)
+    await session.commit()
+    assert report.done == 1
+    assert await billed_docs(session, broken) == [] and len(await billed_docs(session, healthy)) == 1

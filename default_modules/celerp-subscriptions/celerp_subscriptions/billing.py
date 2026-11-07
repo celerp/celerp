@@ -245,16 +245,16 @@ async def write_agreement(session: AsyncSession, company_id, entity_id: str, cha
     after = {**{k: v for k, v in before.items() if k not in drop}, **changes}
     fields = {**{k: {"old": before.get(k), "new": v} for k, v in changes.items()},
               **{k: {"old": before.get(k), "drop": True} for k in drop}}
-    old_periods, new_periods = before.get("periods") or {}, after.get("periods") or {}
+    # Periods an earlier release left as something other than a mapping hold no period to name.
+    old_periods, new_periods = (s["periods"] if isinstance(s.get("periods"), dict) else {} for s in (before, after))
     touched = {k for k in {*old_periods, *new_periods} if old_periods.get(k) != new_periods.get(k)}
     if (failed := (changes.get("billing_failure") or {}).get("period_index")) is not None:
         touched.add(str(failed))
-    if touched and after.get("anchor_date"):
-        try:
-            schedule = Schedule.from_state(after)
-            dates = {k: [schedule.start(int(k)).isoformat(), schedule.service_end(int(k)).isoformat()] for k in touched}
-        except ValueError:
-            dates = {}
+    if touched and on_schedule(after):
+        # A key removed from bookkeeping an earlier release left unreadable is not a number.
+        schedule = Schedule.from_state(after)
+        dates = {k: [schedule.start(int(k)).isoformat(), schedule.service_end(int(k)).isoformat()]
+                 for k in touched if k.lstrip("-").isdigit()}
         for k in ("periods", "billing_failure"):
             if dates and k in changes:
                 fields[k]["dates"] = dates
@@ -735,8 +735,6 @@ async def catch_up_preview(session: AsyncSession, company_id, today: date) -> li
 
 
 async def _member_role(session, company_id, user_id) -> str | None:
-    if not user_id:
-        return None
     try:
         uid = uuid.UUID(str(user_id))
     except ValueError:
@@ -916,8 +914,7 @@ async def run_due(*, session: AsyncSession, company_id, today: date, budget: int
 def _expire_attempts_for(company_id):
     async def _run(factory) -> None:
         async with factory() as session:
-            if await locked_company(session, company_id) is None:
-                return
+            await locked_company(session, company_id)
             await session.execute(delete(SubscriptionEmailAttempt).where(
                 SubscriptionEmailAttempt.company_id == company_id,
                 SubscriptionEmailAttempt.created_at < datetime.now(timezone.utc) - EMAIL_ATTEMPT_RETENTION))

@@ -203,7 +203,9 @@ async def test_skip_period_recorded_and_unskip_restores(client, session, monkeyp
     eid = await agreement(client, hd, start="2026-03-01")
     assert (await _skip(client, hd, eid, 0, reason="")).status_code == 422
     assert (await _skip(client, hd, eid, 0)).status_code == 200
-    assert (await _skip(client, hd, eid, 0)).status_code == 200  # a repeat is a no-op
+    first = (await template(client, hd, eid))["periods"]["0"]
+    assert (await _skip(client, hd, eid, 0, reason="Another reason")).status_code == 200  # a repeat is a no-op
+    assert (await template(client, hd, eid))["periods"]["0"] == first
     entry = (await template(client, hd, eid))["periods"]["0"]
     assert entry["state"] == "skipped" and entry["reason"] == "Office closed" and entry["by"]
     assert (await generate_due(client, hd, eid)).status_code == 409
@@ -638,3 +640,70 @@ async def test_a_schedule_door_refuses_an_agreement_without_a_schedule(client, s
     elif r.status_code != 200:
         assert r.status_code == 409 and r.json()["detail"]["message_key"] == "subscriptions.err_no_periods", (
             door, r.text)
+
+
+def _key(r) -> str | None:
+    return (r.json().get("detail") or {}).get("message_key")
+
+
+async def test_a_period_in_review_or_outside_the_schedule_cannot_be_skipped(client, session, monkeypatch):
+    freeze_day(monkeypatch, "2026-03-15")
+    hd = await register(client)
+    eid = await agreement(client, hd, start="2026-03-01")
+    for k in (-1, 10 ** 6):
+        r = await _skip(client, hd, eid, k)
+        assert r.status_code == 409 and _key(r) == "subscriptions.err_period_missing", (k, r.text)
+    assert not (await template(client, hd, eid)).get("periods")
+
+
+async def test_unskipping_a_period_never_skipped_changes_nothing(client, session, monkeypatch):
+    freeze_day(monkeypatch, "2026-03-15")
+    hd = await register(client)
+    eid = await agreement(client, hd, start="2026-03-01")
+    r = await client.post(f"/subscriptions/{eid}/periods/2/unskip", headers=hd)
+    assert r.status_code == 200, r.text
+    assert not (await template(client, hd, eid)).get("periods")
+
+
+async def test_only_a_paused_agreement_resumes(client, session, monkeypatch):
+    freeze_day(monkeypatch, "2026-03-15")
+    hd = await register(client)
+    eid = await agreement(client, hd, start="2026-03-01")
+    r = await client.post(f"/subscriptions/{eid}/resume", headers=hd)
+    assert r.status_code == 409 and _key(r) == "subscriptions.err_resume_not_paused", r.text
+
+
+async def test_a_draft_has_no_current_period_to_stop_at(client, session, monkeypatch):
+    freeze_day(monkeypatch, "2026-03-15")
+    hd = await register(client)
+    eid = await agreement(client, hd, start="2026-03-01", activate=False)
+    r = await schedule(client, hd, eid, cancel_at_period_end=True)
+    assert r.status_code == 409 and _key(r) == "subscriptions.err_stop_draft", r.text
+    assert (await template(client, hd, eid)).get("cancel_at_period_end") is None
+
+
+async def test_a_term_end_that_leaves_out_a_reopened_period_is_refused(client, session, monkeypatch):
+    """Every period the agreement recorded (a skipped one handed back reads reopened) stays
+    inside its schedule: an end date that would leave one out is refused."""
+    freeze_day(monkeypatch, "2026-03-15")
+    hd = await register(client)
+    eid = await agreement(client, hd, start="2026-03-01")
+    assert (await _skip(client, hd, eid, 3)).status_code == 200
+    assert (await client.post(f"/subscriptions/{eid}/periods/3/unskip", headers=hd)).status_code == 200
+    assert (await template(client, hd, eid))["periods"]["3"]["state"] == "released"
+    r = await schedule(client, hd, eid, term_end="2026-05-01")
+    assert r.status_code == 409 and _key(r) == "subscriptions.err_term_cuts_claimed", r.text
+    assert (await template(client, hd, eid)).get("term_end") is None
+
+
+async def test_one_period_asked_twice_in_a_catch_up_run_is_billed_once(client, session, monkeypatch):
+    freeze_day(monkeypatch, "2026-06-15")
+    hd = await register(client)
+    eid = await agreement(client, hd, start="2026-01-01")
+    assert (await schedule(client, hd, eid, generation_mode="auto_invoice", catchup_periods=1)).status_code == 200
+    items = [_bulk_item(eid, 0), {**_bulk_item(eid, 0), "request_key": "another-click"}, _bulk_item(eid, 2)]
+    r = (await client.post("/subscriptions/catch-up/run", headers=hd, json={"items": items})).json()
+    first, again, later = r["results"]
+    assert first["ok"] and again["ok"] and again["doc_id"] == first["doc_id"], r
+    assert not later["ok"] and later["error"] == t("subscriptions.err_early_not_next"), r
+    assert [d["period_index"] for d in await billed_docs(session, eid)] == [0]

@@ -166,15 +166,16 @@ async def _first_schedule(session, company_id, state: dict) -> dict:
 async def _move_with(session, company_id, proj: Projection, sent: dict, user) -> dict:
     """A template not yet on a schedule takes only its frequency and interval, and moves onto
     a schedule with them at once; 409 naming it and why while it still cannot."""
+    state, entity_id = proj.state, proj.entity_id  # read before a rolled-back move expires proj
     if set(sent) - _MOVING_FIELDS:
-        raise billing.not_moved_refusal(proj.state, proj.entity_id, billing.not_moved(proj.state))
+        raise billing.not_moved_refusal(state, entity_id, billing.not_moved(state))
     try:
         async with session.begin_nested():
-            await billing.write_agreement(session, company_id, proj.entity_id, sent, user.id)
-            await migration.move_template(session, company_id, proj.entity_id)
+            await billing.write_agreement(session, company_id, entity_id, sent, user.id)
+            await migration.move_template(session, company_id, entity_id)
     except ScheduleError as exc:
-        raise billing.not_moved_refusal(proj.state, proj.entity_id, t(exc.key, **exc.params)) from exc
-    moved = await billing.locked_agreement(session, company_id, proj.entity_id)
+        raise billing.not_moved_refusal(state, entity_id, t(exc.key, **exc.params)) from exc
+    moved = await billing.locked_agreement(session, company_id, entity_id)
     await session.commit()
     return {"ok": True, "next_bill_date": next_bill_date(moved.state)}
 
@@ -284,9 +285,6 @@ def _build_router() -> APIRouter:
                     billing.refuse_unbillable(proj.state)
                     if (item.entity_id, item.period_index) not in listed:
                         raise HTTPException(status_code=409, detail=t("subscriptions.err_catchup_not_listed"))
-                    oldest = Schedule.from_state(proj.state).oldest_open(floor=billing.review_floor(proj.state))
-                    if oldest != item.period_index:
-                        raise HTTPException(status_code=409, detail=t("subscriptions.err_early_not_next"))
                     found = await billing.claim_period(
                         session, company_id, item.entity_id, actor=user, period_index=item.period_index,
                         request_key=item.request_key)
