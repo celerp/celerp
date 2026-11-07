@@ -12,58 +12,5 @@
     "th",
     "vi"
   ],
-  "keys": {
-    "subscriptions.err_cancel_period": {
-      "en": "The last period an end-of-period cancel keeps must be a whole period number. Cancel the agreement at the end of its period again from its page.",
-      "params": []
-    },
-    "subscriptions.err_generation_mode": {
-      "en": "Choose a billing mode: generate due by hand, or bill automatically.",
-      "params": []
-    },
-    "subscriptions.err_auto_send": {
-      "en": "Send automatically is either on or off. Set it on the agreement's page.",
-      "params": []
-    },
-    "subscriptions.err_schedule_removed": {
-      "en": "This agreement is on a schedule, so it keeps its first bill date. To stop billing it, pause or cancel it.",
-      "params": []
-    },
-    "subscriptions.done_history_placed": {
-      "en": "Document placed in its period.",
-      "params": []
-    },
-    "subscriptions.done_history_set_aside": {
-      "en": "Document set aside. It bills no period of its own.",
-      "params": []
-    },
-    "subscriptions.done_history_returned": {
-      "en": "Document back in history review.",
-      "params": []
-    },
-    "subscriptions.done_summary_read": {
-      "en": "Summary marked as read.",
-      "params": []
-    },
-    "subscriptions.done_created": {
-      "en": "Draft agreement created. Set its terms, then activate it.",
-      "params": []
-    },
-    "subscriptions.err_ended_cancelled": {
-      "en": "{ref} is cancelled, so its periods can no longer change. Create a new subscription if you need to bill again.",
-      "params": [
-        "ref"
-      ]
-    },
-    "subscriptions.err_ended_void": {
-      "en": "{ref} is void, so its periods cannot change here. Unvoid it in Documents first if it should run again.",
-      "params": [
-        "ref"
-      ]
-    },
-    "subscriptions.period_not_billing": {
-      "en": "Will not bill",
-      "params": []
-    }
-  }
+  "keys": {}
 }
