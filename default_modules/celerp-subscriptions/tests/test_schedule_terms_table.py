@@ -11,7 +11,7 @@ import uuid
 
 import pytest
 
-from agreement_kit import agreement, company_id, freeze_day, register, schedule, template, tick
+from agreement_kit import agreement, company_id, freeze_day, generate_due, register, schedule, template, tick
 from schedule_census import declared_terms, doc_doors, gate_catches, loop_readers, request_bounds, term_fields
 
 
@@ -257,3 +257,11 @@ async def test_an_unreadable_stored_schedule_reads_as_that_rows_reason(client, s
     assert rows[good]["schedule_error"] is None and rows[good]["next_bill_date"] == TODAY
     page = await _call(client.get(f"/subscriptions/{eid}/periods", headers=hd))
     assert page.status_code == 409 and page.json()["detail"]["message_key"] == "subscriptions.err_schedule_unreadable"
+    billing_door = await _call(generate_due(client, hd, eid))
+    assert billing_door.status_code == 409, billing_door.text
+    assert billing_door.json()["detail"]["message_key"] == "subscriptions.err_schedule_unreadable"
+    # A write that names a period of it (the dispatcher recording a failed run) still records,
+    # without the period's dates History cannot read off it.
+    await billing.write_agreement(session, cid, eid, {"billing_failure": {"period_index": 0, "at": "x"}}, None)
+    await session.commit()
+    assert (await _stored(session, eid))["billing_failure"] == {"period_index": 0, "at": "x"}
