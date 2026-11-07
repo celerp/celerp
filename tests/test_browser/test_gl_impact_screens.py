@@ -91,3 +91,7 @@ def test_a_paid_invoice_heads_each_entry_with_what_posted_it(page: Page, ui_serv
     headings = _headings(section)
     assert len(headings) >= 2, headings
     assert all(h.endswith(ref) and h != ref and "je:" not in h for h in headings), headings
+    # Newest first, as the Journal lists them: the payment heads the section, the invoice follows.
+    from ui.routes.documents import _gl_entry_heading
+    posted = api.get(f"/accounting/journal/by-doc/{doc_id}").json()["entries"]
+    assert headings == [_gl_entry_heading(e, ref) for e in reversed(posted)], headings
