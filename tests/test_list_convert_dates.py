@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""A List converted to a document keeps its issue and due dates as a pair: the document is issued
+"""A List converted to a document, or duplicated, keeps its issue and due dates as a pair: the document is issued
 on the company's business day and falls due by the List's payment term from that day, never on
 a due date set against the List's own, earlier issue date."""
 from __future__ import annotations
@@ -43,3 +43,24 @@ async def test_a_converted_list_without_a_term_drops_the_lists_due_date(client, 
     doc = await _converted(client, session, target)
     assert doc["issue_date"] > "2026-10-01"
     assert not doc.get("due_date"), doc["due_date"]
+
+
+@pytest.mark.parametrize("terms", ["Net 30", None])
+async def test_a_duplicated_list_keeps_its_issue_and_due_dates_as_a_pair(client, session, terms):
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    cust = next(c["id"] for c in contacts if c.get("contact_type") in ("customer", "both"))
+    r = await client.post("/lists", headers=h, json={
+        "list_type": "quotation", "contact_id": cust, "issue_date": "2026-10-01", "due_date": "2026-10-31",
+        "line_items": [{"name": "A", "quantity": 2, "unit_price": 50}],
+        **({"payment_terms": terms} if terms else {})})
+    assert r.status_code == 200, r.text
+    r = await client.post(f"/lists/{r.json()['id']}/duplicate", headers=h)
+    assert r.status_code == 200, r.text
+    copy = (await client.get(f"/lists/{r.json()['id']}", headers=h)).json()
+    issued = date.fromisoformat(copy["issue_date"])
+    assert issued > date(2026, 10, 1)
+    if terms:
+        assert copy["due_date"] == (issued + timedelta(days=30)).isoformat()
+    else:
+        assert not copy.get("due_date"), copy["due_date"]

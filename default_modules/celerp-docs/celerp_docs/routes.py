@@ -10026,6 +10026,15 @@ async def delete_list(
     return {"deleted": entity_id}
 
 
+def _issued_today(state: dict, settings: dict) -> dict:
+    """The issue and due dates of a document made today from a List (converted or duplicated): issued
+    on the company's business day and due by the List's payment term from that day. With no term to
+    follow there is no due date, never the List's own, which was set against its earlier issue date."""
+    issued = business_date_of(None, settings.get("timezone"))
+    due = due_date_for_terms(issued, state.get("payment_terms"), company_payment_terms(settings))
+    return {"issue_date": issued, **({"due_date": due} if due else {})}
+
+
 @lists_router.post("/{entity_id}/convert")
 async def convert_list(
     entity_id: str,
@@ -10083,13 +10092,9 @@ async def convert_list(
     if state.get("tax"):
         new_data["tax_rate"] = state["tax"]
     new_data = money_from_lines(new_data, state.get("currency"))
-    # The document is issued today, so its due date follows its payment term from today; with
-    # no term to follow, the List's due date (set against the List's own issue date) is dropped.
-    issued = business_date_of(None, company.settings.get("timezone"))
     new_data.pop("due_date", None)
-    due = due_date_for_terms(issued, state.get("payment_terms"), company_payment_terms(company.settings))
     new_data.update({"doc_type": payload.target_type, "ref_id": ref, "source_list_id": entity_id, "status": "draft",
-                     "issue_date": issued, **({"due_date": due} if due else {})})
+                     **_issued_today(state, company.settings)})
     await emit_event(
         session, company_id=company_id, entity_id=new_doc_id, entity_type="doc",
         event_type="doc.created", data=new_data, actor_id=user.id, location_id=None,
@@ -10118,9 +10123,10 @@ async def duplicate_list(
     ref_id = await claim_number(session, company, list_sequence_key(state.get("list_type"), company.settings))
     new_entity_id = f"list:{ref_id}"
     new_data = {k: v for k, v in state.items()
-                if k not in {"status", "entity_type", "ref_id", "share_token", SCAN_RUNS_FIELD, RESTORE_POINT}}
+                if k not in {"status", "entity_type", "ref_id", "share_token", "due_date", SCAN_RUNS_FIELD,
+                             RESTORE_POINT}}
     new_data.update({"ref_id": ref_id, "status": "draft", "source_list_id": entity_id,
-                     "issue_date": business_date_of(None, company.settings.get("timezone")),
+                     **_issued_today(state, company.settings),
                      "line_items": strip_line_ids(state.get("line_items"))})
     await require_moving_fits_units(session, company_id, new_entity_id, "list", new_data)
     entry = await _emit_list(session, company_id, new_entity_id, "list.created", new_data, user)
