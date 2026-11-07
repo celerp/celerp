@@ -206,11 +206,21 @@ def seeded_user(api_server):
 
 # ── Playwright fixtures ────────────────────────────────────────────────────────
 
+def auth_cookie(name: str, token: str) -> dict:
+    """A session cookie as the UI sets it, lapsing with the token it holds: the UI gives each
+    cookie its token's lifetime, so a browser stops sending an expired access token and the UI
+    renews the session from the refresh cookie. A cookie kept past its token instead sends
+    the expired token, which the UI answers with the sign-in page."""
+    from jose import jwt
+    return {"name": name, "value": token, "domain": "127.0.0.1", "path": "/",
+            "expires": float(jwt.get_unverified_claims(token)["exp"])}
+
+
 def session_cookies(seeded_user) -> list[dict]:
     """The suite's session as a browser holds it: the access cookie and, as a sign-in sets
     both, the refresh one beside it, so the session outlives the access token's few minutes
     for the length of the suite, the way a signed-in user's does."""
-    return [{"name": name, "value": seeded_user[key], "domain": "127.0.0.1", "path": "/"}
+    return [auth_cookie(name, seeded_user[key])
             for name, key in (("celerp_token", "access_token"), ("celerp_refresh", "refresh_token"))]
 
 
@@ -486,9 +496,7 @@ def keep_sign_ins():
 
 def _set_auth_cookie(browser_context, token: str) -> None:
     browser_context.clear_cookies()
-    browser_context.add_cookies([{
-        "name": "celerp_token", "value": token, "domain": "127.0.0.1", "path": "/",
-    }])
+    browser_context.add_cookies([auth_cookie("celerp_token", token)])
 
 
 @pytest.fixture
