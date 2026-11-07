@@ -127,6 +127,17 @@ async def test_a_number_too_long_to_store_is_refused_by_name(client, session, ki
     assert refusal_text(detail) == t("documents.err_number_too_long", "en", max=100, length=len(number))
 
 
+@pytest.mark.parametrize("kind", ["docs", "lists"])
+async def test_a_number_at_the_limit_is_stored_and_one_past_it_is_refused(client, session, kind):
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    body = {"doc_type": "quotation"} if kind == "docs" else {"list_type": "quotation"}
+    r = await client.post(f"/{kind}", headers=h, json={**body, "ref_id": "Q" * 100, **_payload(contacts)})
+    assert r.status_code == 200, r.text
+    r = await client.post(f"/{kind}", headers=h, json={**body, "ref_id": "R" * 101, **_payload(contacts)})
+    assert r.status_code == 422 and r.json()["detail"]["params"] == {"max": 100, "length": 101}, r.text
+
+
 async def test_a_document_cannot_be_renumbered_to_a_number_a_list_holds(client, session):
     auth, contacts = await _demo_company(client, session, "USD")
     h = auth["headers"]
@@ -455,23 +466,25 @@ def _map_census() -> list[tuple[str, str, str, str]]:
             if rel != _SEQUENCES:
                 continue
             if isinstance(node, ast.Raise) and node.exc is not None:
-                exc = node.exc
-                # A keyed refusal is a Refused, or an HTTPException whose detail is a catalog
-                # refusal or the detail of the Refused its ``except Refused as <name>`` caught.
-                handler = parent.get(node)
-                caught = (handler.name if isinstance(handler, ast.ExceptHandler)
-                          and _name(handler.type) == "Refused" else None)
-                keyed = isinstance(exc, ast.Call) and (_name(exc.func) == "Refused" or (
-                    _name(exc.func) == "HTTPException"
-                    and any(k.arg == "detail" and (
-                        (isinstance(k.value, ast.Call) and _name(k.value.func) == "catalog_refusal")
-                        or (caught and ast.unparse(k.value) == f"{caught}.detail")) for k in exc.keywords)))
-                rows.append((rel, fn, "raise", "keyed" if keyed else ast.unparse(exc)[:60]))
+                rows.append((rel, fn, "raise", "keyed" if _keyed_raise(node.exc, parent.get(node))
+                             else ast.unparse(node.exc)[:60]))
             if isinstance(node, (ast.Assign, ast.AugAssign)):
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                 if any(isinstance(t_, ast.Attribute) and t_.attr == "settings" for t_ in targets):
                     rows.append((rel, fn, "settings", "write"))
     return rows
+
+
+def _keyed_raise(exc: ast.expr, handler: ast.AST | None) -> bool:
+    """A keyed refusal is a Refused, or an HTTPException whose detail is a catalog refusal or
+    the detail of the Refused its ``except Refused as <name>`` (``handler``) caught."""
+    caught = (handler.name if isinstance(handler, ast.ExceptHandler)
+              and _name(handler.type) == "Refused" else None)
+    return isinstance(exc, ast.Call) and (_name(exc.func) == "Refused" or (
+        _name(exc.func) == "HTTPException"
+        and any(k.arg == "detail" and (
+            (isinstance(k.value, ast.Call) and _name(k.value.func) == "catalog_refusal")
+            or (caught and ast.unparse(k.value) == f"{caught}.detail")) for k in exc.keywords)))
 
 
 async def test_the_numbering_map_has_one_writer():
@@ -495,3 +508,19 @@ async def test_every_numbering_refusal_is_keyed():
     assert len(rows) >= 5, rows
     unkeyed = [r for r in rows if r[3] != "keyed"]
     assert not unkeyed, f"a numbering refusal is raised without a message key: {unkeyed}"
+
+
+@pytest.mark.parametrize("source, keyed", [
+    ('raise Refused("documents.err_number_too_long", max=1, length=2)', True),
+    ('raise HTTPException(409, detail=catalog_refusal("documents.err_list_number_taken", number="A"))', True),
+    ("try:\n    pass\nexcept Refused as exc:\n    raise HTTPException(409, detail=exc.detail)", True),
+    ("try:\n    pass\nexcept ValueError as exc:\n    raise HTTPException(409, detail=exc.detail)", False),
+    ("try:\n    pass\nexcept Refused as exc:\n    raise HTTPException(409, detail=str(exc))", False),
+    ('raise HTTPException(409, detail="Number taken")', False),
+    ('raise ValueError("Number taken")', False),
+])
+async def test_the_refusal_census_tells_a_keyed_raise_from_a_bare_one(source, keyed):
+    tree = ast.parse(source)
+    parent = {c: n for n in ast.walk(tree) for c in ast.iter_child_nodes(n)}
+    raise_ = next(n for n in ast.walk(tree) if isinstance(n, ast.Raise))
+    assert _keyed_raise(raise_.exc, parent.get(raise_)) is keyed
