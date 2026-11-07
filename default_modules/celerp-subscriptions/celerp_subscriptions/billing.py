@@ -174,10 +174,15 @@ async def write_agreement(session: AsyncSession, company_id, entity_id: str, cha
     turning a mode off drops its consent and a status change keeps it. A write that changes the
     status may not move a consent (ValueError): status and terms are written apart. Whatever
     it changes, a write that brings a mode into force (entering_modes, as Resume and Activate
-    do) also needs that mode's permissions from the actor, and moves no consent for it."""
+    do) also needs that mode's permissions from the actor, and moves no consent for it. A void
+    agreement leaves void only through Documents unvoid, so a status write here on one is refused
+    (409 naming unvoid) and the void is never rewritten as another status."""
     before = (await session.execute(select(Projection.state).where(
         Projection.company_id == company_id, Projection.entity_id == entity_id))).scalar_one_or_none() or {}
     changes = {k: v for k, v in changes.items() if shown(k, before.get(k)) != shown(k, v)}
+    if before.get("status") == "void" and "status" in changes:
+        raise HTTPException(status_code=409, detail=t(
+            "subscriptions.err_status_void", ref=before.get("ref_id") or entity_id))
     drop = tuple(k for k in drop if k in before and k not in changes)
     if not changes and all(shown(k, before[k]) == shown(k, None) for k in drop):
         drop = ()
@@ -230,7 +235,8 @@ async def write_agreement(session: AsyncSession, company_id, entity_id: str, cha
 
 
 # The statuses an agreement holds. Only write_agreement (its own page) moves it between draft,
-# active, paused and cancelled; Documents may also void it, unvoid it or revert it to draft.
+# active, paused and cancelled; Documents may also void it, unvoid it (the only way out of void) or
+# revert it to draft.
 AGREEMENT_STATUSES = frozenset({"draft", "active", "paused", "cancelled", "void"})
 
 

@@ -7279,5 +7279,6 @@
   "country.MX": "Mexico",
   "country.AE": "United Arab Emirates",
   "country.SA": "Saudi Arabia",
-  "subscriptions.err_no_periods": "{ref} is still a draft, so it has no billing periods yet. Activate it on this page to start its schedule."
+  "subscriptions.err_no_periods": "{ref} is still a draft, so it has no billing periods yet. Activate it on this page to start its schedule.",
+  "subscriptions.err_status_void": "{ref} is void, so its status cannot change here. Unvoid it in Documents first if it should run again."
 }

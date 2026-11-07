@@ -96,6 +96,12 @@
       "params": [
         "ref"
       ]
+    },
+    "subscriptions.err_status_void": {
+      "en": "{ref} is void, so its status cannot change here. Unvoid it in Documents first if it should run again.",
+      "params": [
+        "ref"
+      ]
     }
   }
 }

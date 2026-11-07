@@ -375,30 +375,57 @@ async def test_no_status_door_brings_a_mode_into_force_for_a_role_without_its_pe
     assert after.get("consents") == before.get("consents")
 
 
-@pytest.mark.parametrize("to", sorted(AGREEMENT_STATUSES))
-async def test_a_status_write_asks_the_writer_for_every_mode_it_brings_into_force(client, session, monkeypatch, to):
+@pytest.mark.parametrize(("was", "to"), [(was, to) for was in sorted(AGREEMENT_STATUSES - {"void"})
+                                         for to in sorted(AGREEMENT_STATUSES - {was})])
+async def test_a_status_write_asks_the_writer_for_every_mode_it_brings_into_force(
+        client, session, monkeypatch, was, to):
     """Class guard at write_agreement, generated over every pair of statuses: a status write that
     makes an agreement with automatic terms bill (it becomes active) is refused to a writer
     without the permissions (an operator, or no member) and changes nothing; the owner makes it,
-    and the consent stays with whoever set the terms. Every other status write is anyone's."""
-    hd, cid, eid, operator, owner = await _standing(client, session, monkeypatch, "active")
+    and the consent stays with whoever set the terms. Every other status write is anyone's, from
+    any status but void (test_no_status_write_moves_an_agreement_out_of_void)."""
+    hd, cid, eid, operator, owner = await _standing(client, session, monkeypatch, was)
     operator_id = _uid(await _user(client, hd, "operator"))
-    for was in sorted(AGREEMENT_STATUSES - {to}):
-        await _write(session, cid, eid, {"status": was}, owner)
-        await session.commit()
-        before = await template(client, hd, eid)
-        if to == "active":
-            for actor in (operator_id, None):
-                with pytest.raises(HTTPException) as refused:
-                    await _write(session, cid, eid, {"status": to}, actor)
-                assert refused.value.status_code == 403, (was, actor, refused.value.detail)
-            assert await template(client, hd, eid) == before
-            await _write(session, cid, eid, {"status": to}, owner)
-        else:
-            await _write(session, cid, eid, {"status": to}, operator_id)
-        await session.commit()
-        after = await template(client, hd, eid)
-        assert after["status"] == to and after["consents"] == before["consents"], (was, to)
+    before = await template(client, hd, eid)
+    if to == "active":
+        for actor in (operator_id, None):
+            with pytest.raises(HTTPException) as refused:
+                await _write(session, cid, eid, {"status": to}, actor)
+            assert refused.value.status_code == 403, (was, actor, refused.value.detail)
+        assert await template(client, hd, eid) == before
+        await _write(session, cid, eid, {"status": to}, owner)
+    else:
+        await _write(session, cid, eid, {"status": to}, operator_id)
+    await session.commit()
+    after = await template(client, hd, eid)
+    assert after["status"] == to and after["consents"] == before["consents"], (was, to)
+
+
+@pytest.mark.parametrize("door", STATUS_DOORS)
+async def test_no_status_door_moves_a_void_agreement(client, session, monkeypatch, door):
+    """Generated over every route that writes a status (census): pressed by the owner, who holds
+    every permission, on a void agreement, each answers 409 and the agreement stays void exactly
+    as it was, so Documents unvoid remains the one way out of void."""
+    hd, cid, eid, _, owner = await _standing(client, session, monkeypatch, "void")
+    before = await template(client, hd, eid)
+    method, path = route_doors()[door][0].split(" ", 1)
+    r = await client.request(method, "/subscriptions" + path.format(entity_id=eid), headers=hd, json={})
+    assert r.status_code == 409, (door, r.status_code, r.text)
+    assert await template(client, hd, eid) == before, door
+
+
+@pytest.mark.parametrize("to", sorted(AGREEMENT_STATUSES - {"void"}))
+async def test_no_status_write_moves_an_agreement_out_of_void(client, session, monkeypatch, to):
+    """Class guard at write_agreement, generated over every status: a status write on a void
+    agreement is refused (409 naming unvoid) whoever makes it, and changes nothing."""
+    hd, cid, eid, _, owner = await _standing(client, session, monkeypatch, "void")
+    before = await template(client, hd, eid)
+    for actor in (owner, _uid(await _user(client, hd, "operator")), None):
+        with pytest.raises(HTTPException) as refused:
+            await _write(session, cid, eid, {"status": to}, actor)
+        assert refused.value.status_code == 409, (to, actor, refused.value.detail)
+        assert refused.value.detail.key == "subscriptions.err_status_void", refused.value.detail
+    assert await template(client, hd, eid) == before
 
 
 @pytest.mark.parametrize("module_on", [True, False])
