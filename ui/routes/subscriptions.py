@@ -111,6 +111,10 @@ _ACTION_DONE = {"activate": "subscriptions.done_activated", "pause": "subscripti
 # summary, whose outcome row says how the send went.
 _PERIOD_DONE = {"skip": "subscriptions.done_skipped", "unskip": "subscriptions.done_unskipped",
                 "reopen": "subscriptions.done_reopened"}
+# What each history review action says it did: Withdraw returns a placed or a set-aside
+# document to review alike.
+_HISTORY_DONE = {"confirm": "subscriptions.done_history_placed", "set-aside": "subscriptions.done_history_set_aside",
+                 "withdraw": "subscriptions.done_history_returned"}
 # How the Periods table marks each period status; one not listed is plain text.
 _PERIOD_BADGE = {"overdue": "badge--overdue", "due": "badge--warning", "draft": "badge--draft", "voided": "badge--void"}
 # A period's email by billing.send_status; a sent one needs no mark.
@@ -1103,7 +1107,7 @@ def setup_routes(app) -> None:
             await api.acknowledge_subscriptions_summary(token)
         except APIError as e:
             return _refused(e)
-        return Response(status_code=204, headers={"HX-Redirect": "/subscriptions/summary"})
+        return _done("/subscriptions/summary", t("subscriptions.done_summary_read"))
 
     # --- List page ---
 
@@ -1174,18 +1178,16 @@ def setup_routes(app) -> None:
 
     @app.post("/subscriptions/new")
     async def create_subscription(request: Request, direction: str = "sales"):
-        from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            return Response(status_code=401, headers={"HX-Redirect": "/login"})
         doc_type = _DIRECTION_DOC_TYPE.get(direction, "subscription_invoice")
         try:
             result = await api.create_subscription(token, {"doc_type": doc_type, "frequency": "monthly"})
-            doc_id = result.get("entity_id") or result.get("id") or ""
-            return _R("", status_code=204, headers={"HX-Redirect": f"/subscriptions/{doc_id}"})
         except APIError as e:
-            _signed_out(e)
-            return _R("", status_code=204, headers={"HX-Redirect": f"/subscriptions?direction={direction}&error={e}"})
+            return _refused(e)
+        doc_id = result.get("entity_id") or result.get("id") or ""
+        return _done(f"/subscriptions/{doc_id}", t("subscriptions.done_created"))
 
     # --- Detail page ---
 
@@ -1343,8 +1345,6 @@ def setup_routes(app) -> None:
         if action == "send":
             # The API reads the period's email after the attempt; the toast says what is stored.
             return _done(back, done.get("message") or "", _SEND_TOAST.get(done.get("send"), "warning"))
-        if action not in _PERIOD_DONE:
-            return Response(status_code=204, headers={"HX-Redirect": back})
         period = done["period"]
         return _done(back, sentence(_PERIOD_DONE[action], start=period["service_start"], end=period["service_end"]))
 
@@ -1363,7 +1363,7 @@ def setup_routes(app) -> None:
                                                   {"period_index": int(k)} if action == "confirm" else None)
         except APIError as e:
             return _refused(e)
-        return Response(status_code=204, headers={"HX-Redirect": f"/subscriptions/{entity_id}#history-review"})
+        return _done(f"/subscriptions/{entity_id}", t(_HISTORY_DONE[action]))
 
     @app.patch("/subscriptions/{entity_id}/schedule/{field}")
     async def subscription_schedule_ui(request: Request, entity_id: str, field: str):

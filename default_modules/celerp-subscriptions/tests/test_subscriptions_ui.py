@@ -15,6 +15,13 @@ from test_helpers import make_test_token
 from ui.i18n import sentence, t
 
 
+def _loads_with(r, page: str, message: str) -> None:
+    """A done action loads ``page`` again (no fragment, so the browser does load it) and says
+    what it did."""
+    assert r.status_code == 204 and r.headers["HX-Redirect"] == page, (r.status_code, r.headers)
+    assert json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"] == message
+
+
 def _authed(role: str = "owner") -> dict:
     return {"celerp_token": make_test_token(role=role)}
 
@@ -83,9 +90,15 @@ class TestSubscriptionsUI:
             r = await ui_client.post(
                 "/subscriptions/new?direction=sales",
             )
-        # Route returns 204 + HX-Redirect so HTMX can follow the redirect
-        assert r.status_code == 204
-        assert "/subscriptions/sub-001" in r.headers["hx-redirect"]
+        _loads_with(r, "/subscriptions/sub-001", t("subscriptions.done_created", "en"))
+
+    async def test_a_refused_new_agreement_says_why_where_the_user_is(self, ui_client):
+        from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
+        with patch("ui.api_client.create_subscription", new=AsyncMock(side_effect=APIError(403, "Not allowed here"))):
+            r = await ui_client.post("/subscriptions/new?direction=sales")
+        assert "HX-Redirect" not in r.headers
+        assert "Not allowed here" in json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"]
 
     async def test_detail_page_renders(self, ui_client):
         ui_client.cookies.update(_authed())
@@ -343,7 +356,7 @@ class TestBillingPages:
         page = (await owner_ui.get("/subscriptions/summary")).text
         assert f'href="/subscriptions/{eid}"' in page and t("subscriptions.summary_ack", "en") in page
         r = await owner_ui.post("/subscriptions/summary/ack")
-        assert r.status_code == 204 and r.headers["HX-Redirect"] == "/subscriptions/summary"
+        _loads_with(r, "/subscriptions/summary", t("subscriptions.done_summary_read", "en"))
         assert t("subscriptions.summary_empty", "en") in (await owner_ui.get("/subscriptions/summary")).text
         assert f'href="/subscriptions/{eid}"' in (await owner_ui.get("/subscriptions/summary?all=1")).text
 
@@ -359,7 +372,7 @@ class TestBillingPages:
         confirm = AsyncMock(return_value={"ok": True})
         with patch("ui.api_client.subscription_history_action", new=confirm):
             r = await owner_ui.post(f"/subscriptions/{eid}/history/doc:old/confirm", data={"period_index": "-2"})
-        assert r.headers["HX-Redirect"] == f"/subscriptions/{eid}#history-review"
+        _loads_with(r, f"/subscriptions/{eid}", t("subscriptions.done_history_placed", "en"))
         assert confirm.await_args.args[2:] == ("doc:old", "confirm", {"period_index": -2})
         r = await owner_ui.post(f"/subscriptions/{eid}/history/doc:old/withdraw")
         assert t("subscriptions.err_history_not_confirmed", "en") in json.loads(r.headers["HX-Trigger"])["celerpToast"]["message"]
@@ -376,8 +389,11 @@ class TestBillingPages:
         action = AsyncMock(return_value={"ok": True})
         with patch("ui.api_client.subscription_history_action", new=action):
             r = await owner_ui.post(f"/subscriptions/{eid}/history/doc:gone/set-aside")
-        assert r.headers["HX-Redirect"] == f"/subscriptions/{eid}#history-review"
+        _loads_with(r, f"/subscriptions/{eid}", t("subscriptions.done_history_set_aside", "en"))
         assert action.await_args.args[2:] == ("doc:gone", "set-aside", None)
+        with patch("ui.api_client.subscription_history_action", new=action):
+            r = await owner_ui.post(f"/subscriptions/{eid}/history/doc:dup/withdraw")
+        _loads_with(r, f"/subscriptions/{eid}", t("subscriptions.done_history_returned", "en"))
 
 
 async def test_history_set_aside_through_ui_persists(owner_ui, session):
@@ -396,9 +412,12 @@ async def test_history_set_aside_through_ui_persists(owner_ui, session):
     await session.commit()
 
     r = await owner_ui.post(f"/subscriptions/{eid}/history/doc:missing/set-aside")
-    assert r.status_code == 204, r.text
+    _loads_with(r, f"/subscriptions/{eid}", t("subscriptions.done_history_set_aside", "en"))
     state = (await owner_ui.api.get(f"/docs/{eid}")).json()
     assert any(row["doc_id"] == "doc:missing" for row in state["history_set_aside"])
+    # The page it loads again offers Return to review, not Set aside, for that document.
+    page = (await owner_ui.get(r.headers["HX-Redirect"])).text
+    assert f'/history/doc:missing/withdraw"' in page and f'/history/doc:missing/set-aside"' not in page
 
 
 @pytest.mark.parametrize("method,path,api_call,form", [

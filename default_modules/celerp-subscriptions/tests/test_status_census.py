@@ -142,7 +142,7 @@ async def _summary_ack(ui, session, monkeypatch, arm):
     arm()
     r = await ui.post("/subscriptions/summary/ack")
     _not_refused(r)
-    assert r.headers["HX-Redirect"] == "/subscriptions/summary"
+    assert r.headers["HX-Redirect"] == "/subscriptions/summary" and _toast(r)["type"] == "success"
     assert (await ui.api.get("/subscriptions/summary")).json()["rows"] == []
 
 
@@ -152,6 +152,7 @@ async def _new(ui, session, monkeypatch, arm):
     _not_refused(r)
     eid = r.headers["HX-Redirect"].rsplit("/", 1)[1]
     assert (await ui.api.get(f"/docs/{eid}")).json()["doc_type"] == "subscription_invoice"
+    assert _toast(r)["type"] == "success"
 
 
 async def _lifecycle(ui, session, monkeypatch, arm):
@@ -258,6 +259,16 @@ def test_no_read_after_an_action_sits_outside_redrawn():
     """Static half of the rule, over the census: a read after the action inside the action's
     refusal handler reports a done action as refused; outside any handler it fails the request."""
     assert [(r.key, r.shared, r.bare) for r in _ROWS if r.shared or r.bare] == []
+
+
+def test_every_ui_action_answers_by_loading_its_page_redrawing_or_refusing():
+    """Every return of every UI action route the census finds answers through _done (the page
+    loads again with a toast saying what happened), _redrawn, a refusal, a whole page or the
+    shared import wizard; never a redirect the browser does not follow, or none (P4g-1)."""
+    routes = status_census.ui_actions()
+    assert routes and all(r.answers for r in routes)
+    assert [(r.key, a) for r in routes for a in r.answers
+            if a.split("@")[0] not in status_census.ALLOWED_ANSWERS] == []
 
 
 def test_every_api_action_is_shown_through_a_ui_route():

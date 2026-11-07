@@ -38,6 +38,13 @@ PACKAGE = ROOT / "default_modules" / "celerp-subscriptions" / "celerp_subscripti
 API_CLIENT = ROOT / "ui" / "api_client.py"
 ACTION_VERBS = {"post", "patch", "put", "delete"}
 REDRAW = "_redrawn"
+# How a UI action route answers: a done action loads its page again with a toast (_done) or is
+# redrawn from a read after it (_redrawn); a refusal is shown where the user is.
+ANSWERS = {"_done", REDRAW, "_refused", "_action_error"}
+# Every answer a UI action route may give: ANSWERS, a whole page, a step of the app's shared
+# CSV import wizard, the sign-in page, or 404 for an action it does not have.
+IMPORT_WIZARD = "ui.routes.csv_import"
+ALLOWED_ANSWERS = ANSWERS | {"page", "wizard", "signed_out", "not_found"}
 
 
 def ui_files() -> list[Path]:
@@ -107,6 +114,7 @@ class UiAction:
     shared: list[str] = field(default_factory=list)
     bare: list[str] = field(default_factory=list)
     chained: list[str] = field(default_factory=list)
+    answers: list[str] = field(default_factory=list)
 
     @property
     def key(self) -> str:
@@ -176,12 +184,42 @@ def _chained(route: ast.AST, actions: list[tuple[int, str]]) -> list[str]:
     return found
 
 
+def _wizard(tree: ast.Module) -> set[str]:
+    """The names a UI file takes from the app's shared CSV import wizard (IMPORT_WIZARD)."""
+    return {a.asname or a.name for n in tree.body if isinstance(n, ast.ImportFrom) and n.module == IMPORT_WIZARD
+            for a in n.names}
+
+
+def _answer(ret: ast.Return, wizard: set[str]) -> str:
+    """How a UI action route's ``return`` answers: through one of ANSWERS (by name), "page" (a
+    whole page, base_shell), "wizard" (a step of the shared import wizard), "signed_out" (to
+    the sign-in page), "not_found" (404), else "other". A ``_done`` whose page carries a
+    fragment is "fragment": going there from the page itself does not load it again."""
+    value = ret.value.value if isinstance(ret.value, ast.Await) else ret.value
+    if not isinstance(value, ast.Call):
+        return "other"
+    name = getattr(value.func, "id", None) or getattr(value.func, "attr", None)
+    if name == "_done" and value.args and "#" in ast.unparse(value.args[0]):
+        return "fragment"
+    if name in ANSWERS:
+        return name
+    if name in ("base_shell", *wizard):
+        return "page" if name == "base_shell" else "wizard"
+    status = next((k.value.value for k in value.keywords
+                   if k.arg == "status_code" and isinstance(k.value, ast.Constant)), None)
+    target = " ".join(ast.unparse(a) for a in (*value.args, *(k.value for k in value.keywords if k.arg == "headers")))
+    if (status == 401 or name == "RedirectResponse") and "/login" in target:
+        return "signed_out"
+    return "not_found" if status == 404 and not target else "other"
+
+
 def ui_actions() -> list[UiAction]:
     verbs = api_verbs()
     rows = []
     for path in ui_files():
         tree = ast.parse(path.read_text(encoding="utf-8"))
         helpers = {n.name: n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        wizard = _wizard(tree)
         for node in ast.walk(tree):
             found = _route(node)
             if not found or found[0] not in ACTION_VERBS:
@@ -190,7 +228,8 @@ def ui_actions() -> list[UiAction]:
             actions = [(n, name) for n, name in calls if is_action(verbs, name)]
             reads = [(n, name) for n, name in calls if is_read(verbs, name)]
             row = UiAction(f"{_rel(path)}:{node.lineno}", found[0], found[1],
-                           sorted({a for _, a in actions}), sorted({r for _, r in reads}))
+                           sorted({a for _, a in actions}), sorted({r for _, r in reads}),
+                           answers=[f"{_answer(r, wizard)}@{r.lineno}" for r in _own(node) if isinstance(r, ast.Return)])
             if actions:
                 row.chained = _chained(node, actions)
                 first = min(n for n, _ in actions)
@@ -401,7 +440,8 @@ def main() -> None:
     for r in ui:
         print(f"{r.key:58} {r.where:42} {','.join(r.actions) or '-'} | {','.join(r.reads) or '-'}"
               f" | shared={','.join(r.shared) or '-'} | bare={','.join(r.bare) or '-'}"
-              f" | chained={','.join(r.chained) or '-'}")
+              f" | chained={','.join(r.chained) or '-'}"
+              f" | answers={','.join(a for a in r.answers if a.split('@')[0] not in ALLOWED_ANSWERS) or 'ok'}")
     api = api_actions()
     print(f"\n# API action routes ({len(api)})  [reached by UI route]")
     for a in api:
