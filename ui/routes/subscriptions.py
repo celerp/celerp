@@ -234,11 +234,8 @@ def setup_routes(app) -> None:
         page = int(request.query_params.get("page", 1))
         per_page = per_page_value(request.query_params.get("per_page"), _PER_PAGE)
 
-        try:
-            all_resp = await api.list_subscriptions(token, {"direction": direction, "limit": 1000})
-            all_items = all_resp if isinstance(all_resp, list) else all_resp.get("items", [])
-        except APIError:
-            all_items = []
+        all_resp = await api.list_subscriptions(token, {"direction": direction, "limit": 1000})
+        all_items = all_resp if isinstance(all_resp, list) else all_resp.get("items", [])
 
         filtered = all_items
         if status:
@@ -288,11 +285,8 @@ def setup_routes(app) -> None:
         if not token:
             return Div(t("error.session_expired"), id="sub-table")
         q = request.query_params.get("q", "")
-        try:
-            resp = await api.list_subscriptions(token, {"direction": direction, "limit": 1000})
-            items = resp if isinstance(resp, list) else resp.get("items", [])
-        except APIError:
-            items = []
+        resp = await api.list_subscriptions(token, {"direction": direction, "limit": 1000})
+        items = resp if isinstance(resp, list) else resp.get("items", [])
         if status:
             items = [i for i in items if i.get("status") == status]
         else:

@@ -557,10 +557,16 @@ async def ui_401_handler(request: Request, exc):
 
 
 async def ui_api_error_handler(request: Request, exc: _APIError):
-    """Redirect APIError 401s (API → UI proxy calls) to /login."""
+    """An API failure a route let through: 401 signs in again, 403 lands on the
+    dashboard's no-access notice (as a page gate refusal does), 404 is the not-found
+    page, anything else the 500 page. A route never renders a record it could not read."""
     if exc.status == 401:
         return _401_redirect(str(exc.detail or ""), request)
-    # re-raise non-401 APIErrors as 500 so the existing 500 handler formats them
+    if exc.status == 403:
+        from ui.security import not_permitted_redirect
+        return not_permitted_redirect(request)
+    if exc.status == 404:
+        return await ui_404_handler(request, exc)
     raise exc
 
 

@@ -11676,7 +11676,7 @@ class TestAuditHighlightScoping:
     async def test_non_audit_drops_scanned_highlight(self, ui_client):
         # Same audited_at in the data, but a quotation must not paint the highlight.
         ui_client.cookies.update(_authed())
-        with patch("ui.api_client.get_list", new=AsyncMock(return_value=self._list("quotation"))):
+        with patch("ui.api_client.get_list_page", new=_list_page_stub(self._list("quotation"))):
             r = await ui_client.get("/lists/list:1")
         assert r.status_code == 200
         assert "data-row--audited" not in r.text
@@ -11719,7 +11719,7 @@ class TestListScanInPlace:
         # The list scan branch refetches the page of lines being viewed and swaps #line-body instead
         # of reloading. In-place paging never changes the URL, so the refetch cannot use location.href.
         ui_client.cookies.update(_authed())
-        with patch("ui.api_client.get_list", new=AsyncMock(return_value=self._DRAFT)):
+        with patch("ui.api_client.get_list_page", new=_list_page_stub(self._DRAFT)):
             r = await ui_client.get("/lists/list:1")
         assert r.status_code == 200
         assert "DOMParser" in r.text
@@ -11731,7 +11731,7 @@ class TestListScanInPlace:
         # A list accumulates scans client-side and submits the whole run with one Add button; Enter
         # only appends a comma, so the submit button is the sole thing that hits the server.
         ui_client.cookies.update(_authed())
-        with patch("ui.api_client.get_list", new=AsyncMock(return_value=self._DRAFT)):
+        with patch("ui.api_client.get_list_page", new=_list_page_stub(self._DRAFT)):
             r = await ui_client.get("/lists/list:1")
         assert r.status_code == 200
         assert 'id="scan-bar-add"' in r.text
@@ -11780,7 +11780,7 @@ class TestAuditColumnAlignment:
     async def test_draft_audit_rows_align_with_header_and_drop_unit(self, ui_client):
         import re
         ui_client.cookies.update(_authed())
-        with patch("ui.api_client.get_list", new=AsyncMock(return_value=self._AUDIT)):
+        with patch("ui.api_client.get_list_page", new=_list_page_stub(self._AUDIT)):
             r = await ui_client.get("/lists/list:1")
         assert r.status_code == 200
         headers = re.findall(r'<th[^>]*class="[^"]*?(col-[\w-]+)', r.text)
@@ -18476,11 +18476,10 @@ class TestDraftStatusColumn:
         item = {"entity_id": "item:q1", "sku": "Q-A", "name": "Widget", "status": "reserved",
                 "quantity": 1}
         ui_client.cookies.update(_authed())
-        with (
-            patch("ui.api_client.get_list", new=AsyncMock(return_value=lst)),
-            patch("ui.api_client.get_items_metadata",
-                  new=AsyncMock(return_value={"item:q1": item})),
-        ):
+        # The page read carries the catalog metadata for the page's items (item_meta).
+        page = {"list": {k: v for k, v in lst.items() if k != "line_items"},
+                "items": lst["line_items"], "total": 1, "version": 1, "item_meta": {"item:q1": item}}
+        with patch("ui.api_client.get_list_page", new=AsyncMock(return_value=page)):
             r = await ui_client.get("/lists/list:q1")
         assert r.status_code == 200
         assert "badge--reserved" in r.text, "finalized list must show the item's real status"

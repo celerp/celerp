@@ -1773,10 +1773,7 @@ _ICON_GLOBE = (
 async def _doc_notes_section_response(token: str, entity_id: str, is_list: bool):
     """Fetch notes and return the rendered notes section (innerHTML target)."""
     tz = (await _get_company(token)).get("timezone") or "UTC"
-    try:
-        notes = await api.list_list_notes(token, entity_id) if is_list else await api.list_doc_notes(token, entity_id)
-    except Exception:
-        notes = []
+    notes = await api.list_list_notes(token, entity_id) if is_list else await api.list_doc_notes(token, entity_id)
     _base = f"/lists/{entity_id}" if is_list else f"/docs/{entity_id}"
     return _shared_notes_tab(
         entity_id=entity_id,
@@ -2594,19 +2591,17 @@ celerpUpdateBulkAlloc();
             return denied
         try:
             doc = await api.get_doc(token, entity_id)
-        except (APIError, Exception) as e:
-            if isinstance(e, APIError) and e.status == 401:
+        except APIError as e:
+            if e.status != 404:
                 raise
-            if isinstance(e, APIError) and e.status == 404:
-                # A missing document is final: the app's own page says so and leads back to the list.
-                from ui.components.files import files_error_block
-                return await base_shell(
-                    breadcrumbs([(t("nav.dashboard"), "/dashboard")]),
-                    files_error_block((t("documents.document_not_found"), " ",
-                                       A(t("documents.back_to_documents"), href="/docs")), 404),
-                    title=page_title("nav.invoices"), nav_active=_doc_nav_key("invoice"), request=request,
-                )
-            doc = {}
+            # A missing document is final: the app's own page says so and leads back to the list.
+            from ui.components.files import files_error_block
+            return await base_shell(
+                breadcrumbs([(t("nav.dashboard"), "/dashboard")]),
+                files_error_block((t("documents.document_not_found"), " ",
+                                   A(t("documents.back_to_documents"), href="/docs")), 404),
+                title=page_title("nav.invoices"), nav_active=_doc_nav_key("invoice"), request=request,
+            )
 
         # Inject company fields so "My company info" box is populated
         doc = await _merge_company_letterhead(token, doc)
@@ -3378,10 +3373,7 @@ celerpUpdateBulkAlloc();
         if not token:
             from starlette.responses import Response as _Res
             return _Res("", status_code=401)
-        try:
-            notes = await api.list_doc_notes(token, entity_id)
-        except APIError:
-            notes = []
+        notes = await api.list_doc_notes(token, entity_id)
         note = next((n for n in notes if (n.get("note_id") or n.get("id")) == note_id), {})
         return _shared_note_edit_form(
             note_id=note_id,
@@ -3448,10 +3440,7 @@ celerpUpdateBulkAlloc();
         if not token:
             from starlette.responses import Response as _Res
             return _Res("", status_code=401)
-        try:
-            notes = await api.list_list_notes(token, entity_id)
-        except APIError:
-            notes = []
+        notes = await api.list_list_notes(token, entity_id)
         note = next((n for n in notes if (n.get("note_id") or n.get("id")) == note_id), {})
         return _shared_note_edit_form(
             note_id=note_id,
@@ -4643,6 +4632,9 @@ celerpUpdateBulkAlloc();
         token = _token(request)
         if not token:
             return _R("", status_code=401)
+        if not entity_id.strip():
+            # A blank id is no record; the ledger would read it as no filter at all.
+            return _R("", status_code=404)
         # entity_id may contain colons (e.g. "doc:BILL-2605-0003") which break
         # CSS querySelectorAll. Use a safe slug for the DOM id.
         safe_id = entity_id.replace(":", "-").replace("/", "-")
@@ -4653,12 +4645,9 @@ celerpUpdateBulkAlloc();
             page = 1
         per_page = per_page_value(request.query_params.get("per_page"), _DEFAULT_PER_PAGE)
         offset = (page - 1) * per_page
-        try:
-            resp = await api.list_ledger(token, {"entity_id": entity_id, "limit": per_page, "offset": offset, "resolve": "true"})
-            entries = resp.get("items", []) if isinstance(resp, dict) else []
-            total = int(resp.get("total", len(entries))) if isinstance(resp, dict) else len(entries)
-        except Exception:
-            entries, total = [], 0
+        resp = await api.list_ledger(token, {"entity_id": entity_id, "limit": per_page, "offset": offset, "resolve": "true"})
+        entries = resp.get("items", []) if isinstance(resp, dict) else []
+        total = int(resp.get("total", len(entries))) if isinstance(resp, dict) else len(entries)
         category_names = await api.get_category_labels(token)
         from ui.components.activity import format_timestamp, detail_from_entry, _event_display, actor_label
         EMPTY = "--"
@@ -4996,12 +4985,10 @@ celerpUpdateBulkAlloc();
         try:
             resp = await api.get_list_page(token, entity_id, offset=_line_offset, limit=_line_limit)
         except APIError as e:
-            if e.status == 401:
-                raise
             if e.status == 404:
                 from starlette.responses import HTMLResponse as _HR
                 return _HR(f"<h2>{t('documents.list_not_found')}</h2><p><a href='/lists'>{t('documents.back_to_lists')}</a></p>", status_code=404)
-            resp = {}
+            raise
         lst = resp.get("list", {}) or {}
         lst["line_items"] = resp.get("items", []) or []
         lst["line_holds"] = resp.get("line_holds") or {}

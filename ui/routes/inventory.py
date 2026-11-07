@@ -1900,22 +1900,17 @@ def setup_routes(app):
         denied = await _check_permission(request, "view_inventory", page_view=True)
         if denied:
             return denied
-        try:
-            schema, item, company, cat_schemas, price_lists, units_resp, category_names = await asyncio.gather(
-                api.get_item_schema(token),
-                api.get_item(token, entity_id),
-                api.get_company(token),
-                api.get_all_category_schemas(token),
-                api.get_price_lists(token),
-                api.get_units(token),
-                api.get_category_labels(token),
-            )
-            ledger = (await api.list_ledger(token, {"entity_id": entity_id, "limit": 10})).get("items", [])
-            locations = (await api.get_locations(token)).get("items", [])
-        except (APIError, Exception) as e:
-            if isinstance(e, APIError) and e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            schema, item, ledger, locations, company, cat_schemas, price_lists, units_resp, category_names = [], {}, [], [], {}, {}, [], {}, {}
+        schema, item, company, cat_schemas, price_lists, units_resp, category_names = await asyncio.gather(
+            api.get_item_schema(token),
+            api.get_item(token, entity_id),
+            api.get_company(token),
+            api.get_all_category_schemas(token),
+            api.get_price_lists(token),
+            api.get_units(token),
+            api.get_category_labels(token),
+        )
+        ledger = (await api.list_ledger(token, {"entity_id": entity_id, "limit": 10})).get("items", [])
+        locations = (await api.get_locations(token)).get("items", [])
         deleted_parents = await deleted_items(token, [item.get("split_from"), item.get("transformed_from")])
         split_preview = await _item_split_preview(token, entity_id)
         # The base price list name (used by the pricing tab's derivation note) rides on the
@@ -2017,14 +2012,9 @@ def setup_routes(app):
             page = 1
         per_page = 50
         offset = (page - 1) * per_page
-        try:
-            item, company, category_names = await asyncio.gather(
-                api.get_item(token, entity_id), api.get_company(token), api.get_category_labels(token))
-            resp = await api.list_ledger(token, {"entity_id": entity_id, "limit": per_page, "offset": offset})
-        except (APIError, Exception) as e:
-            if isinstance(e, APIError) and e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            item, company, category_names, resp = {}, {}, {}, {"items": [], "total": 0}
+        item, company, category_names = await asyncio.gather(
+            api.get_item(token, entity_id), api.get_company(token), api.get_category_labels(token))
+        resp = await api.list_ledger(token, {"entity_id": entity_id, "limit": per_page, "offset": offset})
 
         currency = company.get("currency")
         activities = resp.get("items", [])
@@ -3653,11 +3643,8 @@ function celerpPrintLabel(entityId, templateId) {
         (Splitting does NOT use this — a split child keeps the parent SKU; see split_item.)
         """
         prefix = f"{parent_sku}."
-        try:
-            resp = await api.list_items(token, {"q": parent_sku, "limit": 200, "status": "all"})
-            items = resp.get("items", []) if isinstance(resp, dict) else resp
-        except Exception:
-            items = []
+        resp = await api.list_items(token, {"q": parent_sku, "limit": 200, "status": "all"})
+        items = resp.get("items", []) if isinstance(resp, dict) else resp
         taken: set[int] = set()
         for it in items:
             sku = str(it.get("sku", ""))

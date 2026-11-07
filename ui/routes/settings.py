@@ -1573,12 +1573,9 @@ def setup_routes(app):
             return P(t("error.session_expired"), cls="cell-error")
         # Key is auto-managed - never directly editable
         if field == "key":
-            try:
-                fields = await api.get_category_schema(token, category)
-                sorted_fields = _load_cat_schema_sorted(fields)
-                f = sorted_fields[idx] if idx < len(sorted_fields) else {}
-            except APIError:
-                f = {}
+            fields = await api.get_category_schema(token, category)
+            sorted_fields = _load_cat_schema_sorted(fields)
+            f = sorted_fields[idx] if idx < len(sorted_fields) else {}
             return _cat_schema_display_cell(category, idx, field, f)
         form = await request.form()
         value = str(form.get("value", ""))
