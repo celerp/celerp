@@ -1,6 +1,7 @@
 """Peer draft documents reuse the canonical importer and must not bypass lifecycle."""
 from __future__ import annotations
 
+import itertools
 import uuid
 from types import SimpleNamespace
 
@@ -635,11 +636,16 @@ async def _copy_of_issued_invoice(client, session, kind: str):
     from celerp.services.document_lines import fill_line_ids, strip_line_ids
     from celerp.services.peer_documents import _FIELDS
     from celerp.services.peer_identity import new_target_identity
-    from test_payments_stripe import _register, _payable_invoice, _h, _company_id
+    from test_payments_stripe import _register, _h, _company_id
 
     token = await _register(client)
     source_company = uuid.UUID(_company_id(token))
-    source_doc, _ = await _payable_invoice(client, token)
+    # Several lines, so a line taking another position's id shows.
+    made = await client.post("/docs", headers=_h(token), json={
+        "doc_type": "invoice", "contact_name": "Buyer", "currency": "USD", "line_items": [
+            {"description": f"Widget {n}", "quantity": n, "unit_price": 100.0 * n} for n in (1, 2, 3)]})
+    source_doc = made.json()["id"]
+    assert (await client.post(f"/docs/{source_doc}/finalize", headers=_h(token))).status_code == 200
     state = (await client.get(f"/docs/{source_doc}", headers=_h(token))).json()
     revision = (await session.get(Projection, (source_company, source_doc), populate_existing=True)).version
     receiver = await client.post("/companies", json={"name": "Firm"}, headers=_h(token))
@@ -707,16 +713,18 @@ async def test_a_copy_keeps_its_own_line_ids_and_compares_the_source_by_content(
     grant, token, source_doc, copy = await _copy_of_issued_invoice(client, session, kind)
     held = (await session.get(Projection, (grant.company_id, copy), populate_existing=True)).state
     ids_before = _copy_line_ids(held)
-    for sender_ids in (True, False):
+    for sender_ids, at in itertools.product((True, False), range(len(ids_before))):
         payload, revision = await _source_payload(client, session, grant, token, source_doc, sender_ids)
-        sent = payload["line_items"][0]
+        sent = payload["line_items"][at]
         cases = [(None, None)] + [(k, _other(v)) for k, v in sent.items()]
         if "line_id" not in sent:
             cases.append(("line_id", str(uuid.uuid4())))
         for key, value in cases:
             line = dict(sent) if key is None else {**sent, key: value}
-            data = {**payload, "line_items": [line, *payload["line_items"][1:]]}
-            label = f"{kind} sender_ids={sender_ids} {key}={value!r}"
+            lines = list(payload["line_items"])
+            lines[at] = line
+            data = {**payload, "line_items": lines}
+            label = f"{kind} sender_ids={sender_ids} line {at + 1} {key}={value!r}"
             async with session.begin_nested() as savepoint:
                 try:
                     outcome = await documents.receive_document(
@@ -732,7 +740,7 @@ async def test_a_copy_keeps_its_own_line_ids_and_compares_the_source_by_content(
             elif key in ("description", "account_code"):
                 assert outcome == "updated", label
                 assert _copy_line_ids(state) == ids_before, label
-                assert state["line_items"][0][key] == value, label
+                assert state["line_items"][at][key] == value, label
             else:
                 try:
                     LineItem.model_validate(line)
