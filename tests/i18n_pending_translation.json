@@ -12,5 +12,14 @@
     "th",
     "vi"
   ],
-  "keys": {}
+  "keys": {
+    "line.invalid_field": {
+      "en": "Line {line} ({sku}): the {field} entered isn't valid. Check it and try again.",
+      "params": [
+        "field",
+        "line",
+        "sku"
+      ]
+    }
+  }
 }

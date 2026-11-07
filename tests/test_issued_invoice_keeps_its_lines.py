@@ -175,39 +175,54 @@ def _refusal(values: dict) -> dict | None:
     return None
 
 
+def _shown(line: dict) -> str:
+    """What a refusal shows a line as: its SKU, name or description, the first one that is text."""
+    return next((v for k in ("sku", "name", "description") if isinstance(v := line.get(k), str) and v), "--")
+
+
+def _field_refusal(lines: list[dict], field: str) -> dict:
+    """The refusal of the last of *lines* for a wrong *field*: the line by number and as shown."""
+    return {"line": len(lines), "sku": _shown(lines[-1]), "field": field}
+
+
 async def test_a_written_line_takes_each_value_exactly_as_the_line_model_does():
     """Over every field a line declares and a value of every JSON type: a write refuses exactly
-    what the line model refuses, naming the field, and every field refuses some type."""
+    what the line model refuses, naming the line and the field, and every field refuses some type.
+    The line is shown by its SKU, name or description whichever of them the wrong value is in."""
+    named = {"sku": "S-1", "name": "N", "description": "D"}
     for field in _LINE_FIELDS:
         refused = [kind for kind, value in _JSON_VALUES.items() if not _line_model_takes(field, value)]
         assert refused, field
         for kind, value in _JSON_VALUES.items():
-            detail = _refusal({"line_items": [{"description": "A"}, {field: value}]})
-            want = {"fields": f"line_items.{field}"} if kind in refused else None
-            assert (detail["params"] if detail else None) == want, (field, kind, detail)
-            assert detail is None or detail["message_key"] == "error.invalid_input_fields", (field, kind)
+            for label in (None, *named):
+                lines = [{"description": "A"}, {**({label: named[label]} if label else {}), field: value}]
+                detail = _refusal({"line_items": lines})
+                want = _field_refusal(lines, field) if kind in refused else None
+                assert (detail["params"] if detail else None) == want, (field, kind, label, detail)
+                assert detail is None or detail["message_key"] == "line.invalid_field", (field, kind)
         assert _refusal({"line_items": [{field: None, "an undeclared key": {"a": 1}}]}) is None, field
 
 
-def _wrong_lines(lines: list[dict]) -> dict[str, tuple[object, str]]:
+def _wrong_lines(lines: list[dict]) -> dict[str, tuple[object, dict]]:
     """Lines of every wrong shape, and for every field a line declares the lines with one value
-    the line model refuses for it, each with the field the refusal must name."""
-    wrong = {shape: (bad, "line_items") for shape, bad in _hostile(lines).items()}
+    the line model refuses for it, each with the parameters the refusal must carry."""
+    wrong = {shape: (bad, {"fields": "line_items"}) for shape, bad in _hostile(lines).items()}
     for field in _LINE_FIELDS:
         value = next(v for v in _JSON_VALUES.values() if not _line_model_takes(field, v))
-        wrong[f"{field} {value!r}"] = ([*lines[:-1], {**lines[-1], field: value}], f"line_items.{field}")
+        bad = [*lines[:-1], {**lines[-1], field: value}]
+        wrong[f"{field} {value!r}"] = (bad, _field_refusal(bad, field))
     return wrong
 
 
-def _refused_naming(r, field: str) -> bool:
-    """422 naming *field*: the line check's refusal, or the request model's own where it declares
+def _refused_naming(r, want: dict) -> bool:
+    """422 carrying *want*: the line check's refusal, or the request model's own where it declares
     the lines a list of objects."""
     detail = r.json()["detail"]
     if isinstance(detail, list):
-        return r.status_code == 422 and field == "line_items" and any(
+        return r.status_code == 422 and want == {"fields": "line_items"} and any(
             e["loc"][:2] == ["body", "line_items"] for e in detail)
-    return (r.status_code, detail["message_key"], detail["params"]) == (
-        422, "error.invalid_input_fields", {"fields": field})
+    key = "line.invalid_field" if "field" in want else "error.invalid_input_fields"
+    return (r.status_code, detail["message_key"], detail["params"]) == (422, key, want)
 
 
 _LINE = {"description": "S", "quantity": 1, "unit_price": 100.0}
@@ -294,17 +309,17 @@ _WRITERS = {
 
 
 @pytest.mark.parametrize("writer", sorted(_WRITERS))
-async def test_every_line_writer_refuses_lines_of_a_wrong_shape_or_type_naming_the_field(client, auth, writer):
+async def test_every_line_writer_refuses_lines_of_a_wrong_shape_or_type_naming_the_line(client, auth, writer):
     """Whoever sends them (the agent, an import, a peer), lines of another shape or a line
     holding a value of the wrong type are refused before any check reads them, naming the
-    field, and nothing is stored."""
+    line and the field, and nothing is stored."""
     make, arg = _WRITERS[writer]
     lines, send, stored = await make(client, auth, arg)
     before = await stored()
-    for case, (bad, field) in _wrong_lines(lines).items():
+    for case, (bad, want) in _wrong_lines(lines).items():
         r = await send(bad)
         if writer.endswith("batch"):
-            assert field in str(r.json()["errors"]), (writer, case, r.text)
+            assert all(str(v) in str(r.json()["errors"]) for v in want.values()), (writer, case, r.text)
         else:
-            assert _refused_naming(r, field), (writer, case, r.text)
+            assert _refused_naming(r, want), (writer, case, r.text)
         assert await stored() == before, (writer, case)

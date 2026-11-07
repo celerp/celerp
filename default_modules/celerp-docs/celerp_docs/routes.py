@@ -337,8 +337,8 @@ _LINE_FIELD_TYPES = {
 
 
 def refuse_malformed_input(values: dict) -> None:
-    """Refuse (422, naming the field) ``line_items`` in *values* that are not a list of objects,
-    or a line holding a field of the wrong type, then taxes no total can be computed from
+    """Refuse (422) ``line_items`` in *values* that are not a list of objects, or a line holding
+    a field of the wrong type (naming the line and the field), then taxes no total can be computed from
     (refuse_malformed_taxes), before any check reads them. Every write that takes a document's
     or a List's lines from outside (a save, a create, an import, a peer) checks it first, so
     nothing of a refused write is stored.
@@ -349,7 +349,7 @@ def refuse_malformed_input(values: dict) -> None:
     lines = values.get("line_items", [])
     if not (isinstance(lines, list) and all(isinstance(line, dict) for line in lines)):
         raise HTTPException(status_code=422, detail=catalog_refusal("error.invalid_input_fields", fields="line_items"))
-    for line in lines:
+    for number, line in enumerate(lines, 1):
         for key, value in line.items():
             if value is None or key not in _LINE_FIELD_TYPES:
                 continue
@@ -357,7 +357,7 @@ def refuse_malformed_input(values: dict) -> None:
                 _LINE_FIELD_TYPES[key].validate_python(value)
             except ValidationError:
                 raise HTTPException(status_code=422, detail=catalog_refusal(
-                    "error.invalid_input_fields", fields=f"line_items.{key}")) from None
+                    "line.invalid_field", line=number, sku=_line_label(line), field=key)) from None
     refuse_malformed_taxes(values)
 
 
@@ -7233,7 +7233,9 @@ class ReturnBody(BaseModel):
 
 
 def _line_label(line: dict) -> str:
-    return str(line.get("sku") or line.get("name") or line.get("description") or "--")
+    """The line's SKU, name or description, the first one set; a value that is not text (the
+    line model declares all three text) is malformed input and is never shown."""
+    return next((v for k in ("sku", "name", "description") if isinstance(v := line.get(k), str) and v), "--")
 
 
 # Which of a line's lots make up its quantity is worked out from what the lots from each
