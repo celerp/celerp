@@ -274,7 +274,6 @@ async def test_a_send_in_flight_reads_sending_and_is_not_sent_again(committed_en
     from agreement_kit import contact
     from celerp.services import email
     from celerp_subscriptions import billing
-    from ui.i18n import t
 
     freeze_day(monkeypatch, "2026-07-01")
     factory = _factory(committed_engine)
@@ -308,7 +307,7 @@ async def test_a_send_in_flight_reads_sending_and_is_not_sent_again(committed_en
             pressed = await client.post(f"/subscriptions/{eid}/periods/0/send", headers=owner,
                                         json={"attempt": row["attempt"], "again": True})
             assert pressed.status_code == 409, pressed.text
-            assert pressed.json()["detail"] == t("subscriptions.err_send_in_progress")
+            assert pressed.json()["detail"]["message_key"] == "subscriptions.err_send_in_progress"
             # The same record, once older than a send can take, reads as cut off.
             monkeypatch.setattr(billing, "SEND_TIMEOUT", billing.SEND_TIMEOUT * 0)
             stale = next(r for r in (await client.get(f"/subscriptions/{eid}/periods", headers=owner)).json()["rows"]

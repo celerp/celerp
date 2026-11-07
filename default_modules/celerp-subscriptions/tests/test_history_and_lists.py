@@ -283,7 +283,7 @@ async def test_history_names_unattended_billing_as_automatic(owner_ui, session, 
     billed = [r for r in rows if "Billed" in " ".join(r)]
     assert billed and all(r[2] == automatic for r in billed), rows
     assert [r for r in rows if r[2] not in (automatic, "--")], rows  # the owner's own changes
-    items = (await owner_ui.api.get("/ledger", params={"entity_id": eid, "limit": 200})).json()
+    items = (await owner_ui.api.get("/ledger", params={"entity_id": eid, "limit": 200, "resolve": "true"})).json()
     items = items["items"] if isinstance(items, dict) else items
-    flags = {e["event_type"]: bool(e.get("actor_automatic")) for e in items if e["event_type"] != "doc.created"}
-    assert True in flags.values() and False in flags.values(), flags
+    flags = {bool(e.get("actor_automatic")) for e in items if e["event_type"] != "doc.created"}
+    assert flags == {True, False}, items

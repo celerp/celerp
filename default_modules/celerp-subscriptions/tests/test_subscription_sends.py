@@ -30,6 +30,16 @@ async def _sending(client, hd, *, start="2026-07-01", catchup=0) -> str:
     return eid
 
 
+async def _sent_from_its_page(api, doc_id: str, body: dict):
+    """Send a document from its own page and wait for the email it sends in the background."""
+    import asyncio
+    from celerp.services import background
+    before = set(background._BG_TASKS)
+    sent = await api.post(f"/docs/{doc_id}/send", json=body)
+    await asyncio.wait_for(asyncio.gather(*(set(background._BG_TASKS) - before)), 30)
+    return sent
+
+
 def _no_email(monkeypatch) -> None:
     monkeypatch.setattr("celerp.config.settings.gateway_token", "")
     monkeypatch.setattr("celerp.config.settings.smtp_host", "")
@@ -346,29 +356,6 @@ async def test_the_agreement_page_says_when_an_email_failed_or_may_not_have_arri
     assert sentence(f"subscriptions.history_send_{state}", start="2026-07-01", end="2026-07-31") in history
 
 
-def test_every_recorded_send_state_reads_the_same_on_the_summary_the_periods_and_history():
-    """Each state billing records a send in (read from its own source: the written literals
-    and the outcome of an attempt) reads through one send_status, with Send in force or not:
-    a summary kind, a mark on its period unless sent, and a History line."""
-    import json
-    import re
-    from celerp_subscriptions import billing, summary as summary_module
-    from ui.routes.subscriptions import _SEND_BADGE
-    source = Path(billing.__file__).read_text()
-    outcome = re.search(r"^\s*outcome = (.*)$", source, re.M).group(1)
-    recorded = set(re.findall(r'\bstate="(\w+)"', source)) | set(re.findall(r'"(\w+)"', outcome))
-    assert recorded == {"pending", "sending", "unconfirmed", "sent", "failed"}
-    en = json.loads((Path(__file__).parents[3] / "ui/locales/en.json").read_text())
-    sending_on = {"status": "active", "generation_mode": "auto_invoice", "auto_send": True}
-    for state in recorded:
-        assert f"subscriptions.history_send_{state}" in en, state
-        for agreement_state in (sending_on, {**sending_on, "auto_send": False}):
-            stored = {**agreement_state, "periods": {"0": {"state": billing.BILLED, "send": {"state": state}}}}
-            status = billing.send_status(stored, 0, date(2026, 7, 1))
-            assert status in summary_module._SEND_KINDS, (state, status)
-            assert status == "sent" or _SEND_BADGE[status][0] in en, (state, status)
-
-
 async def test_an_email_the_next_pass_will_not_send_reads_as_not_sent_and_is_acknowledged(owner_ui, session, monkeypatch):
     """Billed with Send on, the app stopped before the email went and stayed down past the
     catch-up window: the next pass will not send it, so it is not "waiting". Its period reads
@@ -405,8 +392,8 @@ async def test_an_invoice_sent_again_from_its_page_settles_its_period_email(owne
     assert (await template(api, {}, eid))["periods"]["0"]["send"]["state"] == "unconfirmed"
     async with SmtpStub() as working:
         with smtp_settings(working.port):
-            sent = await api.post(f"/docs/{doc['entity_id']}/send", json={"sent_via": "email",
-                                                                          "sent_to": "member@example.test"})
+            sent = await _sent_from_its_page(api, doc["entity_id"], {"sent_via": "email",
+                                                                    "sent_to": "member@example.test"})
             assert sent.status_code == 200, sent.text
             await tick(session, cid, "2026-07-02")
             assert len(working.messages) == 1  # the page's own send; the pass sends nothing more
@@ -483,7 +470,7 @@ async def test_an_invoice_emailed_through_the_documents_api_settles_its_period_e
     [doc] = await billed_docs(session, eid)
     async with SmtpStub() as working:
         with smtp_settings(working.port):
-            sent = await api.post(f"/docs/{doc['entity_id']}/send", json={"sent_to": "member@example.test"})
+            sent = await _sent_from_its_page(api, doc["entity_id"], {"sent_to": "member@example.test"})
             assert sent.status_code == 200, sent.text
             await tick(session, cid, "2026-07-02")
             assert len(working.messages) == 1

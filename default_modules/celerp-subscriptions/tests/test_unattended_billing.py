@@ -45,6 +45,13 @@ def mail(monkeypatch):
     return m
 
 
+def _stopped_long_ago(monkeypatch) -> None:
+    """The process stopped mid-send longer ago than a send can take, so the send it left
+    recorded as sending is no longer with the mail server: it reads as cut off."""
+    from celerp_subscriptions import billing
+    monkeypatch.setattr(billing, "SEND_TIMEOUT", billing.SEND_TIMEOUT * 0)
+
+
 async def _auto(client, hd, *, start, catchup=0, send=False, **fields) -> str:
     eid = await agreement(client, hd, start=start, **fields)
     change = {"generation_mode": "auto_invoice", "catchup_periods": catchup}
@@ -274,6 +281,7 @@ async def test_an_interrupted_send_is_shown_with_a_retry(client, session, monkey
     monkeypatch.setattr(email, "send_email", cut_off)
     with pytest.raises(asyncio.CancelledError):
         await tick(session, cid, "2026-07-01")
+    _stopped_long_ago(monkeypatch)
     [row] = [r for r in (await summary(client, hd))["rows"] if r["kind"] == "send_unconfirmed"]
     # A self-hosted transport cannot replay an outcome it did not confirm: the row offers
     # Send again, a new message behind a confirm, instead of a plain retry.
@@ -369,6 +377,7 @@ async def test_relay_retry_keeps_original_transport_identity(client, session, mo
     monkeypatch.setattr(email, "send_email", interrupted)
     with pytest.raises(asyncio.CancelledError):
         await tick(session, cid, "2026-07-01")
+    _stopped_long_ago(monkeypatch)
     row = next(r for r in (await summary(client, hd))["rows"] if r["kind"] == "send_unconfirmed")
     assert row["retry_url"]
 
@@ -430,6 +439,7 @@ async def test_uncertain_email_reuses_original_payload_without_recomposition(cli
     monkeypatch.setattr(email, "send_email", uncertain)
     with pytest.raises(asyncio.CancelledError):
         await tick(session, cid, "2026-07-01")
+    _stopped_long_ago(monkeypatch)
     row = next(r for r in (await summary(client, hd))["rows"] if r["kind"] == "send_unconfirmed")
     assert row["retry_url"]
 
@@ -494,6 +504,7 @@ async def test_missing_private_payload_refuses_uncertain_retry(client, session, 
     monkeypatch.setattr(email, "send_email", interrupted)
     with pytest.raises(asyncio.CancelledError):
         await tick(session, cid, "2026-07-01")
+    _stopped_long_ago(monkeypatch)
     state = await template(client, hd, eid)
     attempt_id = uuid.UUID(state["periods"]["0"]["send"]["operation_id"])
     await session.execute(delete(SubscriptionEmailAttempt).where(
@@ -526,6 +537,7 @@ async def test_uncertain_send_replay_window_enforced_at_api(client, session, mon
     monkeypatch.setattr(email, "send_email", cut_off)
     with pytest.raises(asyncio.CancelledError):
         await tick(session, cid, "2026-07-01")
+    _stopped_long_ago(monkeypatch)
     state = await template(client, hd, eid)
     operation_id = uuid.UUID(state["periods"]["0"]["send"]["operation_id"])
     attempt = await session.get(
