@@ -68,7 +68,7 @@ jobs:
         # within its 2 cores.
         # Process tests run in their own job so the split stays even.
         # The split balances measured time from tests/.test_durations (refresh it with
-        # --store-durations when a test file is added or a shard nears the cap). The same
+        # --store-durations when a test is added or a shard nears the cap). The same
         # shard runs up to 1.6 times slower on a slow runner, and collection takes
         # about 80s, so share * 1.6 + 80 stays within the timeout below
         # (tests/test_ci_shard_split.py reads that timeout, holds the split to it and the
