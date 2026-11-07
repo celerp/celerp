@@ -7220,7 +7220,7 @@
   "subscriptions.history_billed": "Billed {start} to {end}.",
   "subscriptions.history_skipped": "Skipped {start} to {end}: {reason}",
   "subscriptions.history_unresolved": "{start} to {end} waits for history review.",
-  "subscriptions.history_send_pending": "The bill for {start} to {end} is waiting to be emailed.",
+  "subscriptions.history_send_not_sent": "The bill for {start} to {end} is waiting to be emailed.",
   "subscriptions.history_send_sending": "Started emailing the bill for {start} to {end}.",
   "subscriptions.history_send_sent": "Emailed the bill for {start} to {end}.",
   "subscriptions.history_send_failed": "Could not email the bill for {start} to {end}.",

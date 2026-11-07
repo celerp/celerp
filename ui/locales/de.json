@@ -7220,7 +7220,7 @@
   "subscriptions.history_billed": "Zeitraum vom {start} bis {end} abgerechnet.",
   "subscriptions.history_skipped": "Zeitraum vom {start} bis {end} übersprungen: {reason}",
   "subscriptions.history_unresolved": "Der Zeitraum vom {start} bis {end} wartet auf die Prüfung der bisherigen Belege.",
-  "subscriptions.history_send_pending": "Die Rechnung für den Zeitraum vom {start} bis {end} wartet auf den E-Mail-Versand.",
+  "subscriptions.history_send_not_sent": "Die Rechnung für den Zeitraum vom {start} bis {end} wartet auf den E-Mail-Versand.",
   "subscriptions.history_send_sending": "E-Mail-Versand der Rechnung für den Zeitraum vom {start} bis {end} gestartet.",
   "subscriptions.history_send_sent": "Rechnung für den Zeitraum vom {start} bis {end} per E-Mail gesendet.",
   "subscriptions.history_send_failed": "Die Rechnung für den Zeitraum vom {start} bis {end} konnte nicht per E-Mail gesendet werden.",

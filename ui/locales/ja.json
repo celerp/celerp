@@ -7220,7 +7220,7 @@
   "subscriptions.history_billed": "{start}から{end}までの期間を請求しました。",
   "subscriptions.history_skipped": "{start}から{end}までの期間をスキップしました：{reason}",
   "subscriptions.history_unresolved": "{start}から{end}までの期間は過去の伝票の確認待ちです。",
-  "subscriptions.history_send_pending": "{start}から{end}までの期間の請求書はメール送信待ちです。",
+  "subscriptions.history_send_not_sent": "{start}から{end}までの期間の請求書はメール送信待ちです。",
   "subscriptions.history_send_sending": "{start}から{end}までの期間の請求書のメール送信を開始しました。",
   "subscriptions.history_send_sent": "{start}から{end}までの期間の請求書をメールで送信しました。",
   "subscriptions.history_send_failed": "{start}から{end}までの期間の請求書をメールで送信できませんでした。",

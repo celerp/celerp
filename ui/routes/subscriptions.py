@@ -22,7 +22,7 @@ from starlette.responses import RedirectResponse, Response
 import ui.api_client as api
 from celerp.output.document_context import prepare_document_output
 from celerp.services.record_quantities import template_label
-from celerp_subscriptions.billing import bills
+from celerp_subscriptions.billing import bills, send_written
 from celerp_subscriptions.periods import shown
 from celerp_subscriptions.summary import TO_CHECK
 from ui.components.activity import change_text, format_timestamp, register_fields
@@ -187,7 +187,7 @@ def _period_change(old: dict, new: dict, start: str, end: str, ref: str | None =
         return sentence("subscriptions.done_reopened" if was == "billed" else "subscriptions.done_unskipped", **dates)
     if now == "unresolved" and was != "unresolved":
         return sentence("subscriptions.history_unresolved", **dates)
-    send = (new.get("send") or {}).get("state")
+    send = send_written(new.get("send"))
     if send and new.get("send") != old.get("send"):
         # Sent from the document's own page (by email or marked sent there), which settles it.
         settled = send == "sent" and (new.get("send") or {}).get("via")

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -317,3 +317,60 @@ async def test_a_send_in_flight_reads_sending_and_is_not_sent_again(committed_en
             release.set()
         assert (await asyncio.wait_for(unattended, 30))["state"] == "sent"
     assert len(calls) == 1
+
+
+async def test_a_send_cut_off_after_the_summary_was_read_is_listed_again(committed_engine, monkeypatch):
+    """The app stops while the unattended pass is emailing a period. The owner reads the summary
+    meanwhile ("being emailed right now, check again in a few minutes") and marks it read. Once
+    a send can no longer be with the mail server the period reads as cut off, and the summary
+    lists it again: its reading changed after the owner read it (P2g-1)."""
+    from datetime import datetime as real_datetime
+
+    from agreement_kit import contact
+    from celerp.services import email
+    from celerp_subscriptions import billing
+
+    freeze_day(monkeypatch, "2026-07-01")
+    factory = _factory(committed_engine)
+    seeded = await _company(factory)
+    owner, cid = seeded["h"]["owner"], seeded["company_id"]
+    async with _app_client(factory) as (client, _pending):
+        recipient = await contact(client, owner, "cutoff@example.test")
+        eid = await agreement(client, owner, start="2026-07-01", contact_id=recipient)
+        assert (await schedule(client, owner, eid, generation_mode="auto_invoice", auto_send=True)).status_code == 200
+    async with factory() as s:
+        assert (await billing.run_due(session=s, company_id=cid, today=date(2026, 7, 1), budget=1)).done == 1
+        await s.commit()
+
+    started = asyncio.Event()
+
+    async def hangs(**_kwargs):
+        started.set()
+        await asyncio.Event().wait()
+    monkeypatch.setattr(email, "send_email", hangs)
+    # The pass hands the email over, then the process stops before the answer comes back.
+    task = asyncio.create_task(billing.deliver(factory, cid, eid, 0))
+    await asyncio.wait_for(started.wait(), 30)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    async with _app_client(factory) as (client, _pending):
+        fresh = (await client.get("/subscriptions/summary", headers=owner)).json()
+        assert [r["kind"] for r in fresh["rows"] if r["kind"].startswith("send")] == ["send_sending"]
+        assert (await client.post("/subscriptions/summary/ack", headers=owner)).status_code == 200
+
+        class Later(real_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return real_datetime.now(tz) + billing.SEND_TIMEOUT + timedelta(minutes=1)
+        monkeypatch.setattr(billing, "datetime", Later)
+        row = next(r for r in (await client.get(f"/subscriptions/{eid}/periods", headers=owner)).json()["rows"]
+                   if r["period_index"] == 0)
+        assert (row["send"], row["again"]) == ("unconfirmed", True)
+        later = (await client.get("/subscriptions/summary", headers=owner)).json()
+        assert [r["kind"] for r in later["rows"] if r["kind"].startswith("send")] == ["send_unconfirmed"]
+        assert later["counts"]["send_unconfirmed"] == 1
+        # Read again, it is covered until its reading changes once more.
+        assert (await client.post("/subscriptions/summary/ack", headers=owner)).status_code == 200
+        assert (await client.get("/subscriptions/summary", headers=owner)).json()["rows"] == []

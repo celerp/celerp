@@ -7220,7 +7220,7 @@
   "subscriptions.history_billed": "ออกใบแจ้งหนี้สำหรับรอบวันที่ {start} ถึง {end} แล้ว",
   "subscriptions.history_skipped": "ข้ามรอบวันที่ {start} ถึง {end}: {reason}",
   "subscriptions.history_unresolved": "รอบวันที่ {start} ถึง {end} กำลังรอการตรวจสอบเอกสารย้อนหลัง",
-  "subscriptions.history_send_pending": "ใบแจ้งหนี้ของรอบวันที่ {start} ถึง {end} กำลังรอส่งทางอีเมล",
+  "subscriptions.history_send_not_sent": "ใบแจ้งหนี้ของรอบวันที่ {start} ถึง {end} กำลังรอส่งทางอีเมล",
   "subscriptions.history_send_sending": "เริ่มส่งใบแจ้งหนี้ของรอบวันที่ {start} ถึง {end} ทางอีเมลแล้ว",
   "subscriptions.history_send_sent": "ส่งใบแจ้งหนี้ของรอบวันที่ {start} ถึง {end} ทางอีเมลแล้ว",
   "subscriptions.history_send_failed": "ไม่สามารถส่งใบแจ้งหนี้ของรอบวันที่ {start} ถึง {end} ทางอีเมลได้",

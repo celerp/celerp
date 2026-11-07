@@ -55,10 +55,8 @@ MODE_DOCUMENT_PERMISSION = {"generation": "finalize_documents", "sending": "edit
 # The settings each mode's consent covers: changing one while the mode runs is a new consent.
 # Automatic billing covers every setting its decision reads (unattended_due, outside_window).
 CONSENT_TERMS = {"generation": ("generation_mode", "catchup_periods", *SCHEDULE_FIELDS), "sending": ("auto_send",)}
-# A send handed over with no answer ("unconfirmed"), or cut off before one was recorded ("sending").
-UNCONFIRMED = ("sending", "unconfirmed")
 # The longest a send waits for the mail server, and the longest a send can take with recording its
-# answer: a "sending" record younger than SEND_TIMEOUT may still be with the mail server.
+# answer: a "sending" record younger than SEND_TIMEOUT may still be with the mail server (send_state).
 TRANSPORT_TIMEOUT = timedelta(minutes=4)
 SEND_TIMEOUT = TRANSPORT_TIMEOUT + timedelta(minutes=1)
 # The agreement write_agreement is writing: the one writer allowed to change an agreement's
@@ -69,9 +67,14 @@ EMAIL_ATTEMPT_RETENTION = timedelta(days=2)
 RECOVERY_RETRY_AGE = timedelta(hours=12)
 
 
+def now() -> datetime:
+    """Wall-clock time (not the business day): what a record is stamped with and read at."""
+    return datetime.now(timezone.utc)
+
+
 def now_stamp() -> str:
-    """Wall-clock time of a record (not the business day): what a summary acknowledgment compares."""
-    return datetime.now(timezone.utc).isoformat()
+    """Wall-clock time of a record: what a summary acknowledgment compares."""
+    return now().isoformat()
 
 
 def retryable_attempt_time(created_at: datetime | None) -> bool:
@@ -619,7 +622,7 @@ async def _listed_row(session, company_id, state: dict, schedule: Schedule, k: i
     entry = schedule.periods.get(k) or {}
     doc_id = entry.get("doc_id")
     doc = (await doc_state(session, company_id, doc_id)) if doc_id else None
-    send = send_status(state, k, today, doc)
+    send, _since = send_status(state, k, today, doc)
     released = [{"doc_id": d, "ref_id": await doc_ref(session, company_id, d)}
                 for d, held in sorted((state.get("released_bills") or {}).items()) if int(held) == k]
     return {**period_row(schedule, k), "state": entry.get("state"), "reopened": entry.get("state") == RELEASED and bool(entry.get("reopened")),
@@ -715,8 +718,9 @@ def waiting_sends(state: dict, today: date) -> list[int]:
     sent (the app stopped first, or sending was off), and inside the catch-up window. One
     further back waits for the user to send it from the summary, as an unbilled period
     that far back waits for the catch-up preview."""
+    at = now()
     waiting = sorted(int(k) for k, entry in (state.get("periods") or {}).items()
-                     if (entry.get("send") or {}).get("state") == "pending")
+                     if send_state(entry.get("send"), at)[0] == "not_sent")
     if not waiting or not on_schedule(state) or not sends_itself(state):
         return []
     schedule = Schedule.from_state(state)
@@ -788,35 +792,47 @@ def sends_itself(state: dict) -> bool:
     return "sending" in modes_in_force(state)
 
 
-def send_status(state: dict, k, today: date, doc: dict | None = None) -> str | None:
-    """How period ``k``'s email reads, for the Periods table, the summary and the send answer
-    alike: "sent" once its record or its document says it went (the document's own page can
-    send it), "waiting" while the next pass sends it (waiting_sends), "not_sent" when nothing
-    will send it unless someone does, "failed", "sending" while a send may still be with the
-    mail server (in_flight), or "unconfirmed" (it may not have arrived). None when the period
-    has no email."""
-    recorded = ((periods_of(state).get(str(k)) or {}).get("send") or {}).get("state")
+def send_state(send: dict | None, now: datetime, *, emailed: bool = False,
+               waits: bool = False) -> tuple[str | None, str | None]:
+    """How a send record reads at ``now``, and since when: the one reading of a stored send.
+    The state is "sent" once the record or the document says it went (``emailed``: the
+    document's own page can send it), "waiting" while the next pass sends it (``waits``),
+    "not_sent" when nothing will send it unless someone does, "failed", "sending" while it may
+    still be with the mail server (recorded as sending less than SEND_TIMEOUT ago), or
+    "unconfirmed" (it may not have arrived). Since is when that state began: the time the
+    record was written, except that a send cut off by age reads "unconfirmed" from the moment
+    it could no longer be with the mail server. (None, None) when there is no record."""
+    send = send or {}
+    recorded, at = send.get("state"), send.get("at")
     if recorded is None:
-        return None
-    if recorded == "sent" or emailed(doc):
-        return "sent"
+        return None, None
+    if recorded == "sent" or emailed:
+        return "sent", at
     if recorded == "pending":
-        return "waiting" if int(k) in waiting_sends(state, today) else "not_sent"
-    if in_flight(periods_of(state)[str(k)]["send"]):
-        return "sending"
-    return "unconfirmed" if recorded in UNCONFIRMED else recorded
+        return ("waiting" if waits else "not_sent"), at
+    if recorded == "sending":
+        try:
+            began = datetime.fromisoformat(str(at))
+        except ValueError:
+            return "unconfirmed", at
+        cut_off = (began if began.tzinfo else began.replace(tzinfo=timezone.utc)) + SEND_TIMEOUT
+        return ("sending", at) if cut_off > now else ("unconfirmed", cut_off.isoformat())
+    return recorded, at
 
 
-def in_flight(send: dict) -> bool:
-    """Whether a send record is a send that may still be with the mail server: recorded as
-    sending less than SEND_TIMEOUT ago. An older one was cut off (the process stopped mid-send)."""
-    if send.get("state") != "sending":
-        return False
-    try:
-        at = datetime.fromisoformat(str(send.get("at")))
-    except ValueError:
-        return False
-    return (at if at.tzinfo else at.replace(tzinfo=timezone.utc)) > datetime.now(timezone.utc) - SEND_TIMEOUT
+def send_written(send: dict | None) -> str | None:
+    """How a send record read when it was written, as History describes the event that wrote
+    it: send_state at no time after the record (a send recorded as sending was then in flight)."""
+    return send_state(send, datetime.min.replace(tzinfo=timezone.utc))[0]
+
+
+def send_status(state: dict, k, today: date, doc: dict | None = None) -> tuple[str | None, str | None]:
+    """Period ``k``'s email as send_state reads it now, for the Periods table, the summary, the
+    send answer and Send again alike: whether its document was emailed and whether the next
+    pass sends it (waiting_sends) come from the agreement and the document."""
+    send = (periods_of(state).get(str(k)) or {}).get("send")
+    return send_state(send, now(), emailed=bool(emailed(doc)),
+                      waits=int(k) in waiting_sends(state, today))
 
 
 def emailed(doc: dict | None) -> str | None:
@@ -975,12 +991,13 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
             raise HTTPException(status_code=409, detail=t("subscriptions.err_send_not_billed"))
         if retry_by is not None and int(send.get("n") or 0) != attempt:
             return send
-        if retry_by is not None and in_flight(send):
+        reads, _since = send_state(send, now())
+        if retry_by is not None and reads == "sending":
             raise HTTPException(status_code=409, detail=t("subscriptions.err_send_in_progress"))
-        if send.get("state") not in (("pending", "failed", *UNCONFIRMED) if retry_by else ("pending",)):
+        if reads not in (("not_sent", "failed", "unconfirmed") if retry_by else ("not_sent",)):
             return send
 
-        uncertain = send.get("state") in UNCONFIRMED and not again
+        uncertain = reads == "unconfirmed" and not again
         if uncertain and not (relay_idempotent and send.get("deduplicated")):
             raise HTTPException(status_code=409, detail=t("subscriptions.err_send_unverified"))
         doc_id = entry["doc_id"]
@@ -1068,7 +1085,8 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
         sending = current.get("send") or {}
         operation_uuid = uuid.UUID(operation_id)
         if (current.get("state") != BILLED or current.get("doc_id") != doc_id
-                or sending.get("n") != n or sending.get("state") not in UNCONFIRMED
+                or sending.get("n") != n
+                or send_state(sending, now())[0] not in ("sending", "unconfirmed")
                 or sending.get("operation_id") != operation_id):
             await session.execute(delete(SubscriptionEmailAttempt).where(
                 SubscriptionEmailAttempt.company_id == company_id,

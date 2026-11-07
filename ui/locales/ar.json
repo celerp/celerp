@@ -7220,7 +7220,7 @@
   "subscriptions.history_billed": "تمت فوترة الفترة من {start} إلى {end}.",
   "subscriptions.history_skipped": "تم تخطي الفترة من {start} إلى {end}: {reason}",
   "subscriptions.history_unresolved": "الفترة من {start} إلى {end} بانتظار مراجعة المستندات السابقة.",
-  "subscriptions.history_send_pending": "فاتورة الفترة من {start} إلى {end} بانتظار إرسالها بالبريد الإلكتروني.",
+  "subscriptions.history_send_not_sent": "فاتورة الفترة من {start} إلى {end} بانتظار إرسالها بالبريد الإلكتروني.",
   "subscriptions.history_send_sending": "بدأ إرسال فاتورة الفترة من {start} إلى {end} بالبريد الإلكتروني.",
   "subscriptions.history_send_sent": "أُرسلت فاتورة الفترة من {start} إلى {end} بالبريد الإلكتروني.",
   "subscriptions.history_send_failed": "تعذر إرسال فاتورة الفترة من {start} إلى {end} بالبريد الإلكتروني.",

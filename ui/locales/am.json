@@ -7220,7 +7220,7 @@
   "subscriptions.history_billed": "ከ{start} እስከ {end} ላለው ወቅት መጠየቂያ ተዘጋጅቷል።",
   "subscriptions.history_skipped": "ከ{start} እስከ {end} ያለው ወቅት ተዘሏል፦ {reason}",
   "subscriptions.history_unresolved": "ከ{start} እስከ {end} ያለው ወቅት የቀድሞ ሰነዶች ግምገማን እየጠበቀ ነው።",
-  "subscriptions.history_send_pending": "ከ{start} እስከ {end} ያለው ወቅት መጠየቂያ በኢሜይል ለመላክ እየጠበቀ ነው።",
+  "subscriptions.history_send_not_sent": "ከ{start} እስከ {end} ያለው ወቅት መጠየቂያ በኢሜይል ለመላክ እየጠበቀ ነው።",
   "subscriptions.history_send_sending": "ከ{start} እስከ {end} ያለውን ወቅት መጠየቂያ በኢሜይል መላክ ተጀምሯል።",
   "subscriptions.history_send_sent": "ከ{start} እስከ {end} ያለው ወቅት መጠየቂያ በኢሜይል ተልኳል።",
   "subscriptions.history_send_failed": "ከ{start} እስከ {end} ላለው ወቅት መጠየቂያ በኢሜይል መላክ አልተቻለም።",

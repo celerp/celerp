@@ -7220,7 +7220,7 @@
   "subscriptions.history_billed": "Période du {start} au {end} facturée.",
   "subscriptions.history_skipped": "Période du {start} au {end} ignorée : {reason}",
   "subscriptions.history_unresolved": "La période du {start} au {end} attend la vérification des documents antérieurs.",
-  "subscriptions.history_send_pending": "La facture de la période du {start} au {end} attend son envoi par e-mail.",
+  "subscriptions.history_send_not_sent": "La facture de la période du {start} au {end} attend son envoi par e-mail.",
   "subscriptions.history_send_sending": "Envoi par e-mail de la facture pour la période du {start} au {end} commencé.",
   "subscriptions.history_send_sent": "Facture de la période du {start} au {end} envoyée par e-mail.",
   "subscriptions.history_send_failed": "Impossible d'envoyer par e-mail la facture de la période du {start} au {end}.",

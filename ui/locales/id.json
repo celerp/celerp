@@ -7220,7 +7220,7 @@
   "subscriptions.history_billed": "Periode {start} hingga {end} telah ditagih.",
   "subscriptions.history_skipped": "Periode {start} hingga {end} dilewati: {reason}",
   "subscriptions.history_unresolved": "Periode {start} hingga {end} menunggu peninjauan dokumen sebelumnya.",
-  "subscriptions.history_send_pending": "Tagihan periode {start} hingga {end} menunggu pengiriman melalui email.",
+  "subscriptions.history_send_not_sent": "Tagihan periode {start} hingga {end} menunggu pengiriman melalui email.",
   "subscriptions.history_send_sending": "Pengiriman email tagihan periode {start} hingga {end} telah dimulai.",
   "subscriptions.history_send_sent": "Tagihan periode {start} hingga {end} telah dikirim melalui email.",
   "subscriptions.history_send_failed": "Gagal mengirim tagihan untuk periode {start} hingga {end} melalui email.",
