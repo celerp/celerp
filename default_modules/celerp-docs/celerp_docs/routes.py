@@ -81,7 +81,7 @@ from celerp_contacts.references import (
 )
 from celerp.output.document_context import prepare_document_output
 from celerp.output.doc_print import fmt_money
-from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, DRAFT_REVERT_RETURNED, DRAFT_REVERT_STATUSES, INBOUND_DRAFT_REVERT_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, LINE_SKIP_REASONS, outcome_shown, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, CREDIT_APPLICATION_METHODS, CONVERTIBLE_STATUSES
+from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, DRAFT_REVERT_RETURNED, DRAFT_REVERT_STATUSES, INBOUND_DRAFT_REVERT_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, LINE_REFUSAL_NEXT, LINE_SKIP_REASONS, outcome_shown, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, CREDIT_APPLICATION_METHODS, CONVERTIBLE_STATUSES
 from celerp.services.record_quantities import FULFILLABLE_STATUSES, QUOTATION_SPENT_STATUSES, RECEIVABLE_STATUSES, sent_out_by
 from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, MEMO_DRAW_STATUSES, doc_value, is_awaiting_payment, is_open_credit, is_overdue_document, is_owed, is_paid_document, outstanding_balance
 from celerp.services.list_behavior import (
@@ -10458,8 +10458,9 @@ def _skipped_lines(line_items: list[dict], indices: list[int], kind: str) -> lis
 def _skip_messages(action: str, skipped: list[dict], *, refuse: bool = False) -> list[dict]:
     """One message per kind in ``skipped`` naming its lines, as ``6 "GIA Certificate"``, in
     ``action``'s own words (LINE_SKIP_REASONS): the notice that they were left as they are, or
-    with ``refuse`` the refusal that none of the chosen lines is one the action acts on. A
-    kind the action has no reason for is a KeyError, never another action's wording."""
+    with ``refuse`` the reason none of the chosen lines is one the action acts on, then the
+    action's next step once (LINE_REFUSAL_NEXT). A kind the action has no reason for is a
+    KeyError, never another action's wording."""
     reasons = LINE_SKIP_REASONS[action]
     unknown = {s["kind"] for s in skipped} - set(reasons)
     if unknown:
@@ -10471,6 +10472,8 @@ def _skip_messages(action: str, skipped: list[dict], *, refuse: bool = False) ->
             key = f"{keys[refuse]}_{'one' if len(of_kind) == 1 else 'many'}"
             messages.append(catalog_refusal(key, lines=", ".join(line_name(s["line"], s["name"]) for s in of_kind)))
             messages += _merged_reasons([s["reason"] for s in of_kind if s.get("reason")])
+    if refuse:
+        messages.append(catalog_refusal(f"{LINE_REFUSAL_NEXT[action]}_{'one' if len(skipped) == 1 else 'many'}"))
     return messages
 
 
@@ -10503,7 +10506,7 @@ def _acting_lines(line_items: list[dict], indices: list[int], locked: dict[str, 
 
 def _refuse_skipped(action: str, skipped: list[dict], status_code: int = 422) -> None:
     """Refuse a choice every line of which ``action`` leaves as it is, naming them: with the
-    action's refusal, which says to choose the inventory lines, when no chosen line was one;
+    action's refusal and its next step when no chosen line was one it could act on;
     otherwise with its notices, as there was nothing to change."""
     reasons = LINE_SKIP_REASONS[action]
     msgs = _skip_messages(action, skipped, refuse=all(reasons[s["kind"]][1] for s in skipped))

@@ -240,7 +240,7 @@ async def test_set_available_names_a_line_with_nothing_held_or_out(client, sessi
     assert [(m["message_key"], m["params"]) for m in [detail, *detail["also"]]] == [
         ("documents.lines_skipped_one", {"lines": '3 "GIA Certificate"'}),
         ("documents.idle_lines_skipped_one", {"lines": '2 "DEMO-EMR-001"'})]
-    assert "Choose the inventory lines" not in " ".join(m["message"] for m in [detail, *detail["also"]])
+    assert "instead" not in " ".join(m["message"] for m in [detail, *detail["also"]])
     after = await _state(client, g, owner)
     assert after["version"] == before["version"] and after["line_items"] == before["line_items"]
 
@@ -265,7 +265,7 @@ async def test_service_lines_get_their_own_wording(client, session, ui_client):
     detail = _detail(r)
     assert detail["message_key"] == "lines.no_stock_one" and detail["params"] == {"lines": '3 "GIA Certificate"'}
     assert [(a["message_key"], a["params"]) for a in detail["also"]] == [
-        ("lines.service_no_stock_one", {"lines": f'2 "{SVC}"'})]
+        ("lines.service_no_stock_one", {"lines": f'2 "{SVC}"'}), ("lines.choose_stock_many", {})]
 
     # The page shows both sentences in its toast.
     refused = AsyncMock(side_effect=api._api_error(422, r.json(), r.text))
@@ -713,6 +713,38 @@ async def test_a_refusal_of_several_kinds_shows_every_reason_on_the_page(client,
     trigger = r.headers.get("HX-Trigger")
     shown = json.loads(trigger)["celerpToast"]["message"] if trigger else r.text
     assert refusal_text(first) in shown and refusal_text(second) in shown, shown
+
+
+async def test_a_refusal_gives_one_next_step_after_the_reason_for_each_kind():
+    """Whatever kinds of line a refusal of every chosen line names (every kind of every action
+    in LINE_SKIP_REASONS that has a refusal, alone and together), each reason is said once and
+    the next step once, after them all, as the action's own. Red statement: a service line and
+    the GIA Certificate refused together said "Choose the inventory lines instead." twice, the
+    second time about the service line, which the table shows as an inventory item."""
+    import re
+    from itertools import combinations
+
+    from celerp_docs.doc_constants import LINE_SKIP_REASONS
+    from celerp_docs.routes import _skip_messages
+    from ui.i18n import refusal_text
+    refusals = {}
+    for action, reasons in LINE_SKIP_REASONS.items():
+        refusing = [kind for kind, (_notice_key, refusal_key) in reasons.items() if refusal_key]
+        for kinds in (c for n in range(1, len(refusing) + 1) for c in combinations(refusing, n)):
+            for per_kind in (1, 2):
+                skipped = [{"line": i + 1, "name": f"Line {i}", "line_id": f"l{i}", "kind": kind}
+                           for i, kind in enumerate(k for k in kinds for _ in range(per_kind))]
+                refusals[action, kinds, per_kind] = _skip_messages(action, skipped, refuse=True)
+    repeated = {case: said for case, msgs in refusals.items()
+                if len(set(said := re.split(r"(?<=\.) ", refusal_text(msgs)))) != len(said)}
+    assert repeated == {}, f"a sentence said twice: {next(iter(repeated.items()))}"
+    from celerp_docs.doc_constants import LINE_REFUSAL_NEXT
+    steps = {f"{LINE_REFUSAL_NEXT[a]}_{n}" for a in LINE_REFUSAL_NEXT for n in ("one", "many")}
+    for (action, kinds, per_kind), (*reasons, step) in refusals.items():
+        n = "one" if len(kinds) * per_kind == 1 else "many"
+        assert step["message_key"] == f"{LINE_REFUSAL_NEXT[action]}_{n}", (action, kinds)
+        assert [m["message_key"] for m in reasons if m["message_key"] in steps] == []
+        assert len(reasons) == len(kinds) and step["message"] not in refusal_text(reasons), (action, kinds)
 
 
 @pytest.mark.parametrize("route", _ROUTES, ids=_route_id)

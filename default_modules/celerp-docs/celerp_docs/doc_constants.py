@@ -131,8 +131,9 @@ WRITEOFF_ACCOUNT_TYPES: frozenset[str] = frozenset({"expense", "equity"})
 
 # Why each bulk line action leaves a chosen line as it is. Per action (as _line_action names it),
 # per kind of line it leaves: (catalog key of the notice naming such lines after the action, key
-# of the refusal when every chosen line is of a kind with one, so none was a line the action
-# could act on), each key with a _one and a _many form naming {lines}. A choice that held a line
+# of the refusal's reason when every chosen line is of a kind with one, so none was a line the
+# action could act on, followed by the action's next step, LINE_REFUSAL_NEXT), each key with a
+# _one and a _many form naming {lines}. A choice that held a line
 # the action could act on (an idle one) is refused with the notices instead: there was nothing
 # to change, and choosing again would not help. Every notice and refusal of an action, and the
 # confirm built from its preview, reads its own entry, so a line is never given another action's
@@ -158,6 +159,17 @@ LINE_SKIP_REASONS: dict[str, dict[str, tuple[str, str | None]]] = {
                     "not_scanned": ("documents.unscanned_lines_skipped", None)},
     # Print labels runs in the page; a choice of only such lines keeps its own error.
     "labels": {"no_item": ("documents.labels_skipped", None)},
+}
+
+# The next step a refusal naming every chosen line gives (LINE_SKIP_REASONS), per action with a
+# refusal: said once, after the reason for each kind of line, so it holds for every kind (a
+# service is an inventory item but holds no stock) and is never repeated. A catalog key with a
+# _one and a _many form, by the number of lines refused.
+_CHOOSE_STOCK = "lines.choose_stock"
+LINE_REFUSAL_NEXT: dict[str, str] = {
+    "fulfill": _CHOOSE_STOCK, "reserve": _CHOOSE_STOCK, "revert": _CHOOSE_STOCK, "set-available": _CHOOSE_STOCK,
+    "invoice": _CHOOSE_STOCK, "convert": _CHOOSE_STOCK, "set-scanned": _CHOOSE_STOCK,
+    "back_to_memo": "docs.back_to_memo_delete_instead",
 }
 
 

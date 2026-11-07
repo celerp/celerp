@@ -211,7 +211,7 @@ def test_every_stock_action_confirms_the_count_and_names_the_lines_it_leaves(pag
     toast.wait_for(state="visible", timeout=8000)
     assert asked == []
     assert toast.inner_text().startswith('Line 3 "GIA Certificate" isn\'t an inventory item, so it has no status '
-                                         'to change. Choose the inventory lines instead.')
+                                         'to change. Choose a line that holds stock instead.')
 
     # Every line: the question counts the two stones and names the certificate.
     page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
@@ -262,7 +262,7 @@ def test_set_available_on_lines_with_nothing_out_does_not_send_the_user_back(pag
     toast = page.locator(".toast-container .toast--error").last
     toast.wait_for(state="visible", timeout=8000)
     said = toast.inner_text()
-    assert "Choose the inventory lines instead" not in said
+    assert "instead" not in said
     assert "nothing held or out" in said and '3 "GIA Certificate"' in said
 
 
