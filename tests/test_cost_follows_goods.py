@@ -97,7 +97,7 @@ async def test_goods_one_invoice_set_aside_and_another_shipped_move_their_cost(c
     await _expect(client, session, auth, shipped=0, set_aside=cost_k + cost_l + cost_m, received=received)
 
     shipped = await _ship(client, auth, b, L)
-    assert shipped["taken_from"] == [{"sku": sku, "lot_id": L, "doc_id": a,
+    assert shipped["taken_from"] == [{"sku": sku, "name": "Lot", "takes": "all", "lot_id": L, "doc_id": a,
                                       "doc_number": await _doc_number(session, auth, a)}]
     [move] = await _cost_moves(session, auth)
     assert sorted((e["account"], e["debit"], e["credit"]) for e in move["entries"]) == [
@@ -223,6 +223,43 @@ async def test_part_of_a_lot_set_aside_moves_only_what_shipped(client, session, 
     received = 4 * unit + q_cost
     await _ship(client, auth, a, p)
     await _expect(client, session, auth, shipped=received, set_aside=0, received=received)
+
+
+async def test_taking_part_of_what_another_invoice_set_aside_says_it_ships_less_of_it(client, session, auth):
+    """Lot P holds 3. A sets aside 1 on each of two lines; B (2 units) finds 1 free. B ships 2:
+    only A's later line loses its unit, and A still ships its first line from P. The question
+    before B ships, and the notice after, say A has less of P to ship, never that it can no
+    longer ship it. Red statement: both said A could no longer ship lot P, and then A shipped it."""
+    from ui.i18n import t
+    from ui.routes.documents import _preview_confirm
+    sku = f"CFG-{uuid.uuid4().hex[:6]}"
+    p = await _lot(client, auth, sku, 3, 30.0)
+    a = await _invoice(client, auth, [(p, sku, 1), (p, sku, 1)])
+    b = await _invoice(client, auth, [(p, sku, 2)])
+    h = auth["headers"]
+
+    async def line_ids(doc):
+        return [li["line_id"] for li in (await client.get(f"/docs/{doc}", headers=h)).json()["line_items"]]
+
+    async def ship(doc, lids, **extra):
+        return await client.post(f"/docs/{doc}/fulfill-lines", headers=h,
+                                 json={"line_ids": lids, "idempotency_key": uuid.uuid4().hex, **extra})
+
+    preview = await ship(b, await line_ids(b), dry_run=True)
+    assert preview.status_code == 200, preview.text
+    [taken] = preview.json()["taken_from"]
+    assert (taken["doc_id"], taken["takes"]) == (a, "part")
+    number = await _doc_number(session, auth, a)
+    asked = _preview_confirm("documents.confirm_set_shipped", preview.json())
+    assert t("documents.will_take_part_from", sku=sku, doc=number) in asked, asked
+    assert t("documents.will_take_from", sku=sku, doc=number) not in asked, asked
+    shipped = await ship(b, await line_ids(b), binding=preview.json()["binding"])
+    assert shipped.status_code == 200, shipped.text
+    first, second = await line_ids(a)
+    assert (await ship(a, [first])).status_code == 200
+    refused = await ship(a, [second])
+    assert refused.status_code == 422, refused.text
+    assert refused.json()["detail"]["message_key"] == "documents.unavailable_lines_skipped_one"
 
 
 async def test_goods_two_invoices_ship_from_one_invoices_set_aside(client, session, auth):
@@ -356,7 +393,7 @@ async def test_shipping_names_an_invoice_that_held_none_of_the_goods_it_loses(cl
     a = await _invoice(client, auth, [(L, sku, 1)])
     b = await _invoice(client, auth, [(L, sku, 1)])
     shipped = await _ship(client, auth, a, L)
-    assert shipped["taken_from"] == [{"sku": sku, "lot_id": L, "doc_id": b,
+    assert shipped["taken_from"] == [{"sku": sku, "name": "Lot", "takes": "all", "lot_id": L, "doc_id": b,
                                       "doc_number": await _doc_number(session, auth, b)}]
     assert await _cost_moves(session, auth) == []
     await assert_settled(client, session, auth)
@@ -370,10 +407,16 @@ async def test_shipping_a_part_of_a_lot_names_no_other_invoice(client, session, 
     assert (await _ship(client, auth, a, L))["taken_from"] == []
 
 
-async def test_the_ship_notice_says_the_other_invoice_cannot_ship_it():
+@pytest.mark.parametrize("takes, said", [
+    ("all", "Lot LOT-1 was on invoice INV-A, which can no longer ship it. Invoice INV-A is costed when it ships other stock."),
+    ("part", "Lot LOT-1 was on invoice INV-A, which now has less of it to ship. "
+             "Invoice INV-A is costed for the units taken when it ships other stock."),
+])
+async def test_the_ship_notice_says_the_other_invoice_cannot_ship_it(takes, said):
     """The shipping page shows a notice that stays until it is closed, naming the lot and
-    the invoice that can no longer ship it. Red statement: the old sentence only said the
-    lot was set aside for the other invoice."""
+    the invoice that can no longer ship it, or that has less of it to ship when the shipment
+    took part of what it held. Red statement: the old sentence only said the lot was set aside
+    for the other invoice; then it said the invoice could no longer ship a lot it still shipped."""
     import json
     from unittest.mock import AsyncMock, patch
 
@@ -383,7 +426,7 @@ async def test_the_ship_notice_says_the_other_invoice_cannot_ship_it():
     from ui.app import app as ui_app
     from ui.i18n import t
 
-    moved = [{"sku": "LOT-1", "lot_id": "item:1", "doc_id": "doc:A", "doc_number": "INV-A"}]
+    moved = [{"sku": "LOT-1", "name": "Lot", "takes": takes, "lot_id": "item:1", "doc_id": "doc:A", "doc_number": "INV-A"}]
     answer = {"fulfillment_status": "fulfilled", "fulfilled": ["item:1"], "taken_from": moved, "acted": ["ln-1"]}
     with patch("ui.api_client.fulfill_lines", new=AsyncMock(return_value=answer)):
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as ui:
@@ -393,11 +436,7 @@ async def test_the_ship_notice_says_the_other_invoice_cannot_ship_it():
     # The page reloads itself, as after every line action, and shows the notice it kept.
     assert "HX-Redirect" not in r.headers
     toast = json.loads(r.headers["HX-Trigger"])["celerpToast"]
-    assert toast == {"message": t("documents.lines_shipped_one", n=1) + " "
-                     + t("documents.cost_moved_with_goods", sku="LOT-1", doc="INV-A"),
-                     "type": "info", "persist": True}
-    assert toast["message"] == ("1 line set as shipped. Lot LOT-1 was on invoice INV-A, which can no longer ship it. "
-                                "Invoice INV-A is costed when it ships other stock.")
+    assert toast == {"message": f"{t('documents.lines_shipped_one', n=1)} {said}", "type": "info", "persist": True}
 
 
 def test_the_new_notice_keys_exist_in_every_language():

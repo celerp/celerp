@@ -505,21 +505,30 @@ async def test_the_question_words_why_it_leaves_each_kind_of_line():
     assert [f"{k}_{n}" for k in sorted(kinds) for n in ("one", "many") if f"documents.will_skip_{k}_{n}" not in en] == []
 
 
-def _variants(value):
-    """Every value that differs from ``value`` in one leaf, or by one entry fewer in a list."""
+def _variants(value, *, absent: bool = False):
+    """Every value that differs from ``value`` in one leaf, or by one entry fewer in a list. With
+    ``absent`` a leaf is also tried as None and as missing from its entry, and a number as 0: the
+    states a field the producer reads with ``.get`` can be in."""
     if isinstance(value, dict):
         for k, v in value.items():
-            yield from ({**value, k: w} for w in _variants(v))
+            if absent:
+                yield {kk: vv for kk, vv in value.items() if kk != k}
+            yield from ({**value, k: w} for w in _variants(v, absent=absent))
     elif isinstance(value, list):
         for i, v in enumerate(value):
             yield value[:i] + value[i + 1:]
-            yield from ([*value[:i], w, *value[i + 1:]] for w in _variants(v))
-    elif isinstance(value, bool):
-        yield not value
-    elif isinstance(value, (int, float)):
-        yield value + 1
+            yield from ([*value[:i], w, *value[i + 1:]] for w in _variants(v, absent=absent))
     else:
-        yield f"{value}x"
+        if absent and value is not None:
+            yield None
+        if isinstance(value, bool):
+            yield not value
+        elif isinstance(value, (int, float)):
+            yield value + 1
+            if absent and value != 0:
+                yield 0
+        else:
+            yield f"{value}x"
 
 
 def assert_the_question_is_bound(confirm: str, answer: dict) -> None:
@@ -527,12 +536,17 @@ def assert_the_question_is_bound(confirm: str, answer: dict) -> None:
     the question it asks alters its binding too, so the confirm the user answered can never
     stand for an action that would now do something it did not word. The changes are read from
     the producer's own answer, every field of every part, not from a list of parts kept here,
-    so a part the question comes to word without a binding fails."""
+    so a part the question comes to word without a binding fails; and every leaf of every part
+    of OUTCOME_SHOWN is also tried as None, as missing and (a number) as 0, so a field that can be
+    empty never breaks the question or the binding (each must answer, never raise)."""
+    from celerp_docs.doc_constants import OUTCOME_SHOWN
     from celerp_docs.routes import outcome_binding
     from ui.routes.documents import _preview_confirm
     asked, bound = _preview_confirm(confirm, answer), outcome_binding(answer)
-    unbound = [v for v in _variants(answer)
-               if _preview_confirm(confirm, v) != asked and outcome_binding(v) == bound]
+    changes = [*_variants(answer),
+               *({**answer, part: w} for part in OUTCOME_SHOWN if answer.get(part) is not None
+                 for w in _variants(answer[part], absent=True))]
+    unbound = [v for v in changes if _preview_confirm(confirm, v) != asked and outcome_binding(v) == bound]
     assert unbound == [], f"the question changes but its binding does not: {unbound[0]}"
 
 
@@ -549,6 +563,43 @@ async def test_the_question_names_a_lot_taken_from_another_invoice_by_sku_and_nu
     asked = _preview_confirm(_CONFIRMS["fulfill-lines"], preview)
     assert t("documents.will_take_from", sku=_SAP, doc=(await _state(client, g, other))["doc_number"]) in asked
     assert taken["lot_id"] not in asked and other not in asked
+
+
+async def test_a_lot_with_no_sku_taken_from_another_invoice_ships_and_is_named_by_its_item(client, session):
+    """A lot whose SKU was cleared on its item is named in the question by the item's name,
+    never by its id, and Set as shipped previews and ships it. Red statement: with two lots
+    taken from one invoice, one of them with no SKU, the preview and the action answered 500
+    (the question's order compared no SKU with a SKU); with one, the question named the lot
+    by its id."""
+    from ui.routes.documents import _preview_confirm
+    g = await _gems(client)
+    other = await _doc_of(client, g, [_line(g, _SAP), _line(g, _EMR)])
+    owner = await _doc_of(client, g, [_line(g, _SAP), _line(g, _EMR), dict(GIA)])
+    emr = g.items[_EMR]["id"]
+    await _ok(await client.patch(f"/items/{emr}", headers=g.h,
+                                 json={"fields_changed": {"sku": {"old": _EMR, "new": ""}}}))
+    name = (await client.get(f"/items/{emr}", headers=g.h)).json()["name"]
+    lids = await _ids(client, g, owner)
+    preview = await _ok(await _act(client, g, owner, "fulfill-lines", lids, dry_run=True))
+    asked = _preview_confirm(_CONFIRMS["fulfill-lines"], preview)
+    assert name in asked and _SAP in asked, asked
+    assert not any(m["lot_id"] in asked for m in preview["taken_from"]) and other not in asked, asked
+    assert_the_question_is_bound(_CONFIRMS["fulfill-lines"], preview)
+    shipped = await _ok(await _act(client, g, owner, "fulfill-lines", lids, binding=preview["binding"]))
+    assert len(shipped["acted"]) == 2
+
+
+async def test_every_way_a_lot_is_taken_from_another_invoice_has_its_own_words():
+    """Each kind of take the shipping producer can emit (auto_je.LotTaken: all another invoice
+    held of a lot, or part of it) has its own question and its own notice, so the question never
+    says an invoice can no longer ship a lot it still ships."""
+    from celerp.services.auto_je import LotTaken
+    from celerp_docs.doc_constants import LOT_TAKEN
+    from ui.i18n import _load
+    en = _load("en")
+    assert set(LOT_TAKEN) == {k.value for k in LotTaken}
+    keys = [k for words in LOT_TAKEN.values() for k in words]
+    assert len(set(keys)) == len(keys) and [k for k in keys if k not in en] == []
 
 
 def _previewed_line_actions():

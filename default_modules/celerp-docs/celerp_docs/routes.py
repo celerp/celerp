@@ -498,8 +498,9 @@ LINE_ANSWER_KEYS = {
     "fulfillment_status": "the record's shipping status after the action",
     "fulfilled": ("the items it ships; in a preview, a part of a lot it would carve off is named by an id "
                   "the action does not keep"),
-    "taken_from": ("the other invoices that had set the shipped goods' cost aside, each with "
-                   "``sku``, ``lot_id``, ``doc_id`` and ``doc_number``"),
+    "taken_from": ("the other open invoices whose goods it ships, each with the lot's ``sku`` and ``name`` "
+                   "(null when it has none), ``takes`` (``all``: that invoice can no longer ship the lot; "
+                   "``part``: it has less of it to ship), ``lot_id``, ``doc_id`` and ``doc_number``"),
     "reverted": "the items it takes back whole",
     "partially_returned": ("for each line returned in part, the new in-stock item split off, with its "
                            "``item_id``, ``sku`` and ``quantity``"),
@@ -11014,7 +11015,9 @@ async def _fulfill_lines_impl(
         whole = {proj.entity_id: proj for _idx, proj, _take, full in shipments if full}
         told = {(m["lot_id"], m["doc_id"]) for m in taken_from}
         for lot_id, docs in (await auto_je.other_invoices_naming(session, cid, entity_id, whole)).items():
-            taken_from += [{"sku": whole[lot_id].state.get("sku") or lot_id, "lot_id": lot_id,
+            lot = whole[lot_id].state or {}
+            taken_from += [{"sku": lot.get("sku") or None, "name": lot.get("name") or None,
+                            "takes": auto_je.LotTaken.ALL.value, "lot_id": lot_id,
                             "doc_id": d["doc_id"], "doc_number": d["doc_number"]}
                            for d in docs if (lot_id, d["doc_id"]) not in told]
 

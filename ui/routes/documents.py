@@ -1172,6 +1172,13 @@ def _count_text(key: str, n: int, **params) -> str:
     return t(f"{key}_{'one' if n == 1 else 'many'}", n=n, **params)
 
 
+def _lot_taken_text(shown: dict, when: int) -> str:
+    """The sentence for a lot taken from another invoice (doc_constants.lot_taken_message)."""
+    from celerp_docs.doc_constants import lot_taken_message
+    key, params = lot_taken_message(shown, when, t("documents.lot_no_sku"))
+    return t(key, **params)
+
+
 def _preview_confirm(confirm: str, answer: dict) -> str:
     """The question a stock line action asks from its own preview ``answer``, read only from
     what the preview binds (outcome_shown), part by part: how many lines it acts on
@@ -1189,7 +1196,7 @@ def _preview_confirm(confirm: str, answer: dict) -> str:
     if taken_back := shown["taken_back"]:
         parts.append(_count_text("documents.will_take_back", len(taken_back),
                                  lines=", ".join(line_name(s["line"], s["name"]) for s in taken_back)))
-    parts += [t("documents.will_take_from", sku=m["sku"], doc=m["doc_number"]) for m in shown["taken_from"]]
+    parts += [_lot_taken_text(m, 0) for m in shown["taken_from"]]
     return " ".join(parts)
 
 
@@ -4369,14 +4376,14 @@ celerpUpdateBulkAlloc();
         if preview:
             return JSONResponse({"confirm": _preview_confirm(confirm, answer), "binding": answer["binding"]})
         said = _count_text(done, len(answer.get("acted") or []))
-        # Goods another invoice named: say whose, and that it can no longer ship them, in a
-        # notice that stays until it is closed.
-        moved = answer.get("taken_from") or []
+        # Goods another invoice named: say whose, and how much of them it loses, in a notice
+        # that stays until it is closed.
+        from celerp_docs.doc_constants import OUTCOME_SHOWN
+        moved = OUTCOME_SHOWN["taken_from"](answer)
         if reopened := _reopened_toast(answer):
             toast = reopened
         elif moved:
-            notice = " ".join([said, *(t("documents.cost_moved_with_goods", sku=m.get("sku") or m.get("lot_id"),
-                                         doc=m.get("doc_number") or m.get("doc_id")) for m in moved)])
+            notice = " ".join([said, *(_lot_taken_text(m, 1) for m in moved)])
             toast = toast_header(_with_notices(notice, answer)[0], "info", persist=True)
         else:
             message, persist = _with_notices(said, answer)

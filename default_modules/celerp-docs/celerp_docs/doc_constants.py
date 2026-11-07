@@ -173,24 +173,61 @@ LINE_REFUSAL_NEXT: dict[str, str] = {
 }
 
 
+def _order(value) -> tuple:
+    """A value as a sort key that orders an empty value (None) first and never compares it
+    with a value of its own type."""
+    return (value is not None, value if value is not None else 0)
+
+
 def _shown(entries: list[dict] | None, keys: tuple[str, ...]) -> list[dict]:
-    """Each entry's ``keys`` only, ordered by those keys' values in turn."""
-    return sorted(({k: e[k] for k in keys} for e in entries or []), key=lambda e: [e[k] for k in keys])
+    """Each entry's ``keys`` only (None for a key it lacks), ordered by those keys' values in turn."""
+    return sorted(({k: e.get(k) for k in keys} for e in entries or []), key=lambda e: [_order(e[k]) for k in keys])
+
+
+def lot_name(entry: dict) -> str | None:
+    """The name a lot taken from another invoice (an answer's ``taken_from`` entry) is shown by:
+    its SKU, else its item's name; None when it has neither."""
+    return entry.get("sku") or entry.get("name") or None
+
+
+# How much of a lot another invoice held a shipment takes (a ``taken_from`` entry's ``takes``,
+# auto_je.LotTaken): the question asked before it ships and the notice said after, each worded for
+# that outcome, all it held (it can no longer ship the lot) or part (it has less of it to ship).
+# A ``takes`` the entry lacks reads as part, true in either case.
+LOT_TAKEN: dict[str, tuple[str, str]] = {
+    "all": ("documents.will_take_from", "documents.cost_moved_with_goods"),
+    "part": ("documents.will_take_part_from", "documents.cost_part_moved_with_goods"),
+}
+
+
+def lot_taken_message(shown: dict, when: int, unnamed: str) -> tuple[str, dict]:
+    """The message (catalog key, params) for a lot taken from another invoice, from its shown
+    entry (OUTCOME_SHOWN's ``taken_from``): asked before shipping (``when`` 0) or said after (1),
+    worded for how much of the lot it takes, naming the lot by its name, ``unnamed`` (the
+    reader's words for a lot with no SKU or name) when it has none, and never by an id."""
+    return LOT_TAKEN[shown["takes"]][when], {"sku": shown["lot"] or unnamed, "doc": shown["doc_number"]}
+
+
+def _takes(entry: dict) -> str:
+    """A ``taken_from`` entry's ``takes`` as a LOT_TAKEN kind."""
+    return entry.get("takes") if entry.get("takes") in LOT_TAKEN else "part"
 
 
 # What a stock line action's preview shows, part by part, from its answer: the lines it acts on,
 # each line it leaves with why, the lines whose shipment it takes back and each lot it takes from
 # another invoice. Each part holds exactly what its confirm words (a line by number and name, a
-# lot by SKU and the invoice by number) with the ids that make it the same line, lot or invoice,
-# so the binding (routes.outcome_binding) digests what the question (the page's _preview_confirm)
-# reads and nothing else: shared by the two so they never diverge. A lot carved off is left out,
-# as it is new each time the action runs; a lot taken from another invoice is the one it is
-# carved from.
+# lot by its name (lot_name), the invoice by number and how much of the lot it takes) with the ids
+# that make it the same line, lot or invoice, so the binding (routes.outcome_binding) digests what
+# the question (the page's _preview_confirm) reads and nothing else: shared by the two so they
+# never diverge. A lot carved off is left out, as it is new each time the action runs; a lot taken
+# from another invoice is the one it is carved from. A field an entry lacks reads as None.
 OUTCOME_SHOWN = {
     "acted": lambda answer: answer["acted"],
     "skipped": lambda answer: _shown(answer.get("skipped"), ("line", "kind", "name", "line_id")),
     "taken_back": lambda answer: _shown(answer.get("taken_back"), ("line", "name", "line_id")),
-    "taken_from": lambda answer: _shown(answer.get("taken_from"), ("doc_number", "sku", "doc_id", "lot_id")),
+    "taken_from": lambda answer: _shown([{**e, "lot": lot_name(e), "takes": _takes(e)}
+                                         for e in answer.get("taken_from") or []],
+                                        ("doc_number", "takes", "lot", "doc_id", "lot_id")),
 }
 
 
