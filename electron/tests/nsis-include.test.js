@@ -305,14 +305,157 @@ test("a swap changes nothing outside its own folders that a stopped setup leaves
     }
   });
 
+// Runs a macro body as NSIS would in one build, over a model of the registry, the files
+// and the setup mutex. An instruction it does not know fails the test.
+function runNsis(lines, build, world, args = {}) {
+  const defines = { PRODUCT_NAME: "Celerp", INSTALL_REGISTRY_KEY: "K", CELERP_SETUP_MUTEX: "CelerpSetupRunning",
+    ...args };
+  const stack = [];
+  let errors = false;
+  const ev = (s) => s.replace(/^"(.*)"$/, "$1").replace(/\$\{(\w+)\}/g, (all, k) => defines[k] ?? all)
+    .replace(/\$\w+/g, (v) => world.vars[v] ?? "");
+  const root = (r) => ({ HKEY_CURRENT_USER: "HKCU", HKEY_LOCAL_MACHINE: "HKLM" }[ev(r)] ?? ev(r));
+  const cond = (t) => {
+    if (t[0] === "${Errors}") return errors;
+    if (t[0] === "${isUpdated}") return world.updated;
+    const [a, b] = [ev(t[0]), ev(t[2])];
+    if (t[1] === "==") return a.toLowerCase() === b.toLowerCase();
+    if (t[1] === "!=") return a.toLowerCase() !== b.toLowerCase();
+    throw new Error(`condition: ${t.join(" ")}`);
+  };
+  const pre = [];
+  const run = [];
+  for (const line of lines) {
+    const t = line.match(/"[^"]*"|'[^']*'|\S+/g) || [];
+    if (t.length === 0) continue;
+    if (t[0] === "!ifndef" || t[0] === "!ifdef") { pre.push((t[0] === "!ifdef") === build.has(t[1])); continue; }
+    if (t[0] === "!else") { pre.push(!pre.pop()); continue; }
+    if (t[0] === "!endif") { pre.pop(); continue; }
+    if (!pre.every(Boolean)) continue;
+    if (t[0] === "${If}") { run.push(cond(t.slice(1))); continue; }
+    if (t[0] === "${IfNot}") { run.push(!cond(t.slice(1))); continue; }
+    if (t[0] === "${AndIf}") { run.push(run.pop() && cond(t.slice(1))); continue; }
+    if (t[0] === "${EndIf}") { run.pop(); continue; }
+    if (!run.every(Boolean)) continue;
+    const v = (i) => ev(t[i] ?? "");
+    let m;
+    if (t[0] === "Push") stack.push(v(1));
+    else if (t[0] === "Pop") world.vars[t[1]] = stack.pop();
+    else if (t[0] === "StrCpy") {
+      let s = v(2);
+      if (t[4] !== undefined) s = s.slice(Number(v(4)) < 0 ? s.length + Number(v(4)) : Number(v(4)));
+      if (t[3] !== undefined && v(3) !== "") s = Number(v(3)) < 0 ? s.slice(0, Number(v(3))) : s.slice(0, Number(v(3)));
+      world.vars[t[1]] = s;
+    } else if (t[0] === "StrLen") world.vars[t[1]] = String(v(2).length);
+    else if (t[0] === "${GetParent}") world.vars[t[2]] = v(1).includes("\\") ? v(1).replace(/\\[^\\]*$/, "") : "";
+    else if (t[0] === "ClearErrors") errors = false;
+    else if (t[0] === "FileOpen") { world.vars[t[1]] = v(2); errors = !(v(2) in world.files); }
+    else if (t[0] === "FileReadUTF16LE") world.vars[t[2]] = world.files[v(1)];
+    else if (t[0] === "FileClose") continue;
+    else if (t[0] === "ReadRegStr") world.vars[t[1]] = world.reg[`${root(t[2])}:${v(4)}`] ?? "";
+    else if (t[0] === "WriteRegStr") world.reg[`${root(t[1])}:${v(3)}`] = v(4);
+    else if (t[0] === "!insertmacro" && t[1] === "celerpMoveRegStr") {
+      const [ROOT, KEY, NAME, FROM, TO] = t.slice(2).map((x) => x.replace(/^"(.*)"$/, "$1"))
+        .map((x) => x.replace(/\$\{(\w+)\}/g, (all, k) => defines[k] ?? all).replace(/\$\w+/g, (n) => world.vars[n] ?? ""));
+      const saved = { ...world.vars };
+      runNsis(body("celerpMoveRegStr"), build, world, { ROOT, KEY, NAME, FROM, TO });
+      Object.assign(world.vars, saved);
+    } else if ((m = line.match(/^System::Call 'kernel32::OpenMutexW\(i 0x00100000, i 0, w "\$\{CELERP_SETUP_MUTEX\}"\) p \.r(\d) \?e'$/))) {
+      world.vars[`$${m[1]}`] = world.mutex.handle;
+      stack.push(world.mutex.error);
+      if (world.mutex.handle !== "0") world.opened += 1;
+    } else if ((m = line.match(/^System::Call 'kernel32::CloseHandle\(p r(\d)\)'$/))) {
+      expect(world.vars[`$${m[1]}`]).toBe(world.mutex.handle);
+      world.opened -= 1;
+    } else throw new Error(`not modelled: ${line}`);
+  }
+  expect([pre.length, run.length]).toEqual([0, 0]);
+}
+
 // The template reads InstallLocation in these places without making it $INSTDIR.
 const INSTALL_LOCATION_PRESENCE = {
   "assistedInstaller.nsh": "only whether there is an install, for the install mode page",
   "installUtil.nsh": "the folder of the version being replaced, read after setup set InstallLocation back",
 };
 
-test("every install folder taken from InstallLocation is the one a stopped swap's marker names",
+// The steps of a swap, in the order the install section runs them, and what each leaves
+// for the next reader of InstallLocation: whether the marker is there and what
+// InstallLocation names (null: no value, so the default folder, which is the install).
+const SWAP_STEPS = [
+  { step: "before the marker", marker: false, location: "live" },
+  { step: "celerpBeginCopy", marker: true, location: "live" },
+  { step: "celerpSwapIn", marker: true, location: "live" },
+  { step: "celerpOldVersionLocation", marker: true, location: "old" },
+  { step: "the old uninstaller removed its keys", marker: true, location: null },
+  { step: "celerpFinishReplace", marker: false, location: null },
+  { step: "registryAddInstallInfo", marker: false, location: "live" },
+];
+
+// A setup's own folder choice (setInstallModePer*) runs before its install section creates
+// the setup mutex, so the mutex is only ever another setup's: alive while that setup runs.
+const WRITERS = {
+  "alive": { handle: "1234", error: "0" },
+  "alive, not openable by this account": { handle: "0", error: "5" },
+  "gone": { handle: "0", error: "2" },
+};
+
+const ROLES = {
+  "setup": { build: new Set(), updated: false },
+  "an uninstaller a setup started with --updated": { build: new Set(["BUILD_UNINSTALLER"]), updated: true },
+  "an uninstaller the user started": { build: new Set(["BUILD_UNINSTALLER"]), updated: false },
+};
+
+test("a setup or uninstaller started by a running setup works on the folder it was handed, "
+  + "and only a setup started when none is running finishes a stopped swap",
   function test_nsis_install_dir_of_stopped_swap() {
+    const section = template("installSection.nsh").split("\n").map((l) => l.trim());
+    const at = (step) => section.lastIndexOf(`!insertmacro ${step}`);
+    const steps = ["celerpCleanStoppedSetups", "celerpBeginCopy", "celerpSwapIn", "celerpUninstallOldVersions",
+      "celerpFinishReplace", "registryAddInstallInfo"].map(at);
+    expect(steps.every((i, n) => i > -1 && (n === 0 || i > steps[n - 1]))).toBe(true);
+    expect(body("uninstallOldVersion")).toContain("!insertmacro celerpOldVersionLocation");
+    // the mutex the folder choice reads is created only in the install section, and no
+    // folder choice runs from there
+    expect(macro(include(), "celerpCleanStoppedSetups"))
+      .toContain('System::Call \'kernel32::CreateMutexW(p 0, i 0, w "${CELERP_SETUP_MUTEX}") p .s\'');
+    for (const { name, lines } of installerScripts()) {
+      const creates = lines.filter((l) => l.includes("CreateMutexW") && l.includes("CELERP_SETUP_MUTEX"));
+      expect([name, creates.length]).toEqual([name, name === "build/installer.nsh" ? 1 : 0]);
+      if (name === "installSection.nsh") expect(lines.filter((l) => /setInstallModePer/.test(l))).toEqual([]);
+      if (name === "installer.nsi") {
+        const inc = lines.indexOf('!include "installSection.nsh"');
+        lines.forEach((l, i) => { if (/setInstallModePer/.test(l)) expect([l, i < inc]).toEqual([l, true]); });
+      }
+    }
+    const parent = "C:\\Users\\a\\AppData\\Local\\Programs";
+    const folders = { live: `${parent}\\celerp`, old: `${parent}\\~Olerp` };
+    const cases = [];
+    for (const [role, { build, updated }] of Object.entries(ROLES)) {
+      for (const [writer, mutex] of Object.entries(WRITERS)) {
+        for (const scope of ["HKCU", "HKLM"]) {
+          for (const { step, marker, location } of SWAP_STEPS) {
+            const read = location === null ? folders.live : folders[location];
+            const reg = location === null ? {} : { [`${scope}:InstallLocation`]: read };
+            const world = {
+              vars: { $INSTDIR: read }, reg: { ...reg }, mutex, updated, opened: 0,
+              files: marker ? { [`${parent}\\~Slerp`]: `Celerp setup is replacing ${folders.live}` } : {},
+            };
+            runNsis(body("celerpInstallDirOfStoppedSwap"), build, world, { ROOT: scope });
+            const stopped = role === "setup" && writer === "gone" && marker && read === folders.old;
+            const want = stopped ? folders.live : read;
+            const wantReg = stopped ? { [`${scope}:InstallLocation`]: folders.live } : reg;
+            cases.push([role, writer, scope, step, world.vars.$INSTDIR === want
+              && JSON.stringify(world.reg) === JSON.stringify(wantReg) && world.opened === 0]);
+          }
+        }
+      }
+    }
+    expect(cases.filter((c) => !c[4])).toEqual([]);
+    expect(cases.length).toBe(3 * 3 * 2 * SWAP_STEPS.length);
+    // the uninstaller a running setup started must have been handed the moved-aside folder
+    // through the very InstallLocation value modelled at that step
+    expect(macro(include(), "celerpOldVersionLocation")).toContain("StrCpy $installationDir $celerpOld");
+
     let readers = 0;
     for (const { name, lines } of installerScripts()) {
       lines.forEach((line, i) => {

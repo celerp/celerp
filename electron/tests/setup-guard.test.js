@@ -101,7 +101,10 @@ test("the app asks for the same mutex setup creates",
   function test_setup_mutex_name_matches_installer() {
     const nsh = fs.readFileSync(path.join(__dirname, "..", "build", "installer.nsh"), "utf8");
     expect(nsh).toContain(`!define CELERP_SETUP_MUTEX "${SETUP_MUTEX}"`);
-    expect(nsh.match(/CELERP_SETUP_MUTEX/g).length).toBe(2);   // the define, and the one place that creates it
+    // the define, the one place that creates it, and the stopped-swap check that only opens it
+    expect(nsh.match(/CELERP_SETUP_MUTEX/g).length).toBe(3);
+    expect(nsh.split("!macro celerpInstallDirOfStoppedSwap")[1].split("!macroend")[0])
+      .toContain(`System::Call 'kernel32::OpenMutexW(i 0x00100000, i 0, w "\${CELERP_SETUP_MUTEX}") p .r5 ?e'`);
     const clean = nsh.split("!macro celerpCleanStoppedSetups")[1].split("!macroend")[0];
     expect(clean).toContain(`System::Call 'kernel32::CreateMutexW(p 0, i 0, w "\${CELERP_SETUP_MUTEX}") p .s'`);
     expect(clean).toContain("Pop $celerpSetupMutex");
