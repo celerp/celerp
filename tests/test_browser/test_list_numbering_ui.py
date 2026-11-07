@@ -44,9 +44,8 @@ def test_a_draft_list_changed_to_another_type_takes_that_types_number(page: Page
     page.goto(f"{ui_server}/lists/{entity_id}")
     wait_for_topbar(page)
     assert quote_ref in page.locator("main").inner_text()
-    page.locator(f'[hx-get="/lists/{entity_id}/field/list_type/edit"]').click()
     with page.expect_navigation():
-        page.locator("select.cell-input--select").select_option("audit")
+        page.locator(".list-type-bar select").select_option("audit")
     wait_for_topbar(page)
     main = page.locator("main").inner_text()
     assert expected in main and quote_ref not in main
