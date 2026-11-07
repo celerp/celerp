@@ -4582,6 +4582,7 @@
   "documents.err_numbering_unknown_tokens": "Celerp does not know these tokens in the pattern: {tokens}.",
   "documents.err_numbering_unknown_type": "{doc_type} is not a document type. Use one of: {types}.",
   "documents.err_numbering_prefix_braces": "A prefix cannot contain curly brackets.",
+  "documents.err_number_too_long": "A number can have at most {max} characters. This one has {length}.",
   "documents.err_audit_number_taken": "มีการตรวจนับสต็อกอื่นใช้เลขที่ {number} แล้ว เลือกเลขที่อื่น",
   "documents.err_price_list_unknown": "ไม่มีรายการราคา {price_list} เลือกรายการราคาจากรายการแบบเลื่อนลง",
   "documents.err_contact_currency_invalid": "สกุลเงินของผู้ติดต่อ ({currency}) ไม่ใช่สกุลเงินที่ Celerp รู้จัก เปิดผู้ติดต่อแล้วเลือกสกุลเงินจากรายการ จากนั้นลองอีกครั้ง",

@@ -4582,6 +4582,7 @@
   "documents.err_numbering_unknown_tokens": "Celerp does not know these tokens in the pattern: {tokens}.",
   "documents.err_numbering_unknown_type": "{doc_type} is not a document type. Use one of: {types}.",
   "documents.err_numbering_prefix_braces": "A prefix cannot contain curly brackets.",
+  "documents.err_number_too_long": "A number can have at most {max} characters. This one has {length}.",
   "documents.err_audit_number_taken": "Un autre inventaire utilise déjà le numéro {number}. Choisissez un autre numéro.",
   "documents.err_price_list_unknown": "La liste de prix {price_list} n'existe pas. Choisissez une liste de prix dans le menu déroulant.",
   "documents.err_contact_currency_invalid": "La devise du contact ({currency}) n'est pas reconnue par Celerp. Ouvrez le contact, choisissez une devise dans la liste, puis réessayez.",

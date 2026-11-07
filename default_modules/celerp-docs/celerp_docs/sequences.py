@@ -149,6 +149,18 @@ def require_pattern(pattern: str) -> str:
     return pattern
 
 
+# The longest number a record can have: a record is stored under its number, and a longer
+# one would not fit the index of the keys records are stored under.
+MAX_NUMBER_LENGTH = 100
+
+
+def require_number_length(number: str) -> str:
+    """Return ``number`` when a record can be stored under it, else refuse it with the limit."""
+    if len(number) > MAX_NUMBER_LENGTH:
+        raise Refused("documents.err_number_too_long", max=MAX_NUMBER_LENGTH, length=len(number))
+    return number
+
+
 def require_doc_type(doc_type: str) -> str:
     """Return ``doc_type`` when it is a document type this app numbers, else refuse it by name."""
     if doc_type not in _PREFIX_BY_DOC_TYPE:
@@ -239,7 +251,11 @@ async def require_number_free(session: AsyncSession, company_id, number: str, *,
                               exclude_entity_id: str | None = None, doc_type: str | None = None) -> None:
     """Refuse ``number`` while another Document or List shows it (number_holder), naming which
     kind holds it and the number as that record shows it. The company lock serializes the
-    check with every other numbering write."""
+    check with every other numbering write. A number too long to store is refused first."""
+    try:
+        require_number_length(number.strip())
+    except Refused as e:
+        raise HTTPException(status_code=422, detail=e.detail) from e
     await lock_company(session, company_id)
     holder = await number_holder(session, company_id, number, exclude_entity_id=exclude_entity_id,
                                  doc_type=doc_type)
@@ -366,6 +382,9 @@ def update_sequence(company: Company, doc_type: str, prefix: str | None = None,
         # The number belongs to today's period, so the reset for a later period cannot discard it.
         day = _numbering_day(settings, seq)
         seq.update(next=max(1, next_num), year=day.year, month=day.month, day=day.day)
+
+    # The counter's next number must be one a record can be stored under.
+    require_number_length(_candidates({**settings, "sequences": {**sequences, doc_type: seq}}, doc_type, 1)[0])
 
     # Two counters with one format would give the same numbers, so the second is refused.
     target = _namespace(doc_type, seq)

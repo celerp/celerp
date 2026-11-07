@@ -35,6 +35,13 @@
     "documents.err_numbering_prefix_braces": {
       "en": "A prefix cannot contain curly brackets.",
       "params": []
+    },
+    "documents.err_number_too_long": {
+      "en": "A number can have at most {max} characters. This one has {length}.",
+      "params": [
+        "length",
+        "max"
+      ]
     }
   }
 }

@@ -111,6 +111,22 @@ async def test_the_draw_preview_names_the_invoice_number_the_draw_gives(client, 
     assert await _ref(client, h, done["target_doc_id"]) == preview["target"]["ref_id"]
 
 
+@pytest.mark.parametrize("kind", ["docs", "lists"])
+async def test_a_number_too_long_to_store_is_refused_by_name(client, session, kind):
+    """A record is stored under its number, so a number longer than the stored key can be is
+    refused with the limit, never a failed write."""
+    import secrets
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    number = secrets.token_hex(1500)
+    body = {"doc_type": "quotation"} if kind == "docs" else {"list_type": "quotation"}
+    r = await client.post(f"/{kind}", headers=h, json={**body, "ref_id": number, **_payload(contacts)})
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "documents.err_number_too_long"
+    assert refusal_text(detail) == t("documents.err_number_too_long", "en", max=100, length=len(number))
+
+
 async def test_a_document_cannot_be_renumbered_to_a_number_a_list_holds(client, session):
     auth, contacts = await _demo_company(client, session, "USD")
     h = auth["headers"]
@@ -213,6 +229,8 @@ async def test_a_transfer_document_keeps_legacy_transfer_lists_on_the_shared_cou
     ("audit", {"pattern": "{PREFIX}-{FOO}-{####}"}, "documents.err_numbering_unknown_tokens"),
     ("audit", {"prefix": "A{X}"}, "documents.err_numbering_prefix_braces"),
     ("bogus", {"prefix": "B"}, "documents.err_numbering_unknown_type"),
+    ("audit", {"prefix": "P" * 101}, "documents.err_number_too_long"),
+    ("audit", {"next": 10 ** 101}, "documents.err_number_too_long"),
 ])
 async def test_every_numbering_refusal_reaches_the_reader_in_their_language(client, session, doc_type, body, key):
     from ui.i18n import set_lang
@@ -438,10 +456,16 @@ def _map_census() -> list[tuple[str, str, str, str]]:
                 continue
             if isinstance(node, ast.Raise) and node.exc is not None:
                 exc = node.exc
+                # A keyed refusal is a Refused, or an HTTPException whose detail is a catalog
+                # refusal or the detail of the Refused its ``except Refused as <name>`` caught.
+                handler = parent.get(node)
+                caught = (handler.name if isinstance(handler, ast.ExceptHandler)
+                          and _name(handler.type) == "Refused" else None)
                 keyed = isinstance(exc, ast.Call) and (_name(exc.func) == "Refused" or (
                     _name(exc.func) == "HTTPException"
-                    and any(k.arg == "detail" and isinstance(k.value, ast.Call)
-                            and _name(k.value.func) == "catalog_refusal" for k in exc.keywords)))
+                    and any(k.arg == "detail" and (
+                        (isinstance(k.value, ast.Call) and _name(k.value.func) == "catalog_refusal")
+                        or (caught and ast.unparse(k.value) == f"{caught}.detail")) for k in exc.keywords)))
                 rows.append((rel, fn, "raise", "keyed" if keyed else ast.unparse(exc)[:60]))
             if isinstance(node, (ast.Assign, ast.AugAssign)):
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
