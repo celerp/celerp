@@ -3,18 +3,20 @@
 """Census of the code that reads a period's send record, and of the states it can hold, read
 from the code.
 
-A period's email has one reader for display and for Send again: ``billing.send_status`` (with
-``sends_again`` for whether a send is a new message). Everything else shows what it answers.
+A send record has one reader: ``billing.send_state`` gives its state and the time that state
+began. send_status (the agreement's period at now), send_written (History: the record as it read
+when written) and ``sends_again`` (whether a send is a new message) go through it; everything
+else shows what they answer.
 
 - ``readers()``: every function in the code that touches a send record or the status read from
-  it, with how: ``raw`` (reads the stored ``state`` of a send record), ``status`` (calls
-  send_status), ``shows`` (reads the ``send`` key of a row built from send_status, or of a send
-  record without its state), ``writes`` (calls record_send or builds a send record).
-- ``raw_outside_owner()``: the ``raw`` readers outside billing.py that are not History
-  describers (a History row describes the change an event recorded, not the email as it reads
-  now). Each one would show a stored state send_status does not decide, so it must be empty.
+  it, with how: ``raw`` (reads the stored ``state`` or ``at`` of a send record), ``status``
+  (calls send_state or a function over it), ``shows`` (reads the ``send`` key of a row, or of a
+  send record without its state or time), ``writes`` (calls record_send or builds a send record).
+- ``raw_outside_owner()``: the ``raw`` readers other than send_state. Each one would read a
+  state or a time send_state does not decide (a cut-off send's state began at its cut-off, not
+  at its record), so it must be empty.
 - ``written_states()``: every state the code can store in a send record (record_send's
-  ``state`` and send record literals), so each one can be passed through send_status.
+  ``state`` and send record literals), so each one can be passed through send_state.
 
 Run as a script for the census table: ``python send_census.py``.
 """
@@ -26,7 +28,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 OWNER = ROOT / "default_modules" / "celerp-subscriptions" / "celerp_subscriptions" / "billing.py"
 SOURCE_TOPS = ("celerp", "ui", "default_modules", "premium_modules")
-STATUS_READERS = {"send_status"}
+OWNER_FN = "send_state"
+STATUS_READERS = {"send_state", "send_status", "send_written"}
+RAW_KEYS = {"state", "at"}
 # What turns a status into what the page shows: whether Send again is a new message, the send
 # button, and the tables keyed by status or summary kind (each named _SEND...).
 SHOWERS = {"sends_again", "_send_button"}
@@ -93,7 +97,9 @@ def _tables(tree) -> set[str]:
 def _read(fn, tables: set[str]) -> set[str]:
     """How ``fn`` touches a send record (see the module docstring)."""
     nodes = list(_own_nodes(fn))
-    names: set[str] = set()
+    # A parameter named for a send record holds one (send_state's ``send``, deliver's ``sending``).
+    names: set[str] = {a.arg for a in (*fn.args.posonlyargs, *fn.args.args, *fn.args.kwonlyargs)
+                       if "send" in a.arg}
     for _ in range(3):  # names bound to names bound to a send record
         for node in nodes:
             if (isinstance(node, ast.Assign) and _holds_send(node.value, names)
@@ -102,7 +108,7 @@ def _read(fn, tables: set[str]) -> set[str]:
     how = set()
     for node in nodes:
         key = _key(node)
-        if key == "state" and _holds_send(_target(node), names):
+        if key in RAW_KEYS and _holds_send(_target(node), names):
             how.add("raw")
         elif key == "send":
             how.add("shows")
@@ -139,7 +145,7 @@ def _describers(tree) -> set[str]:
 
 def readers() -> list[tuple[str, str, str, str]]:
     """[(file:line, function, how, owner)] for every function that touches a send record;
-    owner is "billing" (the owning module), "history" (a History describer) or ""."""
+    owner is "owner" for billing.send_state, "history" for a History describer, else ""."""
     rows = []
     for path, tree in _sources():
         describers, tables = _describers(tree), _tables(tree)
@@ -149,13 +155,14 @@ def readers() -> list[tuple[str, str, str, str]]:
             how = _read(fn, tables)
             if not how:
                 continue
-            owner = "billing" if path == OWNER else "history" if fn.name in describers else ""
+            owner = ("owner" if path == OWNER and fn.name == OWNER_FN
+                     else "history" if fn.name in describers else "")
             rows.append((f"{path.relative_to(ROOT)}:{fn.lineno}", fn.name, ",".join(sorted(how)), owner))
     return rows
 
 
 def raw_outside_owner() -> list[tuple[str, str]]:
-    return [(where, fn) for where, fn, how, owner in readers() if "raw" in how.split(",") and not owner]
+    return [(where, fn) for where, fn, how, owner in readers() if "raw" in how.split(",") and owner != "owner"]
 
 
 def _strings(expr) -> set[str]:
@@ -193,8 +200,8 @@ def written_states() -> set[str]:
 
 if __name__ == "__main__":
     rows = readers()
-    print("# Send records: every function that touches one (how: raw = reads its stored state,")
-    print("# status = calls send_status, shows = reads a row's send key, writes = stores one)")
+    print("# Send records: every function that touches one (how: raw = reads its stored state or time,")
+    print("# status = calls send_state or a reader over it, shows = reads a row's send key, writes = stores one)")
     for where, fn, how, owner in rows:
         print(f"READER\t{where}\t{fn}\t{how}\t{owner or '-'}")
     print(f"WRITTEN_STATES\t{','.join(sorted(written_states()))}")

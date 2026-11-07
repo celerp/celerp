@@ -15,8 +15,6 @@ the action from what is stored, never from what the action intended.
   report the done work as refused.
 - ``api_actions()``: every action route of the module's API, with the UI routes that reach
   it, so each API answer is shown through a UI row above.
-- ``send_readers()``: every function of the module that reads a period's send record, and
-  whether it is a writer or reads it through ``billing.send_status``.
 - ``send_writers()``: every function of the module that writes a period's send record, and
   whether it is the one writer (``record_send``, which records who pressed Send).
 - ``deliver_doors()``: every call of ``billing.deliver`` in the code, and whether one made on a
@@ -40,10 +38,6 @@ PACKAGE = ROOT / "default_modules" / "celerp-subscriptions" / "celerp_subscripti
 API_CLIENT = ROOT / "ui" / "api_client.py"
 ACTION_VERBS = {"post", "patch", "put", "delete"}
 REDRAW = "_redrawn"
-# The functions that own a period's send record; every other reader goes through send_status.
-SEND_SOURCES = {"billing.deliver": "sends a period's document and records each attempt",
-                "billing.waiting_sends": "the one predicate for an email the next pass sends; send_status calls it"}
-SEND_STATUS = "send_status"
 
 
 def ui_files() -> list[Path]:
@@ -255,46 +249,6 @@ def api_actions() -> list[ApiAction]:
 
 
 @dataclass
-class SendReader:
-    where: str
-    function: str
-    kind: str  # "source", "send_status", or "unnamed"
-
-
-def _reads_send(node: ast.AST) -> bool:
-    for c in ast.walk(node):
-        if (isinstance(c, ast.Subscript) and not isinstance(c.ctx, ast.Store)
-                and isinstance(c.slice, ast.Constant) and c.slice.value == "send"):
-            return True
-        if (isinstance(c, ast.Call) and isinstance(c.func, ast.Attribute) and c.func.attr == "get"
-                and c.args and isinstance(c.args[0], ast.Constant) and c.args[0].value == "send"):
-            return True
-    return False
-
-
-def _calls(node: ast.AST, name: str) -> bool:
-    return any(isinstance(c, ast.Call) and (getattr(c.func, "id", None) == name or getattr(c.func, "attr", None) == name)
-               for c in ast.walk(node))
-
-
-def send_readers() -> list[SendReader]:
-    """Every module function that reads a period's send record (``["send"]`` or
-    ``.get("send")``): a source (SEND_SOURCES), send_status itself or a function that calls
-    it, or unnamed."""
-    rows = []
-    for path in sorted(PACKAGE.glob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in tree.body:
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or not _reads_send(node):
-                continue
-            name = f"{path.stem}.{node.name}"
-            kind = ("source" if name in SEND_SOURCES
-                    else SEND_STATUS if node.name == SEND_STATUS or _calls(node, SEND_STATUS) else "unnamed")
-            rows.append(SendReader(f"{_rel(path)}:{node.lineno}", name, kind))
-    return rows
-
-
-@dataclass
 class SendWriter:
     where: str
     function: str
@@ -452,11 +406,6 @@ def main() -> None:
     print(f"\n# API action routes ({len(api)})  [reached by UI route]")
     for a in api:
         print(f"{a.verb.upper()} {a.path:52} {a.where:62} {'; '.join(a.reached_by) or 'UNREACHED'}")
-    readers = send_readers()
-    print(f"\n# Readers of a period's send record ({len(readers)})")
-    for s in readers:
-        print(f"{s.function:36} {s.where:70} {s.kind}"
-              f"{'  (' + SEND_SOURCES[s.function] + ')' if s.function in SEND_SOURCES else ''}")
     writers = send_writers()
     print(f"\n# Writers of a period's send record ({len(writers)})  [only {SEND_WRITER}]")
     for w in writers:

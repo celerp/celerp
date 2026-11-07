@@ -6,9 +6,9 @@ stored, over every door status_census finds.
 Each UI route that answers an action has a scenario here: the route's answer is checked
 against a fresh read of the agreement, and run again with every read after the action
 failing, where a done action is never reported as refused. A route the census finds with no
-scenario fails, as does a read after an action outside ``_redrawn``, a reader of a period's
-send record that bypasses send_status, and a document badge that decides from the document
-alone how its agreement bills it."""
+scenario fails, as does a read after an action outside ``_redrawn`` and a document badge
+that decides from the document alone how its agreement bills it. Readers of a send record are
+test_send_census's."""
 from __future__ import annotations
 
 import json
@@ -263,19 +263,6 @@ def test_no_read_after_an_action_sits_outside_redrawn():
 def test_every_api_action_is_shown_through_a_ui_route():
     """Each API action's answer reaches the user through a UI route the scenarios cover."""
     assert [a.path for a in status_census.api_actions() if not a.reached_by] == []
-
-
-def test_every_reader_of_a_send_record_reads_it_through_send_status():
-    """One reading of a period's email: a function that reads the record is a named source
-    or goes through send_status, and send_status reads "waiting" from waiting_sends (P2c-2)."""
-    import ast
-
-    readers = status_census.send_readers()
-    assert [r.function for r in readers if r.kind == "unnamed"] == []
-    assert set(status_census.SEND_SOURCES) <= {r.function for r in readers}
-    tree = ast.parse((status_census.PACKAGE / "billing.py").read_text(encoding="utf-8"))
-    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == status_census.SEND_STATUS)
-    assert status_census._calls(fn, "waiting_sends")
 
 
 def test_no_document_badge_decides_alone_how_its_agreement_bills_it():
