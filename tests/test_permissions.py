@@ -1151,18 +1151,21 @@ class TestSidebarRoleFiltering:
 
     def test_settings_link_visible_for_operator(self):
         """Operators see settings/general (password change lives there)."""
+        from fasthtml.common import to_xml
         from ui.components.shell import _sidebar
-        sidebar_html = str(_sidebar("dashboard", role="operator"))
+        sidebar_html = to_xml(_sidebar("dashboard", role="operator"))
         assert 'href="/settings/general"' in sidebar_html
 
     def test_settings_link_visible_for_manager(self):
+        from fasthtml.common import to_xml
         from ui.components.shell import _sidebar
-        sidebar_html = str(_sidebar("dashboard", role="manager"))
+        sidebar_html = to_xml(_sidebar("dashboard", role="manager"))
         assert "/settings/general" in sidebar_html
 
     def test_settings_link_visible_for_admin(self):
+        from fasthtml.common import to_xml
         from ui.components.shell import _sidebar
-        sidebar_html = str(_sidebar("dashboard", role="admin"))
+        sidebar_html = to_xml(_sidebar("dashboard", role="admin"))
         assert "/settings/general" in sidebar_html
 
 

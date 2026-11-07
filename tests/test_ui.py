@@ -3839,8 +3839,9 @@ class TestModuleAwareSidebar:
         slots.clear()
 
     def _html(self, settings, modules=None) -> str:
+        from fasthtml.common import to_xml
         from ui.components.shell import _sidebar
-        return str(_sidebar("", request=self._request(modules), settings=settings))
+        return to_xml(_sidebar("", request=self._request(modules), settings=settings))
 
     def test_sidebar_hides_modules_the_company_does_not_use(self, nav):
         html = self._html({"enabled_modules": ["celerp-docs"]})
