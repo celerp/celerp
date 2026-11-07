@@ -134,15 +134,17 @@ def refuse_unscheduled(state: dict, entity_id: str) -> None:
 
 def unscheduled(state: dict) -> ScheduleError | None:
     """Why the agreement's stored terms build no schedule, or None when they build one or, with
-    no start of its schedule yet, every term holds what TERMS declares. The one test every
-    writer and every reader of the stored terms asks; anything else that fails reading them
-    (a period key that is not a number, a period that is not a record) reads as unreadable,
-    never as a server error."""
+    no start of its schedule yet, every term holds what TERMS declares as Activate reads it
+    (migration.legacy_terms). The one test every writer and every reader of the stored terms
+    asks; anything else that fails reading them (a period key that is not a number, a period
+    that is not a record) reads as unreadable, never as a server error."""
+    from celerp_subscriptions import migration
+
     try:
         if state.get("anchor_date"):
             Schedule.from_state(state)
         else:
-            check_terms(state)
+            check_terms({**state, **migration.legacy_terms(state)})
     except ScheduleError as exc:
         return exc
     except Exception:

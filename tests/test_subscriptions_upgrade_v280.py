@@ -27,7 +27,7 @@ from sqlalchemy import select
 
 import pre366
 from company_today_support import freeze
-from celerp.events.engine import emit_event
+from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 
 pytestmark = pytest.mark.asyncio
@@ -122,13 +122,23 @@ async def test_custom_without_an_interval_bills_every_30_days_as_on_2_8_0(client
         assert (await _state(session, old, name))["custom_interval_days"] == 30, name
 
 
+async def _set(session, old, name, **fields) -> None:
+    # A 2.8.0 template edited the way 2.8.0's generic field save stored it: its event and
+    # projection as 2.8.0 wrote them, with none of this release's checks on the way in.
+    cid, eid = old["company_id"], old["runs"][name]
+    proj = await session.get(Projection, {"company_id": cid, "entity_id": eid})
+    proj.state, proj.version = {**proj.state, **fields}, proj.version + 1
+    await session.flush()  # this release's lock order: the projection row, then the ledger
+    session.add(LedgerEntry(company_id=cid, entity_id=eid, entity_type="doc", event_type="doc.updated",
+                            data={"fields_changed": {f: {"new": v} for f, v in fields.items()}},
+                            actor_id=None, location_id=None, source="import",
+                            idempotency_key=str(uuid.uuid4())))
+    await session.commit()
+
+
 async def _unreadable_interval(session, old) -> None:
     # A template whose stored interval no release can read as days.
-    await emit_event(session, company_id=old["company_id"], entity_id=old["runs"]["custom_no_days"],
-                     entity_type="doc", event_type="doc.updated",
-                     data={"fields_changed": {"custom_interval_days": {"new": "two weeks"}}},
-                     actor_id=None, location_id=None, source="import", idempotency_key=str(uuid.uuid4()))
-    await session.commit()
+    await _set(session, old, "custom_no_days", custom_interval_days="two weeks")
 
 
 async def test_a_template_that_cannot_move_is_refused_by_name_and_says_why(client, session, monkeypatch):
@@ -202,13 +212,6 @@ async def test_the_upgrade_tells_once_which_templates_have_more_than_one_period_
     assert len([n for n in await _notices(session, old) if _OLD["weekly_late"]["ref_id"] in n]) == 1
 
 
-async def _set(session, old, name, **fields) -> None:
-    # A 2.8.0 template edited the way 2.8.0's generic field save stored it.
-    await emit_event(session, company_id=old["company_id"], entity_id=old["runs"][name],
-                     entity_type="doc", event_type="doc.updated",
-                     data={"fields_changed": {f: {"new": v} for f, v in fields.items()}},
-                     actor_id=None, location_id=None, source="import", idempotency_key=str(uuid.uuid4()))
-    await session.commit()
 
 
 # Every way 2.8.0 templates come into this release, by the lifecycle slot that moves them.
@@ -268,6 +271,7 @@ async def test_only_the_one_mover_moves_templates_and_only_the_one_reader_reads_
     assert callers["migrate_company"] == {"migrate_schedules_hook", "reconcile_company_schedules"}
     assert callers["move_template"] == {"_move_with"}
     assert callers["legacy_schedule"] == {"_migrate_template", "not_moved", "_first_schedule"}
+    assert callers["legacy_terms"] == {"legacy_schedule", "unscheduled"}
     assert callers["_first_schedule"] == {"activate_subscription", "change_schedule"}
     # Every lifecycle slot that reaches the mover is one test_every_way_in_moves_... runs.
     from celerp.modules import loader

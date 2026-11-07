@@ -180,13 +180,22 @@ def test_every_kind_of_maker_is_found():
 # rename of the source dict/constant without updating this list fails loudly here
 # rather than silently passing an unchecked key.
 def _schedule_error_keys() -> list[str]:
-    """The literal key of every ScheduleError the subscriptions module raises; one built from
-    anything else fails here, so the keys a schedule refusal can carry are all checked."""
+    """The literal key of every ScheduleError the subscriptions module raises, and of every
+    declared Term (a ScheduleError raised with ``term.key`` carries one of those); one built
+    from anything else fails here, so the keys a schedule refusal can carry are all checked."""
     keys = []
     for path in sorted((_ROOT / "default_modules" / "celerp-subscriptions" / "celerp_subscriptions").glob("*.py")):
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "ScheduleError":
+            name = getattr(node.func, "id", None) if isinstance(node, ast.Call) else None
+            if name == "Term":
+                key = node.args[1] if len(node.args) > 1 else next(k.value for k in node.keywords if k.arg == "key")
+                assert isinstance(key, ast.Constant), f"{path.name}:{node.lineno} Term key is not a literal"
+                keys.append(key.value)
+            elif name == "ScheduleError":
                 key = node.args[0] if node.args else None
+                if isinstance(key, ast.Attribute) and key.attr == "key" and isinstance(key.value, ast.Name) \
+                        and key.value.id == "term":
+                    continue
                 options = [key.body, key.orelse] if isinstance(key, ast.IfExp) else [key]
                 assert all(isinstance(k, ast.Constant) for k in options), \
                     f"{path.name}:{node.lineno} ScheduleError key is not a literal"

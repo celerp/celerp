@@ -55,19 +55,30 @@ def is_legacy(state: dict) -> bool:
 
 def legacy_schedule(state: dict) -> dict:
     """The schedule fields an agreement not yet on a schedule means (a template an earlier
-    release ran, or a draft from either release), read as the earlier release read them: an
-    interval typed as text ("14") is that many days. A template it ran is anchored on its
-    next run date (or start date), is billed by hand from here on, and with a custom interval
-    left empty bills the 30 days it billed on; a draft is anchored on its start date and keeps
-    its own settings, even when it holds a next run date, which the earlier release's activate
-    never read. ScheduleError saying why when they describe no schedule."""
-    ran = is_legacy(state) and state.get("status") != "draft"
-    anchor = state.get("anchor_date") or (ran and state.get("next_run_date")) or state.get("start_date")
+    release ran, or a draft from either release), read as the earlier release read them: its
+    terms (legacy_terms), and a template it ran is anchored on its next run date (or start
+    date), a draft on its start date, even when it holds a next run date, which the earlier
+    release's activate never read. ScheduleError saying why when they describe no schedule."""
+    anchor = state.get("anchor_date") or (_ran(state) and state.get("next_run_date")) or state.get("start_date")
     if not anchor:
         raise ScheduleError("subscriptions.not_moved_no_date")
-    fields = {"anchor_date": anchor}
-    if ran:
-        fields.update(generation_mode="manual_due", billing_timing="advance")
+    fields = {"anchor_date": anchor, **legacy_terms(state)}
+    Schedule.from_state({**state, **fields, "periods": {}})
+    return fields
+
+
+def _ran(state: dict) -> bool:
+    """An earlier release ran the template (it is not a draft)."""
+    return is_legacy(state) and state.get("status") != "draft"
+
+
+def legacy_terms(state: dict) -> dict:
+    """The schedule terms an agreement not yet on a schedule holds, read as the earlier release
+    read them: an interval typed as text ("14") is that many days; a template it ran is billed
+    by hand from here on, and with a custom interval left empty bills the 30 days it billed on;
+    a draft keeps its own settings. ScheduleError when the interval is not a number of days."""
+    ran = _ran(state)
+    fields = {"generation_mode": "manual_due", "billing_timing": "advance"} if ran else {}
     days = state.get("custom_interval_days")
     days = int(days) if isinstance(days, str) and days.strip().isdigit() else days
     if shown("frequency", state.get("frequency")) == "custom":
@@ -79,7 +90,6 @@ def legacy_schedule(state: dict) -> dict:
         # Only a custom frequency reads the interval: one left from an earlier choice is kept
         # only when it holds.
         fields["custom_interval_days"] = days if TERMS["custom_interval_days"].holds(days) else None
-    Schedule.from_state({**state, **fields, "periods": {}})
     return fields
 
 
