@@ -476,9 +476,9 @@ async def _replay_fulfilment(session: AsyncSession, grant, target_id: str, shipp
                              actor_id) -> None:
     """Bring the receiving document's shipments to the source's: take back the goods it
     shipped that the source took back, then ship the lines whose items the source shipped
-    and it has not."""
+    and it has not, all of them or none: a line it cannot ship refuses the copy."""
     from celerp_docs.routes import (
-        RevertLinesRequest, _fulfill_lines_impl, _get_doc, _revert_lines_impl,
+        RevertLinesRequest, _fulfill_lines_impl, _get_doc, _refuse_skipped, _revert_lines_impl,
     )
 
     wanted = {await _map_identity(session, grant, "item", source) for source in shipped}
@@ -493,5 +493,7 @@ async def _replay_fulfilment(session: AsyncSession, grant, target_id: str, shipp
     indices = [i for i, line in enumerate(row.state.get("line_items") or [])
                if (line.get("entity_id") or line.get("item_id")) in wanted - done]
     if indices:
-        await _fulfill_lines_impl(target_id, indices, str(grant.company_id),
-                                  SimpleNamespace(id=actor_id), session, commit=False)
+        result = await _fulfill_lines_impl(target_id, indices, str(grant.company_id),
+                                           SimpleNamespace(id=actor_id), session, commit=False)
+        if result.get("skipped"):
+            _refuse_skipped("fulfill", result["skipped"])

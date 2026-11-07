@@ -76,19 +76,21 @@ def test_a_live_memo_always_says_what_is_still_on_it(takes, still):
 
 
 def test_every_preview_then_confirm_form_carries_an_operation_key():
-    """Each form confirming a preview (one per previewed write of the docs module) sends an
-    operation key, so a retried submit is the same write, answered as the first was."""
+    """Each form confirming a preview (one per previewed write of the docs module that binds its
+    preview) sends an operation key, so a retried submit is the same write, answered as the
+    first was."""
     import ast
     import inspect
     import typing
 
-    from celerp_docs.routes import router
+    from celerp_docs.routes import binds_its_outcome, router
     from pydantic import BaseModel
     from ui.routes import documents
 
     previewed = {route.path for route in router.routes
                  for hint in typing.get_type_hints(getattr(route, "endpoint", None) or (lambda: None)).values()
-                 if isinstance(hint, type) and issubclass(hint, BaseModel) and "dry_run" in hint.model_fields}
+                 if isinstance(hint, type) and issubclass(hint, BaseModel) and "dry_run" in hint.model_fields
+                 and not binds_its_outcome(hint)}
     forms = [node for node in ast.walk(ast.parse(inspect.getsource(documents)))
              if isinstance(node, ast.Call) and any(k.arg is None and getattr(k.value, "id", "") == "CONFIRMS_PREVIEW"
                                                    for k in node.keywords)]

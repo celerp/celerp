@@ -12,7 +12,7 @@ import httpx
 import pytest
 from playwright.sync_api import expect
 
-from .conftest import _set_auth_cookie, clear_session_registry, css_class
+from .conftest import set_session_cookies, clear_session_registry, css_class
 
 pytestmark = pytest.mark.browser
 
@@ -81,7 +81,7 @@ def test_draft_amounts_editable_for_restricted_role(page, ui_server, api, api_se
                     json={"email": f"op-{tag}@celerp.test", "password": "pw12345a"}, timeout=10)
     assert lr.status_code == 200, lr.text
     try:
-        _set_auth_cookie(browser_context, lr.json()["access_token"])
+        set_session_cookies(browser_context, lr.json()["access_token"])
 
         page.goto(f"{ui_server}/inventory?q={draft_sku}", wait_until="domcontentloaded")
         page.wait_for_selector(".badge--draft", timeout=8000)
@@ -132,7 +132,7 @@ def test_draft_pieces_editable_on_list_for_restricted_role(page, ui_server, api,
                     json={"email": f"opp-{tag}@celerp.test", "password": "pw12345a"}, timeout=10)
     assert lr.status_code == 200, lr.text
     try:
-        _set_auth_cookie(browser_context, lr.json()["access_token"])
+        set_session_cookies(browser_context, lr.json()["access_token"])
 
         page.goto(f"{ui_server}/inventory?q={draft_sku}", wait_until="domcontentloaded")
         page.wait_for_selector(".badge--draft", timeout=8000)
@@ -181,7 +181,7 @@ def test_draft_amounts_editable_on_detail_page_for_restricted_role(page, ui_serv
                     json={"email": f"opd-{tag}@celerp.test", "password": "pw12345a"}, timeout=10)
     assert lr.status_code == 200, lr.text
     try:
-        _set_auth_cookie(browser_context, lr.json()["access_token"])
+        set_session_cookies(browser_context, lr.json()["access_token"])
 
         page.goto(f"{ui_server}/inventory/{item_ids[draft_sku]}", wait_until="domcontentloaded")
         qty = page.locator('tr:has-text("Qty") .paired-primary').first
@@ -222,7 +222,7 @@ def test_draft_cost_edit_on_pricing_tab_persists(page, ui_server, api, api_serve
     lr = httpx.post(f"{api_server}/auth/login",
                     json={"email": f"op-{tag}@celerp.test", "password": "pw12345a"}, timeout=10)
     assert lr.status_code == 200, lr.text
-    _set_auth_cookie(browser_context, lr.json()["access_token"])
+    set_session_cookies(browser_context, lr.json()["access_token"])
     page.goto(f"{ui_server}/inventory/{item_id}?tab=pricing", wait_until="domcontentloaded")
     cost_input = page.locator('input[name="cost_price"]')
     cost_input.wait_for(timeout=8000)
@@ -253,7 +253,7 @@ def test_draft_cost_enterable_before_any_value_set(page, ui_server, api, api_ser
     lr = httpx.post(f"{api_server}/auth/login",
                     json={"email": f"op2-{tag}@celerp.test", "password": "pw12345a"}, timeout=10)
     assert lr.status_code == 200, lr.text
-    _set_auth_cookie(browser_context, lr.json()["access_token"])
+    set_session_cookies(browser_context, lr.json()["access_token"])
     page.goto(f"{ui_server}/inventory/{item_id}?tab=pricing", wait_until="domcontentloaded")
     cost_input = page.locator('input[name="cost_price"]')
     cost_input.wait_for(timeout=8000)

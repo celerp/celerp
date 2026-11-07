@@ -128,30 +128,59 @@ function celerpFetch(url, opts) {
   });
 }
 // Post one line action for the chosen rows (their .li-select checkboxes) as ONE request.
-// Each row is named by its line id; a page whose rows do not all carry one names them by
-// item instead, never a mix. ``fields`` are extra [name, value] pairs. The request carries
+// Each row is named by its line id. ``fields`` are extra [name, value] pairs. The request carries
 // the operation key the page was rendered with, so the same action sent again after a lost
-// answer is recorded once. Resolves true on success, keeping the server's toast for the
-// page the caller opens next; otherwise the reason is shown.
-async function celerpLineAction(url, rows, fields, key, fallbackMsg) {
+// answer is recorded once. Answers the response with its HX-Trigger, or null when it was not sent.
+async function _celerpLinePost(url, rows, fields, key) {
   var fd = new FormData();
   celerpLineSelection(rows).forEach(function(kv) { fd.append(kv[0], kv[1]); });
   (fields || []).forEach(function(kv) { fd.append(kv[0], kv[1]); });
   if (key) fd.append('idempotency_key', key);
-  var msg = fallbackMsg;
   try {
     var resp = await celerpFetch(url, {method: 'POST', body: fd});
     var t = null;
     try { t = JSON.parse(resp.headers.get('HX-Trigger') || 'null'); } catch (e) {}
-    if (resp.status === 204) {
-      if (t && t.celerpToast) _celerpKeepToast(t.celerpToast);
+    return {resp: resp, trigger: t};
+  } catch (e) {
+    return null;
+  }
+}
+// Show why a line action was refused: the server's reason, else ``fallbackMsg``.
+function _celerpLineRefused(sent, fallbackMsg) {
+  var t = sent && sent.trigger;
+  celerpToast((t && t.celerpToast && t.celerpToast.message) || fallbackMsg, 'error');
+}
+// Run one line action. Resolves true on success, keeping the server's toast for the page the
+// caller opens next; otherwise the reason is shown.
+async function celerpLineAction(url, rows, fields, key, fallbackMsg) {
+  var sent = await _celerpLinePost(url, rows, fields, key);
+  if (sent && sent.resp.status === 204) {
+    if (sent.trigger && sent.trigger.celerpToast) _celerpKeepToast(sent.trigger.celerpToast);
+    return true;
+  }
+  _celerpLineRefused(sent, fallbackMsg);
+  return false;
+}
+// A stock line action with its confirm. The action's own preview (dry_run) asks the question:
+// how many lines it acts on, which it leaves as they are and what it takes back. The action is
+// sent bound to that preview, so when the lines changed while the question was open it changes
+// nothing and the fresh question is asked, saying so. A refusal is shown and nothing is asked.
+// Resolves true when the action ran, keeping the server's toast for the page opened next.
+async function celerpStockLineAction(url, rows, fields, key, fallbackMsg) {
+  var sent = await _celerpLinePost(url, rows, (fields || []).concat([['dry_run', '1']]), key);
+  while (true) {
+    var asked = null;
+    if (sent && sent.resp.ok && (sent.resp.headers.get('Content-Type') || '').indexOf('json') >= 0) {
+      try { asked = await sent.resp.json(); } catch (e) {}
+    }
+    if (!asked) { _celerpLineRefused(sent, fallbackMsg); return false; }
+    if (!(await celerpConfirm(asked.confirm))) return false;
+    sent = await _celerpLinePost(url, rows, (fields || []).concat([['binding', asked.binding]]), key);
+    if (sent && sent.resp.status === 204) {
+      if (sent.trigger && sent.trigger.celerpToast) _celerpKeepToast(sent.trigger.celerpToast);
       return true;
     }
-    if (t && t.celerpToast && t.celerpToast.message) msg = t.celerpToast.message;
-  } catch (e) {
   }
-  celerpToast(msg, 'error');
-  return false;
 }
 // One line action at a time: the second click of a double click, or a click while another
 // action's confirm or request is open, does nothing. ``run`` resolves true when the page is
@@ -163,16 +192,55 @@ async function celerpLineActionOnce(e, run) {
   var leaving = false;
   try { leaving = await run(); } finally { if (!leaving) _celerpLineActionBusy = false; }
 }
-// The [name, value] pairs naming the chosen rows: line_id each when every row has one,
-// otherwise the item each row binds.
+// The [name, value] pairs naming the chosen rows: one line_id each, empty for a row without
+// one, so the server names it instead of the request leaving it out.
 function celerpLineSelection(rows) {
-  var byLine = rows.every(function(cb) { return cb.getAttribute('data-line-id'); });
-  var out = [];
-  rows.forEach(function(cb) {
-    var id = byLine ? cb.getAttribute('data-line-id') : cb.value;
-    if (id) out.push([byLine ? 'line_id' : 'selected', id]);
+  return rows.map(function(cb) { return ['line_id', cb.getAttribute('data-line-id') || '']; });
+}
+// Select all for a line table: ticks or unticks every row, then calls ``onChange``. It shows
+// all, none or some (indeterminate) as rows are ticked one by one, and again when the rows
+// themselves are swapped (a scan re-renders the tbody unticked).
+function liSelectAll(table, sa, onChange) {
+  if (!table || !sa) return;
+  function boxes() { return table.querySelectorAll('tbody .li-select'); }
+  function sync() {
+    var b = boxes(), n = 0;
+    b.forEach(function(cb) { if (cb.checked) n++; });
+    sa.checked = n > 0 && n === b.length;
+    sa.indeterminate = n > 0 && n < b.length;
+  }
+  sa.addEventListener('change', function() {
+    boxes().forEach(function(cb) { cb.checked = sa.checked; });
+    sync();
+    if (onChange) onChange();
   });
-  return out;
+  table.addEventListener('change', function(e) {
+    if (e.target && e.target.classList.contains('li-select')) sync();
+  });
+  new MutationObserver(sync).observe(table, {childList: true, subtree: true});
+}
+// The ticked rows named as 6 "GIA Certificate", in forms {one, many}, each with {lines}. rows
+// are their checkboxes. A row is numbered by its position plus the page's line offset and
+// named by its SKU, description or name, as the server names a line (line_label), else by
+// the label its checkbox carries.
+function liNameLines(rows, forms) {
+  var named = rows.map(function(cb) {
+    var row = cb.closest('tr'), all = Array.prototype.slice.call(cb.closest('tbody').querySelectorAll('.li-select'));
+    var name = '';
+    ['sku', 'description', 'name'].some(function(k) {
+      var el = row && row.querySelector('[data-name="' + k + '"]');
+      name = el ? el.value.trim() : '';
+      return name;
+    });
+    name = name || cb.getAttribute('data-label') || '';
+    var n = all.indexOf(cb) + 1 + (window._CELERP_LINE_OFFSET || 0);
+    return name ? n + ' "' + name + '"' : String(n);
+  });
+  return forms[named.length === 1 ? 'one' : 'many'].replace('{lines}', named.join(', '));
+}
+// Name the ticked rows an action left out in a notice that stays.
+function liSkipNotice(rows, forms) {
+  if (rows.length && window.celerpToast) celerpToast(liNameLines(rows, forms), 'info', true);
 }
 // A count message in the form that reads right for n: forms is {one, many}, each with {n}.
 function celerpCount(forms, n) {

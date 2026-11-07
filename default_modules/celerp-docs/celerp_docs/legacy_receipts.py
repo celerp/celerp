@@ -74,7 +74,7 @@ async def record_legacy_receipts(session: AsyncSession) -> dict:
             select(LedgerEntry).where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id == entity_id)
             .order_by(LedgerEntry.id)
         )).scalars():
-            replayed = ProjectionEngine._apply(replayed, entry.event_type, entry.data)
+            replayed = ProjectionEngine.replay(replayed, entry)
         state = _filled_in(row.state or {}, replayed)
         if state is not None:
             row.state = state

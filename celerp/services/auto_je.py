@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from enum import Enum
 from datetime import datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -3672,7 +3673,8 @@ class UnshippedClaim:
     """Goods on hand a finalized invoice costed and has not shipped: ``qty`` units of
     lot ``lot_id`` on line ``line``, ``amount`` of the invoice's recognized cost on
     ``key``, and the value the lot holds now (``on_hand``). A claim read for its quantity
-    only (unshipped_claims, not costed) has no key and no amount."""
+    only (unshipped_claims, not costed) has no key and no amount. A claim moving to another
+    invoice (moved_costs) has ``left``: the units of the lot its invoice still holds after."""
 
     doc_id: str
     line: int
@@ -3681,6 +3683,27 @@ class UnshippedClaim:
     key: str | None
     amount: float
     on_hand: float
+    left: float = 0.0
+
+
+class LotTaken(str, Enum):
+    """How much of a lot another open invoice held a shipment takes from it (create_for_cost_moves,
+    and the fulfill route for a lot shipped whole): all of it, so that invoice can no longer ship
+    the lot, or part, so it has less of it to ship."""
+
+    ALL = "all"
+    PART = "part"
+
+
+def taken_entry(*, sku, name, takes, lot_id, doc_id, doc_number) -> dict:
+    """One lot a shipment takes from another open invoice (create_for_cost_moves, and the
+    fulfill route for a lot shipped whole): the lot's ``sku`` and ``name``, ``takes`` (a
+    LotTaken value) and the ``doc_number`` of the invoice it is taken from, with their ids. Every
+    leaf is text, or None when the record holds nothing there, whatever type the stored lot or
+    invoice holds (an item PATCH keeps a SKU sent as a number), so the entries sort and are
+    worded alike."""
+    leaves = {"sku": sku, "name": name, "takes": takes, "lot_id": lot_id, "doc_id": doc_id, "doc_number": doc_number}
+    return {k: None if v is None or v == "" else str(v) for k, v in leaves.items()}
 
 
 def _on_hand_value(row: Projection) -> _Dec | None:
@@ -4104,14 +4127,25 @@ async def moved_costs(session, company_id, *, doc_id: str, cycle_tag: str,
         on = [c for c in claims if c.lot_id == lot_id]
         remaining = float((row.state or {}).get("quantity") or 0) - take if row is not None else 0.0
         over = min(take, sum(c.qty for c in on) - max(remaining, 0.0))
+        moved: list[tuple[UnshippedClaim, float]] = []
         for claim in reversed(on):
             if over <= 1e-9:
                 break
             qty = min(claim.qty, over)
             over -= qty
+            moved.append((claim, qty))
+        # What each invoice still holds of the lot once its moving units are gone.
+        left = {c.doc_id: 0.0 for c, _ in moved}
+        for c in on:
+            if c.doc_id in left:
+                left[c.doc_id] += c.qty
+        for c, qty in moved:
+            left[c.doc_id] -= qty
+        for claim, qty in moved:
             moving.setdefault(claim.doc_id, []).append(
                 UnshippedClaim(doc_id=claim.doc_id, line=claim.line, lot_id=lot_id, qty=qty, key=claim.key,
-                               amount=claim.amount * qty / claim.qty if claim.qty else 0.0, on_hand=claim.on_hand))
+                               amount=claim.amount * qty / claim.qty if claim.qty else 0.0, on_hand=claim.on_hand,
+                               left=max(left[claim.doc_id], 0.0)))
     return moving
 
 
@@ -4122,8 +4156,8 @@ async def create_for_cost_moves(session, *, company_id, user_id, doc_id: str, do
     Cr cost of goods sold for the other, at the cost that invoice set them aside at.
     Inventory is not touched: it gave the goods up once, when they were set aside. The
     other invoice holds that many fewer units (recognized_cogs) and is costed for them
-    when it ships. Returns the invoices the goods were taken from, for the notice:
-    {sku, lot_id, doc_id, doc_number}."""
+    when it ships. Returns the invoices the goods were taken from, for the notice: a
+    taken_entry for each lot, ``takes`` all the invoice held of it or part."""
     if not moving:
         return []
     cogs_code = await resolve(session, company_id, R.COGS)
@@ -4153,8 +4187,10 @@ async def create_for_cost_moves(session, *, company_id, user_id, doc_id: str, do
                                   "amount": c.amount} for c in claims]},
         )
         for lot_id in dict.fromkeys(c.lot_id for c in claims):
-            notice.append({"sku": (rows[lot_id].state or {}).get("sku") if lot_id in rows else lot_id,
-                           "lot_id": lot_id, "doc_id": from_doc, "doc_number": from_number})
+            lot = (rows[lot_id].state or {}) if lot_id in rows else {}
+            takes = LotTaken.PART if any(c.left > 1e-9 for c in claims if c.lot_id == lot_id) else LotTaken.ALL
+            notice.append(taken_entry(sku=lot.get("sku"), name=lot.get("name"), takes=takes.value,
+                                      lot_id=lot_id, doc_id=from_doc, doc_number=from_number))
     return notice
 
 

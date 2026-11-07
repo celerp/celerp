@@ -51,3 +51,17 @@ def test_search_requires_auth_or_returns_200(unauthed_page, ui_server):
     # Should either redirect or show login
     page_ok = "/login" in page.url or page.locator("input[type=password]").count() > 0 or resp.status == 200
     assert page_ok, f"Unexpected auth behavior for /search: url={page.url}, status={resp.status}"
+
+
+def test_session_context_renews_its_lapsed_access_cookie(page, browser_context, ui_server):
+    """A worker's run outlives the access token. The browser drops the lapsed access cookie
+    and the UI renews the session from the refresh cookie, as it does for a user, so pages
+    later in the run are still signed in."""
+    signed_in = browser_context.cookies()
+    browser_context.clear_cookies(name="celerp_token")
+    try:
+        page.goto(f"{ui_server}/settings", wait_until="domcontentloaded")
+        assert "/login" not in page.url, page.url
+    finally:
+        browser_context.clear_cookies()
+        browser_context.add_cookies(signed_in)

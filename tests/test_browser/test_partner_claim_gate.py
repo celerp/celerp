@@ -14,7 +14,7 @@ import uuid
 import httpx
 import pytest
 
-from .conftest import _set_auth_cookie, clear_session_registry
+from .conftest import set_session_cookies, clear_session_registry
 
 pytestmark = pytest.mark.browser
 
@@ -84,7 +84,7 @@ def test_partner_claim_card_hidden_from_non_owner_admin(
     viewer_token = lr.json()["access_token"]
 
     try:
-        _set_auth_cookie(browser_context, viewer_token)
+        set_session_cookies(browser_context, viewer_token)
         page.goto(f"{ui_server}/settings/cloud", wait_until="domcontentloaded")
         # Give the page a moment to render, then assert the card is absent.
         page.wait_for_timeout(500)

@@ -44,12 +44,13 @@ async def test_an_invoice_whose_goods_shipped_elsewhere_ships_other_stock(client
     r = await client.post(f"/docs/{a}/fulfill-lines", headers=auth["headers"], json={"line_entity_ids": [L]})
     assert r.status_code == 422, r.text
     detail = r.json()["detail"]
-    [reason] = detail["params"]["reasons"]
+    assert detail["message_key"] == "documents.unavailable_lines_skipped_one", detail
+    [reason] = detail["also"]
     assert reason["message_key"] == "lines.shipped_elsewhere"
     nb = await _doc_number(session, auth, b)
     assert reason["params"]["docs"] == nb
     assert [w["params"] for w in reason["params"]["went"]] == [{"lines": sku, "doc": nb}]
-    assert "Revert fulfillment first" in detail["message"]
+    assert "Revert fulfillment first" in reason["message"]
     await _ok(client, auth, f"/docs/{a}/revert-to-draft")
     r = await _rebind(client, auth, a, _line(K, sku))
     assert r.status_code == 200, r.text
@@ -113,13 +114,14 @@ async def test_shipping_goods_two_invoices_shipped_names_both_with_their_lines(c
     assert r.status_code == 422, r.text
     detail = r.json()["detail"]
     nb, nc = await _doc_number(session, auth, b), await _doc_number(session, auth, c)
-    [reason] = detail["params"]["reasons"]
+    assert detail["message_key"] == "documents.unavailable_lines_skipped_many", detail
+    [reason] = detail["also"]
     assert reason["message_key"] == "lines.shipped_elsewhere"
     assert sorted((w["params"]["doc"], w["params"]["lines"]) for w in reason["params"]["went"]) == sorted(
         [(nb, sku), (nc, sku)])
-    assert detail["message"].endswith(".") and "Revert fulfillment first" in detail["message"]
-    assert nb in detail["message"].rsplit("Revert fulfillment first", 1)[1]
-    assert nc in detail["message"].rsplit("Revert fulfillment first", 1)[1]
+    assert reason["message"].endswith(".") and "Revert fulfillment first" in reason["message"]
+    assert nb in reason["message"].rsplit("Revert fulfillment first", 1)[1]
+    assert nc in reason["message"].rsplit("Revert fulfillment first", 1)[1]
 
 
 @pytest.mark.parametrize("path", _LOCALES, ids=lambda p: p.stem)

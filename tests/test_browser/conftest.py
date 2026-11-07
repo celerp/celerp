@@ -494,9 +494,13 @@ def keep_sign_ins():
         clear_session_registry()
 
 
-def _set_auth_cookie(browser_context, token: str) -> None:
-    browser_context.clear_cookies()
-    browser_context.add_cookies([auth_cookie("celerp_token", token)])
+def set_session_cookies(context, access_token: str, refresh_token: str | None = None) -> None:
+    """Sign *context* in as one session, replacing every cookie it held: the access cookie and,
+    when given, the refresh cookie the UI renews a lapsed access cookie with, as it does for a
+    user. Without one the session ends with its access token."""
+    context.clear_cookies()
+    context.add_cookies([auth_cookie(name, token) for name, token in
+                         (("celerp_token", access_token), ("celerp_refresh", refresh_token)) if token])
 
 
 @pytest.fixture
@@ -513,7 +517,7 @@ def fresh_company(api_server, browser_context, api):
     assert r.status_code in (200, 201), f"create company failed: {r.text}"
     new_token = r.json()["access_token"]
 
-    _set_auth_cookie(browser_context, new_token)
+    set_session_cookies(browser_context, new_token, r.json()["refresh_token"])
     client = httpx.Client(
         base_url=api_server, headers={"Authorization": f"Bearer {new_token}"}, timeout=10,
         limits=_API_LIMITS,

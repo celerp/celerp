@@ -23,7 +23,10 @@ from sqlalchemy.pool import NullPool
 from alembic_support import alembic_run, history_by_hand
 
 from celerp.db_url import sync_url
-from celerp.migrations._data_reconcile import RETIRED_META_KEYS
+from celerp.migrations._data_reconcile import (
+    PENDING_BACKFILLS_KEY, RETIRED_META_KEYS, data_backfill_scripts, pending_backfills,
+    replay_data_backfills,
+)
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 UNKNOWN = "ffff00c0ffee"
@@ -37,6 +40,10 @@ pytestmark = [
         not DATABASE_URL.startswith("postgresql"), reason="needs a live Postgres database"
     ),
 ]
+
+
+def _backfills() -> set[str]:
+    return {sc.revision for sc in data_backfill_scripts()}
 
 
 def _head() -> str:
@@ -455,8 +462,18 @@ def test_older_schema_with_older_marker_migrates_forward(scratch, monkeypatch):
     assert after["alembic_version"] == [(_head(),)]
     assert after["sentinel"] == [(1, "sentinel-before")]
     # The stamp is the record of what ran: every data backfill in its history counts as
-    # run, so the restamp below the data-only revisions leaves none pending and none replays.
-    assert after["instance_meta"] == [(OPENED_KEY, RUNNING), ("projection_version", "2.5.3")]
+    # run, so the restamp leaves none of those pending and none replays. A data backfill
+    # above the older stamp never ran: the restamp moves past it and leaves it pending,
+    # and the reconcile runs it once.
+    skipped = [(PENDING_BACKFILLS_KEY, rev) for rev in [_head()] if rev in _backfills()]
+    assert after["instance_meta"] == [*skipped, (OPENED_KEY, RUNNING), ("projection_version", "2.5.3")]
+    engine = sa.create_engine(sync_url(url), poolclass=NullPool)
+    try:
+        assert replay_data_backfills(engine) == ([rev for _key, rev in skipped], [])
+        with engine.connect() as conn:
+            assert pending_backfills(conn) == []
+    finally:
+        engine.dispose()
 
 
 def test_older_backup_restored_and_migrated_forward(scratch, tmp_path, monkeypatch):

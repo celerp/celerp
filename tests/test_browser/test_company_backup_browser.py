@@ -18,6 +18,7 @@ import pytest
 
 from ui.i18n import t
 
+from .conftest import set_session_cookies
 from .test_migration_wizard_browser import _pg_admin
 
 pytestmark = pytest.mark.browser
@@ -44,11 +45,6 @@ def _session_company(context) -> str:
     from celerp.services.auth import decode_access_token
     token = next(c["value"] for c in context.cookies() if c["name"] == "celerp_token")
     return decode_access_token(token)["company_id"]
-
-
-def _cookie(context, token: str) -> None:
-    context.clear_cookies()
-    context.add_cookies([{"name": "celerp_token", "value": token, "domain": "127.0.0.1", "path": "/"}])
 
 
 def _client(api_server: str, token: str) -> httpx.Client:
@@ -210,7 +206,7 @@ def test_restore_refused_for_non_owner_browser(page, fresh_company, api_server, 
         _add_user(c, "manager", email)
     before = _members(dest)
 
-    _cookie(page.context, _token_for(second, source["id"]))
+    set_session_cookies(page.context, _token_for(second, source["id"]))
     _upload(page, _SETTINGS, path)
     text = page.content()
     assert f"Team members not added: 1. Only an owner of {_restored_name(source)} can add them." in text
@@ -254,7 +250,7 @@ def test_restore_inactive_destination_refused_browser(page, fresh_company, api_s
         _add_user(c, "manager", email)
     _deactivate(api_server, restored["access_token"])
 
-    _cookie(page.context, _token_for(second, source["id"]))
+    set_session_cookies(page.context, _token_for(second, source["id"]))
     _upload(page, _NEW_COMPANY, path)
     text = page.content()
     assert t("company_backup.err_not_a_member") in html.unescape(text)

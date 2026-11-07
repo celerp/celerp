@@ -4719,15 +4719,16 @@ class TestListsCreateBlank:
 
     @pytest.mark.asyncio
     async def test_line_confirms_read_right_for_one_line(self, ui_client):
-        """The line-action confirms carry a one-line form, so selecting one line never reads
-        "Set 1 lines", and Delete selected has a confirm of its own."""
+        """Delete selected asks with a one-line form, so selecting one line never reads "Delete
+        1 lines". A stock line action asks from its own preview instead
+        (test_line_action_preview.py), so the page carries none of their questions."""
         ui_client.cookies.update(_authed())
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):
             r = await ui_client.get("/docs/doc:INV-2026-0001")
         assert r.status_code == 200
-        for text in ("Set 1 line as reserved?", "Set {n} lines as reserved?",
-                     "Set 1 line as available?", "Delete 1 line?", "Delete {n} lines?"):
+        for text in ("Delete 1 line?", "Delete {n} lines?"):
             assert text in r.text, text
+        assert "Set 1 line as reserved?" not in r.text and "Set {n} lines as available?" not in r.text
         assert "celerpCount(_L.confirm_delete_lines" in r.text
 
     @pytest.mark.asyncio

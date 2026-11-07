@@ -836,7 +836,7 @@ async def test_fulfill_re_fulfill_after_revert(client, auth, _setup_ids):
 async def test_fulfill_lines_deduplicates_duplicate_ids(client, auth, _setup_ids):
     """Submitting the same entity_id twice in one fulfill-lines call must only fulfill it once.
 
-    Regression: strip_empty did not de-duplicate, so a duplicate ID would emit
+    Regression: the request did not de-duplicate, so a duplicate ID would emit
     item.fulfilled twice for the same item, corrupting quantity_fulfilled and COGS.
     """
     item_id = await _create_item(client, auth, "DEDUP-FL-001", 5, cost_price=10)

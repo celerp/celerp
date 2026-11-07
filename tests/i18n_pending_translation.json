@@ -20,6 +20,31 @@
         "line",
         "sku"
       ]
+    },
+    "documents.will_take_part_from": {
+      "en": "Lot {sku} is on invoice {doc}: shipping it here leaves invoice {doc} less of it to ship.",
+      "params": [
+        "doc",
+        "sku"
+      ]
+    },
+    "documents.cost_part_moved_with_goods": {
+      "en": "Lot {sku} was on invoice {doc}, which now has less of it to ship. Invoice {doc} is costed for the units taken when it ships other stock.",
+      "params": [
+        "doc",
+        "sku"
+      ]
+    },
+    "documents.lot_no_sku": {
+      "en": "(no SKU)",
+      "params": []
+    },
+    "lines.reasons_then_next": {
+      "en": "{reasons} {next}",
+      "params": [
+        "next",
+        "reasons"
+      ]
     }
   }
 }

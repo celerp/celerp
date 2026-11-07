@@ -10,7 +10,7 @@ import time
 import pytest
 from jose import jwt
 
-from .conftest import _set_auth_cookie, session_cookies
+from .conftest import set_session_cookies, session_cookies
 
 pytestmark = pytest.mark.browser
 
@@ -41,16 +41,23 @@ def _from_session_cookies(name: str):
     return write
 
 
-def _from_set_auth_cookie(token: str) -> list[dict]:
-    ctx = _Context()
-    _set_auth_cookie(ctx, token)
-    return ctx.cookies
+def _from_set_session_cookies(name: str):
+    def write(token: str) -> list[dict]:
+        other = _token(int(time.time()) + 86400)
+        ctx = _Context()
+        if name == "celerp_token":
+            set_session_cookies(ctx, token)
+        else:
+            set_session_cookies(ctx, other, token)
+        return [c for c in ctx.cookies if c["name"] == name]
+    return write
 
 
 _WRITERS = {
     "session_cookies-access": _from_session_cookies("celerp_token"),
     "session_cookies-refresh": _from_session_cookies("celerp_refresh"),
-    "set_auth_cookie": _from_set_auth_cookie,
+    "set_session_cookies-access": _from_set_session_cookies("celerp_token"),
+    "set_session_cookies-refresh": _from_set_session_cookies("celerp_refresh"),
 }
 _LIFETIMES = {"expired": -60, "minutes": 15 * 60, "days": 30 * 86400}
 

@@ -16,7 +16,7 @@ import pytest
 
 from ui.i18n import t
 
-from .conftest import wait_for_landing
+from .conftest import set_session_cookies, wait_for_landing
 from .test_company_backup_browser import _WAIT_MS, _add_user, _client, _db, _session_company, _token_for
 from .test_migration_journeys_browser import _start_additional, held_runner  # noqa: F401 - fixture
 from .test_migration_wizard_browser import _run_id, _through_review, _upload
@@ -99,8 +99,7 @@ def test_resetting_lands_on_the_owners_company_still_being_moved_in(playwright, 
     browser = playwright.chromium.launch(headless=True)
     try:
         ctx = browser.new_context(base_url=ui_server)
-        ctx.add_cookies([{"name": "celerp_token", "value": _token_for(user_id, source["id"]),
-                          "domain": "127.0.0.1", "path": "/"}])
+        set_session_cookies(ctx, _token_for(user_id, source["id"]))
         page = ctx.new_page()
         _start_additional(page, moved)
         page.click('button:has-text("Create company and migrate")')
@@ -164,8 +163,7 @@ def test_resetting_the_last_company_lands_on_starting_a_new_one(playwright, ui_s
     browser = playwright.chromium.launch(headless=True)
     try:
         ctx = browser.new_context(base_url=ui_server)
-        ctx.add_cookies([{"name": "celerp_token", "value": _token_for(user_id, source["id"]),
-                          "domain": "127.0.0.1", "path": "/"}])
+        set_session_cookies(ctx, _token_for(user_id, source["id"]))
         page = ctx.new_page()
         _start_over(page, source, user_id, email)
     finally:
@@ -186,8 +184,7 @@ def test_a_login_with_no_company_moves_its_books_in(playwright, ui_server, fresh
     before = get_session_token()
     try:
         ctx = browser.new_context(base_url=ui_server, viewport={"width": 1440, "height": 900})
-        ctx.add_cookies([{"name": "celerp_token", "value": _token_for(user_id, source["id"]),
-                          "domain": "127.0.0.1", "path": "/"}])
+        set_session_cookies(ctx, _token_for(user_id, source["id"]))
         page = ctx.new_page()
         page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
         page.on("pageerror", lambda e: errors.append(str(e)))

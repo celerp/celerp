@@ -254,7 +254,7 @@ async def test_set_scanned_on_page_two_rerenders_page_two(ui_app):
     mark = AsyncMock(return_value={})
     r, page_mock = await _audit_request(
         ui_app, "POST", "/lists/list:aud/set-scanned",
-        data={"scanned": "1", "offset": "100", "limit": "100"},
+        data={"scanned": "1", "offset": "100", "limit": "100", "line_id": "ln-150"},
         extra={"ui.api_client.set_scanned": mark})
     assert _tbody_offsets(page_mock) == [100]
     assert "SKU150" in r.text and "SKU0<" not in r.text

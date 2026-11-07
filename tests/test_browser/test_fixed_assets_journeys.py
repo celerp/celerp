@@ -23,7 +23,7 @@ from playwright.sync_api import Page, expect
 
 from celerp.accounting_roles import SEEDED_TARGETS
 
-from .conftest import css_class, settled_boxes
+from .conftest import css_class, set_session_cookies, settled_boxes
 
 pytestmark = pytest.mark.browser
 
@@ -662,7 +662,7 @@ def _as_member(page: Page, c, api_server: str, role: str) -> None:
     conn.close()
     token = _ok(httpx.post(f"{api_server}/auth/login", json={"email": email, "password": "Member12345!"},
                            timeout=10))["access_token"]
-    page.context.add_cookies([{"name": "celerp_token", "value": token, "domain": "127.0.0.1", "path": "/"}])
+    set_session_cookies(page.context, token)
 
 
 def test_j6_labels_off_asks_an_admin_and_the_admin_turns_it_on_and_prints(page: Page, fresh_company, api_server):
