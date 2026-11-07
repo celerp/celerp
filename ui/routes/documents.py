@@ -874,7 +874,8 @@ def _lists_content(state: dict[str, str], lists: list[dict], total_count: int,
     """Table and pager for a lists page state: the page embeds it and the live search replaces
     it (with the cards out of band), so both always describe the same result set."""
     return Div(
-        _list_table(lists, lang=lang, period=_list_period("lists", state, date_from, date_to)),
+        _list_table(lists, lang=lang, period=_list_period("lists", state, date_from, date_to),
+                    list_type=state.get("type", "")),
         pagination(page, total_count, per_page, "/lists", _state_query(state, without=("per_page",))),
         id="list-content",
     )
@@ -4748,16 +4749,14 @@ celerpUpdateBulkAlloc();
         lang = get_lang(request)
         _role = _get_role(request)
         _settings = company.get("settings") or {}
-        # Audits are location-bound, not blank drafts: send the user through the location picker.
+        _new_url, _ = _new_list_target(list_type)
         if list_type == "audit":
-            _new_btn = A(t("documents.new_audit"), href="/lists/new-audit", cls="btn btn--primary")
+            _new_btn = A(t("documents.new_audit"), href=_new_url, cls="btn btn--primary")
         elif list_type == "shipping_doc":
-            _new_btn = Button(t("page.new_shipping_doc"), hx_post="/lists/create-blank?type=shipping_doc",
+            _new_btn = Button(t("page.new_shipping_doc"), hx_post=_new_url,
                               hx_swap="none", cls="btn btn--primary", title=t("documents.new_shipping_doc_tooltip"))
         else:
-            # On a page filtered to one type, New List makes that type, numbered from its counter.
-            _type_q = f"?type={list_type}" if list_type in _LIST_TYPES else ""
-            _new_btn = Button(t("page.new_list"), hx_post=f"/lists/create-blank{_type_q}", hx_swap="none", cls="btn btn--primary", title=t("documents.new_list_tooltip"))
+            _new_btn = Button(t("page.new_list"), hx_post=_new_url, hx_swap="none", cls="btn btn--primary", title=t("documents.new_list_tooltip"))
         export_link = _export_link("lists", state, role_has_permission(_settings, _role, "import_export_data"))
         return await base_shell(
             Div(
@@ -11612,12 +11611,23 @@ def _doc_summary_line(state: dict[str, str], chips: dict, summary: dict, currenc
 # List listing-page helpers (kept for /lists table view)
 # ---------------------------------------------------------------------------
 
-def _list_table(lists: list[dict], lang: str = "en", period: tuple[str, str, str] | None = None) -> FT:
+def _new_list_target(list_type: str) -> tuple[str, bool]:
+    """Where New List goes on a lists page filtered to ``list_type``, and whether it posts. It
+    makes that type, numbered from its own counter; audits are location-bound, not blank drafts,
+    so they go through the location picker."""
+    if list_type == "audit":
+        return "/lists/new-audit", False
+    return f"/lists/create-blank?type={list_type}" if list_type in _LIST_TYPES else "/lists/create-blank", True
+
+
+def _list_table(lists: list[dict], lang: str = "en", period: tuple[str, str, str] | None = None,
+                list_type: str = "") -> FT:
     if not lists:
         windowed = period_empty_text(period, lang)
+        new_url, posts = _new_list_target(list_type)
         return Div(
-            empty_state_cta(windowed or t("label.no_lists_yet", lang), t("btn.new_list", lang), "/lists/create-blank",
-                            hx_post=True, hint=t("lists.empty_hint", lang),
+            empty_state_cta(windowed or t("label.no_lists_yet", lang), t("btn.new_list", lang), new_url,
+                            hx_post=posts, hint=t("lists.empty_hint", lang),
                             more=(period_all_time_link(period, lang, "btn btn--secondary"),) if windowed else ()),
             id="list-table",
         )
