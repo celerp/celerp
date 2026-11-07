@@ -651,15 +651,19 @@ class TestListPrefixes:
         assert r.json()["id"].startswith("list:TRF-")
 
     @pytest.mark.asyncio
-    async def test_a_types_prefix_setting_applies_and_the_old_list_setting_continues_until_then(self, client):
+    async def test_a_types_prefix_setting_applies_and_the_old_list_setting_continues_until_then(self, client, session):
+        from test_routers.test_numbering_boundary import _legacy
         token = await _register(client)
+        company_id = (await client.get("/companies/me", headers=_h(token))).json()["id"]
+        await _legacy(session, company_id, nxt=1)
         for doc_type, body in (("list", {"prefix": "OLD"}), ("audit", {"prefix": "CNT"})):
             r = await client.patch(f"/docs/sequences/{doc_type}", headers=_h(token), json=body)
             assert r.status_code == 200, r.text
         assert (await _create_list(client, token, list_type="audit")).startswith("list:CNT-")
-        # Quotation, transfer and untyped Lists keep drawing from the shared counter, so their
-        # numbers do not restart; saving the transfer row splits transfers off under their own
-        # prefix. The quotation row is the documents' counter, so quotation Lists stay shared.
+        # A 2.8.0 company's quotation, transfer and untyped Lists keep drawing from the shared
+        # counter, so their numbers do not restart; saving the transfer row splits transfers off
+        # under their own prefix. The quotation row is the documents' counter, so quotation Lists
+        # stay shared.
         old = await _create_list(client, token, list_type="quotation")
         assert old.startswith("list:OLD-") and old.endswith("-0001")
         assert (await _create_list(client, token, list_type="transfer")).startswith("list:OLD-")
@@ -670,6 +674,14 @@ class TestListPrefixes:
         r = await client.patch("/docs/sequences/quotation", headers=_h(token), json={})
         assert r.status_code == 200, r.text
         assert (await _create_list(client, token, list_type="quotation")).startswith("list:OLD-")
+
+    @pytest.mark.asyncio
+    async def test_a_list_prefix_setting_on_a_new_company_moves_no_list_type(self, client):
+        token = await _register(client)
+        r = await client.patch("/docs/sequences/list", headers=_h(token), json={"prefix": "OLD"})
+        assert r.status_code == 200, r.text
+        assert (await _create_list(client, token, list_type="quotation")).startswith("list:QUO-")
+        assert (await _create_list(client, token, list_type="transfer")).startswith("list:TRF-")
 
     @pytest.mark.asyncio
     async def test_a_number_another_list_type_took_is_skipped_not_refused(self, client):

@@ -799,17 +799,31 @@ def test_journal_ref_index_is_recognized_as_schema_ddl_not_data_backfill():
     ]
 
 
+def test_numbering_lookup_indexes_are_recognized_as_schema_ddl_not_data_backfill():
+    migration = (
+        Path(__file__).resolve().parent.parent
+        / "celerp/migrations/versions/q0r1s2t3u4v5_projections_number_lookup.py"
+    )
+    assert [(sig.kind, sig.table, sig.extra) for sig in extract_signatures(migration)] == [
+        ("create_index", "projections", name)
+        for name in ("ix_projections_number_shown", "ix_projections_number_kept", "ix_projections_number_key")
+    ]
+
+
 @pytest.mark.parametrize(("drop_indexes", "invalid_indexes", "expected"), [
     (("ix_ledger_je_doc_refs_gin",), (), "m8a9b0c1d2e3"),
     ((), ("ix_ledger_je_doc_refs_gin",), "m8a9b0c1d2e3"),
-    ((), (), "p9q0r1s2t3u4"),
+    (("ix_projections_number_kept",), (), "p9q0r1s2t3u4"),
+    ((), ("ix_projections_number_key",), "p9q0r1s2t3u4"),
+    ((), (), "q0r1s2t3u4v5"),
 ])
 def test_an_upgraded_database_without_the_journal_ref_index_is_stamped_below_it(
         drop_indexes, invalid_indexes, expected):
     """A database upgraded to m8a9b0c1d2e3 has every table but not the GIN index: the restamp
     before an upgrade must leave p9q0r1s2t3u4 to run, never claim it from the rest of the
     schema. An invalid index, left by a cancelled concurrent build, is not there either: the
-    revision drops and rebuilds it. Once a valid index is there, the revision is proven."""
+    revision drops and rebuilds it. Once a valid index is there, the revision is proven. The
+    numbering lookup indexes of q0r1s2t3u4v5 are proven the same way."""
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(build_alembic_config())
