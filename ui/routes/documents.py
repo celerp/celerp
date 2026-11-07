@@ -44,7 +44,7 @@ from celerp.services.permissions import missing_permission_text, role_has_permis
 from ui.components.import_access import can_import_documents
 from ui.module_slots import connected_connector_ids, required_connectors, visible_slot_contributions
 from celerp.output.document_context import prepare_document_output
-from ui.components.activity import activity_table
+from ui.components.activity import EVENT_TYPE_LABELS, activity_table
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import files_error, files_section as _shared_doc_files_section, files_session_expired
 from ui.components.doc_money import ATTRS as DOC_MONEY_ATTRS, redraw_trigger as doc_money_redraw
@@ -11371,7 +11371,7 @@ async function celerpCsvImport(input, entityId) {{
              hx_get=f"/docs/{entity_id}/gl-impact",
              hx_trigger="load",
              hx_swap="outerHTML")
-         if role_has_permission(settings or {}, role, "view_financial_reports") and doc.get("doc_type") != "list" else ""),
+         if role_has_permission(settings or {}, role, "view_financial_reports") else ""),
         # --- History / Activity section ---
         Div(id=f"doc-history-{entity_id.replace(':', '-').replace('/', '-')}",
             hx_get=f"/docs/{entity_id}/history?page=1",
@@ -11390,6 +11390,15 @@ def _gl_impact_dom_id(entity_id: str) -> str:
 _POSTING_DOC_TYPES = ("invoice", "credit_note", "debit_note", "bill")
 
 
+def _gl_entry_heading(entry: dict, doc_ref: str) -> str:
+    """What an entry was posted for, in the words of the activity feed: the event that posted
+    it and the document number, or the entry's own memo for a posting the feed has no name for."""
+    key = EVENT_TYPE_LABELS.get(entry.get("trigger") or "")
+    if key:
+        return f"{t(key)} {doc_ref}".strip()
+    return entry.get("memo") or doc_ref
+
+
 def _doc_gl_impact_section(data: dict, entity_id: str, currency: str | None) -> FT:
     """The journal entries a document posted, as the books hold them: one table per
     entry, so each balances on its own and links back to the journal."""
@@ -11397,7 +11406,9 @@ def _doc_gl_impact_section(data: dict, entity_id: str, currency: str | None) -> 
     heading = Div(H3(t("documents.gl_impact"), cls="section-title"), cls="section-header")
     if not entries:
         draft = str(data.get("status") or "").lower() == "draft" and data.get("doc_type") in _POSTING_DOC_TYPES
-        body = P(t("documents.gl_impact_not_posted" if draft else "documents.gl_impact_none"), cls="empty-state-msg")
+        key = ("documents.gl_impact_list_not_posted" if _list_behavior(data.get("list_type")).posts
+               else "documents.gl_impact_not_posted" if draft else "documents.gl_impact_none")
+        body = P(t(key), cls="empty-state-msg")
         return Div(heading, body, id=_gl_impact_dom_id(entity_id), cls="doc-section")
     tables = []
     for e in entries:
@@ -11414,7 +11425,8 @@ def _doc_gl_impact_section(data: dict, entity_id: str, currency: str | None) -> 
                 Td(ln.get("party_name") or EMPTY),
                 Td(memo or EMPTY),
             ))
-        link = A(e.get("je_id") or "", href="/accounting?q=" + quote_plus(str((e.get("source_doc") or {}).get("doc_ref") or e.get("je_id") or "")),
+        doc_ref = str((e.get("source_doc") or {}).get("doc_ref") or "")
+        link = A(_gl_entry_heading(e, doc_ref), href="/accounting?q=" + quote_plus(doc_ref or str(e.get("je_id") or "")),
                  cls="table-link")
         tables.append(Div(
             Div(link, Span(f" {e.get('ts') or ''}"),

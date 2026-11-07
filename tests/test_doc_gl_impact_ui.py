@@ -38,14 +38,17 @@ def test_detail_page_shows_gl_impact_to_a_role_granted_it():
     assert _PLACEHOLDER in _page(role="viewer", settings=grants)
 
 
-def test_lists_never_get_a_gl_impact_section():
-    assert _PLACEHOLDER not in _page(doc_type="list", role="owner")
+def test_a_list_page_loads_gl_impact_for_a_role_with_accounting_access():
+    # A write-off or an audit List posts to the books; its page shows what it posted.
+    assert f"/docs/doc:list-1{_PLACEHOLDER}" in _page(doc_type="list", role="owner")
+    assert _PLACEHOLDER not in _page(doc_type="list", role="viewer")
 
 
 _POSTED = {
     "doc_id": "doc:inv-1", "doc_type": "invoice", "status": "final", "currency": "USD",
     "entries": [
         {"je_id": "je:auto:doc:inv-1", "ts": "2026-02-01", "memo": "Invoice INV-1", "status": "posted",
+         "trigger": "doc.finalized",
          "source_doc": {"doc_id": "doc:inv-1", "doc_ref": "INV-1"},
          "lines": [
              {"account": "1120", "name": "Accounts Receivable", "debit": 100.0, "credit": 0.0,
@@ -54,6 +57,7 @@ _POSTED = {
               "party_name": "Acme Ltd", "item": "Widget", "quantity": 2},
          ]},
         {"je_id": "je:auto:doc:inv-1:fulfill", "ts": "2026-02-02", "memo": "Cost of sales", "status": "void",
+         "trigger": "doc.fulfilled",
          "source_doc": {"doc_id": "doc:inv-1", "doc_ref": "INV-1"},
          "lines": [{"account": "5100", "name": "Cost of Goods Sold", "debit": 42.0, "credit": 0.0,
                     "party_id": "contact:1", "party_name": ""}]},
@@ -64,9 +68,24 @@ _POSTED = {
 def test_posted_document_lists_accounts_party_items_and_journal_links():
     html = to_xml(_doc_gl_impact_section(_POSTED, "doc:inv-1", "USD"))
     for expected in ("1120 Accounts Receivable", "4100 Sales", "5100 Cost of Goods Sold", "Acme Ltd",
-                     "Widget x 2", "je:auto:doc:inv-1", "je:auto:doc:inv-1:fulfill", t("documents.gl_impact_void")):
+                     "Widget x 2", t("documents.gl_impact_void")):
         assert expected in html, expected
     assert "/accounting?q=INV-1" in html
+
+
+def test_each_entry_is_headed_by_what_happened_and_the_document_number():
+    html = to_xml(_doc_gl_impact_section(_POSTED, "doc:inv-1", "USD"))
+    assert f"{t('event.doc.finalized')} INV-1" in html
+    assert f"{t('event.doc.fulfilled')} INV-1" in html
+    assert "je:auto" not in html
+
+
+def test_an_entry_with_no_event_label_is_headed_by_its_memo():
+    entry = {**_POSTED["entries"][0], "trigger": "writeoff.adjusted", "memo": "Inventory write-off WO-1",
+             "source_doc": {"doc_id": "list:wo-1", "doc_ref": "WO-1"}}
+    html = to_xml(_doc_gl_impact_section({**_POSTED, "entries": [entry]}, "list:wo-1", "USD"))
+    assert "Inventory write-off WO-1" in html
+    assert "je:auto" not in html
     # A line with no resolvable party name shows an empty cell, never the raw contact id.
     assert "contact:1" not in html
 

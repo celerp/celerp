@@ -833,6 +833,7 @@ async def test_doctor_voids_only_recognition_entries_with_no_finalize_or_receipt
     await auto_je._post_po_receipt(
         session, company_id=company_id, user_id=None, po_id=legacy_po, receipt_key=None,
         debits={auto_je.po_receipt_role({"doc_type": "purchase_order"}): 40.0}, receive_date="2026-01-05",
+        items=[],
     )
     await session.commit()
     false_receipt = next(p.entity_id for p in (await session.execute(

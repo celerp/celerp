@@ -1504,12 +1504,15 @@ def po_receipt_role(doc: dict, receive_as: str = "stock") -> AccountRole:
 
 
 async def _post_po_receipt(session, *, company_id, user_id, po_id: str, receipt_key: str | None,
-                           debits: dict[AccountRole | str, float], receive_date: str | None) -> None:
+                           debits: dict[AccountRole | str, float], receive_date: str | None,
+                           items: list[dict]) -> None:
     """Dr each receipt debit / Cr AP for the sum of the rounded debits.
 
     A role key posts to the role's account; an account key is the inventory account
     of the lot the goods were added to. AP continues on the account the order's
-    earlier receipts recognized it on."""
+    earlier receipts recognized it on. `items` (item, quantity, cost in the books'
+    currency) is what this receipt booked; the entry carries it, so the receipt's items
+    are read from the receipt and not from the whole order."""
     currency = await company_currency(session, company_id)
     rounded = {key: round_money(amount, currency) for key, amount in debits.items()}
     total = sum(rounded.values(), _Dec(0))
@@ -1535,7 +1538,7 @@ async def _post_po_receipt(session, *, company_id, user_id, po_id: str, receipt_
         memo=f"Auto JE for {po_id} received",
         ts=await entry_day(session, company_id, receive_date),
         entries=entries,
-        metadata_={"trigger": "doc.received", "doc_id": po_id},
+        metadata_={"trigger": "doc.received", "doc_id": po_id, "items": items},
     )
 
 
@@ -1586,6 +1589,7 @@ async def create_for_imported_document(
 
 async def create_for_po_receipt(
     session, *, company_id, user_id, po_id: str, receipt_key: str, debits: dict[AccountRole | str, float],
+    items: list[dict],
 ) -> None:
     """Receipt entry for one batch of goods received on a purchase order.
 
@@ -1594,7 +1598,7 @@ async def create_for_po_receipt(
     adds to the lots' cost. Dated today in the company's timezone (entry_day)."""
     await _post_po_receipt(
         session, company_id=company_id, user_id=user_id, po_id=po_id, receipt_key=receipt_key,
-        debits=debits, receive_date=None,
+        debits=debits, receive_date=None, items=items,
     )
 
 
@@ -4724,7 +4728,7 @@ def _list_adjustment_je_id(list_id: str, kind: str, cycle: int) -> str:
 
 async def create_for_line_adjustment(
     session, *, company_id, user_id, list_id: str, kind: str, entries: list[dict], cycle: int = 0,
-    recorded: object = None,
+    recorded: object = None, scope: str | None = None,
 ) -> None:
     """Post one balanced auto JE for a list terminal that adjusts stock value, dated the
     business day of ``recorded``, when the terminal started (entry_day).
@@ -4733,16 +4737,21 @@ async def create_for_line_adjustment(
     shrinkage/overage lines; write-off builds one debit per chosen destination account against
     a single Inventory credit. Idempotency is namespaced by kind+cycle so audit and write-off
     never collide, and a re-run after an undo posts a fresh cycle rather than a duplicate.
+
+    `scope` namespaces the entry id and its idempotency when one List posts more than one
+    entry of a kind (a write-off's cost corrections); the entry still names `list_id` as
+    its source, so it shows on the List it belongs to.
     """
     if not entries:
         return  # nothing to post (no value change)
+    scope = scope or list_id
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=_list_adjustment_je_id(list_id, kind, cycle),
-        idem_create=je_idempotency_key(list_id, f"{kind}.adjusted:{cycle}", "c"),
-        idem_posted=je_idempotency_key(list_id, f"{kind}.adjusted:{cycle}", "p"),
+        je_id=_list_adjustment_je_id(scope, kind, cycle),
+        idem_create=je_idempotency_key(scope, f"{kind}.adjusted:{cycle}", "c"),
+        idem_posted=je_idempotency_key(scope, f"{kind}.adjusted:{cycle}", "p"),
         memo=f"{_ADJUST_MEMO.get(kind, kind)} {list_id}",
         ts=await entry_day(session, company_id, recorded),
         entries=entries,
@@ -4750,9 +4759,12 @@ async def create_for_line_adjustment(
     )
 
 
-async def void_for_list_adjustment(session, *, company_id, user_id, list_id: str, kind: str, cycle: int = 0) -> None:
-    """Void a list-adjustment JE (undo). No-op if it was never posted (zero-value adjustment)."""
-    je_id = _list_adjustment_je_id(list_id, kind, cycle)
+async def void_for_list_adjustment(session, *, company_id, user_id, list_id: str, kind: str, cycle: int = 0,
+                                   scope: str | None = None) -> None:
+    """Void a list-adjustment JE (undo), `scope` as create_for_line_adjustment posted it. No-op if
+    it was never posted (zero-value adjustment)."""
+    scope = scope or list_id
+    je_id = _list_adjustment_je_id(scope, kind, cycle)
     row = await session.get(Projection, {"company_id": company_id, "entity_id": je_id})
     if row is not None and row.state.get("status") == "posted":
         await emit_event(
@@ -4765,7 +4777,7 @@ async def void_for_list_adjustment(session, *, company_id, user_id, list_id: str
             actor_id=user_id,
             location_id=None,
             source="auto_je",
-            idempotency_key=je_idempotency_key(list_id, f"{kind}.undo:{cycle}", "void"),
+            idempotency_key=je_idempotency_key(scope, f"{kind}.undo:{cycle}", "void"),
             metadata_={"trigger": f"{kind}.undo", "list_id": list_id},
         )
 

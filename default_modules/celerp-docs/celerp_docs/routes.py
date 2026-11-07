@@ -5749,15 +5749,21 @@ async def record_receipt(session: AsyncSession, company_id, row: Projection, pay
         # bill it becomes books only what its receipts have not.
         # Goods added to stock are booked on their lot's inventory account; anything else
         # on the account of the role it was received as.
+        # The entry records the items it books, so the extended journal names them per receipt.
         debits: dict = {}
+        booked: list[dict] = []
+        order_lines = row.state.get("line_items") or []
         for line_no, (it, (_, _, received_cost)) in enumerate(zip(payload.received_items, priced)):
             receipt_role = auto_je.po_receipt_role(row.state, it.receive_as)
             target = (line_lot_account.get(line_no, receipt_role)
                       if receipt_role == AccountRole.INVENTORY_PURCHASED else receipt_role)
             debits[target] = debits.get(target, 0.0) + received_cost
+            idx = received_line_index(order_lines, it.model_dump())
+            booked.append({"item": line_label(order_lines[idx]) if idx is not None else (it.sku or it.name or ""),
+                           "quantity": float(it.quantity_received), "cost": received_cost})
         await auto_je.create_for_po_receipt(
             session, company_id=company_id, user_id=user.id, po_id=entity_id,
-            receipt_key=key, debits=debits,
+            receipt_key=key, debits=debits, items=booked,
         )
     elif doc_type == "bill" and landed_drawdown:
         # A bill already recognised goods + AP at finalize (create_for_bill_conversion); receiving must
@@ -14611,10 +14617,9 @@ async def undo_write_off(
         Projection.entity_id.endswith(":writeoff_cost:0", autoescape=True),
     ).order_by(Projection.entity_id))).scalars().all()
     for adjustment_id in adjustment_ids:
-        derived_id = adjustment_id.removeprefix("je:auto:").removesuffix(":writeoff_cost:0")
         await auto_je.void_for_list_adjustment(
-            session, company_id=company_id, user_id=user.id,
-            list_id=derived_id, kind="writeoff_cost")
+            session, company_id=company_id, user_id=user.id, list_id=entity_id,
+            scope=adjustment_id.removeprefix("je:auto:").removesuffix(":writeoff_cost:0"), kind="writeoff_cost")
     await auto_je.void_for_list_adjustment(session, company_id=company_id, user_id=user.id,
                                            list_id=entity_id, kind="writeoff", cycle=cycle)
     await _emit_list(session, company_id, entity_id, "list.reopened", {"line_items": lines}, user)

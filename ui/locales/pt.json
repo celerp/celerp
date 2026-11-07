@@ -2506,6 +2506,7 @@
   "documents.gl_impact_credit": "Credit",
   "documents.gl_impact_debit": "Debit",
   "documents.gl_impact_memo": "Memo",
+  "documents.gl_impact_list_not_posted": "Ainda não lançado. Esta lista afetará o razão geral quando o ajuste de estoque for feito.",
   "documents.gl_impact_none": "This document does not affect the general ledger.",
   "documents.gl_impact_not_posted": "Not posted yet. This document will affect the general ledger once it is issued.",
   "documents.gl_impact_party": "Party",
