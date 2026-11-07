@@ -64,3 +64,33 @@ async def test_a_duplicated_list_keeps_its_issue_and_due_dates_as_a_pair(client,
         assert copy["due_date"] == (issued + timedelta(days=30)).isoformat()
     else:
         assert not copy.get("due_date"), copy["due_date"]
+
+
+async def _quotation(client, session):
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    cust = next(c["id"] for c in contacts if c.get("contact_type") in ("customer", "both"))
+    r = await client.post("/lists", headers=h, json={
+        "list_type": "quotation", "contact_id": cust, "line_items": [{"name": "A", "quantity": 2, "unit_price": 50}]})
+    assert r.status_code == 200, r.text
+    return h, r.json()["id"]
+
+
+async def test_every_convert_refusal_is_keyed_and_names_what_stops_it(client, session):
+    """A List the user cannot convert is refused in the reader's language, saying why: the target is not a
+    document a List becomes, the List is not finalized yet, or it already became a document."""
+    h, lid = await _quotation(client, session)
+    r = await client.post(f"/lists/{lid}/convert", headers=h, json={"target_type": "invoice"})
+    assert r.status_code == 409 and r.json()["detail"]["message_key"] == "documents.err_list_convert_status", r.text
+    assert (await client.post(f"/lists/{lid}/finalize", headers=h)).status_code == 200
+    for target in ("bill", "", " ", "invoiceé", "x" * 5000):
+        r = await client.post(f"/lists/{lid}/convert", headers=h, json={"target_type": target})
+        assert r.status_code == 422 and r.json()["detail"]["message_key"] == "documents.err_convert_unsupported", r.text
+    r = await client.post(f"/lists/{lid}/convert", headers=h, json={"target_type": "invoice"})
+    assert r.status_code == 200, r.text
+    number = r.json()["target_doc_id"].removeprefix("doc:")
+    r = await client.post(f"/lists/{lid}/convert", headers=h, json={"target_type": "memo"})
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["message_key"] == "documents.err_list_already_converted", r.text
+    assert r.json()["detail"]["params"] == {"number": number}
+    assert number in r.json()["detail"]["message"]

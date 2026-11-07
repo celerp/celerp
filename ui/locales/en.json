@@ -4775,6 +4775,8 @@
   "documents.err_list_void_closed": "This list has been completed, so it can't be voided. Undo the last step (for example, the conversion or stock move) first.",
   "documents.err_list_delete_not_draft": "Only a draft list can be deleted. Void it instead, or revert it to Draft first.",
   "documents.err_list_convert_type": "This kind of list can't be turned into an invoice or memo.",
+  "documents.err_list_convert_status": "Only a finalized list can be converted. Finalize this one first, or if it is void or completed, duplicate it and convert the copy.",
+  "documents.err_list_already_converted": "This list was already converted to {number}.",
   "documents.err_split_failed": "{sku} couldn't be split: {error}",
   "documents.err_return_part_failed": "Part of {sku} couldn't be returned: {error}",
   "documents.err_deliver_type": "Items can only be delivered from an invoice or memo.",

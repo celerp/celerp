@@ -10051,12 +10051,13 @@ async def convert_list(
     state = row.state
     lt = state.get("list_type") or DEFAULT_LIST_TYPE
     if payload.target_type not in ("invoice", "memo"):
-        raise HTTPException(status_code=422, detail="target_type must be 'invoice' or 'memo'")
+        raise HTTPException(status_code=422, detail=catalog_refusal("documents.err_convert_unsupported"))
     if terminal_action(lt, f"convert-{payload.target_type}") is None:
-        raise HTTPException(status_code=409,
-                            detail=t("documents.err_list_convert_type"))
+        raise HTTPException(status_code=409, detail=catalog_refusal("documents.err_list_convert_type"))
     if state.get("status") != FINALIZED:
-        raise HTTPException(status_code=409, detail="Finalize the quotation before converting it")
+        raise HTTPException(status_code=409, detail=catalog_refusal(
+            "documents.err_list_already_converted", number=state["converted_to"].removeprefix("doc:"))
+            if state.get("result") == "converted" else catalog_refusal("documents.err_list_convert_status"))
     if (differ := list_totals_differ(state)) is not None:
         stored, current = differ
         key = "documents.err_list_old_rule_total"
