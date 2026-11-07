@@ -26,6 +26,7 @@ from fastapi import HTTPException
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.accounting_roles import catalog_refusal
 from celerp.events.engine import emit_event, find_event_by_idempotency
 from celerp.models.accounting import UserCompany
 from celerp.models.company import Company
@@ -130,7 +131,7 @@ def refuse_unscheduled(state: dict, entity_id: str) -> None:
         raise HTTPException(status_code=409, detail=t(
             "subscriptions.err_no_periods", ref=state.get("ref_id") or entity_id))
     if (exc := unscheduled(state)) is not None:
-        raise HTTPException(status_code=409, detail=t(exc.key, **exc.params)) from exc
+        raise schedule_refusal(409, exc) from exc
 
 
 def unscheduled(state: dict) -> ScheduleError | None:
@@ -160,7 +161,13 @@ def refuse_unbuildable_terms(before: dict, after: dict) -> None:
     such terms. A write to terms an earlier release left unbuildable is not refused, so voiding
     or repairing the agreement still works."""
     if (exc := unscheduled(after)) is not None and unscheduled(before) is None:
-        raise HTTPException(status_code=422, detail=t(exc.key, **exc.params)) from exc
+        raise schedule_refusal(422, exc) from exc
+
+
+def schedule_refusal(status_code: int, exc: ScheduleError) -> HTTPException:
+    """The refusal saying why stored terms build no schedule, keyed so it reads in the
+    reader's language."""
+    return HTTPException(status_code=status_code, detail=catalog_refusal(exc.key, **exc.params))
 
 
 def refuse_not_moved(state: dict, entity_id: str) -> None:
@@ -320,7 +327,7 @@ def refuse_unbillable(state: dict) -> None:
     """A 409 naming why, unless the agreement is billable: its status, or why its stored
     terms build no schedule."""
     if state.get("status") == "active" and (exc := unscheduled(state)) is not None:
-        raise HTTPException(status_code=409, detail=t(exc.key, **exc.params)) from exc
+        raise schedule_refusal(409, exc) from exc
     if not billable(state):
         raise HTTPException(status_code=409, detail=t(
             _UNBILLABLE.get(state.get("status"), "subscriptions.err_bill_not_active")))
@@ -621,7 +628,7 @@ async def period_list(session: AsyncSession, company_id, state: dict, today: dat
         return {"next_bill_date": None, "rows": [], "review": [], "set_aside": [],
                 "older_before": None, "oldest_due_row": None, "not_moved": not_moved(state)}
     if (exc := unscheduled(state)) is not None:
-        raise HTTPException(status_code=409, detail=t(exc.key, **exc.params)) from exc
+        raise schedule_refusal(409, exc) from exc
     schedule = Schedule.from_state(state)
     nxt = schedule.next_bill_date(floor=review_floor(state))
     first = schedule.first()

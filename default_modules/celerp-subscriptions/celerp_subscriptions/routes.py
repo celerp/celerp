@@ -182,7 +182,7 @@ async def _first_schedule(session, company_id, state: dict) -> dict:
     try:
         return {"start_date": start, **migration.legacy_schedule({**state, "start_date": start})}
     except ScheduleError as exc:
-        raise HTTPException(status_code=422, detail=t(exc.key, **exc.params)) from exc
+        raise billing.schedule_refusal(422, exc) from exc
 
 
 async def _move_with(session, company_id, proj: Projection, sent: dict, user) -> dict:
@@ -541,7 +541,7 @@ def _build_router() -> APIRouter:
         try:
             schedule = Schedule.from_state(merged) if merged.get("anchor_date") else None
         except ScheduleError as exc:
-            raise HTTPException(status_code=422, detail=t(exc.key, **exc.params)) from exc
+            raise billing.schedule_refusal(422, exc) from exc
         if merged.get("term_start") and merged.get("term_end") and merged["term_start"] >= merged["term_end"]:
             raise HTTPException(status_code=422, detail=t("subscriptions.err_term_order"))
         if schedule is not None and any(not schedule.exists(k) for k in recorded):

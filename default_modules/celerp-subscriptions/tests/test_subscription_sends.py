@@ -138,11 +138,11 @@ def _caught_text(handler: ast.ExceptHandler) -> list[ast.AST]:
 def _is_catalog_text(node: ast.AST) -> bool:
     if isinstance(node, ast.IfExp):
         return _is_catalog_text(node.body) and _is_catalog_text(node.orelse)
-    return isinstance(node, ast.Call) and getattr(node.func, "id", None) == "t"
+    return isinstance(node, ast.Call) and getattr(node.func, "id", None) in ("t", "catalog_refusal")
 
 
 def test_every_subscription_refusal_is_a_catalog_text():
-    """Class guard: every HTTPException the module raises carries a catalog text (t(...)), and
+    """Class guard: every HTTPException the module raises carries a catalog text (t(...) or catalog_refusal(...)), and
     no except block words the exception it caught (str(exc), an f-string), so every refusal and
     every reason inside one reads in the reader's language, whichever rule refused."""
     root = Path(__file__).resolve().parents[1] / "celerp_subscriptions"
