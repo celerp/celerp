@@ -208,15 +208,13 @@ def seeded_user(api_server):
 
 @pytest.fixture(scope="session")
 def browser_context(playwright, ui_server, seeded_user):
-    """Chromium session context with auth cookie pre-set."""
+    """Chromium session context with the session cookies pre-set. The refresh cookie is set
+    beside the access one, as a sign-in sets both, so the session outlives the access token's
+    few minutes for the length of the suite, the way a signed-in user's does."""
     browser = playwright.chromium.launch(headless=True)
     ctx = browser.new_context(base_url=ui_server)
-    ctx.add_cookies([{
-        "name": "celerp_token",
-        "value": seeded_user["access_token"],
-        "domain": "127.0.0.1",
-        "path": "/",
-    }])
+    ctx.add_cookies([{"name": name, "value": seeded_user[key], "domain": "127.0.0.1", "path": "/"}
+                     for name, key in (("celerp_token", "access_token"), ("celerp_refresh", "refresh_token"))])
     # The health banner reports the real host's RAM/CPU/disk. Under a parallel suite the CPU
     # passes its warning line, and the banner, shown just after load, pushes the page down
     # under whatever a test is hovering. No browser test is about the host's load.
