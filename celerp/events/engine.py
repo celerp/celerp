@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import date
 
@@ -630,6 +631,21 @@ async def _doc_applied(session, entry: LedgerEntry, transition) -> None:
         await resolve_handler(handler)(session=session, entry=entry, transition=transition)
 
 
+# Set while work nobody started by hand runs (unattended): every event it writes is marked so.
+_UNATTENDED: ContextVar[bool] = ContextVar("unattended", default=False)
+
+
+async def unattended(work):
+    """Await ``work`` as work nobody started by hand: each event it writes carries
+    ``metadata.automatic``, so it reads as done automatically whichever member's authority it
+    ran under. The app starts every module background loop through this."""
+    token = _UNATTENDED.set(True)
+    try:
+        return await work
+    finally:
+        _UNATTENDED.reset(token)
+
+
 async def emit_event(
     session, *, preserve_external_code_conflicts: bool = False,
     memo_draw: MemoDraw | MemoReturn | None = None, held_lot_carve: HeldLotCarve | None = None, **kwargs
@@ -875,6 +891,8 @@ async def emit_event(
         await _record_lot_account(session, kwargs, previous_item_state)
         _record_consignor_payable(kwargs, previous_item_state)
 
+    if _UNATTENDED.get():
+        kwargs["metadata_"] = {**(kwargs.get("metadata_") or {}), "automatic": True}
     entry = LedgerEntry(**kwargs)
 
     # The event and its effect on the projection are one SAVEPOINT: a refused projection

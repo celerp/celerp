@@ -142,3 +142,25 @@ def test_only_the_opt_in_names_the_test_server():
     ci = (Path(REPO_ROOT) / ".github" / "workflows" / "ci.yml").read_text()
     assert not re.search(r"^\s*DATABASE_URL:", ci, re.M)
     assert re.search(rf"^\s*{TEST_DATABASE_VAR}:", ci, re.M)
+
+
+def test_a_worker_uses_the_container_the_run_started(monkeypatch):
+    """The run's own container is reached at whatever host Docker gives it (the gateway inside a
+    devcontainer, a remote DOCKER_HOST), and every xdist worker uses it as is; only an opt-in
+    someone set is held to this machine, in every process."""
+    import conftest_support
+
+    container = "postgresql+asyncpg://test:test@172.17.0.1:32768/test"
+    controller: dict[str, str] = {}
+    assert conftest_support.provision_test_database(controller, lambda: container) == container
+    assert TEST_DATABASE_VAR not in controller
+
+    def no_container():
+        raise AssertionError("a worker never starts a container")
+    monkeypatch.setattr(conftest_support, "provision_worker_db", lambda url, worker: f"{url}_{worker}")
+    worker = {**controller, "PYTEST_XDIST_WORKER": "gw0"}
+    assert conftest_support.provision_test_database(worker, no_container) == f"{container}_gw0"
+    with pytest.raises(RefusedTestDatabase):
+        conftest_support.provision_test_database(
+            {**controller, TEST_DATABASE_VAR: "postgresql://u@db.example.com/celerp_test",
+             "PYTEST_XDIST_WORKER": "gw0"}, no_container)

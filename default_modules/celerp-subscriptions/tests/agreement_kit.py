@@ -124,15 +124,17 @@ async def contact(client, headers: dict, email: str) -> str:
 
 
 async def tick(session, cid: str, day: str):
-    """One dispatcher pass for one company on ``day``, in the test's own transaction."""
+    """One dispatcher pass for one company on ``day``, in the test's own transaction, run
+    unattended as the app runs its background loops."""
     from contextlib import asynccontextmanager
+    from celerp.events.engine import unattended
     from celerp_docs import periodic
 
     @asynccontextmanager
     async def factory():
         yield session
 
-    return await periodic.run_company(factory, uuid.UUID(cid), today=date.fromisoformat(day))
+    return await unattended(periodic.run_company(factory, uuid.UUID(cid), today=date.fromisoformat(day)))
 
 
 async def summary(client, headers: dict, **params) -> dict:

@@ -266,3 +266,24 @@ def test_only_the_one_writer_records_an_agreement_change():
                                 for k in node.keywords)):
                     found.add((path.name, fn.name))
     assert found == allowed, found
+
+
+# --- Who did it: work nobody started by hand reads "Automatically" (P4e-1) ---------
+
+async def test_history_names_unattended_billing_as_automatic(owner_ui, session, monkeypatch):
+    """The background pass bills the period: its History rows read "Automatically" in the
+    who column, and the ledger says so to the API, while the owner's own change reads as them."""
+    freeze_day(monkeypatch, "2026-07-01")
+    eid = await agreement(owner_ui.api, {}, start="2026-07-01")
+    assert (await schedule(owner_ui.api, {}, eid, generation_mode="auto_invoice")).status_code == 200
+    await tick(session, await company_id(owner_ui.api, {}), "2026-07-01")
+    soup = BeautifulSoup((await owner_ui.get(f"/docs/{eid}/history?per_page=100")).text, "html.parser")
+    rows = [[td.get_text(" ", strip=True) for td in tr.find_all("td")] for tr in soup.select("tbody tr")]
+    automatic = t("activity.actor_automatic", "en")
+    billed = [r for r in rows if "Billed" in " ".join(r)]
+    assert billed and all(r[2] == automatic for r in billed), rows
+    assert [r for r in rows if r[2] not in (automatic, "--")], rows  # the owner's own changes
+    items = (await owner_ui.api.get("/ledger", params={"entity_id": eid, "limit": 200})).json()
+    items = items["items"] if isinstance(items, dict) else items
+    flags = {e["event_type"]: bool(e.get("actor_automatic")) for e in items if e["event_type"] != "doc.created"}
+    assert True in flags.values() and False in flags.values(), flags

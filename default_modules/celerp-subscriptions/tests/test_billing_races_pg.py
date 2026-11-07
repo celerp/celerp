@@ -263,3 +263,58 @@ async def test_one_confirmed_send_again_sends_one_message_however_often_it_arriv
     assert first.status_code == second.status_code == 200, (first.text, second.text)
     assert len(calls) == 1
     assert first.json()["send"] == "sent"
+
+
+async def test_a_send_in_flight_reads_sending_and_is_not_sent_again(committed_engine, monkeypatch):
+    """The unattended pass is emailing a period and the mail server is slow to answer. The
+    owner opens the agreement meanwhile: the period reads as sending, with no Send again, and a
+    send pressed on it is refused while the first is with the mail server, so the customer
+    gets one email (P2f-2). A send record left in flight longer than a send can take (the
+    process stopped mid-send) reads as cut off and can be sent again."""
+    from agreement_kit import contact
+    from celerp.services import email
+    from celerp_subscriptions import billing
+    from ui.i18n import t
+
+    freeze_day(monkeypatch, "2026-07-01")
+    factory = _factory(committed_engine)
+    seeded = await _company(factory)
+    owner, cid = seeded["h"]["owner"], seeded["company_id"]
+    async with _app_client(factory) as (client, _pending):
+        recipient = await contact(client, owner, "inflight@example.test")
+        eid = await agreement(client, owner, start="2026-07-01", contact_id=recipient)
+        assert (await schedule(client, owner, eid, generation_mode="auto_invoice", auto_send=True)).status_code == 200
+        async with factory() as s:
+            assert (await billing.run_due(session=s, company_id=cid, today=date(2026, 7, 1), budget=1)).done == 1
+            await s.commit()
+
+        started, release, calls = asyncio.Event(), asyncio.Event(), []
+
+        async def slow_ok(*, operation_id=None, **_kwargs):
+            calls.append(operation_id)
+            started.set()
+            await release.wait()
+            return email.EmailResult(True, "accepted")
+        monkeypatch.setattr(email, "send_email", slow_ok)
+        unattended = asyncio.create_task(billing.deliver(factory, cid, eid, 0))
+        try:
+            await asyncio.wait_for(started.wait(), 30)
+            listed = (await client.get(f"/subscriptions/{eid}/periods", headers=owner)).json()
+            row = next(r for r in listed["rows"] if r["period_index"] == 0)
+            assert (row["send"], row["again"]) == ("sending", False)
+            shown = next(r for r in (await client.get("/subscriptions/summary", headers=owner)).json()["rows"]
+                         if r["kind"].startswith("send"))
+            assert (shown["kind"], shown["again"]) == ("send_sending", False)
+            pressed = await client.post(f"/subscriptions/{eid}/periods/0/send", headers=owner,
+                                        json={"attempt": row["attempt"], "again": True})
+            assert pressed.status_code == 409, pressed.text
+            assert pressed.json()["detail"] == t("subscriptions.err_send_in_progress")
+            # The same record, once older than a send can take, reads as cut off.
+            monkeypatch.setattr(billing, "SEND_TIMEOUT", billing.SEND_TIMEOUT * 0)
+            stale = next(r for r in (await client.get(f"/subscriptions/{eid}/periods", headers=owner)).json()["rows"]
+                         if r["period_index"] == 0)
+            assert (stale["send"], stale["again"]) == ("unconfirmed", True)
+        finally:
+            release.set()
+        assert (await asyncio.wait_for(unattended, 30))["state"] == "sent"
+    assert len(calls) == 1

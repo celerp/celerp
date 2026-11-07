@@ -118,6 +118,8 @@ def provision_worker_db(url: str, worker: str) -> str:
 
 
 TEST_DATABASE_VAR = "CELERP_TEST_DATABASE_URL"
+# The container the run started, set only by provision_test_database for the xdist workers.
+_PROVISIONED_VAR = "CELERP_TEST_PROVISIONED_DATABASE_URL"
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
@@ -153,13 +155,14 @@ def provision_test_database(environ: MutableMapping[str, str], start_container) 
     """Point DATABASE_URL at this process's test database and return it.
 
     *start_container* starts a throwaway Postgres and returns its URL; it runs only without an
-    opt-in, and its URL becomes the run's opt-in, so xdist workers share the container. A
-    worker gets its own database on the server. The server's settings are never changed: a
-    server the harness starts gets its durability settings at start, any other keeps its own.
+    opt-in, and the xdist workers use that container as is, at whatever host Docker gives it
+    (only an opt-in is held to this machine). A worker gets its own database on the server.
+    The server's settings are never changed: a server the harness starts gets its durability
+    settings at start, any other keeps its own.
     """
-    url = opted_in_test_database(environ)
+    url = opted_in_test_database(environ) or environ.get(_PROVISIONED_VAR)
     if url is None:
-        url = environ[TEST_DATABASE_VAR] = start_container()
+        url = environ[_PROVISIONED_VAR] = start_container()
     worker = environ.get("PYTEST_XDIST_WORKER")
     if worker:
         url = provision_worker_db(url, worker)

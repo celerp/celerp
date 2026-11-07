@@ -122,6 +122,24 @@
         "reason",
         "start"
       ]
+    },
+    "subscriptions.period_send_sending": {
+      "en": "Email is being sent",
+      "params": []
+    },
+    "subscriptions.err_send_in_progress": {
+      "en": "This email is being sent right now. Check again in a few minutes.",
+      "params": []
+    },
+    "subscriptions.summary_send_sending": {
+      "en": "{ref} is being emailed right now. Check again in a few minutes.",
+      "params": [
+        "ref"
+      ]
+    },
+    "activity.actor_automatic": {
+      "en": "Automatically",
+      "params": []
     }
   }
 }

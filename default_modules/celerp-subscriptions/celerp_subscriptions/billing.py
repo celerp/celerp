@@ -11,6 +11,7 @@ backlog older than the agreement's catch-up window. Sending is requested after c
 """
 from __future__ import annotations
 
+import asyncio
 import copy
 import hashlib
 import json
@@ -56,6 +57,10 @@ MODE_DOCUMENT_PERMISSION = {"generation": "finalize_documents", "sending": "edit
 CONSENT_TERMS = {"generation": ("generation_mode", "catchup_periods", *SCHEDULE_FIELDS), "sending": ("auto_send",)}
 # A send handed over with no answer ("unconfirmed"), or cut off before one was recorded ("sending").
 UNCONFIRMED = ("sending", "unconfirmed")
+# The longest a send waits for the mail server, and the longest a send can take with recording its
+# answer: a "sending" record younger than SEND_TIMEOUT may still be with the mail server.
+TRANSPORT_TIMEOUT = timedelta(minutes=4)
+SEND_TIMEOUT = TRANSPORT_TIMEOUT + timedelta(minutes=1)
 CATCHUP_CAP = 12
 # The agreement write_agreement is writing: the one writer allowed to change an agreement's
 # status (guard_agreement_status), set by nothing else (consent_census holds it).
@@ -577,11 +582,12 @@ async def replayable_operations(session, company_id) -> set[str]:
     return {str(operation_id) for operation_id, created_at in attempts if retryable_attempt_time(created_at)}
 
 
-def sends_again(send: dict | None, replayable: set[str]) -> bool:
-    """A cut-off send is sent again as a new message, behind a confirm that it may already have
-    arrived, unless the relay replays the same message (it cannot arrive twice)."""
+def sends_again(status: str | None, send: dict | None, replayable: set[str]) -> bool:
+    """A cut-off send (send_status "unconfirmed") is sent again as a new message, behind a confirm
+    that it may already have arrived, unless the relay replays the same message (it cannot arrive
+    twice)."""
     send = send or {}
-    return send.get("state") in UNCONFIRMED and not (
+    return status == "unconfirmed" and not (
         send.get("deduplicated") and email.relay_send_is_idempotent() and send.get("operation_id") in replayable)
 
 
@@ -600,7 +606,7 @@ async def _listed_row(session, company_id, state: dict, schedule: Schedule, k: i
             "doc_id": doc_id, "ref_id": ((doc or {}).get("ref_id") or doc_id) if doc_id else None,
             "reason": entry.get("reason"), "history": bool(entry.get("history")), "released": released,
             "send": send, "attempt": int((entry.get("send") or {}).get("n") or 0),
-            "again": send == "unconfirmed" and sends_again(entry.get("send"), replayable)}
+            "again": sends_again(send, entry.get("send"), replayable)}
 
 
 async def period_list(session: AsyncSession, company_id, state: dict, today: date, *,
@@ -767,8 +773,9 @@ def send_status(state: dict, k, today: date, doc: dict | None = None) -> str | N
     """How period ``k``'s email reads, for the Periods table, the summary and the send answer
     alike: "sent" once its record or its document says it went (the document's own page can
     send it), "waiting" while the next pass sends it (waiting_sends), "not_sent" when nothing
-    will send it unless someone does, "failed", or "unconfirmed" (it may not have arrived).
-    None when the period has no email."""
+    will send it unless someone does, "failed", "sending" while a send may still be with the
+    mail server (in_flight), or "unconfirmed" (it may not have arrived). None when the period
+    has no email."""
     recorded = ((periods_of(state).get(str(k)) or {}).get("send") or {}).get("state")
     if recorded is None:
         return None
@@ -776,7 +783,21 @@ def send_status(state: dict, k, today: date, doc: dict | None = None) -> str | N
         return "sent"
     if recorded == "pending":
         return "waiting" if int(k) in waiting_sends(state, today) else "not_sent"
+    if in_flight(periods_of(state)[str(k)]["send"]):
+        return "sending"
     return "unconfirmed" if recorded in UNCONFIRMED else recorded
+
+
+def in_flight(send: dict) -> bool:
+    """Whether a send record is a send that may still be with the mail server: recorded as
+    sending less than SEND_TIMEOUT ago. An older one was cut off (the process stopped mid-send)."""
+    if send.get("state") != "sending":
+        return False
+    try:
+        at = datetime.fromisoformat(str(send.get("at")))
+    except ValueError:
+        return False
+    return (at if at.tzinfo else at.replace(tzinfo=timezone.utc)) > datetime.now(timezone.utc) - SEND_TIMEOUT
 
 
 def emailed(doc: dict | None) -> str | None:
@@ -936,6 +957,8 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
             raise HTTPException(status_code=409, detail=t("subscriptions.err_send_not_billed"))
         if retry_by is not None and int(send.get("n") or 0) != attempt:
             return send
+        if retry_by is not None and in_flight(send):
+            raise HTTPException(status_code=409, detail=t("subscriptions.err_send_in_progress"))
         if send.get("state") not in (("pending", "failed", *UNCONFIRMED) if retry_by else ("pending",)):
             return send
 
@@ -1014,7 +1037,9 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
             await session.commit()
 
     try:
-        result = await email.send_email(**message, operation_id=operation_id, fail_closed_on_uncertain=True)
+        result = await asyncio.wait_for(email.send_email(**message, operation_id=operation_id,
+                                                         fail_closed_on_uncertain=True),
+                                        TRANSPORT_TIMEOUT.total_seconds())
     except Exception as exc:
         log.warning("Sending subscription email failed (%s)", type(exc).__name__)
         result = email.EmailResult(False, "delivery outcome unknown", unconfirmed=True)

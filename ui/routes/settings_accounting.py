@@ -12,6 +12,7 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
 import ui.api_client as api
+from ui.components.activity import actor_label
 from ui.components.currency import currency_options
 from ui.components.icons import import_icon
 from ui.api_client import APIError
@@ -536,7 +537,7 @@ def _correction_row(c: dict, currency: str) -> FT:
         Td(c.get("account") or EMPTY),
         Td(fmt_money(c["amount"], currency), cls="cell--number"),
         Td(c["journal"], cls="cell--mono"),
-        Td(c.get("actor_name") or EMPTY),
+        Td(actor_label(c)),
     )
 
 

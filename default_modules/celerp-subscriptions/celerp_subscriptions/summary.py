@@ -25,12 +25,14 @@ from celerp_subscriptions import billing
 from ui.i18n import t
 
 ACK_SETTING = "subscription_summary_ack"
-KINDS = ("generated", "generation_failed", "sent", "send_failed", "send_unconfirmed", "send_pending",
-         "billing_lapsed", "sending_lapsed")
+KINDS = ("generated", "generation_failed", "sent", "send_failed", "send_sending", "send_unconfirmed",
+         "send_pending", "billing_lapsed", "sending_lapsed")
 # Each billing.send_status and its summary kind. An email that waits to go out on its own is
 # shown until it goes; every other row is shown until it is acknowledged.
-_SEND_KINDS = {"sent": "sent", "failed": "send_failed", "unconfirmed": "send_unconfirmed",
-               "waiting": "send_pending", "not_sent": "send_pending"}
+_SEND_KINDS = {"sent": "sent", "failed": "send_failed", "sending": "send_sending",
+               "unconfirmed": "send_unconfirmed", "waiting": "send_pending", "not_sent": "send_pending"}
+# The send kinds someone may need to act on: every one but a sent email.
+TO_CHECK = tuple(dict.fromkeys(kind for kind in _SEND_KINDS.values() if kind != "sent"))
 _LAPSED = {"generation": "billing_lapsed", "sending": "sending_lapsed"}
 
 
@@ -129,12 +131,11 @@ async def report(session: AsyncSession, company_id, user_id, *, everything: bool
             # An email someone sent by hand is theirs, not this summary's of what ran on its own.
             kind = _send_kind(status, send)
             if kind and kind != "sent_by_hand" and (status == "waiting" or (send.get("at") or "") > since):
-                found.append({**base, "kind": kind, "at": send.get("at"), "error_key": send.get("error_key"),
-                              "attempt": int(send.get("n") or 0),
-                              "again": status == "unconfirmed" and billing.sends_again(send, replayable),
+                found.append({**base, "kind": kind, "send": status, "at": send.get("at"),
+                              "error_key": send.get("error_key"), "attempt": int(send.get("n") or 0),
+                              "again": billing.sends_again(status, send, replayable),
                               "retry_url": (f"/subscriptions/{row.entity_id}/periods/{k}/send"
-                                            if kind in ("send_failed", "send_pending", "send_unconfirmed")
-                                            else None)})
+                                            if status != "sent" else None)})
         failure = state.get("billing_failure") or {}
         if failure.get("at") and failure["at"] > since:
             found.append({"entity_id": row.entity_id, "doc_id": row.entity_id,

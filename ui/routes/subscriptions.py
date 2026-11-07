@@ -24,6 +24,7 @@ from celerp.output.document_context import prepare_document_output
 from celerp.services.record_quantities import template_label
 from celerp_subscriptions.billing import bills
 from celerp_subscriptions.periods import shown
+from celerp_subscriptions.summary import TO_CHECK
 from ui.components.activity import change_text, format_timestamp, register_fields
 from ui.components.icons import import_icon
 from ui.components.operation_key import FIELD, operation_key_vals, operation_key_input, required_operation_key, submitted_operation_key
@@ -75,10 +76,11 @@ _SEND_TOAST = {"sent": "success", "failed": "error"}
 
 
 def _send_button(url: str, send: str | None, again: bool, attempt: int, **vals) -> FT:
-    """Send a billed period's email: Retry after a failure, Send again (behind a confirm that it
-    may already have arrived) after a cut-off send, Send otherwise. It names the ``attempt`` on
-    screen, so the same click arriving twice sends once."""
-    label = "btn.send_again" if again else "btn.retry" if send in ("failed", "unconfirmed") else "btn.send"
+    """Send a billed period's email: Retry after a failure or while a send is with the mail server
+    (the server says to check again then), Send again (behind a confirm that it may already have
+    arrived) after a cut-off send, Send otherwise. It names the ``attempt`` on screen, so the same
+    click arriving twice sends once."""
+    label = "btn.send_again" if again else "btn.retry" if send in ("failed", "sending", "unconfirmed") else "btn.send"
     confirm = {"hx_confirm": t("subscriptions.send_again_confirm")} if again else {}
     return Button(t(label), cls="btn btn--secondary btn--sm", hx_post=url, hx_swap="none",
                   hx_vals={**vals, "attempt": attempt, **({"again": "1"} if again else {})}, **confirm)
@@ -115,6 +117,7 @@ _PERIOD_BADGE = {"overdue": "badge--overdue", "due": "badge--warning", "draft": 
 _SEND_BADGE = {"waiting": ("subscriptions.period_send_pending", "badge--warning"),
                "not_sent": ("subscriptions.period_send_not_sent", "badge--draft"),
                "failed": ("subscriptions.period_send_failed", "badge--overdue"),
+               "sending": ("subscriptions.period_send_sending", "badge--warning"),
                "unconfirmed": ("subscriptions.period_send_unconfirmed", "badge--warning")}
 _MODES = ("manual_due", "auto_invoice")
 _MODE_BADGE = {"auto_invoice": "subscriptions.bills_automatically"}
@@ -741,8 +744,7 @@ def _summary_table(rows: list[dict], subs: dict[str, dict]) -> FT:
     def _row(r: dict) -> FT:
         eid = r["entity_id"]
         doc = A(r.get("ref_id") or r["doc_id"], href=f"/docs/{r['doc_id']}") if r.get("doc_id") else "--"
-        send = {"send_failed": "failed", "send_unconfirmed": "unconfirmed"}.get(r.get("kind"))
-        retry = (_send_button(r["retry_url"], send, bool(r.get("again")), r["attempt"], back="summary")
+        retry = (_send_button(r["retry_url"], r.get("send"), bool(r.get("again")), r["attempt"], back="summary")
                  if r.get("retry_url") else "")
         fix = (A(t("doc.send_relay_error_link"), href="/settings/cloud")
                if r.get("error_key") in _FIXED_IN_WEB_ACCESS else "")
@@ -834,8 +836,9 @@ def _history_review(entity_id: str, review: list[dict], set_aside: list[dict]) -
 # ---------------------------------------------------------------------------
 
 def _sends_to_check(counts: dict) -> int:
-    """Sends that failed, were cut off or still wait to go out: each is listed on the summary."""
-    return counts.get("send_failed", 0) + counts.get("send_unconfirmed", 0) + counts.get("send_pending", 0)
+    """Sends that failed, were cut off, are with the mail server or still wait to go out: each is
+    listed on the summary."""
+    return sum(counts.get(k, 0) for k in TO_CHECK)
 
 
 async def _held_and_unread(token: str) -> tuple[list[dict], dict, list[str]]:

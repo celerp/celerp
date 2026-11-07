@@ -960,8 +960,10 @@ def _is_uuid(s: str) -> bool:
 
 
 def actor_label(e: dict) -> str:
-    """Who made a change, for display: a name, a name carried in from a company backup
-    marked as such, or "--" when there is none to show."""
+    """Who made a change, for display: "Automatically" for work nobody started by hand, a name,
+    a name carried in from a company backup marked as such, or "--" when there is none to show."""
+    if e.get("actor_automatic"):
+        return t("activity.actor_automatic")
     actor = str(e.get("actor_name") or e.get("actor") or e.get("actor_id") or "")
     if not actor or _is_uuid(actor):
         return "--"
