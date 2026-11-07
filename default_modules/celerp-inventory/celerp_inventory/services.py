@@ -1042,7 +1042,7 @@ async def restate_item_cost(
                        "credit": amount if delta < 0 else 0.0}
             await auto_je.create_for_line_adjustment(
                 session, company_id=company_id, user_id=actor_id,
-                list_id=f"{list_id}:cost:{identity}:{lot_id}", kind="writeoff_cost",
+                list_id=list_id, scope=f"{list_id}:cost:{identity}:{lot_id}", kind="writeoff_cost",
                 entries=[expense, inventory], recorded=day)
         for doc_id in plan.docs:
             adjustment = dict(

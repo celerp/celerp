@@ -41,7 +41,7 @@ async def seed_demo_assets(session, company_id, user_id) -> None:
     from celerp.services.demo import DEMO_SOURCE, has_own_books
     from celerp_docs.doc_money import document_money
     from celerp_docs.routes import finalize_document
-    from celerp_docs.sequences import next_draft_ref
+    from celerp_docs.sequences import claim_number
 
     if await has_own_books(session, company_id):
         return
@@ -57,7 +57,7 @@ async def seed_demo_assets(session, company_id, user_id) -> None:
         if account:
             line["account_code"] = account
         money = document_money({}, [line], currency, keep_unrated_tax=True)
-        ref = next_draft_ref(company, "bill")
+        ref = await claim_number(session, company, "bill")
         doc_id = f"doc:{ref}"
         await emit_event(session, company_id=company_id, entity_id=doc_id, entity_type="doc",
                          event_type="doc.created", data={

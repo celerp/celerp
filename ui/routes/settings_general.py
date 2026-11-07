@@ -40,7 +40,7 @@ from ui.routes.settings import (
 )
 
 
-def _general_tabs(active: str, lang: str = "en", is_admin: bool = True) -> FT:
+def _general_tabs(active: str, lang: str = "en", is_admin: bool = True, is_owner: bool = False) -> FT:
     tabs: list[tuple[str, str]] = []
     if is_admin:
         tabs += [
@@ -49,14 +49,15 @@ def _general_tabs(active: str, lang: str = "en", is_admin: bool = True) -> FT:
             ("backup", t("settings.tab_backup", lang)),
         ]
     tabs.append(("password", t("settings.change_password", lang)))
-    return Div(
-        *[
-            A(label, href=f"/settings/general?tab={key}",
-              cls=f"tab {'tab--active' if key == active else ''}")
-            for key, label in tabs
-        ],
-        cls="settings-tabs",
-    )
+    links = [
+        A(label, href=f"/settings/general?tab={key}", cls=f"tab {'tab--active' if key == active else ''}")
+        for key, label in tabs
+    ]
+    if is_owner:
+        # Only the owner edits what the menu offers, as only the owner edits role permissions.
+        links.append(A(t("settings_menu.title", lang), href="/settings/menu",
+                       cls=f"tab {'tab--active' if active == 'menu' else ''}"))
+    return Div(*links, cls="settings-tabs")
 
 
 
@@ -167,7 +168,7 @@ def setup_routes(app):
         return await base_shell(
             _section_breadcrumb("settings_general.breadcrumb_general"),
             page_header(t("page.settings", lang)),
-            _general_tabs(tab, lang=lang, is_admin=is_admin),
+            _general_tabs(tab, lang=lang, is_admin=is_admin, is_owner=is_owner),
             content,
             title=page_title("page.settings"),
             nav_active="settings",

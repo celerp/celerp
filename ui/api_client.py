@@ -1880,6 +1880,11 @@ async def get_extended_journal(token: str, params: dict | None = None) -> dict:
         return _raise(await c.get("/accounting/extended-journal", params=params or {})).json()
 
 
+async def get_doc_gl_impact(token: str, doc_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/accounting/journal/by-doc/{doc_id}")).json()
+
+
 async def get_general_ledger(token: str, params: dict | None = None) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.get("/accounting/general-ledger", params=params or {})).json()
@@ -4685,3 +4690,27 @@ async def label_source(token: str, source: str) -> dict:
 async def label_source_rows(token: str, source: str, ids: list[str]) -> list[dict]:
     async with _api_client(token) as c:
         return _raise(await c.get("/api/labels/source-rows", params={"source": source, "ids": ",".join(ids)})).json()["rows"]
+
+
+async def get_nav_overrides(token: str) -> dict:
+    """The company's side-menu choices and the revision needed to save them."""
+    async with _api_client(token) as c:
+        response = _raise(await c.get("/companies/me/nav-overrides"))
+        return {**response.json(), "_etag": response.headers["etag"]}
+
+
+async def patch_nav_overrides(token: str, overrides: dict, *, etag: str) -> dict:
+    """Conditionally replace the company's side-menu choices."""
+    async with _api_client(token) as c:
+        return _raise(await c.patch(
+            "/companies/me/nav-overrides", json=overrides,
+            headers={"If-Match": etag},
+        )).json()
+
+
+async def reset_nav_overrides(token: str, *, etag: str) -> dict:
+    """Conditionally reset the side menu to its defaults."""
+    async with _api_client(token) as c:
+        return _raise(await c.delete(
+            "/companies/me/nav-overrides", headers={"If-Match": etag},
+        )).json()

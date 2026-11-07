@@ -46,6 +46,7 @@ class ListBehavior:
     scan_sell_qty: bool = False             # a scan places the item's sell quantity (ScanBehavior.sell_qty)
     customs: bool = False                   # value-bearing but non-accounting: per-line customs
                                             # value/HS/origin columns, declared total, no disc/tax
+    posts: bool = False                     # its terminal posts a journal entry (GL Impact)
 
 
 # THE table. One row per type — the only place a type's behaviour is declared.
@@ -74,7 +75,7 @@ LIST_BEHAVIOR: dict[str, ListBehavior] = {
             "adjust", "Adjust stock", "stock_adjusted",
             confirm="Apply the counted quantities to stock? This posts a journal entry.",
             manager=True),),
-        scan_finalized="count", scan_unstocked="snapshot",
+        scan_finalized="count", scan_unstocked="snapshot", posts=True,
     ),
     "writeoff": ListBehavior(
         # Event-based (enter the known quantity leaving stock per line), vs audit's count-based
@@ -86,7 +87,7 @@ LIST_BEHAVIOR: dict[str, ListBehavior] = {
             "write-off", "Write off stock", "written_off",
             confirm="Remove the listed quantities from stock? This posts a journal entry.",
             manager=True),),
-        scan_finalized="noop",
+        scan_finalized="noop", posts=True,
     ),
     "shipping_doc": ListBehavior(
         # One shipment record, two printouts: the Delivery Note (no prices, for the receiver)

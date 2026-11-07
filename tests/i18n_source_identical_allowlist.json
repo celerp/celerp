@@ -454,6 +454,7 @@
     "documents.bank",
     "documents.bcc",
     "documents.cc",
+    "documents.gl_impact_debit",
     "documents.sku_placeholder",
     "enum.doc_status.final",
     "enum.doc_status.pro_forma",

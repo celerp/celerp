@@ -14,7 +14,7 @@ from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header, page_title
 from ui.components.table import EMPTY
 from ui.config import COOKIE_NAME
-from ui.i18n import doc_type_label, get_lang, t
+from ui.i18n import doc_type_label, get_lang, refusal_text, t
 
 from ui.routes.settings import (
     _token,
@@ -24,7 +24,12 @@ from ui.routes.settings import (
 )
 from ui.routes.settings_general import _section_breadcrumb
 
-_SALES_DOC_TYPES = frozenset({"invoice", "proforma", "memo", "receipt", "credit_note"})
+# The list types are numbered here too. Transfers and audits may move to an Inventory settings
+# tab when the Lists menu is split by type (SAL-001). The old shared "list" counter is listed
+# only while a company has it: quotation and untyped Lists, and transfers until their own row
+# is saved, keep drawing from it.
+_SALES_DOC_TYPES = frozenset({"invoice", "proforma", "memo", "receipt", "credit_note",
+                              "quotation", "transfer", "audit", "writeoff", "shipping_doc", "list"})
 
 
 def _sales_tabs(active: str, lang: str = "en") -> FT:
@@ -52,50 +57,13 @@ async def _numbering_content(token: str, doc_types: frozenset[str]) -> FT:
     except APIError as e:
         fix = (A(t("nav.company_details"), href="/finance/company-details", cls="btn btn--secondary btn--xs")
                if (e.data or {}).get("code") == "company_timezone" else "")
-        return Div(P(str(e.detail), cls="cell-error"), fix)
+        return Div(P(_refusal(e), cls="cell-error"), fix)
     return _numbering_tab([s for s in sequences if s.get("doc_type") in doc_types])
 
 
 def _numbering_tab(sequences: list[dict]) -> FT:
     """Render the document numbering settings table."""
-    rows = []
-    edit_title = t("settings.click_to_edit")
-    for seq in sequences:
-        dt = seq["doc_type"]
-        label = doc_type_label(dt)
-        rows.append(Tr(
-            Td(label),
-            Td(
-                Div(
-                    seq.get("prefix") or EMPTY,
-                    hx_get=f"/settings/numbering/{dt}/prefix/edit",
-                    hx_target="this", hx_swap="outerHTML", hx_trigger="click",
-                    title=edit_title, cls="editable-cell",
-                ),
-            ),
-            Td(
-                Div(
-                    seq.get("pattern") or EMPTY,
-                    hx_get=f"/settings/numbering/{dt}/pattern/edit",
-                    hx_target="this", hx_swap="outerHTML", hx_trigger="click",
-                    title=edit_title, cls="editable-cell",
-                ),
-            ),
-            Td(
-                Div(
-                    str(seq.get("next", 1)),
-                    hx_get=f"/settings/numbering/{dt}/next/edit",
-                    hx_target="this", hx_swap="outerHTML", hx_trigger="click",
-                    title=edit_title, cls="editable-cell",
-                ),
-            ),
-            Td(Code(seq.get("preview", ""), cls="numbering-preview")),
-            Td(
-                Button(t("btn.reset"), hx_post=f"/settings/numbering/{dt}/reset",
-                       hx_target="closest tr", hx_swap="outerHTML",
-                       cls="btn btn--xs btn--secondary"),
-            ),
-        ))
+    rows = [_numbering_row(seq) for seq in sequences]
     return Div(
         H3(t("page.document_numbering"), cls="settings-section-title"),
         P(t("settings_sales.numbering_hint"), cls="settings-hint"),
@@ -234,27 +202,7 @@ def setup_routes(app):
         except (APIError, Exception):
             return P(t("settings.error_loading_sequences"), cls="cell-error")
         seq = next((s for s in sequences if s["doc_type"] == doc_type), {})
-        value = str(seq.get(field, ""))
-
-        restore_url = f"/settings/numbering/{doc_type}/{field}/display"
-        esc_js = (f"if(event.key==='Escape'){{htmx.ajax('GET','{restore_url}',"
-                  f"{{target:this.closest('.editable-cell'),swap:'outerHTML'}});event.preventDefault();}}")
-
-        input_type = "number" if field == "next" else "text"
-        extra = {"min": "1"} if field == "next" else {}
-        return Div(
-            Input(
-                type=input_type, name="value", value=value,
-                hx_patch=f"/settings/numbering/{doc_type}/{field}",
-                hx_target="closest tr", hx_swap="outerHTML",
-                hx_trigger="blur delay:200ms",
-                cls="cell-input", autofocus=True,
-                onkeydown=esc_js,
-                oninput="this.dataset.dirty='1'",
-                **extra,
-            ),
-            cls="editable-cell editable-cell--editing",
-        )
+        return _numbering_input(doc_type, field, str(seq.get(field, "")))
 
     @app.get("/settings/numbering/{doc_type}/{field}/display")
     async def numbering_field_display(request: Request, doc_type: str, field: str):
@@ -281,6 +229,15 @@ def setup_routes(app):
             return P(t("error.session_expired"), cls="cell-error")
         form = await request.form()
         value = str(form.get("value", "")).strip()
+        try:
+            sequences = await api.get_doc_sequences(token)
+        except APIError as e:
+            return P(_refusal(e), cls="cell-error")
+        seq = next((s for s in sequences if s["doc_type"] == doc_type), {})
+        # Leaving a cell unchanged saves nothing: a save would split a type still on the shared
+        # List counter off it, or be refused for a value the user did not change.
+        if value == str(seq.get(field, "")).strip():
+            return _numbering_row(seq)
         patch_data = {}
         if field == "prefix":
             patch_data["prefix"] = value
@@ -290,12 +247,13 @@ def setup_routes(app):
             try:
                 patch_data["next"] = int(value)
             except ValueError:
-                return P(t("settings.must_be_a_number"), cls="cell-error")
+                return _numbering_row(seq, editing=(field, value), error=t("settings.must_be_a_number"))
         try:
             await api.patch_doc_sequence(token, doc_type, patch_data)
             sequences = await api.get_doc_sequences(token)
         except APIError as e:
-            return P(str(e.detail), cls="cell-error")
+            # The row stays as it was with the typed value still open, so the user can change it.
+            return _numbering_row(seq, editing=(field, value), error=_refusal(e))
         seq = next((s for s in sequences if s["doc_type"] == doc_type), {})
         return _numbering_row(seq)
 
@@ -305,10 +263,15 @@ def setup_routes(app):
         if not token:
             return P(t("error.session_expired"), cls="cell-error")
         try:
+            sequences = await api.get_doc_sequences(token)
+        except APIError as e:
+            return P(_refusal(e), cls="cell-error")
+        seq = next((s for s in sequences if s["doc_type"] == doc_type), {})
+        try:
             await api.patch_doc_sequence(token, doc_type, {"next": 1})
             sequences = await api.get_doc_sequences(token)
         except APIError as e:
-            return P(str(e.detail), cls="cell-error")
+            return _numbering_row(seq, error=_refusal(e))
         seq = next((s for s in sequences if s["doc_type"] == doc_type), {})
         return _numbering_row(seq)
 
@@ -326,37 +289,64 @@ def setup_routes(app):
         try:
             await api.patch_company(token, {"line_item_identifier": value})
         except APIError as e:
-            return Span(str(e.detail), cls="cell-error")
+            return Span(_refusal(e), cls="cell-error")
         return Span(t("msg.saved"))
 
 
-def _numbering_row(seq: dict) -> FT:
-    """Render a single numbering table row (used for HTMX swap after edit)."""
+def _refusal(e: APIError) -> str:
+    """An API refusal in the user's language."""
+    return refusal_text(e.detail) or str(e.detail)
+
+
+def _numbering_input(dt: str, field: str, value: str, error: FT = "") -> FT:
+    """A numbering cell open for editing, with the reason a save was refused when there is
+    one: blur saves, Escape restores the saved value."""
+    restore_url = f"/settings/numbering/{dt}/{field}/display"
+    esc_js = (f"if(event.key==='Escape'){{htmx.ajax('GET','{restore_url}',"
+              f"{{target:this.closest('.editable-cell'),swap:'outerHTML'}});event.preventDefault();}}")
+    extra = {"type": "number", "min": "1"} if field == "next" else {"type": "text"}
+    return Div(
+        Input(
+            name="value", value=value,
+            hx_patch=f"/settings/numbering/{dt}/{field}",
+            hx_target="closest tr", hx_swap="outerHTML",
+            hx_trigger="blur delay:200ms",
+            cls="cell-input", autofocus=True,
+            onkeydown=esc_js,
+            oninput="this.dataset.dirty='1'",
+            **extra,
+        ),
+        error,
+        cls="editable-cell editable-cell--editing",
+    )
+
+
+def _numbering_row(seq: dict, *, editing: tuple[str, str] | None = None, error: str | None = None) -> FT:
+    """One numbering table row (the table and every HTMX swap after an edit). ``editing`` is
+    the (field, typed value) left open after a refused save; ``error`` is the reason, shown in
+    that field's cell, or beside Reset when no field is open."""
     dt = seq["doc_type"]
-    label = doc_type_label(dt)
     edit_title = t("settings.click_to_edit")
+    error_p = P(error, cls="cell-error", role="alert") if error else ""
+
+    def cell(field: str, shown: str) -> FT:
+        if editing and editing[0] == field:
+            return Td(_numbering_input(dt, field, editing[1], error_p))
+        return Td(Div(
+            shown,
+            hx_get=f"/settings/numbering/{dt}/{field}/edit",
+            hx_target="this", hx_swap="outerHTML", hx_trigger="click",
+            title=edit_title, cls="editable-cell",
+        ))
+
     return Tr(
-        Td(label),
-        Td(Div(
-            seq.get("prefix") or EMPTY,
-            hx_get=f"/settings/numbering/{dt}/prefix/edit",
-            hx_target="this", hx_swap="outerHTML", hx_trigger="click",
-            title=edit_title, cls="editable-cell",
-        )),
-        Td(Div(
-            seq.get("pattern") or EMPTY,
-            hx_get=f"/settings/numbering/{dt}/pattern/edit",
-            hx_target="this", hx_swap="outerHTML", hx_trigger="click",
-            title=edit_title, cls="editable-cell",
-        )),
-        Td(Div(
-            str(seq.get("next", 1)),
-            hx_get=f"/settings/numbering/{dt}/next/edit",
-            hx_target="this", hx_swap="outerHTML", hx_trigger="click",
-            title=edit_title, cls="editable-cell",
-        )),
+        Td(doc_type_label(dt)),
+        cell("prefix", seq.get("prefix") or EMPTY),
+        cell("pattern", seq.get("pattern") or EMPTY),
+        cell("next", str(seq.get("next", 1))),
         Td(Code(seq.get("preview", ""), cls="numbering-preview")),
         Td(Button(t("btn.reset"), hx_post=f"/settings/numbering/{dt}/reset",
                   hx_target="closest tr", hx_swap="outerHTML",
-                  cls="btn btn--xs btn--secondary")),
+                  cls="btn btn--xs btn--secondary"),
+           "" if editing else error_p),
     )

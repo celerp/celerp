@@ -30,7 +30,7 @@ from celerp.services.units import require_moving_fits_units
 from celerp.services.record_quantities import template_label
 from celerp_docs.doc_money import document_money
 from celerp_docs.routes import finalize_document
-from celerp_docs.sequences import next_draft_ref
+from celerp_docs.sequences import claim_number, draft_counter
 from celerp_subscriptions.search import SUBSCRIPTION_DOC_TYPES, search_subscription_templates
 from ui.i18n import t
 
@@ -151,7 +151,7 @@ def _build_router() -> APIRouter:
                 contact_name = contact_state.get("name") or ""
                 contact_company_name = contact_state.get("company_name") or ""
 
-        pf_ref = next_draft_ref(company, target_doc_type)
+        pf_ref = await claim_number(session, company, draft_counter(target_doc_type))
         doc_entity_id = f"doc:{pf_ref}"
 
         line_items = copy.deepcopy(list(state.get("line_items") or []))

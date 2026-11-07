@@ -55,12 +55,13 @@ RELEASE_CHAIN = ["p3e4f5a6b7c8", "q4f5a6b7c8d9", "r5g6b7c8d9e0", "s6h7c8d9e0f1",
 # pending AI charge may be read back, then the label a bank account's currency correction
 # replaced, then per-record connector directions, then connector execution leases and
 # first-sync records, then the links a store fetches product images from, then the
-# language an AI job is written in.
+# language an AI job is written in, then the index the GL Impact lookup reads.
 SHIPPED_HEAD = "y3p4q5r6s7t8"
 AFTER_SHIPPED = ["x2p3q4r5s6t7", "y3q4r5s6t7u8", "z4r5s6t7u8v9", "a5t6u7v8w9x0", "b6u7v8w9x0y1",
                  "c7v8w9x0y1z2", "d8w9x0y1z2a3", "e9x0y1z2a3b4", "f0y1z2a3b4c5", "g1z2a3b4c5d6",
                  "h2a3b4c5d6e7", "h4c5d6e7f8a9", "i3b4c5d6e7f8", "j5d6e7f8a9b0", "k5e6f7a8b9c0",
-                 "k6e7f8a9b0c1", "l7f8a9b0c1d2", "m8a9b0c1d2e3"]
+                 "k6e7f8a9b0c1", "l7f8a9b0c1d2", "m8a9b0c1d2e3", "p9q0r1s2t3u4",
+                 "q0r1s2t3u4v5"]
 
 # The newest revision a database can already carry from the module and payment work
 # that reaches main before this release.

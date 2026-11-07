@@ -376,23 +376,22 @@ async def test_doc_summary_counts_a_text_amount_as_unvalued(client, session):
     assert r.json()["unvalued_count"] == 1
 
 
-def test_summary_bar_says_how_many_documents_are_left_out_of_the_totals():
+def test_summary_line_says_how_many_documents_are_left_out_of_the_totals():
     from fasthtml.common import to_xml
-    from ui.routes.documents import _doc_cards_unvalued, _summary_bar
+    from ui.routes.documents import _doc_cards_unvalued, _doc_summary_line
 
     # The count covers the documents the shown totals add: issued invoices for the receivable
-    # chips, every listed row for a Total, none where the bar only counts.
-    assert "2 not in the totals" in to_xml(_summary_bar({"unvalued_count": 5, "invoice_unvalued_count": 2}, lang="en"))
-    assert "not in the totals" not in to_xml(_summary_bar({"unvalued_count": 5, "invoice_unvalued_count": 0}, lang="en"))
-    assert "3 not in the totals" in to_xml(_summary_bar({"unvalued_count": 3}, doc_type="memo", lang="en", view="unissued"))
-    assert "not in the totals" not in to_xml(_summary_bar({"unvalued_count": 3}, doc_type="memo", lang="en"))
+    # figures, every listed row for a Total, none where the line only counts.
+    assert "2 not in the totals" in to_xml(_doc_summary_line({}, {"unvalued_count": 5, "invoice_unvalued_count": 2}, {}, lang="en"))
+    assert "not in the totals" not in to_xml(_doc_summary_line({}, {"unvalued_count": 5, "invoice_unvalued_count": 0}, {}, lang="en"))
+    assert "3 not in the totals" in to_xml(_doc_summary_line({"type": "memo", "status": "draft"}, {"unvalued_count": 3}, {}, lang="en"))
+    assert "not in the totals" not in to_xml(_doc_summary_line({"type": "memo"}, {"unvalued_count": 3}, {}, lang="en"))
     # The status cards' totals count too: a typed list whose cards total by status says how many
-    # documents of the card set they leave out, even where the chips only count.
+    # documents of the card set they leave out, even where the summary only counts.
     cards = {"unvalued_count": 4}
     assert _doc_cards_unvalued(cards, "quotation") == 4 and _doc_cards_unvalued(cards, "invoice") == 4
     assert _doc_cards_unvalued(cards, "memo") == 0 and _doc_cards_unvalued(cards, "receipt") == 4
-    assert "4 not in the totals" in to_xml(_summary_bar({"unvalued_count": 3}, doc_type="quotation", lang="en",
-                                                        cards_unvalued=_doc_cards_unvalued(cards, "quotation")))
+    assert "4 not in the totals" in to_xml(_doc_summary_line({"type": "quotation"}, {"unvalued_count": 3}, cards, lang="en"))
 
 
 @pytest.mark.asyncio

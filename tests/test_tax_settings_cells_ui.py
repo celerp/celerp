@@ -182,3 +182,56 @@ async def test_new_tax_waits_for_a_pending_cell_save(prefix):
     assert re.search(r'class="settings-card"[^>]*hx-sync="this:queue all"|hx-sync="this:queue all"[^>]*class="settings-card"', html), html
     button = re.search(r'<button[^>]*hx-post="/settings/' + prefix + r'/new"[^>]*>', html).group(0)
     assert 'hx-trigger="click delay:' in button, button
+
+
+# A company still on the shared List counter: its Transfer row shows that counter's values.
+_LEGACY_TRANSFER = {"doc_type": "transfer", "prefix": "LST", "pattern": "{PREFIX}-{YY}{MM}-{####}",
+                    "next": 41, "preview": "LST-2611-0041"}
+
+
+@pytest.mark.parametrize("field, shown", [("prefix", "LST"), ("pattern", "{PREFIX}-{YY}{MM}-{####}"),
+                                          ("next", "41")])
+async def test_numbering_cell_left_unchanged_saves_nothing(ui_client, field, shown):
+    """Clicking into a Numbering cell and leaving it changes nothing: no save is sent, so the
+    type stays on the counter it draws from (here the shared one)."""
+    saved = AsyncMock(return_value={})
+    ui_client.cookies.update(_authed())
+    with patch("ui.api_client.get_doc_sequences", new=AsyncMock(return_value=[_LEGACY_TRANSFER])), \
+         patch("ui.api_client.patch_doc_sequence", new=saved):
+        r = await ui_client.patch(f"/settings/numbering/transfer/{field}", data={"value": f" {shown} "})
+    assert r.status_code == 200 and "cell-error" not in r.text
+    assert "LST-2611-0041" in r.text
+    saved.assert_not_awaited()
+
+
+async def test_numbering_cell_changed_is_saved(ui_client):
+    saved = AsyncMock(return_value={})
+    ui_client.cookies.update(_authed())
+    with patch("ui.api_client.get_doc_sequences", new=AsyncMock(return_value=[_LEGACY_TRANSFER])), \
+         patch("ui.api_client.patch_doc_sequence", new=saved):
+        r = await ui_client.patch("/settings/numbering/transfer/prefix", data={"value": "QUOTE"})
+    assert r.status_code == 200
+    saved.assert_awaited_once()
+    assert saved.await_args.args[1:] == ("transfer", {"prefix": "QUOTE"})
+
+
+@pytest.mark.parametrize("lang", ["en", "th"])
+async def test_a_refused_numbering_save_keeps_the_row_open_with_the_reason(ui_client, lang):
+    """A refused save leaves the whole row in place, the typed value still open in its cell,
+    the reason in the user's language and Reset beside it, so the user can choose again."""
+    from celerp.accounting_roles import catalog_refusal
+    detail = catalog_refusal("documents.err_numbering_overlap", doc_type="quotation")
+    ui_client.cookies.update({**_authed(), "celerp_lang": lang})
+    with patch("ui.api_client.get_doc_sequences", new=AsyncMock(return_value=[_LEGACY_TRANSFER])), \
+         patch("ui.api_client.patch_doc_sequence", new=AsyncMock(side_effect=APIError(422, detail))):
+        htmx = {"HX-Request": "true"}
+        r = await ui_client.patch("/settings/numbering/transfer/prefix", data={"value": "QUO"}, headers=htmx)
+        reset = await ui_client.post("/settings/numbering/transfer/reset", headers=htmx)
+    assert r.status_code == 200 and r.text.lstrip().startswith("<tr")
+    assert 'name="value"' in r.text and 'value="QUO"' in r.text
+    assert 'hx-patch="/settings/numbering/transfer/prefix"' in r.text
+    assert "/settings/numbering/transfer/reset" in r.text and "LST-2611-0041" in r.text
+    message = t("documents.err_numbering_overlap", lang, doc_type=t("settings_sales.doc_type_quotation", lang))
+    assert message in r.text and "{" not in message
+    assert reset.text.lstrip().startswith("<tr") and message in reset.text
+    assert 'name="value"' not in reset.text

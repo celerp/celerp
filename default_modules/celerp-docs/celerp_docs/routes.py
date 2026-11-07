@@ -52,10 +52,10 @@ from celerp.services.physical_codes import lock_item_code_namespace
 from celerp.services.peer_import import SourceRevision, peer_batch, receive_file
 from celerp.services.payments import lock_recorded_unmatched, recorded_unmatched, return_unmatched
 from celerp.tax_regimes import default_line_taxes, set_new_line_taxes, side_taxes
-from celerp.services.business_time import business_date_at, business_date_of, company_today
+from celerp.services.business_time import business_date_at, business_date_of, company_timezone, company_today
 from celerp.services.landed_cost import compute_bill_landed_allocation
-from celerp.services.line_measures import (FULL, floor_to_unit, line_label, proposed_sell_qty, splitting_allowed,
-                                          splitting_off)
+from celerp.services.line_measures import (FULL, floor_to_unit, item_measure_meta, line_label, proposed_sell_qty,
+                                          resolve_line_measures, shared_unit_total, splitting_allowed, splitting_off)
 from celerp.services.document_lines import (
     DrawnLine, MemoDraw, MemoReturn, assert_line_holds_respected, assert_new_references_eligible,
     line_id_counts, line_item_id, linked_items, memo_out_refusal, out_on_another_memo, received_line_index,
@@ -67,9 +67,12 @@ from celerp.services.csv_export import csv_stream, resolve_export_cols
 from celerp.services.currencies import CURRENCY_CODES, require_currency_code
 from celerp.services.auth import AuthContext, get_auth_context, get_current_company_id, get_current_role, get_current_user
 from celerp.services.permissions import assert_role_permission, get_current_company_settings, locked_authority, reject_price_change, require_permission, role_has_permission
-from celerp_docs.sequences import next_doc_ref, next_draft_ref, peek_draft_ref, require_doc_type, get_all_sequences, update_sequence, list_sequence_key
+from celerp_docs.sequences import (
+    claim_number, draft_counter, list_sequence_key, numbering_rows, peek_draft_ref, require_doc_type,
+    require_number_free, update_sequence,
+)
 from celerp_docs.search import doc_q_clause
-from celerp.services.units import build_unit_map, default_receive_as, get_company_units, is_non_stock_line, is_pieces_unit, is_weight_unit, line_receive_kind, require_moving_fits_units, sum_quantities, unit_decimals, validate_line_quantity
+from celerp.services.units import build_unit_map, default_receive_as, get_company_units, is_non_stock_line, is_pieces_unit, is_weight_unit, line_receive_kind, read_company_units, require_moving_fits_units, sum_quantities, unit_decimals, validate_line_quantity
 from celerp.services.money import allocate_pro_rata, books_currency, checked_exchange_rate, discount_from_inputs, doc_rate, document_line_amount, document_line_unit, require_doc_rate, received_share, round_basis, round_money, round_rate, to_base, to_decimal, to_stored_float
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, line_price_list, price_keys_in, resolve_price
 from celerp.services.terms import resolve_document_terms
@@ -84,7 +87,7 @@ from celerp.services.record_quantities import FULFILLABLE_STATUSES, QUOTATION_SP
 from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, MEMO_DRAW_STATUSES, doc_value, is_awaiting_payment, is_open_credit, is_overdue_document, is_owed, is_paid_document, outstanding_balance
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, SCAN_RUNS_FIELD, SUPPLIER_DOC_TYPES, ScanBehavior,
-    behavior, scan_behavior, terminal_action, is_money_list,
+    behavior, scan_behavior, status_key, terminal_action, is_money_list,
 )
 from celerp.services.shipping import (
     INCOTERMS_2020, ITEM_AT_ISSUE, REASONS_FOR_EXPORT, customs_backfill, issued_item, item_at_issue)
@@ -253,6 +256,38 @@ def _canonical_contact_payload(data):
     return _canonical_contact(data) if isinstance(data, dict) else data
 
 
+# The dates the index windows and sorts a record by and the overdue rules read, all compared as
+# text, so each must be a calendar day: YYYY-MM-DD, or an ISO timestamp whose first ten characters
+# are its day. Every request model that can write a state field checks them here.
+_DOC_DATE_FIELDS = ("issue_date", "due_date")
+
+
+def _require_iso_dates(values, new=lambda v: v):
+    """``values`` unchanged when each date field in it is empty or a calendar day, else Refused."""
+    if not isinstance(values, dict):
+        return values
+    for key in _DOC_DATE_FIELDS:
+        value = new(values.get(key))
+        if value in (None, ""):
+            continue
+        try:
+            ok = isinstance(value, str) and len(value) >= 10 and value[4] == "-" and value[7] == "-"
+            if ok:
+                _date.fromisoformat(value[:10])
+                if len(value) > 10:
+                    datetime.fromisoformat(value)
+        except ValueError:
+            ok = False
+        if not ok:
+            raise Refused("error.business_date_invalid", value=str(value))
+    return values
+
+
+def _doc_state_payload(data):
+    """A create or import payload's state fields: the counterparty named canonically, dates checked."""
+    return _require_iso_dates(_canonical_contact_payload(data))
+
+
 def _request_digest(kind: str, entity_id: str | None, expected_version: int | None, body: dict) -> str:
     canonical = json.dumps([kind, entity_id, expected_version, body], sort_keys=True,
                            separators=(",", ":"), ensure_ascii=False, default=str)
@@ -403,7 +438,7 @@ class DocCreatePayload(BaseModel):
     idempotency_key: str | None = None
     model_config = {"extra": "allow"}
 
-    _contact_fields = model_validator(mode="before")(_canonical_contact_payload)
+    _state_fields = model_validator(mode="before")(_doc_state_payload)
     _no_lifecycle_state = model_validator(mode="before")(_reject_lifecycle_fields)
     _known_doc_type = field_validator("doc_type")(require_doc_type)
     _draft_only = field_validator("status", mode="before")(_created_as_draft)
@@ -428,9 +463,10 @@ class DocPatch(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _canonical_contact_fields(cls, data):
+    def _state_fields(cls, data):
         if isinstance(data, dict) and isinstance(data.get("fields_changed"), dict):
-            data = {**data, "fields_changed": _canonical_contact(data["fields_changed"], new=_change_new)}
+            changed = _canonical_contact(data["fields_changed"], new=_change_new)
+            data = {**data, "fields_changed": _require_iso_dates(changed, new=_change_new)}
         return data
 
 
@@ -572,7 +608,7 @@ class DocImportRecord(BaseModel):
     source_ts: str | None = None
     source_revision: SourceRevision = None  # a connected company's records only
 
-    _contact_fields = field_validator("data", mode="before")(_canonical_contact_payload)
+    _state_fields = field_validator("data", mode="before")(_doc_state_payload)
 
 
 class BatchImportResult(BaseModel):
@@ -991,32 +1027,6 @@ async def _assert_sales_line_price_permission(
             assert_role_permission(settings, role, "set_sales_doc_prices")
 
 
-async def _assert_ref_id_unique(
-    session: AsyncSession,
-    company_id: str,
-    ref_id: str,
-    *,
-    exclude_entity_id: str | None = None,
-) -> None:
-    """Raise HTTP 409 if any doc in the company already has the given ref_id in its state.
-
-    Uses a state JSON index scan (same pattern as SKU uniqueness in inventory).
-    exclude_entity_id: the doc being renamed - excluded so renaming to own current
-    number is treated as a no-op and does not raise.
-    """
-    existing = (
-        await session.execute(
-            select(Projection).where(
-                Projection.company_id == company_id,
-                Projection.entity_type == "doc",
-                Projection.state["ref_id"].as_string() == ref_id,
-            )
-        )
-    ).scalars().first()
-    if existing and existing.entity_id != exclude_entity_id:
-        raise HTTPException(status_code=409, detail=catalog_refusal("documents.err_doc_number_taken", number=ref_id))
-
-
 @dataclass
 class DocListFilters:
     """Every filter the document list accepts, as one query-parameter dependency, so the list and
@@ -1063,7 +1073,27 @@ _DOC_SORT_FIELDS = {
 _DOC_NUMERIC_SORT_FIELDS = frozenset({"total", "amount_outstanding"})
 
 
-def _doc_sql_where(company_id: str, f: DocListFilters) -> list:
+def _created_business_day(tz: str):
+    """The business day, in the company timezone ``tz`` (an IANA name), the projection was
+    created on, as YYYY-MM-DD: the date a record stored without an issue_date is shown by."""
+    return _func.to_char(_func.timezone(tz, Projection.created_at), "YYYY-MM-DD")
+
+
+async def _company_tz(session: AsyncSession, company_id) -> str:
+    """The company's business timezone name, for ``_created_business_day``."""
+    return (await company_timezone(session, company_id)).key
+
+
+def _doc_issue_date(tz: str):
+    """A document's effective issue date: its own issue_date, else the business day it was
+    created (``_created_business_day``). A document made without one (an import, or a conversion
+    before issue dates were set) is shown, windowed, sorted and exported by that one date, as
+    _list_sort_date does for lists."""
+    issue = _func.nullif(_func.substr(Projection.state["issue_date"].as_string(), 1, 10), "")
+    return _func.coalesce(issue, _created_business_day(tz))
+
+
+def _doc_sql_where(company_id: str, f: DocListFilters, tz: str) -> list:
     """The SQL WHERE for ``f`` (company scope included): every filter the DB can evaluate. The
     flag filters (``_doc_flag_rules``) are not here; they run row by row (``_doc_filter``), and
     ``_doc_list_filter`` pairs the two."""
@@ -1098,9 +1128,9 @@ def _doc_sql_where(company_id: str, f: DocListFilters) -> list:
     if id_list:
         base_where.append(Projection.entity_id.in_(id_list))
     if f.date_from:
-        base_where.append(Projection.state["issue_date"].as_string() >= f.date_from)
+        base_where.append(_doc_issue_date(tz) >= f.date_from)
     if f.date_to:
-        base_where.append(Projection.state["issue_date"].as_string() <= f.date_to)
+        base_where.append(_doc_issue_date(tz) <= f.date_to)
     if f.due_from:
         base_where.append(Projection.state["due_date"].as_string() >= f.due_from)
     if f.due_to:
@@ -1133,12 +1163,14 @@ def _sql_number(expr):
     return _sa.case((expr.op("~")(_SQL_NUMBER_PATTERN), _sa.cast(expr, _sa.Numeric)), else_=None)
 
 
-def _doc_sql_order(field: str, descending: bool) -> list:
+def _doc_sql_order(field: str, descending: bool, tz: str) -> list:
     """ORDER BY for a sort field, with the unique entity_id tiebreak so the sort is a TOTAL order.
     Without it, rows sharing a value come back in an arbitrary order that differs between the
     per-page queries, so a row on a page boundary can be skipped (or duplicated) by OFFSET."""
     if field == "_updated_at":
         expr = Projection.updated_at
+    elif field == "issue_date":
+        expr = _doc_issue_date(tz)
     elif field == "contact_name":
         expr = party_name_sql()
     else:
@@ -1160,11 +1192,15 @@ def _doc_display(state: dict) -> dict:
     return state | {field: doc_value(state, field) for field in DOC_FIELD_FALLBACKS}
 
 
-def _doc_row(r: Projection, contact_name: str | None) -> dict:
+def _doc_row(r: Projection, contact_name: str | None, issue_date: str | None) -> dict:
     """The list row for a document: its displayed state (``_doc_display``) with ``id``,
-    ``_updated_at`` and the ``contact_name`` the list shows (``party_name_sql``)."""
-    return _doc_display(r.state | {"id": r.entity_id, "_updated_at": r.updated_at.isoformat() if r.updated_at else None,
-                                   "contact_name": contact_name})
+    ``_updated_at`` and the ``contact_name`` the list shows (``party_name_sql``). A document with
+    no issue_date shows ``issue_date``, the ``_doc_issue_date`` it is windowed and sorted by."""
+    row = r.state | {"id": r.entity_id, "_updated_at": r.updated_at.isoformat() if r.updated_at else None,
+                     "contact_name": contact_name}
+    if not row.get("issue_date") and issue_date:
+        row["issue_date"] = issue_date
+    return _doc_display(row)
 
 
 # The state keys the row-by-row filters of ``_doc_filter`` read, before display fallbacks.
@@ -1222,11 +1258,11 @@ async def _doc_filter(session: AsyncSession, company_id: str, f: DocListFilters)
     return lambda x: all(c(x) for c in checks)
 
 
-async def _doc_list_filter(session: AsyncSession, company_id: str, f: DocListFilters):
+async def _doc_list_filter(session: AsyncSession, company_id: str, f: DocListFilters, tz: str):
     """The list's filter step for ``f``: its SQL WHERE (``_doc_sql_where``) and the row-by-row
     predicate over displayed rows (``_doc_filter``, None when no such filter is set). The list,
     its CSV export and its summary all select their rows through this, so they cannot drift."""
-    return _doc_sql_where(company_id, f), await _doc_filter(session, company_id, f)
+    return _doc_sql_where(company_id, f, tz), await _doc_filter(session, company_id, f)
 
 
 # The filters the status cards split the list by. The cards count the set the other filters
@@ -1293,11 +1329,13 @@ async def query_docs(session: AsyncSession, company_id: str, f: DocListFilters, 
     the index passes its page."""
     # Every single-field filter is in the SQL WHERE. The multi-field filters (``_doc_filter``) run
     # in Python over the SQL-ordered rows, so both paths share one ORDER BY.
-    base_where, keep = await _doc_list_filter(session, company_id, f)
-    order_by = _doc_sql_order(_doc_sort_field(f), f.dir == "desc")
+    tz = await _company_tz(session, company_id)
+    base_where, keep = await _doc_list_filter(session, company_id, f, tz)
+    order_by = _doc_sql_order(_doc_sort_field(f), f.dir == "desc", tz)
+    row_cols = (Projection, party_name_sql(), _doc_issue_date(tz))
 
     if keep is not None:
-        rows = (await session.execute(select(Projection, party_name_sql()).where(*base_where).order_by(*order_by))).all()
+        rows = (await session.execute(select(*row_cols).where(*base_where).order_by(*order_by))).all()
         out = [x for x in (_doc_row(*row) for row in rows) if keep(x)]
         total = len(out)
         if offset:
@@ -1311,7 +1349,7 @@ async def query_docs(session: AsyncSession, company_id: str, f: DocListFilters, 
     total = (await session.execute(count_q)).scalar_one()
 
     list_q = (
-        select(Projection, party_name_sql())
+        select(*row_cols)
         .where(*base_where)
         .order_by(*order_by)
         .offset(offset)
@@ -1350,15 +1388,9 @@ async def _ids_numbered(session: AsyncSession, company_id, kind: Literal["doc", 
     return sorted((await session.execute(query)).scalars().all())
 
 
-async def _assert_import_number_free(session: AsyncSession, company_id, kind: Literal["doc", "list"], data: dict) -> None:
-    """Refuse an imported new Document or List whose number another one of its kind already has."""
-    await lock_company(session, company_id)
-    fields = ("doc_number", "ref_id") if kind == "doc" else ("ref_id",)
-    for number in {str(data[f]).strip() for f in fields if str(data.get(f) or "").strip()}:
-        doc_type = data.get("doc_type") if kind == "doc" else None
-        if await _ids_numbered(session, company_id, kind, number, doc_type):
-            key = "documents.err_doc_number_taken" if kind == "doc" else "documents.err_list_number_taken"
-            raise HTTPException(status_code=409, detail=t(key, number=number))
+def _import_numbers(data: dict) -> set[str]:
+    """The numbers an imported Document or List shows, each one checked by require_number_free."""
+    return {str(data[f]).strip() for f in ("doc_number", "ref_id") if str(data.get(f) or "").strip()}
 
 
 @router.get("/numbered", dependencies=[require_permission("view_documents")])
@@ -1394,8 +1426,9 @@ async def get_doc_summary(
     company = await session.get(Company, company_id)
     base_currency = (company.settings or {}).get("currency", "USD") if company else "USD"
     cards_f = _dc_replace(filters, **{k: _DOC_FILTER_DEFAULTS[k] for k in _DOC_SPLIT_FILTERS})
-    where, keep = await _doc_list_filter(session, company_id, filters)
-    card_where, card_keep = await _doc_list_filter(session, company_id, cards_f)
+    tz = await _company_tz(session, company_id)
+    where, keep = await _doc_list_filter(session, company_id, filters, tz)
+    card_where, card_keep = await _doc_list_filter(session, company_id, cards_f, tz)
     rows = (await session.execute(
         select(Projection.state, _sa.and_(*where).label("listed")).where(*card_where))).all()
 
@@ -1510,7 +1543,7 @@ async def get_sequences(company_id: str = Depends(get_current_company_id), user=
     company = await session.get(Company, company_id)
     if not company:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
-    return get_all_sequences(company)
+    return await numbering_rows(session, company)
 
 
 @router.patch("/sequences/{doc_type}")
@@ -1519,11 +1552,12 @@ async def patch_sequence(doc_type: str, payload: SequencePatch, company_id: str 
     if not company:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     try:
-        result = update_sequence(company, doc_type, prefix=payload.prefix, pattern=payload.pattern, next_num=payload.next)
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        update_sequence(company, doc_type, prefix=payload.prefix, pattern=payload.pattern, next_num=payload.next)
+    except Refused as e:
+        raise HTTPException(status_code=422, detail=e.detail) from e
+    row = next(r for r in await numbering_rows(session, company) if r["doc_type"] == doc_type)
     await session.commit()
-    return result
+    return row
 
 
 async def _memo_allocation_items(session: AsyncSession, company_id, entity_id: str) -> list[Projection]:
@@ -2028,13 +2062,12 @@ async def create_doc_record(payload: DocCreatePayload, company_id, role: str, se
     replay = await find_event_by_idempotency(session, company_id, idem_key)
     if replay is not None:
         return _replay_result(replay, event_type="doc.created", digest=digest)
-    ref_id = payload.ref_id or next_draft_ref(company, payload.doc_type)
+    if payload.ref_id:
+        await require_number_free(session, company_id, payload.ref_id)
+        ref_id = payload.ref_id
+    else:
+        ref_id = await claim_number(session, company, draft_counter(payload.doc_type))
     entity_id = f"doc:{ref_id}"
-
-    # Uniqueness check: reject if a doc with this ref_id already exists
-    existing = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    if existing is not None:
-        raise HTTPException(status_code=409, detail=catalog_refusal("documents.err_doc_number_taken", number=ref_id))
 
     data = payload.model_dump(exclude_none=True)
     # A line whose tax is still for the user to set keeps that None, which the dump above drops.
@@ -2284,7 +2317,7 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     # Uniqueness check when ref_id is being changed
     new_ref = (fields_changed.get("ref_id") or {}).get("new")
     if new_ref:
-        await _assert_ref_id_unique(session, company_id, new_ref, exclude_entity_id=entity_id)
+        await require_number_free(session, company_id, new_ref, exclude_entity_id=entity_id)
     # Validate issue/due date ordering against the merged resulting state
     patch_flat = {k: v.get("new") for k, v in fields_changed.items() if v.get("new") is not None}
     _assert_date_order(patch_flat, row.state)
@@ -2773,14 +2806,14 @@ async def finalize_document(
             # Reuse existing INV ref; keep existing source_proforma_ref untouched.
             finalize_data["ref_id"] = existing_inv_ref
         else:
-            inv_ref = next_doc_ref(_company, "invoice")
+            inv_ref = await claim_number(session, _company, "invoice")
             finalize_data["ref_id"] = inv_ref
             finalize_data["source_proforma_ref"] = existing_inv_ref
             await session.flush()
 
     # Purchase Orders: "Convert to Bill" - assign BILL number, change doc_type
     elif doc_type == "purchase_order":
-        bill_ref = next_doc_ref(_company, "bill")
+        bill_ref = await claim_number(session, _company, "bill")
         finalize_data["ref_id"] = bill_ref
         finalize_data["source_po_ref"] = _initial_doc_state.get("ref_id") or _initial_doc_state.get("doc_number") or ""
         finalize_data["doc_type"] = "bill"
@@ -3773,7 +3806,7 @@ async def renumber_doc(
         # No-op: return current state without emitting an event
         return row.state | {"id": entity_id}
 
-    await _assert_ref_id_unique(session, company_id, new_ref, exclude_entity_id=entity_id)
+    await require_number_free(session, company_id, new_ref, exclude_entity_id=entity_id)
 
     entry = await emit_event(
         session,
@@ -5763,15 +5796,21 @@ async def record_receipt(session: AsyncSession, company_id, row: Projection, pay
         # bill it becomes books only what its receipts have not.
         # Goods added to stock are booked on their lot's inventory account; anything else
         # on the account of the role it was received as.
+        # The entry records the items it books, so the extended journal names them per receipt.
         debits: dict = {}
+        booked: list[dict] = []
+        order_lines = row.state.get("line_items") or []
         for line_no, (it, (_, _, received_cost)) in enumerate(zip(payload.received_items, priced)):
             receipt_role = auto_je.po_receipt_role(row.state, it.receive_as)
             target = (line_lot_account.get(line_no, receipt_role)
                       if receipt_role == AccountRole.INVENTORY_PURCHASED else receipt_role)
             debits[target] = debits.get(target, 0.0) + received_cost
+            idx = received_line_index(order_lines, it.model_dump())
+            booked.append({"item": line_label(order_lines[idx]) if idx is not None else (it.sku or it.name or ""),
+                           "quantity": float(it.quantity_received), "cost": received_cost})
         await auto_je.create_for_po_receipt(
             session, company_id=company_id, user_id=user.id, po_id=entity_id,
-            receipt_key=key, debits=debits,
+            receipt_key=key, debits=debits, items=booked,
         )
     elif doc_type == "bill" and landed_drawdown:
         # A bill already recognised goods + AP at finalize (create_for_bill_conversion); receiving must
@@ -7738,7 +7777,7 @@ async def _supplier_credit_for_return(session, company, user_id, doc_id: str, st
     amount = round_money(to_decimal(payable_credit) - _payable_balance(state), currency)
     if amount <= 0:
         return None
-    number = next_doc_ref(company, "debit_note")
+    number = await claim_number(session, company, "debit_note")
     note_id = f"doc:{number}"
     bill_number = str(state.get("doc_number") or state.get("ref_id") or doc_id)
     total = to_stored_float(amount)
@@ -7919,7 +7958,7 @@ async def create_shipment_from_docs(
     _ship_to = next((s.get("contact_shipping_address") for s in states
                      if s.get("contact_shipping_address")), None)
     _attn = next((s.get("shipping_attn") for s in states if s.get("shipping_attn")), None)
-    ref_id = next_doc_ref(company, list_sequence_key("shipping_doc"))
+    ref_id = await claim_number(session, company, list_sequence_key("shipping_doc", company.settings))
     new_entity_id = f"list:{ref_id}"
     data = {k: v for k, v in {
         "list_type": "shipping_doc",
@@ -7973,7 +8012,7 @@ async def convert_doc(entity_id: str, payload: DocConvertBody | None = None, com
         valid_until = state.get("valid_until")
         if valid_until and valid_until < business_date_of(None, (company.settings or {}).get("timezone")):
             raise HTTPException(status_code=409, detail=t("documents.err_quote_expired"))
-        ref = next_draft_ref(company, "invoice")
+        ref = await claim_number(session, company, draft_counter("invoice"))
         new_doc_id = f"doc:{ref}"
         # The invoice is a new draft: none of the quotation's own lifecycle carries over.
         new_data = {k: v for k, v in state.items() if k not in LIFECYCLE_OWNED_FIELDS}
@@ -8000,7 +8039,7 @@ async def convert_doc(entity_id: str, payload: DocConvertBody | None = None, com
         refuse_unpriced_lines(state)
         new_doc_id = await buy_consignment(
             session, company_id=company_id, user_id=user.id, consignment_id=entity_id, state=state,
-            ref=next_doc_ref(company, "bill"),
+            ref=await claim_number(session, company, "bill"),
             base_currency=(company.settings.get("currency", "USD") if company else "USD"),
         )
         entry = await emit_event(
@@ -8503,23 +8542,27 @@ async def export_docs_csv(
     """The document list as CSV: the same filters, order and displayed values as the index, every
     matching row (no page), and the columns the screen asked for via ``cols``."""
     out_cols = resolve_export_cols(cols, _DOC_EXPORT_COLS, _DOC_EXPORT_COLS)
-    base_where, keep = await _doc_list_filter(session, company_id, filters)
-    order_by = _doc_sql_order(_doc_sort_field(filters), filters.dir == "desc")
+    tz = await _company_tz(session, company_id)
+    base_where, keep = await _doc_list_filter(session, company_id, filters, tz)
+    order_by = _doc_sql_order(_doc_sort_field(filters), filters.dir == "desc", tz)
     # Read only the state keys the exported columns and the row filters need, never whole documents.
     fields = {c for c in out_cols if c not in ("entity_id", "contact_name")} | (set(_DOC_FILTER_KEYS) if keep else set())
     keys = sorted(fields | {k for field in fields for k in DOC_FIELD_FALLBACKS.get(field, ())})
 
     async def _rows():
         stmt = (
-            select(Projection.entity_id, party_name_sql(), *(Projection.state[k] for k in keys))
+            select(Projection.entity_id, party_name_sql(), _doc_issue_date(tz), *(Projection.state[k] for k in keys))
             .where(*base_where)
             .order_by(*order_by)
             .execution_options(yield_per=500)
         )
         result = await session.stream(stmt)
         try:
-            async for entity_id, contact_name, *values in result:
-                row = _doc_display({k: v for k, v in zip(keys, values) if v is not None} | {"contact_name": contact_name})
+            async for entity_id, contact_name, issue_date, *values in result:
+                state = {k: v for k, v in zip(keys, values) if v is not None}
+                if not state.get("issue_date") and issue_date:
+                    state["issue_date"] = issue_date
+                row = _doc_display(state | {"contact_name": contact_name})
                 if keep is None or keep(row):
                     yield row | {"entity_id": entity_id}
         finally:
@@ -8542,6 +8585,7 @@ lists_router = APIRouter(dependencies=[Depends(get_current_user)])
 class ListCreatePayload(BaseModel):
     list_type: str | None = None
     ref_id: str | None = None
+    issue_date: str | None = None
     contact_id: str | None = None
     contact_name: str | None = None
     line_items: list[dict] = Field(default_factory=list)
@@ -8572,7 +8616,7 @@ class ListCreatePayload(BaseModel):
     idempotency_key: str | None = None
     model_config = {"extra": "allow"}
 
-    _contact_fields = model_validator(mode="before")(_canonical_contact_payload)
+    _state_fields = model_validator(mode="before")(_doc_state_payload)
     _no_lifecycle_state = model_validator(mode="before")(_reject_lifecycle_fields)
     _draft_only = field_validator("status", mode="before")(_created_as_draft)
 
@@ -8630,15 +8674,27 @@ def _list_base_where(company_id) -> list:
     return [Projection.company_id == company_id, Projection.entity_type == "list"]
 
 
-def _list_sort_date():
-    """The list's effective sort/window date, matching the Python order issue_date > created_at
-    column > date with the historic [:10] truncation. A list's state carries no date of its own,
-    so the projection's created_at column is the fallback. Written once and reused by the index
-    ORDER BY, the index date_from/date_to bounds, and the page/export ordering."""
+def _list_sort_date(tz: str):
+    """The list's effective sort/window date: its issue_date, else the business day it was
+    created in the company timezone ``tz`` (``_created_business_day``), else its legacy ``date``,
+    each cut to YYYY-MM-DD. Written once and reused by the index ORDER BY, the index
+    date_from/date_to bounds, the page and the export."""
     issue = _func.nullif(_func.substr(Projection.state["issue_date"].as_string(), 1, 10), "")
-    created = _func.substr(_sa.cast(Projection.created_at, _sa.Text), 1, 10)
     date = _func.nullif(_func.substr(Projection.state["date"].as_string(), 1, 10), "")
-    return _func.coalesce(issue, created, date)
+    return _func.coalesce(issue, _created_business_day(tz), date)
+
+
+async def _fill_list_issue_date(session: AsyncSession, company_id, entity_id: str, state: dict) -> dict:
+    """``state`` with the list's issue_date filled in when it has none (a list made before lists
+    stored one): the date the index shows and windows it by (``_list_sort_date``), so a list's
+    page and its row in the index always agree. Nothing is written."""
+    if state.get("issue_date"):
+        return state
+    effective = (await session.execute(
+        select(_list_sort_date(await _company_tz(session, company_id)))
+        .where(*_list_base_where(company_id), Projection.entity_id == entity_id)
+    )).scalar_one_or_none()
+    return state | {"issue_date": effective} if effective else state
 
 
 def _list_customer():
@@ -8684,7 +8740,7 @@ class ListIndexFilters:
 
 def _list_index_where(company_id, f: ListIndexFilters, sort_date) -> list:
     """The index's full WHERE for ``f`` (company scope included); ``sort_date`` is the
-    ``_list_sort_date()`` expression the caller also orders by."""
+    ``_list_sort_date`` expression the caller also orders by."""
     base_where = _list_base_where(company_id)
     if f.list_type:
         base_where.append(Projection.state["list_type"].as_string() == f.list_type)
@@ -8705,6 +8761,10 @@ def _list_index_where(company_id, f: ListIndexFilters, sort_date) -> list:
     return base_where
 
 
+# The state fields, besides status and list_type, that status_key reads to name a list's status.
+_LIST_STATUS_KEY_FIELDS = ("result", "sent_at", "accepted_at")
+
+
 def _list_columns(sort_date) -> dict:
     """Every header value the index shows and the CSV exports, by column name, as one set of
     SQL expressions, so a row on screen and its CSV line carry the same values. ``date`` is
@@ -8720,6 +8780,32 @@ def _list_columns(sort_date) -> dict:
     }
 
 
+def _list_weight(lines: list, state: dict, items: dict, unit_map: dict) -> dict:
+    """A list's weight total for its row in the index, by the print's rule: each line's weight
+    comes from its item (``issued_item``, else the item as it is now) through
+    ``resolve_line_measures``; a line with no item keeps its own weight and unit. The total is
+    ``shared_unit_total`` of those. ``lines`` are (line, count) pairs of equal lines. A line
+    whose stored measures are not numbers has no known weight, so the list has no total."""
+    measures = []
+    for line, count in lines:
+        item = issued_item(line, state) or items.get(line.get("item_id"))
+        if item is None:
+            weight, unit = line.get("weight"), line.get("weight_unit")
+        else:
+            try:
+                _, weight, unit, _, _ = resolve_line_measures(line, item_meta=item_measure_meta(item, unit_map))
+            except (TypeError, ValueError):
+                weight, unit = None, None
+        try:
+            weight = float(weight) * count if weight not in (None, "") else None
+        except (TypeError, ValueError):
+            weight = None
+        measures.append((weight, unit))
+    total = shared_unit_total(measures)
+    return {"total_weight": total[0] if total else None, "weight_unit": total[1] if total else None,
+            "has_weight": any(w not in (None, 0) for w, _ in measures)}
+
+
 @lists_router.get("", dependencies=[require_permission("view_documents")])
 async def list_lists(
     filters: ListIndexFilters = Depends(),
@@ -8728,7 +8814,7 @@ async def list_lists(
     company_id: str = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    sort_date = _list_sort_date()
+    sort_date = _list_sort_date(await _company_tz(session, company_id))
     base_where = _list_index_where(company_id, filters, sort_date)
 
     total = (await session.execute(
@@ -8737,18 +8823,26 @@ async def list_lists(
     # individual lines. Push the count and weight sum into SQL and select the header columns alone, so
     # a list with thousands of lines never drags its whole line_items array back into Python here.
     item_count = _func.coalesce(_func.json_array_length(Projection.state["line_items"]), 0)
-    # One line of unknown weight leaves the list's weight unknown (NULL), never short.
-    weight_sum = _sa.literal_column(
-        "(SELECT CASE WHEN BOOL_OR(w IS NULL) THEN NULL ELSE COALESCE(SUM(w), 0) END FROM ("
-        "SELECT COALESCE(NULLIF(elem ->> 'weight_ct', '')::numeric, NULLIF(elem ->> 'weight', '')::numeric) AS w "
-        "FROM json_array_elements(projections.state -> 'line_items') AS elem) AS lw)"
+    # Only the line fields the weight rule reads (_list_weight), equal lines folded into one with
+    # their count, so the page reads a handful of small values per list.
+    weight_lines = _sa.literal_column(
+        "(SELECT json_agg(json_build_array(lw.line, lw.n)) FROM ("
+        "SELECT jsonb_build_object('item_id', COALESCE(elem ->> 'item_id', elem ->> 'entity_id'), "
+        "'quantity', elem -> 'quantity', 'unit', elem -> 'unit', 'sell_by', elem -> 'sell_by', "
+        "'weight', elem -> 'weight', 'weight_unit', elem -> 'weight_unit', "
+        f"'{ITEM_AT_ISSUE}', elem -> '{ITEM_AT_ISSUE}') AS line, COUNT(*) AS n "
+        "FROM json_array_elements(projections.state -> 'line_items') AS elem GROUP BY 1) AS lw)",
+        type_=_sa.JSON,
     )
     columns = _list_columns(sort_date)
     list_q = (
         select(
             *(expr.label(name) for name, expr in columns.items()),
             item_count.label("item_count"),
-            weight_sum.label("total_weight"),
+            weight_lines.label("weight_lines"),
+            Projection.state["customs_saved"].as_boolean().label("customs_saved"),
+            # What status_key reads beyond the columns above; only the page's rows carry them, the CSV never does.
+            *(Projection.state[key].as_string().label(key) for key in _LIST_STATUS_KEY_FIELDS),
         )
         .where(*base_where)
         # Descending newest-first with the unique entity_id tiebreak so equal-date rows have a
@@ -8759,10 +8853,19 @@ async def list_lists(
     if limit is not None:
         list_q = list_q.limit(limit)
     rows = (await session.execute(list_q)).all()
+    lines = [line for r in rows for line, _ in (r.weight_lines or [])]
+    items = await _page_item_meta(session, company_id, lines) if lines else {}
+    unit_map = build_unit_map(await read_company_units(session, company_id)) if items else {}
+
     out = [{
         **{name: getattr(r, name) for name in columns},
         "item_count": r.item_count,
-        "total_weight": None if r.total_weight is None else float(r.total_weight),
+        **_list_weight(r.weight_lines or [], {"status": r.status, "customs_saved": r.customs_saved},
+                       items, unit_map),
+        # The label the list's page shows (Issued, Sent, In transit, ...); status stays the raw
+        # lifecycle value the filters and status cards use.
+        "status_label": status_key({"status": r.status, "list_type": r.list_type,
+                                    **{key: getattr(r, key) for key in _LIST_STATUS_KEY_FIELDS}}),
     } for r in rows]
     return {"items": out, "total": total}
 
@@ -8787,7 +8890,7 @@ async def get_list_summary(
     so the cards count the rows the page shows. The status filters are ignored: the cards split
     the filtered set by status. draft_count is never date-windowed, because the drafts view the
     card opens is not."""
-    sort_date = _list_sort_date()
+    sort_date = _list_sort_date(await _company_tz(session, company_id))
     unsplit = _dc_replace(filters, status=None, exclude_status=None, all_issued=False, converted_to_type=None)
     base_where = _list_index_where(company_id, unsplit, sort_date)
     status_expr = _func.coalesce(Projection.state["status"].as_string(), "")
@@ -8849,7 +8952,7 @@ async def export_lists_csv(
     """The list index as CSV: the index's filters and order, every matching row (no page), and the
     columns the screen asked for via ``cols``."""
     out_cols = resolve_export_cols(cols, _LIST_EXPORT_COLS, _LIST_EXPORT_COLS)
-    sort_date = _list_sort_date()
+    sort_date = _list_sort_date(await _company_tz(session, company_id))
     base_where = _list_index_where(company_id, filters, sort_date)
     # Select only the exported columns, from the same expressions the index rows use, so a list's
     # whole line_items array is never deserialized just to write its row.
@@ -8877,15 +8980,16 @@ async def export_lists_csv(
     )
 
 
-@lists_router.get("/{entity_id}")
+@lists_router.get("/{entity_id}", dependencies=[require_permission("view_documents")])
 async def get_list(
     entity_id: str,
     company_id: str = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     row = await _get_list(session, company_id, entity_id)
-    return row.state | {"id": row.entity_id, "version": row.version,
-                        "line_holds": await _line_holds(session, company_id, entity_id)}
+    state = await _fill_list_issue_date(session, company_id, entity_id, row.state)
+    return state | {"id": row.entity_id, "version": row.version,
+                    "line_holds": await _line_holds(session, company_id, entity_id)}
 
 
 _PAGE_LIMIT_MAX = 100
@@ -8909,7 +9013,7 @@ def _page_bounds(offset: str, limit: str) -> tuple[int, int]:
     return off, min(lim, _PAGE_LIMIT_MAX)
 
 
-@lists_router.get("/{entity_id}/page")
+@lists_router.get("/{entity_id}/page", dependencies=[require_permission("view_documents")])
 async def get_list_page(
     entity_id: str,
     offset: str = "0",
@@ -8946,7 +9050,7 @@ async def get_list_page(
         {"lo": off, "hi": off + lim - 1, "cid": str(company_id), "eid": entity_id},
     )).all()
     items = [r.item for r in window if r.item is not None]
-    header = dict(head.header or {})
+    header = await _fill_list_issue_date(session, company_id, entity_id, dict(head.header or {}))
     header["id"] = entity_id
     header["version"] = head.version
     item_meta = await _page_item_meta(session, company_id, items)
@@ -9030,18 +9134,19 @@ async def create_list_record(payload: ListCreatePayload, company_id, role: str, 
     company = await locked_company(session, company_id)
     if (done := await _replay()) is not None:
         return done
-    ref_id = payload.ref_id or next_doc_ref(company, list_sequence_key(payload.list_type))
+    if payload.ref_id:
+        await require_number_free(session, company_id, payload.ref_id)
+        ref_id = payload.ref_id
+    else:
+        ref_id = await claim_number(session, company, list_sequence_key(payload.list_type, company.settings))
     entity_id = f"list:{ref_id}"
-
-    # Uniqueness check
-    existing = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    if existing is not None:
-        raise HTTPException(status_code=409, detail=t("documents.err_list_number_taken", number=ref_id))
 
     data = payload.model_dump(exclude_none=True)
     data["ref_id"] = ref_id
     chosen = _chosen_terms(data)
     data.setdefault("currency", company.settings.get("currency", "USD"))
+    # Default issue_date to the company's today, as a new document does.
+    data.setdefault("issue_date", business_date_of(None, company.settings.get("timezone")))
     if contact is not None:
         data.update(await _contact_selection_values(
             session, company_id, settings, role, data,
@@ -9110,6 +9215,9 @@ async def write_list_patch(session: AsyncSession, company_id, role: str, setting
         raise HTTPException(status_code=409, detail=t("documents.err_list_stale"))
     if payload.expected_version is not None and row.version != payload.expected_version:
         raise HTTPException(status_code=409, detail=t("documents.err_list_changed"))
+    new_ref = (fields_changed.get("ref_id") or {}).get("new")
+    if new_ref:
+        await require_number_free(session, company_id, new_ref, exclude_entity_id=entity_id)
     _new_values = {f: (c or {}).get("new") for f, c in fields_changed.items()}
     if selecting:
         # Lines a selection reprices are computed from the locked List, so they cannot
@@ -9864,7 +9972,7 @@ async def restore_list_total(
     return {"event_id": entry.id}
 
 
-@lists_router.get("/{entity_id}/old-rule-total")
+@lists_router.get("/{entity_id}/old-rule-total", dependencies=[require_permission("view_documents")])
 async def get_list_old_rule_total(
     entity_id: str,
     company_id: str = Depends(get_current_company_id),
@@ -9918,6 +10026,15 @@ async def delete_list(
     return {"deleted": entity_id}
 
 
+def _issued_today(state: dict, settings: dict) -> dict:
+    """The issue and due dates of a document made today from a List (converted or duplicated): issued
+    on the company's business day and due by the List's payment term from that day. With no term to
+    follow there is no due date, never the List's own, which was set against its earlier issue date."""
+    issued = business_date_of(None, settings.get("timezone"))
+    due = due_date_for_terms(issued, state.get("payment_terms"), company_payment_terms(settings))
+    return {"issue_date": issued, **({"due_date": due} if due else {})}
+
+
 @lists_router.post("/{entity_id}/convert")
 async def convert_list(
     entity_id: str,
@@ -9934,12 +10051,13 @@ async def convert_list(
     state = row.state
     lt = state.get("list_type") or DEFAULT_LIST_TYPE
     if payload.target_type not in ("invoice", "memo"):
-        raise HTTPException(status_code=422, detail="target_type must be 'invoice' or 'memo'")
+        raise HTTPException(status_code=422, detail=catalog_refusal("documents.err_convert_unsupported"))
     if terminal_action(lt, f"convert-{payload.target_type}") is None:
-        raise HTTPException(status_code=409,
-                            detail=t("documents.err_list_convert_type"))
+        raise HTTPException(status_code=409, detail=catalog_refusal("documents.err_list_convert_type"))
     if state.get("status") != FINALIZED:
-        raise HTTPException(status_code=409, detail="Finalize the quotation before converting it")
+        raise HTTPException(status_code=409, detail=catalog_refusal(
+            "documents.err_list_already_converted", number=state["converted_to"].removeprefix("doc:"))
+            if state.get("result") == "converted" else catalog_refusal("documents.err_list_convert_status"))
     if (differ := list_totals_differ(state)) is not None:
         stored, current = differ
         key = "documents.err_list_old_rule_total"
@@ -9951,7 +10069,7 @@ async def convert_list(
     # document keeps the line ids): it is re-stamped to the new document first, so it is
     # its own when it is created; the create then refuses a line reserved elsewhere or a draft.
     to_transfer = await _held_lots(session, company_id, entity_id)
-    ref = next_draft_ref(company, payload.target_type)
+    ref = await claim_number(session, company, draft_counter(payload.target_type))
     new_doc_id = f"doc:{ref}"
     await require_moving_fits_units(session, company_id, new_doc_id, "doc",
                                     {**state, "doc_type": payload.target_type, "status": "draft"})
@@ -9975,7 +10093,9 @@ async def convert_list(
     if state.get("tax"):
         new_data["tax_rate"] = state["tax"]
     new_data = money_from_lines(new_data, state.get("currency"))
-    new_data.update({"doc_type": payload.target_type, "ref_id": ref, "source_list_id": entity_id, "status": "draft"})
+    new_data.pop("due_date", None)
+    new_data.update({"doc_type": payload.target_type, "ref_id": ref, "source_list_id": entity_id, "status": "draft",
+                     **_issued_today(state, company.settings)})
     await emit_event(
         session, company_id=company_id, entity_id=new_doc_id, entity_type="doc",
         event_type="doc.created", data=new_data, actor_id=user.id, location_id=None,
@@ -10001,11 +10121,13 @@ async def duplicate_list(
     row = await _get_list_for_update(session, company_id, entity_id)
     _assert_contacts_unchanged(named, [row])
     state = row.state
-    ref_id = next_doc_ref(company, list_sequence_key(state.get("list_type")))
+    ref_id = await claim_number(session, company, list_sequence_key(state.get("list_type"), company.settings))
     new_entity_id = f"list:{ref_id}"
     new_data = {k: v for k, v in state.items()
-                if k not in {"status", "entity_type", "ref_id", "share_token", SCAN_RUNS_FIELD, RESTORE_POINT}}
+                if k not in {"status", "entity_type", "ref_id", "share_token", "due_date", SCAN_RUNS_FIELD,
+                             RESTORE_POINT}}
     new_data.update({"ref_id": ref_id, "status": "draft", "source_list_id": entity_id,
+                     **_issued_today(state, company.settings),
                      "line_items": strip_line_ids(state.get("line_items"))})
     await require_moving_fits_units(session, company_id, new_entity_id, "list", new_data)
     entry = await _emit_list(session, company_id, new_entity_id, "list.created", new_data, user)
@@ -10013,7 +10135,7 @@ async def duplicate_list(
     return {"event_id": entry.id, "id": new_entity_id}
 
 
-@lists_router.get("/{entity_id}/notes")
+@lists_router.get("/{entity_id}/notes", dependencies=[require_permission("view_documents")])
 async def list_list_notes(
     entity_id: str,
     company_id: str = Depends(get_current_company_id),
@@ -10162,7 +10284,8 @@ async def import_list(
             entity_id=body.entity_id,
         ))
     await _lock_imported_contact(session, company_id, "list", body.data)
-    await _assert_import_number_free(session, company_id, "list", body.data)
+    for number in _import_numbers(body.data):
+        await require_number_free(session, company_id, number)
 
     entry = await emit_event(
         session, company_id=company_id, entity_id=body.entity_id, entity_type="list",
@@ -10176,7 +10299,7 @@ async def import_list(
     return {"event_id": entry.id, "id": entry.entity_id, "idempotency_hit": False}
 
 
-@lists_router.get("/import/template", include_in_schema=False)
+@lists_router.get("/import/template", include_in_schema=False, dependencies=[require_permission("view_documents")])
 async def import_lists_template():
     from fastapi.responses import PlainTextResponse
     return PlainTextResponse(
@@ -10282,7 +10405,8 @@ async def batch_import_lists(
         try:
             refuse_malformed_taxes(rec.data)
             await _lock_imported_contact(session, company_id, "list", rec.data)
-            await _assert_import_number_free(session, company_id, "list", rec.data)
+            for number in _import_numbers(rec.data):
+                await require_number_free(session, company_id, number)
             entry = await emit_event(
                 session, company_id=company_id, entity_id=rec.entity_id, entity_type="list",
                 event_type="list.created", data=await _issued_import_data(session, company_id, rec.data),
@@ -11767,7 +11891,7 @@ async def _draw_preview(session, company_id, memo_id: str, body: InvoiceLinesReq
     problems, picks = draw_problems(snap, body)
     if target is None:
         company = await session.get(Company, company_id)
-        invoice_id, doc_number = None, peek_draft_ref(company, "invoice")
+        invoice_id, doc_number = None, await peek_draft_ref(session, company, "invoice")
     else:
         invoice_id, doc_number = target.entity_id, _ref(target)
     preview = {"target": {"id": invoice_id, "ref_id": doc_number},
@@ -11810,7 +11934,7 @@ async def _write_draw(session, company_id, role: str, settings: dict, user, comp
     memo = memo_row.state
     draw_id = _step_key(key, "lines_invoiced")
     if target is None:
-        doc_number = next_draft_ref(company, "invoice")
+        doc_number = await claim_number(session, company, draft_counter("invoice"))
         invoice_id = f"doc:{doc_number}"
     else:
         invoice_id, doc_number = target.entity_id, _ref(target)
@@ -13485,7 +13609,7 @@ async def create_audit_list_record(payload: AuditCreateBody, company_id: str, us
             continue
         lines.append({"item_id": r.entity_id, "sku": st.get("sku"), "name": st.get("name"),
                       "barcode": st.get("barcode"), "quantity": float(st.get("quantity") or 0)})
-    ref_id = next_doc_ref(company, "audit")
+    ref_id = await claim_number(session, company, list_sequence_key("audit", company.settings))
     entity_id = entity_id_override or f"list:{ref_id}"
     if await session.get(Projection, {"company_id": company_id, "entity_id": entity_id}) is not None:
         raise HTTPException(status_code=409, detail=t("documents.err_audit_number_taken", number=ref_id))
@@ -14311,10 +14435,8 @@ async def create_writeoff_list(
         lines.append(_writeoff_seed_line(item, company.settings or {}))
     if not lines:
         raise HTTPException(status_code=422, detail=t("documents.err_writeoff_no_items"))
-    ref_id = next_doc_ref(company, "writeoff")
+    ref_id = await claim_number(session, company, list_sequence_key("writeoff", company.settings))
     entity_id = f"list:{ref_id}"
-    if await session.get(Projection, {"company_id": company_id, "entity_id": entity_id}) is not None:
-        raise HTTPException(status_code=409, detail=t("documents.err_writeoff_number_taken", number=ref_id))
     data = {"list_type": "writeoff", "status": DRAFT, "ref_id": ref_id, "line_items": lines,
             "adjust_count": 0, "currency": company.settings.get("currency", "USD")}
     entry = await _emit_list(session, company_id, entity_id, "list.created", data, user, payload.idempotency_key)
@@ -14585,10 +14707,9 @@ async def undo_write_off(
         Projection.entity_id.endswith(":writeoff_cost:0", autoescape=True),
     ).order_by(Projection.entity_id))).scalars().all()
     for adjustment_id in adjustment_ids:
-        derived_id = adjustment_id.removeprefix("je:auto:").removesuffix(":writeoff_cost:0")
         await auto_je.void_for_list_adjustment(
-            session, company_id=company_id, user_id=user.id,
-            list_id=derived_id, kind="writeoff_cost")
+            session, company_id=company_id, user_id=user.id, list_id=entity_id,
+            scope=adjustment_id.removeprefix("je:auto:").removesuffix(":writeoff_cost:0"), kind="writeoff_cost")
     await auto_je.void_for_list_adjustment(session, company_id=company_id, user_id=user.id,
                                            list_id=entity_id, kind="writeoff", cycle=cycle)
     await _emit_list(session, company_id, entity_id, "list.reopened", {"line_items": lines}, user)
@@ -14611,7 +14732,10 @@ async def change_list_type(
     financial actions are gated by status, so re-typing can't undo or fabricate past work. Type
     fields persist (nothing is zeroed). Switching a FINALIZED list to audit re-freezes the on-hand
     baseline that the audit's own finalize would have captured, so variance/Adjust stay correct.
-    Closed/void lists are terminal — duplicate instead."""
+    Closed/void lists are terminal — duplicate instead. A draft whose new type draws another
+    counter takes that counter's number, so its number reads as its type's; an issued list
+    keeps the number it was issued under."""
+    company = await locked_company(session, company_id)
     row = await _get_list_for_update(session, company_id, entity_id)
     state = row.state
     new_type = payload.list_type
@@ -14626,6 +14750,9 @@ async def change_list_type(
         # line that a re-type would issue.
         refuse_unset_line_tax(state.get("line_items"), state)
     fields: dict = {"list_type": new_type}
+    counter = list_sequence_key(new_type, company.settings)
+    if status == DRAFT and counter != list_sequence_key(state.get("list_type"), company.settings):
+        fields["ref_id"] = await claim_number(session, company, counter)
     if new_type == "audit" and status == FINALIZED:
         lines = [dict(l) for l in (state.get("line_items") or [])]
         await _lock_audit_lines(session, company_id, lines, keep_unlinked_on_hand=True)
@@ -14634,7 +14761,7 @@ async def change_list_type(
         fields.update(await customs_snapshot(session, company_id, state.get("line_items") or []))
     await _set_list_fields(session, company_id, entity_id, user, fields)
     await session.commit()
-    return {"ok": True, "list_type": new_type}
+    return {"ok": True, "list_type": new_type, "ref_id": fields.get("ref_id", state.get("ref_id"))}
 
 
 @lists_router.post("/{entity_id}/send")
@@ -14648,7 +14775,8 @@ async def send_list(
     use. `sent_via="manual"` (no recipient) is the Mark-as-sent path."""
     row = await _get_list_for_update(session, company_id, entity_id)
     if row.state.get("status") != FINALIZED:
-        raise HTTPException(status_code=409, detail="Issue the list before sending it")
+        raise HTTPException(status_code=409, detail=refusal(
+            "docs.list_issue_before_send", "Issue the list before sending it."))
     now = datetime.now(timezone.utc).isoformat()
     await _set_list_fields(session, company_id, entity_id, user,
                            {"sent_at": now, "sent_via": payload.sent_via or "email",
@@ -14657,7 +14785,8 @@ async def send_list(
     if payload.sent_to:
         from celerp_docs.routes_share import send_view_url
         view_url = await send_view_url(session, company_id, entity_id)
-        await session.commit()
+    # One commit for both paths: the mark as sent (no recipient) writes just as the email does.
+    await session.commit()
     if payload.sent_to:
         from celerp_docs.doc_email import compose_doc_email
         ref = row.state.get("ref_id") or entity_id.split(":")[-1]

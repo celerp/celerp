@@ -16,7 +16,7 @@ from ui.components.shell import _sidebar, module_nav
 
 _LOCALES = Path(__file__).resolve().parents[1] / "ui" / "locales"
 _LANGS = sorted(p.stem for p in _LOCALES.glob("*.json"))
-_HEADER = re.compile(r'class="sidebar-group-header">\s*(?:<a [^>]*>(?:⚙️ )?([^<]*)</a>|<span>([^<]*)</span>)')
+_HEADER = re.compile(r'class="sidebar-group-header">\s*(?:<a [^>]*>(?:<span class="menu-icon">.*?</span>)?([^<]*)</a>|<span>([^<]*)</span>)')
 
 
 def _groups() -> set[str]:

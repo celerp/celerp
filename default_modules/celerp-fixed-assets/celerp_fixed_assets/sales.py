@@ -229,11 +229,11 @@ async def _draft(session, company_id, user_id, data: dict, before=None) -> str:
     from celerp.events.engine import emit_event
     from celerp.services.company_lock import locked_company
     from celerp_docs.doc_money import money_from_lines
-    from celerp_docs.sequences import next_draft_ref
+    from celerp_docs.sequences import claim_number, draft_counter
 
     company = await locked_company(session, company_id)
     data = money_from_lines(data, data["currency"])
-    ref = next_draft_ref(company, data["doc_type"])
+    ref = await claim_number(session, company, draft_counter(data["doc_type"]))
     doc_id = f"doc:{ref}"
     data.update(ref_id=ref, status="draft", amount_paid=0.0, amount_outstanding=data["total"])
     if before is not None:

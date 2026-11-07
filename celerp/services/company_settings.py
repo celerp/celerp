@@ -57,6 +57,7 @@ OWNERS: dict[str, str] = {
     "posting_role_scopes": POSTING_ACCOUNTS,
     # Lists and schemas with their own pages.
     "role_grants": "PATCH /companies/me/role-permissions",
+    "nav_overrides": "PATCH /companies/me/nav-overrides",
     "vertical": "POST /companies/me/business-type",
     "enabled_modules": "POST /companies/me/modules/{module_name}/enable",
     "item_schema": "PATCH /companies/me/item-schema",

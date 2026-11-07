@@ -315,6 +315,7 @@ _DISPLAY_READERS = {
         "query_items", "items_metadata", "get_item", "split_preview", "export_items_csv"},
     "default_modules/celerp-inventory/celerp_inventory/search.py": {"flatten_item_rows"},
     "default_modules/celerp-labels/celerp_labels/routes.py": {"_unit_map"},
+    "default_modules/celerp-docs/celerp_docs/routes.py": {"list_lists"},
 }
 
 

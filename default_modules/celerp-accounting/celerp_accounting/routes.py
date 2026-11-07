@@ -16,7 +16,7 @@ from fastapi.responses import PlainTextResponse
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1063,11 +1063,45 @@ def _je_memo(memo: str, ref: dict | None) -> str:
     return memo
 
 
+_DOC_SOURCE_KEYS = ("doc_id", "cn_id", "dn_id", "from_doc_id", "list_id")
+
+
+# A write-off's cost corrections recorded before their entry named the List exactly carry
+# the List id followed by this marker; the ledger is append-only, so they are read back to
+# their List (_source_meta) rather than rewritten.
+_LIST_COST_SCOPE = ":cost:"
+
+
+def _source_meta(meta: dict) -> dict:
+    """An entry's ledger metadata with each source key naming its record."""
+    list_id = meta.get("list_id")
+    if isinstance(list_id, str) and _LIST_COST_SCOPE in list_id:
+        return {**meta, "list_id": list_id.split(_LIST_COST_SCOPE, 1)[0]}
+    return meta
+
+
+def _linked_doc_events(doc_id: str, dialect_name: str):
+    """Match all actual document-reference keys using the native indexed PG containment op."""
+    from celerp.models.ledger import LedgerEntry
+
+    if dialect_name == "postgresql":
+        from sqlalchemy import cast
+        from sqlalchemy.dialects.postgresql import JSONB
+
+        metadata = cast(LedgerEntry.metadata_, JSONB)
+        named = [metadata.contains({key: doc_id}) for key in _DOC_SOURCE_KEYS]
+    else:
+        named = [LedgerEntry.metadata_[key].as_string() == doc_id for key in _DOC_SOURCE_KEYS]
+    # The cost corrections _source_meta reads back to their List, found by their entry id.
+    legacy = LedgerEntry.entity_id.startswith(f"je:auto:{doc_id}{_LIST_COST_SCOPE}", autoescape=True)
+    return or_(*named, legacy)
+
+
 async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: list[str]) -> dict[str, dict]:
     """Source-doc display info per journal entry: {je_id: {"doc_id", "doc_ref", "fx"}}.
 
-    Only JEs whose creation event carries a doc_id in its ledger metadata appear;
-    doc_ref falls back to the raw doc_id when the doc projection is gone.
+    Only JEs whose creation event carries a document id (a List's postings carry
+    list_id) in its ledger metadata appear; doc_ref falls back to the raw doc_id when the doc projection is gone.
     fx is {"currency", "rate"} when the linked doc was recorded in a foreign
     currency with a stored conversion rate, else None - a missing rate leaves fx
     empty rather than guessing. Payment JEs (metadata carries payment_index)
@@ -1099,19 +1133,50 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
                 )
             )
         ).scalars().all())
+    # An unvoid re-posts the entry the void took out, under its own id; it is the
+    # same posting, so it is classified by the trigger of the entry it restores.
+    creation_trigger = {ev.entity_id: (ev.metadata_ or {}).get("trigger") for ev in ledger_events}
+    restores = {ev.entity_id: (ev.metadata_ or {})["restores"]
+                for ev in ledger_events if (ev.metadata_ or {}).get("restores")}
+    looked_up = set(creation_trigger)
+    pending = set(restores.values()) - looked_up
+    while pending:
+        looked_up |= pending
+        for chunk in _id_chunks(sorted(pending)):
+            for ev in (await session.execute(
+                select(LedgerEntry).where(
+                    LedgerEntry.company_id == company_id,
+                    LedgerEntry.event_type == "acc.journal_entry.created",
+                    LedgerEntry.entity_id.in_(chunk),
+                )
+            )).scalars().all():
+                creation_trigger[ev.entity_id] = (ev.metadata_ or {}).get("trigger")
+                if (ev.metadata_ or {}).get("restores"):
+                    restores[ev.entity_id] = ev.metadata_["restores"]
+        pending = set(restores.values()) - looked_up
+
+    def _posting_trigger(je_id: str) -> str | None:
+        seen = set()
+        while je_id in restores and je_id not in seen:
+            seen.add(je_id)
+            je_id = restores[je_id]
+        return creation_trigger.get(je_id)
+
     je_meta: dict[str, dict] = {}
     je_ts: dict[str, str] = {}
     for ev in ledger_events:
-        meta = ev.metadata_ or {}
-        if meta.get("doc_id"):
-            je_meta[ev.entity_id] = meta
+        meta = _source_meta(ev.metadata_ or {})
+        source_id = meta.get("doc_id") or meta.get("cn_id") or meta.get("dn_id") or meta.get("list_id")
+        if source_id:
+            je_meta[ev.entity_id] = {**meta, "doc_id": source_id}
             je_ts[ev.entity_id] = str((ev.data or {}).get("ts") or "")[:10]
 
     # A credit note carries both ids; its own party is the one the entry belongs
     # to, which is not always the party on the invoice it settles.
     doc_ids = sorted(
         {m["doc_id"] for m in je_meta.values()}
-        | {m["cn_id"] for m in je_meta.values() if m.get("cn_id")}
+        | {m[key] for m in je_meta.values()
+           for key in ("cn_id", "dn_id") if m.get(key)}
     )
     doc_states: dict[str, dict] = {}
     for chunk in _id_chunks(doc_ids):
@@ -1154,7 +1219,7 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
         # The party this entry belongs to, resolved from the document that caused
         # it. Every document-driven posting records its doc_id, so no separate
         # party field has to be stored or backfilled for them.
-        party_state = doc_states.get(meta["cn_id"], state) if meta.get("cn_id") else state
+        party_state = doc_states.get(meta.get("cn_id") or meta.get("dn_id"), state)
         contact_id = (party_state.get("contact_id") or party_state.get("customer_id")
                       or party_state.get("supplier_id"))
         doc_type = party_state.get("doc_type") or party_state.get("type") or ""
@@ -1162,22 +1227,34 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
             entity_id: number
             for entity_id, number in (
                 (doc_id, state.get("ref_id") or state.get("doc_number")),
-                (meta.get("cn_id"), party_state.get("ref_id") or party_state.get("doc_number")),
+                (meta.get("cn_id") or meta.get("dn_id"),
+                 party_state.get("ref_id") or party_state.get("doc_number")),
             )
             if entity_id and number
         }
         refs[je_id] = {
             "doc_id": doc_id,
             "doc_ref": state.get("ref_id") or state.get("doc_number") or doc_id,
+            "related_doc_ids": {str(meta[k]) for k in _DOC_SOURCE_KEYS if meta.get(k)},
             "numbers": numbers,
             "fx": fx,
             "contact_id": contact_id,
             "doc_type": canonical_doc_type(doc_type),
             "is_payment": isinstance(payment_index, int),
-            "is_cost_posting": meta.get("trigger") == "doc.fulfilled",
+            "is_cost_posting": _posting_trigger(je_id) == "doc.fulfilled",
+            # Other posting kinds may happen to equal a document's net price.
+            "is_item_posting": _posting_trigger(je_id) in (
+                "doc.finalized", "doc.imported", "doc.converted_to_bill", "doc.received",
+            ),
+            "trigger": _posting_trigger(je_id),
+            # What one receipt of a purchase order booked, as its entry recorded it.
+            "booked_items": meta.get("items") or None,
             "doc": state,
         }
-    return {je_id: refs[original] for je_id, original in reverses.items() if original in refs}
+    # A reversal undoes the whole entry on the party line; it names no items, and is headed
+    # by its own memo rather than the event of the entry it undoes.
+    return {je_id: refs[original] if je_id == original else {**refs[original], "is_item_posting": False, "trigger": None}
+            for je_id, original in reverses.items() if original in refs}
 
 
 def _line_party(refs: dict[str, dict], je_id: str, entry: dict, survivors: dict[str, str]) -> str:
@@ -1256,6 +1333,8 @@ async def _journal_payload(
     session: AsyncSession, company_id: uuid.UUID,
     date_from: str | None, date_to: str | None,
     filt: _JournalFilter | None = None,
+    survivors: dict[str, str] | None = None,
+    entry_ids: list[str] | None = None,
 ) -> tuple[dict, dict, str]:
     """The journal, its source-doc refs and the base currency.
 
@@ -1263,9 +1342,12 @@ async def _journal_payload(
     item detail attached afterwards, so the two can never show different entries,
     different lines or different totals for the same period. The filter is applied
     here for the same reason: both books, and both of their exports, narrow alike.
+    Given the merge survivors, each line also carries its ``party_id`` (_line_party),
+    read from the stored line it was built from, so a reader never has to line the
+    stored lines up with these again.
     """
     _require_date_range(date_from, date_to)
-    rows = await journal_rows(session, company_id, include_void=True)
+    rows = await journal_rows(session, company_id, include_void=True, entry_ids=entry_ids)
     # Dateless JEs count as pre-period, exactly like the trial balance,
     # general ledger, and per-account ledger: excluded once a start date is
     # set, included otherwise, so period totals cross-foot between reports.
@@ -1331,6 +1413,8 @@ async def _journal_payload(
                 "fx_currency": line_currency,
                 "fx_rate": float(line_rate) if line_rate else None,
             })
+            if survivors is not None:
+                lines[-1]["party_id"] = _line_party(refs, je_id, entry, survivors)
         out = {
             "je_id": je_id,
             "ts": ts,
@@ -1430,6 +1514,14 @@ def _doc_item_lines(doc: dict, base: str) -> list[dict]:
     return out
 
 
+def _booked_item_lines(booked: list[dict], base: str) -> list[dict]:
+    """The items one receipt booked, as its entry recorded them: each at its own cost in the
+    books' currency, rounded the way the receipt rounded its debits."""
+    return [{"item": b["item"], "quantity": b["quantity"], "unit_price": None, "fx_amount": None,
+             "amount": round_money(to_decimal(b["cost"]), base)}
+            for b in booked if to_decimal(b["cost"]) > 0]
+
+
 def _doc_net_posted(doc: dict, base: str) -> Decimal:
     """What a document's items are posted for in one line, in the books' currency:
     its total less its tax, converted the way auto_je converts it."""
@@ -1483,7 +1575,9 @@ def _expand_item_lines(lines: list[dict], ref: dict | None, base: str) -> tuple[
     attached: one posting covering the whole document, which becomes a row per
     item, and one posting per document line in document order, which is already a
     row per item. Anything else is left as the classical journal shows it, because
-    item detail that does not tie to the posting is worse than no item detail.
+    item detail that does not tie to the posting is worse than no item detail. A
+    purchase order receipt is read against the items its own entry recorded, not the
+    whole order, so each receipt of an order received in parts ties on its own.
 
     Where a single posting splits, the rows are the document's own line totals
     converted one by one; converting each and converting their sum can differ by
@@ -1501,7 +1595,7 @@ def _expand_item_lines(lines: list[dict], ref: dict | None, base: str) -> tuple[
     # is the one case here that means something is missing rather than absent.
     if not doc:
         return lines, "no_document"
-    if ref.get("is_payment"):
+    if ref.get("is_payment") or not ref.get("is_item_posting", True):
         return lines, "no_items"
     if ref.get("is_cost_posting"):
         # The fulfilment posting moves inventory to cost of sales at cost, as a
@@ -1512,12 +1606,14 @@ def _expand_item_lines(lines: list[dict], ref: dict | None, base: str) -> tuple[
         # as the classical journal shows it.
         return lines, "no_items"
     side = _ITEM_SIDE.get(ref.get("doc_type") or "")
-    doc_lines = _doc_item_lines(doc, base)
+    booked = ref.get("booked_items")
+    doc_lines = _booked_item_lines(booked, base) if booked else _doc_item_lines(doc, base)
     if not side or not doc_lines:
         return lines, "no_items"
     other = "credit" if side == "debit" else "debit"
 
-    posted = _doc_net_posted(doc, base)
+    posted = (round_money(sum((to_decimal(b["cost"]) for b in booked), Decimal(0)), base) if booked
+              else _doc_net_posted(doc, base))
     amounts = [d["amount"] for d in doc_lines]
     residual = posted - sum(amounts, Decimal(0))
     rounding_room = (Decimal(10) ** -currency_dp(base)) * len(doc_lines)
@@ -1571,6 +1667,96 @@ async def extended_journal(
         entry["lines"] = lines
         entry["items_status"] = status
     return payload
+
+
+async def _party_names(session: AsyncSession, company_id: uuid.UUID, ids: set[str]) -> dict[str, str]:
+    """Display names for contact ids, read from the contact projections. A contact
+    that no longer resolves is absent: it has no name to show, and its id is not one."""
+    if not ids:
+        return {}
+    rows = (await session.execute(
+        select(Projection).where(Projection.company_id == company_id,
+                                 Projection.entity_id.in_(sorted(ids)))
+    )).scalars().all()
+    return {r.entity_id: str((r.state or {}).get("name") or "") for r in rows}
+
+
+@router.get("/journal/by-doc/{doc_id:path}")
+async def journal_by_doc(
+    doc_id: str,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = require_permission("view_financial_reports"),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """What one document did to the books: every journal entry posted for it, with
+    its lines, the party each line belongs to and the item detail the extended
+    journal attaches.
+
+    Cut from the same payload the journal and extended journal read, so the lines
+    here are exactly the lines there; nothing is posted, stored or recomputed. The
+    cost-of-sales and inventory legs of a fulfilment, a payment and a void's
+    reversal are the document's own entries and appear with the rest. A document
+    that posted nothing (a draft, a quotation) returns no entries; the document's
+    `doc_type` and `status` are returned so the caller can say which it is.
+    """
+    doc = (await session.execute(
+        select(Projection).where(Projection.company_id == company_id,
+                                 Projection.entity_id == doc_id)
+    )).scalar_one_or_none()
+    if doc is None or doc.entity_type not in ("doc", "list"):
+        raise HTTPException(status_code=404, detail=t("documents.document_not_found"))
+    state = doc.state or {}
+    # Each line's party is the one every ledger and statement files it under
+    # (_line_party): a line's own contact wins over the document's.
+    from celerp.models.ledger import LedgerEntry
+
+    linked = _linked_doc_events(doc_id, session.get_bind().dialect.name)
+    entry_ids = sorted(set((await session.execute(
+        select(LedgerEntry.entity_id).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.event_type == "acc.journal_entry.created",
+            linked,
+        )
+    )).scalars().all()))
+    survivors = await merge_survivors(session, company_id)
+    payload, refs, base = await _journal_payload(
+        session, company_id, None, None, survivors=survivors, entry_ids=entry_ids
+    )
+    own_party = state.get("contact_id") or state.get("customer_id") or state.get("supplier_id") or ""
+    own_party = survivors.get(own_party, own_party)
+
+    entries = [
+        e for e in payload["entries"]
+        if doc_id in (refs.get(e["je_id"]) or {}).get("related_doc_ids", ())
+    ]
+    for entry in entries:
+        lines, status = _expand_item_lines(entry["lines"], refs.get(entry["je_id"]), base)
+        entry["lines"] = lines
+        entry["items_status"] = status
+        # What happened, so a reader sees "Payment received" rather than an entry id.
+        entry["trigger"] = refs[entry["je_id"]].get("trigger")
+    names = await _party_names(session, company_id,
+                               {ln["party_id"] for e in entries for ln in e["lines"] if ln["party_id"]})
+    # A party that no longer resolves keeps its id (the bucket the ledgers file it
+    # under) but has no name; the document's own party falls back to the name the
+    # document recorded.
+    for entry in entries:
+        for ln in entry["lines"]:
+            ln["party_name"] = names.get(ln["party_id"]) or (
+                (state.get("contact_name") or "") if ln["party_id"] == own_party else "")
+    return {
+        "doc_id": doc_id,
+        "doc_ref": state.get("ref_id") or state.get("doc_number") or doc_id,
+        "doc_type": canonical_doc_type(state.get("doc_type") or state.get("type") or ""),
+        "status": state.get("status"),
+        "list_type": state.get("list_type") if doc.entity_type == "list" else None,
+        "currency": base,
+        "entries": entries,
+        "total_debit": to_stored_float(round_money(
+            sum((to_decimal(l["debit"]) for e in entries if e["status"] == "posted" for l in e["lines"]), Decimal(0)), base)),
+        "total_credit": to_stored_float(round_money(
+            sum((to_decimal(l["credit"]) for e in entries if e["status"] == "posted" for l in e["lines"]), Decimal(0)), base)),
+    }
 
 
 class ManualJELine(BaseModel):

@@ -117,25 +117,29 @@ async def lock_connector_maintenance(session: AsyncSession) -> None:
 
 @asynccontextmanager
 async def connector_maintenance_guard():
-    """Exclude connector work across a multi-transaction maintenance operation."""
-    from celerp.db import LifecycleSessionLocal
+    """Exclude connector work across a multi-transaction maintenance operation.
 
-    async with LifecycleSessionLocal() as session:
-        if session.get_bind().dialect.name == "sqlite":
+    The lock is session level, held on an autocommit connection of its own with no
+    transaction open: the operation runs schema upgrades, and an index built CONCURRENTLY
+    waits for every open transaction to end, this one included."""
+    from celerp.db import lifecycle_engine
+
+    async with lifecycle_engine.connect() as conn:
+        if conn.dialect.name == "sqlite":
             yield
             return
-        await session.execute(
+        await conn.execution_options(isolation_level="AUTOCOMMIT")
+        await conn.execute(
             sa.text("SELECT pg_advisory_lock(hashtextextended(:k, 0))"),
             {"k": "connector-runtime"},
         )
         try:
             yield
         finally:
-            await session.execute(
+            await conn.execute(
                 sa.text("SELECT pg_advisory_unlock(hashtextextended(:k, 0))"),
                 {"k": "connector-runtime"},
             )
-            await session.rollback()
 
 
 async def _lock_active_company(

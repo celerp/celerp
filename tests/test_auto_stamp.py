@@ -54,7 +54,7 @@ from celerp.migrations._auto_stamp import (
 
 
 @contextlib.contextmanager
-def _pg_inspector_for_models(drop_tables=()):
+def _pg_inspector_for_models(drop_tables=(), drop_indexes=(), invalid_indexes=()):
     """create_all the full model schema into an isolated Postgres schema and
     yield an inspector over it. Mirrors the production dev-startup path
     (create_all on Postgres), so the stamp walker is tested against real
@@ -79,6 +79,12 @@ def _pg_inspector_for_models(drop_tables=()):
         with engine.begin() as conn:
             for table in drop_tables:
                 conn.execute(text(f'DROP TABLE IF EXISTS "{table}" CASCADE'))
+            for index in drop_indexes:
+                conn.execute(text(f'DROP INDEX IF EXISTS "{index}"'))
+            for index in invalid_indexes:
+                # What a cancelled CREATE INDEX CONCURRENTLY leaves behind.
+                conn.execute(text("UPDATE pg_index SET indisvalid = false "
+                                  "WHERE indexrelid = to_regclass(:name)"), {"name": index})
         yield inspect(engine)
     finally:
         engine.dispose()
@@ -780,3 +786,75 @@ def test_stamped_but_columns_absent_stamped_behind():
     e7c9 = script.get_revision("e7c9a1b3d5f2")
     below = {r.revision for r in script.iterate_revisions(e7c9.down_revision, "base")}
     assert stamp in below
+
+
+def test_journal_ref_index_is_recognized_as_schema_ddl_not_data_backfill():
+    migration = (
+        Path(__file__).resolve().parent.parent
+        / "celerp/migrations/versions/p9q0r1s2t3u4_ledger_doc_lookup.py"
+    )
+    signatures = extract_signatures(migration)
+    assert [(sig.kind, sig.table, sig.extra) for sig in signatures] == [
+        ("create_index", "ledger", "ix_ledger_je_doc_refs_gin")
+    ]
+
+
+def test_numbering_lookup_indexes_are_recognized_as_schema_ddl_not_data_backfill():
+    migration = (
+        Path(__file__).resolve().parent.parent
+        / "celerp/migrations/versions/q0r1s2t3u4v5_projections_number_lookup.py"
+    )
+    assert [(sig.kind, sig.table, sig.extra) for sig in extract_signatures(migration)] == [
+        ("create_index", "projections", name)
+        for name in ("ix_projections_number_shown", "ix_projections_number_kept", "ix_projections_number_key")
+    ]
+
+
+@pytest.mark.parametrize(("drop_indexes", "invalid_indexes", "expected"), [
+    (("ix_ledger_je_doc_refs_gin",), (), "m8a9b0c1d2e3"),
+    ((), ("ix_ledger_je_doc_refs_gin",), "m8a9b0c1d2e3"),
+    (("ix_projections_number_kept",), (), "p9q0r1s2t3u4"),
+    ((), ("ix_projections_number_key",), "p9q0r1s2t3u4"),
+    ((), (), "q0r1s2t3u4v5"),
+])
+def test_an_upgraded_database_without_the_journal_ref_index_is_stamped_below_it(
+        drop_indexes, invalid_indexes, expected):
+    """A database upgraded to m8a9b0c1d2e3 has every table but not the GIN index: the restamp
+    before an upgrade must leave p9q0r1s2t3u4 to run, never claim it from the rest of the
+    schema. An invalid index, left by a cancelled concurrent build, is not there either: the
+    revision drops and rebuilds it. Once a valid index is there, the revision is proven. The
+    numbering lookup indexes of q0r1s2t3u4v5 are proven the same way."""
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(build_alembic_config())
+    with _pg_inspector_for_models(drop_indexes=drop_indexes, invalid_indexes=invalid_indexes) as inspector:
+        stamp = find_safe_stamp(list(script.walk_revisions()), _real_sigs_by_rev(), inspector,
+                                expected_metadata=load_kernel_metadata())
+    assert stamp == expected
+
+
+class _Reflection20:
+    """An inspector reporting indexes as SQLAlchemy 2.0 does (the Python 3.10 pin): no
+    ``postgresql_invalid`` flag, so an invalid index reads like a valid one."""
+
+    def __init__(self, inspector):
+        self._inspector = inspector
+
+    def __getattr__(self, name):
+        return getattr(self._inspector, name)
+
+    def get_indexes(self, table, *args, **kwargs):
+        indexes = self._inspector.get_indexes(table, *args, **kwargs)
+        return [{k: v for k, v in item.items() if k != "dialect_options"} for item in indexes]
+
+
+def test_an_invalid_journal_ref_index_is_not_proven_whatever_the_reflection_reports():
+    """The invalid index of a cancelled concurrent build leaves p9q0r1s2t3u4 to run even where
+    reflection does not flag it invalid."""
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(build_alembic_config())
+    with _pg_inspector_for_models(invalid_indexes=("ix_ledger_je_doc_refs_gin",)) as inspector:
+        stamp = find_safe_stamp(list(script.walk_revisions()), _real_sigs_by_rev(), _Reflection20(inspector),
+                                expected_metadata=load_kernel_metadata())
+    assert stamp == "m8a9b0c1d2e3"
