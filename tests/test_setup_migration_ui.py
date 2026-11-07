@@ -674,6 +674,9 @@ async def test_existing_new_company_landing_offers_fresh_or_migrate(ui, router, 
     assert r.headers["location"] == "/setup/company"
     assert _cookie_value(r, "celerp_token") == "access-new"
     assert _cookie_value(r, "celerp_refresh") == "refresh-new"
+    # The stand-in pair above is no session the middleware could renew; sign the owner back in.
+    ui.cookies.clear()
+    _owner(ui)
     r = await ui.post(action, data={"company_name": "  "})
     assert r.status_code in (302, 303)
     assert "error" in r.headers["location"]

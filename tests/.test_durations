@@ -21194,6 +21194,7 @@
     "tests/test_setup_one_form.py::test_setup_post_reports_every_field_error_at_once": 0.5,
     "tests/test_setup_one_form.py::test_setup_post_twice_is_harmless": 0.012,
     "tests/test_setup_one_form.py::test_setup_restore_page_offers_whole_installation_recovery": 0.01,
+    "tests/test_setup_session_renewal.py::test_every_signed_in_setup_page_renews_a_lapsed_session": 0.31,
     "tests/test_setup_wizard.py::TestBusinessTypeOptions::test_blank_sorted_last": 0.004,
     "tests/test_setup_wizard.py::TestBusinessTypeOptions::test_empty_presets_dir_returns_empty": 0.004,
     "tests/test_setup_wizard.py::TestBusinessTypeOptions::test_hidden_preset_excluded": 0.004,
