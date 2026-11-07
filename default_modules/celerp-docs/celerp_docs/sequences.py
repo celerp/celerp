@@ -6,8 +6,15 @@ from __future__ import annotations
 import re
 from datetime import date
 
+from fastapi import HTTPException
+from sqlalchemy import func, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from celerp.accounting_roles import Refused, catalog_refusal
 from celerp.models.company import Company
+from celerp.models.projections import Projection
 from celerp.services.business_time import business_today
+from celerp.services.company_lock import lock_company
 
 _PREFIX_BY_DOC_TYPE = {
     "invoice": "INV",
@@ -30,19 +37,18 @@ _PREFIX_BY_DOC_TYPE = {
 }
 
 
-# Every list type has its own numbering counter. The shared "list" counter (LST) is no longer
-# drawn from; it stays in the table so a company's old settings and numbers are still read.
+# Every list type has its own numbering counter.
 _LIST_PREFIX_KEYS = {"quotation", "transfer", "audit", "writeoff", "shipping_doc"}
-# The types the shared counter numbered. Audit, write-off and shipping always had their own.
-_SHARED_COUNTER_KEYS = {"quotation", "transfer"}
 
 
 def list_sequence_key(list_type: str | None, settings: dict | None = None) -> str:
-    """Keep an existing shared counter for the types it numbered until the type has its own
-    configuration."""
+    """The counter a List of ``list_type`` draws. A company that still has the shared "list"
+    counter (LST, which numbered every List before each type had its own) keeps it for
+    quotation and untyped Lists, and for transfers until the transfer counter is saved. The
+    quotation counter is also the quotation documents' counter, so it never ends the fallback."""
     key = list_type if list_type in _LIST_PREFIX_KEYS else "quotation"
     sequences = (settings or {}).get("sequences") or {}
-    if key in _SHARED_COUNTER_KEYS and sequences.get("list") and not sequences.get(key):
+    if sequences.get("list") and (key == "quotation" or (key == "transfer" and not sequences.get(key))):
         return "list"
     return key
 
@@ -160,37 +166,82 @@ def next_doc_ref(company: Company, doc_type: str) -> str:
     return ref
 
 
-def _draft_counter(doc_type: str) -> str:
+def draft_counter(doc_type: str) -> str:
     """The counter a new draft of ``doc_type`` is numbered from. A draft invoice is numbered
     from the proforma counter; finalize gives it its invoice number, so no invoice number goes
     unused."""
     return "proforma" if doc_type == "invoice" else doc_type
 
 
-def next_draft_ref(company: Company, doc_type: str) -> str:
-    """The reference a new draft of ``doc_type`` takes."""
-    return next_doc_ref(company, _draft_counter(doc_type))
+async def number_holder(session: AsyncSession, company_id, number: str, *,
+                        exclude_entity_id: str | None = None, doc_type: str | None = None) -> str | None:
+    """"doc" or "list" for the Document or List that shows ``number`` or is stored under it,
+    ignoring case as imports do; None when the number is free. Documents and Lists share one
+    number space, so every number is checked against this one rule. ``doc_type`` narrows the
+    Documents that count to that type, for imported books, where another system's bill and
+    invoice may carry the same number; every List still counts."""
+    wanted = number.strip().lower()
+    query = select(Projection.entity_type).where(
+        Projection.company_id == company_id,
+        Projection.entity_type.in_(("doc", "list")),
+        or_(func.lower(Projection.entity_id).in_((f"doc:{wanted}", f"list:{wanted}")),
+            func.lower(Projection.state["ref_id"].as_string()) == wanted,
+            func.lower(Projection.state["doc_number"].as_string()) == wanted),
+    )
+    if exclude_entity_id:
+        query = query.where(Projection.entity_id != exclude_entity_id)
+    if doc_type:
+        query = query.where(or_(Projection.entity_type == "list",
+                                Projection.state["doc_type"].as_string() == doc_type))
+    return await session.scalar(query.limit(1))
+
+
+async def require_number_free(session: AsyncSession, company_id, number: str, *,
+                              exclude_entity_id: str | None = None, doc_type: str | None = None) -> None:
+    """Refuse ``number`` while another Document or List shows it (number_holder), naming which
+    kind holds it. The company lock serializes the check with every other numbering write."""
+    await lock_company(session, company_id)
+    holder = await number_holder(session, company_id, number, exclude_entity_id=exclude_entity_id,
+                                 doc_type=doc_type)
+    if holder is not None:
+        key = "documents.err_doc_number_taken" if holder == "doc" else "documents.err_list_number_taken"
+        raise HTTPException(status_code=409, detail=catalog_refusal(key, number=number.strip()))
+
+
+async def claim_number(session: AsyncSession, company: Company, counter: str) -> str:
+    """The next number of ``counter`` that no Document or List holds. A number a user, an
+    import or another counter already gave is skipped, never reused, and nothing is
+    renumbered. ``company`` comes from locked_company(), as for next_doc_ref()."""
+    while True:
+        number = next_doc_ref(company, counter)
+        if await number_holder(session, company.id, number) is None:
+            return number
 
 
 def peek_draft_ref(company: Company, doc_type: str) -> str:
     """The reference the next new draft of ``doc_type`` would take, without taking it."""
     settings = dict(company.settings or {})
-    counter = _draft_counter(doc_type)
+    counter = draft_counter(doc_type)
     return _sequence_view(settings, counter, dict((settings.get("sequences") or {}).get(counter) or {}))["preview"]
 
 
+def _row_counter(doc_type: str, settings: dict) -> str | None:
+    """The counter the Numbering row for ``doc_type`` shows, or None when nothing draws it:
+    the transfer row shows the shared counter while transfers draw it, and the shared
+    counter has its own row only while the company has it."""
+    if doc_type == "list":
+        return "list" if (settings.get("sequences") or {}).get("list") else None
+    return list_sequence_key(doc_type, settings) if doc_type == "transfer" else doc_type
+
+
 def get_all_sequences(company: Company) -> list[dict]:
-    """Return the numbering config for all doc types."""
+    """The numbering config of every counter something draws, one row per doc type."""
     settings = dict(company.settings or {})
     sequences = dict(settings.get("sequences") or {})
     return [
-        _sequence_view(
-            settings, doc_type,
-            dict(sequences.get(
-                list_sequence_key(doc_type, settings) if doc_type in _LIST_PREFIX_KEYS else doc_type
-            ) or {}),
-        )
+        _sequence_view(settings, doc_type, dict(sequences.get(counter) or {}))
         for doc_type in _PREFIX_BY_DOC_TYPE
+        if (counter := _row_counter(doc_type, settings))
     ]
 
 
@@ -209,6 +260,12 @@ def _sequence_view(settings: dict, doc_type: str, seq: dict) -> dict:
     }
 
 
+def _namespace(counter: str, seq: dict) -> str:
+    """The numbers a counter can give, as its pattern with its prefix filled in."""
+    pattern = str(seq.get("pattern") or DEFAULT_PATTERN)
+    return pattern.replace("{PREFIX}", str(seq.get("prefix") or _PREFIX_BY_DOC_TYPE[counter]))
+
+
 def update_sequence(company: Company, doc_type: str, prefix: str | None = None,
                     pattern: str | None = None, next_num: int | None = None) -> dict:
     """Update numbering config for a single doc type. Returns the updated sequence.
@@ -218,11 +275,8 @@ def update_sequence(company: Company, doc_type: str, prefix: str | None = None,
 
     settings = dict(company.settings or {})
     sequences = dict(settings.get("sequences") or {})
-    inherited = (
-        sequences.get("list")
-        if doc_type in _LIST_PREFIX_KEYS and not sequences.get(doc_type)
-        else None
-    )
+    # Saving the transfer row while transfers draw the shared counter gives them their own.
+    inherited = sequences.get("list") if doc_type != "list" == _row_counter(doc_type, settings) else None
     seq = dict(sequences.get(doc_type) or inherited or {})
     if inherited is not None:
         # A split counter must not mint the same references as the shared one.
@@ -240,18 +294,12 @@ def update_sequence(company: Company, doc_type: str, prefix: str | None = None,
         day = _numbering_day(settings, seq)
         seq.update(next=max(1, next_num), year=day.year, month=day.month, day=day.day)
 
-    if doc_type in _LIST_PREFIX_KEYS:
-        def namespace(kind: str, row: dict) -> str:
-            fmt = str(row.get("pattern") or DEFAULT_PATTERN)
-            name = str(row.get("prefix") or _PREFIX_BY_DOC_TYPE[kind])
-            return fmt.replace("{PREFIX}", name)
-
-        target = namespace(doc_type, seq)
-        for kind in sorted({"list", *_LIST_PREFIX_KEYS} - {doc_type}):
-            other = sequences.get(kind)
-            if other and target == namespace(kind, other):
-                raise ValueError(f"Numbering format overlaps the active {kind} counter. "
-                                 "Choose a distinct prefix or pattern.")
+    # Two counters with one format would give the same numbers, so the second is refused.
+    target = _namespace(doc_type, seq)
+    for kind in _PREFIX_BY_DOC_TYPE:
+        counter = _row_counter(kind, settings)
+        if counter and doc_type not in (kind, counter) and target == _namespace(counter, sequences.get(counter) or {}):
+            raise Refused("documents.err_numbering_overlap", doc_type=kind)
 
     sequences[doc_type] = seq
     settings["sequences"] = sequences

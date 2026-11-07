@@ -67,7 +67,10 @@ from celerp.services.csv_export import csv_stream, resolve_export_cols
 from celerp.services.currencies import CURRENCY_CODES, require_currency_code
 from celerp.services.auth import AuthContext, get_auth_context, get_current_company_id, get_current_role, get_current_user
 from celerp.services.permissions import assert_role_permission, get_current_company_settings, locked_authority, reject_price_change, require_permission, role_has_permission
-from celerp_docs.sequences import next_doc_ref, next_draft_ref, peek_draft_ref, require_doc_type, get_all_sequences, update_sequence, list_sequence_key
+from celerp_docs.sequences import (
+    claim_number, draft_counter, get_all_sequences, list_sequence_key, peek_draft_ref, require_doc_type,
+    require_number_free, update_sequence,
+)
 from celerp_docs.search import doc_q_clause
 from celerp.services.units import build_unit_map, default_receive_as, get_company_units, is_non_stock_line, is_pieces_unit, is_weight_unit, line_receive_kind, require_moving_fits_units, sum_quantities, unit_decimals, validate_line_quantity
 from celerp.services.money import allocate_pro_rata, books_currency, checked_exchange_rate, discount_from_inputs, doc_rate, document_line_amount, document_line_unit, require_doc_rate, received_share, round_basis, round_money, round_rate, to_base, to_decimal, to_stored_float
@@ -991,32 +994,6 @@ async def _assert_sales_line_price_permission(
             assert_role_permission(settings, role, "set_sales_doc_prices")
 
 
-async def _assert_ref_id_unique(
-    session: AsyncSession,
-    company_id: str,
-    ref_id: str,
-    *,
-    exclude_entity_id: str | None = None,
-) -> None:
-    """Raise HTTP 409 if any doc in the company already has the given ref_id in its state.
-
-    Uses a state JSON index scan (same pattern as SKU uniqueness in inventory).
-    exclude_entity_id: the doc being renamed - excluded so renaming to own current
-    number is treated as a no-op and does not raise.
-    """
-    existing = (
-        await session.execute(
-            select(Projection).where(
-                Projection.company_id == company_id,
-                Projection.entity_type == "doc",
-                Projection.state["ref_id"].as_string() == ref_id,
-            )
-        )
-    ).scalars().first()
-    if existing and existing.entity_id != exclude_entity_id:
-        raise HTTPException(status_code=409, detail=catalog_refusal("documents.err_doc_number_taken", number=ref_id))
-
-
 @dataclass
 class DocListFilters:
     """Every filter the document list accepts, as one query-parameter dependency, so the list and
@@ -1364,15 +1341,9 @@ async def _ids_numbered(session: AsyncSession, company_id, kind: Literal["doc", 
     return sorted((await session.execute(query)).scalars().all())
 
 
-async def _assert_import_number_free(session: AsyncSession, company_id, kind: Literal["doc", "list"], data: dict) -> None:
-    """Refuse an imported new Document or List whose number another one of its kind already has."""
-    await lock_company(session, company_id)
-    fields = ("doc_number", "ref_id") if kind == "doc" else ("ref_id",)
-    for number in {str(data[f]).strip() for f in fields if str(data.get(f) or "").strip()}:
-        doc_type = data.get("doc_type") if kind == "doc" else None
-        if await _ids_numbered(session, company_id, kind, number, doc_type):
-            key = "documents.err_doc_number_taken" if kind == "doc" else "documents.err_list_number_taken"
-            raise HTTPException(status_code=409, detail=t(key, number=number))
+def _import_numbers(data: dict) -> set[str]:
+    """The numbers an imported Document or List shows, each one checked by require_number_free."""
+    return {str(data[f]).strip() for f in ("doc_number", "ref_id") if str(data.get(f) or "").strip()}
 
 
 @router.get("/numbered", dependencies=[require_permission("view_documents")])
@@ -1534,8 +1505,10 @@ async def patch_sequence(doc_type: str, payload: SequencePatch, company_id: str 
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     try:
         result = update_sequence(company, doc_type, prefix=payload.prefix, pattern=payload.pattern, next_num=payload.next)
+    except Refused as e:
+        raise HTTPException(status_code=422, detail=e.detail) from e
     except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=422, detail=str(e)) from e
     await session.commit()
     return result
 
@@ -2042,13 +2015,12 @@ async def create_doc_record(payload: DocCreatePayload, company_id, role: str, se
     replay = await find_event_by_idempotency(session, company_id, idem_key)
     if replay is not None:
         return _replay_result(replay, event_type="doc.created", digest=digest)
-    ref_id = payload.ref_id or next_draft_ref(company, payload.doc_type)
+    if payload.ref_id:
+        await require_number_free(session, company_id, payload.ref_id)
+        ref_id = payload.ref_id
+    else:
+        ref_id = await claim_number(session, company, draft_counter(payload.doc_type))
     entity_id = f"doc:{ref_id}"
-
-    # Uniqueness check: reject if a doc with this ref_id already exists
-    existing = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    if existing is not None:
-        raise HTTPException(status_code=409, detail=catalog_refusal("documents.err_doc_number_taken", number=ref_id))
 
     data = payload.model_dump(exclude_none=True)
     # A line whose tax is still for the user to set keeps that None, which the dump above drops.
@@ -2298,7 +2270,7 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     # Uniqueness check when ref_id is being changed
     new_ref = (fields_changed.get("ref_id") or {}).get("new")
     if new_ref:
-        await _assert_ref_id_unique(session, company_id, new_ref, exclude_entity_id=entity_id)
+        await require_number_free(session, company_id, new_ref, exclude_entity_id=entity_id)
     # Validate issue/due date ordering against the merged resulting state
     patch_flat = {k: v.get("new") for k, v in fields_changed.items() if v.get("new") is not None}
     _assert_date_order(patch_flat, row.state)
@@ -2787,14 +2759,14 @@ async def finalize_document(
             # Reuse existing INV ref; keep existing source_proforma_ref untouched.
             finalize_data["ref_id"] = existing_inv_ref
         else:
-            inv_ref = next_doc_ref(_company, "invoice")
+            inv_ref = await claim_number(session, _company, "invoice")
             finalize_data["ref_id"] = inv_ref
             finalize_data["source_proforma_ref"] = existing_inv_ref
             await session.flush()
 
     # Purchase Orders: "Convert to Bill" - assign BILL number, change doc_type
     elif doc_type == "purchase_order":
-        bill_ref = next_doc_ref(_company, "bill")
+        bill_ref = await claim_number(session, _company, "bill")
         finalize_data["ref_id"] = bill_ref
         finalize_data["source_po_ref"] = _initial_doc_state.get("ref_id") or _initial_doc_state.get("doc_number") or ""
         finalize_data["doc_type"] = "bill"
@@ -3787,7 +3759,7 @@ async def renumber_doc(
         # No-op: return current state without emitting an event
         return row.state | {"id": entity_id}
 
-    await _assert_ref_id_unique(session, company_id, new_ref, exclude_entity_id=entity_id)
+    await require_number_free(session, company_id, new_ref, exclude_entity_id=entity_id)
 
     entry = await emit_event(
         session,
@@ -7752,7 +7724,7 @@ async def _supplier_credit_for_return(session, company, user_id, doc_id: str, st
     amount = round_money(to_decimal(payable_credit) - _payable_balance(state), currency)
     if amount <= 0:
         return None
-    number = next_doc_ref(company, "debit_note")
+    number = await claim_number(session, company, "debit_note")
     note_id = f"doc:{number}"
     bill_number = str(state.get("doc_number") or state.get("ref_id") or doc_id)
     total = to_stored_float(amount)
@@ -7933,7 +7905,7 @@ async def create_shipment_from_docs(
     _ship_to = next((s.get("contact_shipping_address") for s in states
                      if s.get("contact_shipping_address")), None)
     _attn = next((s.get("shipping_attn") for s in states if s.get("shipping_attn")), None)
-    ref_id = await _next_free_list_ref(session, company, company_id, "shipping_doc")
+    ref_id = await claim_number(session, company, list_sequence_key("shipping_doc", company.settings))
     new_entity_id = f"list:{ref_id}"
     data = {k: v for k, v in {
         "list_type": "shipping_doc",
@@ -7987,7 +7959,7 @@ async def convert_doc(entity_id: str, payload: DocConvertBody | None = None, com
         valid_until = state.get("valid_until")
         if valid_until and valid_until < business_date_of(None, (company.settings or {}).get("timezone")):
             raise HTTPException(status_code=409, detail=t("documents.err_quote_expired"))
-        ref = next_draft_ref(company, "invoice")
+        ref = await claim_number(session, company, draft_counter("invoice"))
         new_doc_id = f"doc:{ref}"
         # The invoice is a new draft: none of the quotation's own lifecycle carries over.
         new_data = {k: v for k, v in state.items() if k not in LIFECYCLE_OWNED_FIELDS}
@@ -8014,7 +7986,7 @@ async def convert_doc(entity_id: str, payload: DocConvertBody | None = None, com
         refuse_unpriced_lines(state)
         new_doc_id = await buy_consignment(
             session, company_id=company_id, user_id=user.id, consignment_id=entity_id, state=state,
-            ref=next_doc_ref(company, "bill"),
+            ref=await claim_number(session, company, "bill"),
             base_currency=(company.settings.get("currency", "USD") if company else "USD"),
         )
         entry = await emit_event(
@@ -8619,22 +8591,6 @@ async def _get_list(session: AsyncSession, company_id, entity_id: str) -> Projec
     return row
 
 
-async def _next_free_list_ref(session: AsyncSession, company, company_id, list_type: str | None) -> str:
-    """The next number of this List type's counter that no List or document holds yet. Every
-    type has its own counter but all share the list: ids, and quotation Lists share their
-    counter with quotation documents, so a counter can reach a number another type, a document
-    or an import already took: that number is skipped, never reused, and nothing is renumbered.
-    ``company`` comes from locked_company(), as for next_doc_ref()."""
-    key = list_sequence_key(list_type, company.settings)
-    while True:
-        ref_id = next_doc_ref(company, key)
-        held = await session.scalar(select(Projection.entity_id).where(
-            Projection.company_id == company_id,
-            Projection.entity_id.in_((f"list:{ref_id}", f"doc:{ref_id}"))).limit(1))
-        if held is None:
-            return ref_id
-
-
 async def _get_list_for_update(session: AsyncSession, company_id, entity_id: str) -> Projection:
     """Load a list row under a write lock (SELECT ... FOR UPDATE) so a read-modify-write over its
     line_items is serialized against concurrent writers. Scan check-off and counting read the whole
@@ -9094,13 +9050,12 @@ async def create_list_record(payload: ListCreatePayload, company_id, role: str, 
     company = await locked_company(session, company_id)
     if (done := await _replay()) is not None:
         return done
-    ref_id = payload.ref_id or await _next_free_list_ref(session, company, company_id, payload.list_type)
+    if payload.ref_id:
+        await require_number_free(session, company_id, payload.ref_id)
+        ref_id = payload.ref_id
+    else:
+        ref_id = await claim_number(session, company, list_sequence_key(payload.list_type, company.settings))
     entity_id = f"list:{ref_id}"
-
-    # Uniqueness check
-    existing = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    if existing is not None:
-        raise HTTPException(status_code=409, detail=t("documents.err_list_number_taken", number=ref_id))
 
     data = payload.model_dump(exclude_none=True)
     data["ref_id"] = ref_id
@@ -9176,6 +9131,9 @@ async def write_list_patch(session: AsyncSession, company_id, role: str, setting
         raise HTTPException(status_code=409, detail=t("documents.err_list_stale"))
     if payload.expected_version is not None and row.version != payload.expected_version:
         raise HTTPException(status_code=409, detail=t("documents.err_list_changed"))
+    new_ref = (fields_changed.get("ref_id") or {}).get("new")
+    if new_ref:
+        await require_number_free(session, company_id, new_ref, exclude_entity_id=entity_id)
     _new_values = {f: (c or {}).get("new") for f, c in fields_changed.items()}
     if selecting:
         # Lines a selection reprices are computed from the locked List, so they cannot
@@ -10017,7 +9975,7 @@ async def convert_list(
     # document keeps the line ids): it is re-stamped to the new document first, so it is
     # its own when it is created; the create then refuses a line reserved elsewhere or a draft.
     to_transfer = await _held_lots(session, company_id, entity_id)
-    ref = next_draft_ref(company, payload.target_type)
+    ref = await claim_number(session, company, draft_counter(payload.target_type))
     new_doc_id = f"doc:{ref}"
     await require_moving_fits_units(session, company_id, new_doc_id, "doc",
                                     {**state, "doc_type": payload.target_type, "status": "draft"})
@@ -10068,7 +10026,7 @@ async def duplicate_list(
     row = await _get_list_for_update(session, company_id, entity_id)
     _assert_contacts_unchanged(named, [row])
     state = row.state
-    ref_id = await _next_free_list_ref(session, company, company_id, state.get("list_type"))
+    ref_id = await claim_number(session, company, list_sequence_key(state.get("list_type"), company.settings))
     new_entity_id = f"list:{ref_id}"
     new_data = {k: v for k, v in state.items()
                 if k not in {"status", "entity_type", "ref_id", "share_token", SCAN_RUNS_FIELD, RESTORE_POINT}}
@@ -10230,7 +10188,8 @@ async def import_list(
             entity_id=body.entity_id,
         ))
     await _lock_imported_contact(session, company_id, "list", body.data)
-    await _assert_import_number_free(session, company_id, "list", body.data)
+    for number in _import_numbers(body.data):
+        await require_number_free(session, company_id, number)
 
     entry = await emit_event(
         session, company_id=company_id, entity_id=body.entity_id, entity_type="list",
@@ -10350,7 +10309,8 @@ async def batch_import_lists(
         try:
             refuse_malformed_taxes(rec.data)
             await _lock_imported_contact(session, company_id, "list", rec.data)
-            await _assert_import_number_free(session, company_id, "list", rec.data)
+            for number in _import_numbers(rec.data):
+                await require_number_free(session, company_id, number)
             entry = await emit_event(
                 session, company_id=company_id, entity_id=rec.entity_id, entity_type="list",
                 event_type="list.created", data=await _issued_import_data(session, company_id, rec.data),
@@ -11878,7 +11838,7 @@ async def _write_draw(session, company_id, role: str, settings: dict, user, comp
     memo = memo_row.state
     draw_id = _step_key(key, "lines_invoiced")
     if target is None:
-        doc_number = next_draft_ref(company, "invoice")
+        doc_number = await claim_number(session, company, draft_counter("invoice"))
         invoice_id = f"doc:{doc_number}"
     else:
         invoice_id, doc_number = target.entity_id, _ref(target)
@@ -13553,7 +13513,7 @@ async def create_audit_list_record(payload: AuditCreateBody, company_id: str, us
             continue
         lines.append({"item_id": r.entity_id, "sku": st.get("sku"), "name": st.get("name"),
                       "barcode": st.get("barcode"), "quantity": float(st.get("quantity") or 0)})
-    ref_id = await _next_free_list_ref(session, company, company_id, "audit")
+    ref_id = await claim_number(session, company, list_sequence_key("audit", company.settings))
     entity_id = entity_id_override or f"list:{ref_id}"
     if await session.get(Projection, {"company_id": company_id, "entity_id": entity_id}) is not None:
         raise HTTPException(status_code=409, detail=t("documents.err_audit_number_taken", number=ref_id))
@@ -14379,10 +14339,8 @@ async def create_writeoff_list(
         lines.append(_writeoff_seed_line(item, company.settings or {}))
     if not lines:
         raise HTTPException(status_code=422, detail=t("documents.err_writeoff_no_items"))
-    ref_id = await _next_free_list_ref(session, company, company_id, "writeoff")
+    ref_id = await claim_number(session, company, list_sequence_key("writeoff", company.settings))
     entity_id = f"list:{ref_id}"
-    if await session.get(Projection, {"company_id": company_id, "entity_id": entity_id}) is not None:
-        raise HTTPException(status_code=409, detail=t("documents.err_writeoff_number_taken", number=ref_id))
     data = {"list_type": "writeoff", "status": DRAFT, "ref_id": ref_id, "line_items": lines,
             "adjust_count": 0, "currency": company.settings.get("currency", "USD")}
     entry = await _emit_list(session, company_id, entity_id, "list.created", data, user, payload.idempotency_key)
@@ -14679,7 +14637,10 @@ async def change_list_type(
     financial actions are gated by status, so re-typing can't undo or fabricate past work. Type
     fields persist (nothing is zeroed). Switching a FINALIZED list to audit re-freezes the on-hand
     baseline that the audit's own finalize would have captured, so variance/Adjust stay correct.
-    Closed/void lists are terminal — duplicate instead."""
+    Closed/void lists are terminal — duplicate instead. A draft whose new type draws another
+    counter takes that counter's number, so its number reads as its type's; an issued list
+    keeps the number it was issued under."""
+    company = await locked_company(session, company_id)
     row = await _get_list_for_update(session, company_id, entity_id)
     state = row.state
     new_type = payload.list_type
@@ -14694,6 +14655,9 @@ async def change_list_type(
         # line that a re-type would issue.
         refuse_unset_line_tax(state.get("line_items"), state)
     fields: dict = {"list_type": new_type}
+    counter = list_sequence_key(new_type, company.settings)
+    if status == DRAFT and counter != list_sequence_key(state.get("list_type"), company.settings):
+        fields["ref_id"] = await claim_number(session, company, counter)
     if new_type == "audit" and status == FINALIZED:
         lines = [dict(l) for l in (state.get("line_items") or [])]
         await _lock_audit_lines(session, company_id, lines, keep_unlinked_on_hand=True)
@@ -14702,7 +14666,7 @@ async def change_list_type(
         fields.update(await customs_snapshot(session, company_id, state.get("line_items") or []))
     await _set_list_fields(session, company_id, entity_id, user, fields)
     await session.commit()
-    return {"ok": True, "list_type": new_type}
+    return {"ok": True, "list_type": new_type, "ref_id": fields.get("ref_id", state.get("ref_id"))}
 
 
 @lists_router.post("/{entity_id}/send")

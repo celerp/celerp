@@ -30,10 +30,10 @@ from celerp_docs.routes import (
     DocImportRecord,
     DocPatch,
     _assert_doc_import_permissions,
-    _assert_import_number_free,
     _doc_import_fields_changed,
     _get_doc,
     _import_auto_je,
+    _import_numbers,
     _import_metadata,
     _lock_imported_contact,
     _require_doc_rate_http,
@@ -47,6 +47,7 @@ from celerp_docs.routes import (
     settle_imported_credit,
     write_doc_patch,
 )
+from celerp_docs.sequences import require_number_free
 
 DOC_CREATED = "doc.created"
 
@@ -178,7 +179,8 @@ async def create_imported_doc(
     from celerp.services import auto_je
 
     await _lock_imported_contact(session, company_id, "doc", rec.data)
-    await _assert_import_number_free(session, company_id, "doc", rec.data)
+    for number in _import_numbers(rec.data):
+        await require_number_free(session, company_id, number, doc_type=rec.data.get("doc_type"))
     if auto_je.imported_issue_kind(rec.data) is not None:
         _require_doc_rate_http(rec.data, base_currency)
     refuse_malformed_taxes(rec.data)

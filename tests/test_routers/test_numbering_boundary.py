@@ -109,7 +109,7 @@ async def test_an_imported_list_is_refused_a_number_a_document_shows(client, ses
     h = auth["headers"]
     doc_ref = await _ref(client, h, (await _quote_doc(client, h, contacts)).json()["id"])
     r = await client.post("/lists/import", headers=h, json={
-        "entity_id": "list:imported-1", "event_type": "list.created", "idempotency_key": "imp-1",
+        "entity_id": "list:imported-1", "event_type": "list.created", "idempotency_key": "imp-1", "source": "csv",
         "data": {"ref_id": doc_ref, "list_type": "quotation", "status": "draft"}})
     assert r.status_code == 409, r.text
     assert refusal_text(r.json()["detail"]) == t("documents.err_doc_number_taken", "en", number=doc_ref)
@@ -167,7 +167,7 @@ async def test_the_overlap_refusal_is_in_the_users_language_and_names_the_type(c
     set_lang("th")
     try:
         text = refusal_text(detail)
-        assert text == t("documents.err_numbering_overlap", "th", kind=doc_type_label("transfer"))
+        assert text == t("documents.err_numbering_overlap", "th", doc_type=doc_type_label("transfer"))
         assert doc_type_label("transfer") in text and "transfer" not in text
     finally:
         set_lang("en")
@@ -214,7 +214,7 @@ def _own_nodes(fn):
 
 def _census() -> list[tuple[str, str, str, str, set[str]]]:
     """(kind, file, function, what, boundary calls) for every counter draw, every event that gives
-    a Document or List its number and every patch of a document's number (fix-1107/census-N.sh)."""
+    a Document or List its number and every writer of a patch that may change a number."""
     rows = []
     for path in sorted(_REPO.rglob("*.py")):
         rel = path.relative_to(_REPO)
@@ -237,6 +237,8 @@ def _census() -> list[tuple[str, str, str, str, set[str]]]:
                 if (what == "get" and isinstance(call.func, ast.Attribute)
                         and "fields_changed" in ast.unparse(call.func.value) and tags[:1] == ["ref_id"]):
                     rows.append(("REF_EDIT", str(rel), fn.name, what, via))
+                if what == "_refuse_protected_fields":  # a writer of a user's field patch, ref_id included
+                    rows.append(("PATCH", str(rel), fn.name, what, via))
     return rows
 
 
@@ -249,8 +251,8 @@ async def test_every_counter_draw_goes_through_claim_number():
 
 
 async def test_every_numbered_writer_goes_through_the_boundary():
-    rows = [r for r in _census() if r[0] in {"NUMBER", "REF_EDIT"}]
-    assert len(rows) >= 15, rows
+    rows = [r for r in _census() if r[0] in {"NUMBER", "REF_EDIT", "PATCH"}]
+    assert len(rows) >= 15 and {r[2] for r in rows if r[0] == "PATCH"} >= {"write_doc_patch", "write_list_patch"}, rows
     stray = [r[:4] for r in rows if not r[4] and (r[1], r[2]) not in _CLAIMED_BY_CALLER]
     assert not stray, f"a writer gives a number without claim_number or require_number_free: {stray}"
     callers = {r[2] for r in _census() if r[4]}
