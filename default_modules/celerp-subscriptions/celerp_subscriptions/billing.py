@@ -243,7 +243,7 @@ async def write_agreement(session: AsyncSession, company_id, entity_id: str, cha
     drop = tuple(k for k in drop if k in before and k not in changes)
     if before.get("status") in ENDED and actor_id is not None and claims(before) != claims(
             {**{k: v for k, v in before.items() if k not in drop}, **changes}):
-        raise HTTPException(status_code=409, detail=t(
+        raise HTTPException(status_code=409, detail=catalog_refusal(
             ENDED[before["status"]], ref=before.get("ref_id") or entity_id))
     if not changes and all(shown(k, before[k]) == shown(k, None) for k in drop):
         drop = ()

@@ -76,7 +76,8 @@ def test_a_send_record_is_no_claim_and_an_agreement_without_periods_claims_none(
 
 @pytest.mark.parametrize("status", ENDED)
 async def test_skip_and_hand_back_on_an_ended_agreement_are_refused_naming_why(owner_ui, monkeypatch, status):
-    """Skip, Un-skip and Reopen are refused like Cancel on a void one: 409 with the status's reason."""
+    """Skip, Un-skip and Reopen are refused like Cancel on a void one: 409 with the status's
+    reason, keyed so it reads in the reader's language after a reload too."""
     from celerp_subscriptions.billing import ENDED as reasons
 
     eid, _ = await _ended(owner_ui.api, monkeypatch, status)
@@ -84,6 +85,7 @@ async def test_skip_and_hand_back_on_an_ended_agreement_are_refused_naming_why(o
         r = await owner_ui.api.post(f"/subscriptions/{eid}/periods/{k}/{action}", json={"reason": "Closed"})
         assert r.status_code == 409, (action, r.text)
         assert r.json()["detail"]["message"] == t(reasons[status], "en", ref=(await template(owner_ui.api, {}, eid))["ref_id"])
+        assert r.json()["detail"]["message_key"] == reasons[status]
 
 
 @pytest.mark.parametrize("status", ENDED)
