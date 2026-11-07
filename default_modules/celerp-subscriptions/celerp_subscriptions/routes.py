@@ -10,7 +10,7 @@ the previous release, and report what unattended billing did.
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, timezone
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query
 from pydantic import AwareDatetime, BaseModel, Field, field_validator
@@ -65,6 +65,14 @@ async def refused_period(session, company_id, entity_id: str, k: int | None) -> 
 
 class AckBody(BaseModel):
     read_at: AwareDatetime  # the summary answer's read_at: what the page marked read showed
+
+    @field_validator("read_at")
+    @classmethod
+    def _in_utc(cls, v):
+        try:
+            return v.astimezone(timezone.utc)
+        except OverflowError:
+            raise ValueError("read_at has no time in UTC") from None
 
 
 class RequestBody(BaseModel):

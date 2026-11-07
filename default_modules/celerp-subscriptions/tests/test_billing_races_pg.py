@@ -450,10 +450,12 @@ async def test_mark_as_read_leaves_a_failure_that_arrived_after_the_page_was_rea
     factory, owner, cid, eid = await _auto_send_billed(committed_engine, monkeypatch, "refused@example.test")
     async with _app_client(factory) as (client, _pending):
         first = (await client.get("/subscriptions/summary", headers=owner)).json()
+        assert "generated" in [r["kind"] for r in first["rows"]]
         assert (await client.post("/subscriptions/summary/ack", headers=owner,
                                   json={"read_at": first["read_at"]})).status_code == 200
         _clock(monkeypatch, timedelta(seconds=5))
         shown = (await client.get("/subscriptions/summary", headers=owner)).json()
+        assert "generated" not in [r["kind"] for r in shown["rows"]]  # the acknowledgment is kept
         assert "send_failed" not in _send_kinds(shown)
 
         async def refused(**_kwargs):

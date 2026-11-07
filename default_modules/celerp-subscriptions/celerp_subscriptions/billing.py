@@ -408,14 +408,13 @@ def bills(doc: dict | None) -> bool:
     return doc is not None and (doc.get("status") or "draft") not in NOT_BILLING
 
 
-async def billing_doc(session, company_id, doc_id: str) -> dict:
-    """The document a period claims, refused (409) when it does not bill the period: back in
-    draft (finalize it, or Reopen), or void or gone (Reopen)."""
+async def billing_doc(session, company_id, doc_id: str) -> None:
+    """Refused (409) when the document a period claims does not bill the period: back in draft
+    (finalize it, or Reopen), or void or gone (Reopen)."""
     doc = await doc_state(session, company_id, doc_id)
     if not bills(doc):
         key = "subscriptions.err_period_draft" if (doc or {}).get("status") == "draft" else "subscriptions.err_period_void"
         raise HTTPException(status_code=409, detail=t(key, ref=(doc or {}).get("ref_id") or doc_id))
-    return doc
 
 
 async def guard_bill_status(*, session, entry, transition) -> None:

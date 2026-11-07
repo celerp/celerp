@@ -74,6 +74,39 @@ def test_a_send_record_is_no_claim_and_an_agreement_without_periods_claims_none(
     assert claims({"status": "void"}) == ({}, None)
 
 
+_BILL = {"state": "billed", "doc_id": "bill"}
+_PLACED = {"state": "billed", "doc_id": "earlier", "history": True}
+_SKIP = {"state": "skipped", "reason": "Holiday"}
+# (periods before, periods after, released bills after, the answer on an ENDED agreement)
+_WRITES = [
+    ({"0": _BILL}, {"0": _BILL}, None, None),  # nothing claimed changes (set aside, a send)
+    ({"0": _BILL, "1": _PLACED}, {"0": _BILL}, None, None),  # Withdraw placement
+    ({"0": _BILL}, {"0": _BILL, "1": _PLACED}, None, "place"),  # placing beside a bill it keeps
+    ({}, {"1": _PLACED}, None, "place"),
+    ({"1": _PLACED}, {"1": {**_PLACED, "doc_id": "other"}}, None, "place"),  # another document placed
+    ({"0": _BILL}, {"1": _PLACED}, None, "ended"),  # placing while the bill's period lets go
+    ({"0": _BILL}, {"0": _BILL, "1": _SKIP}, None, "ended"),  # skip
+    ({"0": _BILL, "1": _SKIP}, {"0": _BILL}, None, "ended"),  # un-skip
+    ({"0": _BILL}, {}, {"bill": 0}, "ended"),  # Reopen
+    ({"0": _BILL}, {"0": _BILL, "1": _PLACED}, {"bill": 0}, "ended"),
+]
+
+
+@pytest.mark.parametrize("status", ["active", "paused", "draft", *ENDED])
+@pytest.mark.parametrize("before,after,released,answer", _WRITES)
+def test_an_ended_agreement_lets_go_of_placements_and_refuses_placing_naming_set_aside(
+        status, before, after, released, answer):
+    """ended_refusal over every kind of claim change: an agreement still running is never refused
+    here; an ended one lets go of a history placement, refuses placing one with the key naming
+    Set aside, and refuses any other claim change naming why it ended."""
+    from celerp_subscriptions.billing import ENDED as KEYS, ENDED_PLACE, ended_refusal
+
+    got = ended_refusal({"status": status, "periods": before},
+                        {"status": status, "periods": after, "released_bills": released})
+    expected = None if status not in KEYS or answer is None else (ENDED_PLACE if answer == "place" else KEYS)[status]
+    assert got == expected
+
+
 @pytest.mark.parametrize("status", ENDED)
 async def test_skip_and_hand_back_on_an_ended_agreement_are_refused_naming_why(owner_ui, monkeypatch, status):
     """Skip, Un-skip and Reopen are refused like Cancel on a void one: 409 with the status's

@@ -191,11 +191,13 @@ async def test_operator_summary_since_ack(client, session, monkeypatch):
 
 @pytest.mark.parametrize("body", [None, {}, {"read_at": None}, {"read_at": "2026-07-01T00:00:00"},
                                   {"read_at": "soon"}, {"read_at": ""}, {"read_at": []}, {"read_at": {}},
-                                  {"read_at": True}])
+                                  {"read_at": True}, {"read_at": "0001-01-01T00:00:00+05:00"},
+                                  {"read_at": "9999-12-31T23:59:59-05:00"}])
 async def test_mark_as_read_without_a_readable_page_time_is_refused_and_acknowledges_nothing(
         client, session, monkeypatch, body):
     """Mark as read covers what the page showed, so it needs the page's read_at with its zone:
-    missing, without a zone or unreadable is refused (422) and the summary still lists the row."""
+    missing, without a zone, unreadable or with no time in UTC is refused (422) and the summary
+    still lists the row."""
     freeze_day(monkeypatch, "2026-07-01")
     hd = await register(client)
     await _auto(client, hd, start="2026-07-01")
@@ -211,12 +213,36 @@ async def test_mark_as_read_never_moves_the_acknowledgment_back(client, session,
     hd = await register(client)
     await _auto(client, hd, start="2026-07-01")
     await tick(session, await company_id(client, hd), "2026-07-01")
-    first = await client.post("/subscriptions/summary/ack", headers=hd,
-                              json={"read_at": (await summary(client, hd))["read_at"]})
-    assert first.status_code == 200, first.text
+    page = await summary(client, hd)
+    first = await client.post("/subscriptions/summary/ack", headers=hd, json={"read_at": page["read_at"]})
+    assert first.status_code == 200 and first.json()["at"] == page["read_at"], first.text
     older = await client.post("/subscriptions/summary/ack", headers=hd, json={"read_at": "2000-01-01T00:00:00+07:00"})
     assert older.status_code == 200 and older.json()["at"] == first.json()["at"], older.text
     assert (await summary(client, hd))["counts"]["generated"] == 0
+
+
+async def test_the_page_time_is_taken_before_any_row_is_read(client, session, monkeypatch):
+    """A row recorded while the summary is being read may be missed by that page, so the page
+    time Mark as read covers is the moment before the first row is read, never after."""
+    import uuid
+    from datetime import datetime, timedelta, timezone
+
+    from celerp_subscriptions import billing, summary as summary_mod
+
+    hd = await register(client)
+    cid = uuid.UUID(await company_id(client, hd))
+    opened = datetime(2026, 7, 1, 9, tzinfo=timezone.utc)
+    clock = [opened]
+    monkeypatch.setattr(billing, "now", lambda: clock[0])
+    for name in ("get", "execute", "scalars"):
+        real = getattr(session, name)
+
+        async def reading(*args, _real=real, **kwargs):
+            clock[0] = opened + timedelta(seconds=1)  # time passes once rows are being read
+            return await _real(*args, **kwargs)
+        monkeypatch.setattr(session, name, reading)
+    answer = await summary_mod.report(session, cid, uuid.uuid4())
+    assert answer["read_at"] == opened.isoformat()
 
 
 async def test_module_disabled_skips_dispatch_keeps_records(client, session, monkeypatch):
@@ -616,6 +642,10 @@ async def test_failed_generation_is_visible_once_and_clears_after_recovery(clien
     assert await billed_docs(session, eid) == []
     await tick(session, cid, "2026-07-01")
     assert (await template(client, hd, eid))["billing_failure"] == first
+    page = await summary(client, hd)
+    assert page["counts"]["generation_failed"] == 1  # once, not once per pass
+    assert (await client.post("/subscriptions/summary/ack", headers=hd, json={"read_at": page["read_at"]})).status_code == 200
+    assert (await summary(client, hd))["counts"]["generation_failed"] == 0
 
     monkeypatch.setattr(docs_routes, "finalize_document", original)
     await tick(session, cid, "2026-07-01")
