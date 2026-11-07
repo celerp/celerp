@@ -12,5 +12,29 @@
     "th",
     "vi"
   ],
-  "keys": {}
+  "keys": {
+    "documents.err_numbering_no_sequence_token": {
+      "en": "Add a sequence token such as {example} to the pattern.",
+      "params": [
+        "example"
+      ]
+    },
+    "documents.err_numbering_unknown_tokens": {
+      "en": "Celerp does not know these tokens in the pattern: {tokens}.",
+      "params": [
+        "tokens"
+      ]
+    },
+    "documents.err_numbering_unknown_type": {
+      "en": "{doc_type} is not a document type. Use one of: {types}.",
+      "params": [
+        "doc_type",
+        "types"
+      ]
+    },
+    "documents.err_numbering_prefix_braces": {
+      "en": "A prefix cannot contain curly brackets.",
+      "params": []
+    }
+  }
 }

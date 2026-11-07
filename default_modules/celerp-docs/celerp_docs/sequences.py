@@ -4,15 +4,16 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Collection, Iterable
 from datetime import date
 
 from fastapi import HTTPException
-from sqlalchemy import func, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import Refused, catalog_refusal
 from celerp.models.company import Company
-from celerp.models.projections import Projection
+from celerp.models.projections import NUMBER_KEPT, NUMBER_SHOWN, Projection, STORAGE_KEY
 from celerp.services.business_time import business_today
 from celerp.services.company_lock import lock_company
 
@@ -40,17 +41,40 @@ _PREFIX_BY_DOC_TYPE = {
 # Every list type has its own numbering counter.
 _LIST_PREFIX_KEYS = {"quotation", "transfer", "audit", "writeoff", "shipping_doc"}
 
+# The List types the shared "list" counter (LST) numbered before each type had its own and
+# still numbers in a company that has it: quotation (and untyped) and transfer Lists.
+_LEGACY_SHARES = ("quotation", "transfer")
+
+
+def _shares(entry: dict | None) -> tuple[str, ...]:
+    """The List types the shared "list" counter numbers, read from that counter alone: the
+    types it is saved with. Every save of this version stamps them (_store), so an entry
+    without them was last saved before each List type had its own counter and numbers
+    quotation, untyped and transfer Lists. No counter numbers none."""
+    if not entry:
+        return ()
+    return tuple(entry["shares"]) if "shares" in entry else _LEGACY_SHARES
+
 
 def list_sequence_key(list_type: str | None, settings: dict | None = None) -> str:
-    """The counter a List of ``list_type`` draws. A company that still has the shared "list"
-    counter (LST, which numbered every List before each type had its own) keeps it for
-    quotation and untyped Lists, and for transfers until the transfer counter is saved. The
-    quotation counter is also the quotation documents' counter, so it never ends the fallback."""
+    """The counter a List of ``list_type`` draws: its type's own, or the shared "list" counter
+    while that counter numbers the type (_shares). No other counter changes it, so writing a
+    document of any type never moves List numbering."""
     key = list_type if list_type in _LIST_PREFIX_KEYS else "quotation"
-    sequences = (settings or {}).get("sequences") or {}
-    if sequences.get("list") and (key == "quotation" or (key == "transfer" and not sequences.get(key))):
-        return "list"
-    return key
+    return "list" if key in _shares(((settings or {}).get("sequences") or {}).get("list")) else key
+
+
+def _store(company: Company, writes: dict[str, dict]) -> None:
+    """Save ``writes`` ({counter: its state}) into the company's numbering: the one writer of
+    it. The shared "list" counter keeps the List types it numbers, unless the write names them."""
+    settings = dict(company.settings or {})
+    sequences = dict(settings.get("sequences") or {})
+    for counter, seq in writes.items():
+        if counter == "list":
+            seq = {"shares": list(_shares(sequences.get("list"))), **seq}
+        sequences[counter] = seq
+    settings["sequences"] = sequences
+    company.settings = settings
 
 
 # Default pattern for all new companies
@@ -114,55 +138,54 @@ def _next_number(seq: dict, pattern: str, day: date) -> int:
     return int(seq.get("next") or 1)
 
 
-def validate_pattern(pattern: str) -> str | None:
-    """Return error message if pattern is invalid, None if OK."""
+def require_pattern(pattern: str) -> str:
+    """Return ``pattern`` when it numbers documents, else refuse it: it needs one sequence
+    token and only the tokens Celerp fills in."""
     if not re.search(r"\{#+\}", pattern):
-        return "Pattern must contain a sequence token like {##} or {####}"
-    # Check for unknown tokens
-    cleaned = re.sub(r"\{(PREFIX|YYYY|YY|MM|DD|#+)\}", "", pattern)
-    unknown = re.findall(r"\{[^}]+\}", cleaned)
+        raise Refused("documents.err_numbering_no_sequence_token", example="{####}")
+    unknown = re.findall(r"\{[^}]*\}", re.sub(r"\{(PREFIX|YYYY|YY|MM|DD|#+)\}", "", pattern))
     if unknown:
-        return f"Unknown tokens: {', '.join(unknown)}"
-    return None
+        raise Refused("documents.err_numbering_unknown_tokens", tokens=", ".join(unknown))
+    return pattern
 
 
 def require_doc_type(doc_type: str) -> str:
     """Return ``doc_type`` when it is a document type this app numbers, else refuse it by name."""
     if doc_type not in _PREFIX_BY_DOC_TYPE:
-        raise ValueError(
-            f"{doc_type!r} is not a document type. Use one of: {', '.join(sorted(_PREFIX_BY_DOC_TYPE))}.")
+        raise Refused("documents.err_numbering_unknown_type", doc_type=str(doc_type),
+                      types=", ".join(sorted(_PREFIX_BY_DOC_TYPE)))
     return doc_type
 
 
-def next_doc_ref(company: Company, doc_type: str) -> str:
-    """Generate the next document reference and increment the sequence counter.
+def _counter(settings: dict, counter: str) -> tuple[dict, str, str, date, int]:
+    """(state, prefix, pattern, numbering day, next number) of ``counter``."""
+    seq = dict((settings.get("sequences") or {}).get(counter) or {})
+    prefix = str(seq.get("prefix") or _PREFIX_BY_DOC_TYPE[counter])
+    pattern = str(seq.get("pattern") or DEFAULT_PATTERN)
+    day = _numbering_day(settings, seq)
+    return seq, prefix, pattern, day, _next_number(seq, pattern, day)
+
+
+def _first_free(settings: dict, counter: str, held: Collection[str]) -> tuple[str, dict]:
+    """(the reference the next document of ``counter`` takes, the counter once it is taken):
+    the first number from the counter's next one that is not in ``held`` (held_numbers). The
+    preview and the number given both read this one rule."""
+    seq, prefix, pattern, day, number = _counter(settings, counter)
+    while (ref := _expand_pattern(pattern, prefix, day, number)).lower() in held:
+        number += 1
+    seq.update(next=number + 1, year=day.year, month=day.month, day=day.day, prefix=prefix, pattern=pattern)
+    return ref, seq
+
+
+def next_doc_ref(company: Company, doc_type: str, held: Collection[str]) -> str:
+    """Take the next reference of ``doc_type``'s counter that is not in ``held`` and advance
+    the counter past it.
 
     ``company`` must come from locked_company(), taken before any document row lock;
     a counter change on any other company object is refused at flush."""
     require_doc_type(doc_type)
-
-    settings = dict(company.settings or {})
-    sequences = dict(settings.get("sequences") or {})
-    seq = dict(sequences.get(doc_type) or {})
-
-    prefix = str(seq.get("prefix") or _PREFIX_BY_DOC_TYPE[doc_type])
-    pattern = str(seq.get("pattern") or DEFAULT_PATTERN)
-
-    day = _numbering_day(settings, seq)
-    next_num = _next_number(seq, pattern, day)
-    ref = _expand_pattern(pattern, prefix, day, next_num)
-
-    # Update sequence state
-    seq["next"] = next_num + 1
-    seq["year"] = day.year
-    seq["month"] = day.month
-    seq["day"] = day.day
-    seq["prefix"] = prefix
-    seq["pattern"] = pattern
-    sequences[doc_type] = seq
-    settings["sequences"] = sequences
-    company.settings = settings
-
+    ref, seq = _first_free(dict(company.settings or {}), doc_type, held)
+    _store(company, {doc_type: seq})
     return ref
 
 
@@ -171,6 +194,15 @@ def draft_counter(doc_type: str) -> str:
     from the proforma counter; finalize gives it its invoice number, so no invoice number goes
     unused."""
     return "proforma" if doc_type == "invoice" else doc_type
+
+
+def _number_match(wanted: list[str], *, keyed: bool):
+    """A Document or List shows or keeps one of ``wanted`` (lowercase), or with ``keyed`` is
+    stored under one, read through the indexed expressions (ix_projections_number_*)."""
+    matches = [NUMBER_SHOWN.in_(wanted), NUMBER_KEPT.in_(wanted)]
+    if keyed:
+        matches.append(STORAGE_KEY.in_([f"{kind}:{w}" for w in wanted for kind in ("doc", "list")]))
+    return or_(*matches)
 
 
 async def number_holder(session: AsyncSession, company_id, number: str, *,
@@ -182,17 +214,13 @@ async def number_holder(session: AsyncSession, company_id, number: str, *,
     is checked against this one rule. ``doc_type`` narrows the Documents that count to that
     type, for imported books, where another system's bill and invoice may carry the same
     number; every List still counts."""
-    wanted = number.strip().lower()
     shown = Projection.state["ref_id"].as_string()
     doc_number = Projection.state["doc_number"].as_string()
-    matches = [func.lower(shown) == wanted, func.lower(doc_number) == wanted]
-    if not exclude_entity_id:
-        # A new record is stored under its number, so a key another record is stored under counts too.
-        matches.append(func.lower(Projection.entity_id).in_((f"doc:{wanted}", f"list:{wanted}")))
+    # A new record is stored under its number, so a key another record is stored under counts too.
     query = select(Projection.entity_type, Projection.entity_id, shown, doc_number).where(
         Projection.company_id == company_id,
         Projection.entity_type.in_(("doc", "list")),
-        or_(*matches),
+        _number_match([number.strip().lower()], keyed=not exclude_entity_id),
     )
     if exclude_entity_id:
         # The record taking the number keeps its own storage key, so only shown numbers count.
@@ -221,21 +249,50 @@ async def require_number_free(session: AsyncSession, company_id, number: str, *,
             "documents.err_doc_number_taken" if kind == "doc" else "documents.err_list_number_taken", number=shown))
 
 
+# The first numbers of a counter held_numbers reads; each further read doubles.
+_WINDOW = 16
+
+
+async def held_numbers(session: AsyncSession, company_id, settings: dict,
+                       counters: Iterable[str]) -> frozenset[str]:
+    """The numbers (lowercase) a Document or List holds among those ``counters`` give next, as
+    number_holder decides for a new record, read until each counter reaches a free one. The
+    window doubles, so a long run of taken numbers costs a few indexed reads, never one per
+    number."""
+    held: set[str] = set()
+    size, todo = _WINDOW, set(counters)
+    while todo:
+        windows = {counter: [ref.lower() for ref in _candidates(settings, counter, size)] for counter in todo}
+        wanted = sorted({ref for refs in windows.values() for ref in refs})
+        rows = await session.execute(select(NUMBER_SHOWN, NUMBER_KEPT, STORAGE_KEY).where(
+            Projection.company_id == company_id, Projection.entity_type.in_(("doc", "list")),
+            _number_match(wanted, keyed=True)))
+        for shown, kept, key in rows:
+            held.update({shown, kept, key.split(":", 1)[1]} & set(wanted))
+        todo = {counter for counter, refs in windows.items() if held.issuperset(refs)}
+        size *= 2
+    return frozenset(held)
+
+
+def _candidates(settings: dict, counter: str, count: int) -> list[str]:
+    """The ``count`` references ``counter`` gives from its next number, taken or not."""
+    _seq, prefix, pattern, day, number = _counter(settings, counter)
+    return [_expand_pattern(pattern, prefix, day, n) for n in range(number, number + count)]
+
+
 async def claim_number(session: AsyncSession, company: Company, counter: str) -> str:
     """The next number of ``counter`` that no Document or List holds. A number a user, an
     import or another counter already gave is skipped, never reused, and nothing is
     renumbered. ``company`` comes from locked_company(), as for next_doc_ref()."""
-    while True:
-        number = next_doc_ref(company, counter)
-        if await number_holder(session, company.id, number) is None:
-            return number
+    held = await held_numbers(session, company.id, dict(company.settings or {}), [counter])
+    return next_doc_ref(company, counter, held)
 
 
-def peek_draft_ref(company: Company, doc_type: str) -> str:
+async def peek_draft_ref(session: AsyncSession, company: Company, doc_type: str) -> str:
     """The reference the next new draft of ``doc_type`` would take, without taking it."""
     settings = dict(company.settings or {})
     counter = draft_counter(doc_type)
-    return _sequence_view(settings, counter, dict((settings.get("sequences") or {}).get(counter) or {}))["preview"]
+    return _first_free(settings, counter, await held_numbers(session, company.id, settings, [counter]))[0]
 
 
 def _row_counter(doc_type: str, settings: dict) -> str | None:
@@ -247,30 +304,31 @@ def _row_counter(doc_type: str, settings: dict) -> str | None:
     return list_sequence_key(doc_type, settings) if doc_type == "transfer" else doc_type
 
 
-def get_all_sequences(company: Company) -> list[dict]:
-    """The numbering config of every counter something draws, one row per doc type."""
+def _row_counters(settings: dict) -> dict[str, str]:
+    """{doc type: the counter its Numbering row shows} for every counter something draws."""
+    return {doc_type: counter for doc_type in _PREFIX_BY_DOC_TYPE if (counter := _row_counter(doc_type, settings))}
+
+
+def get_all_sequences(company: Company, held: Collection[str]) -> list[dict]:
+    """The numbering config of every counter something draws, one row per doc type, with the
+    reference its next document takes past the numbers in ``held`` (held_numbers)."""
     settings = dict(company.settings or {})
-    sequences = dict(settings.get("sequences") or {})
-    return [
-        _sequence_view(settings, doc_type, dict(sequences.get(counter) or {}))
-        for doc_type in _PREFIX_BY_DOC_TYPE
-        if (counter := _row_counter(doc_type, settings))
-    ]
+    sequences = settings.get("sequences") or {}
+    rows = []
+    for doc_type, counter in _row_counters(settings).items():
+        _seq, prefix, pattern, _day, _number = _counter(settings, counter)
+        rows.append({"doc_type": doc_type, "prefix": prefix, "pattern": pattern,
+                     "next": int((sequences.get(counter) or {}).get("next") or 1),
+                     "preview": _first_free(settings, counter, held)[0]})
+    return rows
 
 
-def _sequence_view(settings: dict, doc_type: str, seq: dict) -> dict:
-    """A counter as the Numbering tab shows it; the preview is the reference the next
-    document of this type gets."""
-    prefix = str(seq.get("prefix") or _PREFIX_BY_DOC_TYPE[doc_type])
-    pattern = str(seq.get("pattern") or DEFAULT_PATTERN)
-    day = _numbering_day(settings, seq)
-    return {
-        "doc_type": doc_type,
-        "prefix": prefix,
-        "pattern": pattern,
-        "next": int(seq.get("next") or 1),
-        "preview": _expand_pattern(pattern, prefix, day, _next_number(seq, pattern, day)),
-    }
+async def numbering_rows(session: AsyncSession, company: Company) -> list[dict]:
+    """The Numbering tab's rows (get_all_sequences), each preview the number its next
+    document gets."""
+    settings = dict(company.settings or {})
+    return get_all_sequences(company, await held_numbers(
+        session, company.id, settings, set(_row_counters(settings).values())))
 
 
 def _namespace(counter: str, seq: dict) -> str:
@@ -280,28 +338,30 @@ def _namespace(counter: str, seq: dict) -> str:
 
 
 def update_sequence(company: Company, doc_type: str, prefix: str | None = None,
-                    pattern: str | None = None, next_num: int | None = None) -> dict:
-    """Update numbering config for a single doc type. Returns the updated sequence.
+                    pattern: str | None = None, next_num: int | None = None) -> None:
+    """Update numbering config for a single doc type.
 
     ``company`` must come from locked_company(), as for next_doc_ref()."""
     require_doc_type(doc_type)
 
     settings = dict(company.settings or {})
     sequences = dict(settings.get("sequences") or {})
+    shared = sequences.get("list")
     # Saving the transfer row while transfers draw the shared counter gives them their own.
-    inherited = sequences.get("list") if doc_type != "list" == _row_counter(doc_type, settings) else None
+    split = doc_type == "transfer" and _row_counter(doc_type, settings) == "list"
+    inherited = shared if split and not sequences.get(doc_type) else None
     seq = dict(sequences.get(doc_type) or inherited or {})
     if inherited is not None:
         # A split counter must not mint the same references as the shared one.
         seq["prefix"] = _PREFIX_BY_DOC_TYPE[doc_type]
 
     if prefix is not None:
+        prefix = prefix.strip()
+        if "{" in prefix or "}" in prefix:
+            raise Refused("documents.err_numbering_prefix_braces")
         seq["prefix"] = prefix
     if pattern is not None:
-        err = validate_pattern(pattern)
-        if err:
-            raise ValueError(err)
-        seq["pattern"] = pattern
+        seq["pattern"] = require_pattern(pattern)
     if next_num is not None:
         # The number belongs to today's period, so the reset for a later period cannot discard it.
         day = _numbering_day(settings, seq)
@@ -314,8 +374,7 @@ def update_sequence(company: Company, doc_type: str, prefix: str | None = None,
         if counter and doc_type not in (kind, counter) and target == _namespace(counter, sequences.get(counter) or {}):
             raise Refused("documents.err_numbering_overlap", doc_type=kind)
 
-    sequences[doc_type] = seq
-    settings["sequences"] = sequences
-    company.settings = settings
-
-    return _sequence_view(settings, doc_type, seq)
+    writes = {doc_type: seq}
+    if split:
+        writes["list"] = {**shared, "shares": [t for t in _shares(shared) if t != doc_type]}
+    _store(company, writes)

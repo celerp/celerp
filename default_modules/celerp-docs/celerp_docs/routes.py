@@ -68,7 +68,7 @@ from celerp.services.currencies import CURRENCY_CODES, require_currency_code
 from celerp.services.auth import AuthContext, get_auth_context, get_current_company_id, get_current_role, get_current_user
 from celerp.services.permissions import assert_role_permission, get_current_company_settings, locked_authority, reject_price_change, require_permission, role_has_permission
 from celerp_docs.sequences import (
-    claim_number, draft_counter, get_all_sequences, list_sequence_key, peek_draft_ref, require_doc_type,
+    claim_number, draft_counter, list_sequence_key, numbering_rows, peek_draft_ref, require_doc_type,
     require_number_free, update_sequence,
 )
 from celerp_docs.search import doc_q_clause
@@ -1543,7 +1543,7 @@ async def get_sequences(company_id: str = Depends(get_current_company_id), user=
     company = await session.get(Company, company_id)
     if not company:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
-    return get_all_sequences(company)
+    return await numbering_rows(session, company)
 
 
 @router.patch("/sequences/{doc_type}")
@@ -1552,13 +1552,12 @@ async def patch_sequence(doc_type: str, payload: SequencePatch, company_id: str 
     if not company:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
     try:
-        result = update_sequence(company, doc_type, prefix=payload.prefix, pattern=payload.pattern, next_num=payload.next)
+        update_sequence(company, doc_type, prefix=payload.prefix, pattern=payload.pattern, next_num=payload.next)
     except Refused as e:
         raise HTTPException(status_code=422, detail=e.detail) from e
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e)) from e
+    row = next(r for r in await numbering_rows(session, company) if r["doc_type"] == doc_type)
     await session.commit()
-    return result
+    return row
 
 
 async def _memo_allocation_items(session: AsyncSession, company_id, entity_id: str) -> list[Projection]:
@@ -10084,8 +10083,13 @@ async def convert_list(
     if state.get("tax"):
         new_data["tax_rate"] = state["tax"]
     new_data = money_from_lines(new_data, state.get("currency"))
+    # The document is issued today, so its due date follows its payment term from today; with
+    # no term to follow, the List's due date (set against the List's own issue date) is dropped.
+    issued = business_date_of(None, company.settings.get("timezone"))
+    new_data.pop("due_date", None)
+    due = due_date_for_terms(issued, state.get("payment_terms"), company_payment_terms(company.settings))
     new_data.update({"doc_type": payload.target_type, "ref_id": ref, "source_list_id": entity_id, "status": "draft",
-                     "issue_date": business_date_of(None, company.settings.get("timezone"))})
+                     "issue_date": issued, **({"due_date": due} if due else {})})
     await emit_event(
         session, company_id=company_id, entity_id=new_doc_id, entity_type="doc",
         event_type="doc.created", data=new_data, actor_id=user.id, location_id=None,
@@ -11880,7 +11884,7 @@ async def _draw_preview(session, company_id, memo_id: str, body: InvoiceLinesReq
     problems, picks = draw_problems(snap, body)
     if target is None:
         company = await session.get(Company, company_id)
-        invoice_id, doc_number = None, peek_draft_ref(company, "invoice")
+        invoice_id, doc_number = None, await peek_draft_ref(session, company, "invoice")
     else:
         invoice_id, doc_number = target.entity_id, _ref(target)
     preview = {"target": {"id": invoice_id, "ref_id": doc_number},
