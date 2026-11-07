@@ -137,6 +137,29 @@ async def test_a_write_off_shows_the_cost_correction_it_posted(client, session):
     assert await _unresolved_sources(session, auth["company_id"]) == []
 
 
+async def test_a_cost_correction_recorded_by_2_8_0_shows_on_its_write_off(client, session):
+    """2.8.0 named a write-off's cost correction by its scope (List id, ":cost:", restatement, lot)
+    rather than the List id. The ledger keeps those rows as written, so an upgraded company's
+    write-off still lists them, read back to the List."""
+    auth, wo, correction = await _written_off_then_corrected(client, session)
+    h = auth["headers"]
+    session.expire_all()
+    rows = (await session.execute(select(LedgerEntry).where(
+        LedgerEntry.company_id == auth["company_id"],
+        LedgerEntry.entity_id.like(f"je:auto:{wo}:cost:%")))).scalars().all()
+    assert rows, "the correction posted no entry under its scope"
+    for row in rows:
+        row.metadata_ = {**(row.metadata_ or {}), "list_id": row.entity_id.removeprefix("je:auto:")}
+    await session.commit()
+
+    gl = await _gl(client, h, wo)
+    assert gl["doc_id"] == wo
+    assert len(gl["entries"]) == 2, [e["je_id"] for e in gl["entries"]]
+    assert {e["je_id"] for e in gl["entries"]} >= {r.entity_id for r in rows}
+    expense = [l["debit"] for e in gl["entries"] for l in e["lines"] if l["account"] == "6950"]
+    assert correction in expense, expense
+
+
 async def test_a_purchase_order_received_in_parts_names_the_items_of_each_receipt(client, session):
     from test_tax_acceptance_matrix import _contact, _demo_company
 
