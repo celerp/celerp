@@ -102,6 +102,26 @@
       "params": [
         "ref"
       ]
+    },
+    "subscriptions.err_bill_unscheduled": {
+      "en": "{ref} can't bill again. Its agreement {agreement} has schedule settings that don't make a schedule: {reason} Fix the schedule on the agreement first.",
+      "params": [
+        "agreement",
+        "reason",
+        "ref"
+      ]
+    },
+    "subscriptions.err_schedule_unreadable": {
+      "en": "This agreement's saved schedule can't be read. Set its schedule again on the agreement page.",
+      "params": []
+    },
+    "subscriptions.done_refused": {
+      "en": "{start} to {end}: {reason}",
+      "params": [
+        "end",
+        "reason",
+        "start"
+      ]
     }
   }
 }

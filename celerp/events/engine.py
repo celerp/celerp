@@ -616,12 +616,13 @@ async def _check_asset_lines(session, kwargs: dict) -> None:
 
 
 async def _doc_applied(session, entry: LedgerEntry, transition) -> None:
-    """Every live document event that changes the document's status, whichever writer
-    sends it (finalize, void, unvoid, revert to draft, send, payment, import), goes through
-    the modules' doc_status_guard handlers under the row lock that applied it; raising
-    refuses the event. A handler that cannot be resolved fails the event, never skips it.
-    Replay applies events through ProjectionEngine directly and is not affected."""
-    if (transition.before or {}).get("status") == transition.after.get("status"):
+    """Every live document event that changes the document, whichever writer sends it
+    (finalize, void, unvoid, revert to draft, send, payment, import, an edit, a module), goes
+    through the modules' doc_status_guard handlers under the row lock that applied it; raising
+    refuses the event. Each handler reads the change it guards (a status, a module's own
+    fields) from the transition. A handler that cannot be resolved fails the event, never
+    skips it. Replay applies events through ProjectionEngine directly and is not affected."""
+    if (transition.before or {}) == transition.after:
         return
     from celerp.modules.slots import get as get_slot, resolve_handler
 

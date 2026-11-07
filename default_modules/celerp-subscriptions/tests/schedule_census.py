@@ -21,8 +21,9 @@ ask first whether the row's stored terms build one, or one bad row answers 500 f
   many agreements (billing.agreements, search_subscription_templates, or a Projection query
   over SUBSCRIPTION_DOC_TYPES) and, from the loop, reaches ``Schedule.from_state`` through the
   module's functions; each with the paths that reach it without passing a gate (a function
-  that asks on_schedule, unscheduled, billable or refuse_unscheduled, a scheduled lock, or a
-  try that catches the ScheduleError). An empty path list means the reader is guarded.
+  that asks on_schedule, unscheduled, billable or refuse_unscheduled, a scheduled lock, a gate
+  asked earlier in the same loop body, or a try that catches the ScheduleError). An empty path
+  list means the reader is guarded.
 
 Run as a script for the census table: ``python schedule_census.py``.
 """
@@ -113,11 +114,14 @@ def _builds(fn) -> bool:
                and getattr(n.func.value, "id", None) == "Schedule" for n in ast.walk(fn))
 
 
+def _gated_call(call: ast.Call) -> bool:
+    return _callee(call) in GATES and not (
+        _callee(call) == "locked_agreement" and isinstance(_kw(call, "scheduled"), ast.Constant)
+        and _kw(call, "scheduled").value is False)
+
+
 def _gated(fn) -> bool:
-    return any(isinstance(n, ast.Call) and _callee(n) in GATES
-               and not (_callee(n) == "locked_agreement" and isinstance(_kw(n, "scheduled"), ast.Constant)
-                        and _kw(n, "scheduled").value is False)
-               for n in ast.walk(fn))
+    return any(isinstance(n, ast.Call) and _gated_call(n) for n in ast.walk(fn))
 
 
 def _caught(pkg: _Package, node) -> bool:
@@ -135,9 +139,12 @@ def _caught(pkg: _Package, node) -> bool:
 def _open_paths(pkg: _Package, nodes, fn_name: str, seen: frozenset) -> list[str]:
     """The call paths from ``nodes`` (inside ``fn_name``) to Schedule.from_state that pass no gate."""
     paths = []
+    # A gate asked earlier in the same body guards what comes after it.
+    asked = min((n.lineno for node in nodes for n in ast.walk(node) if isinstance(n, ast.Call) and _gated_call(n)),
+                default=None)
     for node in nodes:
         for call in (n for n in ast.walk(node) if isinstance(n, ast.Call)):
-            if _caught(pkg, call):
+            if _caught(pkg, call) or (asked is not None and call.lineno > asked):
                 continue
             if isinstance(call.func, ast.Attribute) and call.func.attr == "from_state" \
                     and getattr(call.func.value, "id", None) == "Schedule":

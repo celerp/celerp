@@ -124,10 +124,38 @@ def refuse_unscheduled(state: dict, entity_id: str) -> None:
     if not state.get("anchor_date"):
         raise HTTPException(status_code=409, detail=t(
             "subscriptions.err_no_periods", ref=state.get("ref_id") or entity_id))
+    if (exc := unscheduled(state)) is not None:
+        raise HTTPException(status_code=409, detail=t(exc.key, **exc.params)) from exc
+
+
+def unscheduled(state: dict) -> ScheduleError | None:
+    """Why the agreement's stored terms build no schedule, or None when they build one or it
+    has no start of its schedule yet. The one test every writer and every reader of the stored
+    terms asks; stored values no writer gives today (a period key that is not a number) read as
+    unreadable, never as a server error."""
+    if not state.get("anchor_date"):
+        return None
     try:
         Schedule.from_state(state)
     except ScheduleError as exc:
-        raise HTTPException(status_code=409, detail=t(exc.key, **exc.params)) from exc
+        return exc
+    except (ValueError, TypeError, AttributeError):
+        return ScheduleError("subscriptions.err_schedule_unreadable")
+    return None
+
+
+def on_schedule(state: dict) -> bool:
+    """The agreement has a start of its schedule and its stored terms build one."""
+    return bool(state.get("anchor_date")) and unscheduled(state) is None
+
+
+def refuse_unbuildable_terms(before: dict, after: dict) -> None:
+    """A 422 naming the schedule's reason when a write leaves an agreement's stored terms
+    building no schedule where they built one before (or nothing was stored): no writer stores
+    such terms. A write to terms an earlier release left unbuildable is not refused, so voiding
+    or repairing the agreement still works."""
+    if (exc := unscheduled(after)) is not None and unscheduled(before) is None:
+        raise HTTPException(status_code=422, detail=t(exc.key, **exc.params)) from exc
 
 
 def refuse_not_moved(state: dict, entity_id: str) -> None:
@@ -241,8 +269,9 @@ AGREEMENT_STATUSES = frozenset({"draft", "active", "paused", "cancelled", "void"
 
 
 async def guard_agreement_status(*, session, entry, transition) -> None:
-    """doc_status_guard: the status of an agreement that runs an unattended mode, before or
-    after the change, changes only in write_agreement (activate, pause, resume, cancel on its
+    """doc_status_guard: no write of a subscription document, by any writer, leaves its terms
+    building no schedule (refuse_unbuildable_terms). The status of an agreement that runs an
+    unattended mode, before or after the change, changes only in write_agreement (activate, pause, resume, cancel on its
     own page). Every other writer (void, unvoid, finalize, revert, an import) is refused (409), and so
     is any that would leave an agreement a status outside AGREEMENT_STATUSES. A draft starts only
     through Activate, which writes its schedule, so a draft leaves draft elsewhere only by void;
@@ -252,7 +281,10 @@ async def guard_agreement_status(*, session, entry, transition) -> None:
     mode's permissions from whoever makes it, as in write_agreement."""
     from celerp.modules.registry import uses_module
 
-    if _WRITING.get() == entry.entity_id or transition.after.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
+    if transition.after.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
+        return
+    refuse_unbuildable_terms(transition.before or {}, transition.after)
+    if _WRITING.get() == entry.entity_id or (transition.before or {}).get("status") == transition.after.get("status"):
         return
     company = await session.get(Company, entry.company_id)
     in_force = modes_in_force(transition.before or {}) or modes_in_force(transition.after)
@@ -269,8 +301,9 @@ async def guard_agreement_status(*, session, entry, transition) -> None:
 
 def billable(state: dict) -> bool:
     """The one rule for whether an agreement's periods can bill: it is active and on a
-    schedule. Every other status, named or not, bills nothing."""
-    return state.get("status") == "active" and bool(state.get("anchor_date"))
+    schedule its stored terms build (on_schedule). Every other status, named or not, bills
+    nothing."""
+    return state.get("status") == "active" and on_schedule(state)
 
 
 # Why a status does not bill, for the ones an agreement holds; any other reads the last.
@@ -279,7 +312,10 @@ _UNBILLABLE = {"draft": "subscriptions.err_bill_draft", "paused": "subscriptions
 
 
 def refuse_unbillable(state: dict) -> None:
-    """A 409 naming why, unless the agreement is billable."""
+    """A 409 naming why, unless the agreement is billable: its status, or why its stored
+    terms build no schedule."""
+    if state.get("status") == "active" and (exc := unscheduled(state)) is not None:
+        raise HTTPException(status_code=409, detail=t(exc.key, **exc.params)) from exc
     if not billable(state):
         raise HTTPException(status_code=409, detail=t(
             _UNBILLABLE.get(state.get("status"), "subscriptions.err_bill_not_active")))
@@ -327,6 +363,10 @@ async def guard_bill_status(*, session, entry, transition) -> None:
     ).order_by(Projection.entity_id))).scalars().all()
     for agreement in rows:
         k = int(agreement.state["released_bills"][doc_id])
+        if (exc := unscheduled(agreement.state)) is not None:
+            raise HTTPException(status_code=409, detail=t(
+                "subscriptions.err_bill_unscheduled", ref=transition.before.get("ref_id") or doc_id,
+                agreement=template_label(agreement.state, agreement.entity_id), reason=t(exc.key, **exc.params)))
         schedule = Schedule.from_state(agreement.state)
         newer = (schedule.periods.get(k) or {}).get("doc_id") if schedule.state(k) == BILLED else None
         newer_doc = await doc_state(session, entry.company_id, newer) if newer else None
@@ -569,10 +609,13 @@ async def period_list(session: AsyncSession, company_id, state: dict, today: dat
     newest first, at most ``limit``, with each claim's state, status, document and email send state; its next bill date;
     the earlier documents waiting for history review, each with its candidate periods; and the
     ones set aside as billing no period of their own. A template not yet on a schedule has
-    none of these, and ``not_moved`` says why."""
+    none of these, and ``not_moved`` says why; an agreement whose stored terms build no
+    schedule is refused (409) with the schedule's reason."""
     if not state.get("anchor_date"):
         return {"next_bill_date": None, "rows": [], "review": [], "set_aside": [],
                 "older_before": None, "oldest_due_row": None, "not_moved": not_moved(state)}
+    if (exc := unscheduled(state)) is not None:
+        raise HTTPException(status_code=409, detail=t(exc.key, **exc.params)) from exc
     schedule = Schedule.from_state(state)
     nxt = schedule.next_bill_date(floor=review_floor(state))
     first = schedule.first()
@@ -647,7 +690,7 @@ def waiting_sends(state: dict, today: date) -> list[int]:
     that far back waits for the catch-up preview."""
     waiting = sorted(int(k) for k, entry in (state.get("periods") or {}).items()
                      if (entry.get("send") or {}).get("state") == "pending")
-    if not waiting or not state.get("anchor_date") or not sends_itself(state):
+    if not waiting or not on_schedule(state) or not sends_itself(state):
         return []
     schedule = Schedule.from_state(state)
     return [k for k in waiting if not outside_window(state, schedule, [k], today)]

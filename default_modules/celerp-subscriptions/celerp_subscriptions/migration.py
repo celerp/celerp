@@ -182,8 +182,9 @@ async def _old_next_dates(session, company_id) -> dict[str, str]:
 
 async def check_template_schedule_integrity(session: AsyncSession, company_id) -> list[str]:
     """Every problem with the agreements' period claims, as readable lines (empty when sound):
-    a claim on a missing document or one of the wrong kind, a document claimed twice, and a
-    migrated template whose next bill date moved before any later period was touched."""
+    a claim on a missing document or one of the wrong kind, a document claimed twice, an
+    agreement whose stored terms build no schedule, and a migrated template whose next bill
+    date moved before any later period was touched."""
     problems = []
     claimed: dict[str, str] = {}
     old_next = await _old_next_dates(session, company_id)
@@ -203,6 +204,9 @@ async def check_template_schedule_integrity(session: AsyncSession, company_id) -
             if doc_id in claimed:
                 problems.append(f"{doc_id} is claimed by {claimed[doc_id]} and {here}")
             claimed.setdefault(doc_id, here)
+        if (exc := billing.unscheduled(state)) is not None:
+            problems.append(f"{tid} has schedule terms that build no schedule ({exc.key})")
+            continue
         before = old_next.get(tid)
         if not before or not state.get("anchor_date") or state["anchor_date"] != before:
             continue

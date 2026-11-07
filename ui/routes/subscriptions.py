@@ -299,7 +299,9 @@ def _sub_table(subs: list[dict], direction: str, review: bool = False) -> FT:
         name = template_label(s, eid)
         contact = s.get("contact_name") or s.get("contact_company_name") or "-"
         freq = display_enum(s["frequency"], "subscription_frequency") if s.get("frequency") else "-"
-        next_due = s.get("next_bill_date") or "-"
+        # An agreement whose stored terms build no schedule says why where its next bill date would be.
+        next_due = (Span(s["schedule_error"], cls="text-danger") if s.get("schedule_error")
+                    else s.get("next_bill_date") or "-")
         status = s.get("status", "draft")
         return Tr(
             Td(A(name, href=f"/subscriptions/{eid}")),
@@ -649,14 +651,16 @@ def _billed_text(done: dict) -> str:
 
 def _outcome_table(results: list[dict], subs: dict[str, dict], retry_key: str | None = None) -> FT:
     """What a bulk run did, one row per item: the agreement, then the document it billed or the
-    period it skipped with the dates, or why it was refused. With *retry_key* (Generate all due)
-    a refused row offers Retry."""
+    period it skipped with the dates, or why it was refused, with the period's dates when the
+    answer gives them. With *retry_key* (Generate all due) a refused row offers Retry."""
     def _row(r: dict) -> FT:
         eid = r["entity_id"]
         name = template_label(subs[eid], eid) if eid in subs else eid
         action = Td("")
         if not r.get("ok"):
-            outcome = Td(refusal_text(r.get("error")), cls="text-danger")
+            reason = refusal_text(r.get("error"))
+            outcome = Td(sentence("subscriptions.done_refused", start=r["service_start"], end=r["service_end"], reason=reason)
+                         if r.get("service_start") else reason, cls="text-danger")
             if retry_key is not None:
                 action = Td(Button(t("btn.retry"), cls="btn btn--secondary btn--sm", hx_post="/subscriptions/generate-due",
                                    hx_vals={"item": f"{eid}|{r['period_index']}", FIELD: retry_key},

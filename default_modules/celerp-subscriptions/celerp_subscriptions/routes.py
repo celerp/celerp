@@ -39,11 +39,29 @@ _MOVING_FIELDS = {"frequency", "custom_interval_days"}
 
 
 def next_bill_date(state: dict) -> str | None:
-    """The derived next bill date of an active or paused agreement."""
-    if state.get("status") not in ("active", "paused") or not state.get("anchor_date"):
+    """The derived next bill date of an active or paused agreement on a schedule."""
+    if state.get("status") not in ("active", "paused") or not billing.on_schedule(state):
         return None
     nxt = Schedule.from_state(state).next_bill_date(floor=billing.review_floor(state))
     return nxt.isoformat() if nxt else None
+
+
+def list_row(state: dict) -> dict:
+    """An agreement as the list shows it: its derived next bill date, and why its stored terms
+    build no schedule when they build none (that row only; the rest of the list reads)."""
+    exc = billing.unscheduled(state)
+    return {**state, "next_bill_date": next_bill_date(state),
+            "schedule_error": t(exc.key, **exc.params) if exc is not None else None}
+
+
+async def refused_period(session, company_id, entity_id: str, k: int | None) -> dict:
+    """The dates of the period a refused item names, so each refused row says which period it
+    was; nothing when the agreement or its schedule cannot tell."""
+    state = await billing.doc_state(session, company_id, entity_id) or {}
+    if k is None or state.get("doc_type") not in SUBSCRIPTION_DOC_TYPES or not billing.on_schedule(state):
+        return {}
+    schedule = Schedule.from_state(state)
+    return {"service_start": schedule.start(k).isoformat(), "service_end": schedule.service_end(k).isoformat()}
 
 
 class RequestBody(BaseModel):
@@ -198,12 +216,12 @@ def _build_router() -> APIRouter:
         _: None = require_permission("view_subscriptions"),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
-        """List agreements, each with its derived next bill date; ``review`` keeps those
-        with earlier documents waiting for history review."""
+        """List agreements, each with its derived next bill date (list_row); ``review`` keeps
+        those with earlier documents waiting for history review."""
         items, total = await search_subscription_templates(
             session, company_id, direction=direction, status=status, q=q, review=review, limit=limit, offset=offset
         )
-        return {"items": [{**i, "next_bill_date": next_bill_date(i)} for i in items], "total": total}
+        return {"items": [list_row(i) for i in items], "total": total}
 
     @router.get("/due")
     async def list_due(
@@ -262,7 +280,9 @@ def _build_router() -> APIRouter:
         session: AsyncSession = Depends(get_session),
     ) -> dict:
         """Bill the chosen periods from the catch-up preview, in order. An item is billed
-        only when the preview lists it and it is its agreement's oldest open period."""
+        only when the preview lists it and it is its agreement's oldest open period. A refused
+        item says why, the agreement's own state first (paused, cancelled, no schedule) before
+        that it left the preview, and names its period's dates when the schedule gives them."""
         today = await company_today(session, company_id)
         listed = {(i["entity_id"], p["period_index"])
                   for i in await billing.catch_up_preview(session, company_id, today) for p in i["periods"]}
@@ -270,7 +290,8 @@ def _build_router() -> APIRouter:
         for n, item in enumerate(body.items):
             row = {"entity_id": item.entity_id, "period_index": item.period_index}
             if n >= BATCH_CAP:
-                results.append({**row, "ok": False, "error": t("subscriptions.err_catchup_not_listed")})
+                results.append({**row, "ok": False, "error": t("subscriptions.err_catchup_not_listed"),
+                                **await refused_period(session, company_id, item.entity_id, item.period_index)})
                 continue
             try:
                 # A response lost after commit must replay its receipt, even after
@@ -280,11 +301,11 @@ def _build_router() -> APIRouter:
                 if prior is not None:
                     results.append({**row, "ok": True, **prior})
                     continue
-                if (item.entity_id, item.period_index) not in listed:
-                    raise HTTPException(status_code=409, detail=t("subscriptions.err_catchup_not_listed"))
                 async with session.begin_nested():
                     proj = await billing.locked_agreement(session, company_id, item.entity_id)
                     billing.refuse_unbillable(proj.state)
+                    if (item.entity_id, item.period_index) not in listed:
+                        raise HTTPException(status_code=409, detail=t("subscriptions.err_catchup_not_listed"))
                     oldest = Schedule.from_state(proj.state).oldest_open(floor=billing.review_floor(proj.state))
                     if oldest != item.period_index:
                         raise HTTPException(status_code=409, detail=t("subscriptions.err_early_not_next"))
@@ -293,7 +314,8 @@ def _build_router() -> APIRouter:
                         request_key=item.request_key)
                 results.append({**row, "ok": True, **found})
             except HTTPException as exc:
-                results.append({**row, "ok": False, "error": exc.detail})
+                results.append({**row, "ok": False, "error": exc.detail,
+                                **await refused_period(session, company_id, item.entity_id, item.period_index)})
         await session.commit()
         return {"results": results}
 

@@ -63,8 +63,8 @@ item_lineage_guard {"handler": "module.path:function"} naming
 doc_status_guard   {"handler": "module.path:function"} naming
                    `async def handler(*, session, entry, transition) -> None`, called
                    with exactly those keyword arguments on every live document event
-                   that changes the document's status, after it is applied and before
-                   it commits; raising refuses the event
+                   that changes the document (its status or any other field), after it
+                   is applied and before it commits; raising refuses the event
 demo_records       {"handler": "module.path:function"} naming
                    `async def handler(*, session, company_id, user_id) -> None`, called
                    with exactly those keyword arguments whenever a company's demo data
