@@ -159,3 +159,29 @@ LINE_SKIP_REASONS: dict[str, dict[str, tuple[str, str | None]]] = {
     # Print labels runs in the page; a choice of only such lines keeps its own error.
     "labels": {"no_item": ("documents.labels_skipped", None)},
 }
+
+
+def _shown(entries: list[dict] | None, keys: tuple[str, ...]) -> list[dict]:
+    """Each entry's ``keys`` only, ordered by those keys' values in turn."""
+    return sorted(({k: e[k] for k in keys} for e in entries or []), key=lambda e: [e[k] for k in keys])
+
+
+# What a stock line action's preview shows, part by part, from its answer: the lines it acts on,
+# each line it leaves with why, the lines whose shipment it takes back and each lot it takes from
+# another invoice. Each part holds exactly what its confirm words (a line by number and name, a
+# lot by SKU and the invoice by number) with the ids that make it the same line, lot or invoice,
+# so the binding (routes.outcome_binding) digests what the question (the page's _preview_confirm)
+# reads and nothing else: shared by the two so they never diverge. A lot carved off is left out,
+# as it is new each time the action runs; a lot taken from another invoice is the one it is
+# carved from.
+OUTCOME_SHOWN = {
+    "acted": lambda answer: answer["acted"],
+    "skipped": lambda answer: _shown(answer.get("skipped"), ("line", "kind", "name", "line_id")),
+    "taken_back": lambda answer: _shown(answer.get("taken_back"), ("line", "name", "line_id")),
+    "taken_from": lambda answer: _shown(answer.get("taken_from"), ("doc_number", "sku", "doc_id", "lot_id")),
+}
+
+
+def outcome_shown(answer: dict) -> dict:
+    """A stock line action's preview ``answer`` as what it shows (OUTCOME_SHOWN), part by part."""
+    return {part: show(answer) for part, show in OUTCOME_SHOWN.items()}

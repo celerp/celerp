@@ -81,7 +81,7 @@ from celerp_contacts.references import (
 )
 from celerp.output.document_context import prepare_document_output
 from celerp.output.doc_print import fmt_money
-from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, DRAFT_REVERT_RETURNED, DRAFT_REVERT_STATUSES, INBOUND_DRAFT_REVERT_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, LINE_SKIP_REASONS, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, CREDIT_APPLICATION_METHODS, CONVERTIBLE_STATUSES
+from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, DRAFT_REVERT_RETURNED, DRAFT_REVERT_STATUSES, INBOUND_DRAFT_REVERT_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, LINE_SKIP_REASONS, outcome_shown, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, CREDIT_APPLICATION_METHODS, CONVERTIBLE_STATUSES
 from celerp.services.record_quantities import FULFILLABLE_STATUSES, QUOTATION_SPENT_STATUSES, RECEIVABLE_STATUSES, sent_out_by
 from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, MEMO_DRAW_STATUSES, doc_value, is_awaiting_payment, is_open_credit, is_overdue_document, is_owed, is_paid_document, outstanding_balance
 from celerp.services.list_behavior import (
@@ -465,8 +465,8 @@ class DocReopenBody(BaseModel):
 # A write with a preview (``dry_run``) confirms only the preview shown: the preview answers
 # with a binding, and the write refuses a binding that differs from what it would write now.
 # A stock line action binds the outcome of its preview (outcome_binding): the lines it acts on,
-# the lines it leaves and why, and what it takes back, so an edit that changes none of these
-# never refuses it.
+# the lines it leaves and why, what it takes back and what it takes from other invoices, each as
+# its confirm words it (OUTCOME_SHOWN), so an edit that changes none of these never refuses it.
 
 # Request fields that never change what a write does; every other field is bound to its preview.
 PREVIEW_UNBOUND_FIELDS = frozenset({"idempotency_key", "dry_run", "binding"})
@@ -480,21 +480,9 @@ def preview_binding(rows: list[Projection | None], body: BaseModel) -> str:
     return hashlib.sha256(json.dumps(shown, sort_keys=True).encode()).hexdigest()
 
 
-# What a stock line action's preview shows, part by part, from its answer: the lines it acts on,
-# each line it leaves with why, the lines whose shipment it takes back and the other records it
-# takes goods from. Lots are left out: a lot carved off is new each time the action runs.
-OUTCOME_SHOWN = {
-    "acted": lambda result: result["acted"],
-    "skipped": lambda result: sorted([s["line_id"] or "", s["kind"]] for s in result.get("skipped") or []),
-    "taken_back": lambda result: sorted(t["line_id"] or "" for t in result.get("taken_back") or []),
-    "taken_from": lambda result: sorted({m["doc_id"] for m in result.get("taken_from") or []}),
-}
-
-
 def outcome_binding(result: dict) -> str:
-    """What a stock line action's preview shows (OUTCOME_SHOWN), as one digest."""
-    shown = {part: show(result) for part, show in OUTCOME_SHOWN.items()}
-    return hashlib.sha256(json.dumps(shown, sort_keys=True).encode()).hexdigest()
+    """What a stock line action's preview shows (outcome_shown), as one digest."""
+    return hashlib.sha256(json.dumps(outcome_shown(result), sort_keys=True).encode()).hexdigest()
 
 
 # What each key of a bulk line action's answer means, for the API reference (answers_with).

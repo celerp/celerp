@@ -40,7 +40,8 @@ def _lines(g) -> list[dict]:
 
 async def _record(client, g, kind: str, states: dict[str, str]) -> tuple[str, dict[str, str]]:
     """A finalized invoice or a List of SKUS, each stone in its state: "held" by this record,
-    "shipped" by it, or "elsewhere" (sold on another invoice). Returns it and its line ids by sku."""
+    "shipped" by it, "elsewhere" (sold on another invoice) or "aside" (named on another finalized
+    invoice, kept in ``g.aside`` by sku). Returns it and its line ids by sku."""
     lines = _lines(g)
     owner = await (_list(client, g, lines) if kind == "list" else _doc_of(client, g, lines))
     lids = dict(zip(SKUS, await _ids(client, g, owner)))
@@ -52,6 +53,8 @@ async def _record(client, g, kind: str, states: dict[str, str]) -> tuple[str, di
         elif st == "elsewhere":
             other = await _doc_of(client, g, [_line(g, sku)])
             await _ok(await _act(client, g, other, "fulfill-lines", await _ids(client, g, other)))
+        elif st == "aside":
+            vars(g).setdefault("aside", {})[sku] = await _doc_of(client, g, [_line(g, sku)])
     return owner, lids
 
 
@@ -395,6 +398,17 @@ async def _set_aside_elsewhere(client, g, owner, lids, sku):
     await _doc_of(client, g, [_line(g, sku)])
 
 
+async def _name_instead_aside(client, g, owner, lids, sku):
+    """The invoice that named a stone aside is taken back to draft, made to name ``sku``
+    instead and finalized again."""
+    (other,) = g.aside.values()
+    await _ok(await client.post(f"/docs/{other}/revert-to-draft", headers=g.h, json={"reason": "changed"}))
+    version = (await _state(client, g, other))["version"]
+    await _ok(await client.patch(f"/docs/{other}", headers=g.h, json={
+        "expected_version": version, "fields_changed": {"line_items": {"new": [_line(g, sku)]}}}))
+    await _ok(await client.post(f"/docs/{other}/finalize", headers=g.h))
+
+
 async def _choose_too(client, g, owner, lids, sku):
     """Not a change in stock: the confirm is sent for ``sku``'s line as well."""
     return (sku,)
@@ -450,6 +464,9 @@ _RACES = {
                                             _ship_here_once_taken_back_elsewhere, _MIN, _LEAVES),
     ("ship", "takes from another invoice"): ("invoice", "fulfill-lines", {}, {}, (_SAP, "GIA"),
                                              _set_aside_elsewhere, _SAP, frozenset({"taken_from"})),
+    ("ship", "takes another lot from the same invoice"): ("invoice", "fulfill-lines", {}, {_SAP: "aside"},
+                                                          (_SAP, _MIN, "GIA"), _name_instead_aside, _MIN,
+                                                          frozenset({"taken_from"})),
     ("ship", "is confirmed for more lines"): ("invoice", "fulfill-lines", {}, {}, (_SAP, "GIA"),
                                               _choose_too, _MIN, frozenset({"acted"})),
 }
@@ -472,7 +489,7 @@ async def test_every_stock_line_action_meets_every_change_between_preview_and_ac
 async def test_every_part_of_the_binding_has_a_change_that_alters_it_alone():
     """Each part of what a preview binds has a race above in which it alone changes, so no part
     can drop out of the binding unnoticed; a part added without one fails here."""
-    from celerp_docs.routes import OUTCOME_SHOWN
+    from celerp_docs.doc_constants import OUTCOME_SHOWN
     raced = [v[-1] for v in _RACES.values() if not isinstance(v, str) and v[-1] != "refused"]
     assert set().union(*raced) <= set(OUTCOME_SHOWN)
     assert [p for p in OUTCOME_SHOWN if {p} not in raced] == []
@@ -486,6 +503,37 @@ async def test_the_question_words_why_it_leaves_each_kind_of_line():
     en = _load("en")
     kinds = {k for action in {_RACE_ACTIONS[p] for p in _CONFIRMS} for k in LINE_SKIP_REASONS[action]}
     assert [f"{k}_{n}" for k in sorted(kinds) for n in ("one", "many") if f"documents.will_skip_{k}_{n}" not in en] == []
+
+
+def _variants(value):
+    """Every value that differs from ``value`` in one leaf, or by one entry fewer in a list."""
+    if isinstance(value, dict):
+        for k, v in value.items():
+            yield from ({**value, k: w} for w in _variants(v))
+    elif isinstance(value, list):
+        for i, v in enumerate(value):
+            yield value[:i] + value[i + 1:]
+            yield from ([*value[:i], w, *value[i + 1:]] for w in _variants(v))
+    elif isinstance(value, bool):
+        yield not value
+    elif isinstance(value, (int, float)):
+        yield value + 1
+    else:
+        yield f"{value}x"
+
+
+def assert_the_question_is_bound(confirm: str, answer: dict) -> None:
+    """Whatever the question words is bound: every change to a preview's answer that alters
+    the question it asks alters its binding too, so the confirm the user answered can never
+    stand for an action that would now do something it did not word. The changes are read from
+    the producer's own answer, every field of every part, not from a list of parts kept here,
+    so a part the question comes to word without a binding fails."""
+    from celerp_docs.routes import outcome_binding
+    from ui.routes.documents import _preview_confirm
+    asked, bound = _preview_confirm(confirm, answer), outcome_binding(answer)
+    unbound = [v for v in _variants(answer)
+               if _preview_confirm(confirm, v) != asked and outcome_binding(v) == bound]
+    assert unbound == [], f"the question changes but its binding does not: {unbound[0]}"
 
 
 def _previewed_line_actions():
@@ -515,7 +563,7 @@ async def test_an_action_does_only_what_its_preview_said(client, session, race):
     a fresh preview then binds the action to what it now does. Red statement: Set as shipped
     confirmed "Set 1 line as shipped?" and shipped 2 when a line was taken back elsewhere
     meanwhile, and Set as reserved reversed a sale its confirm never mentioned."""
-    from celerp_docs.routes import OUTCOME_SHOWN
+    from celerp_docs.doc_constants import OUTCOME_SHOWN
     from ui.routes.documents import _preview_confirm
     kind, path, extra, states, chosen, change, sku, answer = _RACES[race]
     g = await _gems(client)
@@ -525,6 +573,9 @@ async def test_an_action_does_only_what_its_preview_said(client, session, race):
     body = {"line_ids": [lids[s] for s in chosen], "idempotency_key": key, **extra}
     preview = await _ok(await client.post(url, headers=g.h, json={**body, "dry_run": True}))
     assert preview.get("binding"), preview
+    confirm = _CONFIRMS[path].format(**extra) if path in _CONFIRMS else None
+    if confirm:
+        assert_the_question_is_bound(confirm, preview)
     body["line_ids"] += [lids[s] for s in await change(client, g, owner, lids, sku) or ()]
     before = await _snapshot(client, session, g, owner)
     bound = await client.post(url, headers=g.h, json={**body, "binding": preview["binding"]})
@@ -535,7 +586,7 @@ async def test_an_action_does_only_what_its_preview_said(client, session, race):
         fresh = await client.post(url, headers=g.h, json={**body, "dry_run": True})
         assert fresh.status_code == 200, fresh.text
         assert {p for p, show in OUTCOME_SHOWN.items() if show(fresh.json()) != show(preview)} == answer
-        confirm = _CONFIRMS[path].format(**extra)
+        assert_the_question_is_bound(confirm, fresh.json())
         assert _preview_confirm(confirm, fresh.json()) != _preview_confirm(confirm, preview), \
             "the fresh question repeats the one answered"
         real = await client.post(url, headers=g.h, json={**body, "binding": fresh.json()["binding"]})
