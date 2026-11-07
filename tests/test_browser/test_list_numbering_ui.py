@@ -146,3 +146,29 @@ def test_a_quotation_list_converted_from_its_page_falls_due_by_its_term(page: Pa
     issued = date.fromisoformat(doc["issue_date"])
     assert (doc["source_list_id"], doc["doc_type"]) == (entity_id, "invoice")
     assert issued > date(2026, 10, 1) and doc["due_date"] == (issued + timedelta(days=30)).isoformat()
+
+
+def test_converting_a_list_that_already_became_a_document_says_so_in_the_users_language(
+        page: Page, ui_server, fresh_company):
+    _seed_demo_items(fresh_company)
+    r = fresh_company.post("/lists", json={
+        "list_type": "quotation", "contact_name": "Buyer",
+        "line_items": [{"name": "A", "quantity": 1, "unit_price": 50}]})
+    assert r.status_code == 200, r.text
+    entity_id = r.json()["id"]
+    assert fresh_company.post(f"/lists/{entity_id}/finalize").status_code == 200
+    host = ui_server.split("//", 1)[1].split(":", 1)[0]
+    page.context.add_cookies([{"name": "celerp_lang", "value": "th", "domain": host, "path": "/"}])
+    try:
+        page.goto(f"{ui_server}/lists/{entity_id}")
+        wait_for_topbar(page)
+        # Another session converts it while this page is still open.
+        done = fresh_company.post(f"/lists/{entity_id}/convert", json={"target_type": "invoice"})
+        assert done.status_code == 200, done.text
+        number = fresh_company.get(f"/docs/{done.json()['target_doc_id']}").json()["ref_id"]
+        page.get_by_role("button", name=t("btn.convert", "th"), exact=True).click()
+        toast = page.locator(".toast-container .toast--error").last
+        expect(toast).to_contain_text(t("documents.err_list_already_converted", "th", number=number))
+        assert page.url.endswith(f"/lists/{entity_id}")
+    finally:
+        page.context.clear_cookies(name="celerp_lang")
