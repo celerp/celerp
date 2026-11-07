@@ -11,10 +11,12 @@ payment term from the day the document is issued.
 """
 from __future__ import annotations
 
+import re
+
 import pytest
 from datetime import date, timedelta
 
-from playwright.sync_api import Page
+from playwright.sync_api import Page, expect
 
 from .conftest import wait_for_topbar
 from .test_demo_items_link import _seed_demo_items
@@ -99,9 +101,9 @@ def test_a_refused_numbering_pattern_reads_in_the_users_language(page: Page, ui_
             field = row.locator('input[name="value"]')
             field.fill(pattern)
             field.press("Tab")
-            error = row.locator(".cell-error")
-            error.wait_for()
-            assert error.inner_text().strip().lower() == t(key, "th", **params).lower()
+            # Each refusal replaces the one before it, so wait for this pattern's own text.
+            expect(row.locator(".cell-error")).to_have_text(
+                re.compile(rf"^\s*{re.escape(t(key, 'th', **params))}\s*$", re.I))
             assert field.input_value() == pattern
     finally:
         page.context.clear_cookies(name="celerp_lang")
