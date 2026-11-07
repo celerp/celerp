@@ -78,7 +78,7 @@ async def test_numbering_without_the_lock_is_refused(session):
 
     company_id = await _company(session)
     company = await session.get(Company, company_id)
-    next_doc_ref(company, "invoice")
+    next_doc_ref(company, "invoice", frozenset())
     with pytest.raises(RuntimeError, match="locked_company"):
         await session.flush()
     await session.rollback()

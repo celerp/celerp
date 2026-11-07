@@ -15282,7 +15282,7 @@ class TestProformaNumbering:
         from unittest.mock import MagicMock
         company = MagicMock()
         company.settings = {}
-        ref = next_doc_ref(company, "proforma")
+        ref = next_doc_ref(company, "proforma", frozenset())
         assert ref.startswith("PF-")
 
     def test_invoice_sequence_still_works(self):
@@ -15291,7 +15291,7 @@ class TestProformaNumbering:
         from unittest.mock import MagicMock
         company = MagicMock()
         company.settings = {}
-        ref = next_doc_ref(company, "invoice")
+        ref = next_doc_ref(company, "invoice", frozenset())
         assert ref.startswith("INV-")
 
     def test_proforma_in_all_sequences(self):
@@ -15300,7 +15300,7 @@ class TestProformaNumbering:
         from unittest.mock import MagicMock
         company = MagicMock()
         company.settings = {}
-        seqs = get_all_sequences(company)
+        seqs = get_all_sequences(company, frozenset())
         doc_types = {s["doc_type"] for s in seqs}
         assert "proforma" in doc_types
 

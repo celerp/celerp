@@ -38,21 +38,21 @@ def _company(**settings) -> SimpleNamespace:
 
 
 def _preview(company, doc_type: str = "invoice") -> str:
-    return next(s["preview"] for s in get_all_sequences(company) if s["doc_type"] == doc_type)
+    return next(s["preview"] for s in get_all_sequences(company, ()) if s["doc_type"] == doc_type)
 
 
 def test_pattern_without_year_never_resets(monkeypatch):
     company = _company(sequences={"invoice": {
         "prefix": "INV", "pattern": "{PREFIX}-{####}", "next": 42, "year": 2026, "month": 12, "day": 31}})
     freeze(monkeypatch, datetime(2027, 1, 1, 9, 0, tzinfo=timezone.utc))
-    assert next_doc_ref(company, "invoice") == "INV-0042"
+    assert next_doc_ref(company, "invoice", ()) == "INV-0042"
 
 
 def test_saved_next_without_stored_day_is_kept(monkeypatch):
     freeze(monkeypatch, datetime(2026, 10, 22, 9, 0, tzinfo=timezone.utc))
     company = _company()
     update_sequence(company, "invoice", next_num=500)
-    assert next_doc_ref(company, "invoice") == "INV-2610-0500"
+    assert next_doc_ref(company, "invoice", ()) == "INV-2610-0500"
 
 
 def test_saved_next_after_the_period_turned_is_kept(monkeypatch):
@@ -60,27 +60,27 @@ def test_saved_next_after_the_period_turned_is_kept(monkeypatch):
     company = _company(sequences={"invoice": {
         "prefix": "INV", "pattern": "{PREFIX}-{YY}{MM}-{####}", "next": 7, "year": 2026, "month": 9, "day": 30}})
     freeze(monkeypatch, datetime(2026, 10, 22, 9, 0, tzinfo=timezone.utc))
-    assert update_sequence(company, "invoice", next_num=500)["preview"] == "INV-2610-0500"
+    update_sequence(company, "invoice", next_num=500)
     assert _preview(company) == "INV-2610-0500"
-    assert next_doc_ref(company, "invoice") == "INV-2610-0500"
+    assert next_doc_ref(company, "invoice", ()) == "INV-2610-0500"
     freeze(monkeypatch, datetime(2026, 11, 1, 9, 0, tzinfo=timezone.utc))
-    assert next_doc_ref(company, "invoice") == "INV-2611-0001"
+    assert next_doc_ref(company, "invoice", ()) == "INV-2611-0001"
 
 
 def test_numbering_uses_company_business_day(monkeypatch):
     """18:00 UTC on 31 October is already 1 November in Bangkok."""
     company = _company(timezone="Asia/Bangkok")
     freeze(monkeypatch, datetime(2026, 10, 31, 18, 0, tzinfo=timezone.utc))
-    assert next_doc_ref(company, "invoice") == "INV-2611-0001"
+    assert next_doc_ref(company, "invoice", ()) == "INV-2611-0001"
 
 
 def test_numbering_never_moves_back_a_period(monkeypatch):
     company = _company(timezone="Asia/Bangkok")
     freeze(monkeypatch, datetime(2026, 10, 31, 18, 0, tzinfo=timezone.utc))
-    assert next_doc_ref(company, "invoice") == "INV-2611-0001"
+    assert next_doc_ref(company, "invoice", ()) == "INV-2611-0001"
     company.settings["timezone"] = "America/Los_Angeles"
     freeze(monkeypatch, datetime(2026, 10, 31, 19, 0, tzinfo=timezone.utc))
-    assert next_doc_ref(company, "invoice") == "INV-2611-0002"
+    assert next_doc_ref(company, "invoice", ()) == "INV-2611-0002"
 
 
 def test_day_token_without_month_resets_yearly(monkeypatch):
@@ -90,7 +90,7 @@ def test_day_token_without_month_resets_yearly(monkeypatch):
     refs = []
     for offset in range(40):
         freeze(monkeypatch, start + timedelta(days=offset))
-        refs.append(next_doc_ref(company, "invoice"))
+        refs.append(next_doc_ref(company, "invoice", ()))
     assert len(set(refs)) == len(refs), refs
 
 
@@ -100,13 +100,13 @@ def test_preview_equals_next_ref(monkeypatch, pattern):
     company = _company(timezone="Asia/Bangkok")
     freeze(monkeypatch, datetime(2026, 12, 31, 10, 0, tzinfo=timezone.utc))
     update_sequence(company, "invoice", pattern=pattern)
-    next_doc_ref(company, "invoice")
-    next_doc_ref(company, "invoice")
+    next_doc_ref(company, "invoice", ())
+    next_doc_ref(company, "invoice", ())
     # 1 January in Bangkok: every period token moves on.
     freeze(monkeypatch, datetime(2027, 1, 1, 1, 0, tzinfo=timezone.utc))
     shown = _preview(company)
-    edited = update_sequence(company, "invoice", prefix="INV")["preview"]
-    assert shown == edited == next_doc_ref(company, "invoice")
+    update_sequence(company, "invoice", prefix="INV")
+    assert shown == _preview(company) == next_doc_ref(company, "invoice", ())
 
 
 async def _bad_timezone(session, company_id) -> dict:

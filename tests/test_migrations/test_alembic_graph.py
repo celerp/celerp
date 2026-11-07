@@ -60,7 +60,8 @@ SHIPPED_HEAD = "y3p4q5r6s7t8"
 AFTER_SHIPPED = ["x2p3q4r5s6t7", "y3q4r5s6t7u8", "z4r5s6t7u8v9", "a5t6u7v8w9x0", "b6u7v8w9x0y1",
                  "c7v8w9x0y1z2", "d8w9x0y1z2a3", "e9x0y1z2a3b4", "f0y1z2a3b4c5", "g1z2a3b4c5d6",
                  "h2a3b4c5d6e7", "h4c5d6e7f8a9", "i3b4c5d6e7f8", "j5d6e7f8a9b0", "k5e6f7a8b9c0",
-                 "k6e7f8a9b0c1", "l7f8a9b0c1d2", "m8a9b0c1d2e3", "p9q0r1s2t3u4"]
+                 "k6e7f8a9b0c1", "l7f8a9b0c1d2", "m8a9b0c1d2e3", "p9q0r1s2t3u4",
+                 "q0r1s2t3u4v5"]
 
 # The newest revision a database can already carry from the module and payment work
 # that reaches main before this release.

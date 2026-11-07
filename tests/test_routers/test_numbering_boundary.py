@@ -4,14 +4,19 @@
 Document or List already shows, every number a user or an import gives is refused while another
 record shows it, and the census below fails when a new writer reaches numbering another way.
 Numbering shows only counters something draws, and a company with the old shared List counter
-keeps it for quotation, transfer and untyped Lists."""
+keeps it for quotation, transfer and untyped Lists: the shared counter stores the List types it
+numbers, and no other counter, whoever writes it, changes which counter a List draws."""
 from __future__ import annotations
 
 import ast
 import pathlib
+import time
 
 import pytest
 
+from sqlalchemy import event, select, text
+
+from celerp.models.projections import Projection
 from celerp.services.company_lock import locked_company
 from test_tax_acceptance_matrix import _demo_company
 from ui.i18n import refusal_text, t
@@ -145,6 +150,119 @@ async def test_legacy_numbering_rows_preview_what_each_record_takes(client, sess
     assert await _ref(client, h, await _list(client, h, contacts, "transfer")) == transfer
 
 
+async def test_a_list_document_on_a_new_company_moves_no_list_type(client, session):
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    r = await client.post("/docs", headers=h, json={"doc_type": "list", **_payload(contacts)})
+    assert r.status_code == 200, r.text
+    assert (await _ref(client, h, r.json()["id"])).startswith("LST-")
+    rows = await _rows(client, h)
+    quotation = await _ref(client, h, await _list(client, h, contacts, "quotation"))
+    untyped = await _ref(client, h, await _list(client, h, contacts, None))
+    transfer = await _ref(client, h, await _list(client, h, contacts, "transfer"))
+    assert [quotation[:4], untyped[:4], transfer[:4]] == ["QUO-", "QUO-", "TRF-"], (quotation, untyped, transfer)
+    assert transfer == rows["transfer"]["preview"]
+
+
+async def test_a_transfer_document_keeps_legacy_transfer_lists_on_the_shared_counter(client, session):
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    await _legacy(session, auth["company_id"])
+    r = await client.post("/docs", headers=h, json={"doc_type": "transfer", **_payload(contacts)})
+    assert r.status_code == 200, r.text
+    assert (await _ref(client, h, r.json()["id"])).startswith("TRF-")
+    assert (await _ref(client, h, await _list(client, h, contacts, "transfer"))).startswith("LST-")
+    # Saving the transfer row is what gives transfers their own counter.
+    assert (await client.patch("/docs/sequences/transfer", headers=h, json={"prefix": "XFR"})).status_code == 200
+    assert (await _ref(client, h, await _list(client, h, contacts, "transfer"))).startswith("XFR-")
+    assert (await _ref(client, h, await _list(client, h, contacts, "quotation"))).startswith("LST-")
+
+
+# ── Numbering refusals are keyed ────────────────────────────────────────────
+
+@pytest.mark.parametrize("doc_type, body, key", [
+    ("audit", {"pattern": "{PREFIX}-{YY}{MM}"}, "documents.err_numbering_no_sequence_token"),
+    ("audit", {"pattern": "{PREFIX}-{FOO}-{####}"}, "documents.err_numbering_unknown_tokens"),
+    ("audit", {"prefix": "A{X}"}, "documents.err_numbering_prefix_braces"),
+    ("bogus", {"prefix": "B"}, "documents.err_numbering_unknown_type"),
+])
+async def test_every_numbering_refusal_reaches_the_reader_in_their_language(client, session, doc_type, body, key):
+    from ui.i18n import set_lang
+    auth, _ = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    before = await _rows(client, h)
+    r = await client.patch(f"/docs/sequences/{doc_type}", headers=h, json=body)
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == key
+    set_lang("th")
+    try:
+        # The refusal reads as a sentence, so its first letter may be raised.
+        assert refusal_text(detail).lower() == t(key, "th", **detail.get("params", {})).lower()
+    finally:
+        set_lang("en")
+    assert await _rows(client, h) == before
+
+
+# ── The preview is the number given, read in bounded work ──────────────────
+
+async def _held_run(client, session, h, contacts, count):
+    """``count`` quotations, then the quotation counter reset to 1: its first ``count`` numbers are held."""
+    for _ in range(count):
+        assert (await _quote_doc(client, h, contacts)).status_code == 200
+    assert (await client.patch("/docs/sequences/quotation", headers=h, json={"next": 1})).status_code == 200
+
+
+async def test_after_a_reset_the_preview_is_the_number_the_next_document_gets(client, session):
+    from celerp.models.company import Company
+    from celerp_docs.sequences import peek_draft_ref
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    await _held_run(client, session, h, contacts, 20)
+    preview = (await _rows(client, h))["quotation"]["preview"]
+    assert preview.endswith("-0021"), preview
+    session.expire_all()
+    assert await peek_draft_ref(session, await session.get(Company, auth["company_id"]), "quotation") == preview
+    assert await _ref(client, h, (await _quote_doc(client, h, contacts)).json()["id"]) == preview
+
+
+async def test_a_long_run_of_held_numbers_costs_a_few_reads_under_the_lock(client, session):
+    from celerp.models.company import Company
+    from celerp_docs.sequences import claim_number
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    await _held_run(client, session, h, contacts, 40)
+    session.expire_all()
+    company = await locked_company(session, auth["company_id"])
+    reads = []
+    engine = session.bind.sync_engine
+
+    def count(conn, cursor, statement, *_):
+        if "projections" in statement:
+            reads.append(statement)
+    event.listen(engine, "before_cursor_execute", count)
+    try:
+        ref = await claim_number(session, company, "quotation")
+    finally:
+        event.remove(engine, "before_cursor_execute", count)
+    await session.rollback()
+    assert ref.endswith("-0041")
+    assert len(reads) <= 3, f"{len(reads)} reads for 40 held numbers"
+    # Each read is an indexed lookup of the numbers, never a scan of the company's records.
+    from sqlalchemy.dialects import postgresql
+    from celerp_docs.sequences import _number_match
+    query = select(Projection.entity_id).where(
+        Projection.company_id == auth["company_id"], Projection.entity_type.in_(("doc", "list")),
+        _number_match([ref.lower()], keyed=True))
+    sql = str(query.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+    await session.execute(text("ANALYZE projections"))
+    await session.execute(text("SET LOCAL enable_seqscan = off"))
+    plan = "\n".join(r[0] for r in await session.execute(text("EXPLAIN " + sql)))
+    await session.rollback()
+    for index in ("ix_projections_number_shown", "ix_projections_number_kept", "ix_projections_number_key"):
+        assert index in plan, plan
+
+
 # ── Overlap refusal ─────────────────────────────────────────────────────────
 
 async def test_a_counter_cannot_take_the_format_of_a_list_counter_on_its_default(client, session):
@@ -257,3 +375,71 @@ async def test_every_numbered_writer_goes_through_the_boundary():
     assert not stray, f"a writer gives a number without claim_number or require_number_free: {stray}"
     callers = {r[2] for r in _census() if r[4]}
     assert set(_CLAIMED_BY_CALLER.values()) <= callers
+
+
+# ── Census: the numbering map has one writer and the legacy rule one reader ──
+
+_SEQUENCES = "default_modules/celerp-docs/celerp_docs/sequences.py"
+
+
+def _map_census() -> list[tuple[str, str, str, str]]:
+    """(file, function, what, how) for every use of the numbering map's key ("sequences") in the
+    app, every use of the shared counter's stored List types ("shares") in sequences.py, every
+    raise in sequences.py and every assignment to a company's settings there."""
+    rows = []
+    for path in sorted(_REPO.rglob("*.py")):
+        rel = str(path.relative_to(_REPO))
+        if rel.split("/")[0] not in {"celerp", "default_modules", "ui"} or "/tests/" in rel or "/test_" in rel:
+            continue
+        tree = ast.parse(path.read_text())
+        owner = {}
+        for fn in ast.walk(tree):
+            if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for node in _own_nodes(fn):
+                    owner[node] = fn.name
+        parent = {c: n for n in ast.walk(tree) for c in ast.iter_child_nodes(n)}
+        for node in ast.walk(tree):
+            fn = owner.get(node, "<module>")
+            if isinstance(node, ast.Constant) and (node.value == "sequences" or (
+                    node.value == "shares" and rel == _SEQUENCES)):
+                up = parent.get(node)
+                how = ("write" if isinstance(up, ast.Subscript) and isinstance(up.ctx, ast.Store)
+                       else "key" if isinstance(up, ast.Dict) else "read")
+                rows.append((rel, fn, node.value, how))
+            if rel != _SEQUENCES:
+                continue
+            if isinstance(node, ast.Raise) and node.exc is not None:
+                exc = node.exc
+                keyed = isinstance(exc, ast.Call) and (_name(exc.func) == "Refused" or (
+                    _name(exc.func) == "HTTPException"
+                    and any(k.arg == "detail" and isinstance(k.value, ast.Call)
+                            and _name(k.value.func) == "catalog_refusal" for k in exc.keywords)))
+                rows.append((rel, fn, "raise", "keyed" if keyed else ast.unparse(exc)[:60]))
+            if isinstance(node, (ast.Assign, ast.AugAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                if any(isinstance(t_, ast.Attribute) and t_.attr == "settings" for t_ in targets):
+                    rows.append((rel, fn, "settings", "write"))
+    return rows
+
+
+async def test_the_numbering_map_has_one_writer():
+    rows = _map_census()
+    assert len([r for r in rows if r[2] == "sequences"]) >= 8, rows
+    outside = [r for r in rows if r[2] == "sequences" and r[0] != _SEQUENCES
+               and r[:2] != ("celerp/services/company_settings.py", "<module>")]
+    assert not outside, f"the numbering map is touched outside sequences.py: {outside}"
+    writers = {r[1] for r in rows if r[3] == "write" and r[2] in {"sequences", "settings", "shares"}}
+    assert writers == {"_store"}, f"the numbering map is written outside _store: {writers}"
+
+
+async def test_the_legacy_list_rule_reads_only_the_stored_list_types():
+    rows = [r for r in _map_census() if r[2] == "shares"]
+    assert {r[1] for r in rows if r[3] == "read"} == {"_shares"}, rows
+    assert {r[1] for r in rows if r[3] == "key"} <= {"_store", "update_sequence"}, rows
+
+
+async def test_every_numbering_refusal_is_keyed():
+    rows = [r for r in _map_census() if r[2] == "raise"]
+    assert len(rows) >= 5, rows
+    unkeyed = [r for r in rows if r[3] != "keyed"]
+    assert not unkeyed, f"a numbering refusal is raised without a message key: {unkeyed}"
