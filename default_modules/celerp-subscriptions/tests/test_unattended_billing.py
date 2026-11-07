@@ -11,11 +11,12 @@ from __future__ import annotations
 import pytest
 
 from celerp.services.email import EmailResult
+from celerp_subscriptions.summary import KINDS as SUMMARY_KINDS, _key as summary_key
 from ui.i18n import t
 
 from agreement_kit import (
-    agreement, billed_docs, company_id, contact, freeze_day, member, register, revoke, schedule,
-    summary, template, tick,
+    agreement, billed_docs, company_id, contact, freeze_day, mark_read, member, register, revoke,
+    schedule, summary, template, tick,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -174,9 +175,9 @@ async def test_operator_summary_since_ack(client, session, monkeypatch):
     assert (await summary(client, hd))["counts"]["generated"] == 0
     await tick(session, cid, "2026-07-01")
     assert (await summary(client, hd))["counts"]["generated"] == 1
-    # A read time later than now is held to the server's clock (the August bill below still lists).
-    ack = await client.post("/subscriptions/summary/ack", headers=hd, json={"read_at": "2100-01-01T00:00:00Z"})
-    assert ack.status_code == 200, ack.text
+    # Mark as read covers the rows the page showed: the August bill below still lists.
+    ack = await mark_read(client, hd, await summary(client, hd))
+    assert ack.status_code == 200 and ack.json()["read"] == 1, ack.text
     assert (await summary(client, hd))["counts"]["generated"] == 0
     assert (await summary(client, manager))["counts"]["generated"] == 1  # per user
     freeze_day(monkeypatch, "2026-08-01")
@@ -189,15 +190,12 @@ async def test_operator_summary_since_ack(client, session, monkeypatch):
     assert [r["period_index"] for r in shown["rows"] if r["entity_id"] == eid] == [1, 0]  # newest first
 
 
-@pytest.mark.parametrize("body", [None, {}, {"read_at": None}, {"read_at": "2026-07-01T00:00:00"},
-                                  {"read_at": "soon"}, {"read_at": ""}, {"read_at": []}, {"read_at": {}},
-                                  {"read_at": True}, {"read_at": "0001-01-01T00:00:00+05:00"},
-                                  {"read_at": "9999-12-31T23:59:59-05:00"}])
-async def test_mark_as_read_without_a_readable_page_time_is_refused_and_acknowledges_nothing(
+@pytest.mark.parametrize("body", [None, {}, {"keys": None}, {"keys": "x"}, {"keys": {}}, {"keys": True},
+                                  {"keys": [1]}, {"keys": [None]}, {"keys": [[]]}, {"read_at": "2026-07-01T00:00:00Z"}])
+async def test_mark_as_read_without_readable_row_keys_is_refused_and_acknowledges_nothing(
         client, session, monkeypatch, body):
-    """Mark as read covers what the page showed, so it needs the page's read_at with its zone:
-    missing, without a zone, unreadable or with no time in UTC is refused (422) and the summary
-    still lists the row."""
+    """Mark as read names the rows the page showed by their keys: a missing or unreadable list is
+    refused (422) and the summary still lists the row."""
     freeze_day(monkeypatch, "2026-07-01")
     hd = await register(client)
     await _auto(client, hd, start="2026-07-01")
@@ -207,42 +205,100 @@ async def test_mark_as_read_without_a_readable_page_time_is_refused_and_acknowle
     assert (await summary(client, hd))["counts"]["generated"] == 1
 
 
-async def test_mark_as_read_never_moves_the_acknowledgment_back(client, session, monkeypatch):
-    """An older page marked read after a newer one (a second tab) keeps the newer acknowledgment."""
+@pytest.mark.parametrize("keys", [[], ["generated|doc:x|0|2026-07-01T00:00:00+00:00"], ["|||"], ["x" * 5000],
+                                  ["generated"] * 1000])
+async def test_keys_of_no_row_shown_acknowledge_nothing(client, session, monkeypatch, keys):
+    """A key that names no row the summary holds (made up, stale, empty, huge, repeated) marks
+    nothing read and is not kept."""
+    import uuid
+
+    from celerp.models.company import Company
+    from celerp_subscriptions.summary import ACK_SETTING
+
     freeze_day(monkeypatch, "2026-07-01")
     hd = await register(client)
+    cid = await company_id(client, hd)
     await _auto(client, hd, start="2026-07-01")
-    await tick(session, await company_id(client, hd), "2026-07-01")
-    page = await summary(client, hd)
-    first = await client.post("/subscriptions/summary/ack", headers=hd, json={"read_at": page["read_at"]})
-    assert first.status_code == 200 and first.json()["at"] == page["read_at"], first.text
-    older = await client.post("/subscriptions/summary/ack", headers=hd, json={"read_at": "2000-01-01T00:00:00+07:00"})
-    assert older.status_code == 200 and older.json()["at"] == first.json()["at"], older.text
+    await tick(session, cid, "2026-07-01")
+    ack = await client.post("/subscriptions/summary/ack", headers=hd, json={"keys": keys})
+    assert ack.status_code == 200 and ack.json()["read"] == 0, ack.text
+    assert (await summary(client, hd))["counts"]["generated"] == 1
+    session.expire_all()
+    stored = ((await session.get(Company, uuid.UUID(cid))).settings or {}).get(ACK_SETTING) or {}
+    assert all(v == [] for v in stored.values()), stored
+
+
+async def test_an_older_page_marked_read_keeps_what_a_newer_one_marked(client, session, monkeypatch):
+    """An older page marked read after a newer one (a second tab) keeps the rows the newer one
+    marked read, and adds only the rows it showed itself."""
+    freeze_day(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    await _auto(client, hd, start="2026-07-01")
+    await tick(session, cid, "2026-07-01")
+    older = await summary(client, hd)
+    freeze_day(monkeypatch, "2026-08-01")
+    await tick(session, cid, "2026-08-01")
+    newer = await summary(client, hd)
+    assert newer["counts"]["generated"] == 2
+    assert (await mark_read(client, hd, newer)).json()["read"] == 2
+    assert (await mark_read(client, hd, older)).json()["read"] == 2
     assert (await summary(client, hd))["counts"]["generated"] == 0
 
 
-async def test_the_page_time_is_taken_before_any_row_is_read(client, session, monkeypatch):
-    """A row recorded while the summary is being read may be missed by that page, so the page
-    time Mark as read covers is the moment before the first row is read, never after."""
-    import uuid
-    from datetime import datetime, timedelta, timezone
+_READ = "2026-07-01T09:00:00+00:00"
 
-    from celerp_subscriptions import billing, summary as summary_mod
+
+def _summary_row(kind: str, at: str, eid: str = "doc:agreement", lasts: bool = False) -> dict:
+    """A summary row as summary._rows gives it: keyed by what it is, or shown while it lasts."""
+    row = {"entity_id": eid, "doc_id": None, "period_index": 0, "kind": kind, "at": None if lasts else at}
+    return {**row, "key": None if lasts else summary_key(row)}
+
+
+# Each change to the row between the page being read and Mark as read pressed on it: whether the
+# page showed the row, the row's time after (None: gone), and whether it is listed after.
+_CHANGES = {
+    "unchanged": (True, _READ, False),
+    "committed_after_read": (False, "2026-07-01T09:00:05+00:00", True),
+    "stamped_before_read_committed_after": (False, "2026-07-01T08:59:59+00:00", True),
+    "reading_changed": (True, "2026-07-01T09:05:00+00:00", True),
+    "gone": (True, None, False),
+}
+
+
+@pytest.mark.parametrize("change", sorted(_CHANGES))
+@pytest.mark.parametrize("kind,lasts", [*((k, False) for k in SUMMARY_KINDS),
+                                        *((k, True) for k in ("send_pending", "billing_lapsed", "sending_lapsed"))])
+async def test_mark_as_read_marks_exactly_the_rows_the_page_showed(client, session, monkeypatch, kind, lasts, change):
+    """Generated over every summary kind and every change to a row between the page being read
+    and Mark as read pressed on it: only a row the page showed, as it showed it, is marked read;
+    one committed after the read (whatever its time), or whose reading changed, stays listed; a
+    row shown while it lasts (an email waiting to go out on its own, a lapsed authorization) is
+    never hidden; and a key whose row is gone is not kept."""
+    import uuid
+
+    from celerp.models.company import Company
+    from celerp_subscriptions import summary as summary_mod
 
     hd = await register(client)
-    cid = uuid.UUID(await company_id(client, hd))
-    opened = datetime(2026, 7, 1, 9, tzinfo=timezone.utc)
-    clock = [opened]
-    monkeypatch.setattr(billing, "now", lambda: clock[0])
-    for name in ("get", "execute", "scalars"):
-        real = getattr(session, name)
+    cid, user = uuid.UUID(await company_id(client, hd)), uuid.uuid4()
+    shown, at_after, listed_after = _CHANGES[change]
+    other = _summary_row("generated", _READ, "doc:other")  # a row the page shows beside it
+    held = [other, *([_summary_row(kind, _READ, lasts=lasts)] if shown else [])]
 
-        async def reading(*args, _real=real, **kwargs):
-            clock[0] = opened + timedelta(seconds=1)  # time passes once rows are being read
-            return await _real(*args, **kwargs)
-        monkeypatch.setattr(session, name, reading)
-    answer = await summary_mod.report(session, cid, uuid.uuid4())
-    assert answer["read_at"] == opened.isoformat()
+    async def rows(*_args):
+        return [dict(r) for r in held]
+    monkeypatch.setattr(summary_mod, "_rows", rows)
+    page = await summary_mod.report(session, cid, user)
+    held[:] = [other, *([_summary_row(kind, at_after, lasts=lasts)] if at_after else [])]
+    await summary_mod.acknowledge(session, cid, user, [r["key"] for r in page["rows"] if r["key"]])
+    after = (await summary_mod.report(session, cid, user))["rows"]
+    assert [r["kind"] for r in after if r["entity_id"] == "doc:agreement"] == (
+        [kind] if at_after and (listed_after or lasts) else []), (kind, change, after)
+    assert other["key"] not in [r["key"] for r in after]
+    stored = ((await session.get(Company, cid)).settings or {})[summary_mod.ACK_SETTING][str(user)]
+    assert set(stored) <= {r["key"] for r in held if r["key"]}, stored  # nothing of a row gone is kept
+    assert len((await summary_mod.report(session, cid, user, everything=True))["rows"]) == len(held)
 
 
 async def test_module_disabled_skips_dispatch_keeps_records(client, session, monkeypatch):
@@ -644,7 +700,7 @@ async def test_failed_generation_is_visible_once_and_clears_after_recovery(clien
     assert (await template(client, hd, eid))["billing_failure"] == first
     page = await summary(client, hd)
     assert page["counts"]["generation_failed"] == 1  # once, not once per pass
-    assert (await client.post("/subscriptions/summary/ack", headers=hd, json={"read_at": page["read_at"]})).status_code == 200
+    assert (await mark_read(client, hd, page)).status_code == 200
     assert (await summary(client, hd))["counts"]["generation_failed"] == 0
 
     monkeypatch.setattr(docs_routes, "finalize_document", original)

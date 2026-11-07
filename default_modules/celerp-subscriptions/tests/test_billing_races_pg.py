@@ -13,7 +13,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from agreement_kit import agreement, freeze_day, generate_due, schedule
+from agreement_kit import agreement, freeze_day, generate_due, mark_read, schedule
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from race_support import _Held, _app_client, _race, _seed, _until_waiting_or_done
@@ -358,8 +358,7 @@ async def test_a_send_cut_off_after_the_summary_was_read_is_listed_again(committ
     async with _app_client(factory) as (client, _pending):
         fresh = (await client.get("/subscriptions/summary", headers=owner)).json()
         assert [r["kind"] for r in fresh["rows"] if r["kind"].startswith("send")] == ["send_sending"]
-        assert (await client.post("/subscriptions/summary/ack", headers=owner,
-                                  json={"read_at": fresh["read_at"]})).status_code == 200
+        assert (await mark_read(client, owner, fresh)).status_code == 200
 
         class Later(real_datetime):
             @classmethod
@@ -373,8 +372,7 @@ async def test_a_send_cut_off_after_the_summary_was_read_is_listed_again(committ
         assert [r["kind"] for r in later["rows"] if r["kind"].startswith("send")] == ["send_unconfirmed"]
         assert later["counts"]["send_unconfirmed"] == 1
         # Read again, it is covered until its reading changes once more.
-        assert (await client.post("/subscriptions/summary/ack", headers=owner,
-                                  json={"read_at": later["read_at"]})).status_code == 200
+        assert (await mark_read(client, owner, later)).status_code == 200
         assert (await client.get("/subscriptions/summary", headers=owner)).json()["rows"] == []
 
 
@@ -436,7 +434,7 @@ async def test_mark_as_read_after_waiting_leaves_a_send_cut_off_since_the_page_w
         shown = (await client.get("/subscriptions/summary", headers=owner)).json()
         assert _send_kinds(shown) == ["send_sending"]
         _clock(monkeypatch, billing.SEND_TIMEOUT + timedelta(minutes=1))
-        ack = await client.post("/subscriptions/summary/ack", headers=owner, json={"read_at": shown["read_at"]})
+        ack = await mark_read(client, owner, shown)
         assert ack.status_code == 200, ack.text
         assert _send_kinds((await client.get("/subscriptions/summary", headers=owner)).json()) == ["send_unconfirmed"]
 
@@ -451,8 +449,7 @@ async def test_mark_as_read_leaves_a_failure_that_arrived_after_the_page_was_rea
     async with _app_client(factory) as (client, _pending):
         first = (await client.get("/subscriptions/summary", headers=owner)).json()
         assert "generated" in [r["kind"] for r in first["rows"]]
-        assert (await client.post("/subscriptions/summary/ack", headers=owner,
-                                  json={"read_at": first["read_at"]})).status_code == 200
+        assert (await mark_read(client, owner, first)).status_code == 200
         _clock(monkeypatch, timedelta(seconds=5))
         shown = (await client.get("/subscriptions/summary", headers=owner)).json()
         assert "generated" not in [r["kind"] for r in shown["rows"]]  # the acknowledgment is kept
@@ -464,6 +461,45 @@ async def test_mark_as_read_leaves_a_failure_that_arrived_after_the_page_was_rea
         _clock(monkeypatch, timedelta(seconds=10))
         await billing.deliver(factory, cid, eid, 0)
         _clock(monkeypatch, timedelta(seconds=20))
-        ack = await client.post("/subscriptions/summary/ack", headers=owner, json={"read_at": shown["read_at"]})
+        ack = await mark_read(client, owner, shown)
         assert ack.status_code == 200, ack.text
         assert "send_failed" in _send_kinds((await client.get("/subscriptions/summary", headers=owner)).json())
+
+
+@pytest.mark.parametrize("kind", ["generated", "generation_failed"])
+async def test_mark_as_read_leaves_a_row_stamped_before_the_page_and_committed_after_it(
+        committed_engine, monkeypatch, kind):
+    """The unattended pass stamps a bill (or its failure) when it makes it and commits once at the
+    end of the pass. The owner opens the summary while the pass still runs, so the page cannot show
+    the row, though the row's time is earlier than the page's. The pass commits and the owner
+    presses Mark as read on the page as loaded: the row was never shown, so it stays listed."""
+    from agreement_kit import contact
+    from celerp_docs import routes as docs_routes
+    from celerp_subscriptions import billing
+
+    freeze_day(monkeypatch, "2026-07-01")
+    factory = _factory(committed_engine)
+    seeded = await _company(factory)
+    owner, cid = seeded["h"]["owner"], seeded["company_id"]
+    if kind == "generation_failed":
+        async def broken(*_args, **_kwargs):
+            raise ValueError("synthetic finalize failure")
+        monkeypatch.setattr(docs_routes, "finalize_document", broken)
+    async with _app_client(factory) as (client, _pending):
+        eid = await agreement(client, owner, start="2026-07-01",
+                              contact_id=await contact(client, owner, "midpass@example.test"))
+        assert (await schedule(client, owner, eid, generation_mode="auto_invoice",
+                               catchup_periods=0)).status_code == 200
+        async with factory() as pass_session:
+            await billing.run_due(session=pass_session, company_id=cid, today=date(2026, 7, 1), budget=1)
+            shown = (await asyncio.wait_for(client.get("/subscriptions/summary", headers=owner), 30)).json()
+            await pass_session.commit()
+        assert kind not in [r["kind"] for r in shown["rows"]]
+        everything = (await client.get("/subscriptions/summary", headers=owner, params={"all": "true"})).json()
+        made = next(r for r in everything["rows"] if r["kind"] == kind)
+        assert (await mark_read(client, owner, shown)).status_code == 200
+        after = (await client.get("/subscriptions/summary", headers=owner)).json()
+        assert [r["kind"] for r in after["rows"] if r["entity_id"] == eid] == [kind], (made, after)
+        # Marked read from a page that shows it, it goes.
+        assert (await mark_read(client, owner, after)).status_code == 200
+        assert (await client.get("/subscriptions/summary", headers=owner)).json()["rows"] == []

@@ -3,9 +3,8 @@
 """What unattended billing did, derived on read from the agreements' period records.
 
 Nothing is copied: a billed period records when and whether it was billed unattended,
-and its send records each attempt. A user's acknowledgment is a wall-clock time kept in
-the company settings per user, the time the page they marked read was read; the summary shows
-what was recorded after it. An
+and its send records each attempt. A user's acknowledgment is the keys of the rows the page they marked read showed,
+kept in the company settings per user; the summary hides those rows and nothing else. An
 unattended mode whose authorizer no longer holds its permission, and an email waiting to go
 out on its own, are shown while they last; an email that will not go on its own is a row like
 any other. A failed send keeps its reason as a catalog key, worded
@@ -14,8 +13,6 @@ in the reader's language when read.
 from __future__ import annotations
 
 import uuid
-from contextlib import suppress
-from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,8 +28,9 @@ ACK_SETTING = "subscription_summary_ack"
 KINDS = ("generated", "generation_failed", "sent", "send_failed", "send_sending", "send_unconfirmed",
          "send_pending", "billing_lapsed", "sending_lapsed")
 # Each billing.send_status and its summary kind. An email that waits to go out on its own is
-# shown until it goes; every other row is shown until it is acknowledged after its reading
-# began (the since of billing.send_state), so a send that turns cut off by age shows again.
+# shown until it goes; every other row is shown until the page showing it is marked read. A row's
+# key holds the time its reading began (the since of billing.send_state), so a send that turns
+# cut off by age is a new row and shows again.
 _SEND_KINDS = {"sent": "sent", "failed": "send_failed", "sending": "send_sending",
                "unconfirmed": "send_unconfirmed", "waiting": "send_pending", "not_sent": "send_pending"}
 # The send kinds someone may need to act on: every one but a sent email.
@@ -40,21 +38,28 @@ TO_CHECK = tuple(dict.fromkeys(kind for kind in _SEND_KINDS.values() if kind != 
 _LAPSED = {"generation": "billing_lapsed", "sending": "sending_lapsed"}
 
 
-async def acknowledge(session: AsyncSession, company_id, user_id, read_at: datetime) -> str:
-    """Record that ``user_id`` has read the summary as it was at ``read_at`` (the time report
-    answered for the page they read): never later than now, and never earlier than what they
-    had already read."""
+def _key(row: dict) -> str:
+    return "|".join(str(row[f]) for f in ("kind", "entity_id", "period_index", "at"))
+
+
+def _read(settings: dict, user_id) -> set[str]:
+    """The keys of the rows ``user_id`` marked read."""
+    read = (settings.get(ACK_SETTING) or {}).get(str(user_id))
+    return {k for k in read if isinstance(k, str)} if isinstance(read, list) else set()
+
+
+async def acknowledge(session: AsyncSession, company_id, user_id, keys: list[str]) -> list[str]:
+    """Record that ``user_id`` has read the rows whose keys the page they read showed (each row
+    of report carries its ``key``). Only keys of rows there now are kept, with those already
+    read: a row the page never showed is never marked read, and a key whose row is gone drops."""
     company = await locked_company(session, company_id)
     settings = dict(company.settings or {})
-    at = min(read_at.astimezone(timezone.utc), billing.now())
-    previous = (settings.get(ACK_SETTING) or {}).get(str(user_id))
-    with suppress(TypeError, ValueError):
-        at = max(at, datetime.fromisoformat(previous).astimezone(timezone.utc))
-    at = at.isoformat()
-    settings[ACK_SETTING] = {**(settings.get(ACK_SETTING) or {}), str(user_id): at}
+    current = {r["key"] for r in await _rows(session, company_id, settings) if r["key"]}
+    read = sorted(current & (set(keys) | _read(settings, user_id)))
+    settings[ACK_SETTING] = {**(settings.get(ACK_SETTING) or {}), str(user_id): read}
     company.settings = settings
     await session.flush()
-    return at
+    return read
 
 
 async def _states(session, company_id, entity_ids: set[str]) -> dict[str, dict]:
@@ -121,13 +126,9 @@ async def modes_answer(session: AsyncSession, company_id, entity_id: str) -> dic
     return {"runs": runs, "lapsed": lapsed, "message": " ".join(sentences) or t("subscriptions.runs_by_hand")}
 
 
-async def report(session: AsyncSession, company_id, user_id, *, everything: bool = False) -> dict:
-    """Counts by kind and the rows behind them, newest first, and ``read_at``: the time taken
-    before any row is read, which Mark as read on this answer acknowledges up to."""
-    read_at = billing.now_stamp()
-    company = await session.get(Company, company_id)
-    settings = (company.settings or {}) if company else {}
-    since = "" if everything else ((settings.get(ACK_SETTING) or {}).get(str(user_id)) or "")
+async def _rows(session: AsyncSession, company_id, settings: dict) -> list[dict]:
+    """Every row the summary can show, each with its ``key`` (None for one shown while it lasts:
+    an email waiting to go out on its own, a mode whose authorization lapsed)."""
     replayable = await billing.replayable_operations(session, company_id)
     today = await company_today(session, company_id)
     # One whose stored schedule can't be read reports nothing here; the list and its page name it.
@@ -140,34 +141,45 @@ async def report(session: AsyncSession, company_id, user_id, *, everything: bool
         state = row.state
         for k, entry in (state.get("periods") or {}).items():
             base = {"entity_id": row.entity_id, "doc_id": entry.get("doc_id"), "period_index": int(k)}
-            if entry.get("state") == billing.BILLED and entry.get("auto") and (entry.get("at") or "") > since:
+            if entry.get("state") == billing.BILLED and entry.get("auto") and entry.get("at"):
                 found.append({**base, "kind": "generated", "at": entry["at"]})
             send = entry.get("send") or {}
             status, began = billing.send_status(state, k, today, docs.get(entry.get("doc_id")))
             # An email someone sent by hand is theirs, not this summary's of what ran on its own.
             kind = _send_kind(status, send)
-            if kind and kind != "sent_by_hand" and (status == "waiting" or (began or "") > since):
-                found.append({**base, "kind": kind, "send": status, "at": began,
+            if kind and kind != "sent_by_hand" and (status == "waiting" or began):
+                found.append({**base, "kind": kind, "send": status, "at": began, "lasts": status == "waiting",
                               "error_key": send.get("error_key"), "attempt": int(send.get("n") or 0),
                               "again": billing.sends_again(status, send, replayable),
                               "retry_url": (f"/subscriptions/{row.entity_id}/periods/{k}/send"
                                             if status != "sent" else None)})
         failure = state.get("billing_failure") or {}
-        if failure.get("at") and failure["at"] > since:
+        if failure.get("at"):
             found.append({"entity_id": row.entity_id, "doc_id": row.entity_id,
                           "period_index": failure.get("period_index"),
                           "kind": "generation_failed", "at": failure["at"]})
         for mode in billing.modes_in_force(state):
             if await billing.authorizer(session, company_id, settings, state, mode) is None:
                 found.append({"entity_id": row.entity_id, "doc_id": None, "period_index": None,
-                              "kind": _LAPSED[mode], "at": None})
+                              "kind": _LAPSED[mode], "at": None, "lasts": True})
     named = {**docs, **await _states(session, company_id, {r["doc_id"] for r in found
                                                             if r["doc_id"] and r["doc_id"] not in docs})}
-    rows = []
+    out = []
     for r in found:
         ref = (named.get(r["doc_id"]) or {}).get("ref_id") or r["doc_id"]
-        rows.append({"retry_url": None, "again": False, **r, "ref_id": ref if r["doc_id"] else None,
-                     "message": _message(r["kind"], ref, r.get("error_key"))})
+        lasts = r.pop("lasts", False)
+        out.append({"retry_url": None, "again": False, **r, "ref_id": ref if r["doc_id"] else None,
+                    "message": _message(r["kind"], ref, r.get("error_key")), "key": None if lasts else _key(r)})
+    return out
+
+
+async def report(session: AsyncSession, company_id, user_id, *, everything: bool = False) -> dict:
+    """Counts by kind and the rows behind them, newest first, each with the ``key`` Mark as read
+    posts for it: every row but those this user marked read (``everything``: all of them)."""
+    company = await session.get(Company, company_id)
+    settings = (company.settings or {}) if company else {}
+    read = set() if everything else _read(settings, user_id)
+    rows = [r for r in await _rows(session, company_id, settings) if r["key"] not in read]
     rows.sort(key=lambda r: r["at"] or "", reverse=True)
     counts = {kind: sum(1 for r in rows if r["kind"] == kind) for kind in KINDS}
-    return {"counts": counts, "rows": rows, "read_at": read_at}
+    return {"counts": counts, "rows": rows}

@@ -298,6 +298,12 @@ def review_doors() -> list[ApiAction]:
     return [a for a in api_actions() if "/history/{doc_id}/" in a.path]
 
 
+def claim_doors() -> list[ApiAction]:
+    """The API action routes on one period or one history review document of an agreement: the
+    doors that can change what its periods claim (the ENDED way-out guard covers each)."""
+    return [a for a in api_actions() if "/periods/{k}/" in a.path or "/history/{doc_id}/" in a.path]
+
+
 CLAIM_REFUSAL = "_refuse_claimed"
 
 
@@ -514,6 +520,10 @@ def main() -> None:
     review = review_doors()
     print(f"\n# History review doors ({len(review)})")
     for a in review:
+        print(f"{a.verb.upper()} {a.path:52} {a.where}")
+    doors = claim_doors()
+    print(f"\n# Claim doors on one period or review document ({len(doors)})")
+    for a in doors:
         print(f"{a.verb.upper()} {a.path:52} {a.where}")
     refusals = claim_refusals()
     print(f"\n# Routes refusing a claimed period through {CLAIM_REFUSAL} ({len(refusals)})")

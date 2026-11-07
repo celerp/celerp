@@ -232,8 +232,8 @@ async def write_agreement(session: AsyncSession, company_id, entity_id: str, cha
     agreement leaves void only through Documents unvoid, so a status write here on one is refused
     (409 naming unvoid) and the void is never rewritten as another status. An ENDED agreement
     bills no period again, so a person's write that changes what its periods claim is refused
-    (ended_refusal), whichever action makes it; its terms, a period's send record and its history
-    review (set aside, withdraw) still change."""
+    (ended_refusal), whichever action makes it, a placement's withdrawal included; its terms, a
+    period's send record and its history review (Set aside, and Return of a set-aside) still change."""
     before = (await session.execute(select(Projection.state).where(
         Projection.company_id == company_id, Projection.entity_id == entity_id))).scalar_one_or_none() or {}
     changes = {k: v for k, v in changes.items() if shown(k, before.get(k)) != shown(k, v)}
@@ -243,7 +243,7 @@ async def write_agreement(session: AsyncSession, company_id, entity_id: str, cha
     drop = tuple(k for k in drop if k in before and k not in changes)
     if actor_id is not None and (refusal := ended_refusal(
             before, {**{k: v for k, v in before.items() if k not in drop}, **changes})):
-        raise HTTPException(status_code=409, detail=catalog_refusal(refusal, ref=before.get("ref_id") or entity_id))
+        raise ended_answer(refusal, before, entity_id)
     if not changes and all(shown(k, before[k]) == shown(k, None) for k in drop):
         drop = ()
     merged = {**{k: v for k, v in before.items() if k not in drop}, **changes}
@@ -363,21 +363,33 @@ def claims(state: dict) -> tuple:
     return claimed, state.get("released_bills")
 
 
+def ended_key(state: dict, *, placing: bool = False) -> str | None:
+    """Why an ENDED agreement refuses a change to what its periods claim, or None when it runs:
+    placing an earlier document names Set aside, the way its history review finishes."""
+    return (ENDED_PLACE if placing else ENDED).get(state.get("status"))
+
+
+def ended_answer(key: str, state: dict, entity_id: str) -> HTTPException:
+    return HTTPException(status_code=409, detail=catalog_refusal(key, ref=state.get("ref_id") or entity_id))
+
+
+def refuse_ended(state: dict, entity_id: str, *, placing: bool = False) -> None:
+    """The 409 of ended_key for a door that changes what a period claims, answered before any
+    other refusal of the period, so every door a refusal names is open there and can be undone."""
+    if (key := ended_key(state, placing=placing)) is not None:
+        raise ended_answer(key, state, entity_id)
+
+
 def ended_refusal(before: dict, after: dict) -> str | None:
     """Why a write turning ``before`` into ``after`` is refused on an ENDED agreement, or None.
-    The one claim change it may make is letting go of a history placement (Withdraw placement:
-    no money moves), so its history review always finishes; placing a document refuses naming
-    Set aside, any other change to what its periods claim naming why it ended."""
-    status = before.get("status")
-    if status not in ENDED:
-        return None
+    What its periods claim no longer changes, placements included (they are final like bills),
+    so every claim is as the agreement ended; only adding history placements names Set aside."""
     (was, released), (now, released_after) = claims(before), claims(after)
-    kept = {k: e for k, e in was.items() if k in now or not e.get("history")}
-    if (kept, released) == (now, released_after):
+    if (was, released) == (now, released_after):
         return None
-    placing = released == released_after and all(
-        e.get("history") for k, e in now.items() if kept.get(k) != e) and all(k in now for k in kept)
-    return ENDED_PLACE[status] if placing else ENDED[status]
+    placing = released == released_after and all(k in now for k in was) and all(
+        e.get("history") for k, e in now.items() if was.get(k) != e)
+    return ended_key(before, placing=placing)
 
 
 def refuse_unbillable(state: dict) -> None:

@@ -143,6 +143,12 @@ async def summary(client, headers: dict, **params) -> dict:
     return r.json()
 
 
+async def mark_read(client, headers: dict, page: dict):
+    """Mark as read on a summary answer ``page``: posts the key of every row it showed."""
+    return await client.post("/subscriptions/summary/ack", headers=headers,
+                             json={"keys": [r["key"] for r in page["rows"] if r["key"]]})
+
+
 async def revoke(client, owner: dict, perm_key: str, role_key: str) -> None:
     r = await client.patch("/companies/me/role-permissions", headers=owner,
                            json={"perm_key": perm_key, "role_key": role_key, "granted": False})

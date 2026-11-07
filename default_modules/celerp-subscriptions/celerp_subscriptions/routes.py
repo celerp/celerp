@@ -10,10 +10,10 @@ the previous release, and report what unattended billing did.
 from __future__ import annotations
 
 import uuid
-from datetime import date, timezone
+from datetime import date
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query
-from pydantic import AwareDatetime, BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
@@ -64,15 +64,7 @@ async def refused_period(session, company_id, entity_id: str, k: int | None) -> 
 
 
 class AckBody(BaseModel):
-    read_at: AwareDatetime  # the summary answer's read_at: what the page marked read showed
-
-    @field_validator("read_at")
-    @classmethod
-    def _in_utc(cls, v):
-        try:
-            return v.astimezone(timezone.utc)
-        except OverflowError:
-            raise ValueError("read_at has no time in UTC") from None
+    keys: list[str]  # the ``key`` of each row the page marked read showed (GET /summary)
 
 
 class RequestBody(BaseModel):
@@ -143,7 +135,8 @@ def _period_answer(state: dict, k: int) -> dict:
 
 async def _refuse_claimed(session, company_id, entry: dict) -> None:
     """409 when the period is billed, naming the door that frees it: Withdraw placement for a
-    history placement, Reopen for a bill that no longer bills it (billing_doc), else Void."""
+    history placement, Reopen for a bill that no longer bills it (billing_doc), else Void. Its
+    callers answer billing.refuse_ended first, so on an ENDED agreement none of these is named."""
     if entry.get("state") == BILLED:
         ref = await billing.doc_ref(session, company_id, entry["doc_id"])
         if entry.get("history"):
@@ -330,11 +323,11 @@ def _build_router() -> APIRouter:
         user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
-        """Mark the summary read as the page showed it (``read_at`` from GET /summary), held to
-        the server's clock: never later than now."""
-        at = await summary.acknowledge(session, company_id, user.id, body.read_at)
+        """Mark read the rows the page showed (each row's ``key`` from GET /summary); a key of
+        no row there now is ignored."""
+        read = await summary.acknowledge(session, company_id, user.id, body.keys)
         await session.commit()
-        return {"ok": True, "at": at}
+        return {"ok": True, "read": len(read)}
 
     @router.post("/{entity_id}/generate-due")
     async def generate_due(
@@ -396,6 +389,7 @@ def _build_router() -> APIRouter:
         if not reason:
             raise HTTPException(status_code=422, detail=t("subscriptions.err_skip_reason"))
         proj = await billing.locked_agreement(session, company_id, entity_id)
+        billing.refuse_ended(proj.state, entity_id)
         periods = _periods(proj.state)
         entry = periods.get(str(k)) or {}
         await _refuse_claimed(session, company_id, entry)
@@ -412,6 +406,7 @@ def _build_router() -> APIRouter:
 
     async def _hand_back(entity_id: str, k: int, company_id, user, session, *, after_void: bool) -> dict:
         proj = await billing.locked_agreement(session, company_id, entity_id)
+        billing.refuse_ended(proj.state, entity_id)
         periods = _periods(proj.state)
         entry = periods.get(str(k)) or {}
         release = entry.get("release_count", 0)
@@ -559,6 +554,7 @@ def _build_router() -> APIRouter:
         entry = periods.get(k) or {}
         if entry.get("state") == BILLED and entry.get("doc_id") == doc_id:
             return {"ok": True}
+        billing.refuse_ended(proj.state, entity_id, placing=True)
         review = list(proj.state.get("history_review") or [])
         row = next((r for r in review if r.get("doc_id") == doc_id), None)
         if row is None or body.period_index not in (row.get("candidates") or []):
@@ -615,7 +611,8 @@ def _build_router() -> APIRouter:
         session: AsyncSession = Depends(get_session),
     ) -> dict:
         """Undo a placement or a set-aside while no later period is billed: the document waits
-        for review again."""
+        for review again. On an ENDED agreement a placement is final like a bill, and a set-aside
+        always goes back."""
         proj = await billing.locked_agreement(session, company_id, entity_id)
         periods = _periods(proj.state)
         aside = list(proj.state.get("history_set_aside") or [])
@@ -628,9 +625,13 @@ def _build_router() -> APIRouter:
             candidates = periods[str(k)].get("candidates") or [k]
         else:
             raise HTTPException(status_code=409, detail=t("subscriptions.err_history_not_confirmed"))
+        if set_aside is None:
+            billing.refuse_ended(proj.state, entity_id)
         earliest = min([*candidates, *([k] if k is not None else [])], default=None)
-        if earliest is not None and any(int(i) > earliest and e.get("state") == BILLED and not e.get("history")
-                                        for i, e in periods.items()):
+        # Nothing bills again on an ENDED agreement, so a set-aside always goes back there: Set
+        # aside, the way its review finishes, can be undone.
+        if earliest is not None and billing.ended_key(proj.state) is None and any(
+                int(i) > earliest and e.get("state") == BILLED and not e.get("history") for i, e in periods.items()):
             raise HTTPException(status_code=409, detail=t("subscriptions.err_history_later_billed"))
         for c in candidates:
             entry = periods.get(str(c)) or {}
