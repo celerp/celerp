@@ -7296,5 +7296,8 @@
   "subscriptions.done_history_set_aside": "Document set aside. It bills no period of its own.",
   "subscriptions.done_history_returned": "Document back in history review.",
   "subscriptions.done_summary_read": "Summary marked as read.",
-  "subscriptions.done_created": "Draft agreement created. Set its terms, then activate it."
+  "subscriptions.done_created": "Draft agreement created. Set its terms, then activate it.",
+  "subscriptions.err_ended_cancelled": "{ref} is cancelled, so its periods can no longer change. Create a new subscription if you need to bill again.",
+  "subscriptions.err_ended_void": "{ref} is void, so its periods cannot change here. Unvoid it in Documents first if it should run again.",
+  "subscriptions.period_not_billing": "Will not bill"
 }

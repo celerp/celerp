@@ -48,6 +48,22 @@
     "subscriptions.done_created": {
       "en": "Draft agreement created. Set its terms, then activate it.",
       "params": []
+    },
+    "subscriptions.err_ended_cancelled": {
+      "en": "{ref} is cancelled, so its periods can no longer change. Create a new subscription if you need to bill again.",
+      "params": [
+        "ref"
+      ]
+    },
+    "subscriptions.err_ended_void": {
+      "en": "{ref} is void, so its periods cannot change here. Unvoid it in Documents first if it should run again.",
+      "params": [
+        "ref"
+      ]
+    },
+    "subscriptions.period_not_billing": {
+      "en": "Will not bill",
+      "params": []
     }
   }
 }

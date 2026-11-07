@@ -230,7 +230,10 @@ async def write_agreement(session: AsyncSession, company_id, entity_id: str, cha
     it changes, a write that brings a mode into force (entering_modes, as Resume and Activate
     do) also needs that mode's permissions from the actor, and moves no consent for it. A void
     agreement leaves void only through Documents unvoid, so a status write here on one is refused
-    (409 naming unvoid) and the void is never rewritten as another status."""
+    (409 naming unvoid) and the void is never rewritten as another status. An ENDED agreement
+    bills no period again, so a person's write that changes what its periods claim (claims:
+    skip, un-skip, reopen, history placement) is refused (409 naming why), whichever action
+    makes it; its terms and a period's send record still change."""
     before = (await session.execute(select(Projection.state).where(
         Projection.company_id == company_id, Projection.entity_id == entity_id))).scalar_one_or_none() or {}
     changes = {k: v for k, v in changes.items() if shown(k, before.get(k)) != shown(k, v)}
@@ -238,6 +241,10 @@ async def write_agreement(session: AsyncSession, company_id, entity_id: str, cha
         raise HTTPException(status_code=409, detail=t(
             "subscriptions.err_status_void", ref=before.get("ref_id") or entity_id))
     drop = tuple(k for k in drop if k in before and k not in changes)
+    if before.get("status") in ENDED and actor_id is not None and claims(before) != claims(
+            {**{k: v for k, v in before.items() if k not in drop}, **changes}):
+        raise HTTPException(status_code=409, detail=t(
+            ENDED[before["status"]], ref=before.get("ref_id") or entity_id))
     if not changes and all(shown(k, before[k]) == shown(k, None) for k in drop):
         drop = ()
     merged = {**{k: v for k, v in before.items() if k not in drop}, **changes}
@@ -335,6 +342,23 @@ def billable(state: dict) -> bool:
 # Why a status does not bill, for the ones an agreement holds; any other reads the last.
 _UNBILLABLE = {"draft": "subscriptions.err_bill_draft", "paused": "subscriptions.err_bill_paused",
                "cancelled": "subscriptions.err_generate_cancelled", "void": "subscriptions.err_bill_void"}
+
+
+# The statuses no action on the agreement's page leaves (cancelled is final, void leaves only
+# through Documents unvoid), each with why a person's change to what its periods claim is
+# refused. Such an agreement bills no period again, so its page shows no bill date and its
+# unclaimed periods read "not_billing".
+ENDED = {"cancelled": "subscriptions.err_ended_cancelled", "void": "subscriptions.err_ended_void"}
+
+
+def claims(state: dict) -> tuple:
+    """What an agreement's periods claim: each period without its send record, the documents
+    waiting for history review or set aside, and the bills periods let go."""
+    periods = state.get("periods")
+    if isinstance(periods, dict):
+        periods = {k: {f: v for f, v in e.items() if f != "send"} if isinstance(e, dict) else e
+                   for k, e in periods.items()}
+    return (periods, state.get("history_review"), state.get("history_set_aside"), state.get("released_bills"))
 
 
 def refuse_unbillable(state: dict) -> None:
@@ -584,17 +608,19 @@ def period_row(schedule: Schedule, k: int) -> dict:
 
 
 # What the Periods table says of a period: its claim, else where its bill date stands today.
-PERIOD_STATUSES = ("billed", "draft", "voided", "skipped", "unresolved", "overdue", "due", "upcoming")
+PERIOD_STATUSES = ("billed", "draft", "voided", "skipped", "unresolved", "not_billing", "overdue", "due", "upcoming")
 
 
-def period_status(state: str | None, doc: dict | None, bill_date: date, today: date) -> str:
+def period_status(state: str | None, doc: dict | None, bill_date: date, today: date, *, ended: bool = False) -> str:
     """One of PERIOD_STATUSES. A billed period reads "billed" only while its document bills
     it: back in draft it reads "draft", void or gone "voided"; an open or reopened one reads
-    by its bill date."""
+    "not_billing" when its agreement has ENDED, else by its bill date."""
     if state == BILLED:
         return "billed" if bills(doc) else "draft" if (doc or {}).get("status") == "draft" else "voided"
     if state in (SKIPPED, UNRESOLVED):
         return state
+    if ended:
+        return "not_billing"
     return "overdue" if bill_date < today else "due" if bill_date == today else "upcoming"
 
 
@@ -626,7 +652,8 @@ async def _listed_row(session, company_id, state: dict, schedule: Schedule, k: i
     released = [{"doc_id": d, "ref_id": await doc_ref(session, company_id, d)}
                 for d, held in sorted((state.get("released_bills") or {}).items()) if int(held) == k]
     return {**period_row(schedule, k), "state": entry.get("state"), "reopened": entry.get("state") == RELEASED and bool(entry.get("reopened")),
-            "status": period_status(entry.get("state"), doc, schedule.bill_date(k), today),
+            "status": period_status(entry.get("state"), doc, schedule.bill_date(k), today,
+                                    ended=state.get("status") in ENDED),
             "doc_id": doc_id, "ref_id": ((doc or {}).get("ref_id") or doc_id) if doc_id else None,
             "reason": entry.get("reason"), "history": bool(entry.get("history")), "released": released,
             "send": send, "attempt": int((entry.get("send") or {}).get("n") or 0),
@@ -638,16 +665,18 @@ async def period_list(session: AsyncSession, company_id, state: dict, today: dat
     """An agreement's periods from its lowest to the one after today (and any claimed later),
     newest first, at most ``limit``, with each claim's state, status, document and email send state; its next bill date;
     the earlier documents waiting for history review, each with its candidate periods; and the
-    ones set aside as billing no period of their own. A template not yet on a schedule has
-    none of these, and ``not_moved`` says why; an agreement whose stored terms build no
-    schedule is refused (409) with the schedule's reason."""
+    ones set aside as billing no period of their own. An ENDED agreement has no next bill date
+    and no oldest due row, and ``ended`` says why it bills nothing. A template not yet on a
+    schedule has none of these, and ``not_moved`` says why; an agreement whose stored terms
+    build no schedule is refused (409) with the schedule's reason."""
+    ended = t(_UNBILLABLE[state["status"]]) if state.get("status") in ENDED else None
     if not state.get("anchor_date"):
-        return {"next_bill_date": None, "rows": [], "review": [], "set_aside": [],
+        return {"next_bill_date": None, "rows": [], "review": [], "set_aside": [], "ended": ended,
                 "older_before": None, "oldest_due_row": None, "not_moved": not_moved(state)}
     if (exc := unscheduled(state)) is not None:
         raise schedule_refusal(409, exc) from exc
     schedule = Schedule.from_state(state)
-    nxt = schedule.next_bill_date(floor=review_floor(state))
+    nxt = None if ended else schedule.next_bill_date(floor=review_floor(state))
     first = schedule.first()
     replayable = await replayable_operations(session, company_id)
     rows = []
@@ -666,7 +695,7 @@ async def period_list(session: AsyncSession, company_id, state: dict, today: dat
     older_before = rows[-1]["period_index"] if rows and first is not None and k >= first else None
     oldest_open = schedule.oldest_open(floor=review_floor(state))
     oldest_due_row = None
-    if (before is None and oldest_open is not None and oldest_open not in
+    if (before is None and not ended and oldest_open is not None and oldest_open not in
             {r["period_index"] for r in rows} and schedule.bill_date(oldest_open) <= today):
         oldest_due_row = await _listed_row(session, company_id, state, schedule, oldest_open, today, replayable)
     review = [{"doc_id": r.get("doc_id"), "ref_id": await doc_ref(session, company_id, r.get("doc_id")),
@@ -674,7 +703,7 @@ async def period_list(session: AsyncSession, company_id, state: dict, today: dat
               for r in state.get("history_review") or []]
     set_aside = [{"doc_id": r.get("doc_id"), "ref_id": await doc_ref(session, company_id, r.get("doc_id"))}
                  for r in state.get("history_set_aside") or []]
-    return {"next_bill_date": nxt.isoformat() if nxt else None,
+    return {"next_bill_date": nxt.isoformat() if nxt else None, "ended": ended,
             "oldest_open_index": oldest_open, "oldest_due_row": oldest_due_row,
             "older_before": older_before, "rows": rows, "review": review, "set_aside": set_aside}
 

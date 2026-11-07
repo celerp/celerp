@@ -22,7 +22,7 @@ from starlette.responses import RedirectResponse, Response
 import ui.api_client as api
 from celerp.output.document_context import prepare_document_output
 from celerp.services.record_quantities import template_label
-from celerp_subscriptions.billing import bills, send_written
+from celerp_subscriptions.billing import ENDED, bills, send_written
 from celerp_subscriptions.periods import shown
 from celerp_subscriptions.summary import TO_CHECK
 from ui.components.activity import change_text, format_timestamp, register_fields
@@ -389,9 +389,12 @@ def _schedule_section(entity_id: str, sub: dict) -> FT:
 
 
 def _bill_date_note(sub: dict, next_bill: str | None) -> FT:
-    """Shows the first bill date until a period is billed, then the next bill date."""
+    """Shows the first bill date until a period is billed, then the next bill date; for an
+    agreement that has ended, why it bills nothing."""
     billed = any((e or {}).get("state") == "billed" for e in (sub.get("periods") or {}).values())
     attrs = {"id": "sub-bill-note", "cls": "text-muted", "style": "font-size:.85em"}
+    if sub.get("ended"):
+        return Span(sub["ended"], **attrs)
     if not billed and (first := next_bill or sub.get("anchor_date")):
         return Span(sentence("subscriptions.first_bill_on", date=first), **attrs)
     if next_bill:
@@ -400,8 +403,10 @@ def _bill_date_note(sub: dict, next_bill: str | None) -> FT:
 
 
 def _with_schedule(sub: dict, schedule: dict) -> dict:
-    """The agreement as its page shows it: its own fields and its periods' next bill date."""
-    return {**sub, "next_bill_date": schedule.get("next_bill_date"), "not_moved": schedule.get("not_moved")}
+    """The agreement as its page shows it: its own fields, its periods' next bill date, and why
+    it bills nothing once it has ended."""
+    return {**sub, "next_bill_date": schedule.get("next_bill_date"), "not_moved": schedule.get("not_moved"),
+            "ended": schedule.get("ended")}
 
 
 def _action_groups(entity_id: str, sub: dict, schedule: dict) -> tuple[FT, FT]:
@@ -420,7 +425,7 @@ def _schedule_views(entity_id: str, sub: dict, schedule: dict) -> list[FT]:
 
     sub = _with_schedule(sub, schedule)
     return [*_action_groups(entity_id, sub, schedule), *subscription_meta_cells(sub),
-            _schedule_section(entity_id, sub) if sub.get("status") != "cancelled" else "",
+            _schedule_section(entity_id, sub) if sub.get("status") not in ENDED else "",
             _billing_section(entity_id, sub), _periods_table(entity_id, schedule)]
 
 
@@ -439,7 +444,7 @@ def _sub_action_controls(entity_id: str, sub: dict, next_bill: str | None = None
     Draft:   left=[Activate, note]                                        right=[]
     Active:  left=[badge, GenerateDue, BillEarly, note]                   right=[Pause, Cancel]
     Paused:  left=[badge, note]                                           right=[restart note, Resume, Cancel]
-    Cancelled: left=[badge]                                               right=[]
+    Cancelled or void: left=[badge, why it bills nothing]                 right=[]
     Not on a schedule yet: left=[badge, why]                              right=[Pause, Cancel]
 
     The schedule itself is set in the Schedule section below the document.
@@ -452,7 +457,7 @@ def _sub_action_controls(entity_id: str, sub: dict, next_bill: str | None = None
         warning = Span(t("subscriptions.err_not_moved", ref=sub.get("ref_id") or entity_id, reason=sub["not_moved"]),
                        cls="flash flash--warning")
         stops = [_pause_button(entity_id)] if status == "active" else []
-        if status != "cancelled":
+        if status not in ENDED:
             stops.append(_cancel_button(entity_id))
         return [_status_badge(status), warning], stops
 
@@ -486,11 +491,10 @@ def _sub_action_controls(entity_id: str, sub: dict, next_bill: str | None = None
             Button(t("btn.resume"), cls="btn btn--success btn--sm", hx_post=f"/subscriptions/{entity_id}/resume", hx_swap="none")
         )
 
-    if status not in ("cancelled", "draft"):
+    if status not in (*ENDED, "draft"):
         right.append(_cancel_button(entity_id))
 
-    if status != "cancelled":
-        left.append(note)
+    left.append(note)
     gen_count = sum(1 for e in (sub.get("periods") or {}).values() if (e or {}).get("state") == "billed")
     if gen_count:
         left.append(
@@ -1289,7 +1293,7 @@ def setup_routes(app) -> None:
                 extra_right_actions=[actions_right],
                 suppress_pdf=True,
             ),
-            _schedule_section(entity_id, doc) if status != "cancelled" else "",
+            _schedule_section(entity_id, doc) if status not in ENDED else "",
             _billing_section(entity_id, doc),
             _history_review(entity_id, schedule.get("review") or [], schedule.get("set_aside") or []),
             _periods_table(entity_id, schedule, historical_page=period_before is not None),
