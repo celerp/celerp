@@ -256,6 +256,38 @@ def _canonical_contact_payload(data):
     return _canonical_contact(data) if isinstance(data, dict) else data
 
 
+# The dates the index windows and sorts a record by and the overdue rules read, all compared as
+# text, so each must be a calendar day: YYYY-MM-DD, or an ISO timestamp whose first ten characters
+# are its day. Every request model that can write a state field checks them here.
+_DOC_DATE_FIELDS = ("issue_date", "due_date")
+
+
+def _require_iso_dates(values, new=lambda v: v):
+    """``values`` unchanged when each date field in it is empty or a calendar day, else Refused."""
+    if not isinstance(values, dict):
+        return values
+    for key in _DOC_DATE_FIELDS:
+        value = new(values.get(key))
+        if value in (None, ""):
+            continue
+        try:
+            ok = isinstance(value, str) and len(value) >= 10 and value[4] == "-" and value[7] == "-"
+            if ok:
+                _date.fromisoformat(value[:10])
+                if len(value) > 10:
+                    datetime.fromisoformat(value)
+        except ValueError:
+            ok = False
+        if not ok:
+            raise Refused("error.business_date_invalid", value=str(value))
+    return values
+
+
+def _doc_state_payload(data):
+    """A create or import payload's state fields: the counterparty named canonically, dates checked."""
+    return _require_iso_dates(_canonical_contact_payload(data))
+
+
 def _request_digest(kind: str, entity_id: str | None, expected_version: int | None, body: dict) -> str:
     canonical = json.dumps([kind, entity_id, expected_version, body], sort_keys=True,
                            separators=(",", ":"), ensure_ascii=False, default=str)
@@ -406,7 +438,7 @@ class DocCreatePayload(BaseModel):
     idempotency_key: str | None = None
     model_config = {"extra": "allow"}
 
-    _contact_fields = model_validator(mode="before")(_canonical_contact_payload)
+    _state_fields = model_validator(mode="before")(_doc_state_payload)
     _no_lifecycle_state = model_validator(mode="before")(_reject_lifecycle_fields)
     _known_doc_type = field_validator("doc_type")(require_doc_type)
     _draft_only = field_validator("status", mode="before")(_created_as_draft)
@@ -431,9 +463,10 @@ class DocPatch(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _canonical_contact_fields(cls, data):
+    def _state_fields(cls, data):
         if isinstance(data, dict) and isinstance(data.get("fields_changed"), dict):
-            data = {**data, "fields_changed": _canonical_contact(data["fields_changed"], new=_change_new)}
+            changed = _canonical_contact(data["fields_changed"], new=_change_new)
+            data = {**data, "fields_changed": _require_iso_dates(changed, new=_change_new)}
         return data
 
 
@@ -575,7 +608,7 @@ class DocImportRecord(BaseModel):
     source_ts: str | None = None
     source_revision: SourceRevision = None  # a connected company's records only
 
-    _contact_fields = field_validator("data", mode="before")(_canonical_contact_payload)
+    _state_fields = field_validator("data", mode="before")(_doc_state_payload)
 
 
 class BatchImportResult(BaseModel):
@@ -8565,7 +8598,7 @@ class ListCreatePayload(BaseModel):
     idempotency_key: str | None = None
     model_config = {"extra": "allow"}
 
-    _contact_fields = model_validator(mode="before")(_canonical_contact_payload)
+    _state_fields = model_validator(mode="before")(_doc_state_payload)
     _no_lifecycle_state = model_validator(mode="before")(_reject_lifecycle_fields)
     _draft_only = field_validator("status", mode="before")(_created_as_draft)
 
