@@ -25,7 +25,7 @@ from celerp.services.permissions import require_permission
 from celerp_docs.doc_constants import NO_SEND_DOC_TYPES
 from celerp_subscriptions import billing, migration, summary
 from celerp_subscriptions.periods import (
-    BILLED, CLAIMED_STATES, RELEASED, SKIPPED, Schedule, ScheduleError, UNRESOLVED, shown,
+    AUTO_MODES, BILLED, CLAIMED_STATES, RELEASED, SKIPPED, Schedule, ScheduleError, UNRESOLVED, shown,
 )
 from celerp_subscriptions.search import SUBSCRIPTION_DOC_TYPES, search_subscription_templates
 from ui.i18n import t
@@ -503,7 +503,7 @@ def _build_router() -> APIRouter:
         # Sending runs only on what automatic billing makes: choosing it under billing by hand
         # is refused, and going back to billing by hand turns it off (the answer says so).
         terms = {**state, **changes}
-        sending_off = bool(terms.get("auto_send")) and terms.get("generation_mode") not in billing.AUTO_MODES
+        sending_off = bool(terms.get("auto_send")) and terms.get("generation_mode") not in AUTO_MODES
         if sending_off and "auto_send" in changes:
             raise HTTPException(status_code=422, detail=t("subscriptions.err_send_manual"))
         sending_off = sending_off and "generation_mode" in changes

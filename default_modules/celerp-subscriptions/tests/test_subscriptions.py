@@ -382,7 +382,7 @@ async def test_subscription_custom_frequency_needs_its_interval(client):
     r = await client.post("/docs", headers=h, json={
         "doc_type": "subscription_invoice", "contact_id": "contact:test-001", "frequency": "custom",
         "start_date": "2026-01-01", "line_items": [{"description": "S", "quantity": 1, "unit_price": 100.0}]})
-    assert (await client.post(f"/subscriptions/{r.json()['id']}/activate", headers=h)).status_code == 422
+    assert r.status_code == 422 and r.json()["detail"]["message_key"] == "subscriptions.err_custom_interval"
     sub = await _create_sub_template(client, h, frequency="custom", custom_interval_days=30)
     r = await client.post(f"/subscriptions/{sub['id']}/generate-due", headers=h, json={"request_key": str(uuid.uuid4())})
     assert r.status_code == 200, r.text

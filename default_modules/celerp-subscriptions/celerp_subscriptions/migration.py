@@ -36,7 +36,7 @@ from celerp.models.projections import Projection
 from celerp.services.business_time import company_today
 from celerp_docs.doc_constants import SCHEDULE_REMOVED_FIELDS
 from celerp_subscriptions import billing
-from celerp_subscriptions.periods import BILLED, RELEASED, UNRESOLVED, Schedule, ScheduleError, shown
+from celerp_subscriptions.periods import AUTO_MODES, BILLED, RELEASED, UNRESOLVED, Schedule, ScheduleError, shown
 
 log = logging.getLogger(__name__)
 
@@ -299,7 +299,7 @@ async def reconcile_restored_company_schedules(*, session: AsyncSession, company
             # Its stored terms build no schedule, so it runs no mode (billable); setting it
             # again on its page asks for consent as every agreement write does.
             continue
-        if (state.get("generation_mode") in billing.AUTO_MODES or state.get("auto_send")
+        if (state.get("generation_mode") in AUTO_MODES or state.get("auto_send")
                 or state.get("consents")):
             await billing.locked_agreement(session, company_id, agreement.entity_id, scheduled=False)
             await billing.write_agreement(

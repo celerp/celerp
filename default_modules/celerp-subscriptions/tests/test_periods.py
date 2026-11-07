@@ -16,6 +16,13 @@ def _s(anchor: date, frequency: str = "monthly", **kw):
     return Schedule(anchor=anchor, frequency=frequency, **kw)
 
 
+def _built(state: dict):
+    """The schedule a stored state describes, through the builder that checks every term."""
+    from celerp_subscriptions.periods import Schedule
+
+    return Schedule.from_state(state)
+
+
 def test_period_bounds_month_end_anchor_never_drifts():
     s = _s(date(2028, 1, 31))
     assert [s.start(k) for k in range(5)] == [
@@ -38,7 +45,7 @@ def test_period_bounds_weekly_biweekly_quarterly_annual_custom():
     arrears = _s(date(2026, 1, 1), timing="arrears")
     assert arrears.bill_date(0) == date(2026, 2, 1)
     with pytest.raises(ValueError):
-        _s(date(2026, 1, 1), "custom")
+        _built({"anchor_date": "2026-01-01", "frequency": "custom"})
 
 
 @pytest.mark.asyncio
@@ -88,10 +95,9 @@ def test_arrears_catchup_window_begins_at_bill_date():
     assert outside_window({"catchup_periods": 0}, expired, [0], date(2026, 7, 1))
 
 def test_invalid_calendar_intervals_and_terms_are_rejected():
-    with pytest.raises(ValueError):
-        _s(date(2026, 1, 1), "custom", custom_days=36501)
-    with pytest.raises(ValueError):
-        _s(date(2026, 1, 1), "custom", custom_days=10**12)
+    for days in (36501, 10**12):
+        with pytest.raises(ValueError):
+            _built({"anchor_date": "2026-01-01", "frequency": "custom", "custom_interval_days": days})
     with pytest.raises(ValueError):
         _s(date(9999, 12, 31), "monthly")
     with pytest.raises(ValueError):

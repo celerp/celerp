@@ -7287,5 +7287,8 @@
   "subscriptions.period_send_sending": "Email đang được gửi",
   "subscriptions.err_send_in_progress": "Email này đang được gửi. Hãy kiểm tra lại sau vài phút.",
   "subscriptions.summary_send_sending": "{ref} đang được gửi qua email. Hãy kiểm tra lại sau vài phút.",
-  "activity.actor_automatic": "Tự động"
+  "activity.actor_automatic": "Tự động",
+  "subscriptions.err_cancel_period": "The last period an end-of-period cancel keeps must be a whole period number. Cancel the agreement at the end of its period again from its page.",
+  "subscriptions.err_generation_mode": "Choose a billing mode: generate due by hand, or bill automatically.",
+  "subscriptions.err_auto_send": "Send automatically is either on or off. Set it on the agreement's page."
 }

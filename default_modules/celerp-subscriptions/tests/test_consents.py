@@ -117,7 +117,7 @@ async def test_collection_is_not_a_billing_mode(client, session, monkeypatch, ro
     eid = await agreement(client, hd, start="2026-04-01")
     who = hd if role == "owner" else (await member(client, session, hd, role))[0]
     r = await schedule(client, who, eid, generation_mode="auto_invoice_collect")
-    assert r.status_code == 422 and "Unknown generation mode" in r.text
+    assert r.status_code == 422 and r.json()["detail"]["message_key"] == "subscriptions.err_generation_mode"
     html = to_xml(_billing_section(eid, await template(client, hd, eid)))
     assert "collect" not in html.lower()
 
@@ -130,12 +130,18 @@ _CHANGED_TERM = {"anchor_date": "2026-07-05", "frequency": "weekly", "custom_int
                  "auto_send": True}
 
 
-async def test_every_setting_unattended_billing_reads_is_covered_by_its_consent():
+async def test_every_setting_unattended_billing_reads_is_covered_by_its_consent(monkeypatch):
     """Class guard: the consent to a mode covers every setting the mode's own decision reads.
     The decision is read through a state that records each field asked for, so a setting a
-    later change makes it read, and that the consent does not cover, fails here."""
+    later change makes it read, and that the consent does not cover, fails here. The schedule
+    builder checks every stored term (periods.check_terms) whatever the decision, so that check
+    reads an unrecorded copy."""
     from datetime import date
-    from celerp_subscriptions import billing
+    from celerp_subscriptions import billing, periods
+
+    check = periods.check_terms
+    for owner in (periods, billing):
+        monkeypatch.setattr(owner, "check_terms", lambda state: check(dict(state)))
     from celerp_subscriptions.routes import ScheduleBody
 
     class Recorded(dict):

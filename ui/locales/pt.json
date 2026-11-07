@@ -7287,5 +7287,8 @@
   "subscriptions.period_send_sending": "O e-mail está sendo enviado",
   "subscriptions.err_send_in_progress": "Este e-mail está sendo enviado agora. Verifique novamente em alguns minutos.",
   "subscriptions.summary_send_sending": "{ref} está sendo enviado por e-mail agora. Verifique novamente em alguns minutos.",
-  "activity.actor_automatic": "Automaticamente"
+  "activity.actor_automatic": "Automaticamente",
+  "subscriptions.err_cancel_period": "The last period an end-of-period cancel keeps must be a whole period number. Cancel the agreement at the end of its period again from its page.",
+  "subscriptions.err_generation_mode": "Choose a billing mode: generate due by hand, or bill automatically.",
+  "subscriptions.err_auto_send": "Send automatically is either on or off. Set it on the agreement's page."
 }

@@ -12,5 +12,18 @@
     "th",
     "vi"
   ],
-  "keys": {}
+  "keys": {
+    "subscriptions.err_cancel_period": {
+      "en": "The last period an end-of-period cancel keeps must be a whole period number. Cancel the agreement at the end of its period again from its page.",
+      "params": []
+    },
+    "subscriptions.err_generation_mode": {
+      "en": "Choose a billing mode: generate due by hand, or bill automatically.",
+      "params": []
+    },
+    "subscriptions.err_auto_send": {
+      "en": "Send automatically is either on or off. Set it on the agreement's page.",
+      "params": []
+    }
+  }
 }
