@@ -79,10 +79,15 @@ async def test_export_lists_csv_streams_and_does_not_buffer(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_backend_exports_use_one_streamed_statement():
+async def test_backend_exports_use_one_streamed_statement(monkeypatch):
     from types import SimpleNamespace
     import importlib
     routes = importlib.import_module("celerp_docs.routes")
+
+    # The company's timezone (the business day a dateless row shows) is a settings read, not a row read.
+    async def _company_tz(session, company_id):
+        return "UTC"
+    monkeypatch.setattr(routes, "_company_tz", _company_tz)
 
     class Result:
         def __init__(self, rows):
