@@ -2465,6 +2465,7 @@
   "documents.email_subject": "{type} #{number} de {company}",
   "documents.enter_a_number": "Introduzca un número",
   "documents.duplicate_item_on_document": "Este artículo ya está en el documento. Cambie la cantidad de la línea existente en lugar de añadirlo otra vez.",
+  "documents.field_not_saved": "Un cambio que hizo no se guardó. Vuelva a guardarlo o pulse Esc para deshacerlo.",
   "documents.finalize_label_consignment_in": "Emitir albarán de entrada",
   "documents.finalize_label_credit_note": "Emitir nota de crédito",
   "documents.finalize_label_invoice": "Emitir factura",

@@ -2776,6 +2776,7 @@
   "documents.email_subject": "{type} #{number} from {company}",
   "documents.enter_a_number": "Enter a number",
   "documents.duplicate_item_on_document": "This item is already on the document. Change the quantity on the existing line instead of adding it again.",
+  "documents.field_not_saved": "A change you made wasn't saved. Save it again, or press Esc to put it back.",
   "documents.finalize_label_consignment_in": "Issue Consignment In",
   "documents.finalize_label_credit_note": "Issue Credit Note",
   "documents.finalize_label_invoice": "Issue Invoice",

@@ -8798,6 +8798,7 @@ window._L = {_json.dumps({
     "net_subtotal": t("documents.net_subtotal"),
     "double_click_rename": t("documents.double_click_rename"),
     "save_failed": t("documents.save_failed"),
+    "field_not_saved": t("documents.field_not_saved"),
     "invalid_qty": t("documents.enter_a_number"),
     "dup_on_doc": t("documents.duplicate_item_on_document"),
     "reprice_failed": t("documents.reprice_failed"),
@@ -10146,14 +10147,32 @@ function _celerpPersist() {{
    also said in a toast, since the control clicked may be far from them. It also waits for a
    field that saves itself: one left a moment ago whose delayed save has not fired yet, and any
    change already on its way, so a click straight from an edited cell runs on the saved value.
-   Once saved, the request meets its own confirmation, as it would have. Capture phase, so it runs before any
-   confirmation listener. The line save itself is a fetch, not an htmx request. A request that
-   pinned the version before the save is pinned to the one the save produced: this tab's own save
-   is the only write in between (another tab's write makes the save fail). */
+   Nothing is sent while a field elsewhere on the page shows what is not saved: its save failed,
+   a refusal is showing, or an open editor holds a value it has not sent. The click is answered
+   with the refusal, or with "not saved", in a toast. Once saved, the request meets its own
+   confirmation, as it would have. Capture phase, so it runs before any confirmation listener.
+   The line save itself is a fetch, not an htmx request. A request that pinned the version before
+   the save is pinned to the one the save produced: this tab's own save is the only write in
+   between (another tab's write makes the save fail). */
 if (!window._celerpSaveFirstBound) {{
     window._celerpSaveFirstBound = true;
-    const scheduled = new Map(), inFlight = new Set();
+    const scheduled = new Map(), inFlight = new Set(), failed = new Set();
     const fieldSaving = () => inFlight.size > 0 || Array.from(scheduled.values()).some(t => t > Date.now());
+    // What a field outside `own` (the cell of the request at hand) shows unsaved, as the reason to give;
+    // an editor whose save is on its way is saving, which the request waits for.
+    const fieldUnsaved = function(own) {{
+        const other = n => !(own && own.contains(n)) && !n.closest('[data-preview]');
+        const said = Array.from(document.querySelectorAll('.cell-error')).find(other);
+        if (said) return said.textContent.trim() || _L.field_not_saved;
+        const lost = Array.from(failed).some(el => el.isConnected && other(el))
+            || Array.from(document.querySelectorAll('input, textarea')).some(el => el._v !== undefined && el.value !== el._v && !(scheduled.get(el) > Date.now()) && other(el));
+        return lost ? _L.field_not_saved : '';
+    }};
+    document.addEventListener('htmx:afterRequest', function(e) {{
+        const el = e.detail.elt;
+        if (e.detail.requestConfig.verb === 'get' || !el.matches('input, select, textarea')) return;
+        if (e.detail.successful) failed.delete(el); else failed.add(el);
+    }});
     document.addEventListener('focusout', function(e) {{
         const el = e.target;
         const delay = /delay:(\\w+)/.exec((el.getAttribute && el.getAttribute('hx-trigger')) || '');
@@ -10174,16 +10193,20 @@ if (!window._celerpSaveFirstBound) {{
         const d = e.detail;
         if (d.verb === 'get' || d.celerpSaved) return;
         scheduled.delete(d.elt);
-        if (!fieldSaving() && !_celerpLinesDirty()) return;
+        // Read at the click: leaving a refused editor puts its stored value back while the request waits.
+        const own = d.elt.closest('td, .editable-cell'), shown = fieldUnsaved(own);
+        if (!fieldSaving() && !_celerpLinesDirty() && !shown) return;
         e.preventDefault();
         e.stopPropagation();
         clearTimeout(_celerpSaveTimer);
         _celerpSaveTimer = null;
-        fieldsSaved().then(() => _celerpLinesDirty() ? _celerpPersist() : true).then(function(ok) {{
-            if (!ok) {{
-                const said = document.getElementById('save-status')?.firstChild;
-                if (said && said.nodeType === Node.TEXT_NODE && said.textContent && window.celerpToast)
-                    celerpToast(said.textContent.replace(/^\u2717 /, ''), 'error');
+        // A field's reason, or the line save's answer (its own words stay beside the lines too).
+        fieldsSaved().then(() => shown || fieldUnsaved(own) || (_celerpLinesDirty() ? _celerpPersist() : true)).then(function(ok) {{
+            if (ok !== true) {{
+                const said = typeof ok === 'string' ? ok : document.getElementById('save-status')?.firstChild;
+                const text = typeof said === 'string' ? said
+                    : said && said.nodeType === Node.TEXT_NODE && said.textContent.replace(/^\u2717 /, '');
+                if (text && window.celerpToast) celerpToast(text, 'error');
                 return;
             }}
             const pinned = d.etc && d.etc.values;

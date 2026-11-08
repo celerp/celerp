@@ -2466,6 +2466,7 @@
   "documents.email_subject": "{type} #{number} von {company}",
   "documents.enter_a_number": "Geben Sie eine Zahl ein",
   "documents.duplicate_item_on_document": "Dieser Artikel ist bereits im Dokument. Ändern Sie die Menge in der vorhandenen Zeile, statt ihn erneut hinzuzufügen.",
+  "documents.field_not_saved": "Eine Änderung wurde nicht gespeichert. Speichern Sie sie erneut oder drücken Sie Esc, um sie zurückzusetzen.",
   "documents.finalize_label_consignment_in": "Sendung ausstellen",
   "documents.finalize_label_credit_note": "Gutschrift ausstellen",
   "documents.finalize_label_invoice": "Rechnung ausstellen",
