@@ -174,24 +174,6 @@ def test_activate_straight_after_typing_a_price_activates_at_that_price(page, ui
     assert doc["status"] == "active" and float(doc["line_items"][0]["unit_price"]) == 12345.0, doc["line_items"]
 
 
-def test_an_action_folds_in_the_waiting_line_save_and_a_failed_save_stops_it(page, ui_server, api):
-    """The save a blur leaves waiting folds into the action's own save (one save, then the post),
-    and a save that fails stops the action before it posts."""
-    eid = _draft(api, {"unit_price": 9800.0, "line_total": 9800.0, "taxes": []})
-    page.goto(f"{ui_server}/subscriptions/{eid}", wait_until="domcontentloaded")
-    run = """async (saved) => {
-        const seen = {saves: 0, posts: []};
-        window._celerpPersistOnce = async () => { seen.saves += 1; return saved; };
-        htmx.ajax = (method, url) => { seen.posts.push(url); };
-        celerpAutoSave();
-        await celerpSaveThenPost('/x');
-        await new Promise(r => setTimeout(r, 800));
-        return seen;
-    }"""
-    assert page.evaluate(run, True) == {"saves": 1, "posts": ["/x"]}
-    assert page.evaluate(run, False) == {"saves": 1, "posts": []}
-
-
 def _scheduled_draft(api, skipped: bool = False) -> str:
     eid = _draft(api, {"unit_price": 9800.0, "line_total": 9800.0, "taxes": []})
     anchor = date.today().replace(day=1).isoformat()

@@ -4,7 +4,8 @@
 that changes something waits for the page's pending line edits to save. So every state-changing
 control on a draft agreement's page and a draft document's page must be an htmx request (hx-post,
 hx-put, hx-patch, hx-delete) the gate sees; a control that posts by itself from an inline handler,
-or a form that posts without htmx, would go around it."""
+or a form that posts without htmx, would go around it. The gate is the only save before a request:
+no control carries an inline handler that saves the lines itself."""
 from __future__ import annotations
 
 import re
@@ -15,6 +16,7 @@ from bs4 import BeautifulSoup
 _VERBS = ("hx-post", "hx-put", "hx-patch", "hx-delete")
 _GATE = "window._celerpSaveFirstBound"
 _SENDS = re.compile(r"\bfetch\(|celerpFetch\(|XMLHttpRequest|\.submit\(|htmx\.ajax\(\s*['\"](?!GET)", re.I)
+_SAVES = re.compile(r"_celerpPersist|SaveThenPost")
 
 
 async def _draft_agreement(api) -> str:
@@ -56,4 +58,4 @@ async def test_every_state_changing_control_on_a_draft_page_goes_through_the_gat
     for node in main.find_all(True):
         for attr, js in node.attrs.items():
             if attr.startswith("on"):
-                assert not _SENDS.search(str(js)), (attr, node)
+                assert not _SENDS.search(str(js)) and not _SAVES.search(str(js)), (attr, node)

@@ -5073,7 +5073,7 @@ celerpUpdateBulkAlloc();
                 *[Option(_list_type_label(lt), value=lt, selected=(lt == value)) for lt in _LIST_TYPES],
                 name="value",
                 cls="cell-input cell-input--select", autofocus=True,
-                onchange=f"_celerpPatchListField(this, {_json.dumps(patch_url)}, {_json.dumps(lst.get('status') == 'draft')})",
+                onchange=f"_celerpPatchListField(this, {_json.dumps(patch_url)})",
                 onkeydown=esc_js,
             )
         elif field in _LIST_DATE_FIELDS or field in ("issue_date",):
@@ -5907,7 +5907,7 @@ async def _contact_picker(token: str, *, resource: str, entity_id: str, field: s
 
     field is contact_id (options by name, with Add new) or contact_company_name (options by
     company, still saving contact_id). A document saves through htmx; a List saves through
-    its mutation queue, persisting pending line edits first because the save reloads the page.
+    its mutation queue; the page's save-first gate saves pending line edits before either.
     """
     try:
         contacts = (await api.list_contacts(token, {"limit": 500, "contact_type": contact_type})).get("items", [])
@@ -5926,7 +5926,7 @@ async def _contact_picker(token: str, *, resource: str, entity_id: str, field: s
     prefix = "/lists" if resource == "list" else "/docs"
     patch_url = f"{prefix}/{entity_id}/field/{save_field}"
     if resource == "list":
-        save_attrs = {"onchange": f"_celerpPatchListField(this, {_json.dumps(patch_url)}, true)"}
+        save_attrs = {"onchange": f"_celerpPatchListField(this, {_json.dumps(patch_url)})"}
     else:
         save_attrs = {"hx_patch": patch_url, "hx_target": "closest .editable-cell",
                       "hx_swap": "outerHTML", "hx_trigger": "change",
@@ -7310,13 +7310,6 @@ def _doc_money(doc: dict) -> dict:
             "outstanding": fmt_money(float(doc_value(doc, "amount_outstanding") or 0), currency)}
 
 
-def save_then_post(url: str) -> str:
-    """The onclick of a button that posts a state-changing action from a document's page: the
-    page's pending line edits save first (celerpSaveThenPost), so the action runs on the lines
-    the page shows."""
-    return f"event.preventDefault();celerpSaveThenPost({_json.dumps(url)});"
-
-
 def subscription_meta_cells(doc: dict) -> tuple:
     """An agreement's frequency and next bill date in the document header. Its schedule changes
     only through its own controls, which check it against the periods already billed, so here
@@ -7438,10 +7431,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Select(
                     *[Option(_list_type_label(lt), value=lt, selected=(lt == _current_lt)) for lt in _LIST_TYPES],
                     name="value",
-                    onchange=(
-                        f"_celerpPatchListField(this, '/lists/{entity_id}/field/list_type', "
-                        f"{_json.dumps(is_draft)})"
-                    ),
+                    onchange=f"_celerpPatchListField(this, '/lists/{entity_id}/field/list_type')",
                     cls="form-select",
                 ),
                 cls="list-type-bar",
@@ -7647,7 +7637,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         if _can_finalize and not suppress_doc_actions:
             action_btns_left.append(
                 Button(finalize_label,
-                       onclick=save_then_post(f"/docs/{entity_id}/action/finalize"),
+                       hx_post=f"/docs/{entity_id}/action/finalize", hx_swap="none",
                        title=finalize_tip, cls="btn btn--primary")
             )
     if status not in ("void", "draft", "closed") and _can_finalize and not suppress_doc_actions:
@@ -8718,7 +8708,7 @@ function _celerpMutate(run) {{
     window._celerpMutationTail = next.then(() => true, () => false);
     return next;
 }}
-function _celerpPatchListField(input, url, persistFirst=false) {{
+function _celerpPatchListField(input, url) {{
     const value = input.value;
     const cell = input.closest('.editable-cell');
     const target = cell || input;
@@ -8726,12 +8716,6 @@ function _celerpPatchListField(input, url, persistFirst=false) {{
     return _celerpMutate(async () => {{
         // ESC may replace an inline editor before a delayed blur runs. Never save a detached control.
         if (!input.isConnected || !target.isConnected) return false;
-        if (persistFirst) {{
-            clearTimeout(_celerpSaveTimer);
-            _celerpSaveTimer = null;
-            const ok = await _celerpPersistOnce();
-            if (!ok) return false;
-        }}
         await htmx.ajax('PATCH', url, {{target: target, swap: swap,
             values: {{value: value, expected_version: window._celerpEntityVersion}}}});
         return true;
@@ -10144,14 +10128,6 @@ function _celerpPersist() {{
     window._celerpLineRevision += 1;
     return _celerpMutate(_celerpPersistOnce);
 }}
-/* Save the page's pending line edits, then post a state-changing action (save_then_post), so it
-   runs on the lines the page shows. A blur's save still waiting folds into this one; a failed
-   save has shown its own reason and the action does not run. */
-async function celerpSaveThenPost(url) {{
-    clearTimeout(_celerpSaveTimer);
-    if (!(await _celerpPersist())) return;
-    htmx.ajax('POST', url, {{swap: 'none'}});
-}}
 /* Save first: every htmx request that changes something (any verb but GET), whichever control on
    the page sends it, waits for the page's pending line edits to save, so it runs on the lines the
    page shows and a reload it answers with drops nothing typed. A blur's save still waiting folds
@@ -10162,6 +10138,15 @@ async function celerpSaveThenPost(url) {{
    is the only write in between (another tab's write makes the save fail). */
 if (!window._celerpSaveFirstBound) {{
     window._celerpSaveFirstBound = true;
+    // An edit in a line is unsaved from the moment it is made, not only once its field blurs:
+    // a tax picked from a select still has focus when the request's control is used.
+    ['input', 'change'].forEach(function(type) {{
+        document.addEventListener(type, function(e) {{
+            const el = e.target;
+            if (el.closest && el.closest('#{line_body_id}') && !el.classList.contains('li-select'))
+                window._celerpLineRevision += 1;
+        }}, true);
+    }});
     document.addEventListener('htmx:confirm', function(e) {{
         const d = e.detail;
         if (d.verb === 'get' || d.celerpSaved || !_celerpLinesDirty()) return;
