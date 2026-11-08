@@ -157,3 +157,20 @@ async def test_generate_all_due_on_1001_agreements_sends_every_ticked_one(owner_
                             headers={"content-type": "application/x-www-form-urlencoded"})
     assert r.status_code == 200, (r.status_code, r.text[:200])
     assert len(sent) == 1001 and sent[0]["entity_id"] == "doc:SUB-0"
+
+
+async def test_retry_on_a_refused_row_posts_its_period_as_the_one_item_field(owner_ui, monkeypatch):
+    """Retry sits outside the form, so it carries its period itself, in the field's one shape."""
+    from fasthtml.common import to_xml
+    import ui.api_client as api
+    refused = {"entity_id": "doc:SUB-0", "period_index": 3, "ok": False, "error": "paused"}
+    button = BeautifulSoup(to_xml(subs_ui._outcome_table([refused], _subs(1), "k-retry")), "html.parser").find(
+        attrs={"hx-post": "/subscriptions/generate-due"})
+    sent = []
+
+    async def generate(token, items):
+        sent.extend(items)
+        return {"billed": 0, "refused": 0, "results": []}
+    monkeypatch.setattr(api, "generate_all_due", generate)
+    r = await owner_ui.post("/subscriptions/generate-due", data=json.loads(button["hx-vals"]))
+    assert r.status_code == 200 and [(i["entity_id"], i["period_index"]) for i in sent] == [("doc:SUB-0", 3)]
