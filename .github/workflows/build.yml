@@ -145,9 +145,18 @@ jobs:
         with:
           version: 9
 
+      # Electron's postinstall downloads its binary from GitHub releases, which
+      # sometimes answers 504 to the runners for a while. Try again before failing.
       - name: Install Node deps
         working-directory: electron
-        run: pnpm install --frozen-lockfile
+        shell: bash
+        run: |
+          for attempt in 1 2 3 4 5; do
+            pnpm install --frozen-lockfile && exit 0
+            echo "pnpm install failed (attempt $attempt of 5)"
+            sleep 60
+          done
+          exit 1
 
       # A release tag must be vX.Y.Z: the Windows installer compares dotted numbers
       # only, so a suffixed release would look identical to the plain one.

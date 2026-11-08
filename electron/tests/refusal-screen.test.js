@@ -61,6 +61,7 @@ test("the screen says what happened and offers Update Celerp, the installer and 
     expect(p.el("status").textContent).toBe("");
     expect(p.el("refusal-update")).toMatchObject({ textContent: "Update Celerp", disabled: false });
     expect(p.el("refusal-download")).toMatchObject({ textContent: VIEW.download, href: VIEW.downloadUrl });
+    expect(p.el("refusal-quit").textContent).toBe(VIEW.quit);
     p.el("refusal-quit").click();
     expect(p.calls).toEqual(["quit"]);
   });
