@@ -5066,6 +5066,8 @@
     "tests/test_browser/test_updater_ui.py::test_failed_update_offers_the_installer[chromium-with-version]": 1.932,
     "tests/test_browser/test_updater_ui.py::test_failed_update_says_what_failed[chromium-antivirus]": 1.005,
     "tests/test_browser/test_updater_ui.py::test_failed_update_says_what_failed[chromium-security-check]": 0.941,
+    "tests/test_browser/test_updater_ui.py::test_failure_card_shows_a_log_only_with_detail[chromium-detail]": 0.9730881669820519,
+    "tests/test_browser/test_updater_ui.py::test_failure_card_shows_a_log_only_with_detail[chromium-no-detail]": 5.268447086011292,
     "tests/test_browser/test_updater_ui.py::test_install_without_pip_route_shows_only_the_reason[chromium]": 0.952,
     "tests/test_browser/test_updater_ui.py::test_malformed_progress_shows_a_percent_in_range[chromium--3-0%-2.0.1]": 0.956,
     "tests/test_browser/test_updater_ui.py::test_malformed_progress_shows_a_percent_in_range[chromium-150-100%-100%]": 0.96,
