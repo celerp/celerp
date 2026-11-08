@@ -228,6 +228,16 @@ async def test_generate_due_preserves_legacy_customer_terms(client):
     assert not doc.get("terms_template")
 
 
+@pytest.mark.asyncio
+async def test_generate_due_carries_the_agreement_customer_note(client):
+    h = _h(await _register(client))
+    eid = (await _create_sub_template(client, h, customer_note="Thank you for your support."))["id"]
+    r = await client.post(f"/subscriptions/{eid}/generate-due", headers=h, json={"request_key": str(uuid.uuid4())})
+    assert r.status_code == 200, r.text
+    doc = (await client.get(f"/docs/{r.json()['doc_id']}", headers=h)).json()
+    assert doc.get("customer_note") == "Thank you for your support."
+
+
 # ---------------------------------------------------------------------------
 # 7. Generate due computes totals
 # ---------------------------------------------------------------------------

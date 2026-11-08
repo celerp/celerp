@@ -288,6 +288,18 @@ async def _sending(client, monkeypatch):
     return hd, await company_id(client, hd), eid, purchase_only
 
 
+async def test_resume_with_every_period_billed_has_no_bill_to_ask_and_is_accepted(client, monkeypatch):
+    """An agreement whose one period is billed has no next bill, so Resume asks nothing and runs."""
+    freeze_day(monkeypatch, "2026-03-01")
+    hd = await register(client)
+    eid = await agreement(client, hd, start="2026-03-01", end_date="2026-04-01")
+    assert (await generate_due(client, hd, eid)).status_code == 200
+    assert (await client.post(f"/subscriptions/{eid}/pause", headers=hd)).status_code == 200
+    r = await client.post(f"/subscriptions/{eid}/resume", headers=hd)
+    assert r.status_code == 200, r.text
+    assert (await template(client, hd, eid))["status"] == "active"
+
+
 async def test_a_waiting_email_goes_out_after_the_next_bill_is_refused(client, session, monkeypatch):
     """The pass billed, the app stopped before the email; then the next bill became refused. The
     next pass sends the waiting email and records it."""
