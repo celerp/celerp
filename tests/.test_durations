@@ -23971,7 +23971,7 @@
     "tests/test_tax_acceptance_matrix.py::test_a_quotation_converts_to_an_invoice_charging_the_same_tax[legacy_rate]": 2.934,
     "tests/test_tax_acceptance_matrix.py::test_a_quotation_converts_to_an_invoice_charging_the_same_tax[one]": 3.613,
     "tests/test_tax_acceptance_matrix.py::test_a_quotation_converts_to_an_invoice_charging_the_same_tax[two]": 3.124,
-    "tests/test_tax_acceptance_matrix.py::test_a_quotation_taxed_on_the_whole_list_converts_to_an_invoice_charging_that_tax": 3.026,
+    "tests/test_tax_acceptance_matrix.py::test_a_quotation_taxed_on_the_whole_list_converts_to_an_invoice_of_its_lines": 3.026,
     "tests/test_tax_acceptance_matrix.py::test_a_quotation_totals_as_the_invoice_it_converts_to[jpy_header_pct]": 2.925,
     "tests/test_tax_acceptance_matrix.py::test_a_quotation_totals_as_the_invoice_it_converts_to[jpy_rate_only_per_line]": 2.937,
     "tests/test_tax_acceptance_matrix.py::test_a_quotation_totals_as_the_invoice_it_converts_to[kwd_header_flat]": 2.855,
