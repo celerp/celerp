@@ -62,7 +62,6 @@
         celerp.installUpdate();
         return;
       }
-      notAvailable = false;
       follow({ ...state, checking: true });
       celerp.checkForUpdates();
     });
