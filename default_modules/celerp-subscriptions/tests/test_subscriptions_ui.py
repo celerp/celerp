@@ -254,7 +254,7 @@ class TestBillingPages:
         more = [th.get_text(strip=True) for th in soup.select("thead th")].index(t("subscriptions.th_more_due", "en"))
         assert soup.select_one(f'input[value="{eid}|0"]').find_parent("tr").select("td")[more].get_text(strip=True) == "1"
         assert 'name="idempotency_key"' in panel
-        r = await owner_ui.post("/subscriptions/generate-due", data={"item": [f"{eid}|0"], "idempotency_key": "due-click"})
+        r = await owner_ui.post("/subscriptions/generate-due", data={"item": json.dumps([f"{eid}|0"]), "idempotency_key": "due-click"})
         assert t("subscriptions.due_result", "en", billed=1, refused=0) in r.text
         sub = (await owner_ui.api.get(f"/docs/{eid}")).json()
         assert [k for k, e in sub["periods"].items() if e["state"] == "billed"] == ["0"]
@@ -264,7 +264,7 @@ class TestBillingPages:
         freeze_day(monkeypatch, "2026-03-15")
         eid = await agreement(owner_ui.api, {}, start="2026-03-01")
         assert (await owner_ui.api.post(f"/subscriptions/{eid}/pause")).status_code == 200
-        r = await owner_ui.post("/subscriptions/generate-due", data={"item": [f"{eid}|0"], "idempotency_key": "due-click"})
+        r = await owner_ui.post("/subscriptions/generate-due", data={"item": json.dumps([f"{eid}|0"]), "idempotency_key": "due-click"})
         assert t("subscriptions.err_bill_paused", "en") in r.text
         assert t("btn.retry", "en") in r.text and "#sub-due-panel" in r.text
         assert "due-click" in r.text  # retry preserves the original batch identity
@@ -302,7 +302,7 @@ class TestBillingPages:
         assert t("subscriptions.catchup_banner", "en", n=1, m=3) in listing
         page = (await owner_ui.get("/subscriptions/catch-up")).text
         assert f'value="{eid}|0"' in page and f'value="{eid}|2"' in page
-        r = await owner_ui.post("/subscriptions/catch-up/run", data={"item": [f"{eid}|0", f"{eid}|1", f"{eid}|2"], "idempotency_key": "catchup-click"})
+        r = await owner_ui.post("/subscriptions/catch-up/run", data={"item": json.dumps([f"{eid}|0", f"{eid}|1", f"{eid}|2"]), "idempotency_key": "catchup-click"})
         assert len(BeautifulSoup(r.text, "html.parser").select("#catchup-card td a[href^='/docs/']")) == 3
         assert t("subscriptions.catchup_empty", "en") in r.text
 
@@ -329,7 +329,7 @@ class TestBillingPages:
                 raise api.APIError(503, "Service temporarily unavailable")
             return await real(token, chunk)
         monkeypatch.setattr(api, "run_subscriptions_catch_up", second_fails)
-        r = await owner_ui.post("/subscriptions/catch-up/run", data={"item": items, "idempotency_key": "two-batches"})
+        r = await owner_ui.post("/subscriptions/catch-up/run", data={"item": json.dumps(items), "idempotency_key": "two-batches"})
         assert r.status_code == 200 and r.headers.get("HX-Reswap") != "none"
         assert "error" != json.loads(r.headers.get("HX-Trigger") or "{}").get("celerpToast", {}).get("type")
         billed = [d for e in eids for d in await billed_docs(session, e)]
@@ -343,9 +343,9 @@ class TestBillingPages:
         eid = await agreement(owner_ui.api, {}, start="2026-01-01")
         assert (await schedule(owner_ui.api, {}, eid, generation_mode="auto_invoice")).status_code == 200
         freeze_day(monkeypatch, "2026-03-15")
-        r = await owner_ui.post("/subscriptions/catch-up/skip", data={"item": [f"{eid}|0"], "reason": ""})
+        r = await owner_ui.post("/subscriptions/catch-up/skip", data={"item": json.dumps([f"{eid}|0"]), "reason": ""})
         assert t("subscriptions.err_skip_reason", "en") in r.text
-        r = await owner_ui.post("/subscriptions/catch-up/skip", data={"item": [f"{eid}|0"], "reason": "Closed"})
+        r = await owner_ui.post("/subscriptions/catch-up/skip", data={"item": json.dumps([f"{eid}|0"]), "reason": "Closed"})
         assert sentence("subscriptions.done_skipped", "en", start="2026-01-01", end="2026-01-31") in r.text
         sub = (await owner_ui.api.get(f"/docs/{eid}")).json()
         assert sub["periods"]["0"]["state"] == "skipped"
@@ -441,7 +441,7 @@ async def test_an_ended_session_on_a_billing_action_goes_to_sign_in(owner_ui, me
     from ui.api_client import APIError
 
     eid = await _active_subscription(owner_ui)
-    sent = {} if form is None else {"data": {k: ([x.format(eid=eid) for x in v] if isinstance(v, list) else v)
+    sent = {} if form is None else {"data": {k: (json.dumps([x.format(eid=eid) for x in v]) if isinstance(v, list) else v)
                                              for k, v in form.items()}, "headers": {"HX-Request": "true"}}
     with patch(f"ui.api_client.{api_call}", AsyncMock(side_effect=APIError(401, "Session expired"))):
         r = await getattr(owner_ui, method)(path.format(eid=eid), **sent)

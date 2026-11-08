@@ -212,7 +212,7 @@ async def test_catch_up_skip_without_a_reason_names_why(owner_ui, monkeypatch):
     freeze_day(monkeypatch, "2026-06-15")
     eid = await agreement(owner_ui.api, {}, start="2026-01-01")
     await schedule(owner_ui.api, {}, eid, generation_mode="auto_invoice")
-    r = await owner_ui.post("/subscriptions/catch-up/skip", data={"item": [f"{eid}|0"], "reason": ""})
+    r = await owner_ui.post("/subscriptions/catch-up/skip", data={"item": json.dumps([f"{eid}|0"]), "reason": ""})
     assert t("subscriptions.err_skip_reason", "en") in r.text
 
 

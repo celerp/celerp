@@ -102,7 +102,7 @@ async def _due(ui, monkeypatch) -> str:
 async def _generate_all_due(ui, session, monkeypatch, arm):
     eid = await _due(ui, monkeypatch)
     failing = arm()
-    r = await ui.post("/subscriptions/generate-due", data={"item": [f"{eid}|0"], "idempotency_key": "k1"},
+    r = await ui.post("/subscriptions/generate-due", data={"item": json.dumps([f"{eid}|0"]), "idempotency_key": "k1"},
                       headers={"HX-Current-URL": "http://test/subscriptions?direction=sales"})
     _not_refused(r)
     if failing is not None:
@@ -119,9 +119,9 @@ async def _catch_up(ui, session, monkeypatch, arm):
         assert (await schedule(ui.api, {}, eid, generation_mode="auto_invoice", catchup_periods=0)).status_code == 200
         eids.append(eid)
     failing = arm()
-    run = await ui.post("/subscriptions/catch-up/run", data={"item": [f"{eids[0]}|0"], "idempotency_key": "k2"})
+    run = await ui.post("/subscriptions/catch-up/run", data={"item": json.dumps([f"{eids[0]}|0"]), "idempotency_key": "k2"})
     _not_refused(run)
-    skip = await ui.post("/subscriptions/catch-up/skip", data={"item": [f"{eids[1]}|0"], "reason": "Closed"})
+    skip = await ui.post("/subscriptions/catch-up/skip", data={"item": json.dumps([f"{eids[1]}|0"]), "reason": "Closed"})
     _not_refused(skip)
     if failing is not None:
         failing.clear()

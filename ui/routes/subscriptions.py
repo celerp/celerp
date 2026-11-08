@@ -607,10 +607,30 @@ def _period_text(p: dict) -> str:
     return f"{p['service_start']} - {p['service_end']}"
 
 
+# A bulk table's selection posts as ONE field, the ticked rows as a JSON list (the row boxes carry
+# no name), so a page of any size stays under the form parser's 1000-field cap. Set as each request
+# is built: the page's script policy runs no hx-vals expression.
+_CHOSEN_ROWS_JS = """
+(function(){
+  if(window.__celerpChosenRows)return;window.__celerpChosenRows=true;
+  document.addEventListener('htmx:configRequest',function(e){
+    var f=e.detail.elt.closest('form[data-chosen-rows]');if(!f)return;
+    e.detail.parameters[f.getAttribute('data-chosen-rows')]=JSON.stringify(Array.prototype.map.call(
+      f.querySelectorAll('.bulk-select:checked'),function(box){return box.value;}));});
+})();
+"""
+
+
+def _bulk_form(*children, **attrs) -> FT:
+    """A form over a bulk table: its ticked rows post as the one ``item`` field."""
+    return Form(*children, Script(_CHOSEN_ROWS_JS), data_chosen_rows="item", **attrs)
+
+
 def _row_box(value: str, checked: bool = True) -> FT:
     """A row checkbox of a table that bills several agreements at once, ticked until a run has
-    acted on the table, so the next click never bills rows nobody chose."""
-    return Td(Input(type="checkbox", name="item", value=value, checked=checked, cls="bulk-select"), cls="col-checkbox")
+    acted on the table, so the next click never bills rows nobody chose. Its _bulk_form posts
+    the ticked ones."""
+    return Td(Input(type="checkbox", value=value, checked=checked, cls="bulk-select"), cls="col-checkbox")
 
 
 def _due_panel(preview: dict, subs: dict[str, dict]) -> FT:
@@ -642,7 +662,7 @@ def _due_panel(preview: dict, subs: dict[str, dict]) -> FT:
             cls="data-row",
         )
 
-    return Form(
+    return _bulk_form(
         operation_key_input(),
         P(t("subscriptions.due_hint", n=len(items)), cls="text-muted"),
         _data_table(Thead(Tr(select_all_th(), Th(t("th.name")), Th(t("th.contact")), Th(t("th.period")), Th(t("th.bill_date")),
@@ -677,7 +697,7 @@ def _outcome_table(results: list[dict], subs: dict[str, dict], retry_key: str | 
                          if r.get("service_start") else reason, cls="text-danger")
             if retry_key is not None:
                 action = Td(Button(t("btn.retry"), cls="btn btn--secondary btn--sm", hx_post="/subscriptions/generate-due",
-                                   hx_vals={"item": f"{eid}|{r['period_index']}", FIELD: retry_key},
+                                   hx_vals={"item": json.dumps([f"{eid}|{r['period_index']}"]), FIELD: retry_key},
                                    hx_target="#sub-due-panel", hx_swap="innerHTML"))
         elif r.get("skipped"):
             outcome = Td(sentence("subscriptions.done_skipped", start=r["service_start"], end=r["service_end"]))
@@ -726,7 +746,7 @@ def _catch_up_card(items: list[dict], subs: dict[str, dict], results: list[dict]
     return Div(
         *notes,
         P(t("subscriptions.catchup_hint"), cls="text-muted"),
-        Form(
+        _bulk_form(
             operation_key_input(),
             _data_table(Thead(Tr(select_all_th(), Th(t("th.name")), Th(t("th.period")), Th(t("th.bill_date")),
                            Th(t("th.total"), cls="cell--number"))),
@@ -851,9 +871,9 @@ def _history_review(entity_id: str, review: list[dict], set_aside: list[dict]) -
 # Route setup
 # ---------------------------------------------------------------------------
 
-def _posted_keys(raw) -> object:
-    """The ``keys`` field Mark as read posts (one JSON list, so a page of any size is one field),
-    decoded and forwarded as sent: the API refuses anything but a list of keys."""
+def _posted_list(raw) -> object:
+    """A list posted as one JSON field (Mark as read's keys, a bulk table's chosen rows), so a
+    page of any size is one field; decoded, or the raw value when it is not JSON."""
     try:
         return json.loads(raw or "")
     except ValueError:
@@ -935,9 +955,11 @@ async def _agreements(token: str, direction: str | None = None) -> dict[str, dic
 
 
 def _catch_up_items(form) -> list[dict]:
-    """The chosen catch-up periods, in the order the page lists them."""
+    """The chosen periods (the ``item`` field a _bulk_form posts), in the order the page lists
+    them. Anything but a list chooses nothing."""
+    chosen = _posted_list(form.get("item"))
     items = []
-    for raw in form.getlist("item"):
+    for raw in chosen if isinstance(chosen, list) else []:
         eid, _, k = str(raw).rpartition("|")
         if eid and k.lstrip("-").isdigit():
             items.append({"entity_id": eid, "period_index": int(k)})
@@ -1127,7 +1149,7 @@ def setup_routes(app) -> None:
         if not token:
             return Response(status_code=401, headers={"HX-Redirect": "/login"})
         try:
-            await api.acknowledge_subscriptions_summary(token, _posted_keys((await request.form()).get("keys")))
+            await api.acknowledge_subscriptions_summary(token, _posted_list((await request.form()).get("keys")))
         except APIError as e:
             return _refused(e)
         return _done("/subscriptions/summary", t("subscriptions.done_summary_read"))

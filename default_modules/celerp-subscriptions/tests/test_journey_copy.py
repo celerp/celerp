@@ -4,6 +4,7 @@
 on a period, the dates in a message, what a bulk run did, and what the page redraws."""
 from __future__ import annotations
 
+import json
 import uuid
 
 import pytest
@@ -76,7 +77,6 @@ async def test_a_draft_points_from_its_action_bar_to_the_schedule(owner_ui, monk
 
 
 def _toast(r) -> dict:
-    import json
     return json.loads(r.headers["HX-Trigger"])["celerpToast"]
 
 
@@ -169,7 +169,7 @@ async def test_a_bulk_run_names_each_agreement_document_and_period_it_acted_on(o
         r = await owner_ui.api.patch(f"/subscriptions/{eid}/schedule",
                                      json={"generation_mode": _BULK_ROUTES[route], "catchup_periods": 1})
         assert r.status_code == 200, r.text
-    r = await owner_ui.post(route, data={"item": [f"{eid}|0" for eid in ids], "reason": "closed", **_key()})
+    r = await owner_ui.post(route, data={"item": json.dumps([f"{eid}|0" for eid in ids]), "reason": "closed", **_key()})
     assert r.status_code == 200, r.text
     text = BeautifulSoup(r.text, "html.parser").get_text(" ", strip=True)
     for eid in ids:
@@ -193,7 +193,7 @@ async def test_generate_all_due_redraws_the_list_rows_and_counts_it_changed(owne
     freeze_day(monkeypatch, "2026-03-15")
     ids = [await agreement(owner_ui.api, {}, start="2026-03-01") for _ in range(2)]
     before = BeautifulSoup((await owner_ui.get(view)).text, "html.parser")
-    r = await owner_ui.post("/subscriptions/generate-due", data={"item": [f"{eid}|0" for eid in ids], **_key()},
+    r = await owner_ui.post("/subscriptions/generate-due", data={"item": json.dumps([f"{eid}|0" for eid in ids]), **_key()},
                             headers={"HX-Request": "true", "HX-Current-URL": f"http://test{view}"})
     assert r.status_code == 200, r.text
     answer = BeautifulSoup(r.text, "html.parser")
