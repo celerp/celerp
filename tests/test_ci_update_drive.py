@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import sys
 import types
@@ -85,3 +86,12 @@ def test_no_refusal_screen_fails_the_check_in_time(drive, capsys):
     ui = types.SimpleNamespace(url="http://127.0.0.1:5000/")
     assert drive.refusal(_browser(ui), drive.time.monotonic() + 0.05) == 1
     assert "the refusal screen was not shown" in capsys.readouterr().out
+
+
+def test_the_refusal_command_reaches_the_refusal_screen(drive, monkeypatch):
+    screen = _Screen([{"status": "downloaded", "version": "2.8.2"}])
+    chromium = types.SimpleNamespace(connect_over_cdp=lambda _url: _browser(screen))
+    playwright = types.SimpleNamespace(chromium=chromium)
+    monkeypatch.setattr(drive, "sync_playwright", lambda: contextlib.nullcontext(playwright))
+    assert drive.main("refusal", 9222, 60) == 0
+    assert screen.clicks[-1] == ("#refusal-update", "Restart to install")
