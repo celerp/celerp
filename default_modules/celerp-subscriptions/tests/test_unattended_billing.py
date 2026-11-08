@@ -867,3 +867,80 @@ async def test_a_failure_recording_a_failed_run_does_not_stop_the_pass(client, s
     await session.commit()
     assert report.done == 1
     assert await billed_docs(session, broken) == [] and len(await billed_docs(session, healthy)) == 1
+
+
+async def test_the_summary_covers_its_window_so_mark_as_read_stores_only_rows_in_it(client, session, monkeypatch):
+    """One agreement billed unattended each month and the summary marked read each month: the
+    summary (all=1 too) holds only rows of the last SUMMARY_WINDOW, and the stored keys are exactly
+    the rows in it, so a row past the window leaves the page and its key leaves storage."""
+    import uuid
+    from datetime import datetime, timezone
+
+    from celerp.models.company import Company
+    from celerp_subscriptions import billing
+    from celerp_subscriptions.summary import ACK_SETTING, SUMMARY_WINDOW
+
+    def on(day):
+        instant = datetime.fromisoformat(day).replace(hour=12, tzinfo=timezone.utc)
+        freeze_day(monkeypatch, day)
+        monkeypatch.setattr(billing, "now", lambda: instant)
+        return instant
+
+    on("2026-01-01")
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    await _auto(client, hd, start="2026-01-01")
+    for month in range(1, 13):
+        instant = on(f"2026-{month:02d}-01")
+        await tick(session, cid, f"2026-{month:02d}-01")
+        assert (await mark_read(client, hd, await summary(client, hd))).status_code == 200
+        everything = (await summary(client, hd, all=1))["rows"]
+        assert everything and all(datetime.fromisoformat(r["at"]) >= instant - SUMMARY_WINDOW for r in everything)
+        session.expire_all()
+        stored = ((await session.get(Company, uuid.UUID(cid))).settings or {})[ACK_SETTING]
+        assert [sorted(v) for v in stored.values()] == [sorted(r["key"] for r in everything)], month
+    # Nothing billed for longer than the window: the last bill's row leaves the page and, on the
+    # next Mark as read, its key leaves storage.
+    on("2027-04-01")
+    assert (await summary(client, hd, all=1))["rows"] == []
+    assert (await mark_read(client, hd, await summary(client, hd))).status_code == 200
+    session.expire_all()
+    assert ((await session.get(Company, uuid.UUID(cid))).settings or {})[ACK_SETTING] == {
+        k: [] for k in stored}
+
+
+async def test_a_failed_bill_keeps_its_reason_is_counted_to_check_and_offers_generate_due(client, session, monkeypatch):
+    """An agreement billing on its own with no line items fails its bill: the summary row says
+    why (the refusal Generate due would give), the summary line and the list banner count it to
+    check in the warning style, and the row offers Generate due, the door that fixes it."""
+    import uuid
+
+    from bs4 import BeautifulSoup
+
+    from celerp_subscriptions.summary import INFORMATIONAL, NEEDS_YOU, KINDS
+    from test_helpers import ui_signed_in
+
+    freeze_day(monkeypatch, "2026-07-01")
+    r = await client.post("/auth/register", json={
+        "company_name": "Failed bill Co", "email": f"failed-bill-{uuid.uuid4().hex[:8]}@test.test", "name": "Owner", "password": "validpass1"})
+    token = r.json()["access_token"]
+    hd = {"Authorization": f"Bearer {token}"}
+    cid = await company_id(client, hd)
+    eid = await _auto(client, hd, start="2026-07-01", line_items=[])
+    await tick(session, cid, "2026-07-01")
+    refused = (await client.post(f"/subscriptions/{eid}/generate-due", headers=hd,
+                                 json={"request_key": "why"})).json()["detail"]
+    page = await summary(client, hd)
+    ref = (await template(client, hd, eid))["ref_id"]
+    assert [(r["kind"], r["message"]) for r in page["rows"]] == [
+        ("generation_failed", t("subscriptions.summary_generation_failed_because", ref=ref,
+                                error=refused if isinstance(refused, str) else refused["message"]))]
+    assert set(KINDS) == set(NEEDS_YOU) | set(INFORMATIONAL) and not set(NEEDS_YOU) & set(INFORMATIONAL)
+    async with ui_signed_in(token) as ui:
+        listing = BeautifulSoup((await ui.get("/subscriptions")).text, "html.parser")
+        shown = BeautifulSoup((await ui.get("/subscriptions/summary")).text, "html.parser")
+    counted = t("subscriptions.summary_counts", generated=0, sent=0, failed=1)
+    banner = next(d for d in listing.select(".flash") if "/subscriptions/summary" in str(d))
+    assert "flash--warning" in banner["class"] and t("subscriptions.summary_banner", generated=0, sent=0, failed=1) in banner.text
+    assert counted in shown.text
+    assert shown.find("button", attrs={"hx-post": f"/subscriptions/{eid}/generate-due"}) is not None

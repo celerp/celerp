@@ -545,3 +545,31 @@ async def test_optional_billing_summary_failure_is_visible_on_list(ui_client):
         response = await ui_client.get("/subscriptions")
     assert response.status_code == 200
     assert "Billing summary unavailable" in response.text
+
+
+@pytest.mark.asyncio
+async def test_mark_as_read_on_a_page_of_1001_rows_posts_one_field_and_marks_every_row(owner_ui, monkeypatch):
+    """Mark as read sends the keys the page showed as one field, so a page of more rows than the
+    form parser takes fields (1000) is still marked read in one press, every key forwarded; the
+    page says which window the summary covers."""
+    import ui.api_client as api
+    from celerp_subscriptions.summary import SUMMARY_WINDOW
+
+    rows = [{"kind": "generated", "entity_id": f"doc:SUB-{i}", "doc_id": f"doc:INV-{i}", "period_index": 0,
+             "at": "2026-07-01T00:00:00+00:00", "retry_url": None, "again": False, "ref_id": f"INV-{i}",
+             "message": f"INV-{i} was created", "key": f"generated|doc:SUB-{i}|0|2026-07-01T00:00:00+00:00"}
+            for i in range(1001)]
+    posted = []
+
+    async def big(token, everything=False):
+        return {"counts": {"generated": len(rows)}, "rows": rows}
+
+    async def ack(token, keys):
+        posted.append(keys)
+        return {"ok": True, "read": len(keys)}
+    monkeypatch.setattr(api, "subscriptions_summary", big)
+    monkeypatch.setattr(api, "acknowledge_subscriptions_summary", ack)
+    page = (await owner_ui.get("/subscriptions/summary")).text
+    r = await owner_ui.post("/subscriptions/summary/ack", data=_hx_vals(page, "/subscriptions/summary/ack"))
+    assert r.status_code == 204 and posted == [[row["key"] for row in rows]], (r.status_code, r.text[:200])
+    assert t("subscriptions.summary_window", days=SUMMARY_WINDOW.days) in page

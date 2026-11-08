@@ -26,7 +26,9 @@ the action from what is stored, never from what the action intended.
 - ``claim_refusals()``: every route that refuses a claimed period through ``_refuse_claimed``
   (the one refusal naming the door that frees each kind of claim);
 - ``ack_doors()``: every function of the module or its UI that reads or writes the summary
-  acknowledgment (only ``summary.acknowledge`` writes it, from the page's read time);
+  acknowledgment (only ``summary.acknowledge`` writes it, from the keys of the rows the page showed);
+- ``named_door_refusals()``: every catalog refusal the module raises whose English names a door to
+  use instead (the named-door way-out guard walks each: the door accepts, and the page has it);
 - ``badge_renders()``: every ``doc_detail_badges`` render a module registers, and whether it
   reads a document's status itself (a document cannot tell how its agreement bills it now).
 
@@ -342,6 +344,20 @@ def ack_doors() -> list[tuple[str, str, str]]:
     return rows
 
 
+# A refusal names a door when its English tells the person which action to use instead.
+DOOR_WORDS = re.compile(r"\bUse |\b[Uu]nvoid\b|\bReopen\b|Withdraw placement|Set aside|\b[Vv]oid \{|Generate due")
+
+
+def named_door_refusals() -> list[tuple[str, str]]:
+    """(catalog key, English) of every ``subscriptions.err_*`` key the module's code names whose
+    English names a door (DOOR_WORDS)."""
+    import json
+    en = json.loads((ROOT / "ui" / "locales" / "en.json").read_text(encoding="utf-8"))
+    keys = {k for path in PACKAGE.glob("*.py")
+            for k in re.findall(r'"(subscriptions\.err_\w+)"', path.read_text(encoding="utf-8"))}
+    return sorted((k, en[k]) for k in keys if k in en and DOOR_WORDS.search(en[k]))
+
+
 @dataclass
 class SendWriter:
     where: str
@@ -533,6 +549,10 @@ def main() -> None:
     print(f"\n# Uses of the summary acknowledgment ({len(acks)})")
     for where, fn, how in acks:
         print(f"{fn:36} {where:70} {how}")
+    named = named_door_refusals()
+    print(f"\n# Refusals naming a door ({len(named)})")
+    for key, text in named:
+        print(f"{key:52} {text}")
     badges = badge_renders()
     print(f"\n# doc_detail_badges renders ({len(badges)})")
     for b in badges:

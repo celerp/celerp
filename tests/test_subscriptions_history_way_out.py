@@ -243,3 +243,102 @@ async def test_an_ended_agreement_answers_its_rule_first_and_the_door_it_names_c
         assert r.status_code == 200, (path, r.text)
     assert not await _review(client, old) and not await _in_review_list(client, old)
     assert (await _state(session, old, NAME))["periods"][str(k)]["doc_id"] == a
+
+
+# Every refusal that names a door (status_census.named_door_refusals), the door it names, and the
+# test that walks it: the door accepts in the state the refusal answered from, and the page where
+# the refusal shows offers it. A refusal the census finds that is not named here fails the guard.
+HERE = "test_every_refusal_on_a_running_agreement_names_a_door_that_accepts_and_is_on_its_page"
+VOID_HERE = "test_a_void_agreement_offers_unvoid_where_its_refusals_name_it"
+NAMED_DOORS = {
+    "subscriptions.err_period_placed": ("withdraw", HERE),
+    "subscriptions.err_period_placed_later_billed": ("void, reopen, withdraw", HERE),
+    "subscriptions.err_history_later_billed": ("void, reopen", HERE),
+    "subscriptions.err_period_billed": ("void", HERE),
+    "subscriptions.err_period_void": ("reopen", HERE),
+    "subscriptions.err_ended_void": ("unvoid", VOID_HERE),
+    "subscriptions.err_status_void": ("unvoid", VOID_HERE),
+    "subscriptions.err_bill_void": ("unvoid", VOID_HERE),
+    "subscriptions.err_ended_place_void": ("set-aside, unvoid", VOID_HERE),
+    "subscriptions.err_ended_place_cancelled": (
+        "set-aside", "test_an_ended_agreement_answers_its_rule_first_and_the_door_it_names_can_be_undone"),
+    "subscriptions.err_bill_reopened": ("generate-due", "test_period_billed_once"),
+    "subscriptions.err_period_draft": ("reopen", "test_period_billed_once"),
+    "subscriptions.err_early_due": ("generate-due", "test_billing_answers"),
+    "subscriptions.err_agreement_status_lifecycle": ("status actions", "test_consent_doors"),
+}
+
+
+def test_every_refusal_naming_a_door_is_walked():
+    assert {key for key, _ in status_census.named_door_refusals()} == set(NAMED_DOORS)
+
+
+def _refusal(r) -> tuple[str | None, str | None]:
+    got = r.json().get("detail") if r.status_code == 409 else None
+    return (got.get("message_key"), got.get("message")) if isinstance(got, dict) else (None, r.text)
+
+
+async def test_every_refusal_on_a_running_agreement_names_a_door_that_accepts_and_is_on_its_page(
+        client, session, monkeypatch):
+    """A placement with later periods billed: Skip and Reopen on its period name the way on (void
+    the later bills, Reopen their periods, then Withdraw placement), as does Withdraw placement.
+    Each door named accepts, one after the other, and the agreement's page offers each (the bill's
+    link, Reopen on its row, Withdraw placement); Withdraw placement is undone by placing it again."""
+    from celerp_subscriptions.billing import BILLED
+
+    old = await _upgrade(session, monkeypatch, "2026-11-04", before_start=_two_in_one_period)
+    hd, eid = old["headers"], old["runs"][NAME]
+    (a, ca), (_b, cb) = ((r["doc_id"], [c["period_index"] for c in r["candidates"]]) for r in await _review(client, old))
+    k = min(set(ca) & set(cb))
+
+    def post(path, **body):
+        return client.post(_url(old, NAME, path), headers=hd, json=body or None)
+
+    async def ref(doc_id):
+        session.expire_all()
+        return (await session.get(Projection, {"company_id": old["company_id"], "entity_id": doc_id})).state["ref_id"]
+
+    assert (await post(f"/history/{a}/confirm", period_index=k)).status_code == 200
+    for day in ("2026-11-04", "2026-12-20"):
+        _on(monkeypatch, day)
+        assert (await _generate(client, old, NAME)).status_code == 200
+    periods = (await _state(session, old, NAME))["periods"]
+    later = sorted((int(i), e["doc_id"]) for i, e in periods.items()
+                   if int(i) > k and e.get("state") == BILLED and not e.get("history"))
+    assert len(later) >= 2, later
+    placed, refs = await ref(a), ", ".join([await ref(d) for _, d in later])
+    for door in ("skip", "reopen"):
+        assert _refusal(await post(f"/periods/{k}/{door}", reason="Closed")) == (
+            "subscriptions.err_period_placed_later_billed",
+            t("subscriptions.err_period_placed_later_billed", "en", ref=placed, later=refs)), door
+    assert _refusal(await post(f"/history/{a}/withdraw")) == (
+        "subscriptions.err_history_later_billed", t("subscriptions.err_history_later_billed", "en", later=refs))
+    # The doors named, newest bill first: Skip on it names Void (the bill's link is on the page and
+    # Void accepts), then Reopen (on its row, and it accepts).
+    for p, doc in reversed(later):
+        assert _refusal(await post(f"/periods/{p}/skip", reason="Closed"))[0] == "subscriptions.err_period_billed"
+        assert f'href="/docs/{doc}"' in await _page(monkeypatch, old, NAME)
+        r = await client.post(f"/docs/{doc}/void", headers=hd,
+                              json={"reason": "Entered by mistake", "idempotency_key": str(uuid.uuid4())})
+        assert r.status_code == 200, r.text
+        assert _refusal(await post(f"/periods/{p}/skip", reason="Closed"))[0] == "subscriptions.err_period_void"
+        assert f'hx-post="/subscriptions/{eid}/periods/{p}/reopen"' in await _page(monkeypatch, old, NAME)
+        assert (await post(f"/periods/{p}/reopen")).status_code == 200
+    assert _refusal(await post(f"/periods/{k}/skip", reason="Closed")) == (
+        "subscriptions.err_period_placed", t("subscriptions.err_period_placed", "en", ref=placed))
+    assert f'hx-post="/subscriptions/{eid}/history/{a}/withdraw"' in await _page(monkeypatch, old, NAME)
+    assert (await post(f"/history/{a}/withdraw")).status_code == 200
+    assert (await post(f"/history/{a}/confirm", period_index=k)).status_code == 200
+
+
+async def test_a_void_agreement_offers_unvoid_where_its_refusals_name_it(client, session, monkeypatch):
+    """A void agreement's period and status doors answer "Unvoid it": its page links to its
+    document's page, which offers Unvoid, and Unvoid accepts."""
+    old = await _upgrade(session, monkeypatch, "2026-11-04")
+    hd, eid = old["headers"], old["runs"][NAME]
+    await _to(client, old, "void")
+    assert _refusal(await client.post(_url(old, NAME, "/pause"), headers=hd))[0] == "subscriptions.err_status_void"
+    page = await _page(monkeypatch, old, NAME)
+    assert f'<a href="/docs/{eid}"' in page and t("doc.unvoid", "en") in page
+    r = await client.post(f"/docs/{eid}/unvoid", headers=hd, json={"idempotency_key": str(uuid.uuid4())})
+    assert r.status_code == 200, r.text
