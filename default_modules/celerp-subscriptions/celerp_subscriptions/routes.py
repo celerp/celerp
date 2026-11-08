@@ -193,7 +193,7 @@ async def _move_with(session, company_id, proj: Projection, sent: dict, user) ->
     if set(sent) - _MOVING_FIELDS:
         raise billing.not_moved_refusal(state, entity_id, billing.not_moved(state))
     try:
-        async with session.begin_nested():
+        async with billing.attempt(session):
             await billing.write_agreement(session, company_id, entity_id, sent, user.id)
             await migration.move_template(session, company_id, entity_id)
     except ScheduleError as exc:
@@ -249,7 +249,7 @@ def _build_router() -> APIRouter:
         for item in body.items:
             eid = item.entity_id
             try:
-                async with session.begin_nested():
+                async with billing.attempt(session):
                     found = await billing.claim_period(
                         session, company_id, eid, actor=user, period_index=item.period_index,
                         request_key=item.request_key)
@@ -303,7 +303,7 @@ def _build_router() -> APIRouter:
                 if prior is not None:
                     results.append({**row, "ok": True, **prior})
                     continue
-                async with session.begin_nested():
+                async with billing.attempt(session):
                     proj = await billing.locked_agreement(session, company_id, item.entity_id)
                     billing.refuse_unbillable(proj.state)
                     if (item.entity_id, item.period_index) not in listed:

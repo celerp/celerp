@@ -23,7 +23,7 @@ from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from fastapi import HTTPException
-from sqlalchemy import delete, select
+from sqlalchemy import delete, event, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import catalog_refusal
@@ -940,10 +940,11 @@ def entering_modes(before: dict, after: dict) -> list[str]:
 
 def failure_reason(exc: Exception) -> dict:
     """Why an unattended bill failed, stored with its billing_failure: ``reason``, the keyed
-    refusal Generate due gives for the same state; nothing for any other failure."""
+    refusal Generate due gives for the same state (keyed, or the sentence it answers with);
+    nothing for any other failure."""
     from celerp.error_body import as_refusal, keyed
     detail = as_refusal(exc.detail) if isinstance(exc, HTTPException) else None
-    return {"reason": detail} if keyed(detail) else {}
+    return {"reason": detail} if keyed(detail) or (isinstance(detail, str) and detail) else {}
 
 
 async def run_due(*, session: AsyncSession, company_id, today: date, budget: int) -> OperationReport:
@@ -967,7 +968,7 @@ async def run_due(*, session: AsyncSession, company_id, today: date, budget: int
         while report.done < budget:
             failed_period = None
             try:
-                async with session.begin_nested():
+                async with attempt(session):
                     # Decided again from the agreement as locked: the read above may be stale.
                     company = await locked_company(session, company_id)
                     if (company is None or not company.is_active
@@ -1123,7 +1124,7 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
                 await session.commit()
                 return send
             try:
-                async with session.begin_nested():
+                async with attempt(session):
                     message = await doc_email(session, company_id, doc_id, doc.state, to, actor)
                     html, body = email._with_footer(message["body_html"], message["body_text"])
                     message = {**message, "body_html": html, "body_text": body, "branded": False}
@@ -1179,7 +1180,7 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
         await write_agreement(session, company_id, template_id, {"periods": periods}, actor.id)
         if result.ok:
             try:
-                async with session.begin_nested():
+                async with attempt(session):
                     await mark_doc_sent(session, company_id, doc_id, actor, DocSendBody(
                         sent_via="email", sent_to=message["to"],
                         idempotency_key=f"send:{doc_id}:{n}"), source="subscription")
@@ -1191,6 +1192,25 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
                 SubscriptionEmailAttempt.operation_id == operation_uuid))
         await session.commit()
     return send
+
+
+@asynccontextmanager
+async def attempt(session: AsyncSession):
+    """A savepoint whose failure the caller catches and carries on after. Every row written
+    inside it is held until it ends, so its rollback takes each of them out of the session: a
+    row the session no longer held would come back on a later read as one the rollback cannot
+    see, and stay in the session after its row is gone."""
+    written = []
+
+    def hold(_session, instance) -> None:
+        written.append(instance)
+
+    event.listen(session.sync_session, "pending_to_persistent", hold)
+    try:
+        async with session.begin_nested():
+            yield
+    finally:
+        event.remove(session.sync_session, "pending_to_persistent", hold)
 
 
 @asynccontextmanager

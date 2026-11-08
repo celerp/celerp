@@ -358,6 +358,27 @@ def named_door_refusals() -> list[tuple[str, str]]:
     return sorted((k, en[k]) for k in keys if k in en and DOOR_WORDS.search(en[k]))
 
 
+def savepoints() -> list[tuple[str, str, str]]:
+    """(file, function, opener) of every savepoint the module opens: ``attempt`` (billing.attempt)
+    or a bare ``begin_nested``, under the innermost function that opens it."""
+    found = set()
+
+    def visit(node: ast.AST, path: Path, fn: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                visit(child, path, child.name)
+                continue
+            if isinstance(child, ast.Call):
+                name = child.func.attr if isinstance(child.func, ast.Attribute) else getattr(child.func, "id", "")
+                if name in ("attempt", "begin_nested"):
+                    found.add((path.name, fn, name))
+            visit(child, path, fn)
+
+    for path in sorted(PACKAGE.glob("*.py")):
+        visit(ast.parse(path.read_text(encoding="utf-8")), path, "")
+    return sorted(found)
+
+
 @dataclass
 class SendWriter:
     where: str

@@ -944,3 +944,28 @@ async def test_a_failed_bill_keeps_its_reason_is_counted_to_check_and_offers_gen
     assert "flash--warning" in banner["class"] and t("subscriptions.summary_banner", generated=0, sent=0, failed=1) in banner.text
     assert counted in shown.text
     assert shown.find("button", attrs={"hx-post": f"/subscriptions/{eid}/generate-due"}) is not None
+
+
+async def test_a_failed_bill_leaves_the_next_agreement_in_the_same_pass_billed(client, session, monkeypatch):
+    """A bill that fails takes its document back with it, and the next agreement in the same pass
+    bills under the reference it frees: the failed document is not left behind to block it."""
+    freeze_day(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    failing = await _auto(client, hd, start="2026-07-01", line_items=[])
+    billing = await _auto(client, hd, start="2026-07-01")
+    await tick(session, cid, "2026-07-01")
+    assert await billed_docs(session, failing) == []
+    assert [d["period_index"] for d in await billed_docs(session, billing)] == [0]
+
+
+async def test_every_savepoint_the_module_opens_is_an_attempt():
+    """A savepoint whose failure is caught holds the rows written inside it until it ends
+    (billing.attempt); the module opens no other kind, so none leaves a row behind its rollback."""
+    from status_census import savepoints
+
+    opened = savepoints()
+    assert [s for s in opened if s[2] == "begin_nested"] == [("billing.py", "attempt", "begin_nested")]
+    assert {(f, fn) for f, fn, how in opened if how == "attempt"} >= {
+        ("billing.py", "run_due"), ("routes.py", "catch_up_run")}
+
