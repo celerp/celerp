@@ -27,6 +27,10 @@ _VALID_COMMERCIAL_MODES = ("celerp_direct", "partner_managed")
 # Billing tiers above free, in offer order. Unknown entitlement is represented
 # separately and must never be rendered as an authoritative Free account.
 PAID_TIERS = ("cloud", "ai", "team")
+# The tiers whose AI questions take several files. The AI service enforces the
+# per-tier file limit (Free and Connect: one file); this mirrors it for what the
+# app tells the user and must change with it.
+MULTI_FILE_TIERS = ("ai", "team")
 
 
 def get_instance_id() -> str:

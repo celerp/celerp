@@ -11,7 +11,7 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
 from celerp.error_body import keyed
-from celerp.gateway.state import PAID_TIERS
+from celerp.gateway.state import MULTI_FILE_TIERS, PAID_TIERS
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.activity import QTY_FIELD_KEYS, fmt_price, fmt_qty, is_money_field
@@ -22,7 +22,7 @@ from ui.components.cloud_gate import (
 )
 from ui.components.shell import base_shell, load_error
 from ui.config import get_token as _token, get_role
-from ui.i18n import doc_type_label, refusal_text, t, t_or, get_lang
+from ui.i18n import doc_type_label, refusal_text, t, t_or, get_lang, tier_label
 from ui.security import not_permitted_redirect
 
 # A proposal set larger than this renders as the review table instead of cards.
@@ -114,17 +114,42 @@ def _quota_exceeded_card(detail: dict, lang: str = "en") -> tuple[FT, FT]:
                 cls="ai-upgrade-cta",
             ),
         )
-    upgrade_label = t("msg.get_the_ai_plan", lang)
     return (
         _msg_bubble("ai", _credits_exhausted_text(detail, lang)),
-        Div(
-            P(t("msg.upgrade_to_keep_your_ai_operator_working", lang), cls="ai-upgrade-label"),
-            A(upgrade_label,
-              href=subscribe_url("ai"),
-              target="_blank", cls="btn btn--primary"),
-            cls="ai-upgrade-cta",
-        ),
+        _upgrade_cta(t("msg.upgrade_to_keep_your_ai_operator_working", lang), lang),
     )
+
+
+def _upgrade_cta(label: str, lang: str) -> FT:
+    """``label`` above the one action that opens the Connect + AI plan."""
+    return Div(
+        P(label, cls="ai-upgrade-label"),
+        A(t("msg.get_the_ai_plan", lang), href=subscribe_url("ai"), target="_blank", cls="btn btn--primary"),
+        cls="ai-upgrade-cta",
+    )
+
+
+def _bills_tip(tier: str | None, lang: str, cls: str) -> FT:
+    """How to hand bills to the reader on the user's plan: each bill in its own file, at
+    1 credit a file. A plan that reads several files per question says so; a plan that
+    reads one offers the plan that reads a whole stack at once. A plan not known here
+    (its status did not load) gets the rule alone."""
+    rule = t("ai.bills_each_file_free" if tier == "free" else "ai.bills_each_file", lang)
+    if tier in MULTI_FILE_TIERS:
+        return Div(P(f"{rule} {t('ai.bills_many_at_once', lang)}"), cls=cls)
+    if tier in ("free", *PAID_TIERS):
+        return Div(P(rule), _upgrade_cta(t("ai.bills_upsell", lang, plan=tier_label("ai")), lang), cls=cls)
+    return Div(P(rule), cls=cls)
+
+
+def _held_many_bills(job: dict) -> bool:
+    """Whether a file of a reading job held more bills than the one it was read for."""
+    return any((f.get("bill_count") or 1) > 1 for f in job.get("files") or [])
+
+
+def _many_bills_notice(job: dict, tier: str | None, lang: str) -> list[FT]:
+    """Beneath a reading job's reply: the plan's tip when a file of it held several bills."""
+    return [_bills_tip(tier, lang, "ai-msg flash flash--warning")] if _held_many_bills(job) else []
 
 
 def _refusal_text(status: int | None, data: dict, lang: str) -> tuple[str, bool] | None:
@@ -372,7 +397,7 @@ def setup_ui_routes(app) -> None:
         return await base_shell(
             _chat_view(
                 messages=messages, jobs=jobs, conversation_id=conversation_id,
-                lang=lang, failed=failed, paid=paid, badge=badge,
+                lang=lang, failed=failed, tier=status.get("tier"), badge=badge,
             ),
             title="AI Assistant - Celerp", nav_active="ai", request=request,
         )
@@ -582,7 +607,14 @@ def setup_ui_routes(app) -> None:
         message_id = str(result.get("message_id", ""))
         actions = result.get("pending_actions") or []
         groups = [_action_group(conversation_id, message_id, actions, lang)] if actions else []
-        return (_job_done_line(job, lang), _msg_bubble("ai", result.get("answer", "")), *groups)
+        tier = None  # a plan that did not load gets the bills rule alone
+        if _held_many_bills(job):
+            try:
+                tier = (await api.ai_quota_status(token, session_token)).get("tier")
+            except Exception:
+                pass
+        return (_job_done_line(job, lang), _msg_bubble("ai", result.get("answer", "")),
+                *_many_bills_notice(job, tier, lang), *groups)
 
     @app.get("/ai/question-ui")
     async def ai_question_ui(request: Request):
@@ -1908,10 +1940,12 @@ def _showcase_view(lang: str = "en", *, offer: dict | None = None, owner: bool |
     )
 
 
-def _thread(messages: list[dict], jobs: list[dict], conversation_id: str, lang: str) -> list[FT]:
+def _thread(messages: list[dict], jobs: list[dict], conversation_id: str, lang: str,
+            tier: str | None = None) -> list[FT]:
     """Render a stored conversation in time order: message bubbles, reading-job
-    bubbles, and the action cards beneath the assistant turn that proposed them. A
-    last question with no reply yet and no reading job is a running or interrupted
+    bubbles, and the action cards beneath the assistant turn that proposed them (a
+    reading job's reply carries the ``tier`` plan's tip when a file held several bills).
+    A last question with no reply yet and no reading job is a running or interrupted
     question job: its bubble reads its state."""
     entries = [("message", m) for m in messages] + [("job", j) for j in jobs]
     entries.sort(key=lambda entry: str(entry[1].get("created_at") or ""))
@@ -1920,11 +1954,15 @@ def _thread(messages: list[dict], jobs: list[dict], conversation_id: str, lang: 
     # before it again or as a new question.
     last = messages[-1] if messages else None
     asked: dict | None = None
+    reply_of = {str(j["proposal_message_id"]): j for j in jobs if j.get("proposal_message_id")}
     for kind, entry in entries:
         if kind == "job":
             out.append(_job_bubble(entry, conversation_id, lang))
             continue
-        out.extend(_message_parts(entry, conversation_id, asked, lang, offer_again=entry is last))
+        parts = _message_parts(entry, conversation_id, asked, lang, offer_again=entry is last)
+        if (job := reply_of.get(str(entry.get("id")))) is not None:
+            parts[1:1] = _many_bills_notice(job, tier, lang)
+        out.extend(parts)
         if entry.get("role") == "user":
             asked = entry
     reading = {str(j.get("id")) for j in jobs}
@@ -1959,14 +1997,16 @@ def _message_parts(entry: dict, conversation_id: str, asked: dict | None, lang: 
 def _chat_view(
     messages: list[dict] | None = None, jobs: list[dict] | None = None,
     conversation_id: str = "", lang: str = "en", failed: FT | None = None,
-    paid: bool = True, badge: str = "",
+    tier: str | None = None, badge: str = "",
 ) -> FT:
-    """The chat. ``paid`` offers the top-up link; a free account's ``badge`` (its
-    questions left) is rendered here, a paid plan's credits are read by the page script."""
+    """The chat. A paid ``tier`` offers the top-up link, and the tier decides the bills
+    tip under the drop zone; a free account's ``badge`` (its questions left) is rendered
+    here, a paid plan's credits are read by the page script."""
+    paid = tier in PAID_TIERS
     if failed is not None:
         message_children = [failed]
     elif messages or jobs:
-        message_children = _thread(messages or [], jobs or [], conversation_id, lang)
+        message_children = _thread(messages or [], jobs or [], conversation_id, lang, tier)
     else:
         message_children = [_empty_state(lang)]
     return Div(
@@ -2087,6 +2127,7 @@ def _chat_view(
                     id="ai-chat-dropzone", cls="ai-chat-dropzone",
                     role="button", tabindex="0", onclick="celerpAiOpenFilePicker()",
                 ),
+                _bills_tip(tier, lang, "form-hint"),
                 Div(id="ai-upload-error", cls="ai-upload-error", role="alert"),
                 hx_post="/ai/chat",
                 hx_target="#ai-messages",
