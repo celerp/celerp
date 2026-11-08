@@ -5,6 +5,7 @@ stored ones. A field that saved itself, or one put back with Escape, leaves noth
 the action posts on its own with no line save in front of it."""
 from __future__ import annotations
 
+import re
 import time
 import uuid
 
@@ -169,3 +170,67 @@ def test_a_quantity_the_user_blanks_is_saved_first_and_refused(page, ui_server, 
     assert page.locator("#save-status").inner_text() == "\u2717 Enter a number"
     assert sent == []
     assert api.get(path).json()["status"] == "draft"
+
+
+_LEVY = {"code": "Levy 5%", "rate": 5.0, "amount": 0, "order": 0, "is_compound": False, "label": ""}
+
+
+def _draft(api, doc_taxes=None) -> str:
+    r = api.post("/docs", json={"doc_type": "invoice", "status": "draft", "doc_taxes": doc_taxes or [],
+                                "line_items": [{"name": "Widget", "quantity": 1, "unit_price": 100.0,
+                                                "line_total": 100.0}]})
+    assert r.status_code in (200, 201), r.text
+    return r.json()["id"]
+
+
+def _issue_after(page, api, doc_id: str, js: str) -> dict:
+    page.evaluate(js + "; document.querySelector(\"button[hx-post$='/action/finalize']\").click();")
+    deadline = time.time() + 10
+    while time.time() < deadline and api.get(f"/docs/{doc_id}").json().get("status") == "draft":
+        time.sleep(0.2)
+    time.sleep(1.0)
+    doc = api.get(f"/docs/{doc_id}").json()
+    assert doc.get("status") != "draft"
+    return doc
+
+
+def test_a_discount_applied_right_before_issue_is_saved_first(page, ui_server, api):
+    doc_id = _draft(api)
+    answer_confirms(page)
+    page.goto(f"{ui_server}/docs/{doc_id}", wait_until="load")
+    doc = _issue_after(page, api, doc_id, "document.getElementById('disc-pop-value').value = '10';"
+                       "celerpDiscType('percentage'); celerpApplyDiscount()")
+    assert (float(doc.get("discount") or 0), doc.get("discount_type")) == (10.0, "percentage"), doc
+
+
+def test_a_document_tax_removed_right_before_issue_is_saved_first(page, ui_server, api):
+    doc_id = _draft(api, [_LEVY])
+    answer_confirms(page)
+    page.goto(f"{ui_server}/docs/{doc_id}", wait_until="load")
+    doc = _issue_after(page, api, doc_id, "celerpRemoveDocTax(0)")
+    assert [t for t in (doc.get("doc_taxes") or []) if t] == [], doc
+
+
+def test_an_edit_made_while_a_save_is_in_flight_is_saved_before_issue(page, ui_server, api):
+    """Price 150 is saving (held); meanwhile the price reads 175, typed but not yet blurred. The
+    save comes back, then Issue: 175 is saved first, so the issued invoice holds 175."""
+    doc_id = _draft(api)
+    answer_confirms(page)
+    page.goto(f"{ui_server}/docs/{doc_id}", wait_until="load")
+    held: list = []
+    page.route(re.compile(rf".*/docs/{doc_id}/lines$"), lambda route: route.continue_() if held else held.append(route))
+    cell = page.locator('#line-body input[data-name="unit_price"]').first
+    cell.fill("150")
+    cell.dispatch_event("input")
+    cell.blur()
+    for _ in range(80):
+        if held:
+            break
+        page.wait_for_timeout(100)
+    assert held, "the line save never left the page"
+    page.evaluate("document.querySelector('#line-body input[data-name=\"unit_price\"]').value = '175'")
+    with page.expect_response(re.compile(rf".*/docs/{doc_id}/lines$")):
+        held[0].continue_()
+    page.wait_for_timeout(300)
+    doc = _issue_after(page, api, doc_id, "void 0")
+    assert float(doc["line_items"][0]["unit_price"]) == 175.0, doc
