@@ -9,6 +9,9 @@ history review door (status_census.review_doors) in every document state that do
 each door answers as the rule says (on a cancelled or void agreement nothing new is placed in a
 period, and the refusal names Set aside), and from every state some door empties the review, so
 the agreement leaves the review list and its page stops asking for review.
+
+Every refusal a status guard answers (guard_agreement_status, write_agreement, guard_bill_status) is
+walked the same way: over every agreement status, with the module on or off, a door it names opens.
 """
 from __future__ import annotations
 
@@ -396,48 +399,192 @@ async def _agreement_to(client, hd, eid: str, status: str) -> None:
     assert r.status_code == 200, (status, r.text)
 
 
-# What a document a period let go meets when it comes back into billing (billing.guard_bill_status,
-# a doc_status_guard: any writer, any agreement status). Read off the guard's own code, so a new
-# refusal there fails test_a_let_go_document_comes_back_in_every_agreement_status until walked.
-GUARD_REFUSALS = {"subscriptions.err_bill_rebilled"}
-WAY_OUT_STATUSES = ("active", "paused", "cancelled", "void")
+# Every refusal the agreement and bill status guards and write_agreement raise (status_refusals),
+# with the doors it names. A row with doors is walked by
+# test_every_status_refusal_names_a_door_that_opens_in_the_state_it_answers: in whatever status the
+# agreement holds, with the module on or off, one of the doors named accepts. A row naming a test
+# is walked there; one naming no door is asserted to name none.
+STATUS_REFUSALS = {
+    "subscriptions.err_agreement_status_elsewhere": ("activate", "pause", "resume", "cancel"),
+    "subscriptions.err_agreement_activate": ("activate", "void"),
+    "subscriptions.err_agreement_status_lifecycle": ("activate", "pause", "resume", "cancel", "void", "unvoid", "revert"),
+    "subscriptions.err_status_void": ("unvoid",),
+    "subscriptions.err_ended_void": ("unvoid",),
+    "subscriptions.err_ended_cancelled": ("new subscription",),
+    "subscriptions.err_ended_place_void": "test_a_void_agreement_offers_unvoid_where_its_refusals_name_it",
+    "subscriptions.err_ended_place_cancelled": (
+        "test_an_ended_agreement_answers_its_rule_first_and_the_door_it_names_can_be_undone"),
+    "subscriptions.err_bill_rebilled": (),
+}
+# Helpers the guards call that refuse on their own, each refusing whatever the status, and the test
+# that walks them.
+RAISING_HELPERS = {
+    "refuse_unbuildable_terms": "test_schedule_terms_doors",
+    "require_mode_permissions": "test_consent_doors",
+    "locked_agreement": "test_billing_answers",
+    "write_agreement": "test_every_status_refusal_names_a_door_that_opens_in_the_state_it_answers",
+}
+GUARDS = ("guard_agreement_status", "write_agreement", "guard_bill_status")
 
 
-def test_the_bill_guard_refusals_are_walked_and_name_no_door():
-    """The guard answers whichever writer brings a document back, in whatever status its agreement
-    holds, so none of its refusals may send the user to a door that status keeps closed."""
+def status_refusals() -> tuple[set[str], set[str]]:
+    """(keys, helpers): every catalog key a raise in GUARDS answers with, read off the code (the
+    raise itself, the functions its value comes from and the constants they read), and every
+    module function a guard calls outside a raise that refuses on its own."""
+    import ast
     import inspect
-    import json
     import re
+    import textwrap
 
     from celerp_subscriptions import billing
 
-    found = set(re.findall(r'"(subscriptions\.err_\w+)"', inspect.getsource(billing.guard_bill_status)))
-    assert found == GUARD_REFUSALS
+    def fn(name):
+        target = getattr(billing, name, None)
+        return target if inspect.isfunction(target) and target.__module__ == billing.__name__ else None
+
+    def tree(f):
+        return ast.parse(textwrap.dedent(inspect.getsource(f)))
+
+    def keys_of(node, seen) -> set[str]:
+        found = set(re.findall(r"subscriptions\.err_\w+", ast.unparse(node)))
+        for n in ast.walk(node):
+            if isinstance(n, ast.Name) and n.id not in seen:
+                seen.add(n.id)
+                if (f := fn(n.id)) is not None:
+                    found |= keys_of(tree(f), seen)
+                elif isinstance(value := getattr(billing, n.id, None), (dict, str)):
+                    found |= set(re.findall(r"subscriptions\.err_\w+", repr(value)))
+        return found
+
+    keys, helpers = set(), set()
+    for name in GUARDS:
+        body = tree(fn(name))
+        assigned = {t.id: n.value for n in ast.walk(body) if isinstance(n, (ast.Assign, ast.NamedExpr))
+                    for t in (n.targets if isinstance(n, ast.Assign) else [n.target]) if isinstance(t, ast.Name)}
+        raises = [n for n in ast.walk(body) if isinstance(n, ast.Raise) and n.exc is not None]
+        in_raise = {id(m) for r in raises for m in ast.walk(r)}
+        for r in raises:
+            keys |= keys_of(r.exc, set())
+            keys |= {k for n in ast.walk(r.exc) if isinstance(n, ast.Name) and n.id in assigned
+                     for k in keys_of(assigned[n.id], set())}
+        helpers |= {n.func.id for n in ast.walk(body) if isinstance(n, ast.Call) and id(n) not in in_raise
+                    and isinstance(n.func, ast.Name) and (f := fn(n.func.id)) is not None
+                    and any(isinstance(m, ast.Raise) for m in ast.walk(tree(f)))}
+    return keys, helpers
+
+
+def test_every_status_refusal_has_a_row():
+    """A refusal added to a status guard, or a helper that refuses, fails here until it has a row."""
+    import json
+
+    keys, helpers = status_refusals()
+    assert keys == set(STATUS_REFUSALS)
+    assert helpers == set(RAISING_HELPERS)
     en = json.loads((Path(__file__).resolve().parents[1] / "ui" / "locales" / "en.json").read_text(encoding="utf-8"))
-    assert not [k for k in found if status_census.DOOR_WORDS.search(en[k])]
+    assert not [k for k, doors in STATUS_REFUSALS.items() if not doors and status_census.DOOR_WORDS.search(en[k])]
     assert set(WAY_OUT_STATUSES) == AGREEMENT_STATUSES - {"draft"}
 
 
+async def _status_door(client, hd, eid: str, door: str):
+    """A person's status door (or Skip, which changes what a period claims) on agreement ``eid``."""
+    key = {"idempotency_key": str(uuid.uuid4())}
+    if door == "new subscription":
+        return await client.post(f"/subscriptions/{await agreement(client, hd, start='2026-01-01', activate=False)}/activate",
+                                 headers=hd)
+    if door == "skip":
+        return await client.post(f"/subscriptions/{eid}/periods/1/skip", headers=hd, json={"reason": "Closed"})
+    if door in ("activate", "pause", "resume", "cancel"):
+        return await client.post(f"/subscriptions/{eid}/{door}", headers=hd)
+    body = {"void": {"reason": "Entered by mistake", **key}, "unvoid": key}.get(door, {})
+    return await client.post(f"/docs/{eid}/{ {'revert': 'revert-to-draft'}.get(door, door)}", headers=hd, json=body)
+
+
+STATUS_DOORS = ("activate", "pause", "resume", "cancel", "void", "unvoid", "revert", "finalize", "skip")
+# The status refusals the walk meets, by whether the module is on.
+MET = {
+    True: {"subscriptions.err_agreement_status_elsewhere", "subscriptions.err_agreement_activate",
+           "subscriptions.err_agreement_status_lifecycle", "subscriptions.err_status_void",
+           "subscriptions.err_ended_void", "subscriptions.err_ended_cancelled"},
+    False: {"subscriptions.err_agreement_activate", "subscriptions.err_agreement_status_lifecycle"},
+}
+
+
+@pytest.mark.parametrize("module_on", [True, False])
+async def test_every_status_refusal_names_a_door_that_opens_in_the_state_it_answers(
+        client, session, monkeypatch, module_on):
+    """An agreement billing on its own is brought to each status as a person does (void while the
+    module is off, as Documents allows), then the module is left on or off and each status door is
+    pressed. Each status refusal it answers names a door, and one of them accepts in that state."""
+    from agreement_kit import company_id, schedule, tick
+    from test_module_off_census import MODULE, _turn_off
+
+    freeze_day(monkeypatch, "2026-01-01")
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    made = {}
+    for status in sorted(AGREEMENT_STATUSES):
+        for door in STATUS_DOORS:
+            eid = await agreement(client, hd, start="2026-01-01", activate=status != "draft")
+            r = await schedule(client, hd, eid, generation_mode="auto_invoice", catchup_periods=6)
+            assert r.status_code == 200, (status, r.text)
+            if status in ("paused", "cancelled"):
+                assert (await _status_door(client, hd, eid, {"paused": "pause", "cancelled": "cancel"}[status])).status_code == 200
+            made[status, door] = eid
+    await tick(session, cid, "2026-01-01")
+    await _turn_off(client, hd, monkeypatch)
+    for door in STATUS_DOORS:
+        assert (await _status_door(client, hd, made["void", door], "void")).status_code == 200
+    if module_on:
+        assert (await client.post(f"/companies/me/modules/{MODULE}/enable", headers=hd)).status_code == 200
+        monkeypatch.undo()
+        freeze_day(monkeypatch, "2026-01-01")
+    met, answers = set(), {}
+    for (status, door), eid in made.items():
+        assert (await client.get(f"/docs/{eid}", headers=hd)).json()["status"] == status
+        r = await _status_door(client, hd, eid, door)
+        key = (r.json().get("detail") or {}).get("message_key") if r.status_code == 409 else None
+        answers[status, door] = key or r.status_code
+        if key not in STATUS_REFUSALS:
+            continue
+        met.add(key)
+        named = STATUS_REFUSALS[key]
+        assert isinstance(named, tuple) and named, (status, door, key)
+        for named_door in named:
+            if (await _status_door(client, hd, eid, named_door)).status_code == 200:
+                break
+        else:
+            raise AssertionError(("no door named opens", status, door, key, module_on))
+    assert met == MET[module_on], (met, answers)
+
+
+WAY_OUT_STATUSES = ("active", "paused", "cancelled", "void")
+
+
+@pytest.mark.parametrize("module_on", [True, False])
 @pytest.mark.parametrize("status", WAY_OUT_STATUSES)
-async def test_a_let_go_document_comes_back_in_every_agreement_status(client, session, monkeypatch, status):
-    """Bill, void the bill, Reopen, then the agreement is paused, cancelled or voided: Unvoid on the
-    bill undoes the Reopen, so the period reads billed on it again. Once a newer bill bills the
-    period instead, Unvoid of the older one answers err_bill_rebilled in every status."""
+async def test_a_let_go_document_comes_back_in_every_agreement_status(client, session, monkeypatch, status, module_on):
+    """Bill, void the bill, Reopen, then the agreement is paused, cancelled or voided, and the module
+    is left on or turned off: Unvoid on the bill undoes the Reopen, so the period reads billed on it
+    again. Once a newer bill bills the period instead, Unvoid of the older one answers
+    err_bill_rebilled (it names no door: test_every_status_refusal_has_a_row) in every status."""
+    from test_module_off_census import _turn_off
+
     freeze_day(monkeypatch, "2026-03-01")
     hd = await register(client)
     eid = await agreement(client, hd, start="2026-03-01")
     bill = await _bill_void_reopen(client, hd, eid)
     await _agreement_to(client, hd, eid, status)
+    other = await agreement(client, hd, start="2026-03-01")
+    older = await _bill_void_reopen(client, hd, other)
+    newer = (await generate_due(client, hd, other)).json()
+    await _agreement_to(client, hd, other, status)
+    if not module_on:
+        await _turn_off(client, hd, monkeypatch)
     r = await client.post(f"/docs/{bill['doc_id']}/unvoid", headers=hd, json={"idempotency_key": str(uuid.uuid4())})
     assert r.status_code == 200, r.text
     state = (await client.get(f"/docs/{eid}", headers=hd)).json()
     assert (state["status"], state["periods"]["0"]["doc_id"], state["released_bills"]) == (status, bill["doc_id"], {})
 
-    other = await agreement(client, hd, start="2026-03-01")
-    older = await _bill_void_reopen(client, hd, other)
-    newer = (await generate_due(client, hd, other)).json()
-    await _agreement_to(client, hd, other, status)
     r = await client.post(f"/docs/{older['doc_id']}/unvoid", headers=hd, json={"idempotency_key": str(uuid.uuid4())})
     got = r.json()["detail"] if r.status_code == 409 else {}
     assert (got.get("message_key"), (got.get("params") or {}).get("newer")) == (
