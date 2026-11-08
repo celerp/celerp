@@ -69,6 +69,7 @@ def test_a_list_conversion_carries_every_key_the_money_rule_reads():
     assert reads.read, source
     for key in reads.read:
         assert carried.get("tax_rate" if key == "tax" else key) == source.get(key), key
+    assert "tax" not in carried  # a List's tax is its rate, never a tax amount on the document
 
 
 async def _ok(r):
