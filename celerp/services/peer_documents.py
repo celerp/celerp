@@ -90,7 +90,8 @@ async def receive_document(
     through the canonical services, without bypassing their status and money checks."""
     from celerp_docs.doc_constants import LIFECYCLE_OWNED_FIELDS
     from celerp_docs.import_service import import_doc_records
-    from celerp_docs.routes import DocImportRecord, LineItem, _reject_line_attributes, finalize_document
+    from celerp_docs.line_bodies import LineItem
+    from celerp_docs.routes import DocImportRecord, _reject_line_attributes, finalize_document
     from celerp_docs.sequences import require_doc_type
 
     if not isinstance(data, dict):

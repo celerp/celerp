@@ -23,7 +23,8 @@ from celerp.models.projections import Projection
 from celerp.services.list_behavior import DOC_SCAN_BEHAVIOR, LIST_TYPES
 from celerp.services.money import document_line_amount
 from celerp_docs.doc_constants import TOTAL_POSTED_DOC_TYPES
-from celerp_docs.routes import LineItem, refuse_malformed_input
+from celerp_docs.line_bodies import LineItem
+from celerp_docs.routes import refuse_malformed_input
 from test_invoice_unshipped_books import _ok
 from test_receipt_accounting import _doc, _finalize
 from test_reissued_invoice_cogs import _invoice, _line_ids, _ship, _state, _stones

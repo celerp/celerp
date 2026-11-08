@@ -42,7 +42,7 @@ from celerp.services.account_roles import consignor_of, is_consigned, lineage, n
 from celerp.services.company_lock import lock_projections
 from celerp.services.lot_origin import RETIRED
 from celerp.services.money import allocate_pro_rata, require_line_amount, round_money, to_decimal, to_stored_float
-from celerp_docs.doc_money import UnratedTaxError, document_money, refuse_unset_line_tax
+from celerp_docs.doc_money import DOC_MONEY_INPUTS, DOC_TOTAL_FIELDS, UnratedTaxError, document_money, refuse_unset_line_tax
 from celerp_docs.record_copy import copy_of
 
 _EPS = Decimal("1e-9")
@@ -392,7 +392,9 @@ async def buy_consignment(session, *, company_id, user_id, consignment_id: str, 
     bill_id = f"doc:{ref}"
     # The bill is a copy of the consignment that starts its own lifecycle (record_copy): what went
     # back to the consignor was returned on the consignment, never on the bill, and its scan runs stay with it.
+    # It is born issued at the consignment's price, so it keeps the consignment's money.
     data = copy_of(state, settings)
+    data.update({k: state[k] for k in (*DOC_MONEY_INPUTS, *DOC_TOTAL_FIELDS) if k in state})
     data["line_items"] = lines
     data["received_items"], data["received_item_ids"] = _bill_receipts(state, plan, source)
     if changed:

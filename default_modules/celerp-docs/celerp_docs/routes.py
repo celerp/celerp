@@ -35,11 +35,12 @@ from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
 from celerp_docs.consignment_buy import bought_parcels, bought_receipt_lots, buy_consignment
-from celerp_docs.doc_money import (LIST_TOTAL_FIELDS, document_money, document_terms, drawn_line_money, fixed_discount,
+from celerp_docs.doc_money import (DOC_MONEY_INPUTS, LIST_TOTAL_FIELDS, document_money, document_terms, drawn_line_money, fixed_discount,
                                    list_totals_differ, memo_draws, memo_fixed_amounts, memo_tax_rate_money,
                                    money_from_lines, refuse_malformed_taxes, refuse_unset_line_tax, released_header_money,
                                    unrated_tax)
 from celerp_docs.doc_projections import RESTORE_POINT, UNISSUED_STATUSES, list_lines_and_totals, payment_status
+from celerp_docs.line_bodies import LineItem, WriteoffLineBody
 from celerp_docs.record_copy import copy_of
 from celerp_docs.taxes import TaxApplication
 from celerp.services.field_schema import reject_system_item_fields
@@ -121,61 +122,6 @@ def _validate_shipment_values(values: dict) -> None:
         v = values.get(field)
         if v and v not in allowed:
             raise ValueError(t("documents.err_incoterms_invalid" if field == "incoterms" else "documents.err_export_reason_invalid", value=v))
-
-
-class LineItem(BaseModel):
-    # The line's own stable identity, assigned where lines are written when omitted.
-    line_id: str | None = None
-    item_id: str | None = None
-    entity_id: str | None = None  # alias sent by the frontend; resolved to item_id below
-    sku: str | None = None
-    # Stamped from the catalog item when the line is added; the identifier a
-    # finalized document keeps showing even if the item is later re-barcoded.
-    barcode: str | None = None
-    name: str | None = None
-    description: str | None = None
-    quantity: FiniteFloat = 0
-    unit: str | None = None
-    unit_price: FiniteFloat = 0
-    # The line's own discount, taken off its price (document_line_amount) when no line_total is given.
-    discount_pct: FiniteFloat | None = None
-    tax_rate: FiniteFloat | None = None  # deprecated: kept for backward compat; prefer taxes list
-    # None: the line's tax is still for the user to set (set_new_line_taxes); it charges nothing.
-    taxes: list[TaxApplication] | None = Field(default_factory=list)
-    sell_by: str | None = None
-    line_total: FiniteFloat | None = None
-    # Purchasing: whether the line's goods are received into stock, as an expense or as an asset.
-    receive_as: Literal["stock", "expense", "asset"] | None = None
-    # Invoice fulfillment: how much of the linked parcel this line draws, by piece
-    # and by weight. Drive the split-on-fulfill (child_pieces / child_weight). Only
-    # editable when the parcel actually tracks that measure and splitting is allowed.
-    pieces: FiniteFloat | None = None
-    weight: FiniteFloat | None = None
-    # Purchasing: what the received lot records about the goods.
-    attributes: dict | None = None
-    # Purchasing: the chart account the line posts to; checked when the bill is finalized.
-    account_code: str | None = None
-    # Selling a fixed asset: the asset the line sells (an invoice) or credits (a credit note).
-    asset_id: str | None = None
-    # A credit note line that takes the sold asset back onto the books.
-    asset_returned: bool | None = None
-    # A credit note line: the invoice line it credits.
-    source_line_id: str | None = None
-    # A migrated line: the tracking category -> option its source books gave it.
-    tracking: dict[str, str] | None = None
-
-    @model_validator(mode="after")
-    def _resolve_entity_id(self) -> "LineItem":
-        """Frontend sends entity_id; normalise to item_id so the stored state is consistent.
-        A line naming two different items under the two keys is refused, as every line
-        writer refuses it (document_lines.linked_items)."""
-        if self.entity_id and self.item_id and self.entity_id != self.item_id:
-            raise ValueError(f"This line names two different items ({self.item_id} and {self.entity_id}). "
-                             "Keep one item per line.")
-        if self.entity_id and not self.item_id:
-            self.item_id = self.entity_id
-        self.entity_id = None  # never persist entity_id; always use item_id
-        return self
 
 
 def _calendar_date(v: str | None) -> str | None:
@@ -486,7 +432,6 @@ class DocCreatePayload(BaseModel):
 
 
 # Header and line inputs a document's money is computed from (see document_money).
-_DOC_MONEY_INPUTS = frozenset({"line_items", "discount", "discount_type", "shipping", "doc_taxes", "tax_rate", "currency"})
 
 
 class DocPatch(BaseModel):
@@ -2440,7 +2385,7 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     # Stored values round at the stored currency, incoming ones at the currency this patch leaves.
     _old_currency = row.state.get("currency")
     _new_currency = (fields_changed.get("currency") or {}).get("new") or _old_currency
-    if is_draft and _DOC_MONEY_INPUTS & fields_changed.keys():
+    if is_draft and DOC_MONEY_INPUTS & fields_changed.keys():
         # The document's money is computed here from its lines and header inputs, never taken
         # from the client: every line tax, document tax, discount and total follows the one rule
         # in document_money, so the stored figures always reconcile (shipping included).
@@ -8184,8 +8129,9 @@ async def convert_doc(entity_id: str, payload: DocConvertBody | None = None, com
             raise HTTPException(status_code=409, detail=t("documents.err_quote_expired"))
         ref = await claim_number(session, company, draft_counter("invoice"))
         new_doc_id = f"doc:{ref}"
-        # The invoice is a new draft copy of the quotation (record_copy).
-        new_data = copy_of(state, company.settings)
+        # The invoice is a new draft copy of the quotation (record_copy), its money worked out
+        # from its lines as for any document created.
+        new_data = money_from_lines(copy_of(state, company.settings), state.get("currency"))
         new_data.update({"doc_type": "invoice", "ref_id": ref, "source_quotation_id": entity_id})
         await require_moving_fits_units(session, company_id, new_doc_id, "doc", new_data)
         await emit_event(
@@ -10213,10 +10159,6 @@ async def delete_list(
     return {"deleted": entity_id}
 
 
-# A List's money figures, which a document made from it works out again in its own representation.
-_LIST_MONEY = frozenset({"tax", "tax_amount", "subtotal", "discount_amount", "total"})
-
-
 @lists_router.post("/{entity_id}/convert")
 async def convert_list(
     entity_id: str,
@@ -10254,14 +10196,9 @@ async def convert_list(
     to_transfer = await _held_lots(session, company_id, entity_id)
     ref = await claim_number(session, company, draft_counter(payload.target_type))
     new_doc_id = f"doc:{ref}"
-    # A list holds its header tax as a rate (``tax``) beside the amount (``tax_amount``); a
-    # document holds the rate as ``tax_rate`` and the amount as ``tax``. So no list money is
-    # taken: the document's money is worked out from its lines by the document rule
-    # (money_from_lines), as for any document created.
-    new_data = {k: v for k, v in copy_of(state, company.settings).items() if k not in _LIST_MONEY}
-    if state.get("tax"):
-        new_data["tax_rate"] = state["tax"]
-    new_data = money_from_lines(new_data, state.get("currency"))
+    # The document is a copy of the list (record_copy), its money worked out from its lines by the
+    # document rule (money_from_lines), as for any document created.
+    new_data = money_from_lines(copy_of(state, company.settings), state.get("currency"))
     new_data.update({"doc_type": payload.target_type, "ref_id": ref, "source_list_id": entity_id})
     await require_moving_fits_units(session, company_id, new_doc_id, "doc", new_data)
     for li_eid, held in to_transfer.items():
@@ -14733,16 +14670,6 @@ def _stated_measures(weight: float | None, pieces: float | None) -> dict:
 class WriteoffCreateBody(BaseModel):
     entity_ids: list[str] = Field(default_factory=list)
     idempotency_key: str | None = None
-
-
-class WriteoffLineBody(BaseModel):
-    line_id: str | None = None
-    item_id: str | None = None
-    qty_out: FiniteFloat | None = None
-    weight: FiniteFloat | None = None
-    pieces: FiniteFloat | None = None
-    account: str | None = None
-    comment: str | None = None
 
 
 async def _get_writeoff(session: AsyncSession, company_id, entity_id: str, *, for_update: bool = False) -> Projection:
