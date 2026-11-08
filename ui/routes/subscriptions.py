@@ -294,6 +294,12 @@ def _data_table(*parts) -> FT:
     return Div(Table(*parts, cls="data-table"), cls="table-scroll-wrap")
 
 
+def _sentence_cell(*content, cls: str = "") -> FT:
+    """A cell that can hold a sentence (what happened, why, what to do): it wraps in the room
+    its table has (app.css cell--note) instead of pushing the columns after it out of view."""
+    return Td(*content, cls=f"cell--note {cls}".rstrip())
+
+
 def _sub_table(subs: list[dict], direction: str, review: bool = False) -> FT:
     if not subs and review:
         return Div(empty_state_cta(t("subscriptions.review_empty"), t("subscriptions.review_all"),
@@ -315,7 +321,7 @@ def _sub_table(subs: list[dict], direction: str, review: bool = False) -> FT:
             Td(A(name, href=f"/subscriptions/{eid}")),
             Td(contact),
             Td(freq),
-            Td(next_due),
+            _sentence_cell(next_due),
             Td(_status_badge(status)),
         )
 
@@ -560,7 +566,7 @@ def _periods_table(entity_id: str, schedule: dict, *, historical_page: bool = Fa
                 earlier += [", "] if earlier else []
                 earlier.append(A(d["ref_id"], href=f"/docs/{d['doc_id']}"))
             doc = Div(doc, Div(t("subscriptions.period_earlier_bills"), " ", *earlier, cls="text-muted"))
-        return Tr(Td(f"{r['service_start']} - {r['service_end']}"), Td(r["bill_date"]), Td(label), Td(doc),
+        return Tr(Td(f"{r['service_start']} - {r['service_end']}"), Td(r["bill_date"]), Td(label), _sentence_cell(doc),
                   Td(_period_actions(entity_id, r)))
 
     return Div(
@@ -693,16 +699,16 @@ def _outcome_table(results: list[dict], subs: dict[str, dict], retry_key: str | 
         action = Td("")
         if not r.get("ok"):
             reason = refusal_text(r.get("error"))
-            outcome = Td(sentence("subscriptions.done_refused", start=r["service_start"], end=r["service_end"], reason=reason)
-                         if r.get("service_start") else reason, cls="text-danger")
+            outcome = _sentence_cell(sentence("subscriptions.done_refused", start=r["service_start"], end=r["service_end"],
+                                              reason=reason) if r.get("service_start") else reason, cls="text-danger")
             if retry_key is not None:
                 action = Td(Button(t("btn.retry"), cls="btn btn--secondary btn--sm", hx_post="/subscriptions/generate-due",
                                    hx_vals={"item": json.dumps([f"{eid}|{r['period_index']}"]), FIELD: retry_key},
                                    hx_target="#sub-due-panel", hx_swap="innerHTML"))
         elif r.get("skipped"):
-            outcome = Td(sentence("subscriptions.done_skipped", start=r["service_start"], end=r["service_end"]))
+            outcome = _sentence_cell(sentence("subscriptions.done_skipped", start=r["service_start"], end=r["service_end"]))
         else:
-            outcome = Td(A(_billed_text(r), href=f"/docs/{r['doc_id']}"))
+            outcome = _sentence_cell(A(_billed_text(r), href=f"/docs/{r['doc_id']}"))
         return Tr(Td(A(name, href=f"/subscriptions/{eid}")), outcome, action)
 
     return _data_table(Thead(Tr(Th(t("th.name")), Th(t("th.status")), Th(""))), Tbody(*[_row(r) for r in results]))
@@ -786,8 +792,8 @@ def _summary_table(rows: list[dict], subs: dict[str, dict]) -> FT:
                if r.get("error_key") in _FIXED_IN_WEB_ACCESS else "")
         return Tr(Td(format_timestamp(r.get("at") or "") or "--"),
                   Td(A(template_label(subs.get(eid) or {}, eid), href=f"/subscriptions/{eid}")),
-                  Td(r.get("message") or "", " " if fix else "", fix,
-                     Div(retry, cls="mt-xs") if retry else ""), Td(doc))
+                  _sentence_cell(r.get("message") or "", " " if fix else "", fix,
+                                 Div(retry, cls="mt-xs") if retry else ""), Td(doc))
 
     return _data_table(Thead(Tr(Th(t("th.date")), Th(t("th.name")), Th(t("th.description")), Th(t("th.document")))),
                  Tbody(*[_row(r) for r in rows]))
@@ -852,11 +858,11 @@ def _history_review(entity_id: str, review: list[dict], set_aside: list[dict]) -
         aside = _action(t("subscriptions.history_set_aside"), doc_id, "set-aside",
                         title=t("subscriptions.history_set_aside_title"))
         note = [] if places else [Span(t("subscriptions.history_no_period"), cls="text-muted")]
-        return Tr(Td(_doc(r)), Td(*note, *places, aside))
+        return Tr(Td(_doc(r)), _sentence_cell(*note, *places, aside))
 
     def _aside_row(r: dict) -> FT:
-        return Tr(Td(_doc(r)), Td(Span(t("subscriptions.history_set_aside_row"), cls="text-muted"),
-                                  _action(t("subscriptions.history_return"), r["doc_id"], "withdraw")))
+        return Tr(Td(_doc(r)), _sentence_cell(Span(t("subscriptions.history_set_aside_row"), cls="text-muted"),
+                                              _action(t("subscriptions.history_return"), r["doc_id"], "withdraw")))
 
     return Div(
         H3(t("subscriptions.history_heading")),

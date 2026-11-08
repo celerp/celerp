@@ -246,7 +246,9 @@ async def write_agreement(session: AsyncSession, company_id, entity_id: str, cha
     bills no period again, so a person's write that changes what its periods claim is refused
     (ended_refusal), whichever action makes it, a placement's withdrawal included; its terms, a
     period's send record and its history review (Set aside, and Return of a set-aside) still change.
-    A change that ends the agreement's billing failure (ends_failure) drops it in the same event."""
+    A change that ends the agreement's billing failure (ends_failure) drops it in the same event;
+    one that only stops it holding (a pause, billing by hand, a new schedule) leaves it to run_due's
+    next pass, as does a void, which Documents writes without passing here."""
     before = (await session.execute(select(Projection.state).where(
         Projection.company_id == company_id, Projection.entity_id == entity_id))).scalar_one_or_none() or {}
     changes = {k: v for k, v in changes.items() if shown(k, before.get(k)) != shown(k, v)}
@@ -391,9 +393,11 @@ def failure_of(state: dict) -> dict:
 
 
 def ends_failure(before: dict, changes: dict) -> bool:
-    """Whether a change ends the agreement's billing failure: its period is billed or skipped,
-    or the agreement is cancelled or voided. run_due writes the failure and drops one that no
-    longer holds; this is the only other way it ends."""
+    """Whether a change written through write_agreement ends the agreement's billing failure in
+    that event: its period is billed or skipped, or the agreement ends (ENDED, as Cancel does).
+    The failure is one current fact, which run_due writes: anything else that stops it holding (a
+    pause, billing by hand, a new schedule, or a void, which Documents writes without passing
+    here) leaves it stored until run_due's next pass drops it (still_failing)."""
     failure = failure_of(before)
     if not failure:
         return False
@@ -1032,13 +1036,16 @@ def failure_reason(exc: Exception) -> dict:
 
 def still_failing(state: dict, found: tuple[Schedule, list[int]] | None) -> bool:
     """Whether the agreement's billing failure still holds: its period is the one the agreement
-    would bill on its own next (``found``, unattended_due as stored)."""
+    would bill on its own next (``found``, unattended_due as stored). One that no longer holds
+    (paused, billing by hand, rescheduled, or void through Documents) stays stored until
+    run_due's next pass drops it."""
     return found is not None and found[1][0] == failure_of(state).get("period_index")
 
 
 async def _drop_failure(session: AsyncSession, company_id, entity_id: str, today: date) -> None:
     """Drop a billing failure that no longer holds (still_failing, decided again as locked):
-    the agreement was paused, set to bill by hand or rescheduled since the pass that failed."""
+    the agreement was paused, set to bill by hand, rescheduled or voided through Documents since
+    the pass that failed."""
     try:
         async with savepoint(session):
             proj = await locked_agreement(session, company_id, entity_id)
@@ -1049,7 +1056,10 @@ async def _drop_failure(session: AsyncSession, company_id, entity_id: str, today
 
 
 async def run_due(*, session: AsyncSession, company_id, today: date, budget: int) -> OperationReport:
-    """The dispatcher's billing pass for one company (the ``periodic_operation`` slot)."""
+    """The dispatcher's billing pass for one company (the ``periodic_operation`` slot). It
+    stores an agreement's billing failure when its unattended bill is refused, one current fact,
+    and drops one that no longer holds (still_failing) before billing it; a bill or skip of the
+    failed period, or the agreement ending, drops it sooner, in that write (ends_failure)."""
     report = OperationReport()
     from celerp.modules.registry import uses_module
 

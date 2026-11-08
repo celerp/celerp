@@ -1050,6 +1050,30 @@ async def test_a_failure_ended_another_way_leaves_no_row(client, session, monkey
     assert "billing_failure" not in await template(client, hd, eid)
 
 
+async def test_a_documents_void_leaves_the_failure_to_the_next_pass(client, session, monkeypatch):
+    """Documents writes a void without write_agreement, so the void does not end the failure in
+    that write: it stays stored, its row listed, until the next pass drops it as no longer holding."""
+    _on(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    eid = await _untaxed(client, session, hd, start="2026-07-01", frequency="annually")
+    await tick(session, cid, "2026-07-01")
+    # Documents refuses a void while the agreement bills automatically; a pause alone ends nothing.
+    assert (await client.post(f"/subscriptions/{eid}/pause", headers=hd)).status_code == 200
+    failure = (await template(client, hd, eid))["billing_failure"]
+    r = await client.post(f"/docs/{eid}/void", headers=hd,
+                          json={"reason": "Entered by mistake", "idempotency_key": str(uuid.uuid4())})
+    assert r.status_code == 200, r.text
+    state = await template(client, hd, eid)
+    assert state["status"] == "void" and state["billing_failure"] == failure
+    assert len(_failed(await summary(client, hd))) == 1
+    _on(monkeypatch, "2026-07-02")
+    await tick(session, cid, "2026-07-02")
+    page = await summary(client, hd)
+    assert _failed(page) == [] and page["counts"]["generation_failed"] == 0
+    assert "billing_failure" not in await template(client, hd, eid)
+
+
 async def test_skipping_a_failed_period_is_refused_naming_pause_and_the_failure_stays(client, session, monkeypatch):
     """Skip leaves the agreement billing what its next bill would refuse too, so it is refused
     with the refusal naming Pause, the way to fix its lines, and the failure row stays."""
