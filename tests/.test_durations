@@ -3469,7 +3469,6 @@
     "default_modules/celerp-subscriptions/tests/test_schedule_page.py::test_stop_at_period_end_is_set_and_undone_from_the_page": 0.5,
     "default_modules/celerp-subscriptions/tests/test_schedule_page.py::test_stop_at_period_end_keeps_a_period_billed_early": 0.368,
     "default_modules/celerp-subscriptions/tests/test_schedule_page.py::test_timing_and_term_are_set_from_the_page": 0.407,
-    "default_modules/celerp-subscriptions/tests/test_schedule_terms_doors.py::test_a_let_go_bill_of_an_agreement_without_a_schedule_is_refused_by_name": 0.375,
     "default_modules/celerp-subscriptions/tests/test_schedule_terms_doors.py::test_a_raw_event_never_takes_an_agreement_off_its_schedule[empty]": 0.25,
     "default_modules/celerp-subscriptions/tests/test_schedule_terms_doors.py::test_a_raw_event_never_takes_an_agreement_off_its_schedule[null]": 0.267,
     "default_modules/celerp-subscriptions/tests/test_schedule_terms_doors.py::test_an_import_never_stores_terms_that_build_no_schedule[anchor]": 0.216,
@@ -27394,5 +27393,6 @@
     "tests/test_subscriptions_history_way_out.py::test_a_let_go_document_comes_back_in_every_agreement_status[cancelled]": 0.9397965019888943,
     "tests/test_subscriptions_history_way_out.py::test_a_let_go_document_comes_back_in_every_agreement_status[paused]": 0.9224859549867688,
     "tests/test_subscriptions_history_way_out.py::test_a_let_go_document_comes_back_in_every_agreement_status[void]": 0.8814342899859184,
-    "tests/test_subscriptions_history_way_out.py::test_the_bill_guard_refusals_are_walked_and_name_no_door": 0.013847702997736633
+    "tests/test_subscriptions_history_way_out.py::test_the_bill_guard_refusals_are_walked_and_name_no_door": 0.013847702997736633,
+    "default_modules/celerp-subscriptions/tests/test_schedule_terms_doors.py::test_a_let_go_bill_of_an_agreement_without_a_schedule_claims_its_period_back": 1.2142152070155134
 }
