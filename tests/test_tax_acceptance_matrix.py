@@ -336,9 +336,8 @@ async def test_a_quotation_converts_to_an_invoice_charging_the_same_tax(client, 
         _expected_roles("invoice", quotation["total"], quotation["tax_amount"]))
 
 
-async def test_a_quotation_taxed_on_the_whole_list_converts_to_an_invoice_of_its_lines(client, session):
-    """A list's header ``tax`` rate is the list's own, not a line's: the invoice it converts to
-    charges its lines (untaxed here) and books exactly that."""
+async def test_a_quotation_taxed_on_the_whole_list_converts_to_an_invoice_charging_that_tax(client, session):
+    """A list's header ``tax`` is a rate; the invoice it converts to holds its tax as an amount."""
     auth, contacts = await _demo_company(client, session, "USD")
     kind, lst = await _create(client, auth, contacts, "list", "USD", "document")
     quotation = await _get(client, auth, kind, lst)
@@ -350,10 +349,10 @@ async def test_a_quotation_taxed_on_the_whole_list_converts_to_an_invoice_of_its
     inv = r.json()["target_doc_id"]
     invoice = await _get(client, auth, "docs", inv)
     assert (invoice["subtotal"], invoice["tax"], invoice["total"]) == (
-        pytest.approx(37.02), 0, pytest.approx(37.02))
+        pytest.approx(37.02), pytest.approx(2.59), pytest.approx(39.61))
     assert (await _post(client, auth, f"/docs/{inv}/finalize")).status_code == 200
     assert _moved(before[0], (await _books(session, auth))[0]) == pytest.approx(
-        _expected_roles("invoice", 37.02, 0))
+        _expected_roles("invoice", 39.61, 2.59))
 
 
 _VAT10 = [_tax("VAT 10%", 10)]
@@ -376,21 +375,16 @@ QUOTE_CASES = {
 
 @pytest.mark.parametrize("case", sorted(QUOTE_CASES))
 async def test_a_quotation_totals_as_the_invoice_it_converts_to(client, session, case):
-    """A quotation's money follows the document rule, and the invoice made from it carries its
-    lines: the subtotal, discount, tax and total of the same lines with no header discount (that
-    discount is the quotation's own), and books exactly that."""
+    """A quotation's money follows the document rule: the invoice made from it carries the same
+    subtotal, discount, tax and total, and books exactly that."""
     currency, header, lines, expected = QUOTE_CASES[case]
     auth, _ = await _demo_company(client, session, currency)
-
-    async def quotation_of(head: dict) -> tuple[str, dict]:
-        r = await client.post("/lists", headers=auth["headers"], json={
-            "list_type": "quotation", "currency": currency, **head,
-            "line_items": [{"description": f"Service {i}", **line} for i, line in enumerate(lines)]})
-        assert r.status_code == 200, r.text
-        return r.json()["id"], await _get(client, auth, "lists", r.json()["id"])
-
-    lst, quotation = await quotation_of(header)
-    lines_only = (await quotation_of({}))[1] if header else quotation
+    r = await client.post("/lists", headers=auth["headers"], json={
+        "list_type": "quotation", "currency": currency, **header,
+        "line_items": [{"description": f"Service {i}", **line} for i, line in enumerate(lines)]})
+    assert r.status_code == 200, r.text
+    lst = r.json()["id"]
+    quotation = await _get(client, auth, "lists", lst)
     assert (quotation["subtotal"], quotation["discount_amount"], quotation["tax_amount"], quotation["total"]) == (
         pytest.approx(expected[0]), pytest.approx(expected[1]), pytest.approx(expected[2]), pytest.approx(expected[3]))
     assert (await _post(client, auth, f"/lists/{lst}/finalize")).status_code == 200
@@ -400,11 +394,11 @@ async def test_a_quotation_totals_as_the_invoice_it_converts_to(client, session,
     inv = r.json()["target_doc_id"]
     invoice = await _get(client, auth, "docs", inv)
     assert (invoice["subtotal"], invoice["discount_amount"], invoice["tax"], invoice["total"]) == (
-        lines_only["subtotal"], lines_only["discount_amount"], lines_only["tax_amount"], lines_only["total"])
+        quotation["subtotal"], quotation["discount_amount"], quotation["tax_amount"], quotation["total"])
     assert (await _post(client, auth, f"/docs/{inv}/finalize")).status_code == 200
     moved = _moved(before[0], (await _books(session, auth))[0])
     assert {k: moved.get(k) for k in ("receivable", "tax_output")} == pytest.approx(
-        {"receivable": lines_only["total"], "tax_output": -lines_only["tax_amount"]})
+        {"receivable": expected[3], "tax_output": -expected[2]})
 
 
 async def test_a_line_discount_is_charged_the_same_through_every_way_in(client, session):

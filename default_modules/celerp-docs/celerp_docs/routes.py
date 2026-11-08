@@ -41,7 +41,7 @@ from celerp_docs.doc_money import (DOC_MONEY_INPUTS, LIST_TOTAL_FIELDS, document
                                    unrated_tax)
 from celerp_docs.doc_projections import RESTORE_POINT, UNISSUED_STATUSES, list_lines_and_totals, payment_status
 from celerp_docs.line_bodies import LineItem, WriteoffLineBody
-from celerp_docs.record_copy import copy_of
+from celerp_docs.record_copy import conversion_of, copy_of
 from celerp_docs.taxes import TaxApplication
 from celerp.services.field_schema import reject_system_item_fields
 from celerp.services.locations import require_company_location, require_ship_from
@@ -8129,9 +8129,9 @@ async def convert_doc(entity_id: str, payload: DocConvertBody | None = None, com
             raise HTTPException(status_code=409, detail=t("documents.err_quote_expired"))
         ref = await claim_number(session, company, draft_counter("invoice"))
         new_doc_id = f"doc:{ref}"
-        # The invoice is a new draft copy of the quotation (record_copy), its money worked out
-        # from its lines as for any document created.
-        new_data = money_from_lines(copy_of(state, company.settings), state.get("currency"))
+        # The invoice is a new draft conversion of the quotation (record_copy), its money worked out
+        # from its lines and the quoted money inputs as for any document created.
+        new_data = money_from_lines(conversion_of(state, company.settings), state.get("currency"))
         new_data.update({"doc_type": "invoice", "ref_id": ref, "source_quotation_id": entity_id})
         await require_moving_fits_units(session, company_id, new_doc_id, "doc", new_data)
         await emit_event(
@@ -10196,9 +10196,9 @@ async def convert_list(
     to_transfer = await _held_lots(session, company_id, entity_id)
     ref = await claim_number(session, company, draft_counter(payload.target_type))
     new_doc_id = f"doc:{ref}"
-    # The document is a copy of the list (record_copy), its money worked out from its lines by the
-    # document rule (money_from_lines), as for any document created.
-    new_data = money_from_lines(copy_of(state, company.settings), state.get("currency"))
+    # The document is a conversion of the list (record_copy), its money worked out from its lines and
+    # the quoted money inputs by the document rule (money_from_lines), as for any document created.
+    new_data = money_from_lines(conversion_of(state, company.settings, tax_rate_key="tax"), state.get("currency"))
     new_data.update({"doc_type": payload.target_type, "ref_id": ref, "source_list_id": entity_id})
     await require_moving_fits_units(session, company_id, new_doc_id, "doc", new_data)
     for li_eid, held in to_transfer.items():

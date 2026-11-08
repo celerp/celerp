@@ -2,11 +2,12 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """A record made from another record (a List duplicated or converted, a quotation converted, a
 consignment bought) is built by one rule (record_copy.copy_of): the source's parties and its lines,
-as a new draft. Its status, outcome, sending, numbering, links and scans stay with the source, and so
+as a new draft; a conversion also keeps the money agreed and its term (record_copy.conversion_of,
+test_record_conversion). Its status, outcome, sending, numbering, links and scans stay with the source, and so
 does what each line records of its lifecycle (test_record_copy_lines).
 
 The guard comes from the code: every door that creates a document or list either builds it through
-copy_of or names every key it writes."""
+copy_of (or conversion_of) or names every key it writes."""
 from __future__ import annotations
 
 import ast
@@ -70,8 +71,8 @@ def _wholesale(fn: ast.AST) -> bool:
 
 
 def copy_doors() -> list[tuple[str, str, str]]:
-    """Every function that creates a document or list, with how it builds it: ``copy_of`` (through
-    record_copy), ``wholesale`` (copies unnamed keys of a source by its own rule) or ``named``
+    """Every function that creates a document or list, with how it builds it: ``conversion_of`` or
+    ``copy_of`` (through record_copy), ``wholesale`` (copies unnamed keys of a source by its own rule) or ``named``
     (every key it writes is named: a payload, a literal or a fixed field set)."""
     rows, constants = [], _creation_constants()
     for rel, path in app_sources():
@@ -80,7 +81,8 @@ def copy_doors() -> list[tuple[str, str, str]]:
             if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or not _creates(fn, constants):
                 continue
             calls = {getattr(n.func, "id", getattr(n.func, "attr", "")) for n in ast.walk(fn) if isinstance(n, ast.Call)}
-            how = "copy_of" if "copy_of" in calls else "wholesale" if _wholesale(fn) else "named"
+            how = next((f for f in ("conversion_of", "copy_of") if f in calls), None) or (
+                "wholesale" if _wholesale(fn) else "named")
             rows.append((str(rel), fn.name, how))
     return rows
 
@@ -88,8 +90,8 @@ def copy_doors() -> list[tuple[str, str, str]]:
 def test_every_door_that_creates_a_record_names_what_it_takes():
     doors = copy_doors()
     assert [d for d in doors if d[2] == "wholesale"] == []
-    through = {name for _, name, how in doors if how == "copy_of"}
-    assert {"duplicate_list", "convert_list", "convert_doc", "buy_consignment"} <= through, doors
+    assert {name for _, name, how in doors if how == "conversion_of"} == {"convert_list", "convert_doc", "buy_consignment"}, doors
+    assert "duplicate_list" in {name for _, name, how in doors if how == "copy_of"}, doors
 
 
 def test_the_census_finds_a_door_that_names_the_creation_event_by_a_constant():

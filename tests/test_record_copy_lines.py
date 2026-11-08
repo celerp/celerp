@@ -84,9 +84,13 @@ async def test_every_line_key_the_lifecycle_writes_stays_with_the_source(client,
     lot = next(x for x in items if float(x.get("quantity") or 0) >= 2 and (x.get("status") or "available") == "available")
     wid = (await _ok(await client.post("/lists/writeoff", headers=h, json={"entity_ids": [lot["id"]]})))["id"]
     wl = (await _ok(await client.get(f"/lists/{wid}", headers=h)))["line_items"][0]
-    await _ok(await client.post(f"/lists/{wid}/writeoff-line", headers=h, json={"line_id": wl["line_id"], "qty_out": 1}))
+    entered = {"qty_out": 1.0, "account": "6950", "comment": "Spoiled"}
+    await _ok(await client.post(f"/lists/{wid}/writeoff-line", headers=h, json={"line_id": wl["line_id"], **entered}))
     await _ok(await client.post(f"/lists/{wid}/finalize", headers=h))
     await _ok(await client.post(f"/lists/{wid}/write-off", headers=h))
+    wdup = (await _ok(await client.post(f"/lists/{wid}/duplicate", headers=h)))["id"]
+    (copied_line,) = (await _ok(await client.get(f"/lists/{wdup}", headers=h)))["line_items"]
+    assert {k: copied_line.get(k) for k in entered} == entered
     cust = next(c["id"] for c in contacts if c.get("contact_type") in ("customer", "both"))
     qid = (await _ok(await client.post("/lists", headers=h, json={
         "list_type": "quotation", "contact_id": cust, "line_items": [{"item_id": lot["id"], "quantity": 1, "unit_price": 9}]})))["id"]

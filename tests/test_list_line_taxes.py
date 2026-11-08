@@ -183,12 +183,11 @@ async def test_rate_only_lines_are_rounded_per_line_as_on_the_invoice(client, se
 @pytest.mark.parametrize("taxes, tax", [([_tax("Exempt 0%", 0)], 0), ([], 7)])
 async def test_a_header_rate_applies_only_where_no_line_has_a_tax(client, session, taxes, tax):
     """A line taxed at 0% has its tax: the list's header rate does not apply over it, as on the
-    invoice converted from it. A line with no tax at all takes the header rate. The header rate is
-    the list's own: the invoice converted from it charges its lines' taxes only."""
+    invoice converted from it. A line with no tax at all takes the header rate."""
     auth = await _demo_company(client, session, "USD")
     line = {"description": "Service", "quantity": 1, "unit_price": 100, "taxes": taxes}
     lid = await _create(client, auth, "USD", [line], tax=7)
     lst = await _list(client, auth, lid)
     assert (lst["tax_amount"], lst["total"]) == (pytest.approx(tax), pytest.approx(100 + tax))
     doc = await _invoice_from(client, auth, lid)
-    assert (doc["tax"], doc["total"]) == (0, pytest.approx(100))
+    assert (doc["tax"], doc["total"]) == (lst["tax_amount"], lst["total"])
