@@ -27375,5 +27375,8 @@
     "default_modules/celerp-subscriptions/tests/test_subscriptions_ui.py::TestSubscriptionActions::test_an_unknown_period_or_history_action_is_not_found_and_calls_nothing[periods/0/delete]": 0.4053509240038693,
     "default_modules/celerp-subscriptions/tests/test_unattended_billing.py::test_a_failure_ended_another_way_leaves_no_row[skip]": 0.45145188199239783,
     "default_modules/celerp-subscriptions/tests/test_unattended_billing.py::test_skipping_a_failed_period_is_accepted_and_the_next_bill_names_cancel_and_new": 0.45609989602235146,
-    "tests/test_browser/test_subscriptions_e2e.py::test_documents_page_shows_the_next_bill_date_its_own_page_shows[chromium]": 6.9744031190057285
+    "tests/test_browser/test_subscriptions_e2e.py::test_documents_page_shows_the_next_bill_date_its_own_page_shows[chromium]": 6.9744031190057285,
+    "tests/test_doc_detail_next_bill_date.py::test_next_bill_date_is_the_one_its_periods_hold": 0.4210817310085986,
+    "tests/test_doc_detail_next_bill_date.py::test_without_a_date_the_cell_reads_dashes": 0.4188386839814484,
+    "tests/test_doc_detail_next_bill_date.py::test_without_the_module_the_stored_date_shows": 0.40783819199714344
 }
