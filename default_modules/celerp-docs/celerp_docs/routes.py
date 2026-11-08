@@ -38,6 +38,7 @@ from celerp_docs.doc_money import (LIST_TOTAL_FIELDS, document_money, document_t
                                    money_from_lines, refuse_malformed_taxes, refuse_unset_line_tax, released_header_money,
                                    unrated_tax)
 from celerp_docs.doc_projections import RESTORE_POINT, UNISSUED_STATUSES, list_lines_and_totals, payment_status
+from celerp_docs.record_copy import inherited_content
 from celerp_docs.taxes import TaxApplication
 from celerp.services.field_schema import reject_system_item_fields
 from celerp.services.locations import require_company_location, require_ship_from
@@ -87,7 +88,7 @@ from celerp.services.record_quantities import FULFILLABLE_STATUSES, QUOTATION_SP
 from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, MEMO_DRAW_STATUSES, doc_value, is_awaiting_payment, is_open_credit, is_overdue_document, is_owed, is_paid_document, outstanding_balance
 from celerp.services.list_behavior import (
     DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, SCAN_RUNS_FIELD, SUPPLIER_DOC_TYPES, ScanBehavior,
-    behavior, scan_behavior, status_key, terminal_action, is_money_list,
+    behavior, list_fact, scan_behavior, status_key, terminal_action, is_money_list,
 )
 from celerp.services.shipping import (
     INCOTERMS_2020, ITEM_AT_ISSUE, REASONS_FOR_EXPORT, customs_backfill, issued_item, item_at_issue)
@@ -8014,8 +8015,8 @@ async def convert_doc(entity_id: str, payload: DocConvertBody | None = None, com
             raise HTTPException(status_code=409, detail=t("documents.err_quote_expired"))
         ref = await claim_number(session, company, draft_counter("invoice"))
         new_doc_id = f"doc:{ref}"
-        # The invoice is a new draft: none of the quotation's own lifecycle carries over.
-        new_data = {k: v for k, v in state.items() if k not in LIFECYCLE_OWNED_FIELDS}
+        # The invoice is a new draft with the quotation's content only (record_copy).
+        new_data = inherited_content(state, company.settings)
         new_data.update({"doc_type": "invoice", "ref_id": ref, "source_quotation_id": entity_id, "status": "draft"})
         await require_moving_fits_units(session, company_id, new_doc_id, "doc", new_data)
         await emit_event(
@@ -8039,8 +8040,7 @@ async def convert_doc(entity_id: str, payload: DocConvertBody | None = None, com
         refuse_unpriced_lines(state)
         new_doc_id = await buy_consignment(
             session, company_id=company_id, user_id=user.id, consignment_id=entity_id, state=state,
-            ref=await claim_number(session, company, "bill"),
-            base_currency=(company.settings.get("currency", "USD") if company else "USD"),
+            ref=await claim_number(session, company, "bill"), settings=company.settings or {},
         )
         entry = await emit_event(
             session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.converted",
@@ -10026,13 +10026,8 @@ async def delete_list(
     return {"deleted": entity_id}
 
 
-def _issued_today(state: dict, settings: dict) -> dict:
-    """The issue and due dates of a document made today from a List (converted or duplicated): issued
-    on the company's business day and due by the List's payment term from that day. With no term to
-    follow there is no due date, never the List's own, which was set against its earlier issue date."""
-    issued = business_date_of(None, settings.get("timezone"))
-    due = due_date_for_terms(issued, state.get("payment_terms"), company_payment_terms(settings))
-    return {"issue_date": issued, **({"due_date": due} if due else {})}
+# A List's money figures, which a document made from it works out again in its own representation.
+_LIST_MONEY = frozenset({"tax", "tax_amount", "subtotal", "discount_amount", "total"})
 
 
 @lists_router.post("/{entity_id}/convert")
@@ -10055,9 +10050,10 @@ async def convert_list(
     if terminal_action(lt, f"convert-{payload.target_type}") is None:
         raise HTTPException(status_code=409, detail=catalog_refusal("documents.err_list_convert_type"))
     if state.get("status") != FINALIZED:
+        converted_to = list_fact(state, "converted_to")
         raise HTTPException(status_code=409, detail=catalog_refusal(
-            "documents.err_list_already_converted", number=state["converted_to"].removeprefix("doc:"))
-            if state.get("result") == "converted" else catalog_refusal("documents.err_list_convert_status"))
+            "documents.err_list_already_converted", number=converted_to.removeprefix("doc:"))
+            if converted_to else catalog_refusal("documents.err_list_convert_status"))
     if (differ := list_totals_differ(state)) is not None:
         stored, current = differ
         key = "documents.err_list_old_rule_total"
@@ -10071,8 +10067,16 @@ async def convert_list(
     to_transfer = await _held_lots(session, company_id, entity_id)
     ref = await claim_number(session, company, draft_counter(payload.target_type))
     new_doc_id = f"doc:{ref}"
-    await require_moving_fits_units(session, company_id, new_doc_id, "doc",
-                                    {**state, "doc_type": payload.target_type, "status": "draft"})
+    # A list holds its header tax as a rate (``tax``) beside the amount (``tax_amount``); a
+    # document holds the rate as ``tax_rate`` and the amount as ``tax``. So no list money is
+    # taken: the document's money is worked out from its lines by the document rule
+    # (money_from_lines), as for any document created.
+    new_data = {k: v for k, v in inherited_content(state, company.settings).items() if k not in _LIST_MONEY}
+    if state.get("tax"):
+        new_data["tax_rate"] = state["tax"]
+    new_data = money_from_lines(new_data, state.get("currency"))
+    new_data.update({"doc_type": payload.target_type, "ref_id": ref, "source_list_id": entity_id, "status": "draft"})
+    await require_moving_fits_units(session, company_id, new_doc_id, "doc", new_data)
     for li_eid, held in to_transfer.items():
         data = {"new_status": "reserved", "source_doc_id": new_doc_id, "doc_number": ref}
         if held.state.get("status_line_entity_id"):
@@ -10083,19 +10087,6 @@ async def convert_list(
             actor_id=user.id, location_id=None, source="reservation",
             idempotency_key=str(uuid.uuid4()), metadata_={"doc_id": new_doc_id},
         )
-    # A list holds its header tax as a rate (``tax``) beside the amount (``tax_amount``); a
-    # document holds the rate as ``tax_rate`` and the amount as ``tax``. So no list money is
-    # copied: the document's money is worked out from its lines by the document rule
-    # (money_from_lines), as for any document created.
-    new_data = {k: v for k, v in state.items()
-                if k not in {"status", "result", "entity_type", "list_type", "finalized_at", "sent_at", "accepted_at",
-                             SCAN_RUNS_FIELD, RESTORE_POINT, "tax", "tax_amount", "subtotal", "discount_amount", "total"}}
-    if state.get("tax"):
-        new_data["tax_rate"] = state["tax"]
-    new_data = money_from_lines(new_data, state.get("currency"))
-    new_data.pop("due_date", None)
-    new_data.update({"doc_type": payload.target_type, "ref_id": ref, "source_list_id": entity_id, "status": "draft",
-                     **_issued_today(state, company.settings)})
     await emit_event(
         session, company_id=company_id, entity_id=new_doc_id, entity_type="doc",
         event_type="doc.created", data=new_data, actor_id=user.id, location_id=None,
@@ -10123,11 +10114,9 @@ async def duplicate_list(
     state = row.state
     ref_id = await claim_number(session, company, list_sequence_key(state.get("list_type"), company.settings))
     new_entity_id = f"list:{ref_id}"
-    new_data = {k: v for k, v in state.items()
-                if k not in {"status", "entity_type", "ref_id", "share_token", "due_date", SCAN_RUNS_FIELD,
-                             RESTORE_POINT}}
+    new_data = inherited_content(state, company.settings)
     new_data.update({"ref_id": ref_id, "status": "draft", "source_list_id": entity_id,
-                     **_issued_today(state, company.settings),
+                     **({"list_type": state["list_type"]} if state.get("list_type") else {}),
                      "line_items": strip_line_ids(state.get("line_items"))})
     await require_moving_fits_units(session, company_id, new_entity_id, "list", new_data)
     entry = await _emit_list(session, company_id, new_entity_id, "list.created", new_data, user)

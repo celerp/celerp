@@ -22,6 +22,19 @@ LIST_STATUSES = (DRAFT, FINALIZED, CLOSED, VOID)
 
 DEFAULT_LIST_TYPE = "quotation"
 
+# The status a List's conversion or sending fact is true under: what it converted to only while it
+# is closed as converted (reopening clears the result), when it was sent only once it was issued.
+_FACT_HOLDS = {
+    "converted_to": lambda state: state.get("status") == CLOSED and state.get("result") == "converted",
+    "sent_at": lambda state: state.get("status") in (FINALIZED, CLOSED),
+}
+
+
+def list_fact(state: dict, key: str):
+    """A List's ``converted_to`` or ``sent_at``, read only beside the status that makes it true
+    (_FACT_HOLDS). On any other List it is absent, whatever the state still holds."""
+    return state.get(key) if _FACT_HOLDS[key](state) else None
+
 
 @dataclass(frozen=True)
 class TerminalAction:

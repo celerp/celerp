@@ -42,8 +42,8 @@ from celerp.services.account_roles import consignor_of, is_consigned, lineage, n
 from celerp.services.company_lock import lock_projections
 from celerp.services.lot_origin import RETIRED
 from celerp.services.money import allocate_pro_rata, require_line_amount, round_money, to_decimal, to_stored_float
-from celerp_docs.doc_constants import LIFECYCLE_OWNED_FIELDS
 from celerp_docs.doc_money import UnratedTaxError, document_money, refuse_unset_line_tax
+from celerp_docs.record_copy import inherited_content
 
 _EPS = Decimal("1e-9")
 
@@ -365,7 +365,7 @@ async def bought_parcels(session, company_id, bill: dict) -> dict[str, tuple[flo
 
 
 async def buy_consignment(session, *, company_id, user_id, consignment_id: str, state: dict, ref: str,
-                          base_currency: str) -> str:
+                          settings: dict) -> str:
     """Create the vendor bill for an issued consignment and make every lot it bought the
     company's own (module docstring). Returns the bill's id."""
     from celerp.services import auto_je
@@ -380,6 +380,7 @@ async def buy_consignment(session, *, company_id, user_id, consignment_id: str, 
             "The consignment's goods changed while it was being converted; try again."))
     plan = locked
 
+    base_currency = settings.get("currency", "USD")
     currency = state.get("currency") or base_currency
     lines, source, changed = _bill_lines(state, plan.kept, currency)
     if not lines:
@@ -389,9 +390,9 @@ async def buy_consignment(session, *, company_id, user_id, consignment_id: str, 
             "Receive the goods first."))
     refuse_unset_line_tax(lines, state, source)  # the bill is born issued
     bill_id = f"doc:{ref}"
-    # The bill starts its own lifecycle, as any conversion does: what went back to the consignor was
-    # returned on the consignment, never on the bill, and the consignment's scan runs stay with it.
-    data = {k: v for k, v in state.items() if k not in LIFECYCLE_OWNED_FIELDS}
+    # The bill starts its own lifecycle with the consignment's content only (record_copy): what went
+    # back to the consignor was returned on the consignment, never on the bill, and its scan runs stay with it.
+    data = inherited_content(state, settings)
     data["line_items"] = lines
     data["received_items"], data["received_item_ids"] = _bill_receipts(state, plan, source)
     if changed:
