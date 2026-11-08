@@ -168,6 +168,7 @@ def test_a_quantity_the_user_blanks_is_saved_first_and_refused(page, ui_server, 
     page.locator(".toast__msg", has_text="Enter a number").first.wait_for(timeout=8000)
     assert page.locator(".toast__msg").all_inner_texts() == ["Enter a number"]
     assert page.locator("#save-status").inner_text() == "\u2717 Enter a number"
+    page.wait_for_timeout(1500)  # Delete would have been confirmed and sent by now
     assert sent == []
     assert api.get(path).json()["status"] == "draft"
 
