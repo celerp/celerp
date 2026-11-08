@@ -7310,6 +7310,13 @@ def _doc_money(doc: dict) -> dict:
             "outstanding": fmt_money(float(doc_value(doc, "amount_outstanding") or 0), currency)}
 
 
+def save_then_post(url: str) -> str:
+    """The onclick of a button that posts a state-changing action from a document's page: the
+    page's pending line edits save first (celerpSaveThenPost), so the action runs on the lines
+    the page shows."""
+    return f"event.preventDefault();celerpSaveThenPost('{url}');"
+
+
 def subscription_meta_cells(doc: dict) -> tuple:
     """An agreement's frequency and next bill date in the document header. Its schedule changes
     only through its own controls, which check it against the periods already billed, so here
@@ -7640,7 +7647,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         if _can_finalize and not suppress_doc_actions:
             action_btns_left.append(
                 Button(finalize_label,
-                       onclick=f"event.preventDefault();(async()=>{{if(!(await _celerpPersist()))return;htmx.ajax('POST','/docs/{entity_id}/action/finalize',{{swap:'none'}});}})();",
+                       onclick=save_then_post(f"/docs/{entity_id}/action/finalize"),
                        title=finalize_tip, cls="btn btn--primary")
             )
     if status not in ("void", "draft", "closed") and _can_finalize and not suppress_doc_actions:
@@ -10136,6 +10143,15 @@ function _celerpPersist() {{
     // Incrementing here is intentionally harmless when autosave already marked it.
     window._celerpLineRevision += 1;
     return _celerpMutate(_celerpPersistOnce);
+}}
+/* Save the page's pending line edits, then post a state-changing action (save_then_post), so it
+   runs on the lines the page shows. A blur's save still waiting folds into this one; a failed
+   save has shown its own reason and the action does not run. */
+async function celerpSaveThenPost(url) {{
+    clearTimeout(_celerpSaveTimer);
+    _celerpSaveTimer = null;
+    if (!(await _celerpPersist())) return;
+    htmx.ajax('POST', url, {{swap: 'none'}});
 }}
 /* Swap to another page of the same draft list. Paging must never silently drop unsaved
    edits: a dirty page saves first, and a failed save (including a stale-version conflict)

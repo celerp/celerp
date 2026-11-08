@@ -116,7 +116,7 @@ def test_activate_on_an_empty_draft_names_the_way_out_its_page_offers(page, ui_s
     page.locator("[hx-post*='/subscriptions/new']").first.click()
     page.wait_for_url(lambda url: "/subscriptions/" in url and "/new" not in url, timeout=10000)
     page.wait_for_load_state("load")
-    page.locator("[hx-post$='/activate']").click()
+    page.get_by_role("button", name=t("btn.activate", "en"), exact=True).click()
     refusal = page.locator(".toast-container .toast", has_text="can't bill")
     refusal.wait_for(timeout=10000)
     toast = refusal.first.inner_text()
@@ -125,3 +125,48 @@ def test_activate_on_an_empty_draft_names_the_way_out_its_page_offers(page, ui_s
     _no_crash(page, "draft-activate")
     assert page.locator("button", has_text=t("btn._add_item", "en")).count() > 0
     assert "Cancel this subscription" not in toast, toast
+
+
+def _draft(api, line: dict) -> str:
+    r = api.post("/docs", json={
+        "doc_type": "subscription_invoice", "frequency": "monthly", "start_date": "2027-03-01",
+        "line_items": [{"description": "Service", "quantity": 1, **line}],
+    })
+    assert r.status_code in {200, 201}, r.text
+    return r.json()["id"]
+
+
+def _activated(page, api, eid: str) -> dict:
+    """Wait for the agreement to leave draft and return it as the API holds it."""
+    for _ in range(50):
+        doc = api.get(f"/docs/{eid}").json()
+        if doc["status"] != "draft":
+            return doc
+        page.wait_for_timeout(200)
+    raise AssertionError(f"{eid} is still a draft: {doc['line_items']}")
+
+
+def test_activate_after_choosing_only_a_line_tax_activates_on_that_tax(page, ui_server, api):
+    """A draft refused for a line with no tax chosen: pick No Tax in the line and click Activate,
+    nothing else. Activate saves the choice first and the agreement activates on it."""
+    from ui.i18n import t
+
+    eid = _draft(api, {"unit_price": 100.0, "line_total": 100.0, "taxes": None})
+    page.goto(f"{ui_server}/subscriptions/{eid}", wait_until="domcontentloaded")
+    page.locator("#line-body select[data-name=tax_select]").first.select_option(label=t("doc.no_tax", "en"))
+    page.get_by_role("button", name=t("btn.activate", "en"), exact=True).click()
+    doc = _activated(page, api, eid)
+    assert doc["status"] == "active" and doc["line_items"][0]["taxes"] == [], doc["line_items"]
+
+
+def test_activate_straight_after_typing_a_price_activates_at_that_price(page, ui_server, api):
+    """Type a new unit price and click Activate at once: the agreement activates at the typed price,
+    not the stored one."""
+    from ui.i18n import t
+
+    eid = _draft(api, {"unit_price": 9800.0, "line_total": 9800.0, "taxes": []})
+    page.goto(f"{ui_server}/subscriptions/{eid}", wait_until="domcontentloaded")
+    page.locator("#line-body input[data-name=unit_price]").first.fill("12345")
+    page.get_by_role("button", name=t("btn.activate", "en"), exact=True).click()
+    doc = _activated(page, api, eid)
+    assert doc["status"] == "active" and float(doc["line_items"][0]["unit_price"]) == 12345.0, doc["line_items"]

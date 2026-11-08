@@ -11,6 +11,7 @@ import pytest
 from bs4 import BeautifulSoup
 
 from agreement_kit import agreement, freeze_day, generate_due
+from ui.routes.documents import save_then_post
 
 
 def _key() -> dict:
@@ -70,7 +71,7 @@ async def test_a_draft_points_from_its_action_bar_to_the_schedule(owner_ui, monk
     freeze_day(monkeypatch, "2026-03-15")
     eid = await agreement(owner_ui.api, {}, start="2026-04-01", activate=False)
     page = BeautifulSoup((await owner_ui.get(f"/subscriptions/{eid}")).text, "html.parser")
-    activate = page.find("button", attrs={"hx-post": f"/subscriptions/{eid}/activate"})
+    activate = page.find("button", attrs={"onclick": save_then_post(f"/subscriptions/{eid}/activate")})
     link = activate.parent.find("a", href="#sub-schedule")
     assert link is not None and page.find(id="sub-schedule") is not None, activate.parent
     assert link.get_text(strip=True) == "Set the schedule"
