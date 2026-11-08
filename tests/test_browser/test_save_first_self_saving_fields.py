@@ -238,7 +238,8 @@ def test_an_edit_made_while_a_save_is_in_flight_is_saved_before_issue(page, ui_s
 
 def test_a_quantity_typed_then_written_off_from_the_field_is_saved_first(page, ui_server, api):
     """The write-off qty cell saves itself on blur after a short delay. Clicking Write off stock
-    straight from the field waits for that save, so 5 of the 8 are written off, not 8."""
+    straight from the field waits for that save, scheduled and then held on its way, so 5 of the
+    8 are written off, not 8."""
     api.post("/accounting/chart/seed")
     iid = api.post("/items", json={"sku": "WO-FIELD-WAIT", "sell_by": "piece", "name": "Field wait",
                                    "quantity": 8}).json()["id"]
@@ -263,7 +264,14 @@ def test_a_quantity_typed_then_written_off_from_the_field_is_saved_first(page, u
         if then:
             cell.press(then)
             page.wait_for_timeout(600)
+    held: list = []
+    page.route(re.compile(r".*/writeoff-line/.*"), lambda route: route.continue_() if held else held.append(route))
+    write_offs: list = []
+    page.on("request", lambda q: q.url.endswith("/action/write-off") and write_offs.append(q.url))
     page.get_by_role("button", name="Write off stock").click()
+    page.wait_for_timeout(1000)
+    assert len(held) == 1 and write_offs == [], (held, write_offs)
+    held[0].continue_()
     page.get_by_role("button", name="Undo write-off").wait_for(state="visible", timeout=10000)
     page.wait_for_timeout(500)
     item = api.get(f"/items/{iid}").json()
