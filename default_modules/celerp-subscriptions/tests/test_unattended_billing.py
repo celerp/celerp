@@ -8,6 +8,8 @@ never a backlog older than its catch-up window. Sending is a separate choice, an
 failed send keeps the invoice and offers a retry that sends once."""
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from celerp.services.email import EmailResult
@@ -943,7 +945,8 @@ async def test_a_failed_bill_keeps_its_reason_is_counted_to_check_and_offers_gen
     banner = next(d for d in listing.select(".flash") if "/subscriptions/summary" in str(d))
     assert "flash--warning" in banner["class"] and t("subscriptions.summary_banner", generated=0, sent=0, failed=1) in banner.text
     assert counted in shown.text
-    assert shown.find("button", attrs={"hx-post": f"/subscriptions/{eid}/generate-due"}) is not None
+    offered = shown.find("button", attrs={"hx-post": f"/subscriptions/{eid}/generate-due"})
+    assert offered is not None and json.loads(offered["hx-vals"])["period_index"] == page["rows"][0]["period_index"]
 
 
 async def test_a_failed_bill_leaves_the_next_agreement_in_the_same_pass_billed(client, session, monkeypatch):
