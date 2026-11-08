@@ -507,7 +507,7 @@ _PICKER_START_PAGES = 5
 # Lists constants
 # ---------------------------------------------------------------------------
 from celerp.services.list_behavior import (
-    behavior as _list_behavior, status_key as _list_status_key, SUPPLIER_DOC_TYPES,
+    behavior as _list_behavior, status_key as _list_status_key, list_fact, SUPPLIER_DOC_TYPES,
     LIST_TYPES as _REG_LIST_TYPES, LIST_STATUSES as _LIST_STATUSES, DRAFT as _LD, FINALIZED as _LF, CLOSED as _LC,
 )
 
@@ -7759,7 +7759,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     # Quotations get the same Send / Mark-as-sent as documents (relay-gated). For a list, "sent" is a
     # milestone (sent_at) on the finalized state, so the gates below are list-aware.
     _list_sendable = is_list and list_type == "quotation"
-    _list_sent = bool(doc.get("sent_at"))
+    _list_sent = bool(list_fact(doc, "sent_at"))
     _can_send = (
         not suppress_doc_actions
         and ((not is_list and doc_type not in NO_SEND_DOC_TYPES) or _list_sendable)
@@ -11136,8 +11136,9 @@ async function celerpCsvImport(input, entityId) {{
     _status_field = P(_list_status_label(doc), cls="meta-value") if is_list else _cell("status", status)
     _contact_rows.append(Div(Div(t("doc.status"), cls="form-label"), _status_field, *_slot_badges, cls="form-group"))
     # A converted quotation points at the document it became.
-    if is_list and doc.get("result") == "converted" and doc.get("converted_to"):
-        _converted_to = str(doc["converted_to"])
+    _converted_to = list_fact(doc, "converted_to") if is_list else None
+    if _converted_to:
+        _converted_to = str(_converted_to)
         _contact_rows.append(Div(Div(t("doc.converted_to"), cls="form-label"),
                                  A(_converted_to.split(":", 1)[-1], href=doc_href(_converted_to), cls="table-link"),
                                  cls="form-group"))

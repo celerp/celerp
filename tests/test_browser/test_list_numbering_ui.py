@@ -7,7 +7,9 @@ A draft List changed to a type with another counter takes that counter's number.
 Numbering a refused format leaves the row in place with the typed value open and the reason
 beside it in the user's language, so the user can choose another value there, and Reset shows
 the number the next document gets. A quotation List converted from its page falls due by its
-payment term from the day the document is issued.
+payment term from the day the document is issued. A duplicate of a sent, converted quotation is a
+fresh draft that can be marked as sent and converted, and a void quotation is converted the way
+its refusal advises: duplicate it and convert the copy.
 """
 from __future__ import annotations
 
@@ -172,3 +174,61 @@ def test_converting_a_list_that_already_became_a_document_says_so_in_the_users_l
         assert page.url.endswith(f"/lists/{entity_id}")
     finally:
         page.context.clear_cookies(name="celerp_lang")
+
+
+def _click_to_next_page(page: Page, label: str) -> str:
+    with page.expect_navigation():
+        page.get_by_role("button", name=label, exact=True).click()
+    wait_for_topbar(page)
+    return page.url.rsplit("/", 1)[-1]
+
+
+def test_a_duplicate_of_a_sent_converted_quotation_starts_fresh_and_converts(page: Page, ui_server, fresh_company):
+    _seed_demo_items(fresh_company)
+    r = fresh_company.post("/lists", json={
+        "list_type": "quotation", "contact_name": "Buyer",
+        "line_items": [{"name": "A", "quantity": 1, "unit_price": 50}]})
+    assert r.status_code == 200, r.text
+    entity_id = r.json()["id"]
+    page.goto(f"{ui_server}/lists/{entity_id}")
+    wait_for_topbar(page)
+    _click_to_next_page(page, t("documents.issue", "en"))
+    _click_to_next_page(page, t("btn.mark_as_sent", "en"))
+    expect(page.get_by_role("button", name=t("btn.unmark_sent", "en"), exact=True)).to_be_visible()
+    _click_to_next_page(page, t("btn.convert", "en"))
+    page.goto(f"{ui_server}/lists/{entity_id}")
+    wait_for_topbar(page)
+    expect(page.get_by_text(t("doc.converted_to", "en"))).to_be_visible()
+
+    copy = _click_to_next_page(page, t("btn.duplicate", "en"))
+    assert copy != entity_id
+    expect(page.get_by_text(t("doc.converted_to", "en"))).to_have_count(0)
+    _click_to_next_page(page, t("documents.issue", "en"))
+    expect(page.get_by_role("button", name=t("btn.mark_as_sent", "en"), exact=True)).to_be_visible()
+    expect(page.get_by_role("button", name=t("btn.unmark_sent", "en"), exact=True)).to_have_count(0)
+    doc_id = _click_to_next_page(page, t("btn.convert", "en"))
+    doc = fresh_company.get(f"/docs/{doc_id}").json()
+    assert (doc["source_list_id"], doc["doc_type"]) == (copy, "invoice")
+
+
+def test_a_void_quotation_is_converted_the_way_its_refusal_advises(page: Page, ui_server, fresh_company):
+    _seed_demo_items(fresh_company)
+    r = fresh_company.post("/lists", json={
+        "list_type": "quotation", "contact_name": "Buyer",
+        "line_items": [{"name": "A", "quantity": 1, "unit_price": 50}]})
+    assert r.status_code == 200, r.text
+    entity_id = r.json()["id"]
+    assert fresh_company.post(f"/lists/{entity_id}/finalize").status_code == 200
+    assert fresh_company.post(f"/lists/{entity_id}/send", json={"sent_via": "manual"}).status_code == 200
+    assert fresh_company.post(f"/lists/{entity_id}/void", json={"reason": "Replaced"}).status_code == 200
+    refused = fresh_company.post(f"/lists/{entity_id}/convert", json={"target_type": "invoice"})
+    assert refused.status_code == 409 and refused.json()["detail"]["message_key"] == "documents.err_list_convert_status"
+    # Duplicate it and convert the copy, from the List's own page.
+    page.goto(f"{ui_server}/lists/{entity_id}")
+    wait_for_topbar(page)
+    copy = _click_to_next_page(page, t("btn.duplicate", "en"))
+    _click_to_next_page(page, t("documents.issue", "en"))
+    expect(page.get_by_role("button", name=t("btn.mark_as_sent", "en"), exact=True)).to_be_visible()
+    doc_id = _click_to_next_page(page, t("btn.convert", "en"))
+    doc = fresh_company.get(f"/docs/{doc_id}").json()
+    assert (doc["source_list_id"], doc["doc_type"]) == (copy, "invoice")
