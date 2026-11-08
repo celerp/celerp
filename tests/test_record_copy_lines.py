@@ -107,3 +107,11 @@ async def test_every_line_key_the_lifecycle_writes_stays_with_the_source(client,
             made.append((await _ok(await client.get(f"/lists/{dup}", headers=h)))["line_items"])
     stored = {k for lines in made for li in lines for k in li}
     assert stored <= ENTERED | {"line_id"}, sorted(stored - ENTERED)
+
+
+def test_a_line_naming_its_item_as_entity_id_is_copied_under_item_id():
+    """The line editor sends an item as entity_id and the save step keeps it as item_id, so a copy of
+    a line that holds only entity_id keeps that item under item_id, and the key itself is never kept."""
+    assert LineItem(entity_id="item:1").model_dump(exclude_unset=False)["entity_id"] is None
+    (line,) = copy_of({"line_items": [{"entity_id": "item:1", "quantity": 2}]}, {})["line_items"]
+    assert line == {"item_id": "item:1", "quantity": 2}
