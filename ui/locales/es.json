@@ -4580,7 +4580,7 @@
   "documents.err_numbering_overlap": "La numeración de {doc_type} ya usa este formato. Elija otro prefijo u otro patrón.",
   "documents.err_numbering_no_sequence_token": "Añada al patrón un token de secuencia como {example}.",
   "documents.err_numbering_unknown_tokens": "Celerp no reconoce estos tokens del patrón: {tokens}.",
-  "documents.err_numbering_unknown_type": "{doc_type} no es un tipo de documento. Use uno de estos: {types}.",
+  "documents.err_numbering_unknown_type": "'{value}' no es un tipo de documento. Use uno de estos: {types}.",
   "documents.err_numbering_prefix_braces": "Un prefijo no puede contener llaves.",
   "documents.err_number_too_long": "Un número puede tener como máximo {max} caracteres. Este tiene {length}.",
   "documents.err_audit_number_taken": "Otro recuento de existencias ya usa el número {number}. Elija un número distinto.",

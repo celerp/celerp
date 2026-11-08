@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 from playwright.sync_api import Page, expect
 
-from .conftest import answer_confirms, wait_for_topbar
+from .conftest import answer_confirms, css_class, wait_for_topbar
 
 pytestmark = pytest.mark.browser
 
@@ -64,9 +64,11 @@ def test_hide_move_and_reset_show_in_the_side_menu_on_the_same_page(page: Page, 
 
     # The redrawn side menu still folds its groups.
     group = page.locator(f"nav.sidebar .sidebar-group[data-group='{gid}']")
-    was_open = "sidebar-group--open" in (group.get_attribute("class") or "")
+    expect(group).to_have_class(css_class("sidebar-group--open"))  # groups open by default
     group.locator(".sidebar-group-arrow").click()
-    assert ("sidebar-group--open" in (group.get_attribute("class") or "")) is not was_open
+    expect(group).not_to_have_class(css_class("sidebar-group--open"))
+    group.locator(".sidebar-group-arrow").click()
+    expect(group).to_have_class(css_class("sidebar-group--open"))
 
     answer_confirms(page)
     page.locator(".menu-editor button", has_text="Reset").last.click()

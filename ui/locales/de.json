@@ -4580,7 +4580,7 @@
   "documents.err_numbering_overlap": "Die Nummerierung für {doc_type} verwendet dieses Format bereits. Wählen Sie ein anderes Präfix oder Muster.",
   "documents.err_numbering_no_sequence_token": "Fügen Sie dem Muster ein Laufnummer-Token wie {example} hinzu.",
   "documents.err_numbering_unknown_tokens": "Celerp kennt diese Tokens im Muster nicht: {tokens}.",
-  "documents.err_numbering_unknown_type": "{doc_type} ist keine Dokumentart. Verwenden Sie eine der folgenden: {types}.",
+  "documents.err_numbering_unknown_type": "'{value}' ist keine Dokumentart. Verwenden Sie eine der folgenden: {types}.",
   "documents.err_numbering_prefix_braces": "Ein Präfix darf keine geschweiften Klammern enthalten.",
   "documents.err_number_too_long": "Eine Nummer darf höchstens {max} Zeichen haben. Diese hat {length}.",
   "documents.err_audit_number_taken": "Eine andere Inventur verwendet bereits die Nummer {number}. Wählen Sie eine andere Nummer.",

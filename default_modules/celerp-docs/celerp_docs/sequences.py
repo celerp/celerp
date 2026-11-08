@@ -162,9 +162,10 @@ def require_number_length(number: str) -> str:
 
 
 def require_doc_type(doc_type: str) -> str:
-    """Return ``doc_type`` when it is a document type this app numbers, else refuse it by name."""
+    """Return ``doc_type`` when it is a document type this app numbers, else refuse it, echoing
+    the value sent as written (a label made up from it would name a type that does not exist)."""
     if doc_type not in _PREFIX_BY_DOC_TYPE:
-        raise Refused("documents.err_numbering_unknown_type", doc_type=str(doc_type),
+        raise Refused("documents.err_numbering_unknown_type", value=str(doc_type),
                       types=", ".join(sorted(_PREFIX_BY_DOC_TYPE)))
     return doc_type
 
