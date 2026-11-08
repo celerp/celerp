@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """The save-first gate saves the page's lines before an action only while they differ from the
 stored ones. A field that saved itself, or one put back with Escape, leaves nothing to save, so
-the action posts on its own with no line save in front of it."""
+the action posts on its own with no line save in front of it, once a cell's own save is done."""
 from __future__ import annotations
 
 import re
@@ -234,3 +234,37 @@ def test_an_edit_made_while_a_save_is_in_flight_is_saved_before_issue(page, ui_s
     page.wait_for_timeout(300)
     doc = _issue_after(page, api, doc_id, "void 0")
     assert float(doc["line_items"][0]["unit_price"]) == 175.0, doc
+
+
+def test_a_quantity_typed_then_written_off_from_the_field_is_saved_first(page, ui_server, api):
+    """The write-off qty cell saves itself on blur after a short delay. Clicking Write off stock
+    straight from the field waits for that save, so 5 of the 8 are written off, not 8."""
+    api.post("/accounting/chart/seed")
+    iid = api.post("/items", json={"sku": "WO-FIELD-WAIT", "sell_by": "piece", "name": "Field wait",
+                                   "quantity": 8}).json()["id"]
+    api.post("/items/bulk/make-available", json={"entity_ids": [iid]})
+    answer_confirms(page)
+    page.goto(f"{ui_server}/inventory", wait_until="domcontentloaded")
+    page.evaluate("window.CelerpSelection && window.CelerpSelection.clear()")
+    page.locator(f'input.row-select[value="{iid}"]').click()
+    page.wait_for_selector("#bulk-toolbar.is-active", timeout=3000)
+    page.locator("#bulk-action-select").select_option("write_off")
+    page.wait_for_url("**/lists/**", timeout=15000)
+    page.locator("td.col-account").first.dblclick()
+    acct = page.locator("td.col-account input:visible").first
+    acct.click()
+    acct.fill("69")
+    page.locator(".combobox-option:visible").first.click()
+    page.wait_for_timeout(500)
+    for qty, then in (("8", "Enter"), ("5", None)):
+        page.locator("td.col-qtyout").first.dblclick()
+        cell = page.locator("td.col-qtyout input:visible").first
+        cell.fill(qty)
+        if then:
+            cell.press(then)
+            page.wait_for_timeout(600)
+    page.get_by_role("button", name="Write off stock").click()
+    page.get_by_role("button", name="Undo write-off").wait_for(state="visible", timeout=10000)
+    page.wait_for_timeout(500)
+    item = api.get(f"/items/{iid}").json()
+    assert (item["status"], float(item["quantity"])) == ("available", 3.0), item

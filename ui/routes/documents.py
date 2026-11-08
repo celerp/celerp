@@ -10143,21 +10143,43 @@ function _celerpPersist() {{
    the page sends it, waits for the page's pending line edits to save, so it runs on the lines the
    page shows and a reload it answers with drops nothing typed. A blur's save still waiting folds
    into this one; a failed save is not followed by the request, and its reason beside the lines is
-   also said in a toast, since the control clicked may be far from them. Once saved,
-   the request meets its own confirmation, as it would have. Capture phase, so it runs before any
+   also said in a toast, since the control clicked may be far from them. It also waits for a
+   field that saves itself: one left a moment ago whose delayed save has not fired yet, and any
+   change already on its way, so a click straight from an edited cell runs on the saved value.
+   Once saved, the request meets its own confirmation, as it would have. Capture phase, so it runs before any
    confirmation listener. The line save itself is a fetch, not an htmx request. A request that
    pinned the version before the save is pinned to the one the save produced: this tab's own save
    is the only write in between (another tab's write makes the save fail). */
 if (!window._celerpSaveFirstBound) {{
     window._celerpSaveFirstBound = true;
+    const scheduled = new Map(), inFlight = new Set();
+    const fieldSaving = () => inFlight.size > 0 || Array.from(scheduled.values()).some(t => t > Date.now());
+    document.addEventListener('focusout', function(e) {{
+        const el = e.target;
+        const delay = /delay:(\\w+)/.exec((el.getAttribute && el.getAttribute('hx-trigger')) || '');
+        if (delay && el.matches('[hx-post], [hx-patch], [hx-put]'))
+            scheduled.set(el, Date.now() + htmx.parseInterval(delay[1]) + 50);
+    }}, true);
+    document.addEventListener('htmx:trigger', e => scheduled.delete(e.target));
+    document.addEventListener('htmx:beforeSend', function(e) {{
+        const xhr = e.detail.xhr;
+        if (e.detail.requestConfig.verb === 'get') return;
+        inFlight.add(xhr);
+        xhr.addEventListener('loadend', () => inFlight.delete(xhr));
+    }});
+    const fieldsSaved = () => new Promise(function wait(done) {{
+        if (fieldSaving()) setTimeout(() => wait(done), 50); else done();
+    }});
     document.addEventListener('htmx:confirm', function(e) {{
         const d = e.detail;
-        if (d.verb === 'get' || d.celerpSaved || !_celerpLinesDirty()) return;
+        if (d.verb === 'get' || d.celerpSaved) return;
+        scheduled.delete(d.elt);
+        if (!fieldSaving() && !_celerpLinesDirty()) return;
         e.preventDefault();
         e.stopPropagation();
         clearTimeout(_celerpSaveTimer);
         _celerpSaveTimer = null;
-        _celerpPersist().then(function(ok) {{
+        fieldsSaved().then(() => _celerpLinesDirty() ? _celerpPersist() : true).then(function(ok) {{
             if (!ok) {{
                 const said = document.getElementById('save-status')?.firstChild;
                 if (said && said.nodeType === Node.TEXT_NODE && said.textContent && window.celerpToast)
