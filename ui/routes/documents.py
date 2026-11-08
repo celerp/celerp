@@ -8695,27 +8695,31 @@ if (!window._celerpEntityVersionListener) {{
 // The server remains the concurrency authority across tabs; this queue only prevents this
 // page from racing its own line saves, header patches, and repricing requests.
 window._celerpMutationTail = window._celerpMutationTail || Promise.resolve(true);
-// The page's line edits are unsaved exactly while what a line save would send differs from
-// what is stored: the state the stored rows rendered or were installed with, or the state the
-// last successful save sent (an edit made while it was in flight stays unsaved). A field put
-// back with Escape leaves nothing unsaved, and a cell that saves itself is never sent by a line
-// save, so it never makes the page unsaved. Line ids and line totals follow from the fields.
+// The page's line edits are unsaved exactly while the line fields, as typed, differ from the
+// stored ones: the values the stored rows rendered or were installed with, or the values the
+// last successful save sent (an edit made while it was in flight stays unsaved). The raw values,
+// not what a save would send: a stored line no save would accept as it stands (a reorder line's
+// blank quantity) is as stored as any other until someone changes it, while a quantity the user
+// blanks is a difference the save refuses with its reason. A field put back with Escape leaves
+// nothing unsaved, and a cell that saves itself (it carries its own request) is not a line
+// field. Line ids and line totals follow from the fields.
 function _celerpLineFrame() {{
     const hd = _celerpHeaderDiscount(0);
     const taxes = document.getElementById('doc-taxes-state');
     return JSON.stringify([hd.value, hd.type, taxes ? taxes.value : null]);
 }}
-function _celerpLineState(lines, frame) {{
-    if (lines === null) return null;
-    return JSON.stringify([lines.map(({{line_id, line_total, ...fields}}) => fields), frame || _celerpLineFrame()]);
+function _celerpLineState(frame) {{
+    const rows = Array.from(document.querySelectorAll('#{line_body_id} tr'), row =>
+        Array.from(row.querySelectorAll(':is(input, select, textarea)[data-name]:not([hx-post], [hx-patch], [hx-put])'))
+            .filter(el => el.dataset.name !== 'line_id' && el.dataset.name !== 'line_total')
+            .map(el => [el.dataset.name, el.value]));
+    return JSON.stringify([rows, frame || _celerpLineFrame()]);
 }}
 function _celerpLinesDirty() {{
-    if (!window._CELERP_CAN_EDIT_LINES) return false;
-    const now = _celerpLineState(_celerpCollectLines());
-    return now === null || now !== window._celerpSavedLines;
+    return !!window._CELERP_CAN_EDIT_LINES && _celerpLineState() !== window._celerpSavedLines;
 }}
 function _celerpMarkLinesStored(frame) {{
-    if (window._CELERP_CAN_EDIT_LINES) window._celerpSavedLines = _celerpLineState(_celerpCollectLines(), frame);
+    if (window._CELERP_CAN_EDIT_LINES) window._celerpSavedLines = _celerpLineState(frame);
 }}
 function _celerpMutate(run) {{
     const next = window._celerpMutationTail.then(run, run);
@@ -10062,7 +10066,7 @@ async function _celerpRefreshHeldBadges() {{
     // save was attempted and failed, so callers that gate on a clean save (page navigation)
     // can hold position instead of discarding unsaved rows.
     if (!lines.length && !_celerpHadLines) return true;
-    const sent = _celerpLineState(lines);
+    const sent = _celerpLineState();
     const hd = _celerpHeaderDiscount(lines.reduce((s, l) => s + l.line_total, 0));
     const statusEl = document.getElementById('save-status');
     const _docTaxesState = document.getElementById('doc-taxes-state');
