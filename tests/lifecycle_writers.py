@@ -196,7 +196,6 @@ class _Resolver:
             if part is None and isinstance(g.target, ast.Name) and isinstance(expr.key, ast.Name) \
                     and expr.key.id == g.target.id and (names := app.name_set(g.iter)) is not None:
                 return names  # {f: ... for f in FIELDS}: the fields named
-            return {f"<{ast.unparse(expr)[:60]}>"}
         if isinstance(expr, ast.Await):
             return self.keys(expr.value, fn, part, depth)
         if isinstance(expr, ast.IfExp):
@@ -211,12 +210,11 @@ class _Resolver:
             if made:  # what an app function returns
                 return {k for f in made for r in ast.walk(f) if isinstance(r, ast.Return) and r.value is not None
                         for k in self.keys(r.value, f, part, depth + 1)}
-            return {f"<{ast.unparse(expr)[:60]}>"}
         if isinstance(expr, ast.Attribute) and part is None:
             return self.keys(expr.value, fn, expr.attr, depth)
         if isinstance(expr, ast.Name):
             return self._name(expr.id, fn, part, depth)
-        return {f"<{ast.unparse(expr)[:60]}>"}
+        return {f"<{ast.unparse(expr)[:60]}>"}  # anything not followed above
 
     def _subscript_key(self, key, fn, depth):
         if (v := app.name(key)) is not None:
