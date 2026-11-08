@@ -10158,14 +10158,18 @@ if (!window._celerpSaveFirstBound) {{
     window._celerpSaveFirstBound = true;
     const scheduled = new Map(), inFlight = new Set(), failed = new Set();
     const fieldSaving = () => inFlight.size > 0 || Array.from(scheduled.values()).some(t => t > Date.now());
-    // What a field outside `own` (the cell of the request at hand) shows unsaved, as the reason to give;
-    // an editor whose save is on its way is saving, which the request waits for.
+    // What a field outside `own` (the cell of the request at hand) shows unsaved, as the reason to give.
+    // A cell whose editor is leaving with a new value is saving, which the request waits for, and the
+    // answer to that save is what counts.
+    const saving = el => scheduled.get(el) > Date.now() && (el._v === undefined || el.value !== el._v);
     const fieldUnsaved = function(own) {{
-        const other = n => !(own && own.contains(n)) && !n.closest('[data-preview]');
+        const cell = n => n.closest('td, .editable-cell') || n;
+        const other = n => !(own && own.contains(n)) && !n.closest('[data-preview]')
+            && !Array.from(scheduled.keys()).some(el => saving(el) && cell(n).contains(el));
         const said = Array.from(document.querySelectorAll('.cell-error')).find(other);
         if (said) return said.textContent.trim() || _L.field_not_saved;
         const lost = Array.from(failed).some(el => el.isConnected && other(el))
-            || Array.from(document.querySelectorAll('input, textarea')).some(el => el._v !== undefined && el.value !== el._v && !(scheduled.get(el) > Date.now()) && other(el));
+            || Array.from(document.querySelectorAll('input, textarea')).some(el => el._v !== undefined && el.value !== el._v && other(el));
         return lost ? _L.field_not_saved : '';
     }};
     document.addEventListener('htmx:afterRequest', function(e) {{
