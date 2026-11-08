@@ -13,6 +13,8 @@ import json
 import pytest
 
 from celerp.services.email import EmailResult
+from celerp_subscriptions.billing import ends_failure
+from celerp_subscriptions.periods import BILLED
 from celerp_subscriptions.summary import KINDS as SUMMARY_KINDS, _key as summary_key
 from ui.i18n import t
 
@@ -1030,6 +1032,16 @@ async def test_a_failure_ended_another_way_leaves_no_row(client, session, monkey
     page = await summary(client, hd)
     assert _failed(page) == [] and page["counts"]["generation_failed"] == 0
     assert "billing_failure" not in await template(client, hd, eid)
+
+
+async def test_only_a_failure_that_is_there_can_be_ended():
+    """A cancel, a void or a billed period ends a failure only when the agreement has one, and only
+    the period that failed."""
+    billed = {"periods": {"0": {"state": BILLED}}}
+    for changes in ({"status": "cancelled"}, {"status": "void"}, billed):
+        assert ends_failure({}, changes) is False
+        assert ends_failure({"billing_failure": {"period_index": 0}}, changes) is True
+    assert ends_failure({"billing_failure": {"period_index": 1}}, billed) is False
 
 
 async def test_a_second_different_reason_replaces_the_first(client, session, monkeypatch):
