@@ -11,6 +11,12 @@
         Waits until the updater has downloaded the update and sends the same
         install-update message Restart to install sends. Exits 1, printing the
         update state, if the download fails or does not finish in time.
+    python scripts/ci_update_drive.py refusal <debugging port> <seconds>
+        On the screen a Celerp shows for data a newer Celerp has opened, selects
+        Update Celerp, waits until the update has downloaded and the button says
+        Restart to install, and selects it. Exits 1, printing the update state,
+        if the screen does not show, or the download fails or does not finish in
+        time.
     python scripts/ci_update_drive.py card <debugging port> <seconds> <text>
         Waits until a signed-in page's update card says <text>. Exits 1, printing
         what the card says, if it does not within the time.
@@ -90,6 +96,40 @@ def install(browser, end: float) -> int:
     return 1
 
 
+def refusal_page(browser):
+    """The window's refusal screen (the bundled loading page), or None."""
+    pages = [p for c in browser.contexts for p in c.pages
+             if p.url.startswith("file:") and p.url.endswith("/loading.html")]
+    return pages[0] if pages else None
+
+
+def refusal(browser, end: float) -> int:
+    asked = None   # the button's label when Update Celerp was selected
+    state = None
+    while time.monotonic() < end:
+        page = refusal_page(browser)
+        try:
+            if page and asked is None and page.evaluate("!document.getElementById('refusal').hidden"):
+                asked = page.inner_text("#refusal-update")
+                page.click("#refusal-update")
+                print(f"selected '{asked}' on: {page.inner_text('#refusal-message')}")
+            if page and asked is not None:
+                state = page.evaluate("window.celerp.getUpdateState()")
+                label = page.inner_text("#refusal-update")
+                if state["status"] == "downloaded" and label != asked and page.is_enabled("#refusal-update"):
+                    page.click("#refusal-update")
+                    print(f"selected '{label}' for {state['version']}")
+                    return 0
+                if state["status"] == "error":
+                    break
+        except Error:
+            pass   # the window is between pages
+        time.sleep(2)
+    shown = "shown" if asked is not None else "not shown"
+    print(f"the refusal screen was {shown}; the update was not downloaded: {state}")
+    return 1
+
+
 def card(browser, end: float, text: str) -> int:
     said = None
     while time.monotonic() < end:
@@ -119,7 +159,7 @@ def main(command: str, port: int, seconds: int, *args: str) -> int:
                     print(f"no Celerp window on port {port} in {seconds} s")
                     return 1
                 time.sleep(2)
-        return {"sign-in": sign_in, "install": install, "card": card}[command](browser, end, *args)
+        return {"sign-in": sign_in, "install": install, "refusal": refusal, "card": card}[command](browser, end, *args)
 
 
 if __name__ == "__main__":

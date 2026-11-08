@@ -31,11 +31,13 @@ const SETTERS = "\n;module.exports.setMainWindow = (win) => { mainWindow = win; 
 // override the defaults; `resourcesPath` stands in for the packaged app's resources
 // folder; `argv` its command line; `platform` the operating system it runs on; `BrowserWindow` the window
 // class. By default the app never becomes ready, so only the load-time wiring runs.
+// `menuItem(label)` finds an item of the application menu, once the app has built it.
 function loadAppMain({ app = {}, dialog = {}, shell = {}, extraFakes = {}, resourcesPath, argv = process.argv,
                       platform = process.platform, BrowserWindow = function BrowserWindow() {} } = {}) {
   const handlers = {};
   const listeners = {};
   const updater = new EventEmitter();
+  let menuTemplate = [];
   const fakes = {
     electron: {
       app: {
@@ -56,7 +58,7 @@ function loadAppMain({ app = {}, dialog = {}, shell = {}, extraFakes = {}, resou
       BrowserWindow,
       shell,
       dialog,
-      Menu: { buildFromTemplate: () => ({}), setApplicationMenu: () => {} },
+      Menu: { buildFromTemplate: (template) => { menuTemplate = template; return {}; }, setApplicationMenu: () => {} },
       powerSaveBlocker: {},
     },
     "electron-updater": { autoUpdater: updater },
@@ -78,7 +80,8 @@ function loadAppMain({ app = {}, dialog = {}, shell = {}, extraFakes = {}, resou
            setServices: mod.exports.setServices, postgresLauncher: mod.exports.postgresLauncher,
            windowsPrivateRoot: mod.exports.windowsPrivateRoot, setupAutoUpdater: mod.exports.setupAutoUpdater,
            serverCommand: mod.exports.serverCommand, startServer: mod.exports.startServer,
-           publishApiPort: mod.exports.publishApiPort, withdrawApiPort: mod.exports.withdrawApiPort };
+           publishApiPort: mod.exports.publishApiPort, withdrawApiPort: mod.exports.withdrawApiPort,
+           menuItem: (label) => menuTemplate.flatMap((menu) => menu.submenu ?? []).find((item) => item.label === label) };
 }
 
 module.exports = { loadAppMain };

@@ -26,7 +26,9 @@ function downloadedSetup() {
 const stateOf = ({ log, revision, ...state }) => state;
 
 const IDLE = { status: "idle", version: "", percent: 0, message: "", checking: false, downloadFailed: false, failure: "",
-               releaseUrl: "" };
+               releaseUrl: "", upToDate: false, installing: false };
+// What a check that found nothing newer leaves.
+const UP_TO_DATE = { ...IDLE, upToDate: true };
 const DOWNLOADED = { ...IDLE, status: "downloaded", version: "2.0.1", percent: 100 };
 const LATEST = "https://github.com/celerp/celerp/releases/latest";
 
@@ -222,13 +224,13 @@ test("a check in progress is part of the state until it has a result",
     expect(stateOf(getUpdateState())).toEqual({ ...IDLE, checking: true });
     expect(sent).toEqual([["update-log", getUpdateState()]]);
     updater.emit("update-not-available", {});
-    expect(stateOf(getUpdateState())).toEqual(IDLE);
+    expect(stateOf(getUpdateState())).toEqual(UP_TO_DATE);
   });
 
 test("a failed check is kept until a later check has a result, and stays in the log",
   function test_check_error_clears_to_the_next_check_result() {
     for (const [event, payload, result] of [
-      ["update-not-available", {}, IDLE],
+      ["update-not-available", {}, UP_TO_DATE],
       ["update-available", { version: "2.0.1" }, { ...IDLE, status: "downloading", version: "2.0.1" }],
     ]) {
       const { updater, getUpdateState } = setup();
@@ -283,7 +285,8 @@ function serveSetup(canCheck = false) {
   const windowSent = [];
   let win = { webContents: { send: (channel, state) => windowSent.push([channel, state]) } };
   const updater = new EventEmitter();
-  updater.checkForUpdates = jest.fn(() => Promise.resolve());
+  // electron-updater resolves a check that ran with its result.
+  updater.checkForUpdates = jest.fn(() => Promise.resolve({ updateInfo: {} }));
   serveUpdateState(ipcMain, () => win, updater, canCheck);
   return { handlers, windowSent, updater, closeWindow: () => { win = null; } };
 }
@@ -332,7 +335,7 @@ test("a check the user asks for dismisses a failed download, and the check's res
     updater.emit("checking-for-update");
     updater.emit("update-not-available", {});
     const state = handlers["get-update-state"]();
-    expect(stateOf(state)).toEqual(IDLE);
+    expect(stateOf(state)).toEqual(UP_TO_DATE);
     expect(state.log).toContain("Update error: sha512 checksum mismatch");
   });
 
@@ -436,4 +439,81 @@ test("a version that is not a release number links the latest release, never a p
     expect(getUpdateState().releaseUrl).toBe(LATEST);
     installFailed("2.8.1-beta.2", "", "stopped");
     expect(getUpdateState().releaseUrl).toBe("https://github.com/celerp/celerp/releases/tag/v2.8.1-beta.2");
+  });
+
+test("nothing newer is kept as upToDate until the next result, which clears it",
+  function test_up_to_date_until_the_next_result() {
+    for (const [event, payload, result] of [
+      ["update-available", { version: "2.0.1" }, { ...IDLE, status: "downloading", version: "2.0.1" }],
+      ["error", new Error("getaddrinfo ENOTFOUND github.com"),
+        { ...IDLE, status: "error", message: "getaddrinfo ENOTFOUND github.com", failure: "check", releaseUrl: LATEST }],
+    ]) {
+      const { updater, getUpdateState } = setup();
+      updater.emit("update-not-available", {});
+      updater.emit("checking-for-update");
+      // While the next check runs, the last result is still there.
+      expect(stateOf(getUpdateState())).toEqual({ ...UP_TO_DATE, checking: true });
+      updater.emit(event, payload);
+      expect(stateOf(getUpdateState())).toEqual(result);
+    }
+  });
+
+test("a downloaded update handed to its installer is kept for the next page, once, and not sent",
+  function test_installing_is_kept_not_sent() {
+    const { updater, sent } = downloadedSetup();
+    const tracked = trackUpdater(updater, (channel, payload) => sent.push([channel, payload]));
+    updater.emit("update-downloaded", { version: "2.0.1" });
+    sent.length = 0;
+    const before = tracked.getUpdateState();
+    tracked.installing();
+    expect(stateOf(tracked.getUpdateState())).toEqual({ ...DOWNLOADED, installing: true });
+    expect(tracked.getUpdateState().revision).toBe(before.revision);
+    expect(sent).toEqual([]);
+    // An installer that did not start replaces it with the failed install.
+    tracked.installFailed("2.0.1", "", "install");
+    expect(tracked.getUpdateState()).toMatchObject({ status: "error", failure: "install", installing: false });
+  });
+
+test("nothing but a downloaded update can be handed to its installer", function test_installing_needs_downloaded() {
+  for (const events of [[], [["update-available", { version: "2.0.1" }]], [["update-not-available", {}]]]) {
+    const updater = new EventEmitter();
+    const tracked = trackUpdater(updater, () => {});
+    for (const [event, payload] of events) updater.emit(event, payload);
+    const before = tracked.getUpdateState();
+    tracked.installing();
+    expect(tracked.getUpdateState()).toEqual(before);
+  }
+});
+
+test("a check the user asks for that runs nothing ends as a failed check, never checking forever",
+  async function test_user_check_that_runs_nothing_fails() {
+    for (const nothing of [null, undefined]) {
+      const { handlers, updater, windowSent } = serveSetup(true);
+      updater.checkForUpdates = jest.fn(() => Promise.resolve(nothing));
+      updater.emit("update-not-available", {});
+      await handlers["check-for-updates"]();
+      await new Promise(setImmediate);
+      const state = handlers["get-update-state"]();
+      expect(stateOf(state)).toEqual({ ...IDLE, status: "error", failure: "inactive", releaseUrl: LATEST });
+      expect(state.log).toEqual(["This copy of Celerp cannot update itself."]);
+      expect(windowSent.at(-1)).toEqual(["update-error", state]);
+    }
+    // A check that ran leaves the state to the updater's events.
+    const { handlers } = serveSetup(true);
+    await handlers["check-for-updates"]();
+    await new Promise(setImmediate);
+    expect(stateOf(handlers["get-update-state"]())).toEqual(IDLE);
+  });
+
+test("a check that ran nothing is not the user's any more: a later failure of the app's own check is not told",
+  async function test_check_that_ran_nothing_clears_user_asked() {
+    const ipcMain = { handle: (channel, fn) => { ipcMain[channel] = fn; } };
+    const updater = new EventEmitter();
+    updater.checkForUpdates = () => Promise.resolve(null);
+    const told = [];
+    serveUpdateState(ipcMain, () => null, updater, true, (state) => told.push(state.failure));
+    await ipcMain["check-for-updates"]();
+    await new Promise(setImmediate);
+    updater.emit("error", new Error("getaddrinfo ENOTFOUND github.com"));
+    expect(told).toEqual([]);
   });
