@@ -544,7 +544,9 @@ async def bill_document(session, company: Company, tid: str, state: dict, schedu
     contact_state = (contact.state or {}) if contact is not None and contact.entity_type == "contact" else {}
     service = {"source_agreement": tid, "period_index": k,
                "service_start": schedule.start(k).isoformat(), "service_end": schedule.service_end(k).isoformat()}
-    lines = [{**li, **service} for li in copy.deepcopy(list(state.get("line_items") or []))]
+    # Only mappings are lines: anything else stored holds none, which the bill's checks then refuse.
+    stored = state.get("line_items")
+    lines = [{**li, **service} for li in copy.deepcopy(stored if isinstance(stored, list) else []) if isinstance(li, dict)]
     auto_note = f"Auto-created from subscription template {template_label(state, tid)}"
     notes = f"{state['notes']}\n{auto_note}".strip() if state.get("notes") else auto_note
     money_inputs = {f: state[f] for f in HEADER_MONEY_FIELDS if f in state}

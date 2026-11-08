@@ -120,6 +120,23 @@ async def test_whatever_status_it_held_no_person_leaves_an_agreement_billing_wha
     await billing.refuse_bill_refused(session, {}, fixed, person)
 
 
+@pytest.mark.parametrize("stored", [None, 0, 7, "x", {}, {"a": 1}, [None], ["x"], [[]], False], ids=repr)
+async def test_lines_stored_as_anything_but_mappings_bill_nothing_and_are_refused_as_none(
+        client, session, monkeypatch, stored):
+    """Lines an earlier release or a hand edit stored as something other than a list of mappings
+    hold no line: the bill is refused for having none (never an error), and a mapping beside
+    them still bills."""
+    freeze_day(monkeypatch, DAY)
+    cid = uuid.UUID(await company_id(client, await register(client)))
+    person = SimpleNamespace(actor_id=uuid.uuid4(), entity_id="doc:SUBI-T", company_id=cid)
+    after = _state("documents.err_finalize_no_lines", "active") | {"line_items": stored}
+    with pytest.raises(HTTPException) as refused:
+        await billing.refuse_bill_refused(session, {}, after, person)
+    assert refused.value.detail["params"]["reason"]["message_key"] == "documents.err_finalize_no_lines"
+    mixed = [{**LINE, "taxes": []}, *(stored if isinstance(stored, list) else [stored])]
+    await billing.refuse_bill_refused(session, {}, after | {"line_items": mixed}, person)
+
+
 def _key(r) -> str | None:
     detail = r.json().get("detail") if r.status_code in (409, 422) else None
     return detail.get("message_key") if isinstance(detail, dict) else None
