@@ -7126,7 +7126,7 @@
   "company.err_price_list_rounding_needs_factor": "L'arrondi de {name} nécessite un coefficient. Ajoutez-en un ou désactivez l'arrondi.",
   "company.err_price_list_rounding": "La valeur d'arrondi de {name} doit être un nombre supérieur à 0 et inférieur ou égal à {max}.",
   "company.err_price_list_cost_name": "{name} est un nom réservé par Celerp pour le coût. Chaque entreprise dispose déjà de la liste « Coût », qui affiche le coût de chaque article. Donnez un autre nom à cette liste.",
-  "settings_menu.err_version_required": "This change must say which version of the side menu it replaces. Read the side menu first and send its ETag in an If-Match header.",
-  "settings_menu.err_changed": "The side menu changed after you read it, so this change was not saved. Read it again and make the change on the current version.",
-  "settings_menu.changed_elsewhere": "Someone else changed the side menu while you were saving, so your change was not saved. The list below shows the menu as it is now. Make your change again."
+  "settings_menu.err_version_required": "Cette modification doit indiquer quelle version du menu latéral elle remplace. Lisez d'abord le menu latéral et envoyez son ETag dans un en-tête If-Match.",
+  "settings_menu.err_changed": "Le menu latéral a changé après que vous l'avez lu, cette modification n'a donc pas été enregistrée. Relisez-le et apportez la modification à la version actuelle.",
+  "settings_menu.changed_elsewhere": "Quelqu'un d'autre a modifié le menu latéral pendant votre enregistrement, votre modification n'a donc pas été enregistrée. La liste ci-dessous montre le menu tel qu'il est maintenant. Refaites votre modification."
 }
