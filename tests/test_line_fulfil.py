@@ -89,14 +89,17 @@ async def test_ship_a_line_whose_lot_went_out_on_another_record_is_refused(clien
     assert left["status"] == "available" and float(left["quantity"]) == 3.0
     assert (await item(client, h, a))["status"] == out_status
     detail = r.json()["detail"]
+    # Ship leaves the line, naming it, then says where its goods went and what to do.
+    said = [detail, *detail.get("also", [])]
     try:
         if not memo:
-            [reason] = detail["params"]["reasons"]
+            assert detail["message_key"] == "documents.unavailable_lines_skipped_one", detail
+            [reason] = detail["also"]
             assert reason["message_key"] == "lines.shipped_elsewhere", detail
         for code, status_label in (("en", "memo" if memo else "Revert fulfillment first"),
                                    ("es", "consignación" if memo else "Revierta primero el procesamiento")):
             i18n.set_lang(code)
-            text = i18n.refusal_text(detail)
+            text = i18n.refusal_text(said)
             assert status_label in (text.lower() if memo else text), text
             assert number in text and "FL-4" in text, text
             assert out_status not in text and "'" not in text, text

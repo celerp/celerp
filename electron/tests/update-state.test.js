@@ -399,7 +399,7 @@ test("an installer that could not start moves a downloaded update to a failed in
     const { installFailed, getUpdateState } = trackUpdater(updater, (channel, s) => sent.push(channel));
     updater.emit("update-available", { version: "2.6.1" });
     updater.emit("update-downloaded", { version: "2.6.1" });
-    installFailed("2.6.1", "spawn UNKNOWN");
+    installFailed("2.6.1", "spawn UNKNOWN", "install");
     const state = getUpdateState();
     expect(stateOf(state)).toEqual({ ...IDLE, status: "error", version: "2.6.1", message: "spawn UNKNOWN",
       downloadFailed: true, failure: "install", releaseUrl: "https://github.com/celerp/celerp/releases/tag/v2.6.1" });
@@ -407,4 +407,25 @@ test("an installer that could not start moves a downloaded update to a failed in
     expect(sent.slice(-1)).toEqual(["update-error"]);
     updater.emit("update-available", { version: "2.6.1" });
     expect(getUpdateState().failure).toBe("install");
+  });
+
+test("a setup that started and then stopped keeps its own failure kind, so the app can say what happened",
+  function test_stopped_install_state() {
+    const updater = new EventEmitter();
+    const { installFailed, getUpdateState } = trackUpdater(updater, () => {});
+    installFailed("2.8.1", "", "stopped");
+    const state = getUpdateState();
+    expect([state.status, state.failure, state.version]).toEqual(["error", "stopped", "2.8.1"]);
+    // with no message there is no log line: the card's own text says what happened
+    expect(state.log).toEqual([]);
+  });
+
+test("a version that is not a release number links the latest release, never a page it names",
+  function test_release_url_needs_a_version() {
+    const updater = new EventEmitter();
+    const { installFailed, getUpdateState } = trackUpdater(updater, () => {});
+    installFailed("2.8.1/../../../other/repo/releases/tag/v1", "", "stopped");
+    expect(getUpdateState().releaseUrl).toBe(LATEST);
+    installFailed("2.8.1-beta.2", "", "stopped");
+    expect(getUpdateState().releaseUrl).toBe("https://github.com/celerp/celerp/releases/tag/v2.8.1-beta.2");
   });

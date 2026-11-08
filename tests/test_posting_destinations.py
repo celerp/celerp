@@ -214,9 +214,10 @@ async def test_an_account_picked_for_a_line_of_a_finalized_bill_is_refused(clien
     bill = await _with_line_account(client, headers, "bill", "6100")
     assert (await client.post(f"/docs/{bill}/finalize", headers=headers)).status_code == 200
     code = await _destination(client, headers, why)
+    [stored] = (await client.get(f"/docs/{bill}", headers=headers)).json()["line_items"]
 
-    _refused(await client.patch(f"/docs/{bill}", headers=headers, json={"expected_version": await doc_version(client, headers, bill), 
-        "fields_changed": {"line_items": {"new": [{**_LINE, "account_code": code}]}}}), why, code)
+    _refused(await client.patch(f"/docs/{bill}", headers=headers, json={"expected_version": await doc_version(client, headers, bill),
+        "fields_changed": {"line_items": {"new": [{**stored, "account_code": code}]}}}), why, code)
 
     [line] = (await client.get(f"/docs/{bill}", headers=headers)).json()["line_items"]
     assert line["account_code"] == "6100"

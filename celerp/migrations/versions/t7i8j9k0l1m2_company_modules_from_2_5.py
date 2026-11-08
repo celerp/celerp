@@ -13,9 +13,9 @@ the module toggle but never read. Read now, a list left over from then would
 turn off every module it does not name. Removing it makes each company one that
 has never chosen, which uses every module the installation loads: what it had.
 
-Runs once per database. It is a data-only migration, so the version-change
-reconcile replays it; the instance_meta marker makes every later run a no-op,
-so a choice a company makes afterwards is never removed. Forward-only.
+Runs once per database. It is a data-only migration, so on a database a stamp
+moved past it the reconcile runs it; its instance_meta marker makes any later run
+a no-op, so a choice a company makes afterwards is never removed. Forward-only.
 """
 
 from __future__ import annotations

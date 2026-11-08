@@ -22,7 +22,7 @@ from decimal import ROUND_DOWN, Decimal, InvalidOperation
 from fastapi import HTTPException
 
 from celerp.accounting_roles import refusal
-from celerp.services.units import exceeds_precision, is_pieces_unit, is_weight_unit, validate_quantity
+from celerp.services.units import exceeds_precision, is_non_stock_line, is_pieces_unit, is_weight_unit, validate_quantity
 from ui.i18n import t
 
 
@@ -148,6 +148,7 @@ def item_measure_meta(item: dict, unit_map: dict) -> dict:
         "pieces": item.get("pieces"),
         "qty_is_weight": is_weight_unit(sell_by, unit_map),
         "qty_is_pieces": is_pieces_unit(sell_by, unit_map),
+        "non_stock": is_non_stock_line(item.get("inventory_type"), sell_by),
     }
 
 
@@ -222,6 +223,11 @@ def line_label(line: dict) -> str:
     from here, so the same line never appears under two different labels.
     """
     return str(line.get("sku") or line.get("description") or line.get("name") or "")
+
+
+def line_name(number: int, label: str) -> str:
+    """A line as a message names it: its number and, when it has one, its label in quotes."""
+    return f'{number} "{label}"' if label else str(number)
 
 
 LINE_IDENTIFIER_MODES: tuple[str, ...] = ("sku", "barcode", "barcode_sku")

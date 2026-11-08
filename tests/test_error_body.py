@@ -72,8 +72,8 @@ def _examples() -> dict:
     from fastapi.exceptions import RequestValidationError
     from slowapi.errors import RateLimitExceeded
 
-    from celerp.inventory_codes import BarcodeConflictError, CodeConflictError
-    from celerp.projections.engine import UnhandledEventsError
+    from celerp.accounting_roles import KeyedRefusal
+    from celerp.inventory_codes import BarcodeConflictError
     from celerp.services.account_roles import PostingRoleError
     from celerp.services.business_time import InvalidTimezoneError
     from celerp.services.journal_accounts import UnbalancedJournalEntry
@@ -85,9 +85,8 @@ def _examples() -> dict:
         RequestValidationError: RequestValidationError([{"loc": ["body", "sku"], "msg": "Field required", "type": "missing"}]),
         # The handler reads nothing from the exception; a Limit needs a live limiter to build.
         RateLimitExceeded: RateLimitExceeded.__new__(RateLimitExceeded),
-        CodeConflictError: BarcodeConflictError("1001"),
+        KeyedRefusal: BarcodeConflictError("1001"),
         InvalidTimezoneError: InvalidTimezoneError("error.company_timezone_unknown"),
-        UnhandledEventsError: UnhandledEventsError({"unknown.event"}),
         PostingRoleError: PostingRoleError([catalog_refusal("posting.problem.unset", role="sales")]),
         UnbalancedJournalEntry: UnbalancedJournalEntry("error.server_error"),
     }

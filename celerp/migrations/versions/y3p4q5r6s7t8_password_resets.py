@@ -24,8 +24,6 @@ down_revision = "x2o3p4q5r6s7"
 branch_labels = None
 depends_on = None
 
-_RESET_COLUMNS = ("reset_token", "reset_token_expires")
-
 
 def _exists(conn, table: str) -> bool:
     return conn.execute(sa.text("SELECT to_regclass(:t)"), {"t": table}).scalar() is not None
@@ -61,10 +59,13 @@ def upgrade() -> None:
             sa.UniqueConstraint("reset_id", "recipient_id"),
         )
         op.create_index("ix_password_reset_notices_recipient_id", "password_reset_notices", ["recipient_id"])
+    # One literal call per column, so the stamp repair reads each drop as a change
+    # of this revision and runs it while a column is still there.
     present = _user_columns(conn)
-    for column in _RESET_COLUMNS:
-        if column in present:
-            op.drop_column("users", column)
+    if "reset_token" in present:
+        op.drop_column("users", "reset_token")
+    if "reset_token_expires" in present:
+        op.drop_column("users", "reset_token_expires")
 
 
 def downgrade() -> None:

@@ -5,11 +5,14 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
 
 from ui.i18n import t
+
+from .conftest import answer_in_app
 
 _CHECK_FAILED = t("shell.update_check_failed", "en")
 
@@ -269,7 +272,10 @@ def _fake_electron(page, seed=(), *, hold_replay=False):
     user asks for goes through the real check-for-updates handler and is kept
     in the same event list as "user-check". With `hold_replay`, the page's
     get-update-state answer is read when asked but delivered only when the page
-    calls window.__releaseReplay(), as a slow IPC reply would be.
+    calls window.__releaseReplay(), as a slow IPC reply would be. The pseudo-event
+    "install-failed" calls installFailed with its version, message and failure, as the
+    app does when setup reopens it after a failure. Each call to a bridge action is
+    counted in window.__bridgeCalls.
     """
     _pin_empty_inbox(page)
     page.add_init_script(
@@ -291,9 +297,10 @@ def _fake_electron(page, seed=(), *, hold_replay=False):
           var win = { webContents: { send: function(channel, state) {
             if (live && windowCallbacks[channel]) windowCallbacks[channel](state);
           } } };
-          module.exports.serveUpdateState(ipcMain, function() { return win; }, updater, false);
+          var served = module.exports.serveUpdateState(ipcMain, function() { return win; }, updater, false);
           function fire(name, payload) {
             if (name === 'user-check') ipcHandlers['check-for-updates']();
+            else if (name === 'install-failed') served.installFailed(payload.version, payload.message, payload.failure);
             else (listeners[name] || []).forEach(function(fn) { fn(payload); });
           }
           JSON.parse(sessionStorage.getItem(KEY)).forEach(function(e) { fire(e[0], e[1]); });
@@ -305,6 +312,8 @@ def _fake_electron(page, seed=(), *, hold_replay=False):
             fire(name, payload);
           };
           function on(channel) { return function(cb) { windowCallbacks[channel] = cb; }; }
+          window.__bridgeCalls = { installUpdate: 0, uninstallKeepData: 0, uninstallDeleteData: 0 };
+          function count(name) { return function() { window.__bridgeCalls[name] += 1; }; }
           window.celerp = {
             getVersion: function() { return Promise.resolve('2.0.0'); },
             getUpdateState: function() {
@@ -319,7 +328,9 @@ def _fake_electron(page, seed=(), *, hold_replay=False):
             onUpdateDownloaded: on('update-downloaded'),
             onUpdateError: on('update-error'),
             checkForUpdates: function() { window.__updaterEmit('user-check', null); return Promise.resolve(); },
-            installUpdate: function() {},
+            installUpdate: count('installUpdate'),
+            uninstallKeepData: count('uninstallKeepData'),
+            uninstallDeleteData: count('uninstallDeleteData'),
           };
         })();
         """ % (json.dumps(list(seed)), _UPDATE_STATE_JS.read_text(), json.dumps(hold_replay))
@@ -701,3 +712,104 @@ def test_replay_answered_after_a_live_event_does_not_undo_it(page, ui_server):
     seen = page.evaluate(_VISIBLE_STATE_JS)
     assert "2.0.1" in seen["state"] and seen["restart"] is True, seen
     assert seen["progress"] == "100%"
+
+
+def _desktop_runtime(monkeypatch, platform):
+    """The in-process UI server as the desktop app's own on `platform`."""
+    monkeypatch.setenv("CELERP_INSTALL_CHANNEL", "electron")
+    monkeypatch.setattr(sys, "platform", platform)
+
+
+def test_desktop_restart_asks_before_installing(page, ui_server, monkeypatch):
+    """Restart to install in the Windows desktop app asks first: Cancel changes nothing,
+    OK shows the installing notice for the offered version and then installs."""
+    _desktop_runtime(monkeypatch, "win32")
+    _fake_electron(page, [_FOUND, _PROGRESS, _DOWNLOADED])
+    ready = _open(page, f"{ui_server}/")
+    assert ready["restart"] is True
+    page.locator(".notif-bell-btn").click()
+    restart = page.locator(".update-card__restart-btn")
+    restart.click()
+    assert answer_in_app(page, accept=False) == t("shell.update_restart_confirm_windows", "en")
+    assert page.evaluate("() => window.__bridgeCalls.installUpdate") == 0
+    assert page.evaluate(_VISIBLE_STATE_JS) == ready
+    assert restart.is_visible() and restart.is_enabled()
+    restart.click()
+    answer_in_app(page, accept=True)
+    page.wait_for_function("() => window.__bridgeCalls.installUpdate === 1")
+    state = page.locator(".update-card__state")
+    assert state.is_visible()
+    assert state.text_content() == t(
+        "shell.update_installing_windows", "en").replace("{version}", "2.0.1")
+    assert restart.is_disabled()
+
+
+def test_pip_restart_keeps_the_installing_notice_in_view(page, ui_server):
+    """Restart to install on a pip install asks first; answering keeps the bell panel open,
+    so Cancel leaves the card as it was and OK shows the installing notice."""
+    import json
+
+    _open_card(page, ui_server, _status())
+    installs = []
+
+    def update(route):
+        if route.request.method == "POST":
+            installs.append(1)
+            body = {"installing": "1.1.0"}
+        else:
+            body = _status(installing="1.1.0" if installs else None)
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
+
+    page.route("**/system/update", update)
+    restart = page.locator(".update-card__restart-btn")
+    state = page.locator(".update-card__state")
+    restart.click()
+    answer_in_app(page, accept=False)
+    assert installs == []
+    assert state.is_visible() and state.text_content() == "Update available: v1.1.0"
+    restart.click()
+    answer_in_app(page, accept=True)
+    page.wait_for_function("() => document.querySelector('.update-card__state').textContent"
+                           " !== 'Update available: v1.1.0'")
+    assert installs == [1]
+    assert state.is_visible()
+    assert state.text_content() == t("shell.update_installing", "en").replace("{version}", "1.1.0")
+
+
+def test_stopped_setup_card_says_setup_stopped(page, ui_server):
+    """A Celerp reopened by a setup that stopped says so on its card, offers the installer
+    of that version and no help link."""
+    _fake_electron(page)
+    _open(page, f"{ui_server}/")
+    _emit(page, ("install-failed", {"version": "2.0.1", "message": "", "failure": "stopped"}))
+    seen = page.evaluate(_VISIBLE_STATE_JS)
+    assert seen["state"] == t("shell.update_stopped_failed", "en")
+    assert seen["state"] != _CHECK_FAILED
+    assert (seen["installer"], seen["help"]) == (f"{_RELEASES}/tag/v2.0.1", False)
+
+
+_UNINSTALL_BUTTONS = {
+    "uninstallKeepData": t("settings.uninstall_keep_data", "en"),
+    "uninstallDeleteData": t("settings.uninstall_delete_data", "en"),
+}
+
+
+def test_uninstall_cards_need_the_desktop_app(page, ui_server, monkeypatch):
+    """On the macOS desktop's server, a browser without the app says where to uninstall and
+    asks nothing; in the app, Quit and Keep Data runs once and Delete all data asks first."""
+    _desktop_runtime(monkeypatch, "darwin")
+    page.goto(f"{ui_server}/settings/general?tab=company", wait_until="domcontentloaded")
+    for label in _UNINSTALL_BUTTONS.values():
+        page.locator("button", has_text=label).click()
+        toast = page.locator(".toast__msg", has_text=t("settings.uninstall_desktop_only", "en"))
+        toast.last.wait_for()
+        assert page.locator("dialog.confirm-dialog[open]").count() == 0
+
+    _fake_electron(page)
+    page.goto(f"{ui_server}/settings/general?tab=company", wait_until="domcontentloaded")
+    page.locator("button", has_text=_UNINSTALL_BUTTONS["uninstallKeepData"]).click()
+    assert page.evaluate("() => window.__bridgeCalls") == {
+        "installUpdate": 0, "uninstallKeepData": 1, "uninstallDeleteData": 0}
+    page.locator("button", has_text=_UNINSTALL_BUTTONS["uninstallDeleteData"]).click()
+    assert answer_in_app(page, accept=False) == t("settings.uninstall_confirm_js", "en")
+    assert page.evaluate("() => window.__bridgeCalls.uninstallDeleteData") == 0

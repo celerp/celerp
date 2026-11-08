@@ -359,7 +359,8 @@ def refusal_text(detail) -> str:
 
     A structured refusal carries ``message`` (English), ``message_key`` and ``params``;
     its ``message_key`` is translated with those params, and wins over an ``errors``
-    list beside it (the list is the detail behind a keyed summary). A body's
+    list beside it (the list is the detail behind a keyed summary). A refusal of several
+    kinds is followed by each refusal in its ``also`` list. A body's
     ``errors`` (a list wins over a joined English ``message`` beside it) and lists
     render every entry in turn, a body's ``detail`` renders what it holds, and plain text is shown as the
     server wrote it. Internal record ids never reach the user. Anything
@@ -377,10 +378,10 @@ def refusal_text(detail) -> str:
         return refusal_text(detail.get("detail"))
     message = _without_ids(str(detail.get("message") or ""))
     key = detail.get("message_key")
-    if not key:
-        return message
-    params = {name: _refusal_param(name, value) for name, value in (detail.get("params") or {}).items()}
-    return _without_ids(t_or(str(key), message, **params))
+    if key:
+        params = {name: _refusal_param(name, value) for name, value in (detail.get("params") or {}).items()}
+        message = _without_ids(t_or(str(key), message, **params))
+    return " ".join(text for text in (message, refusal_text(detail.get("also") or [])) if text)
 
 
 # A record id the user never sees: a bare UUID, or a prefixed id such as item:<uuid>.
@@ -401,12 +402,15 @@ def _without_ids(text: str) -> str:
 
 
 _ICON = re.compile(r"^\W+")
+# The marks that end a sentence in the site languages; a list of reasons that all end with
+# one reads as sentences, never as "Sold.; ...".
+_SENTENCE_END = (".", "!", "?", "\u3002", "\uff01", "\uff1f", "\u1362", "\u061f")
 
 
 def _refusal_param(name: str, value):
     """A refusal param as the user reads it: a nested refusal (a sidebar item's ``nav.``
     label without its icon), or a list of them (``steps`` and ``reasons`` joined by
-    semicolons, others as sentences), in the user's language; a
+    semicolons unless every one is a whole sentence, others as sentences), in the user's language; a
     ``role`` as its label and ``roles`` as their labels; ``type``/``types`` as account types;
     ``status`` as an item status, ``lot_status`` as one read mid-sentence and
     ``doc_status`` as a document status, each only when the value is an enum slug (a
@@ -419,7 +423,9 @@ def _refusal_param(name: str, value):
         # A sidebar item named in a sentence reads as its label, without its icon.
         return _ICON.sub("", text) if str(value.get("message_key") or "").startswith("nav.") else text
     if isinstance(value, list) and value and all(isinstance(v, dict) for v in value):
-        return ("; " if name in ("steps", "reasons") else " ").join(refusal_text(v) for v in value)
+        texts = [refusal_text(v) for v in value]
+        sentences = name not in ("steps", "reasons") or all(t.endswith(_SENTENCE_END) for t in texts)
+        return (" " if sentences else "; ").join(texts)
     if name == "role":
         return role_label(str(value), str(value).replace("_", " "))
     if name == "roles" and isinstance(value, list):

@@ -164,7 +164,8 @@ async def test_a_failed_tax_read_creates_no_document(ui_client, url, body):
 
 
 _DRAFT = {"entity_id": "doc:INV-1", "doc_type": "invoice", "status": "draft", "currency": "THB", "version": 4,
-          "line_items": [{"description": "Ring", "quantity": 1, "unit_price": 100}],
+          "line_items": [{"line_id": "33333333-3333-4333-8333-333333333333", "description": "Ring", "quantity": 1,
+                          "unit_price": 100}],
           "doc_taxes": [{"code": "VAT 7%", "rate": 7.0, "amount": 7.0, "order": 0, "is_compound": False}],
           "subtotal": 100.0, "tax": 7.0, "total": 107.0}
 
@@ -230,7 +231,8 @@ async def test_save_doc_lines_reread_failure_reports_the_error(ui_client):
                           patch_doc=AsyncMock(return_value={"version": 5}),
                           get_doc=AsyncMock(side_effect=APIError(503, "The document could not be read.")))
     assert r.status_code == 200, r.text
-    assert r.json() == {"ok": True, "version": 5, "error": "The document could not be read."}
+    assert r.json() == {"ok": True, "version": 5, "error": "The document could not be read.",
+                        "line_ids": ["33333333-3333-4333-8333-333333333333"]}
 
 
 async def test_save_list_lines_reread_failure_reports_the_error(ui_client):
@@ -239,7 +241,7 @@ async def test_save_list_lines_reread_failure_reports_the_error(ui_client):
             patch("ui.api_client.get_list", new=AsyncMock(side_effect=APIError(503, "The list could not be read."))):
         r = await ui_client.post("/lists/list:Q-1/lines", json={"line_items": [], "expected_version": 4})
     assert r.status_code == 200, r.text
-    assert r.json() == {"ok": True, "version": 5, "error": "The list could not be read."}
+    assert r.json() == {"ok": True, "version": 5, "error": "The list could not be read.", "line_ids": []}
 
 
 _LEVY_WHOLE = [{"code": "Levy 5%", "rate": 5.0, "amount": 0, "order": 0, "is_compound": False, "label": ""}]

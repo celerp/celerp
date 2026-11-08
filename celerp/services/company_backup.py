@@ -1635,6 +1635,19 @@ async def _projection_states(session: AsyncSession, company_id) -> dict[str, tup
     return {eid: (etype, _canonical(_parse_row(state))) for eid, etype, state in rows.all()}
 
 
+async def _fill_line_ids(session: AsyncSession, company_id) -> None:
+    """Give each restored document and List line stored without a line id the id a replay
+    derives, so a backup made before line ids existed agrees with its ledger."""
+    from celerp.models.projections import Projection
+    from celerp.services.document_lines import fill_line_ids
+    for proj in (await session.scalars(select(Projection).where(
+            Projection.company_id == company_id, Projection.entity_type.in_(("doc", "list"))))).all():
+        state = dict(proj.state or {})
+        if fill_line_ids(state, proj.entity_id):
+            proj.state = state
+    await session.flush()
+
+
 async def _check_replay(session: AsyncSession, company_id) -> None:
     """Replay the restored ledger with the running modules and refuse the restore unless it
     produces exactly the records the backup holds. The replay itself is undone, so the
@@ -1878,6 +1891,7 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 except DBAPIError:
                     raise BackupError(422, t(UNSAVABLE)) from None
             await _verify(session, checked, m, new_id, {new: old for old, new in id_map.items()})
+            await _fill_line_ids(session, new_id)
             await _check_replay(session, new_id)
             if retain_peer_identities:
                 from celerp.services.peer_identity import seed_restored_identities

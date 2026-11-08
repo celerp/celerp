@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.background import BackgroundTask
 
+from celerp.accounting_roles import refusal_detail
 from celerp.db import get_session
 from celerp.models.migration import MigrationRun, MigrationStatus
 from celerp.modules import requirements
@@ -113,7 +114,7 @@ async def send_handoff(payload: SendCompanyHandoff, ctx: AuthContext = Depends(u
     try:
         secret = sender.decode_key(payload.key)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from None
+        raise HTTPException(status_code=422, detail=refusal_detail(exc)) from None
     await session.rollback()  # snapshot uses its own consistent transaction
     async def export(destination: Path):
         # The copy names its firm, shown as Prepared by before it is opened.

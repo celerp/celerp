@@ -34,7 +34,7 @@ from celerp.services.business_time import business_date_of
 
 
 def apply_event(state: dict, event: LedgerEntry) -> dict:
-    return ProjectionEngine._apply(state, event.event_type, event.data)
+    return ProjectionEngine.replay(state, event)
 
 
 STRIPE_OWNED_PAYMENT = refusal(

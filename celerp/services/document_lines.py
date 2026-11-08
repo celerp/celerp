@@ -619,8 +619,13 @@ async def assert_document_item_uniqueness(session, company_id, doc_type, line_it
 # Line identity: every document and List line carries a stable ``line_id`` (a UUID
 # string) so an action, a hold or a shipment can name one line even when two lines
 # share an item. The id is assigned where lines are written (emit_event), never
-# regenerated, and unique within its record.
+# regenerated, and unique within its record. A line stored before line ids existed gets
+# the id ``fill_line_ids`` derives from its record id and position, wherever the record's
+# state is built, so every build of that state names the line the same way.
 # ---------------------------------------------------------------------------
+
+# Frozen: the derived ids are stored, so this namespace and the name format never change.
+LINE_ID_NAMESPACE = uuid.UUID("062edee8-1c9a-5c36-aa10-db4cf4f0d7c5")
 
 def is_line_id(value) -> bool:
     """True for a well-formed line id: a UUID, in its 36-character or 32-hex form."""
@@ -635,6 +640,26 @@ def is_line_id(value) -> bool:
 
 def new_line_id() -> str:
     return str(uuid.uuid4())
+
+
+def derived_line_id(entity_id: str, index: int) -> str:
+    """The id of the line at ``index`` of record ``entity_id`` when it was stored without one."""
+    return str(uuid.uuid5(LINE_ID_NAMESPACE, f"{entity_id}:{index}"))
+
+
+def fill_line_ids(state: dict, entity_id: str) -> bool:
+    """Give each line of ``state`` without a well-formed id its derived id; return whether
+    any line changed. The lines are replaced by copies, never written in place, so a state
+    shared with an earlier build is left as it was."""
+    lines = state.get("line_items")
+    if not isinstance(lines, list) or all(
+            not isinstance(li, dict) or is_line_id(li.get("line_id")) for li in lines):
+        return False
+    state["line_items"] = [
+        {**li, "line_id": derived_line_id(entity_id, i)}
+        if isinstance(li, dict) and not is_line_id(li.get("line_id")) else li
+        for i, li in enumerate(lines)]
+    return True
 
 
 def _line_key(line: dict):

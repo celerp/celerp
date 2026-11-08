@@ -250,6 +250,190 @@ jobs:
             Write-Host "::notice::previous release $env:PREVIOUS_VERSION predates the check (from $env:GUARDED_SINCE); downgrade exit $code, install changed: $changed. Not asserted."
           }
 
-          $code = Install $candidate @("--updated", "/S", "/currentuser")
+          # The arguments the updater passes (--force-run: reopen Celerp when done). The
+          # run shows setup's window and reopens Celerp from the install folder.
+          $code = Install $candidate @("--updated", "/S", "--force-run", "/currentuser")
           if ($code -ne 0 -or (Installed) -ne $new) { Fail "in-app update run: exit $code, entry $(Installed) (want exit 0, $new)" }
-          Write-Host "update: the in-app update run installed $new without a prompt"
+          $exe = Join-Path (InstallDir) "Celerp.exe"
+          $end = (Get-Date).AddSeconds(120)
+          while (-not (Get-Process Celerp -ErrorAction SilentlyContinue | Where-Object Path -eq $exe)) {
+            if ((Get-Date) -gt $end) { Fail "in-app update run: Celerp was not reopened from $exe in 120 s" }
+            Start-Sleep 2
+          }
+          Get-Process Celerp | Where-Object Path -eq $exe | Stop-Process -Force
+          Write-Host "update: the in-app update run installed $new without a prompt and reopened Celerp"
+
+      # The in-app update as a user runs it: the previous release installed and running,
+      # an update from a local feed, and Restart to install. Each check starts from a
+      # fresh install of the previous release.
+      - name: In-app update from a running Celerp (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 30
+        run: |
+          $ErrorActionPreference = "Stop"
+          python -m pip install --quiet "playwright>=1.43,<1.62"
+          function Entry {
+            Get-ChildItem "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall" |
+              Where-Object { (Get-ItemProperty $_.PSPath).DisplayName -like "Celerp*" } |
+              Select-Object -First 1
+          }
+          function Installed { (Get-ItemProperty (Entry).PSPath).DisplayVersion }
+          function InstallDir {
+            $u = (Get-ItemProperty (Entry).PSPath).UninstallString
+            if ($u -notmatch '^"([^"]+)"') { throw "unexpected UninstallString: $u" }
+            Split-Path $Matches[1]
+          }
+          function Fail([string]$why) {
+            Write-Host "::error::$why"
+            foreach ($log in "install.log", "update.log") {
+              $file = Join-Path $logs $log
+              if (Test-Path $file) { Write-Host "--- $log"; Get-Content $file -Tail 40 }
+            }
+            exit 1
+          }
+          # Bounded wait: polls $done every 2 s and fails the step after $seconds.
+          function WaitFor([string]$what, [int]$seconds, [scriptblock]$done) {
+            $end = (Get-Date).AddSeconds($seconds)
+            while (-not (& $done)) {
+              if ((Get-Date) -gt $end) { Fail "no $what in $seconds s" }
+              Start-Sleep 2
+            }
+          }
+          function Running {
+            $dir = InstallDir
+            Get-CimInstance Win32_Process -Filter "Name = 'Celerp.exe'" |
+              Where-Object { $_.ExecutablePath -like "$dir\*" -and $_.CommandLine -notmatch "--type=" }
+          }
+          function SetupWindow {
+            Get-Process | Where-Object { $_.MainWindowTitle -like "*Celerp*Setup*" }
+          }
+          $previous = "$env:RUNNER_TEMP\previous\Celerp-Setup.exe"
+          $candidate = "$env:RUNNER_TEMP\candidate\Celerp-Setup.exe"
+          $logs = "$env:APPDATA\Celerp\celerp-data\logs"
+
+          # The feed: the candidate installer and its latest.yml, with no blockmap, so the
+          # updater downloads the whole installer.
+          $new = Installed
+          $feed = "$env:RUNNER_TEMP\feed"
+          New-Item -ItemType Directory -Force $feed | Out-Null
+          Copy-Item $candidate $feed
+          $bytes = [IO.File]::ReadAllBytes("$feed\Celerp-Setup.exe")
+          $sha512 = [Convert]::ToBase64String([Security.Cryptography.SHA512]::Create().ComputeHash($bytes))
+          Set-Content -Encoding Ascii "$feed\latest.yml" @"
+          version: $new
+          files:
+            - url: Celerp-Setup.exe
+              sha512: $sha512
+              size: $($bytes.Length)
+          path: Celerp-Setup.exe
+          sha512: $sha512
+          releaseDate: '$((Get-Date).ToUniversalTime().ToString("o"))'
+          "@
+          $server = Start-Process python -ArgumentList "-m", "http.server", "8765", "--bind", "127.0.0.1", "--directory", $feed -PassThru -WindowStyle Hidden
+
+          # The previous release, fresh, pointed at the feed and started.
+          function StartPrevious {
+            Get-Process Celerp -ErrorAction SilentlyContinue | Stop-Process -Force
+            if (Entry) {
+              $u = (Get-ItemProperty (Entry).PSPath).UninstallString
+              $null = $u -match '^"([^"]+)"'
+              (Start-Process -FilePath $Matches[1] -ArgumentList "/S", "/currentuser" -Wait -PassThru).ExitCode | Out-Null
+              WaitFor "uninstall of the candidate" 120 { -not (Entry) }
+            }
+            $code = (Start-Process -FilePath $previous -ArgumentList "/S", "/currentuser" -Wait -PassThru).ExitCode
+            if ($code -ne 0) { Fail "previous release install exited $code" }
+            $script:old = Installed
+            Set-Content -Encoding Ascii (Join-Path (InstallDir) "resources\app-update.yml") @"
+          provider: generic
+          url: http://127.0.0.1:8765/
+          updaterCacheDirName: celerp-updater
+          "@
+            Remove-Item "$logs\install.log", "$logs\update.log" -ErrorAction SilentlyContinue
+            Start-Process (Join-Path (InstallDir) "Celerp.exe") -ArgumentList "--remote-debugging-port=9223"
+          }
+          # Restart to install, once the running previous release has downloaded the update.
+          function RestartToInstall {
+            python scripts/ci_update_drive.py install 9223 600
+            if ($LASTEXITCODE -ne 0) { Fail "the previous release $old did not download and start the update" }
+            WaitFor "setup window" 180 { SetupWindow }
+            Write-Host "setup window: $((SetupWindow).MainWindowTitle)"
+          }
+          function InstallLog { if (Test-Path "$logs\install.log") { Get-Content "$logs\install.log" -Raw } else { "" } }
+          function ExpectNewRunning {
+            WaitFor "Celerp $new running" 600 { (Installed) -eq $new -and (Running) }
+            $log = InstallLog
+            if ($log -notmatch "mode forced: current") { Fail "install.log has no mode forced line" }
+            if ($log -notmatch "done: $([regex]::Escape($new)) is installed") { Fail "install.log has no success line" }
+            if ((Get-Content "$logs\update.log" -Raw -ErrorAction SilentlyContinue) -match "not signed") {
+              Fail "update.log has a signature error"
+            }
+          }
+
+          # check_update_from_running_app
+          StartPrevious
+          RestartToInstall
+          ExpectNewRunning
+          Write-Host "check_update_from_running_app: $old updated to $new from the running app, setup visible, $new running"
+
+          # check_update_with_celerp_reopened_mid_install
+          StartPrevious
+          RestartToInstall
+          Start-Sleep 15
+          Start-Process (Join-Path (InstallDir) "Celerp.exe")
+          ExpectNewRunning
+          if ((InstallLog) -notmatch "Closed the Celerp that was opened during the update") {
+            Fail "install.log has no line for the Celerp closed before the swap"
+          }
+          Write-Host "check_update_with_celerp_reopened_mid_install: the reopened Celerp was closed, $new running"
+
+          # check_update_with_held_file_reopens_old_version
+          StartPrevious
+          # Signed in, so the Celerp that setup reopens shows its update card.
+          python scripts/ci_update_drive.py sign-in 9223 300
+          if ($LASTEXITCODE -ne 0) { Fail "could not set up the company on the previous release $old" }
+          $en = Get-Content (Join-Path (InstallDir) "resources\app\ui\locales\en.json") -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
+          # Setup reopens Celerp with --updated: a release that knows a stopped update says so.
+          $failedText = if ($en.ContainsKey("shell.update_stopped_failed")) { $en["shell.update_stopped_failed"] } else { $en["shell.update_install_failed"] }
+          $held = Join-Path (InstallDir) "celerp-ci-held.txt"
+          Set-Content -Encoding Ascii $held "held"
+          $holder = Start-Process pwsh -PassThru -WindowStyle Hidden -ArgumentList "-NoProfile", "-Command",
+            "`$f = [IO.File]::Open('$held', 'Open', 'Read', 'None'); Start-Sleep 900"
+          RestartToInstall
+          # The rename prompt: setup's message box with Retry and Cancel (its main window has no Retry).
+          Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+          $AE = [Windows.Automation.AutomationElement]
+          $scope = [Windows.Automation.TreeScope]
+          $boxes = [Windows.Automation.PropertyCondition]::new($AE::ClassNameProperty, "#32770")
+          $button = { param($name) [Windows.Automation.PropertyCondition]::new($AE::NameProperty, $name) }
+          $cancel = $null
+          WaitFor "rename prompt" 300 {
+            foreach ($box in $AE::RootElement.FindAll($scope::Children, $boxes)) {
+              if ($box.FindFirst($scope::Descendants, (& $button "Retry"))) {
+                $script:cancel = $box.FindFirst($scope::Descendants, (& $button "Cancel"))
+                if ($script:cancel) { return $true }
+              }
+            }
+            $false
+          }
+          $cancel.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
+          WaitFor "Celerp $old reopened with the failed update" 300 {
+            (Running) | Where-Object { $_.CommandLine -match "--update-install-failed=$([regex]::Escape($new))" }
+          }
+          if ((Installed) -ne $old) { Fail "after Cancel the entry is $(Installed) (want $old)" }
+          if ((InstallLog) -notmatch "stopped: ") { Fail "install.log has no line for the stop" }
+          # The update card says the update failed. UI Automation cannot read inside the page
+          # (Celerp's page tree is off without a screen reader), so the reopened Celerp is
+          # started again with its own command line and a debugging port, and the card is
+          # read over CDP.
+          $reopened = (Running) | Where-Object { $_.CommandLine -match "--update-install-failed=" } | Select-Object -First 1
+          $reopenedArgs = $reopened.CommandLine -replace '^("[^"]*"|\S+)\s*', ''
+          # Closed as a user closes it, so its database stops before the second start.
+          Get-Process Celerp | Where-Object MainWindowHandle -ne 0 | ForEach-Object { $null = $_.CloseMainWindow() }
+          WaitFor "the reopened Celerp to close" 120 { -not (Get-Process Celerp -ErrorAction SilentlyContinue) }
+          Start-Process (Join-Path (InstallDir) "Celerp.exe") -ArgumentList "$reopenedArgs --remote-debugging-port=9223"
+          python scripts/ci_update_drive.py card 9223 180 $failedText
+          if ($LASTEXITCODE -ne 0) { Fail "the update card of the reopened $old does not say '$failedText'" }
+          Stop-Process $holder -Force
+          Write-Host "check_update_with_held_file_reopens_old_version: Cancel kept $old, which reopened and says '$failedText'"
+          Stop-Process $server -Force

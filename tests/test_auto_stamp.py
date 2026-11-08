@@ -35,6 +35,7 @@ positives (saying "applied" when it isn't) would cause data loss.
 
 from __future__ import annotations
 
+import collections
 import os
 from pathlib import Path
 
@@ -513,6 +514,14 @@ class TestFindSafeStamp:
             "rev2": [RevisionSignature(rev="rev2", kind="drop_column", table="notices", column="read")],
         }
         assert find_safe_stamp(revs, sigs_by_rev, inspector) == "rev1"
+        # Against the kernel schema a table no revision creates is one only the
+        # startup creates (test_startup_tables_stamp), so here a revision creates it.
+        revs = [MagicMock(revision=f"rev{i}") for i in (3, 2, 1)]
+        sigs_by_rev = {
+            "rev1": [RevisionSignature(rev="rev1", kind="create_table", table="users")],
+            "rev2": [RevisionSignature(rev="rev2", kind="create_table", table="notices")],
+            "rev3": [RevisionSignature(rev="rev3", kind="drop_column", table="notices", column="read")],
+        }
         assert find_safe_stamp(revs, sigs_by_rev, inspector, expected_metadata=metadata) == "rev1"
 
     def test_an_unreadable_column_list_is_no_proof_a_column_was_dropped(self):
@@ -780,3 +789,46 @@ def test_stamped_but_columns_absent_stamped_behind():
     e7c9 = script.get_revision("e7c9a1b3d5f2")
     below = {r.revision for r in script.iterate_revisions(e7c9.down_revision, "base")}
     assert stamp in below
+
+
+# The kinds of schema change the walker reads. A call of one of these in a
+# revision's upgrade that it cannot read (a table or column named by a variable)
+# leaves that change invisible, and the walker takes the revision as applied
+# while the change is still missing.
+_READ_KINDS = ("create_table", "add_column", "drop_column", "create_index", "create_unique_constraint")
+# Revisions whose upgrade makes schema changes the walker cannot read, with why that
+# is safe. Each is read as a data backfill: the reconcile replays one a stamp skips.
+_UNREAD_SCHEMA_CHANGES = {
+    # Adds whichever job columns the table lacks and drops whichever counters it
+    # still has, so it leaves the same schema run on any table, any number of times.
+    "h4c5d6e7f8a9_ai_jobs.py": "converges on any table",
+}
+
+
+def _schema_calls(migration_file: Path) -> collections.Counter:
+    import ast
+
+    tree = ast.parse(migration_file.read_text())
+    return collections.Counter(
+        node.func.attr
+        for func in ast.walk(tree) if isinstance(func, ast.FunctionDef) and func.name == "upgrade"
+        for node in ast.walk(func)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in _READ_KINDS
+    )
+
+
+_MIGRATIONS = sorted(
+    f for f in Path(build_alembic_config().get_main_option("script_location"), "versions").glob("*.py")
+    if f.name != "__init__.py"
+)
+
+
+@pytest.mark.parametrize("migration", _MIGRATIONS, ids=lambda f: f.stem)
+def test_every_schema_change_in_a_revision_is_read_by_the_walker(migration):
+    calls = _schema_calls(migration)
+    read = collections.Counter(sig.kind for sig in extract_signatures(migration))
+    if migration.name in _UNREAD_SCHEMA_CHANGES:
+        assert calls != read, f"{migration.name} is read in full now; take it off the list"
+        assert not read, f"{migration.name} is listed as a backfill but has changes the walker reads"
+    else:
+        assert calls == read, f"{migration.name}: schema calls {dict(calls)}, read {dict(read)}"

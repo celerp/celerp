@@ -39,7 +39,7 @@ def _bill(api) -> str:
 
 @pytest.mark.parametrize("make, action, button", [
     (_invoice, "li-reserve", "#li-bulk-reserve-btn"),
-    (_invoice, "li-fulfill", "#li-bulk-fulfill-btn button[type=submit]"),
+    (_invoice, "li-fulfill", "#li-bulk-fulfill-btn"),
     (_bill, "li-fulfill", "#li-bulk-fulfill-btn button[type=submit]"),
 ])
 @pytest.mark.parametrize("answer", ["accept", "dismiss"])
