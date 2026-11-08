@@ -28,14 +28,15 @@ function releasePageUrl(version) {
 
 function initialUpdateState() {
   return Object.freeze({ status: "idle", version: "", percent: 0, message: "", checking: false,
-                         downloadFailed: false, failure: "", releaseUrl: "" });
+                         downloadFailed: false, failure: "", releaseUrl: "", upToDate: false, installing: false });
 }
 
 /**
  * What failed, from the updater's error: "install" (the installer did not
  * start), "save" (Windows refused to save the download, usually antivirus
  * still scanning it), "verify" (the download failed its checksum or signature
- * check), "download", or "check". A download that failed verification must not
+ * check), "download", or "check". "inactive" (this copy cannot update itself) is
+ * not an updater error: it is a check that ran nothing (serveUpdateState). A download that failed verification must not
  * be installed by hand, so it is the one failure with no installer to offer.
  *
  * @param {string} message the updater's error
@@ -49,7 +50,7 @@ function failureKind(message, downloading) {
 
 // The failed state for `failure`, with the release page to offer, if any.
 function failedState(state, failure, fields) {
-  return Object.freeze({ ...state, status: "error", percent: 0, checking: false, failure,
+  return Object.freeze({ ...state, status: "error", percent: 0, checking: false, upToDate: false, installing: false, failure,
                          releaseUrl: failure === "verify" ? "" : releasePageUrl(fields.version ?? state.version),
                          ...fields });
 }
@@ -75,10 +76,15 @@ function toPercent(value) {
  * - "install-failed" (the installer did not start, failure "install", or setup
  *   started and then stopped, failure "stopped") replaces any state, even
  *   downloaded, with a failed download that offers the installer.
+ * - "installing" marks a downloaded update as handed to its installer.
+ * - "inactive" is a check the user asked for that ran nothing: a failed check.
+ * - not-available sets upToDate, which any later result clears.
  *
  * @param {{status: string, version: string, percent: number, message: string,
- *          checking: boolean, downloadFailed: boolean, failure: string, releaseUrl: string}} state
- * @param {{type: "check"|"dismiss"|"found"|"progress"|"downloaded"|"not-available"|"error"|"install-failed",
+ *          checking: boolean, downloadFailed: boolean, failure: string, releaseUrl: string,
+ *          upToDate: boolean, installing: boolean}} state
+ * @param {{type: "check"|"dismiss"|"found"|"progress"|"downloaded"|"not-available"|"error"|"install-failed"|
+ *                "installing"|"inactive",
  *          version?: string, percent?: number, message?: string, failure?: string}} event
  */
 function nextUpdateState(state, event) {
@@ -86,10 +92,13 @@ function nextUpdateState(state, event) {
     return failedState(state, event.failure, { version: event.version || state.version,
                                                  message: event.message || "", downloadFailed: true });
   }
-  if (state.status === "downloaded") return null;
+  if (state.status === "downloaded") {
+    return event.type === "installing" && !state.installing ? Object.freeze({ ...state, installing: true }) : null;
+  }
   const failedDownload = state.status === "error" && state.downloadFailed;
   const next = (fields) =>
-    Object.freeze({ ...state, message: "", checking: false, downloadFailed: false, failure: "", releaseUrl: "", ...fields });
+    Object.freeze({ ...state, message: "", checking: false, downloadFailed: false, failure: "", releaseUrl: "",
+                    upToDate: false, ...fields });
   switch (event.type) {
     case "check":
       if ((state.status !== "idle" && state.status !== "error") || failedDownload) return null;
@@ -110,12 +119,14 @@ function nextUpdateState(state, event) {
       return next({ status: "downloaded", version: event.version || state.version, percent: 100 });
     case "not-available":
       if (state.status === "downloading" || failedDownload) return null;
-      return initialUpdateState();
+      return Object.freeze({ ...initialUpdateState(), upToDate: true });
     case "error": {
       const message = event.message || "";
       const downloadFailed = state.status === "downloading" || failedDownload;
       return failedState(state, failureKind(message, downloadFailed), { message, downloadFailed });
     }
+    case "inactive":
+      return failedState(state, "inactive", { message: "", downloadFailed: false });
     default:
       return null;
   }
@@ -136,11 +147,15 @@ function nextUpdateState(state, event) {
  * @param {(channel: string, state: object) => void} send
  * @param {(state: object) => void} [onFailure]
  * @returns {{getUpdateState: () => object, dismissError: () => void, userChecks: () => void,
- *            installFailed: (version: string, message: string, failure: "install"|"stopped") => void}}
+ *            installFailed: (version: string, message: string, failure: "install"|"stopped") => void,
+ *            installing: () => void, checkedNothing: () => void}}
  *   getUpdateState returns a copy with its log and revision; dismissError clears a failed
  *   download, at the user's request; userChecks marks the next check as the user's;
  *   installFailed records an installer that did not start, or with "stopped" a setup
- *   that started and then stopped; with no message it adds no log line.
+ *   that started and then stopped; with no message it adds no log line; installing marks
+ *   the downloaded update as handed to its installer, kept for the next page that loads
+ *   but not sent, since the page that asked for it shows it already; checkedNothing
+ *   records a check the user asked for that ran nothing (failure "inactive").
  */
 function trackUpdater(updater, send, onFailure = () => {}) {
   let state = initialUpdateState();
@@ -207,6 +222,11 @@ function trackUpdater(updater, send, onFailure = () => {}) {
     userChecks: () => { userAsked = true; },
     installFailed: (version, message, failure) =>
       apply("update-error", { type: "install-failed", version, message, failure }, () => (message ? errorLine(message) : "")),
+    installing: () => { state = nextUpdateState(state, { type: "installing" }) ?? state; },
+    checkedNothing: () => {
+      userAsked = false;
+      apply("update-error", { type: "inactive" }, () => "This copy of Celerp cannot update itself.");
+    },
   };
 }
 
@@ -221,11 +241,14 @@ function trackUpdater(updater, send, onFailure = () => {}) {
  * @param {{on: (event: string, fn: Function) => void, checkForUpdates: () => Promise}} updater
  * @param {boolean} canCheck
  * @param {(state: object) => void} [onFailure] see trackUpdater
- * @returns {{getUpdateState: () => object, installFailed: Function, checkForUser: () => void}}
- *   installFailed as in trackUpdater; checkForUser runs a check as the user's.
+ * @returns {{getUpdateState: () => object, installFailed: Function, installing: Function, checkForUser: () => void}}
+ *   installFailed and installing as in trackUpdater; checkForUser runs a check as the user's.
+ *   A check that resolves with no result (electron-updater does that, with no event, when
+ *   this copy cannot update itself: an AppImage run without APPIMAGE, a snap) is a failed
+ *   check, so the user is never left waiting on it.
  */
 function serveUpdateState(ipcMain, getWindow, updater, canCheck, onFailure) {
-  const { getUpdateState, dismissError, userChecks, installFailed } = trackUpdater(updater, (channel, state) => {
+  const { getUpdateState, dismissError, userChecks, installFailed, installing, checkedNothing } = trackUpdater(updater, (channel, state) => {
     const win = getWindow();
     if (win) win.webContents.send(channel, state);
   }, onFailure);
@@ -236,10 +259,11 @@ function serveUpdateState(ipcMain, getWindow, updater, canCheck, onFailure) {
     dismissError();
     if (!canCheck) return;
     userChecks();
-    updater.checkForUpdates().catch(() => {}); // errors handled by the "error" event
+    updater.checkForUpdates().then((result) => { if (!result) checkedNothing(); })
+      .catch(() => {}); // errors handled by the "error" event
   };
   ipcMain.handle("check-for-updates", checkForUser);
-  return { getUpdateState, installFailed, checkForUser };
+  return { getUpdateState, installFailed, installing, checkForUser };
 }
 
 module.exports = { initialUpdateState, nextUpdateState, trackUpdater, serveUpdateState };

@@ -7382,5 +7382,15 @@
   "documents.unscanned_lines_skipped_one": "La ligne {lines} n'était pas marquée comme scannée ; il n'y avait donc aucune indication de scan à effacer.",
   "documents.unscanned_lines_skipped_many": "Les lignes {lines} n'étaient pas marquées comme scannées ; il n'y avait donc aucune indication de scan à effacer.",
   "documents.drawn_lines_skipped_one": "La ligne {lines} a été facturée depuis un mémo et ses marchandises sont déjà chez le client ; elle a donc été laissée telle quelle.",
-  "documents.drawn_lines_skipped_many": "Les lignes {lines} ont été facturées depuis un mémo et leurs marchandises sont déjà chez le client ; elles ont donc été laissées telles quelles."
+  "documents.drawn_lines_skipped_many": "Les lignes {lines} ont été facturées depuis un mémo et leurs marchandises sont déjà chez le client ; elles ont donc été laissées telles quelles.",
+  "btn.update_celerp": "Mettre à jour Celerp",
+  "btn.quit": "Quitter",
+  "shell.update_inactive_failed": "Cette copie de Celerp ne peut pas se mettre à jour elle-même. Téléchargez le programme d'installation et exécutez-le vous-même.",
+  "shell.data_newer": "Vos données ont été ouvertes pour la dernière fois avec Celerp {recorded}, plus récent que cette copie ({running}).",
+  "shell.data_newer_schema": "Vos données ont été ouvertes pour la dernière fois avec une version de Celerp plus récente que cette copie ({running}).",
+  "shell.data_update_to_open": "Vos données n'ont pas été modifiées. Mettez Celerp à jour pour les ouvrir.",
+  "shell.data_no_update": "Aucune version plus récente n'est encore disponible.",
+  "shell.data_not_released": "Vos données n'ont pas été modifiées. Celerp pourra les ouvrir dès que la version {recorded} ou plus récente sera disponible.",
+  "shell.data_not_released_schema": "Vos données n'ont pas été modifiées. Celerp pourra les ouvrir dès qu'une version plus récente sera disponible.",
+  "shell.data_invalid_record": "Celerp ne peut pas lire quelle version a ouvert vos données en dernier, il ne les a donc pas ouvertes. Vos données n'ont pas été modifiées."
 }

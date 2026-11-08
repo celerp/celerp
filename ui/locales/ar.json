@@ -7382,5 +7382,15 @@
   "documents.unscanned_lines_skipped_one": "لم يكن السطر {lines} معلّمًا بأنه ممسوح ضوئيًا، لذا لم تكن هناك علامة لإزالتها.",
   "documents.unscanned_lines_skipped_many": "لم تكن الأسطر {lines} معلّمة بأنها ممسوحة ضوئيًا، لذا لم تكن هناك علامات لإزالتها.",
   "documents.drawn_lines_skipped_one": "فُوتر السطر {lines} من مذكرة وبضاعته موجودة بالفعل لدى العميل، لذا تُرك دون تغيير.",
-  "documents.drawn_lines_skipped_many": "فُوترت الأسطر {lines} من مذكرة وبضائعها موجودة بالفعل لدى العميل، لذا تُركت دون تغيير."
+  "documents.drawn_lines_skipped_many": "فُوترت الأسطر {lines} من مذكرة وبضائعها موجودة بالفعل لدى العميل، لذا تُركت دون تغيير.",
+  "btn.update_celerp": "تحديث Celerp",
+  "btn.quit": "إنهاء",
+  "shell.update_inactive_failed": "لا تستطيع هذه النسخة من Celerp تحديث نفسها. نزّل برنامج التثبيت وشغّله بنفسك.",
+  "shell.data_newer": "آخر مرة فُتحت فيها بياناتك كانت باستخدام Celerp {recorded}، وهو أحدث من هذه النسخة ({running}).",
+  "shell.data_newer_schema": "آخر مرة فُتحت فيها بياناتك كانت باستخدام إصدار من Celerp أحدث من هذه النسخة ({running}).",
+  "shell.data_update_to_open": "لم تتغير بياناتك. حدّث Celerp لفتحها.",
+  "shell.data_no_update": "لا يتوفر إصدار أحدث بعد.",
+  "shell.data_not_released": "لم تتغير بياناتك. يمكن لـ Celerp فتحها عند توفر الإصدار {recorded} أو أحدث.",
+  "shell.data_not_released_schema": "لم تتغير بياناتك. يمكن لـ Celerp فتحها عند توفر إصدار أحدث.",
+  "shell.data_invalid_record": "لا يستطيع Celerp قراءة الإصدار الذي فتح بياناتك آخر مرة، لذلك لم يفتحها. لم تتغير بياناتك."
 }

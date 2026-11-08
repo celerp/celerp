@@ -7382,5 +7382,15 @@
   "documents.unscanned_lines_skipped_one": "መስመር {lines} እንደተቃኘ ምልክት አልተደረገበትም፣ ስለዚህ የሚወገድ ምልክት አልነበረም።",
   "documents.unscanned_lines_skipped_many": "መስመሮች {lines} እንደተቃኙ ምልክት አልተደረገባቸውም፣ ስለዚህ የሚወገድ ምልክት አልነበረም።",
   "documents.drawn_lines_skipped_one": "መስመር {lines} ከሜሞ ደረሰኝ ተዘጋጅቶለታል እና እቃው አስቀድሞ በደንበኛው እጅ ነው፤ ስለዚህ ሳይቀየር ቀርቷል።",
-  "documents.drawn_lines_skipped_many": "መስመሮች {lines} ከሜሞ ደረሰኝ ተዘጋጅቶላቸዋል እና እቃዎቹ አስቀድመው በደንበኛው እጅ ናቸው፤ ስለዚህ ሳይቀየሩ ቀርተዋል።"
+  "documents.drawn_lines_skipped_many": "መስመሮች {lines} ከሜሞ ደረሰኝ ተዘጋጅቶላቸዋል እና እቃዎቹ አስቀድመው በደንበኛው እጅ ናቸው፤ ስለዚህ ሳይቀየሩ ቀርተዋል።",
+  "btn.update_celerp": "Celerp ን አዘምን",
+  "btn.quit": "ውጣ",
+  "shell.update_inactive_failed": "ይህ የ Celerp ቅጂ ራሱን ማዘመን አይችልም። ጫኚውን አውርደው ራስዎ ያስኪዱት።",
+  "shell.data_newer": "ውሂብዎ ለመጨረሻ ጊዜ የተከፈተው በ Celerp {recorded} ነው፣ ይህም ከዚህ ቅጂ ({running}) አዲስ ነው።",
+  "shell.data_newer_schema": "ውሂብዎ ለመጨረሻ ጊዜ የተከፈተው ከዚህ ቅጂ ({running}) አዲስ በሆነ የ Celerp ስሪት ነው።",
+  "shell.data_update_to_open": "ውሂብዎ አልተለወጠም። ለመክፈት Celerp ን ያዘምኑ።",
+  "shell.data_no_update": "እስካሁን አዲስ ስሪት የለም።",
+  "shell.data_not_released": "ውሂብዎ አልተለወጠም። ስሪት {recorded} ወይም ከዚያ በላይ ሲገኝ Celerp ሊከፍተው ይችላል።",
+  "shell.data_not_released_schema": "ውሂብዎ አልተለወጠም። አዲስ ስሪት ሲገኝ Celerp ሊከፍተው ይችላል።",
+  "shell.data_invalid_record": "Celerp ውሂብዎን ለመጨረሻ ጊዜ የከፈተውን ስሪት ማንበብ ስላልቻለ አልከፈተውም። ውሂብዎ አልተለወጠም።"
 }

@@ -7382,5 +7382,15 @@
   "documents.unscanned_lines_skipped_one": "Zeile {lines} war nicht als gescannt markiert. Daher gab es keine Scanmarkierung zu entfernen.",
   "documents.unscanned_lines_skipped_many": "Die Zeilen {lines} waren nicht als gescannt markiert. Daher gab es keine Scanmarkierungen zu entfernen.",
   "documents.drawn_lines_skipped_one": "Zeile {lines} wurde aus einem Memo in Rechnung gestellt und die Ware befindet sich bereits beim Kunden. Daher blieb die Zeile unverändert.",
-  "documents.drawn_lines_skipped_many": "Die Zeilen {lines} wurden aus einem Memo in Rechnung gestellt und die Waren befinden sich bereits beim Kunden. Daher blieben die Zeilen unverändert."
+  "documents.drawn_lines_skipped_many": "Die Zeilen {lines} wurden aus einem Memo in Rechnung gestellt und die Waren befinden sich bereits beim Kunden. Daher blieben die Zeilen unverändert.",
+  "btn.update_celerp": "Celerp aktualisieren",
+  "btn.quit": "Beenden",
+  "shell.update_inactive_failed": "Diese Celerp-Kopie kann sich nicht selbst aktualisieren. Laden Sie das Installationsprogramm herunter und führen Sie es selbst aus.",
+  "shell.data_newer": "Ihre Daten wurden zuletzt mit Celerp {recorded} geöffnet, das neuer ist als diese Version ({running}).",
+  "shell.data_newer_schema": "Ihre Daten wurden zuletzt mit einer neueren Version von Celerp geöffnet als dieser ({running}).",
+  "shell.data_update_to_open": "Ihre Daten wurden nicht verändert. Aktualisieren Sie Celerp, um sie zu öffnen.",
+  "shell.data_no_update": "Es ist noch keine neuere Version verfügbar.",
+  "shell.data_not_released": "Ihre Daten wurden nicht verändert. Celerp kann sie öffnen, sobald Version {recorded} oder neuer verfügbar ist.",
+  "shell.data_not_released_schema": "Ihre Daten wurden nicht verändert. Celerp kann sie öffnen, sobald eine neuere Version verfügbar ist.",
+  "shell.data_invalid_record": "Celerp kann nicht lesen, welche Version Ihre Daten zuletzt geöffnet hat, und hat sie deshalb nicht geöffnet. Ihre Daten wurden nicht verändert."
 }

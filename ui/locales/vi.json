@@ -7382,5 +7382,15 @@
   "documents.unscanned_lines_skipped_one": "Dòng {lines} chưa được đánh dấu là đã quét nên không có dấu nào cần xóa.",
   "documents.unscanned_lines_skipped_many": "Các dòng {lines} chưa được đánh dấu là đã quét nên không có dấu nào cần xóa.",
   "documents.drawn_lines_skipped_one": "Dòng {lines} đã được lập hóa đơn từ phiếu memo và hàng đã ở chỗ khách hàng nên được giữ nguyên.",
-  "documents.drawn_lines_skipped_many": "Các dòng {lines} đã được lập hóa đơn từ phiếu memo và hàng đã ở chỗ khách hàng nên được giữ nguyên."
+  "documents.drawn_lines_skipped_many": "Các dòng {lines} đã được lập hóa đơn từ phiếu memo và hàng đã ở chỗ khách hàng nên được giữ nguyên.",
+  "btn.update_celerp": "Cập nhật Celerp",
+  "btn.quit": "Thoát",
+  "shell.update_inactive_failed": "Bản Celerp này không thể tự cập nhật. Hãy tải trình cài đặt về và tự chạy.",
+  "shell.data_newer": "Dữ liệu của bạn được mở lần cuối bằng Celerp {recorded}, mới hơn bản này ({running}).",
+  "shell.data_newer_schema": "Dữ liệu của bạn được mở lần cuối bằng một phiên bản Celerp mới hơn bản này ({running}).",
+  "shell.data_update_to_open": "Dữ liệu của bạn chưa bị thay đổi. Hãy cập nhật Celerp để mở dữ liệu.",
+  "shell.data_no_update": "Hiện chưa có phiên bản mới hơn.",
+  "shell.data_not_released": "Dữ liệu của bạn chưa bị thay đổi. Celerp có thể mở dữ liệu khi có phiên bản {recorded} trở lên.",
+  "shell.data_not_released_schema": "Dữ liệu của bạn chưa bị thay đổi. Celerp có thể mở dữ liệu khi có phiên bản mới hơn.",
+  "shell.data_invalid_record": "Celerp không đọc được phiên bản nào đã mở dữ liệu của bạn lần cuối nên chưa mở dữ liệu. Dữ liệu của bạn chưa bị thay đổi."
 }

@@ -7382,5 +7382,15 @@
   "documents.unscanned_lines_skipped_one": "Line {lines} wasn't marked as scanned, so there was nothing to clear.",
   "documents.unscanned_lines_skipped_many": "Lines {lines} weren't marked as scanned, so there was nothing to clear.",
   "documents.drawn_lines_skipped_one": "Line {lines} was invoiced from a memo and its products are already with the customer, so it was left as it is.",
-  "documents.drawn_lines_skipped_many": "Lines {lines} were invoiced from a memo and their products are already with the customer, so they were left as they are."
+  "documents.drawn_lines_skipped_many": "Lines {lines} were invoiced from a memo and their products are already with the customer, so they were left as they are.",
+  "btn.update_celerp": "Update Celerp",
+  "btn.quit": "Quit",
+  "shell.update_inactive_failed": "This copy of Celerp cannot update itself. Download the installer and run it yourself.",
+  "shell.data_newer": "Your data was last opened with Celerp {recorded}, which is newer than this copy ({running}).",
+  "shell.data_newer_schema": "Your data was last opened with a newer version of Celerp than this copy ({running}).",
+  "shell.data_update_to_open": "Your data has not been changed. Update Celerp to open it.",
+  "shell.data_no_update": "No newer version is available yet.",
+  "shell.data_not_released": "Your data has not been changed. Celerp can open it once version {recorded} or newer is available.",
+  "shell.data_not_released_schema": "Your data has not been changed. Celerp can open it once a newer version is available.",
+  "shell.data_invalid_record": "Celerp cannot read which version last opened your data, so it has not opened it. Your data has not been changed."
 }

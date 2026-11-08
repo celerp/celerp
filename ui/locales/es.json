@@ -7382,5 +7382,15 @@
   "documents.unscanned_lines_skipped_one": "La línea {lines} no estaba marcada como escaneada, así que no había ninguna marca que quitar.",
   "documents.unscanned_lines_skipped_many": "Las líneas {lines} no estaban marcadas como escaneadas, así que no había ninguna marca que quitar.",
   "documents.drawn_lines_skipped_one": "La línea {lines} se facturó desde un memo y sus productos ya están con el cliente, así que se dejó sin cambios.",
-  "documents.drawn_lines_skipped_many": "Las líneas {lines} se facturaron desde un memo y sus productos ya están con el cliente, así que se dejaron sin cambios."
+  "documents.drawn_lines_skipped_many": "Las líneas {lines} se facturaron desde un memo y sus productos ya están con el cliente, así que se dejaron sin cambios.",
+  "btn.update_celerp": "Actualizar Celerp",
+  "btn.quit": "Salir",
+  "shell.update_inactive_failed": "Esta copia de Celerp no puede actualizarse por sí misma. Descargue el instalador y ejecútelo usted mismo.",
+  "shell.data_newer": "Sus datos se abrieron por última vez con Celerp {recorded}, que es más reciente que esta copia ({running}).",
+  "shell.data_newer_schema": "Sus datos se abrieron por última vez con una versión de Celerp más reciente que esta copia ({running}).",
+  "shell.data_update_to_open": "Sus datos no se han modificado. Actualice Celerp para abrirlos.",
+  "shell.data_no_update": "Todavía no hay una versión más reciente disponible.",
+  "shell.data_not_released": "Sus datos no se han modificado. Celerp podrá abrirlos cuando esté disponible la versión {recorded} o posterior.",
+  "shell.data_not_released_schema": "Sus datos no se han modificado. Celerp podrá abrirlos cuando haya una versión más reciente disponible.",
+  "shell.data_invalid_record": "Celerp no puede leer qué versión abrió sus datos por última vez, así que no los ha abierto. Sus datos no se han modificado."
 }

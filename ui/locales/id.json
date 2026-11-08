@@ -7382,5 +7382,15 @@
   "documents.unscanned_lines_skipped_one": "Baris {lines} belum ditandai sebagai dipindai, jadi tidak ada tanda yang perlu dihapus.",
   "documents.unscanned_lines_skipped_many": "Baris {lines} belum ditandai sebagai dipindai, jadi tidak ada tanda yang perlu dihapus.",
   "documents.drawn_lines_skipped_one": "Baris {lines} sudah ditagihkan dari memo dan barangnya sudah berada pada pelanggan, jadi dibiarkan tanpa perubahan.",
-  "documents.drawn_lines_skipped_many": "Baris {lines} sudah ditagihkan dari memo dan barangnya sudah berada pada pelanggan, jadi dibiarkan tanpa perubahan."
+  "documents.drawn_lines_skipped_many": "Baris {lines} sudah ditagihkan dari memo dan barangnya sudah berada pada pelanggan, jadi dibiarkan tanpa perubahan.",
+  "btn.update_celerp": "Perbarui Celerp",
+  "btn.quit": "Keluar",
+  "shell.update_inactive_failed": "Salinan Celerp ini tidak dapat memperbarui dirinya sendiri. Unduh penginstal dan jalankan sendiri.",
+  "shell.data_newer": "Data Anda terakhir dibuka dengan Celerp {recorded}, yang lebih baru dari salinan ini ({running}).",
+  "shell.data_newer_schema": "Data Anda terakhir dibuka dengan versi Celerp yang lebih baru dari salinan ini ({running}).",
+  "shell.data_update_to_open": "Data Anda tidak diubah. Perbarui Celerp untuk membukanya.",
+  "shell.data_no_update": "Belum ada versi yang lebih baru.",
+  "shell.data_not_released": "Data Anda tidak diubah. Celerp dapat membukanya setelah versi {recorded} atau yang lebih baru tersedia.",
+  "shell.data_not_released_schema": "Data Anda tidak diubah. Celerp dapat membukanya setelah versi yang lebih baru tersedia.",
+  "shell.data_invalid_record": "Celerp tidak dapat membaca versi mana yang terakhir membuka data Anda, jadi Celerp tidak membukanya. Data Anda tidak diubah."
 }

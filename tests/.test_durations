@@ -27420,5 +27420,13 @@
     "tests/test_browser/test_save_first_self_saving_fields.py::test_an_open_quantity_editor_holding_a_new_value_stops_the_write_off[chromium]": 5.19999147800263,
     "tests/test_browser/test_save_first_self_saving_fields.py::test_issue_clicked_straight_from_the_due_date_follows_its_save[chromium-failed]": 3.1604040150123183,
     "tests/test_browser/test_save_first_self_saving_fields.py::test_issue_clicked_straight_from_the_due_date_follows_its_save[chromium-refused]": 2.585542319022352,
-    "tests/test_browser/test_save_first_self_saving_fields.py::test_issue_clicked_straight_from_the_due_date_follows_its_save[chromium-saved]": 2.108012075012084
+    "tests/test_browser/test_save_first_self_saving_fields.py::test_issue_clicked_straight_from_the_due_date_follows_its_save[chromium-saved]": 2.108012075012084,
+    "tests/test_ci_update_drive.py::test_a_failed_download_fails_the_check": 0.01,
+    "tests/test_ci_update_drive.py::test_no_refusal_screen_fails_the_check_in_time": 0.05,
+    "tests/test_ci_update_drive.py::test_the_driver_waits_for_the_screen_to_catch_up": 0.01,
+    "tests/test_ci_update_drive.py::test_the_refusal_command_reaches_the_refusal_screen": 0.01,
+    "tests/test_ci_update_drive.py::test_update_celerp_then_restart_to_install": 0.01,
+    "tests/test_release_workflow.py::test_a_failed_windows_update_check_uploads_its_logs_and_screen": 0.02,
+    "tests/test_release_workflow.py::test_an_older_copy_on_newer_data_updates_from_its_refusal_screen": 0.01,
+    "tests/test_release_workflow.py::test_each_previous_release_update_check_starts_on_fresh_data": 0.01
 }

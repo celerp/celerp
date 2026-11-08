@@ -57,6 +57,9 @@ contextBridge.exposeInMainWorld("celerp", {
   // Quit and install the downloaded update immediately.
   installUpdate: () => ipcRenderer.send("install-update"),
 
+  // Quit Celerp (the refusal screen's Quit).
+  quit: () => ipcRenderer.send("quit-app"),
+
   // Full app relaunch to apply a saved infrastructure change (DB/storage mode).
   restartApp: () => ipcRenderer.send("restart-app"),
 });
