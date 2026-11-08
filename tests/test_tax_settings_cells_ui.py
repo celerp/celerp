@@ -235,3 +235,42 @@ async def test_a_refused_numbering_save_keeps_the_row_open_with_the_reason(ui_cl
     assert message in r.text and "{" not in message
     assert reset.text.lstrip().startswith("<tr") and message in reset.text
     assert 'name="value"' not in reset.text
+
+
+def _unknown_type_refusal() -> dict:
+    """The API's refusal of a doc type it does not number, as the API builds it."""
+    from celerp.accounting_roles import Refused
+    from celerp_docs.sequences import require_doc_type
+    with pytest.raises(Refused) as refused:
+        require_doc_type("bogus")
+    return refused.value.detail
+
+
+@pytest.mark.parametrize("method, url, value", [
+    ("patch", "/settings/numbering/bogus/prefix", "QUO"),
+    ("patch", "/settings/numbering/bogus/prefix", ""),
+    ("patch", "/settings/numbering/bogus/pattern", "{PREFIX}-{####}"),
+    ("patch", "/settings/numbering/bogus/next", "5"),
+    ("post", "/settings/numbering/bogus/reset", None),
+])
+async def test_a_numbering_save_for_an_unknown_doc_type_shows_the_api_refusal(ui_client, method, url, value):
+    """A save or Reset for a doc type the API does not list answers the API's refusal in the
+    row, not an error page, even when the typed value matches nothing saved."""
+    detail = _unknown_type_refusal()
+    ui_client.cookies.update(_authed())
+    with patch("ui.api_client.get_doc_sequences", new=AsyncMock(return_value=[_LEGACY_TRANSFER])), \
+         patch("ui.api_client.patch_doc_sequence", new=AsyncMock(side_effect=APIError(422, detail))):
+        kwargs = {"data": {"value": value}} if value is not None else {}
+        r = await getattr(ui_client, method)(url, headers={"HX-Request": "true"}, **kwargs)
+    assert r.status_code == 200 and r.text.lstrip().startswith("<tr")
+    from html import escape
+    from ui.i18n import refusal_text
+    assert "cell-error" in r.text and escape(refusal_text(detail), quote=False) in r.text
+
+
+@pytest.mark.parametrize("url", ["/settings/numbering/bogus/prefix/edit", "/settings/numbering/bogus/prefix/display"])
+async def test_opening_a_numbering_cell_for_an_unknown_doc_type_does_not_fail(ui_client, url):
+    ui_client.cookies.update(_authed())
+    with patch("ui.api_client.get_doc_sequences", new=AsyncMock(return_value=[_LEGACY_TRANSFER])):
+        r = await ui_client.get(url)
+    assert r.status_code == 200 and "editable-cell" in r.text

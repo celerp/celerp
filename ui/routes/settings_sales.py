@@ -63,7 +63,7 @@ async def _numbering_content(token: str, doc_types: frozenset[str]) -> FT:
 
 def _numbering_tab(sequences: list[dict]) -> FT:
     """Render the document numbering settings table."""
-    rows = [_numbering_row(seq) for seq in sequences]
+    rows = [_numbering_row(seq["doc_type"], seq) for seq in sequences]
     return Div(
         H3(t("page.document_numbering"), cls="settings-section-title"),
         P(t("settings_sales.numbering_hint"), cls="settings-hint"),
@@ -201,7 +201,7 @@ def setup_routes(app):
             sequences = await api.get_doc_sequences(token)
         except (APIError, Exception):
             return P(t("settings.error_loading_sequences"), cls="cell-error")
-        seq = next((s for s in sequences if s["doc_type"] == doc_type), {})
+        seq = _listed_sequence(sequences, doc_type) or {}
         return _numbering_input(doc_type, field, str(seq.get(field, "")))
 
     @app.get("/settings/numbering/{doc_type}/{field}/display")
@@ -213,7 +213,7 @@ def setup_routes(app):
             sequences = await api.get_doc_sequences(token)
         except (APIError, Exception):
             return P(t("settings.error"), cls="cell-error")
-        seq = next((s for s in sequences if s["doc_type"] == doc_type), {})
+        seq = _listed_sequence(sequences, doc_type) or {}
         value = seq.get(field, "")
         return Div(
             str(value) or EMPTY,
@@ -233,11 +233,12 @@ def setup_routes(app):
             sequences = await api.get_doc_sequences(token)
         except APIError as e:
             return P(_refusal(e), cls="cell-error")
-        seq = next((s for s in sequences if s["doc_type"] == doc_type), {})
+        seq = _listed_sequence(sequences, doc_type)
         # Leaving a cell unchanged saves nothing: a save would split a type still on the shared
-        # List counter off it, or be refused for a value the user did not change.
-        if value == str(seq.get(field, "")).strip():
-            return _numbering_row(seq)
+        # List counter off it, or be refused for a value the user did not change. A type the API
+        # does not list has nothing saved, so its save goes to the API, which refuses it.
+        if seq is not None and value == str(seq.get(field, "")).strip():
+            return _numbering_row(doc_type, seq)
         patch_data = {}
         if field == "prefix":
             patch_data["prefix"] = value
@@ -247,15 +248,15 @@ def setup_routes(app):
             try:
                 patch_data["next"] = int(value)
             except ValueError:
-                return _numbering_row(seq, editing=(field, value), error=t("settings.must_be_a_number"))
+                return _numbering_row(doc_type, seq or {}, editing=(field, value),
+                                      error=t("settings.must_be_a_number"))
         try:
             await api.patch_doc_sequence(token, doc_type, patch_data)
             sequences = await api.get_doc_sequences(token)
         except APIError as e:
             # The row stays as it was with the typed value still open, so the user can change it.
-            return _numbering_row(seq, editing=(field, value), error=_refusal(e))
-        seq = next((s for s in sequences if s["doc_type"] == doc_type), {})
-        return _numbering_row(seq)
+            return _numbering_row(doc_type, seq or {}, editing=(field, value), error=_refusal(e))
+        return _numbering_row(doc_type, _listed_sequence(sequences, doc_type) or {})
 
     @app.post("/settings/numbering/{doc_type}/reset")
     async def numbering_reset(request: Request, doc_type: str):
@@ -266,14 +267,13 @@ def setup_routes(app):
             sequences = await api.get_doc_sequences(token)
         except APIError as e:
             return P(_refusal(e), cls="cell-error")
-        seq = next((s for s in sequences if s["doc_type"] == doc_type), {})
+        seq = _listed_sequence(sequences, doc_type) or {}
         try:
             await api.patch_doc_sequence(token, doc_type, {"next": 1})
             sequences = await api.get_doc_sequences(token)
         except APIError as e:
-            return _numbering_row(seq, error=_refusal(e))
-        seq = next((s for s in sequences if s["doc_type"] == doc_type), {})
-        return _numbering_row(seq)
+            return _numbering_row(doc_type, seq, error=_refusal(e))
+        return _numbering_row(doc_type, _listed_sequence(sequences, doc_type) or {})
 
     @app.patch("/settings/sales/line-identifier")
     async def line_identifier_patch(request: Request):
@@ -321,11 +321,17 @@ def _numbering_input(dt: str, field: str, value: str, error: FT = "") -> FT:
     )
 
 
-def _numbering_row(seq: dict, *, editing: tuple[str, str] | None = None, error: str | None = None) -> FT:
-    """One numbering table row (the table and every HTMX swap after an edit). ``editing`` is
-    the (field, typed value) left open after a refused save; ``error`` is the reason, shown in
-    that field's cell, or beside Reset when no field is open."""
-    dt = seq["doc_type"]
+def _listed_sequence(sequences: list[dict], doc_type: str) -> dict | None:
+    """The API's numbering for ``doc_type``, or None when the API does not list that type."""
+    return next((s for s in sequences if s["doc_type"] == doc_type), None)
+
+
+def _numbering_row(dt: str, seq: dict, *, editing: tuple[str, str] | None = None,
+                   error: str | None = None) -> FT:
+    """The numbering table row of doc type ``dt`` (the table and every HTMX swap after an edit),
+    showing ``seq``, the API's numbering for it (empty when the API does not list it).
+    ``editing`` is the (field, typed value) left open after a refused save; ``error`` is the
+    reason, shown in that field's cell, or beside Reset when no field is open."""
     edit_title = t("settings.click_to_edit")
     error_p = P(error, cls="cell-error", role="alert") if error else ""
 
