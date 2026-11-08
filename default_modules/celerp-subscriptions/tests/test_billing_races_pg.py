@@ -498,3 +498,50 @@ async def test_mark_as_read_leaves_a_row_stamped_before_the_page_and_committed_a
         # Marked read from a page that shows it, it goes.
         assert (await mark_read(client, owner, after)).status_code == 200
         assert (await client.get("/subscriptions/summary", headers=owner)).json()["rows"] == []
+
+
+@pytest.mark.parametrize("first", ["unvoid", "generate"])
+async def test_unvoid_of_a_reopened_bill_racing_generate_due_bills_the_period_once(committed_engine, monkeypatch, first):
+    """A bill voided and its period reopened: Unvoid (which claims the period back) and Generate
+    due (which bills it anew) at once. Whichever commits first holds the period; the other
+    answers the period's one bill or is refused naming it, never a second bill."""
+    import uuid
+
+    freeze_day(monkeypatch, "2026-03-15")
+    factory = _factory(committed_engine)
+    seeded = await _company(factory)
+    owner = seeded["h"]["owner"]
+    async with _app_client(factory) as (client, pending):
+        eid = await agreement(client, owner, start="2026-03-01")
+        bill = (await generate_due(client, owner, eid)).json()
+        r = await client.post(f"/docs/{bill['doc_id']}/void", headers=owner,
+                              json={"reason": "x", "idempotency_key": str(uuid.uuid4())})
+        assert r.status_code == 200, r.text
+        assert (await client.post(f"/subscriptions/{eid}/periods/0/reopen", headers=owner)).status_code == 200
+
+        async def _unvoid(held):
+            if held is not None:
+                pending.append(held)
+            return await client.post(f"/docs/{bill['doc_id']}/unvoid", headers=owner,
+                                     json={"idempotency_key": str(uuid.uuid4())})
+
+        async def _generate(held):
+            if held is not None:
+                pending.append(held)
+            return await generate_due(client, owner, eid)
+
+        doors = {"unvoid": _unvoid, "generate": _generate}
+        one, two = await _race(committed_engine, doors[first], doors[{"unvoid": "generate", "generate": "unvoid"}[first]])
+        unvoided, generated = (one, two) if first == "unvoid" else (two, one)
+        assert generated.status_code == 200, generated.text
+        async with factory() as s:
+            agreement_state = (await s.get(Projection, {"company_id": seeded["company_id"], "entity_id": eid})).state
+            issued = sorted(st["ref_id"] for st in (await s.execute(select(Projection.state).where(
+                Projection.company_id == seeded["company_id"], Projection.entity_type == "doc"))).scalars().all()
+                if st.get("source_agreement") == eid and st.get("status") not in ("draft", "void"))
+    holder = agreement_state["periods"]["0"]["doc_id"]
+    assert issued == [generated.json()["ref_id"]] and generated.json()["doc_id"] == holder
+    if first == "unvoid":
+        assert unvoided.status_code == 200 and holder == bill["doc_id"] and generated.json()["already_billed"]
+    else:
+        assert unvoided.json()["detail"]["message_key"] == "subscriptions.err_bill_rebilled", unvoided.text

@@ -468,31 +468,47 @@ async def billing_doc(session, company_id, doc_id: str) -> None:
 
 async def guard_bill_status(*, session, entry, transition) -> None:
     """doc_status_guard: a document an agreement period let go (Reopen records it in
-    ``released_bills``) never bills again, whichever writer issues it (unvoid, finalize,
-    send). Refused (409) naming the bill the period has now, or saying it was reopened."""
+    ``released_bills``) that comes back into billing, whichever writer issues it (unvoid,
+    finalize, send), claims its period again, whatever the agreement's status: Unvoid and
+    Finalize undo Reopen. A newer document holding the period that bills nothing is let go as
+    Reopen lets it go. Refused (409) only when a newer bill already bills the period. The claim
+    is written under the agreement's company lock, as Reopen and Generate due take it, so a
+    concurrent bill and the claim never both hold the period."""
     if bills(transition.before) or not bills(transition.after):
         return
-    doc_id = entry.entity_id
-    rows = (await session.execute(select(Projection).where(
-        Projection.company_id == entry.company_id, Projection.entity_type == "doc",
+    doc_id, company_id = entry.entity_id, entry.company_id
+    ids = (await session.execute(select(Projection.entity_id).where(
+        Projection.company_id == company_id, Projection.entity_type == "doc",
         Projection.state["doc_type"].as_string().in_(SUBSCRIPTION_DOC_TYPES),
         Projection.state["released_bills"][doc_id].as_string().is_not(None),
     ).order_by(Projection.entity_id))).scalars().all()
-    for agreement in rows:
-        k = int(agreement.state["released_bills"][doc_id])
+    for agreement_id in ids:
+        agreement = await locked_agreement(session, company_id, agreement_id, scheduled=False)
+        released = dict(agreement.state.get("released_bills") or {})
+        if doc_id not in released:
+            continue
+        k = int(released.pop(doc_id))
+        ref, label = transition.before.get("ref_id") or doc_id, template_label(agreement.state, agreement_id)
         if (exc := unscheduled(agreement.state)) is not None:
             raise HTTPException(status_code=409, detail=t(
-                "subscriptions.err_bill_unscheduled", ref=transition.before.get("ref_id") or doc_id,
-                agreement=template_label(agreement.state, agreement.entity_id), reason=t(exc.key, **exc.params)))
-        schedule = Schedule.from_state(agreement.state)
-        newer = (schedule.periods.get(k) or {}).get("doc_id") if schedule.state(k) == BILLED else None
-        newer_doc = await doc_state(session, entry.company_id, newer) if newer else None
-        params = {"ref": transition.before.get("ref_id") or doc_id, "agreement": template_label(agreement.state, agreement.entity_id),
-                  "start": schedule.start(k).isoformat(), "end": schedule.service_end(k).isoformat()}
+                "subscriptions.err_bill_unscheduled", ref=ref, agreement=label, reason=t(exc.key, **exc.params)))
+        periods = periods_of(agreement.state)
+        held = periods.get(str(k)) or {}
+        newer = held.get("doc_id") if held.get("state") == BILLED else None
+        newer_doc = await doc_state(session, company_id, newer) if newer else None
         if bills(newer_doc):
+            schedule = Schedule.from_state(agreement.state)
             raise HTTPException(status_code=409, detail=t(
-                "subscriptions.err_bill_rebilled", newer=newer_doc.get("ref_id") or newer, **params))
-        raise HTTPException(status_code=409, detail=t("subscriptions.err_bill_reopened", **params))
+                "subscriptions.err_bill_rebilled", ref=ref, agreement=label, newer=newer_doc.get("ref_id") or newer,
+                start=schedule.start(k).isoformat(), end=schedule.service_end(k).isoformat()))
+        if newer:
+            released[newer] = k
+        periods[str(k)] = {"state": BILLED, "doc_id": doc_id, "release_count": held.get("release_count", 0),
+                           "at": now_stamp(), "by": str(entry.actor_id) if entry.actor_id else None, "auto": False}
+        # Not a person's change to an ended agreement's claims (ended_refusal): the undo of Reopen.
+        await write_agreement(session, company_id, agreement_id, {"periods": periods, "released_bills": released}, None)
+        if newer:
+            await discard_email_attempts(session, company_id, newer)
 
 
 async def replay_result(session, company_id, template_id: str, request_key: str,

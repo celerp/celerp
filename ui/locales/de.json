@@ -7223,7 +7223,6 @@
   "subscriptions.consent_sending_withdrawn": "Berechtigung zum automatischen Versand widerrufen",
   "subscriptions.th_more_due": "Weitere fällige Zeiträume",
   "subscriptions.err_bill_rebilled": "{ref} kann nicht erneut abgerechnet werden. Das Dokument wurde für den Zeitraum {start} bis {end} aus {agreement} entfernt; dieser Zeitraum wird inzwischen über {newer} abgerechnet. Würde auch {ref} ausgestellt, würde der Zeitraum doppelt abgerechnet.",
-  "subscriptions.err_bill_reopened": "{ref} kann nicht erneut abgerechnet werden. Der Zeitraum {start} bis {end} in {agreement} wurde wieder geöffnet. Deshalb wird er mit dem nächsten Dokument für diesen Zeitraum abgerechnet. Verwenden Sie in der Vereinbarung „Fällige Rechnungen erstellen“, um ihn abzurechnen.",
   "subscriptions.err_period_draft": "Das Dokument für diesen Zeitraum, {ref}, befindet sich wieder im Entwurfsstatus. Stellen Sie {ref} fertig, um den Zeitraum abzurechnen, oder wählen Sie in der Zeitraumliste in der entsprechenden Zeile „Wieder öffnen“, um ihn mit einem neuen Dokument abzurechnen.",
   "subscriptions.period_draft": "Dokument im Entwurf",
   "subscriptions.err_schedule_date": "{day} ist kein von Celerp lesbares Datum. Geben Sie ein gültiges Datum ein.",

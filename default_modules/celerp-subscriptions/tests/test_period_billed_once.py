@@ -1,9 +1,10 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
-"""A period is billed by its document only while that document is issued, and a document an
-agreement period has let go never bills again: unvoid, finalize and send after Reopen are
-refused, naming the bill the period has now. A draft or void document never reads as billed,
-whether the answer is fresh or a replay."""
+"""A period is billed by its document only while that document is issued. A document an
+agreement period has let go (Reopen) bills again only by claiming its period back: unvoid,
+finalize and send undo the Reopen while no newer bill bills the period, and are refused naming
+that bill once one does. A draft or void document never reads as billed, whether the answer is
+fresh or a replay."""
 from __future__ import annotations
 
 import uuid
@@ -81,9 +82,9 @@ async def test_a_let_go_document_never_bills_a_period_billed_again(client, sessi
 
 
 @pytest.mark.parametrize("route", sorted(_RETURNS))
-async def test_a_let_go_document_never_bills_a_reopened_period(client, session, monkeypatch, route):
-    """Reopen without a new bill yet: the document is still refused, and the period stays open
-    for Generate due, which then bills it once."""
+async def test_a_let_go_document_claims_its_reopened_period_back(client, session, monkeypatch, route):
+    """Reopen without a new bill yet: bringing the document back undoes the Reopen, so the
+    period reads billed on it and Generate due bills nothing more."""
     freeze_day(monkeypatch, "2026-03-01")
     hd = await register(client)
     eid = await agreement(client, hd, start="2026-03-01")
@@ -91,11 +92,26 @@ async def test_a_let_go_document_never_bills_a_reopened_period(client, session, 
     first = (await generate_due(client, hd, eid)).json()
     await let_go(client, hd, first["doc_id"])
     assert (await _reopen(client, hd, eid)).status_code == 200
-    key, params = _refusal(await bring_back(client, hd, first["doc_id"]))
-    assert (key, params["ref"]) == ("subscriptions.err_bill_reopened", first["ref_id"])
-    assert (await _row(client, hd, eid))["status"] == "due"
-    second = (await generate_due(client, hd, eid)).json()
-    assert await _live(session, eid) == [second["ref_id"]]
+    assert (await bring_back(client, hd, first["doc_id"])).status_code == 200
+    assert ((await _row(client, hd, eid))["status"], (await template(client, hd, eid))["released_bills"]) == ("billed", {})
+    again = (await generate_due(client, hd, eid)).json()
+    assert (again["ref_id"], again["already_billed"]) == (first["ref_id"], True)
+    assert await _live(session, eid) == [first["ref_id"]]
+
+
+async def test_a_let_go_document_takes_its_period_from_a_newer_one_that_bills_nothing(client, session, monkeypatch):
+    """The newer document is void: the older one claims the period back, the newer one is let
+    go as Reopen lets it go, and bringing the newer one back is then refused naming the older."""
+    freeze_day(monkeypatch, "2026-03-01")
+    hd = await register(client)
+    eid = await agreement(client, hd, start="2026-03-01")
+    first, second = await _billed_then_let_go(client, hd, eid, _void)
+    await _void(client, hd, second["doc_id"])
+    assert (await client.post(f"/docs/{first['doc_id']}/unvoid", headers=hd, json=_key())).status_code == 200
+    assert (await template(client, hd, eid))["released_bills"] == {second["doc_id"]: 0}
+    key, params = _refusal(await client.post(f"/docs/{second['doc_id']}/unvoid", headers=hd, json=_key()))
+    assert (key, params["ref"], params["newer"]) == ("subscriptions.err_bill_rebilled", second["ref_id"], first["ref_id"])
+    assert await _live(session, eid) == [first["ref_id"]]
 
 
 async def test_a_document_its_period_still_holds_comes_back(client, session, monkeypatch):

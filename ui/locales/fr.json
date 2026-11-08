@@ -7223,7 +7223,6 @@
   "subscriptions.consent_sending_withdrawn": "Autorisation d'envoi automatique révoquée",
   "subscriptions.th_more_due": "Autres périodes à facturer",
   "subscriptions.err_bill_rebilled": "{ref} ne peut pas être facturé à nouveau. Ce document a été dissocié de {agreement} pour la période du {start} au {end}, désormais facturée par {newer}. Émettre également {ref} reviendrait à facturer cette période deux fois.",
-  "subscriptions.err_bill_reopened": "{ref} ne peut pas être facturé à nouveau. Sa période dans {agreement}, du {start} au {end}, a été rouverte. Le prochain document de cette période servira donc à la facturer. Utilisez « Générer les factures dues » dans l'accord pour la facturer.",
   "subscriptions.err_period_draft": "Le document de cette période, {ref}, est de nouveau à l'état de brouillon. Finalisez {ref} pour facturer la période, ou utilisez « Rouvrir » sur sa ligne dans la liste des périodes pour la facturer avec un nouveau document.",
   "subscriptions.period_draft": "Document en brouillon",
   "subscriptions.err_schedule_date": "{day} n'est pas une date reconnue par Celerp. Saisissez une date valide.",

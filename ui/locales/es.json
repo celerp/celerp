@@ -7223,7 +7223,6 @@
   "subscriptions.consent_sending_withdrawn": "Autorización de envío automático revocada",
   "subscriptions.th_more_due": "Más períodos pendientes",
   "subscriptions.err_bill_rebilled": "No se puede volver a facturar {ref}. Se desvinculó de {agreement} para el período del {start} al {end}, que ahora está facturado mediante {newer}. Emitir también {ref} supondría facturar dos veces el mismo período.",
-  "subscriptions.err_bill_reopened": "No se puede volver a facturar {ref}. Su período en {agreement}, del {start} al {end}, se volvió a abrir, por lo que el siguiente documento de ese período será el que lo facture. Utilice «Generar facturas pendientes» en el acuerdo para facturarlo.",
   "subscriptions.err_period_draft": "El documento de este período, {ref}, ha vuelto a borrador. Finalice {ref} para facturar el período o utilice «Reabrir» en su fila de la lista de períodos para facturarlo con un documento nuevo.",
   "subscriptions.period_draft": "Documento en borrador",
   "subscriptions.err_schedule_date": "{day} no es una fecha que Celerp pueda interpretar. Introduzca una fecha válida.",

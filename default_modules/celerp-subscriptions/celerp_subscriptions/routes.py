@@ -433,7 +433,8 @@ def _build_router() -> APIRouter:
             if not after_void or billing.bills(doc):
                 await _refuse_claimed(session, company_id, periods, k)
             release += 1  # the next document for this period takes a new claim key
-            # The document let go never bills again: billing.guard_bill_status reads this.
+            # The document let go bills again only by claiming this period back while no newer
+            # bill bills it (billing.guard_bill_status reads this).
             written["released_bills"] = {**(proj.state.get("released_bills") or {}), entry["doc_id"]: k}
         elif entry.get("state") != SKIPPED:
             return _period_answer(proj.state, k)
@@ -468,7 +469,8 @@ def _build_router() -> APIRouter:
         session: AsyncSession = Depends(get_session),
     ) -> dict:
         """Open a billed period again once its document no longer bills it (void, or back in
-        draft), so it can be billed once more; that document never bills again."""
+        draft), so it can be billed once more. Unvoiding or finalizing that document undoes it
+        while no newer bill bills the period (billing.guard_bill_status)."""
         return await _hand_back(entity_id, k, company_id, user, session, after_void=True)
 
     @router.post("/{entity_id}/periods/{k}/send")

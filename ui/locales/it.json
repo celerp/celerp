@@ -7223,7 +7223,6 @@
   "subscriptions.consent_sending_withdrawn": "Autorizzazione all'invio automatico revocata",
   "subscriptions.th_more_due": "Altri periodi da fatturare",
   "subscriptions.err_bill_rebilled": "Non è possibile fatturare di nuovo {ref}. Il documento è stato scollegato da {agreement} per il periodo dal {start} al {end}, che ora è fatturato tramite {newer}. Emettere anche {ref} comporterebbe una doppia fatturazione del periodo.",
-  "subscriptions.err_bill_reopened": "Non è possibile fatturare di nuovo {ref}. Il relativo periodo in {agreement}, dal {start} al {end}, è stato riaperto; sarà quindi il prossimo documento relativo a quel periodo a fatturarlo. Utilizza «Genera le fatture dovute» nell'accordo per fatturare il periodo.",
   "subscriptions.err_period_draft": "Il documento di questo periodo, {ref}, è tornato in bozza. Finalizza {ref} per fatturare il periodo oppure usa «Riapri» nella riga corrispondente dell'elenco dei periodi per fatturarlo con un nuovo documento.",
   "subscriptions.period_draft": "Documento in bozza",
   "subscriptions.err_schedule_date": "{day} non è una data riconosciuta da Celerp. Inserisci una data valida.",

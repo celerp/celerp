@@ -7223,7 +7223,6 @@
   "subscriptions.consent_sending_withdrawn": "Izin pengiriman otomatis dicabut",
   "subscriptions.th_more_due": "Periode jatuh tempo lainnya",
   "subscriptions.err_bill_rebilled": "{ref} tidak dapat ditagihkan lagi. Dokumen tersebut telah dilepas dari {agreement} untuk periode {start} hingga {end}, dan periode itu sekarang sudah ditagihkan melalui {newer}. Jika {ref} juga diterbitkan, periode tersebut akan ditagihkan dua kali.",
-  "subscriptions.err_bill_reopened": "{ref} tidak dapat ditagihkan lagi. Periode {start} hingga {end} dalam {agreement} telah dibuka kembali, sehingga dokumen berikutnya untuk periode tersebut yang akan menjadi tagihannya. Gunakan Buat tagihan jatuh tempo pada perjanjian untuk menagih periode tersebut.",
   "subscriptions.err_period_draft": "Dokumen untuk periode ini, {ref}, kembali berstatus draf. Finalisasi {ref} untuk menagih periode tersebut, atau gunakan Buka kembali pada barisnya di daftar periode untuk menagihnya dengan dokumen baru.",
   "subscriptions.period_draft": "Dokumen berstatus draf",
   "subscriptions.err_schedule_date": "{day} bukan tanggal yang dapat dibaca Celerp. Masukkan tanggal yang valid.",

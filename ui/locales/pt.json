@@ -7223,7 +7223,6 @@
   "subscriptions.consent_sending_withdrawn": "Autorização para envio automático revogada",
   "subscriptions.th_more_due": "Mais períodos a faturar",
   "subscriptions.err_bill_rebilled": "{ref} não pode ser faturado novamente. O documento foi desvinculado de {agreement} para o período de {start} a {end}, que agora está faturado por {newer}. Emitir também {ref} faria com que o período fosse faturado duas vezes.",
-  "subscriptions.err_bill_reopened": "{ref} não pode ser faturado novamente. Seu período em {agreement}, de {start} a {end}, foi reaberto. Assim, o próximo documento desse período será usado para faturá-lo. Use Gerar faturas pendentes no contrato para faturar o período.",
   "subscriptions.err_period_draft": "O documento deste período, {ref}, voltou ao estado de rascunho. Finalize {ref} para faturar o período ou use Reabrir na linha correspondente da lista de períodos para faturá-lo com um novo documento.",
   "subscriptions.period_draft": "Documento em rascunho",
   "subscriptions.err_schedule_date": "{day} não é uma data que o Celerp reconheça. Informe uma data válida.",

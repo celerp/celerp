@@ -20,6 +20,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "default_modules" / "celerp-subscriptions" / "tests"))
 import status_census  # noqa: E402
+from agreement_kit import agreement, billed_docs, freeze_day, generate_due, register  # noqa: E402
 from celerp.models.projections import Projection  # noqa: E402
 from celerp_subscriptions.billing import AGREEMENT_STATUSES  # noqa: E402
 from test_subscriptions_upgrade_v280 import _generate, _on, _page, _state, _upgrade, _url  # noqa: E402
@@ -263,7 +264,6 @@ NAMED_DOORS = {
     "subscriptions.err_ended_place_void": ("set-aside, unvoid", VOID_HERE),
     "subscriptions.err_ended_place_cancelled": (
         "set-aside", "test_an_ended_agreement_answers_its_rule_first_and_the_door_it_names_can_be_undone"),
-    "subscriptions.err_bill_reopened": ("generate-due", "test_period_billed_once"),
     "subscriptions.err_period_draft": ("reopen", "test_period_billed_once"),
     "subscriptions.err_early_due": ("generate-due", "test_billing_answers"),
     "subscriptions.err_agreement_status_lifecycle": ("status actions", "test_consent_doors"),
@@ -373,3 +373,74 @@ async def test_a_void_agreement_offers_unvoid_where_its_refusals_name_it(client,
     assert t("btn.confirm_unvoid", "en") in await _page(monkeypatch, old, NAME, f"/docs/{eid}")
     r = await client.post(f"/docs/{eid}/unvoid", headers=hd, json={"idempotency_key": str(uuid.uuid4())})
     assert r.status_code == 200, r.text
+
+
+async def _bill_void_reopen(client, hd, eid: str) -> dict:
+    """Period 0 billed, its bill voided in Documents and the period reopened, as a person does."""
+    bill = (await generate_due(client, hd, eid)).json()
+    r = await client.post(f"/docs/{bill['doc_id']}/void", headers=hd,
+                          json={"reason": "Entered by mistake", "idempotency_key": str(uuid.uuid4())})
+    assert r.status_code == 200, r.text
+    assert (await client.post(f"/subscriptions/{eid}/periods/0/reopen", headers=hd)).status_code == 200
+    return bill
+
+
+async def _agreement_to(client, hd, eid: str, status: str) -> None:
+    if status == "active":
+        return
+    if status == "void":
+        r = await client.post(f"/docs/{eid}/void", headers=hd,
+                              json={"reason": "Entered by mistake", "idempotency_key": str(uuid.uuid4())})
+    else:
+        r = await client.post(f"/subscriptions/{eid}/" + {"paused": "pause", "cancelled": "cancel"}[status], headers=hd)
+    assert r.status_code == 200, (status, r.text)
+
+
+# What a document a period let go meets when it comes back into billing (billing.guard_bill_status,
+# a doc_status_guard: any writer, any agreement status). Read off the guard's own code, so a new
+# refusal there fails test_a_let_go_document_comes_back_in_every_agreement_status until walked.
+GUARD_REFUSALS = {"subscriptions.err_bill_rebilled", "subscriptions.err_bill_unscheduled"}
+WAY_OUT_STATUSES = ("active", "paused", "cancelled", "void")
+
+
+def test_the_bill_guard_refusals_are_walked_and_name_no_door():
+    """The guard answers whichever writer brings a document back, in whatever status its agreement
+    holds, so none of its refusals may send the user to a door that status keeps closed."""
+    import inspect
+    import json
+    import re
+
+    from celerp_subscriptions import billing
+
+    found = set(re.findall(r'"(subscriptions\.err_\w+)"', inspect.getsource(billing.guard_bill_status)))
+    assert found == GUARD_REFUSALS
+    en = json.loads((Path(__file__).resolve().parents[1] / "ui" / "locales" / "en.json").read_text(encoding="utf-8"))
+    assert not [k for k in found if status_census.DOOR_WORDS.search(en[k])]
+    assert set(WAY_OUT_STATUSES) == AGREEMENT_STATUSES - {"draft"}
+
+
+@pytest.mark.parametrize("status", WAY_OUT_STATUSES)
+async def test_a_let_go_document_comes_back_in_every_agreement_status(client, session, monkeypatch, status):
+    """Bill, void the bill, Reopen, then the agreement is paused, cancelled or voided: Unvoid on the
+    bill undoes the Reopen, so the period reads billed on it again. Once a newer bill bills the
+    period instead, Unvoid of the older one answers err_bill_rebilled in every status."""
+    freeze_day(monkeypatch, "2026-03-01")
+    hd = await register(client)
+    eid = await agreement(client, hd, start="2026-03-01")
+    bill = await _bill_void_reopen(client, hd, eid)
+    await _agreement_to(client, hd, eid, status)
+    r = await client.post(f"/docs/{bill['doc_id']}/unvoid", headers=hd, json={"idempotency_key": str(uuid.uuid4())})
+    assert r.status_code == 200, r.text
+    state = (await client.get(f"/docs/{eid}", headers=hd)).json()
+    assert (state["status"], state["periods"]["0"]["doc_id"], state["released_bills"]) == (status, bill["doc_id"], {})
+
+    other = await agreement(client, hd, start="2026-03-01")
+    older = await _bill_void_reopen(client, hd, other)
+    newer = (await generate_due(client, hd, other)).json()
+    await _agreement_to(client, hd, other, status)
+    r = await client.post(f"/docs/{older['doc_id']}/unvoid", headers=hd, json={"idempotency_key": str(uuid.uuid4())})
+    got = r.json()["detail"] if r.status_code == 409 else {}
+    assert (got.get("message_key"), (got.get("params") or {}).get("newer")) == (
+        "subscriptions.err_bill_rebilled", newer["ref_id"]), r.text
+    assert [d["ref_id"] for d in await billed_docs(session, other) if d.get("status") not in ("draft", "void")] == [
+        newer["ref_id"]]

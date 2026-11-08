@@ -7223,7 +7223,6 @@
   "subscriptions.consent_sending_withdrawn": "自動送信の承認が取り消されました",
   "subscriptions.th_more_due": "その他の請求期限到来期間",
   "subscriptions.err_bill_rebilled": "{ref}で再度請求することはできません。この伝票は{agreement}の{start}から{end}までの期間から関連付けが解除され、その期間は現在{newer}で請求済みです。{ref}も発行すると同じ期間を二重に請求することになります。",
-  "subscriptions.err_bill_reopened": "{ref}で再度請求することはできません。{agreement}の{start}から{end}までの期間が再開されたため、その期間の次の伝票で請求されます。契約の「期限到来分を請求」を使用して請求してください。",
   "subscriptions.err_period_draft": "この期間の伝票{ref}は下書きに戻っています。{ref}を確定してこの期間を請求するか、期間一覧の該当行で「再開」を選択して新しい伝票で請求してください。",
   "subscriptions.period_draft": "下書きの伝票",
   "subscriptions.err_schedule_date": "{day}はCelerpで認識できる日付ではありません。正しい日付を入力してください。",

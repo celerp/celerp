@@ -7223,7 +7223,6 @@
   "subscriptions.consent_sending_withdrawn": "Đã thu hồi quyền cho phép gửi tự động",
   "subscriptions.th_more_due": "Các kỳ đến hạn khác",
   "subscriptions.err_bill_rebilled": "Không thể lập hóa đơn lại bằng {ref}. Chứng từ này đã được gỡ khỏi {agreement} cho kỳ từ {start} đến {end}, và kỳ đó hiện đã được lập hóa đơn bằng {newer}. Nếu tiếp tục phát hành {ref}, kỳ này sẽ bị lập hóa đơn hai lần.",
-  "subscriptions.err_bill_reopened": "Không thể lập hóa đơn lại bằng {ref}. Kỳ từ {start} đến {end} trong {agreement} đã được mở lại, nên chứng từ tiếp theo của kỳ đó sẽ dùng để lập hóa đơn. Hãy dùng Tạo hóa đơn đến hạn trong thỏa thuận để lập hóa đơn cho kỳ này.",
   "subscriptions.err_period_draft": "Chứng từ {ref} của kỳ này đã trở lại trạng thái bản nháp. Hãy hoàn tất {ref} để lập hóa đơn cho kỳ này, hoặc chọn Mở lại ở dòng tương ứng trong danh sách kỳ để lập hóa đơn bằng chứng từ mới.",
   "subscriptions.period_draft": "Chứng từ ở trạng thái nháp",
   "subscriptions.err_schedule_date": "{day} không phải là ngày mà Celerp có thể nhận dạng. Hãy nhập ngày hợp lệ.",

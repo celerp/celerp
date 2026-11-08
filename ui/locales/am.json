@@ -7223,7 +7223,6 @@
   "subscriptions.consent_sending_withdrawn": "ራስ-ሰር የመላክ ፈቃድ ተሰርዟል",
   "subscriptions.th_more_due": "ተጨማሪ የደረሱ ወቅቶች",
   "subscriptions.err_bill_rebilled": "{ref}ን እንደገና ለክፍያ መጠየቅ አይቻልም። ለ{start} እስከ {end} ያለው ጊዜ የሰነዱ ግንኙነት ከ{agreement} ተወግዷል፣ እና ለዚያ ጊዜ አሁን በ{newer} የክፍያ መጠየቂያ ተዘጋጅቷል። {ref}ንም ማውጣት ለዚያው ጊዜ ሁለት ጊዜ ክፍያ መጠየቅ ይሆናል።",
-  "subscriptions.err_bill_reopened": "{ref}ን እንደገና ለክፍያ መጠየቅ አይቻልም። በ{agreement} ውስጥ ከ{start} እስከ {end} ያለው ጊዜ እንደገና ተከፍቷል፣ ስለዚህ ለዚያ ጊዜ የሚቀጥለው ሰነድ የክፍያ መጠየቂያ ይሆናል። ለዚህ ጊዜ የክፍያ መጠየቂያ ለማዘጋጀት በስምምነቱ ላይ «የደረሱ መጠየቂያዎችን ፍጠር» ይጠቀሙ።",
   "subscriptions.err_period_draft": "ለዚህ ጊዜ የተዘጋጀው {ref} ሰነድ ወደ ረቂቅ ሁኔታ ተመልሷል። ለጊዜው የክፍያ መጠየቂያ ለማዘጋጀት {ref}ን ያጠናቅቁ፣ ወይም በጊዜያት ዝርዝር ውስጥ በተዛማጅ ረድፍ ላይ «እንደገና ክፈት» የሚለውን በመምረጥ አዲስ ሰነድ ያዘጋጁ።",
   "subscriptions.period_draft": "ሰነድ በረቂቅ ሁኔታ ላይ ነው",
   "subscriptions.err_schedule_date": "{day} Celerp ሊያነበው የሚችል ቀን አይደለም። ትክክለኛ ቀን ያስገቡ።",
