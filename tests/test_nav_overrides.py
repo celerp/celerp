@@ -522,3 +522,20 @@ async def test_hide_move_and_reset_redraw_the_side_menu_on_the_same_page(ui_clie
     assert after_move.index(_href_of(ids[1])) < after_move.index(_href_of(ids[0]))
     assert _href_of(ids[2]) not in _hrefs(_sidebar_of(hidden))
     assert _hrefs(_sidebar_of(reset)) == _hrefs(re.search(r'<nav[^>]*id="sidebar".*?</nav>', page, re.S).group(0))
+
+
+def test_the_api_schema_states_the_revision_rule_of_the_side_menu_routes():
+    """An API client learns from the schema alone that a write names the revision it replaces:
+    GET returns it as ETag, PATCH and DELETE take it as If-Match and answer 428 without it and
+    412 when it is stale, and each operation's description says so."""
+    from celerp.main import app
+    ops = app.openapi()["paths"]["/companies/me/nav-overrides"]
+    assert "ETag" in ops["get"]["responses"]["200"]["headers"]
+    assert "ETag" in ops["get"]["description"]
+    for method in ("patch", "delete"):
+        op = ops[method]
+        headers = [p for p in op.get("parameters") or [] if p["in"] == "header"]
+        assert [p["name"] for p in headers] == ["If-Match"], method
+        assert {"412", "428"} <= op["responses"].keys(), method
+        assert all(op["responses"][code]["description"] for code in ("412", "428"))
+        assert "If-Match" in op["description"] and "428" in op["description"] and "412" in op["description"]

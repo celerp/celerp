@@ -10,7 +10,9 @@ import re
 import uuid
 from datetime import date
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Request, Response, UploadFile
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import or_, select
@@ -509,13 +511,26 @@ async def patch_role_permissions(
     return {"ok": True, "perm_key": perm.key, "roles": grants[perm.key]}
 
 
-@router.get("/me/nav-overrides")
+# A side-menu write names the revision it replaces, so a second tab or API client cannot
+# overwrite choices it never read.
+_NAV_IF_MATCH = Annotated[str | None, Header(
+    alias="If-Match", description="The ETag GET /companies/me/nav-overrides returned for the choices this write replaces.")]
+_NAV_WRITE_RESPONSES = {
+    412: {"description": "If-Match names an older revision: the choices changed since they were read. "
+                         "Read them again and reapply the change."},
+    428: {"description": "If-Match is missing. Read the choices first and send their ETag."},
+}
+
+
+@router.get("/me/nav-overrides", responses={200: {"headers": {"ETag": {
+    "description": "The revision of these choices, for If-Match on a write.", "schema": {"type": "string"}}}}})
 async def get_nav_overrides(
     response: Response,
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """The company's side-menu choices: hidden entries and groups, and their order."""
+    """The company's side-menu choices: hidden entries and groups, and their order. The ETag
+    header names their revision; a PATCH or DELETE sends it back as If-Match."""
     company = await session.get(Company, company_id)
     if company is None:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
@@ -524,13 +539,10 @@ async def get_nav_overrides(
     return {field: list(stored.get(field) or []) for field in nav_overrides.FIELDS}
 
 
-async def _nav_overrides_for_write(request: Request, session: AsyncSession, company_id) -> tuple[Company, dict]:
-    """The locked company and a copy of its settings, once the write names the revision it replaces.
-
-    A write without If-Match is refused with 428 and one naming an older revision with 412, each
-    saying what to do, so a second tab or API client cannot overwrite choices it never read.
-    """
-    expected = request.headers.get("if-match")
+async def _nav_overrides_for_write(expected: str | None, session: AsyncSession, company_id) -> tuple[Company, dict]:
+    """The locked company and a copy of its settings, once the write names (``expected``, its
+    If-Match) the revision it replaces: refused with 428 without it and 412 when it is older,
+    each saying what to do."""
     if expected is None:
         raise HTTPException(status_code=428, detail=t("settings_menu.err_version_required"))
     company = await locked_company(session, company_id)
@@ -542,10 +554,10 @@ async def _nav_overrides_for_write(request: Request, session: AsyncSession, comp
     return company, settings
 
 
-@router.patch("/me/nav-overrides")
+@router.patch("/me/nav-overrides", responses=_NAV_WRITE_RESPONSES)
 async def patch_nav_overrides(
     payload: NavOverridesPatch,
-    request: Request,
+    if_match: _NAV_IF_MATCH = None,
     company_id=Depends(get_current_company_id),
     _: None = require_permission("manage_permissions"),
     session: AsyncSession = Depends(get_session),
@@ -556,9 +568,12 @@ async def patch_nav_overrides(
     shows is part of what each role is offered. The choices only hide and reorder entries a role's
     permissions already show; they cannot grant access, and Settings cannot be hidden. Saving no
     choices at all is the same as a reset.
+
+    If-Match must name the revision GET returned as ETag: without it the write is refused with
+    428, and with an older one (the choices changed since) with 412.
     """
     cleaned = nav_overrides.normalize(payload.model_dump())
-    company, settings = await _nav_overrides_for_write(request, session, company_id)
+    company, settings = await _nav_overrides_for_write(if_match, session, company_id)
     if cleaned:
         settings[nav_overrides.KEY] = cleaned
     else:
@@ -568,15 +583,19 @@ async def patch_nav_overrides(
     return {field: cleaned.get(field, []) for field in nav_overrides.FIELDS}
 
 
-@router.delete("/me/nav-overrides")
+@router.delete("/me/nav-overrides", responses=_NAV_WRITE_RESPONSES)
 async def reset_nav_overrides(
-    request: Request,
+    if_match: _NAV_IF_MATCH = None,
     company_id=Depends(get_current_company_id),
     _: None = require_permission("manage_permissions"),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Put the side menu back to its default entries and order."""
-    company, settings = await _nav_overrides_for_write(request, session, company_id)
+    """Put the side menu back to its default entries and order.
+
+    If-Match must name the revision GET returned as ETag: without it the reset is refused with
+    428, and with an older one (the choices changed since) with 412.
+    """
+    company, settings = await _nav_overrides_for_write(if_match, session, company_id)
     settings.pop(nav_overrides.KEY, None)
     company.settings = settings
     await session.commit()
