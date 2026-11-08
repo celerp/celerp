@@ -5311,6 +5311,7 @@
     "tests/test_ci_test_postgres.py::test_the_suite_never_alters_a_postgres_server_it_did_not_start": 0.0027274259773548692,
     "tests/test_ci_update_drive.py::test_a_failed_download_fails_the_check": 0.01,
     "tests/test_ci_update_drive.py::test_no_refusal_screen_fails_the_check_in_time": 0.05,
+    "tests/test_ci_update_drive.py::test_the_driver_waits_for_the_screen_to_catch_up": 0.01,
     "tests/test_ci_update_drive.py::test_the_refusal_command_reaches_the_refusal_screen": 0.01,
     "tests/test_ci_update_drive.py::test_update_celerp_then_restart_to_install": 0.01,
     "tests/test_cif_v2.py::test_a_migration_item_starts_only_in_a_status_the_item_writer_accepts": 0.003,
