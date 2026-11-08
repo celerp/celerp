@@ -87,3 +87,21 @@ def test_sub_create_and_detail(page, ui_server, api):
         "Frequency control missing on subscription detail"
     assert page.locator("input[hx-patch$='/schedule/anchor_date']").count() > 0, \
         "First-bill-date control missing on subscription detail"
+
+
+def test_documents_page_shows_the_next_bill_date_its_own_page_shows(page, ui_server, api):
+    """An agreement opened from Documents shows the next bill date its periods hold, the one its
+    own page shows, not "--"."""
+    r = api.post("/docs", json={
+        "doc_type": "subscription_invoice", "frequency": "monthly", "start_date": "2027-03-01",
+        "line_items": [{"description": "Service", "quantity": 1, "unit_price": 100.0, "line_total": 100.0}],
+    })
+    assert r.status_code in {200, 201}, r.text
+    eid = r.json()["id"]
+    assert api.post(f"/subscriptions/{eid}/activate").status_code == 200
+    next_bill = api.get(f"/subscriptions/{eid}/periods").json()["next_bill_date"]
+    assert next_bill == "2027-03-01"
+    for url in (f"{ui_server}/subscriptions/{eid}", f"{ui_server}/docs/{eid}"):
+        page.goto(url, wait_until="domcontentloaded")
+        _no_crash(page, url)
+        assert page.locator("#sub-next-bill").inner_text().split()[-1] == next_bill, url

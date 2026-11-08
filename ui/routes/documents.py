@@ -2536,6 +2536,13 @@ celerpUpdateBulkAlloc();
                     title=page_title("nav.invoices"), nav_active=_doc_nav_key("invoice"), request=request,
                 )
             doc = {}
+        if doc.get("doc_type") in ("subscription_invoice", "subscription_po"):
+            # The next bill date its own page shows, read from its periods; without the
+            # subscriptions module, the date an agreement not yet on a schedule still stores.
+            try:
+                doc["next_bill_date"] = (await api.get_subscription_periods(token, entity_id)).get("next_bill_date")
+            except APIError:
+                doc["next_bill_date"] = doc.get("next_run_date")
 
         # Inject company fields so "My company info" box is populated
         doc = await _merge_company_letterhead(token, doc)
