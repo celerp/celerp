@@ -43,7 +43,7 @@ from celerp.services.company_lock import lock_projections
 from celerp.services.lot_origin import RETIRED
 from celerp.services.money import allocate_pro_rata, require_line_amount, round_money, to_decimal, to_stored_float
 from celerp_docs.doc_money import UnratedTaxError, document_money, refuse_unset_line_tax
-from celerp_docs.record_copy import inherited_content
+from celerp_docs.record_copy import copy_of
 
 _EPS = Decimal("1e-9")
 
@@ -390,9 +390,9 @@ async def buy_consignment(session, *, company_id, user_id, consignment_id: str, 
             "Receive the goods first."))
     refuse_unset_line_tax(lines, state, source)  # the bill is born issued
     bill_id = f"doc:{ref}"
-    # The bill starts its own lifecycle with the consignment's content only (record_copy): what went
+    # The bill is a copy of the consignment that starts its own lifecycle (record_copy): what went
     # back to the consignor was returned on the consignment, never on the bill, and its scan runs stay with it.
-    data = inherited_content(state, settings)
+    data = copy_of(state, settings)
     data["line_items"] = lines
     data["received_items"], data["received_item_ids"] = _bill_receipts(state, plan, source)
     if changed:

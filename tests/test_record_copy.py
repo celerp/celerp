@@ -1,40 +1,26 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """A record made from another record (a List duplicated or converted, a quotation converted, a
-consignment bought) inherits the source's content only, by one rule (record_copy). Its own
-status, outcome, sending, numbering, links and scans stay with the source.
+consignment bought) is the whole source less the keys that belong to its lifecycle, by one rule
+(record_copy.copy_of). Its own status, outcome, sending, numbering, links and scans stay with the
+source; what the user entered is copied (test_record_copy_content).
 
-The guards walk every door that creates a document or list and fail on one that copies a
-source's state wholesale, and walk every key the demo company's documents and lists hold and
-fail on one the rule does not place on either side."""
+The guards come from the code: every door that creates a document or list either builds it through
+copy_of or names every key it writes, and every key a writer sets on an existing document or list
+(tests/lifecycle_writers.py) is either never copied or content the code declares the user enters."""
 from __future__ import annotations
 
 import ast
 import sys
-from pathlib import Path
 
-import pytest
-
-from celerp_docs.record_copy import INHERITED_CONTENT, NOT_INHERITED
-from test_tax_acceptance_matrix import _demo_company, seed_demo
-
-ROOT = Path(__file__).resolve().parent.parent
-CREATED = {"doc.created", "list.created"}
-
-
-def _app_sources():
-    for top in ("celerp", "ui", "default_modules"):
-        for path in sorted((ROOT / top).rglob("*.py")):
-            rel = path.relative_to(ROOT)
-            if "tests" in rel.parts or path.name.startswith(("test_", "conftest")):
-                continue
-            yield rel, path
+from lifecycle_writers import CREATED, ROOT, ROUTES, app_sources, census
+from test_tax_acceptance_matrix import _demo_company
 
 
 def _creation_constants() -> set[str]:
     """Names the app binds to a creation event (``DOC_CREATED = "doc.created"``), so a door that
     passes the constant is found as surely as one that writes the string."""
-    return {t.id for _, path in _app_sources() for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+    return {t.id for _, path in app_sources() for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
             if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant) and node.value.value in CREATED
             for t in node.targets if isinstance(t, ast.Name)}
 
@@ -74,17 +60,17 @@ def _wholesale(fn: ast.AST) -> bool:
 
 
 def copy_doors() -> list[tuple[str, str, str]]:
-    """Every function that creates a document or list, with how it builds it: ``allowlist``
-    (through inherited_content), ``wholesale`` (copies unnamed keys of a source) or ``named``
+    """Every function that creates a document or list, with how it builds it: ``copy_of`` (through
+    record_copy), ``wholesale`` (copies unnamed keys of a source by its own rule) or ``named``
     (every key it writes is named: a payload, a literal or a fixed field set)."""
     rows, constants = [], _creation_constants()
-    for rel, path in _app_sources():
+    for rel, path in app_sources():
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for fn in ast.walk(tree):
             if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or not _creates(fn, constants):
                 continue
             calls = {getattr(n.func, "id", getattr(n.func, "attr", "")) for n in ast.walk(fn) if isinstance(n, ast.Call)}
-            how = "allowlist" if "inherited_content" in calls else "wholesale" if _wholesale(fn) else "named"
+            how = "copy_of" if "copy_of" in calls else "wholesale" if _wholesale(fn) else "named"
             rows.append((str(rel), fn.name, how))
     return rows
 
@@ -92,7 +78,7 @@ def copy_doors() -> list[tuple[str, str, str]]:
 def test_every_door_that_creates_a_record_names_what_it_takes():
     doors = copy_doors()
     assert [d for d in doors if d[2] == "wholesale"] == []
-    through = {name for _, name, how in doors if how == "allowlist"}
+    through = {name for _, name, how in doors if how == "copy_of"}
     assert {"duplicate_list", "convert_list", "convert_doc", "buy_consignment"} <= through, doors
 
 
@@ -101,8 +87,27 @@ def test_the_census_finds_a_door_that_names_the_creation_event_by_a_constant():
     assert {"create_imported_doc", "_doc_record"} <= names
 
 
-def test_the_rule_places_each_key_on_one_side_only():
-    assert INHERITED_CONTENT & NOT_INHERITED == frozenset()
+# The edit form's writers take the fields the user edits, by name (refusing the protected ones);
+# the one other computed key is the id a platform returns for a pushed invoice, and no door copies
+# an invoice.
+FORM_WRITERS = {f"{ROUTES}:write_doc_patch", f"{ROUTES}:write_list_patch"}
+PUSHED_ID = "<f'{platform}_{data.get('entity', 'invoice')}_id'>"
+
+
+def test_every_key_a_writer_sets_on_an_existing_record_is_never_copied_or_content():
+    rows = census()
+    unplaced = [r for r in rows if r[3] == "NO" and not (r[0].startswith("<") and r[1] in FORM_WRITERS)
+                and not (r[0] == PUSHED_ID and r[2] == "doc.pushed")]
+    assert unplaced == []
+
+
+def test_the_writer_census_finds_lifecycle_steps_and_skips_a_sentinel():
+    rows = {(k, w.rsplit(":", 1)[1], e, p) for k, w, e, p in census()}
+    assert {("sent_at", "_set_list_fields", "list.updated", "never copied"),
+            ("woocommerce_status", "upsert_order_from_woocommerce", "doc.updated", "never copied"),
+            ("issued_at", "finalize_list_record", "list.finalized", "never copied"),
+            ("accounting_sync_excluded", "write_doc_patch", "doc.updated", "content")} <= rows
+    assert "freeze_onhand" not in {k for k, *_ in rows}
 
 
 async def _scenario(client, session):
@@ -166,33 +171,7 @@ def test_a_list_names_its_conversion_and_sending_only_beside_the_status_that_mak
     assert list_fact({**copied, "status": "closed", "result": "accepted"}, "converted_to") is None
 
 
-async def test_every_key_the_demo_company_records_hold_is_placed_by_the_rule(client, session):
-    """The demo company's invoices and purchase orders through their lifecycles, a quotation List
-    through finalize, send, share, convert and duplicate, and a quotation document converted: every
-    top-level key any of them holds is either inherited content or named as not inherited."""
-    from sqlalchemy import select
-
-    from celerp.models.projections import Projection
-
-    auth, contacts, _, _ = await _scenario(client, session)
-    h, token = auth["headers"], auth["headers"]["Authorization"].split()[1]
-    await seed_demo.seed_docs(client, token, contacts, "invoice", 6)
-    await seed_demo.seed_docs(client, token, contacts, "purchase_order", 4)
-    cust = next(c["id"] for c in contacts if c.get("contact_type") in ("customer", "both"))
-    r = await client.post("/docs", headers=h, json={
-        "doc_type": "quotation", "contact_id": cust, "line_items": [{"name": "A", "quantity": 1, "unit_price": 9}]})
-    assert r.status_code == 200, r.text
-    assert (await client.post(f"/docs/{r.json()['id']}/finalize", headers=h)).status_code == 200
-    assert (await client.post(f"/docs/{r.json()['id']}/convert", headers=h)).status_code == 200
-    session.expire_all()
-    rows = (await session.execute(select(Projection).where(
-        Projection.company_id == auth["company_id"], Projection.entity_type.in_(("doc", "list"))))).scalars().all()
-    assert {r.entity_type for r in rows} == {"doc", "list"}
-    keys = {k for r in rows for k in r.state}
-    assert sorted(keys - INHERITED_CONTENT - NOT_INHERITED) == []
-
-
 if __name__ == "__main__":  # the census: python tests/test_record_copy.py
-    sys.path[:0] = [str(ROOT)]
+    sys.path[:0] = [str(ROOT / "tests")]
     for row in copy_doors():
         print("\t".join(row))

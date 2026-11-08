@@ -38,7 +38,7 @@ from celerp_docs.doc_money import (LIST_TOTAL_FIELDS, document_money, document_t
                                    money_from_lines, refuse_malformed_taxes, refuse_unset_line_tax, released_header_money,
                                    unrated_tax)
 from celerp_docs.doc_projections import RESTORE_POINT, UNISSUED_STATUSES, list_lines_and_totals, payment_status
-from celerp_docs.record_copy import inherited_content
+from celerp_docs.record_copy import copy_of
 from celerp_docs.taxes import TaxApplication
 from celerp.services.field_schema import reject_system_item_fields
 from celerp.services.locations import require_company_location, require_ship_from
@@ -8015,9 +8015,9 @@ async def convert_doc(entity_id: str, payload: DocConvertBody | None = None, com
             raise HTTPException(status_code=409, detail=t("documents.err_quote_expired"))
         ref = await claim_number(session, company, draft_counter("invoice"))
         new_doc_id = f"doc:{ref}"
-        # The invoice is a new draft with the quotation's content only (record_copy).
-        new_data = inherited_content(state, company.settings)
-        new_data.update({"doc_type": "invoice", "ref_id": ref, "source_quotation_id": entity_id, "status": "draft"})
+        # The invoice is a new draft copy of the quotation (record_copy).
+        new_data = copy_of(state, company.settings)
+        new_data.update({"doc_type": "invoice", "ref_id": ref, "source_quotation_id": entity_id})
         await require_moving_fits_units(session, company_id, new_doc_id, "doc", new_data)
         await emit_event(
             session, company_id=company_id, entity_id=new_doc_id, entity_type="doc", event_type="doc.created", data=new_data,
@@ -9400,9 +9400,12 @@ async def _reprice_catalog_lines(
 _CONTACT_SNAPSHOT_FIELDS: tuple[str, ...] = tuple(contact_snapshot({}))
 
 
+CHOSEN_TERMS: tuple[str, ...] = ("currency", "price_list", "payment_terms", "due_date")
+
+
 def _chosen_terms(values: dict) -> frozenset[str]:
     """The commercial terms a new record's caller set itself, which its contact does not replace."""
-    chosen = {f for f in ("currency", "price_list", "payment_terms", "due_date") if values.get(f) not in (None, "")}
+    chosen = {f for f in CHOSEN_TERMS if values.get(f) not in (None, "")}
     if values.get("terms") not in (None, ""):
         chosen.add("payment_terms")
     return frozenset(chosen)
@@ -10071,11 +10074,11 @@ async def convert_list(
     # document holds the rate as ``tax_rate`` and the amount as ``tax``. So no list money is
     # taken: the document's money is worked out from its lines by the document rule
     # (money_from_lines), as for any document created.
-    new_data = {k: v for k, v in inherited_content(state, company.settings).items() if k not in _LIST_MONEY}
+    new_data = {k: v for k, v in copy_of(state, company.settings).items() if k not in _LIST_MONEY}
     if state.get("tax"):
         new_data["tax_rate"] = state["tax"]
     new_data = money_from_lines(new_data, state.get("currency"))
-    new_data.update({"doc_type": payload.target_type, "ref_id": ref, "source_list_id": entity_id, "status": "draft"})
+    new_data.update({"doc_type": payload.target_type, "ref_id": ref, "source_list_id": entity_id})
     await require_moving_fits_units(session, company_id, new_doc_id, "doc", new_data)
     for li_eid, held in to_transfer.items():
         data = {"new_status": "reserved", "source_doc_id": new_doc_id, "doc_number": ref}
@@ -10114,8 +10117,8 @@ async def duplicate_list(
     state = row.state
     ref_id = await claim_number(session, company, list_sequence_key(state.get("list_type"), company.settings))
     new_entity_id = f"list:{ref_id}"
-    new_data = inherited_content(state, company.settings)
-    new_data.update({"ref_id": ref_id, "status": "draft", "source_list_id": entity_id,
+    new_data = copy_of(state, company.settings)
+    new_data.update({"ref_id": ref_id, "source_list_id": entity_id,
                      **({"list_type": state["list_type"]} if state.get("list_type") else {}),
                      "line_items": strip_line_ids(state.get("line_items"))})
     await require_moving_fits_units(session, company_id, new_entity_id, "list", new_data)
