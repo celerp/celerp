@@ -10152,6 +10152,32 @@ async function celerpSaveThenPost(url) {{
     if (!(await _celerpPersist())) return;
     htmx.ajax('POST', url, {{swap: 'none'}});
 }}
+/* Save first: every htmx request that changes something (any verb but GET), whichever control on
+   the page sends it, waits for the page's pending line edits to save, so it runs on the lines the
+   page shows and a reload it answers with drops nothing typed. A blur's save still waiting folds
+   into this one; a failed save has shown its own reason and the request is not sent. Once saved,
+   the request meets its own confirmation, as it would have. Capture phase, so it runs before any
+   confirmation listener. The line save itself is a fetch, not an htmx request. A request that
+   pinned the version before the save is pinned to the one the save produced: this tab's own save
+   is the only write in between (another tab's write makes the save fail). */
+if (!window._celerpSaveFirstBound) {{
+    window._celerpSaveFirstBound = true;
+    document.addEventListener('htmx:confirm', function(e) {{
+        const d = e.detail;
+        if (d.verb === 'get' || d.celerpSaved || !_celerpLinesDirty()) return;
+        e.preventDefault();
+        e.stopPropagation();
+        clearTimeout(_celerpSaveTimer);
+        _celerpSaveTimer = null;
+        _celerpPersist().then(function(ok) {{
+            if (!ok) return;
+            const pinned = d.etc && d.etc.values;
+            if (pinned && 'expected_version' in pinned) pinned.expected_version = window._celerpEntityVersion;
+            d.celerpSaved = true;
+            if (htmx.trigger(d.elt, 'htmx:confirm', d)) d.issueRequest(true);
+        }});
+    }}, true);
+}}
 /* Swap to another page of the same draft list. Paging must never silently drop unsaved
    edits: a dirty page saves first, and a failed save (including a stale-version conflict)
    holds the current page in place with its message showing. A clean page saves nothing and
