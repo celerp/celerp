@@ -309,8 +309,9 @@ async def test_subscription_generate_duplicate_is_atomic(client, session):
 
     r = await client.post(f"/subscriptions/{sub_id}/generate-due", headers=_h(t), json={"request_key": str(_uuid.uuid4())})
 
-    assert r.status_code == 409, r.text
-    assert r.json()["detail"]["code"] == "duplicate_document_item"
+    # Every refusal of the bill path arrives inside the one naming cancel and a new subscription.
+    assert r.status_code == 409 and r.json()["detail"]["message_key"] == "subscriptions.err_bill_refused", r.text
+    assert r.json()["detail"]["params"]["reason"]["code"] == "duplicate_document_item", r.text
     # Atomicity: no generated invoice, template unchanged (no period claimed).
     assert await _target_doc_count(session, cid, "invoice") == before_invoices
     after_template = await _doc_state(session, cid, sub_id)
