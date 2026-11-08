@@ -5,6 +5,8 @@ pending line edits first, through the same save-then-post path as Finalize, so t
 the lines the page shows."""
 from __future__ import annotations
 
+import json
+
 from ui.routes.documents import save_then_post
 from ui.routes.subscriptions import _sub_action_controls
 
@@ -25,7 +27,7 @@ def _drafts():
 
 
 def test_every_draft_header_action_saves_the_lines_first():
-    prefix, _, suffix = save_then_post("\0").partition("\0")
+    prefix, _, suffix = save_then_post("").partition('""')
     for sub in _drafts():
         left, right = _sub_action_controls(_EID, sub, sub.get("next_bill_date"))
         actions = [n for n in _nodes([*left, *right]) if n.tag in ("button", "form")]
@@ -34,5 +36,5 @@ def test_every_draft_header_action_saves_the_lines_first():
             assert not set(node.attrs) & set(_DIRECT), node
             js = node.attrs.get("onclick", "")
             assert js.startswith(prefix) and js.endswith(suffix), node
-            url = js[len(prefix):len(js) - len(suffix)]
+            url = json.loads(js[len(prefix):len(js) - len(suffix)])
             assert url.startswith(f"/subscriptions/{_EID}/") and js == save_then_post(url), node

@@ -7314,7 +7314,7 @@ def save_then_post(url: str) -> str:
     """The onclick of a button that posts a state-changing action from a document's page: the
     page's pending line edits save first (celerpSaveThenPost), so the action runs on the lines
     the page shows."""
-    return f"event.preventDefault();celerpSaveThenPost('{url}');"
+    return f"event.preventDefault();celerpSaveThenPost({_json.dumps(url)});"
 
 
 def subscription_meta_cells(doc: dict) -> tuple:
