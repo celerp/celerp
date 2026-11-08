@@ -6,7 +6,8 @@ The rule it serves: an agreement's stored status decides whether a period can bi
 allow-list predicate (billing.billable) that the preview and every writer read.
 
 - ``billing_doors()``: every call in the code of the functions that bill a period
-  (billing.claim_period, billing._bill), with the route of the function that makes it.
+  (billing.claim_period, billing._bill), with the route of the function that makes it. A call
+  inside a savepoint whose block ends by raising keeps nothing, so it is not a door.
 - ``reads_rule()``: whether a function reaches billing.billable through the package's own calls.
 - ``status_writers()``: every route that writes an agreement's status: the Documents status routes
   (refused by billing.guard_agreement_status unless the agreement keeps a lifecycle status) and
@@ -47,6 +48,14 @@ def _own_calls(fn) -> list[ast.Call]:
     return found
 
 
+def _unkept_calls(fn) -> set[int]:
+    """The calls inside a ``savepoint`` block that ends by raising: rolled back, so nothing kept."""
+    return {id(c) for w in ast.walk(fn) if isinstance(w, (ast.With, ast.AsyncWith))
+            and any(isinstance(i.context_expr, ast.Call) and _callee(i.context_expr) == "savepoint" for i in w.items)
+            and isinstance(w.body[-1], ast.Raise)
+            for c in ast.walk(w) if isinstance(c, ast.Call)}
+
+
 def _route(fn) -> str | None:
     for d in fn.decorator_list:
         if (isinstance(d, ast.Call) and getattr(d.func, "attr", None) in ("get", "post", "put", "patch", "delete")
@@ -60,8 +69,9 @@ def billing_doors() -> dict[str, tuple[str, str | None]]:
     found = {}
     for path, tree in _sources():
         for fn in (n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))):
+            unkept = _unkept_calls(fn)
             for call in _own_calls(fn):
-                if _callee(call) in BILLERS and _callee(call) != fn.name:
+                if _callee(call) in BILLERS and _callee(call) != fn.name and id(call) not in unkept:
                     found[f"{path.relative_to(ROOT)}::{fn.name}"] = (_callee(call), _route(fn))
     return found
 

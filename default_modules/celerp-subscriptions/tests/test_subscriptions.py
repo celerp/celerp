@@ -556,8 +556,11 @@ async def test_generate_in_a_locked_period_is_refused_and_writes_nothing(client,
     before = (await client.get("/docs?doc_type=invoice", headers=h)).json()["items"]
 
     r = await client.post(f"/subscriptions/{eid}/generate-due", headers=h, json={"request_key": str(uuid.uuid4())})
-    assert r.status_code == 422, r.text
-    assert refusal_text(r.json()["detail"]) == refusal_text(period_locked_refusal(date_text(date.today(), "en")))
+    # Every refusal on the bill path reaches the user as err_bill_refused, the lock its reason.
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["message_key"] == "subscriptions.err_bill_refused"
+    assert (refusal_text(r.json()["detail"]["params"]["reason"])
+            == refusal_text(period_locked_refusal(date_text(date.today(), "en"))))
     assert (await client.get("/docs?doc_type=invoice", headers=h)).json()["items"] == before
     assert await _generated(client, h, eid) == []
 
