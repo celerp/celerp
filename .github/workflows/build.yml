@@ -494,7 +494,16 @@ jobs:
           rm -rf "$MOUNT_POINT"
           mkdir -p "$MOUNT_POINT"
           hdiutil attach -readonly -nobrowse -mountpoint "$MOUNT_POINT" "$DMG"
-          cleanup() { hdiutil detach "$MOUNT_POINT" >/dev/null 2>&1 || true; }
+          # A just-read image can stay busy for a few seconds (Spotlight, codesign), so
+          # the detach is retried before it is forced.
+          detach() {
+            for attempt in 1 2 3 4 5; do
+              hdiutil detach "$MOUNT_POINT" && return 0
+              [ "$attempt" = 5 ] || sleep 3
+            done
+            hdiutil detach -force "$MOUNT_POINT"
+          }
+          cleanup() { detach >/dev/null 2>&1 || true; }
           trap cleanup EXIT
 
           test -d "$MOUNT_POINT/Celerp.app"
@@ -508,7 +517,7 @@ jobs:
             xcrun stapler validate "$MOUNT_POINT/Celerp.app"
           fi
 
-          hdiutil detach "$MOUNT_POINT"
+          detach
           trap - EXIT
           echo "macOS distributable verified: checksum, mount, contents, signing, and release notarization policy OK"
 
