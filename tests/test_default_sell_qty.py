@@ -677,8 +677,10 @@ async def test_an_unnamed_subscription_is_named_as_the_subscriptions_list_names_
     row.state = {**row.state, "status": "active"}
     await session.commit()
     r = await client.post(f"/subscriptions/{sub}/generate-due", headers=auth["headers"], json={"request_key": str(uuid.uuid4())})
-    assert r.status_code == 422, r.text
-    detail = r.json()["detail"]
+    # Every refusal of the bill path arrives inside the one naming cancel and a new subscription.
+    assert r.status_code == 409 and r.json()["detail"]["message_key"] == "subscriptions.err_bill_refused", r.text
+    assert r.json()["detail"]["params"]["ref"] == ref, r.text
+    detail = r.json()["detail"]["params"]["reason"]
     assert detail["message_key"] == "units.template_finer_than_unit", detail
     assert detail["params"]["template"] == ref, detail
     assert detail["message"].startswith(f"Subscription {ref} lists Stone at 0.275 carat"), detail
@@ -919,8 +921,9 @@ async def test_a_subscription_never_makes_a_document_finer_than_its_units(client
 
     before = await _doc_count(session, auth)
     r = await client.post(f"/subscriptions/{old}/generate-due", headers=auth["headers"], json={"request_key": str(uuid.uuid4())})
-    assert r.status_code == 422, r.text
-    detail = r.json()["detail"]
+    # Every refusal of the bill path arrives inside the one naming cancel and a new subscription.
+    assert r.status_code == 409 and r.json()["detail"]["message_key"] == "subscriptions.err_bill_refused", r.text
+    detail = r.json()["detail"]["params"]["reason"]
     assert detail["message_key"] == "units.template_finer_than_unit", detail
     assert detail["params"] == {"template": "SUB-OLD", "label": "Stone", "qty": "0.275", "unit": "carat",
                                 "decimals": 2, "places": 3}, detail

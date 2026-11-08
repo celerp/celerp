@@ -100,8 +100,10 @@ async def test_a_subscription_with_withholding_tax_generates_nothing(client, ses
                                        "frequency": "monthly"})
     assert r.status_code == 200, r.text
     before = await _entries(session)
-    assert (await client.post(f"/subscriptions/{eid}/activate", headers=h)).status_code == 200
-    _refused_for(await client.post(f"/subscriptions/{eid}/generate-due", headers=h, json={"request_key": str(uuid.uuid4())}), "WHT 3%")
+    # Activate asks the bill path, so the withholding tax refuses it there, naming the tax.
+    r = await client.post(f"/subscriptions/{eid}/activate", headers=h)
+    assert r.status_code == 409 and r.json()["detail"]["message_key"] == "subscriptions.err_bill_refused", r.text
+    assert "WHT 3%" in r.text, r.text
     assert await _entries(session) == before
     invoices = (await client.get("/docs", headers=h, params={"doc_type": "invoice"})).json()["items"]
     assert [d for d in invoices if d.get("finalized") or d.get("status") != "draft"] == []

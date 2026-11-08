@@ -51,10 +51,8 @@ API_CLIENT = ROOT / "ui" / "api_client.py"
 ACTION_VERBS = {"post", "patch", "put", "delete"}
 REDRAW = "_redrawn"
 # How a UI action route answers: a done action loads its page again with a toast (_done) or is
-# redrawn from a read after it (_redrawn); a refusal is shown where the user is. A paused
-# agreement's line save answers as the line editor every document shares (save_lines): the
-# editor redraws from the money the API computed, or shows the refusal where the user is.
-ANSWERS = {"_done", REDRAW, "_refused", "_action_error", "save_lines"}
+# redrawn from a read after it (_redrawn); a refusal is shown where the user is.
+ANSWERS = {"_done", REDRAW, "_refused", "_action_error"}
 # Every answer a UI action route may give: ANSWERS, a whole page, a step of the app's shared
 # CSV import wizard, the sign-in page, or 404 for an action it does not have.
 IMPORT_WIZARD = "ui.routes.csv_import"
@@ -397,7 +395,7 @@ def to_check_readers() -> list[tuple[str, str]]:
 
 
 # A refusal names a door when its English tells the person which action to use instead.
-DOOR_WORDS = re.compile(r"\bUse |\b[Uu]nvoid\b|\bReopen\b|Withdraw placement|Set aside|\b[Vv]oid \{|Generate due|import it as a draft|[Pp]ause it|[Ff]ix it on its page|changed on its page|use New Subscription")
+DOOR_WORDS = re.compile(r"\bUse |\b[Uu]nvoid\b|\bReopen\b|Withdraw placement|Set aside|\b[Vv]oid \{|Generate due|Cancel this subscription")
 
 
 def named_door_refusals() -> list[tuple[str, str]]:

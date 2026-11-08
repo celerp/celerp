@@ -2309,12 +2309,10 @@ def _same_value(field: str, old, new) -> bool:
 
 async def write_doc_patch(session: AsyncSession, company_id, role: str, settings: dict, user, entity_id: str, payload: DocPatch,
                           *, scan_runs: list[dict] | None = None,
-                          memo_draw: MemoDraw | MemoReturn | None = None, lines_open: bool = False) -> dict:
+                          memo_draw: MemoDraw | MemoReturn | None = None) -> dict:
     """Apply a document edit without committing, so an import can make it part of a larger unit.
     Only the document scan passes `scan_runs`, the scan ledger no caller may patch. Only a memo
-    draw and Back to memo pass `memo_draw`, the grant to add or remove the drawn lines they name.
-    Only a paused subscription's own line edit passes `lines_open`: its lines, taxes and money
-    change as on a draft, since they are what its future bills carry."""
+    draw and Back to memo pass `memo_draw`, the grant to add or remove the drawn lines they name."""
     from celerp.services import auto_je
 
     fields_changed = dict(payload.fields_changed)
@@ -2380,7 +2378,7 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
         await _assert_sales_line_price_permission(session, company_id, settings, role, _incoming_lines, _stored_by_idx)
     if isinstance(memo_draw, MemoDraw):
         _attach_drawn_from(_incoming_lines if isinstance(_incoming_lines, list) else [], memo_draw)
-    is_draft = row.state.get("status") == "draft" or lines_open
+    is_draft = row.state.get("status") == "draft"
     if not is_draft:
         assert_finalized_edit(row.state, fields_changed)
         if "line_items" in fields_changed:

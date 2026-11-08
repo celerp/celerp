@@ -40,7 +40,6 @@ EXPECTED: dict[tuple[str, str], str] = {
     ("POST", "/{entity_id}/history/{doc_id}/withdraw"): BILL,
     ("POST", "/{entity_id}/periods/{k}/send"): EDIT,
     ("PATCH", "/{entity_id}/schedule"): EDIT,
-    ("PATCH", "/{entity_id}/lines"): EDIT,
     ("POST", "/{entity_id}/pause"): EDIT,
     ("POST", "/{entity_id}/resume"): EDIT,
     ("POST", "/{entity_id}/cancel"): EDIT,

@@ -267,12 +267,7 @@ NAMED_DOORS = {
     "subscriptions.err_period_draft": ("reopen", "test_period_billed_once"),
     "subscriptions.err_early_due": ("generate-due", "test_billing_answers"),
     "subscriptions.err_agreement_status_lifecycle": ("status actions", "test_consent_doors"),
-    "subscriptions.err_bill_refused_draft": ("edit lines, activate", "test_bill_refusal_doors"),
-    "subscriptions.err_bill_refused_paused": ("edit lines, resume", "test_bill_refusal_doors"),
-    "subscriptions.err_bill_refused_running": ("pause, edit lines, resume", "test_bill_refusal_doors"),
-    "subscriptions.err_bill_refused_import": ("import as draft, edit lines", "test_bill_refusal_doors"),
-    "subscriptions.err_bill_refused_ended": ("new subscription", "test_bill_refusal_doors"),
-    "subscriptions.err_lines_paused_only": ("pause, edit lines, resume", "test_bill_refusal_doors"),
+    "subscriptions.err_bill_refused": ("cancel, new subscription", "test_bill_refusal_doors"),
 }
 
 

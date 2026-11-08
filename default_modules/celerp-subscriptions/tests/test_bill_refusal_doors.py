@@ -76,6 +76,15 @@ async def _stored(session, client, hd, eid: str, **fields) -> None:
     await session.commit()
 
 
+async def _hand_edited(session, client, hd, eid: str, lines) -> None:
+    """The agreement's lines as a hand edit of the database left them, past every write's checks."""
+    from celerp.models.projections import Projection
+
+    proj = await session.get(Projection, {"company_id": uuid.UUID(await company_id(client, hd)), "entity_id": eid})
+    proj.state = {**proj.state, "line_items": lines}
+    await session.commit()
+
+
 async def _page(ui, eid: str) -> str:
     r = await ui.get(f"/subscriptions/{eid}")
     assert r.status_code == 200, r.text
@@ -199,11 +208,12 @@ async def test_lines_stored_as_anything_but_mappings_bill_nothing_and_are_refuse
     freeze_day(monkeypatch, DAY)
     hd = await register(client)
     eid = await agreement(client, hd, start=DAY)
-    await _stored(session, client, hd, eid, line_items=stored)
+    await _hand_edited(session, client, hd, eid, stored)
     r = await generate_due(client, hd, eid)
     assert _key(r) == REFUSED and _reason(r) == "documents.err_finalize_no_lines", r.text
-    await _stored(session, client, hd, eid, line_items=[{**LINE, "taxes": []}, *(stored if isinstance(stored, list) else [stored])])
-    assert (await generate_due(client, hd, eid)).status_code == 200
+    mixed = await agreement(client, hd, start=DAY)
+    await _hand_edited(session, client, hd, mixed, [{**LINE, "taxes": []}, *(stored if isinstance(stored, list) else [stored])])
+    assert (await generate_due(client, hd, mixed)).status_code == 200
 
 
 async def test_activate_refuses_a_draft_its_bill_refuses(client, owner_ui, monkeypatch):

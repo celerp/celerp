@@ -319,8 +319,7 @@ AGREEMENT_STATUSES = frozenset({"draft", "active", "paused", "cancelled", "void"
 
 async def guard_agreement_status(*, session, entry, transition) -> None:
     """doc_status_guard: no write of a subscription document, by any writer, leaves its terms
-    building no schedule (refuse_unbuildable_terms), and no person's write leaves billable an
-    agreement whose bill would be refused (refuse_bill_refused). The status of an agreement that runs an
+    building no schedule (refuse_unbuildable_terms). The status of an agreement that runs an
     unattended mode, before or after the change, changes only in write_agreement (activate, pause, resume, cancel on its
     own page). Every other writer (void, unvoid, finalize, revert, an import) is refused (409), and so
     is any that would leave an agreement a status outside AGREEMENT_STATUSES. A draft starts only
@@ -334,7 +333,6 @@ async def guard_agreement_status(*, session, entry, transition) -> None:
     if transition.after.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
         return
     refuse_unbuildable_terms(transition.before or {}, transition.after)
-    await refuse_bill_refused(session, transition.before or {}, transition.after, entry)
     if _WRITING.get() == entry.entity_id or (transition.before or {}).get("status") == transition.after.get("status"):
         return
     company = await session.get(Company, entry.company_id)
@@ -348,19 +346,6 @@ async def guard_agreement_status(*, session, entry, transition) -> None:
         raise HTTPException(status_code=409, detail=t("subscriptions.err_agreement_status_lifecycle"))
     await require_mode_permissions(session, entry.company_id, entry.actor_id,
                                    entering_modes(transition.before or {}, transition.after))
-
-
-async def refuse_bill_refused(session, before: dict, after: dict, entry) -> None:
-    """The bill_refusal of an agreement a person's write leaves billable: refused whatever the
-    write is (Activate, Resume, Bill automatically, an import, an unvoid, an edit through
-    Documents or the API), so no person leaves an agreement billing what every bill would refuse.
-    A write nobody made (the upgrade, a restore, the billing pass's own record) keeps what was
-    stored."""
-    if entry.actor_id is None or not billable(after):
-        return
-    if (refused := await bill_refusal(session, entry.company_id, entry.entity_id, after,
-                                      was=before.get("status"))) is not None:
-        raise refused
 
 
 def billable(state: dict) -> bool:
@@ -571,44 +556,52 @@ async def bill_document(session, company: Company, tid: str, state: dict, schedu
     return doc
 
 
-async def bill_refusal(session, company_id, tid: str, state: dict, *, was: str | None = "active") -> HTTPException | None:
-    """Why the agreement's next bill would be refused, or None: the checks Generate due's bill
-    meets on the agreement's own content (its units, then every content refusal finalize raises,
-    refuse_unfinalizable), run on the document it would make, which is not written. The one rule
-    for whether an agreement's content can bill. The refusal (409) gives that reason inside the
-    one for the status the agreement held before (``was``; none for an import), naming the way to
-    fix it that state offers: a draft and a paused agreement take line changes on their page, an
-    import in its file, an active one once paused; any other status takes none, so a new
-    agreement is the way on."""
-    from celerp.accounting_roles import KeyedRefusal
-    from celerp.error_body import as_refusal
-    from celerp_docs.routes import refuse_unfinalizable
+class BillRefused(HTTPException):
+    """A refusal the bill path met (409): the agreement as the subscriptions list names it, the
+    reason inside, then the one way out an agreement whose bill is refused has, since nothing on it
+    changes once activated: cancel it and create a new subscription that bills."""
 
-    company = await session.get(Company, company_id)
-    schedule = Schedule.from_state(state)
-    doc = await bill_document(session, company, tid, state, schedule, 0)
+    def __init__(self, state: dict, tid: str, exc: Exception):
+        from celerp.error_body import as_refusal
+
+        super().__init__(status_code=409, detail=catalog_refusal(
+            "subscriptions.err_bill_refused", ref=template_label(state, tid), reason=as_refusal(exc.detail)))
+
+
+class _Unkept(Exception):
+    """Ends bill_refusal's savepoint after a bill the path accepted, so nothing it wrote is kept."""
+
+
+async def bill_refusal(session, company: Company, tid: str, state: dict, actor) -> BillRefused | None:
+    """Why the agreement's next bill would be refused, or None: the bill path itself (_bill) run
+    on ``state`` for its oldest open period inside a savepoint that is rolled back, so its
+    refusals are the path's own and nothing it wrote is kept. The doors that make an agreement
+    bill (Activate, Resume, Bill automatically) ask it, holding the company lock first. Objects the
+    path changed are read again afterwards, so the caller reads what it held before asking."""
+    k = Schedule.from_state(state).oldest_open(floor=review_floor(state))
+    if k is None:
+        return None
+    refused = None
     try:
-        await require_moving_fits_units(session, company_id, tid, "doc", doc, template=template_label(state, tid))
-        await refuse_unfinalizable(session, company_id, company.settings or {}, doc)
-    except (HTTPException, KeyedRefusal) as exc:
-        why = {"ref": state.get("ref_id") or tid, "reason": as_refusal(exc.detail)}
-        if was == "active":
-            return HTTPException(status_code=409, detail=catalog_refusal("subscriptions.err_bill_refused_running", **why))
-        if was == "paused":
-            return HTTPException(status_code=409, detail=catalog_refusal("subscriptions.err_bill_refused_paused", **why))
-        if was == "draft":
-            return HTTPException(status_code=409, detail=catalog_refusal("subscriptions.err_bill_refused_draft", **why))
-        if was is None:
-            return HTTPException(status_code=409, detail=catalog_refusal("subscriptions.err_bill_refused_import", **why))
-        return HTTPException(status_code=409, detail=catalog_refusal("subscriptions.err_bill_refused_ended", **why))
-    return None
+        async with savepoint(session):
+            await _bill(session, company, company.id, tid, state, Schedule.from_state(state), k, actor,
+                        auto=False, send=False)
+            raise _Unkept
+    except _Unkept:
+        pass
+    except BillRefused as exc:
+        refused = exc
+    await session.refresh(company)
+    return refused
 
 
 async def _bill(session, company, company_id, tid: str, state: dict, schedule: Schedule, k: int, actor,
                 *, auto: bool, send: bool, request: dict | None = None, key: str | None = None) -> str:
     """Create, finalize and claim period ``k``'s document. Caller holds the locks and commits.
-    A billing ``request`` under its idempotency ``key`` keeps its answer on the claim's own
-    event, for replay_result to repeat."""
+    Every refusal on the way to the finalized document (its units, its content, finalize's own
+    checks) is a BillRefused. A billing ``request`` under its idempotency ``key`` keeps its
+    answer on the claim's own event, for replay_result to repeat."""
+    from celerp.accounting_roles import KeyedRefusal
     from celerp_docs.routes import finalize_document
     from celerp_docs.sequences import next_draft_ref
 
@@ -618,20 +611,22 @@ async def _bill(session, company, company_id, tid: str, state: dict, schedule: S
     claim_key = f"sub:{tid}:p{k}:{kind}:r{release}"
     if (earlier := await find_event_by_idempotency(session, company_id, claim_key)) is not None:
         return earlier.entity_id
-    # The template may predate a precision change or a tax change; its content is checked first.
-    if (refused := await bill_refusal(session, company_id, tid, state)) is not None:
-        raise refused
-    ref = next_draft_ref(company, kind)
-    doc_id = f"doc:{ref}"
-    doc = {**await bill_document(session, company, tid, state, schedule, k), "ref_id": ref}
-    doc.update(resolve_document_terms(state, company.settings or {}, kind))
-    if "customer_note" in state:
-        doc["customer_note"] = state.get("customer_note") or ""
-    await emit_event(session, company_id=company_id, entity_id=doc_id, entity_type="doc", event_type="doc.created",
-                     data=doc, actor_id=actor.id, location_id=None, source="subscription", idempotency_key=claim_key)
-    await session.flush()
-    await finalize_document(doc_id, company_id, actor, session, commit=False)
-    await session.flush()
+    try:
+        doc = await bill_document(session, company, tid, state, schedule, k)
+        # The template may predate a precision change; its units are checked on the bill it makes.
+        await require_moving_fits_units(session, company_id, tid, "doc", doc, template=template_label(state, tid))
+        ref = next_draft_ref(company, kind)
+        doc_id = f"doc:{ref}"
+        doc = {**doc, "ref_id": ref, **resolve_document_terms(state, company.settings or {}, kind)}
+        if "customer_note" in state:
+            doc["customer_note"] = state.get("customer_note") or ""
+        await emit_event(session, company_id=company_id, entity_id=doc_id, entity_type="doc", event_type="doc.created",
+                         data=doc, actor_id=actor.id, location_id=None, source="subscription", idempotency_key=claim_key)
+        await session.flush()
+        await finalize_document(doc_id, company_id, actor, session, commit=False)
+        await session.flush()
+    except (HTTPException, KeyedRefusal) as exc:
+        raise BillRefused(state, tid, exc) from exc
     periods = periods_of(state)
     periods[str(k)] = {"state": BILLED, "doc_id": doc_id, "release_count": release, "at": now_stamp(),
                        "by": str(actor.id) if actor.id else None, "auto": auto}

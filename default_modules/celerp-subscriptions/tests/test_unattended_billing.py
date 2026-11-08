@@ -83,7 +83,7 @@ async def _untaxed(client, session, hd, **fields) -> str:
 
 def _cant_bill(ref: str, lang: str = "en") -> str:
     """The refusal every bill of an _untaxed agreement meets, its line's reason inside."""
-    return t("subscriptions.err_bill_refused_running", lang, ref=ref,
+    return t("subscriptions.err_bill_refused", lang, ref=ref,
              reason=t("documents.err_line_tax_unset", lang, line=1))
 
 
@@ -983,7 +983,7 @@ async def test_a_bill_refused_in_the_readers_language_keeps_that_refusal_as_its_
     assert await billed_docs(session, eid) == []
     refused = (await client.post(f"/subscriptions/{eid}/generate-due", headers=hd,
                                  json={"request_key": "why"})).json()["detail"]
-    assert isinstance(refused, dict) and refused["message_key"] == "subscriptions.err_bill_refused_running"
+    assert isinstance(refused, dict) and refused["message_key"] == "subscriptions.err_bill_refused"
     assert refused["params"]["reason"]["message_key"] == "documents.err_line_tax_unset"
     ref = (await template(client, hd, eid))["ref_id"]
     assert [(r["kind"], r["message"]) for r in (await summary(client, hd))["rows"]] == [
@@ -1074,18 +1074,20 @@ async def test_a_documents_void_leaves_the_failure_to_the_next_pass(client, sess
     assert "billing_failure" not in await template(client, hd, eid)
 
 
-async def test_skipping_a_failed_period_is_refused_naming_pause_and_the_failure_stays(client, session, monkeypatch):
-    """Skip leaves the agreement billing what its next bill would refuse too, so it is refused
-    with the refusal naming Pause, the way to fix its lines, and the failure row stays."""
+async def test_skipping_a_failed_period_is_accepted_and_the_next_bill_names_cancel_and_new(client, session, monkeypatch):
+    """Skip is not a door that makes an agreement bill, so it never asks the bill path: it is
+    accepted, and the next bill is refused naming cancel and a new subscription (the way out)."""
     _on(monkeypatch, "2026-07-01")
     hd = await register(client)
     cid = await company_id(client, hd)
-    eid = await _untaxed(client, session, hd, start="2026-07-01", frequency="annually")
+    eid = await _untaxed(client, session, hd, start="2026-07-01", frequency="weekly")
     await tick(session, cid, "2026-07-01")
     r = await client.post(f"/subscriptions/{eid}/periods/0/skip", headers=hd, json={"reason": "x"})
+    assert r.status_code == 200, r.text
+    _on(monkeypatch, "2026-07-08")
+    r = await client.post(f"/subscriptions/{eid}/generate-due", headers=hd, json={"request_key": "after-skip"})
     ref = (await template(client, hd, eid))["ref_id"]
     assert r.status_code == 409 and r.json()["detail"]["message"] == _cant_bill(ref), r.text
-    assert len(_failed(await summary(client, hd))) == 1 and "billing_failure" in await template(client, hd, eid)
 
 
 async def test_a_failure_on_the_first_of_several_due_periods_holds_from_pass_to_pass(client, session, monkeypatch):
@@ -1195,7 +1197,7 @@ async def test_every_savepoint_the_module_opens_holds_its_rows():
     opened = savepoints()
     assert [s for s in opened if s[2] == "begin_nested"] == [("billing.py", "savepoint", "begin_nested")]
     assert {(f, fn) for f, fn, how in opened if how == "savepoint"} >= {
-        ("billing.py", "run_due"), ("routes.py", "catch_up_run")}
+        ("billing.py", "run_due"), ("billing.py", "bill_refusal"), ("routes.py", "catch_up_run")}
 
 
 

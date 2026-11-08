@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import date
-from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
@@ -19,12 +18,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.models.projections import Projection
-from celerp.services.auth import get_current_company_id, get_current_role, get_current_user
+from celerp.services.auth import get_current_company_id, get_current_user
 from celerp.services.business_time import company_today
 from celerp.services.company_lock import locked_company
-from celerp.services.permissions import get_current_company_settings, require_permission
+from celerp.services.permissions import require_permission
 from celerp_docs.doc_constants import NO_SEND_DOC_TYPES
-from celerp_docs.routes import DocPatch, write_doc_patch
 from celerp_subscriptions import billing, migration, summary
 from celerp_subscriptions.periods import (
     AUTO_MODES, BILLED, CLAIMED_STATES, RELEASED, SKIPPED, Schedule, ScheduleError, UNRESOLVED, shown,
@@ -35,26 +33,6 @@ from ui.i18n import t
 BATCH_CAP = 50
 # Schedule terms that place the periods: fixed once any period is claimed.
 PLACING_FIELDS = ("anchor_date", "frequency", "custom_interval_days", "billing_timing")
-# What a paused agreement's own line edit changes: what its future bills carry.
-LINE_FIELDS = frozenset({"line_items", "discount", "discount_type", "doc_taxes"})
-
-
-def _unreadable_line_field(fields_changed: dict) -> str | None:
-    """The field of a paused agreement's line edit its bills cannot be computed from, or None:
-    lines that are not a list of lines, or a discount that is not a finite number."""
-    new = {f: (c or {}).get("new") for f, c in fields_changed.items()}
-    lines = new.get("line_items", [])
-    if not (isinstance(lines, list) and all(isinstance(li, dict) for li in lines)):
-        return "line_items"
-    if "discount" not in new:
-        return None
-    try:
-        readable = Decimal(str(new["discount"])).is_finite()
-    except InvalidOperation:
-        readable = False
-    return None if readable else "discount"
-
-
 # What a template not yet on a schedule may change: the terms that let it move onto one.
 _MOVING_FIELDS = {"frequency", "custom_interval_days"}
 
@@ -521,10 +499,11 @@ def _build_router() -> APIRouter:
     ) -> dict:
         """Change the agreement's schedule terms and unattended modes. Bringing a mode into
         force, or changing the terms of one that runs, asks for its consent where every
-        agreement write does (billing.write_agreement)."""
+        agreement write does (billing.write_agreement). Choosing automatic billing asks the bill
+        path first (billing.bill_refusal)."""
         sent = body.model_dump(include=body.model_fields_set)
         changes = {f: (v.isoformat() if isinstance(v, date) else v) for f, v in sent.items()}
-        await locked_company(session, company_id)
+        company = await locked_company(session, company_id)
         proj = await billing.locked_agreement(session, company_id, entity_id, scheduled=False)
         if migration.is_legacy(proj.state):
             return await _move_with(session, company_id, proj, sent, user)
@@ -573,6 +552,9 @@ def _build_router() -> APIRouter:
             previous = Schedule.from_state(state)
             if any(schedule.service_end(k) != previous.service_end(k) for k in claimed):
                 raise HTTPException(status_code=409, detail=t("subscriptions.err_term_cuts_claimed"))
+        if "generation" in billing.entering_modes(state, merged) and (
+                refused := await billing.bill_refusal(session, company, entity_id, merged, user)) is not None:
+            raise refused
         await _write(session, company_id, entity_id, changes, user)
         return {"ok": True, "next_bill_date": next_bill_date(merged), "sending_off": sending_off}
 
@@ -709,7 +691,9 @@ def _build_router() -> APIRouter:
         them, and the answer says what now runs. Periods missed while paused stay due: none is skipped, unless the
         template was paused on an earlier release, which restarted it from the resume day. Then
         every open period that started on or before today is skipped with that reason (each
-        can be un-skipped), once."""
+        can be un-skipped), once. An agreement whose next bill the bill path refuses stays paused
+        (billing.bill_refusal)."""
+        company = await locked_company(session, company_id)
         proj = await billing.locked_agreement(session, company_id, entity_id)
         state = proj.state
         if state.get("status") != "paused":
@@ -729,38 +713,12 @@ def _build_router() -> APIRouter:
                     skipped.append(billing.period_row(schedule, k))
                 k += 1
             changes["periods"] = periods
+        if (refused := await billing.bill_refusal(session, company, entity_id, {**state, **changes}, user)) is not None:
+            raise refused
         await _write(session, company_id, entity_id, changes, user,
                      drop=("resume_restarts",) if "resume_restarts" in state else ())
         return {"ok": True, "next_bill_date": next_bill_date({**state, **changes}), "skipped": skipped,
                 **await summary.modes_answer(session, company_id, entity_id)}
-
-    @router.patch("/{entity_id}/lines")
-    async def patch_subscription_lines(
-        entity_id: str,
-        payload: DocPatch,
-        company_id: uuid.UUID = Depends(get_current_company_id),
-        _: None = require_permission("edit_documents"),
-        role: str = Depends(get_current_role),
-        settings: dict = Depends(get_current_company_settings),
-        user=Depends(get_current_user),
-        session: AsyncSession = Depends(get_session),
-    ) -> dict:
-        """Change a paused agreement's lines, discount and document taxes, as a draft's change
-        through Documents: what its bills carry once resumed (Resume asks that they bill,
-        billing.refuse_bill_refused). Documents it billed are records of their own and keep what
-        they hold. Only while paused, so no bill is made from a change half done; a draft takes
-        its lines through Documents."""
-        proj = await billing.locked_agreement(session, company_id, entity_id, scheduled=False)
-        if proj.state.get("status") != "paused":
-            raise HTTPException(status_code=409, detail=t(
-                "subscriptions.err_lines_paused_only", ref=proj.state.get("ref_id") or entity_id))
-        if other := sorted(set(payload.fields_changed) - LINE_FIELDS):
-            raise HTTPException(status_code=422, detail=t("subscriptions.err_lines_fields", fields=", ".join(other)))
-        if field := _unreadable_line_field(payload.fields_changed):
-            raise HTTPException(status_code=422, detail=t("subscriptions.err_lines_unreadable", field=field))
-        result = await write_doc_patch(session, company_id, role, settings, user, entity_id, payload, lines_open=True)
-        await session.commit()
-        return result
 
     @router.post("/{entity_id}/cancel")
     async def cancel_subscription(
@@ -789,15 +747,17 @@ def _build_router() -> APIRouter:
         automatic terms keep the consent of whoever set them, and the answer says what now runs.
         Activate gives the draft its schedule, so it asks only that the agreement is not a
         template still waiting to move onto one; whoever presses it needs the permissions of any
-        mode it brings into force (billing.write_agreement). A draft whose bill would be refused (no
-        lines, a line with no tax chosen) is refused, naming the reason and its fix on its page
-        (billing.refuse_bill_refused)."""
+        mode it brings into force (billing.write_agreement). A draft whose first bill the bill path
+        refuses stays a draft (billing.bill_refusal)."""
+        company = await locked_company(session, company_id)
         proj = await billing.locked_agreement(session, company_id, entity_id, scheduled=False)
         billing.refuse_not_moved(proj.state, entity_id)
         if proj.state.get("status") != "draft":
             raise HTTPException(status_code=409, detail=t("subscriptions.err_activate_not_draft"))
         changes = {"status": "active", **await _first_schedule(session, company_id, proj.state)}
         merged = {**proj.state, **changes}
+        if (refused := await billing.bill_refusal(session, company, entity_id, merged, user)) is not None:
+            raise refused
         await _write(session, company_id, entity_id, changes, user)
         return {"ok": True, "next_bill_date": next_bill_date(merged),
                 **await summary.modes_answer(session, company_id, entity_id)}
