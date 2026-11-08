@@ -348,7 +348,7 @@ def ack_doors() -> list[tuple[str, str, str]]:
     return rows
 
 
-FAILURE = "billing_failure"
+FAILURE, READER = "billing_failure", "failure_of"
 TO_CHECK = "NEEDS_YOU"
 
 
@@ -371,9 +371,11 @@ def _uses(name: str, match) -> list[tuple[str, str, ast.AST, dict]]:
 def failure_uses() -> list[tuple[str, str, str]]:
     """(where, function, writes|drops|reads) of every use of the agreement's billing failure in
     the module and its UI: a dict display keyed by it writes it, a drop of it (the ``drop``
-    argument, or a tuple bound to ``drop``) drops it, anything else reads it."""
+    argument, or a tuple bound to ``drop``) drops it, anything else (a call of its reader
+    ``failure_of`` included) reads it."""
     rows = []
-    for where, fn, node, parents in _uses(FAILURE, lambda n: isinstance(n, ast.Constant) and n.value == FAILURE):
+    for where, fn, node, parents in _uses(FAILURE, lambda n: isinstance(n, ast.Constant) and n.value == FAILURE
+                                          or isinstance(n, ast.Call) and ast.unparse(n.func).endswith(READER)):
         up = parents.get(node)
         if isinstance(up, ast.Dict) and node in up.keys:
             how = "writes"

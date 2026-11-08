@@ -164,7 +164,7 @@ async def _rows(session: AsyncSession, company_id, settings: dict) -> list[dict]
                               "again": billing.sends_again(status, send, replayable),
                               "retry_url": (f"/subscriptions/{row.entity_id}/periods/{k}/send"
                                             if status != "sent" else None)})
-        if failure := state.get("billing_failure"):
+        if failure := billing.failure_of(state):
             found.append({"entity_id": row.entity_id, "doc_id": row.entity_id,
                           "period_index": failure.get("period_index"), "kind": "generation_failed",
                           "at": failure.get("at"), "reason": failure.get("reason"), "lasts": True})

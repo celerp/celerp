@@ -366,11 +366,18 @@ ENDED = {"cancelled": "subscriptions.err_ended_cancelled", "void": "subscription
 ENDED_PLACE = {"cancelled": "subscriptions.err_ended_place_cancelled", "void": "subscriptions.err_ended_place_void"}
 
 
+def failure_of(state: dict) -> dict:
+    """The agreement's billing failure as run_due writes it: a mapping of its period_index, at and
+    reason. A stored value that is not a mapping holds nothing to read; the next pass drops it."""
+    failure = state.get("billing_failure")
+    return failure if isinstance(failure, dict) else {}
+
+
 def ends_failure(before: dict, changes: dict) -> bool:
     """Whether a change ends the agreement's billing failure: its period is billed or skipped,
     or the agreement is cancelled or voided. run_due writes the failure and drops one that no
     longer holds; this is the only other way it ends."""
-    failure = before.get("billing_failure") or {}
+    failure = failure_of(before)
     if not failure:
         return False
     entry = (changes.get("periods") or {}).get(str(failure.get("period_index")))
@@ -965,7 +972,7 @@ def failure_reason(exc: Exception) -> dict:
 def still_failing(state: dict, found: tuple[Schedule, list[int]] | None) -> bool:
     """Whether the agreement's billing failure still holds: its period is the one the agreement
     would bill on its own next (``found``, unattended_due as stored)."""
-    return found is not None and found[1][0] == (state.get("billing_failure") or {}).get("period_index")
+    return found is not None and found[1][0] == failure_of(state).get("period_index")
 
 
 async def _drop_failure(session: AsyncSession, company_id, entity_id: str, today: date) -> None:
@@ -1028,7 +1035,7 @@ async def run_due(*, session: AsyncSession, company_id, today: date, budget: int
                 if failed_period is not None:
                     try:
                         proj = await locked_agreement(session, company_id, row.entity_id)
-                        prior = proj.state.get("billing_failure") or {}
+                        prior = failure_of(proj.state)
                         why = failure_reason(exc)
                         if (prior.get("period_index"), prior.get("reason")) != (failed_period, why.get("reason")):
                             await write_agreement(session, company_id, row.entity_id, {

@@ -1130,6 +1130,35 @@ async def test_every_savepoint_the_module_opens_holds_its_rows():
 
 
 
+@pytest.mark.parametrize("damaged", ["x", 5, ["a"], True])
+async def test_a_stored_failure_that_is_not_a_mapping_keeps_the_summary_answering(client, session, monkeypatch, damaged):
+    """A billing failure stored as something other than run_due's mapping holds nothing to read:
+    the summary answers without a row for it, a cancel goes through, and the next pass drops it."""
+    from sqlalchemy import update
+
+    from celerp.models.projections import Projection
+    from celerp_subscriptions import billing
+
+    freeze_day(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    eid = await _auto(client, hd, start="2026-07-01", frequency="annually")
+    kept = await _auto(client, hd, start="2026-07-01", frequency="annually")
+    await tick(session, cid, "2026-07-01")
+    for target in (eid, kept):
+        row = next(r for r in await billing.agreements(session, cid) if r.entity_id == target)
+        await session.execute(update(Projection).where(Projection.entity_id == target).values(
+            state={**row.state, "billing_failure": damaged}))
+    await session.commit()
+    r = await client.get("/subscriptions/summary", headers=hd)
+    assert r.status_code == 200, r.text
+    assert _failed(r.json()) == []
+    assert (await client.post(f"/subscriptions/{eid}/cancel", headers=hd)).status_code == 200
+    freeze_day(monkeypatch, "2026-07-02")
+    await tick(session, cid, "2026-07-02")
+    assert "billing_failure" not in await template(client, hd, kept)
+
+
 @pytest.mark.parametrize("at", ["0001-01-01T00:00:00+05:00", "9999-12-31T23:59:59-05:00"])
 async def test_a_stored_time_at_the_edge_of_the_calendar_keeps_the_summary_answering(client, session, monkeypatch, at):
     """A send record and a failed bill whose stored time cannot be given in UTC read as a time
