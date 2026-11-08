@@ -524,23 +524,34 @@ function runMigrations(dbUrl) {
 
 /**
  * Whether this copy may open the database (see compatibility.js). On a refusal the
- * user has been told why; the bundled database is stopped and the app quits.
+ * bundled database is stopped and the user is told why: data a newer Celerp opened
+ * gets the refusal screen, which updates Celerp in place; an unreadable version
+ * record gets its dialog and the app quits.
  */
 async function mayOpenDatabase(dbUrl) {
-  const allowed = mayOpenData({
+  return mayOpenData({
     check: () => childProcess.spawnSync(pythonBin(), compatibilityArgs(dbUrl), {
       cwd: APP_DIR,
       env: databaseCommandEnv(dbUrl),
       encoding: "utf8",
     }),
+    t: translator(path.join(APP_DIR, "ui", "locales"), app.getLocale()),
+    stop: () => lifecycle.shutdown(),
+    offerUpdate: showRefusalScreen,
     dialog,
     shell,
+    quit: () => app.exit(0),
   });
-  if (!allowed) {
-    await lifecycle.shutdown();
-    app.exit(0);
-  }
-  return allowed;
+}
+
+// The refusal screen (assets/refusal.js) in the window, with the updater ready for
+// the user's Update Celerp. Nothing checks by itself: the user decides.
+async function showRefusalScreen(view) {
+  configureAutoUpdater();
+  if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+  await mainWindow.loadFile(path.join(__dirname, "assets", "loading.html"));
+  await mainWindow.webContents.executeJavaScript(`window.showRefusal(${JSON.stringify(view)})`);
+  mainWindow.show();
 }
 
 /**
@@ -987,8 +998,12 @@ async function showUpdateFailure(state) {
   }
 }
 
-function setupAutoUpdater() {
-  if (!app.isPackaged) return;
+// The updater's settings and error handling, once: the refusal screen needs them
+// without the checks setupAutoUpdater schedules.
+let updaterConfigured = false;
+function configureAutoUpdater() {
+  if (!app.isPackaged || updaterConfigured) return;
+  updaterConfigured = true;
 
   autoUpdater.autoDownload = true;
   // Setup reopens Celerp when it is done (quitAndInstall runs it with --force-run).
@@ -1015,6 +1030,11 @@ function setupAutoUpdater() {
       });
     }
   });
+}
+
+function setupAutoUpdater() {
+  if (!app.isPackaged) return;
+  configureAutoUpdater();
 
   // After a failed install the user decides when to check again, from the update card.
   // An update that stopped is also told in a dialog: the user asked for it and saw
@@ -1402,6 +1422,9 @@ ipcMain.on("install-update", async () => {
 // reuses the boot-bound dbUrl and would not apply it.
 ipcMain.on("restart-app", () => fullRelaunch(app, process.argv));
 
+// quit-app: the refusal screen's Quit. Closing the window would only hide it on macOS.
+ipcMain.on("quit-app", () => app.quit());
+
 // get-version: renderer fetches the current app version
 ipcMain.handle("get-version", () => app.getVersion());
 
@@ -1666,8 +1689,8 @@ app.whenReady().then(async () => {
         // A restart can follow a backup restore that replaced the database wholesale
         // (possibly with an older schema). Check and reconcile it before the servers
         // come back, exactly like a cold boot; skipping this leaves the code querying
-        // columns the restored schema does not have. A refusal has already quit;
-        // returning it keeps the UI from starting.
+        // columns the restored schema does not have. A refusal has already stopped
+        // the servers and told the user; returning it keeps the UI from starting.
         return reopenData({
           mayOpenData: () => mayOpenDatabase(url),
           runMigrations: () => runMigrations(url),

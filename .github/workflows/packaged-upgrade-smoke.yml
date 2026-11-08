@@ -265,7 +265,8 @@ jobs:
 
       # The in-app update as a user runs it: the previous release installed and running,
       # an update from a local feed, and Restart to install. Each check starts from a
-      # fresh install of the previous release.
+      # fresh install of the previous release on fresh data. The last check starts
+      # Celerp on data a newer Celerp has opened and updates it from the refusal screen.
       - name: In-app update from a running Celerp (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -332,25 +333,47 @@ jobs:
           "@
           $server = Start-Process python -ArgumentList "-m", "http.server", "8765", "--bind", "127.0.0.1", "--directory", $feed -PassThru -WindowStyle Hidden
 
-          # The previous release, fresh, pointed at the feed and started.
-          function StartPrevious {
-            Get-Process Celerp -ErrorAction SilentlyContinue | Stop-Process -Force
+          # No Celerp installed and no data: every process from the install folder (the app,
+          # its servers and its database) stopped, the app uninstalled, and its data folder
+          # removed on purpose. The step before and each check leave data the candidate has
+          # opened, which an older copy refuses to open; the checks of the previous release
+          # need it to start on fresh data. The runner's account name is plain ASCII, so the
+          # database lives in this folder, not in a private folder under ProgramData.
+          function RemoveCelerp {
             if (Entry) {
+              $dir = InstallDir
+              Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like "$dir\*" } |
+                ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
               $u = (Get-ItemProperty (Entry).PSPath).UninstallString
               $null = $u -match '^"([^"]+)"'
               (Start-Process -FilePath $Matches[1] -ArgumentList "/S", "/currentuser" -Wait -PassThru).ExitCode | Out-Null
-              WaitFor "uninstall of the candidate" 120 { -not (Entry) }
+              WaitFor "uninstall of Celerp" 120 { -not (Entry) }
             }
-            $code = (Start-Process -FilePath $previous -ArgumentList "/S", "/currentuser" -Wait -PassThru).ExitCode
-            if ($code -ne 0) { Fail "previous release install exited $code" }
-            $script:old = Installed
+            Remove-Item "$env:APPDATA\Celerp\celerp-data" -Recurse -Force -ErrorAction SilentlyContinue
+            if (Test-Path "$env:APPDATA\Celerp\celerp-data") { Fail "the data folder of the last check could not be removed" }
+          }
+          # Installs $setup fresh and points it at the feed.
+          function InstallFresh([string]$setup) {
+            RemoveCelerp
+            $code = (Start-Process -FilePath $setup -ArgumentList "/S", "/currentuser" -Wait -PassThru).ExitCode
+            if ($code -ne 0) { Fail "$setup install exited $code" }
             Set-Content -Encoding Ascii (Join-Path (InstallDir) "resources\app-update.yml") @"
           provider: generic
           url: http://127.0.0.1:8765/
           updaterCacheDirName: celerp-updater
           "@
-            Remove-Item "$logs\install.log", "$logs\update.log" -ErrorAction SilentlyContinue
-            Start-Process (Join-Path (InstallDir) "Celerp.exe") -ArgumentList "--remote-debugging-port=9223"
+          }
+          function StartCelerp { Start-Process (Join-Path (InstallDir) "Celerp.exe") -ArgumentList "--remote-debugging-port=9223" }
+          # Closed as a user closes it, so its database stops before the next start.
+          function CloseCelerp {
+            Get-Process Celerp | Where-Object MainWindowHandle -ne 0 | ForEach-Object { $null = $_.CloseMainWindow() }
+            WaitFor "Celerp to close" 120 { -not (Get-Process Celerp -ErrorAction SilentlyContinue) }
+          }
+          # The previous release, fresh, pointed at the feed and started.
+          function StartPrevious {
+            InstallFresh $previous
+            $script:old = Installed
+            StartCelerp
           }
           # Restart to install, once the running previous release has downloaded the update.
           function RestartToInstall {
@@ -428,12 +451,60 @@ jobs:
           # read over CDP.
           $reopened = (Running) | Where-Object { $_.CommandLine -match "--update-install-failed=" } | Select-Object -First 1
           $reopenedArgs = $reopened.CommandLine -replace '^("[^"]*"|\S+)\s*', ''
-          # Closed as a user closes it, so its database stops before the second start.
-          Get-Process Celerp | Where-Object MainWindowHandle -ne 0 | ForEach-Object { $null = $_.CloseMainWindow() }
-          WaitFor "the reopened Celerp to close" 120 { -not (Get-Process Celerp -ErrorAction SilentlyContinue) }
+          CloseCelerp
           Start-Process (Join-Path (InstallDir) "Celerp.exe") -ArgumentList "$reopenedArgs --remote-debugging-port=9223"
           python scripts/ci_update_drive.py card 9223 180 $failedText
           if ($LASTEXITCODE -ne 0) { Fail "the update card of the reopened $old does not say '$failedText'" }
           Stop-Process $holder -Force
           Write-Host "check_update_with_held_file_reopens_old_version: Cancel kept $old, which reopened and says '$failedText'"
+
+          # check_update_from_newer_data
+          # A released Celerp cannot have the refusal screen this build adds, and no newer
+          # release exists yet. So the candidate itself plays both copies, with the same
+          # binaries that ship: it first opens fresh data with its package version raised
+          # (the version Celerp records in the data), then starts with its own version on
+          # that data, is refused, and updates from the refusal screen. A second build with
+          # a lower version would double the Windows build and test a binary that never ships.
+          if ($new -notmatch '^(\d+)\.(\d+)\.(\d+)') { Fail "candidate version $new is not major.minor.patch" }
+          $newer = "$($Matches[1]).$($Matches[2]).$([int]$Matches[3] + 1)"
+          InstallFresh $candidate
+          $meta = Get-ChildItem (Join-Path (InstallDir) "resources") -Recurse -Filter METADATA |
+            Where-Object { $_.Directory.Name -like "celerp-*.dist-info" } | Select-Object -First 1
+          if (-not $meta) { Fail "the candidate has no celerp package metadata" }
+          $metadata = [IO.File]::ReadAllText($meta.FullName)
+          [IO.File]::WriteAllText($meta.FullName, ($metadata -replace "(?m)^Version: .*$", "Version: $newer"))
+          StartCelerp
+          python scripts/ci_update_drive.py sign-in 9223 300
+          if ($LASTEXITCODE -ne 0) { Fail "the candidate as $newer did not open fresh data" }
+          CloseCelerp
+          [IO.File]::WriteAllText($meta.FullName, $metadata)
+          (Get-Content "$feed\latest.yml") -replace "^version: .*$", "version: $newer" | Set-Content -Encoding Ascii "$feed\latest.yml"
+          Remove-Item "$logs\install.log", "$logs\update.log" -ErrorAction SilentlyContinue
+          StartCelerp
+          python scripts/ci_update_drive.py refusal 9223 600
+          if ($LASTEXITCODE -ne 0) { Fail "the candidate on data $newer opened did not update from its refusal screen" }
+          WaitFor "setup window" 180 { SetupWindow }
+          ExpectNewRunning
+          Write-Host "check_update_from_newer_data: $new on data $newer opened offered Update Celerp, downloaded and ran setup"
           Stop-Process $server -Force
+
+      # A failed update check leaves Celerp's logs and the screen as it was, to read.
+      - name: Logs and screen of a failed update check (Windows)
+        if: failure() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $out = "$env:RUNNER_TEMP\failure"
+          New-Item -ItemType Directory -Force $out | Out-Null
+          Copy-Item "$env:APPDATA\Celerp\celerp-data\logs" "$out\logs" -Recurse -ErrorAction SilentlyContinue
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $bounds = [Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $shot = [Drawing.Bitmap]::new($bounds.Width, $bounds.Height)
+          [Drawing.Graphics]::FromImage($shot).CopyFromScreen($bounds.Location, [Drawing.Point]::Empty, $bounds.Size)
+          $shot.Save("$out\screen.png", [Drawing.Imaging.ImageFormat]::Png)
+      - name: Upload the logs and screen of a failed update check (Windows)
+        if: failure() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: upgrade-smoke-windows-failure
+          path: ${{ runner.temp }}/failure
+          if-no-files-found: ignore

@@ -56,6 +56,7 @@ test("every updater callback receives the state from its own channel, and the ac
     invoked.length = 0;
     api.checkForUpdates();
     api.installUpdate();
+    api.quit();
     expect(invoked).toEqual(["check-for-updates"]);
-    expect(sent).toEqual(["install-update"]);
+    expect(sent).toEqual(["install-update", "quit-app"]);
   });

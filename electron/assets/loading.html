@@ -35,6 +35,30 @@
     animation: spin 0.8s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
+  .loading, .refusal {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 24px;
+  }
+  [hidden] { display: none !important; }
+  .refusal { max-width: 32rem; padding: 0 24px; text-align: center; gap: 16px; -webkit-app-region: no-drag; user-select: text; }
+  .refusal p { line-height: 1.5; }
+  .refusal .detail { color: #9ca3af; }
+  .actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin-top: 8px; }
+  .actions button, .actions a {
+    font: inherit;
+    font-size: 0.9rem;
+    padding: 8px 16px;
+    border-radius: 6px;
+    border: 1px solid #374151;
+    background: transparent;
+    color: #f9fafb;
+    text-decoration: none;
+    cursor: pointer;
+  }
+  .actions button.primary { background: #6366f1; border-color: #6366f1; }
+  .actions button:disabled { opacity: 0.6; cursor: default; }
   .status {
     font-size: 0.85rem;
     color: #9ca3af;
@@ -45,11 +69,19 @@
 </head>
 <body>
   <div class="logo">Celer<span>p</span></div>
-  <div class="spinner"></div>
+  <div class="loading" id="loading"><div class="spinner"></div></div>
+  <div class="refusal" id="refusal" hidden>
+    <p id="refusal-message"></p>
+    <p class="detail" id="refusal-detail"></p>
+    <div class="actions">
+      <button type="button" class="primary" id="refusal-update"></button>
+      <a id="refusal-download"></a>
+      <button type="button" id="refusal-quit"></button>
+    </div>
+  </div>
   <div class="status" id="status">Starting…</div>
+  <script src="refusal.js"></script>
   <script>
-    // Listen for status updates from main process via localStorage polling
-    // (simple cross-context comms without needing a preload on this page)
     function setStatus(msg) {
       var el = document.getElementById('status');
       if (el) el.textContent = msg;
