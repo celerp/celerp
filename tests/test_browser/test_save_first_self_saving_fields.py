@@ -160,6 +160,12 @@ def test_a_quantity_the_user_blanks_is_saved_first_and_refused(page, ui_server, 
     answer_confirms(page)
     page.goto(f"{ui_server}{path}", wait_until="load")
     page.locator('#line-body input[data-name="quantity"]').first.fill("")
-    assert _sent(page, path, lambda: _delete(page)) == []
+    sent: list = []
+    page.on("request", lambda q: q.method != "GET" and path in q.url and sent.append(q.url))
+    _delete(page)
+    # The refusal is said where the user is looking, in the words shown beside the lines.
+    page.locator(".toast__msg", has_text="Enter a number").first.wait_for(timeout=8000)
+    assert page.locator(".toast__msg").all_inner_texts() == ["Enter a number"]
     assert page.locator("#save-status").inner_text() == "\u2717 Enter a number"
+    assert sent == []
     assert api.get(path).json()["status"] == "draft"

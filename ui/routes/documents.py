@@ -10142,7 +10142,8 @@ function _celerpPersist() {{
 /* Save first: every htmx request that changes something (any verb but GET), whichever control on
    the page sends it, waits for the page's pending line edits to save, so it runs on the lines the
    page shows and a reload it answers with drops nothing typed. A blur's save still waiting folds
-   into this one; a failed save has shown its own reason and the request is not sent. Once saved,
+   into this one; a failed save is not followed by the request, and its reason beside the lines is
+   also said in a toast, since the control clicked may be far from them. Once saved,
    the request meets its own confirmation, as it would have. Capture phase, so it runs before any
    confirmation listener. The line save itself is a fetch, not an htmx request. A request that
    pinned the version before the save is pinned to the one the save produced: this tab's own save
@@ -10157,7 +10158,12 @@ if (!window._celerpSaveFirstBound) {{
         clearTimeout(_celerpSaveTimer);
         _celerpSaveTimer = null;
         _celerpPersist().then(function(ok) {{
-            if (!ok) return;
+            if (!ok) {{
+                const said = document.getElementById('save-status')?.firstChild;
+                if (said && said.nodeType === Node.TEXT_NODE && said.textContent && window.celerpToast)
+                    celerpToast(said.textContent.replace(/^\u2717 /, ''), 'error');
+                return;
+            }}
             const pinned = d.etc && d.etc.values;
             if (pinned && 'expected_version' in pinned) pinned.expected_version = window._celerpEntityVersion;
             d.celerpSaved = true;
