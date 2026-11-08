@@ -200,9 +200,10 @@ async def test_one_agreement_without_a_schedule_never_breaks_the_company(client,
     await migration.reconcile_restored_company_schedules(session=session, company_id=uuid.UUID(cid))
 
 
-async def test_a_let_go_bill_of_an_agreement_without_a_schedule_is_refused_by_name(client, session, monkeypatch):
-    """Unvoid of a bill a period let go, once its agreement's stored terms build no schedule:
-    refused naming the agreement's terms, never a server error."""
+async def test_a_let_go_bill_of_an_agreement_without_a_schedule_claims_its_period_back(client, session, monkeypatch):
+    """Unvoid of a bill a period let go, once its agreement's stored terms build no schedule: the
+    claim needs no schedule, so Unvoid still undoes the Reopen, never a refusal naming terms the
+    agreement's recorded periods keep from changing, and never a server error."""
     from celerp_subscriptions import billing
 
     freeze_day(monkeypatch, "2026-03-01")
@@ -220,9 +221,9 @@ async def test_a_let_go_bill_of_an_agreement_without_a_schedule_is_refused_by_na
         r = await client.post(f"/docs/{first['doc_id']}/unvoid", headers=hd, json=_key())
     except Exception as exc:
         pytest.fail(f"unhandled {type(exc).__name__}: {exc}")
-    assert r.status_code == 409, r.text
-    assert r.json()["detail"]["message_key"] == "subscriptions.err_bill_unscheduled"
-    assert (await _stored(session, first["doc_id"]))["status"] == "void"
+    assert r.status_code == 200, r.text
+    stored = await _stored(session, eid)
+    assert (stored["periods"]["0"]["doc_id"], stored["released_bills"]) == (first["doc_id"], {})
 
 
 async def test_no_documents_route_moves_an_agreement_out_of_its_statuses(client, session, monkeypatch):

@@ -7276,7 +7276,6 @@
   "country.SA": "サウジアラビア",
   "subscriptions.err_no_periods": "{ref} はまだ下書きのため、請求期間がありません。このページで有効化して請求スケジュールを開始してください。",
   "subscriptions.err_status_void": "{ref} は無効になっているため、ここでは状態を変更できません。再開する場合は、まず書類で無効化を解除してください。",
-  "subscriptions.err_bill_unscheduled": "{ref} を再度請求することはできません。契約 {agreement} のスケジュール設定から有効な請求スケジュールを作成できません: {reason} まず契約のスケジュールを修正してください。",
   "subscriptions.err_schedule_unreadable": "この契約に保存されているスケジュールを読み取れません。契約のページでもう一度スケジュールを設定してください。",
   "subscriptions.done_refused": "{start} から {end} まで: {reason}",
   "subscriptions.period_send_sending": "メールを送信中です",

@@ -7276,7 +7276,6 @@
   "country.SA": "Arab Saudi",
   "subscriptions.err_no_periods": "{ref} masih berupa draf, sehingga belum memiliki periode penagihan. Aktifkan dari halaman ini untuk memulai jadwalnya.",
   "subscriptions.err_status_void": "{ref} berstatus tidak berlaku, sehingga statusnya tidak dapat diubah di sini. Batalkan status tidak berlakunya di Dokumen terlebih dahulu jika perlu dijalankan kembali.",
-  "subscriptions.err_bill_unscheduled": "{ref} tidak dapat ditagihkan lagi. Pengaturan jadwal pada perjanjian {agreement} tidak menghasilkan jadwal penagihan yang valid: {reason} Perbaiki jadwal pada perjanjian terlebih dahulu.",
   "subscriptions.err_schedule_unreadable": "Jadwal yang tersimpan untuk perjanjian ini tidak dapat dibaca. Atur ulang jadwalnya dari halaman perjanjian.",
   "subscriptions.done_refused": "{start} hingga {end}: {reason}",
   "subscriptions.period_send_sending": "Email sedang dikirim",

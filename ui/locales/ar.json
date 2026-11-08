@@ -7276,7 +7276,6 @@
   "country.SA": "المملكة العربية السعودية",
   "subscriptions.err_no_periods": "لا يزال {ref} مسودة، لذلك ليست له فترات فوترة بعد. فعِّله من هذه الصفحة لبدء جدوله.",
   "subscriptions.err_status_void": "الاشتراك {ref} مُبطَل، لذا لا يمكن تغيير حالته هنا. ألغِ إبطاله في «المستندات» أولًا إذا أردت تشغيله مجددًا.",
-  "subscriptions.err_bill_unscheduled": "لا يمكن فوترة {ref} مجددًا. إعدادات الجدولة في الاتفاقية {agreement} لا تنتج جدولًا صالحًا: {reason} صحّح الجدول في الاتفاقية أولًا.",
   "subscriptions.err_schedule_unreadable": "تعذّرت قراءة الجدول المحفوظ لهذه الاتفاقية. أعد ضبط جدولها من صفحة الاتفاقية.",
   "subscriptions.done_refused": "من {start} إلى {end}: {reason}",
   "subscriptions.period_send_sending": "جارٍ إرسال البريد الإلكتروني",

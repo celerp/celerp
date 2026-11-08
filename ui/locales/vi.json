@@ -7276,7 +7276,6 @@
   "country.SA": "Ả Rập Xê Út",
   "subscriptions.err_no_periods": "{ref} vẫn là bản nháp nên chưa có kỳ lập hóa đơn. Hãy kích hoạt trên trang này để bắt đầu lịch lập hóa đơn.",
   "subscriptions.err_status_void": "{ref} đã bị vô hiệu nên không thể thay đổi trạng thái tại đây. Hãy bỏ trạng thái vô hiệu trong mục Chứng từ trước nếu muốn tiếp tục sử dụng.",
-  "subscriptions.err_bill_unscheduled": "Không thể lập hóa đơn lại cho {ref}. Thiết lập lịch của thỏa thuận {agreement} không tạo được lịch hợp lệ: {reason} Hãy sửa lịch trên trang thỏa thuận trước.",
   "subscriptions.err_schedule_unreadable": "Không thể đọc lịch đã lưu của thỏa thuận này. Hãy thiết lập lại lịch trên trang thỏa thuận.",
   "subscriptions.done_refused": "Từ {start} đến {end}: {reason}",
   "subscriptions.period_send_sending": "Email đang được gửi",

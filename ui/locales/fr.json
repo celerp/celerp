@@ -7276,7 +7276,6 @@
   "country.SA": "Arabie saoudite",
   "subscriptions.err_no_periods": "{ref} est encore un brouillon et n'a donc pas de périodes de facturation. Activez-le sur cette page pour démarrer sa planification.",
   "subscriptions.err_status_void": "{ref} est invalidé : son statut ne peut pas être modifié ici. Annulez d'abord son invalidation dans Documents s'il doit reprendre.",
-  "subscriptions.err_bill_unscheduled": "{ref} ne peut pas être facturé de nouveau. Les paramètres de planification de son accord {agreement} ne permettent pas d'établir un calendrier : {reason} Corrigez d'abord la planification dans l'accord.",
   "subscriptions.err_schedule_unreadable": "Le calendrier enregistré de cet accord est illisible. Définissez-le de nouveau sur la page de l'accord.",
   "subscriptions.done_refused": "Du {start} au {end} : {reason}",
   "subscriptions.period_send_sending": "Envoi de l'e-mail en cours",

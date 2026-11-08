@@ -7276,7 +7276,6 @@
   "country.SA": "ሳዑዲ አረቢያ",
   "subscriptions.err_no_periods": "{ref} አሁንም ረቂቅ ነው፣ ስለዚህ ገና የክፍያ ጊዜያት የሉትም። የጊዜ ሰሌዳው እንዲጀምር በዚህ ገጽ ላይ ያግብሩት።",
   "subscriptions.err_status_void": "{ref} ተሽሯል፣ ስለዚህ ሁኔታው እዚህ ሊቀየር አይችልም። እንደገና መሥራት ካለበት መጀመሪያ በሰነዶች ውስጥ ሽረቱን ይቀልብሱ።",
-  "subscriptions.err_bill_unscheduled": "{ref} እንደገና የክፍያ መጠየቂያ ሊያዘጋጅ አይችልም። የስምምነቱ {agreement} የጊዜ ሰሌዳ ቅንብሮች ትክክለኛ ሰሌዳ አይፈጥሩም፦ {reason} መጀመሪያ በስምምነቱ ላይ ሰሌዳውን ያስተካክሉ።",
   "subscriptions.err_schedule_unreadable": "የዚህ ስምምነት የተቀመጠ የጊዜ ሰሌዳ ሊነበብ አይችልም። በስምምነቱ ገጽ ላይ ሰሌዳውን እንደገና ያቀናብሩ።",
   "subscriptions.done_refused": "ከ {start} እስከ {end}፦ {reason}",
   "subscriptions.period_send_sending": "ኢሜይል እየተላከ ነው",

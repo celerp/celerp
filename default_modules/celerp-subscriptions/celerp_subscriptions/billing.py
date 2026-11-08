@@ -489,18 +489,19 @@ async def guard_bill_status(*, session, entry, transition) -> None:
             continue
         k = int(released.pop(doc_id))
         ref, label = transition.before.get("ref_id") or doc_id, template_label(agreement.state, agreement_id)
-        if (exc := unscheduled(agreement.state)) is not None:
-            raise HTTPException(status_code=409, detail=t(
-                "subscriptions.err_bill_unscheduled", ref=ref, agreement=label, reason=t(exc.key, **exc.params)))
         periods = periods_of(agreement.state)
         held = periods.get(str(k)) or {}
         newer = held.get("doc_id") if held.get("state") == BILLED else None
         newer_doc = await doc_state(session, company_id, newer) if newer else None
         if bills(newer_doc):
-            schedule = Schedule.from_state(agreement.state)
+            # The period's dates: the schedule's, or the newer bill's own while the terms build none.
+            start, end = newer_doc.get("service_start") or "--", newer_doc.get("service_end") or "--"
+            if unscheduled(agreement.state) is None:
+                schedule = Schedule.from_state(agreement.state)
+                start, end = schedule.start(k).isoformat(), schedule.service_end(k).isoformat()
             raise HTTPException(status_code=409, detail=t(
                 "subscriptions.err_bill_rebilled", ref=ref, agreement=label, newer=newer_doc.get("ref_id") or newer,
-                start=schedule.start(k).isoformat(), end=schedule.service_end(k).isoformat()))
+                start=start, end=end))
         if newer:
             released[newer] = k
         periods[str(k)] = {"state": BILLED, "doc_id": doc_id, "release_count": held.get("release_count", 0),

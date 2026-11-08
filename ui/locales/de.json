@@ -7276,7 +7276,6 @@
   "country.SA": "Saudi-Arabien",
   "subscriptions.err_no_periods": "{ref} befindet sich noch im Entwurfsstatus und hat daher noch keine Abrechnungszeiträume. Aktivieren Sie es auf dieser Seite, um den Abrechnungsplan zu starten.",
   "subscriptions.err_status_void": "{ref} wurde ungültig gesetzt. Sein Status kann hier daher nicht geändert werden. Heben Sie die Ungültigerklärung zuerst unter Dokumente auf, wenn es wieder ausgeführt werden soll.",
-  "subscriptions.err_bill_unscheduled": "{ref} kann nicht erneut abgerechnet werden. Die Planeinstellungen der zugehörigen Vereinbarung {agreement} ergeben keinen gültigen Abrechnungsplan: {reason} Korrigieren Sie zuerst den Plan in der Vereinbarung.",
   "subscriptions.err_schedule_unreadable": "Der gespeicherte Abrechnungsplan dieser Vereinbarung kann nicht gelesen werden. Legen Sie ihn auf der Seite der Vereinbarung erneut fest.",
   "subscriptions.done_refused": "{start} bis {end}: {reason}",
   "subscriptions.period_send_sending": "E-Mail wird gesendet",

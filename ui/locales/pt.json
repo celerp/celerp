@@ -7276,7 +7276,6 @@
   "country.SA": "Arábia Saudita",
   "subscriptions.err_no_periods": "{ref} ainda é um rascunho, portanto ainda não tem períodos de cobrança. Ative a assinatura nesta página para iniciar o cronograma.",
   "subscriptions.err_status_void": "{ref} está anulado, portanto seu status não pode ser alterado aqui. Desfaça primeiro a anulação em Documentos se precisar retomá-lo.",
-  "subscriptions.err_bill_unscheduled": "{ref} não pode ser faturado novamente. As configurações do contrato {agreement} não formam um cronograma válido: {reason} Corrija primeiro o cronograma no contrato.",
   "subscriptions.err_schedule_unreadable": "Não é possível ler o cronograma salvo deste contrato. Configure-o novamente na página do contrato.",
   "subscriptions.done_refused": "De {start} a {end}: {reason}",
   "subscriptions.period_send_sending": "O e-mail está sendo enviado",

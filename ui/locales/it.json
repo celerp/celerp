@@ -7276,7 +7276,6 @@
   "country.SA": "Arabia Saudita",
   "subscriptions.err_no_periods": "{ref} è ancora una bozza, quindi non ha ancora periodi di fatturazione. Lo attivi da questa pagina per avviare la programmazione.",
   "subscriptions.err_status_void": "{ref} è invalidato, quindi il suo stato non può essere modificato qui. Annulli prima l'invalidamento in Documenti se deve essere riattivato.",
-  "subscriptions.err_bill_unscheduled": "{ref} non può essere fatturato nuovamente. Le impostazioni dell'accordo {agreement} non producono un calendario di fatturazione valido: {reason} Corregga prima la programmazione nell'accordo.",
   "subscriptions.err_schedule_unreadable": "Non è possibile leggere la programmazione salvata di questo accordo. La imposti di nuovo dalla pagina dell'accordo.",
   "subscriptions.done_refused": "Dal {start} al {end}: {reason}",
   "subscriptions.period_send_sending": "Invio dell'e-mail in corso",

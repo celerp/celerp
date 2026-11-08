@@ -399,7 +399,7 @@ async def _agreement_to(client, hd, eid: str, status: str) -> None:
 # What a document a period let go meets when it comes back into billing (billing.guard_bill_status,
 # a doc_status_guard: any writer, any agreement status). Read off the guard's own code, so a new
 # refusal there fails test_a_let_go_document_comes_back_in_every_agreement_status until walked.
-GUARD_REFUSALS = {"subscriptions.err_bill_rebilled", "subscriptions.err_bill_unscheduled"}
+GUARD_REFUSALS = {"subscriptions.err_bill_rebilled"}
 WAY_OUT_STATUSES = ("active", "paused", "cancelled", "void")
 
 

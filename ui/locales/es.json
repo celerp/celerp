@@ -7276,7 +7276,6 @@
   "country.SA": "Arabia Saudita",
   "subscriptions.err_no_periods": "{ref} sigue siendo un borrador, por lo que todavía no tiene períodos de facturación. Actívela desde esta página para iniciar su programación.",
   "subscriptions.err_status_void": "{ref} está anulada, por lo que su estado no puede cambiarse aquí. Quite primero la anulación en Documentos si debe volver a ejecutarse.",
-  "subscriptions.err_bill_unscheduled": "{ref} no puede volver a facturarse. La configuración de programación de su acuerdo {agreement} no genera un calendario válido: {reason} Corrija primero la programación desde el acuerdo.",
   "subscriptions.err_schedule_unreadable": "No se puede leer la programación guardada de este acuerdo. Configúrela de nuevo desde la página del acuerdo.",
   "subscriptions.done_refused": "Del {start} al {end}: {reason}",
   "subscriptions.period_send_sending": "Se está enviando el correo electrónico",
