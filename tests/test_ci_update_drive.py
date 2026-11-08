@@ -35,31 +35,49 @@ def drive(monkeypatch):
 
 
 class _Screen:
-    """The refusal screen: Update Celerp checks; each poll moves the updater on one state."""
+    """The refusal screen: Update Celerp checks; each poll moves the updater on one state.
+
+    The screen can lag the updater as the real one does: the refusal stays hidden for the
+    first `hidden` looks, and once the update is downloaded the button keeps its old label
+    for `lag` polls, then shows Restart to install disabled for one more poll.
+    """
 
     url = "file:///C:/Program%20Files/Celerp/resources/app.asar/assets/loading.html"
 
-    def __init__(self, states):
+    def __init__(self, states, hidden=0, lag=0):
         self.states = list(states)
         self.state = {"status": "idle"}
         self.clicks = []
+        self.hidden = hidden
+        self.looks = 0
+        self.lag = lag
+        self.since = 0   # polls since the state last changed
 
     def evaluate(self, js):
         if "hidden" in js:
-            return True
+            self.looks += 1
+            return self.looks > self.hidden
+        assert self.state["status"] != "error", "the driver polled on after a failed update"
         if self.clicks and self.states:
-            self.state = self.states.pop(0)
+            self.state, self.since = self.states.pop(0), 0
+        else:
+            self.since += 1
         return self.state
+
+    def _downloaded(self):
+        return self.state["status"] == "downloaded" and self.since >= self.lag
 
     def inner_text(self, selector):
         if selector == "#refusal-message":
             return "Your data was last opened with Celerp 2.8.2"
-        return "Restart to install" if self.state["status"] == "downloaded" else "Update Celerp"
+        return "Restart to install" if self._downloaded() else "Update Celerp"
 
     def is_enabled(self, _selector):
-        return True
+        return not (self._downloaded() and self.since == self.lag and self.lag > 0)
 
     def click(self, selector):
+        assert self.looks > self.hidden, "clicked while the refusal screen was hidden"
+        assert self.is_enabled(selector), "clicked a disabled button"
         self.clicks.append((selector, self.inner_text(selector)))
 
 
@@ -80,6 +98,12 @@ def test_a_failed_download_fails_the_check(drive, capsys):
     assert drive.refusal(_browser(screen), drive.time.monotonic() + 60) == 1
     assert screen.clicks == [("#refusal-update", "Update Celerp")]
     assert "the refusal screen was shown; the update was not downloaded" in capsys.readouterr().out
+
+
+def test_the_driver_waits_for_the_screen_to_catch_up(drive):
+    screen = _Screen([{"status": "downloaded", "version": "2.8.2"}], hidden=2, lag=2)
+    assert drive.refusal(_browser(screen), drive.time.monotonic() + 60) == 0
+    assert screen.clicks == [("#refusal-update", "Update Celerp"), ("#refusal-update", "Restart to install")]
 
 
 def test_no_refusal_screen_fails_the_check_in_time(drive, capsys):
