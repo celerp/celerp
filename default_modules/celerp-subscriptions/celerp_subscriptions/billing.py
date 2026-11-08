@@ -315,8 +315,8 @@ AGREEMENT_STATUSES = frozenset({"draft", "active", "paused", "cancelled", "void"
 
 async def guard_agreement_status(*, session, entry, transition) -> None:
     """doc_status_guard: no write of a subscription document, by any writer, leaves its terms
-    building no schedule (refuse_unbuildable_terms), and no person's write makes billable an
-    agreement with no lines (refuse_billing_nothing). The status of an agreement that runs an
+    building no schedule (refuse_unbuildable_terms), and no person's write leaves billable an
+    agreement whose bill would be refused (refuse_bill_refused). The status of an agreement that runs an
     unattended mode, before or after the change, changes only in write_agreement (activate, pause, resume, cancel on its
     own page). Every other writer (void, unvoid, finalize, revert, an import) is refused (409), and so
     is any that would leave an agreement a status outside AGREEMENT_STATUSES. A draft starts only
@@ -330,7 +330,7 @@ async def guard_agreement_status(*, session, entry, transition) -> None:
     if transition.after.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
         return
     refuse_unbuildable_terms(transition.before or {}, transition.after)
-    refuse_billing_nothing(transition.before or {}, transition.after, entry)
+    await refuse_bill_refused(session, transition.before or {}, transition.after, entry)
     if _WRITING.get() == entry.entity_id or (transition.before or {}).get("status") == transition.after.get("status"):
         return
     company = await session.get(Company, entry.company_id)
@@ -346,22 +346,17 @@ async def guard_agreement_status(*, session, entry, transition) -> None:
                                    entering_modes(transition.before or {}, transition.after))
 
 
-# Why a person may not make an agreement with no lines billable, by the status it leaves: a
-# draft takes lines on its own page, an import (no status before) in its file, and any other
-# status takes none, so a new agreement is the way on.
-_NO_LINES = {"draft": "subscriptions.err_no_lines_draft", None: "subscriptions.err_no_lines_import"}
-
-
-def refuse_billing_nothing(before: dict, after: dict, entry) -> None:
-    """A 409 when a person's write (Activate, Resume, an import, an unvoid: any writer, since the
-    status guard sees each) makes billable an agreement with no lines, whose every bill would be
-    refused for having none, naming the way to give it lines. A write nobody made (the upgrade, a
-    restore) keeps what was stored."""
-    if entry.actor_id is None or after.get("line_items") or billable(before) or not billable(after):
+async def refuse_bill_refused(session, before: dict, after: dict, entry) -> None:
+    """The bill_refusal of an agreement a person's write leaves billable: refused whatever the
+    write is (Activate, Resume, Bill automatically, an import, an unvoid, an edit through
+    Documents or the API), so no person leaves an agreement billing what every bill would refuse.
+    A write nobody made (the upgrade, a restore, the billing pass's own record) keeps what was
+    stored."""
+    if entry.actor_id is None or not billable(after):
         return
-    raise HTTPException(status_code=409, detail=t(
-        _NO_LINES.get(before.get("status"), "subscriptions.err_no_lines_running"),
-        ref=after.get("ref_id") or entry.entity_id))
+    if (refused := await bill_refusal(session, entry.company_id, entry.entity_id, after,
+                                      was=before.get("status"))) is not None:
+        raise refused
 
 
 def billable(state: dict) -> bool:
@@ -540,6 +535,65 @@ async def _billed_answer(session, company_id, k: int, schedule: Schedule, state:
     return await _result(session, company_id, doc_id, k, schedule, state, already_billed=True)
 
 
+async def bill_document(session, company: Company, tid: str, state: dict, schedule: Schedule, k: int) -> dict:
+    """The document period ``k`` of the agreement bills, as _bill creates it before its reference."""
+    kind = doc_kind(state)
+    today = business_today((company.settings or {}).get("timezone"))
+    contact_id = state.get("contact_id")
+    contact = (await session.get(Projection, {"company_id": company.id, "entity_id": contact_id})) if contact_id else None
+    contact_state = (contact.state or {}) if contact is not None and contact.entity_type == "contact" else {}
+    service = {"source_agreement": tid, "period_index": k,
+               "service_start": schedule.start(k).isoformat(), "service_end": schedule.service_end(k).isoformat()}
+    lines = [{**li, **service} for li in copy.deepcopy(list(state.get("line_items") or []))]
+    auto_note = f"Auto-created from subscription template {template_label(state, tid)}"
+    notes = f"{state['notes']}\n{auto_note}".strip() if state.get("notes") else auto_note
+    money_inputs = {f: state[f] for f in HEADER_MONEY_FIELDS if f in state}
+    currency = money_inputs["currency"] = state.get("currency") or (company.settings or {}).get("currency", "USD")
+    money = document_money(money_inputs, lines, currency, keep_unrated_tax=True)
+    doc = {
+        "doc_type": kind, "contact_id": contact_id,
+        "contact_name": contact_state.get("name") or "", "contact_company_name": contact_state.get("company_name") or "",
+        "line_items": lines, "payment_terms": state.get("payment_terms"), **money_inputs, **money, "amount_outstanding": money["total"], "issue_date": today.isoformat(),
+        "notes": notes, **service,
+    }
+    if due := compute_due_date(today, state.get("payment_terms"), company):
+        doc["due_date"] = due
+    return doc
+
+
+async def bill_refusal(session, company_id, tid: str, state: dict, *, was: str | None = "active") -> HTTPException | None:
+    """Why the agreement's next bill would be refused, or None: the checks Generate due's bill
+    meets on the agreement's own content (its units, then every content refusal finalize raises,
+    refuse_unfinalizable), run on the document it would make, which is not written. The one rule
+    for whether an agreement's content can bill. The refusal (409) gives that reason inside the
+    one for the status the agreement held before (``was``; none for an import), naming the way to
+    fix it that state offers: a draft and a paused agreement take line changes on their page, an
+    import in its file, an active one once paused; any other status takes none, so a new
+    agreement is the way on."""
+    from celerp.accounting_roles import KeyedRefusal
+    from celerp.error_body import as_refusal
+    from celerp_docs.routes import refuse_unfinalizable
+
+    company = await session.get(Company, company_id)
+    schedule = Schedule.from_state(state)
+    doc = await bill_document(session, company, tid, state, schedule, 0)
+    try:
+        await require_moving_fits_units(session, company_id, tid, "doc", doc, template=template_label(state, tid))
+        await refuse_unfinalizable(session, company_id, company.settings or {}, doc)
+    except (HTTPException, KeyedRefusal) as exc:
+        why = {"ref": state.get("ref_id") or tid, "reason": as_refusal(exc.detail)}
+        if was == "active":
+            return HTTPException(status_code=409, detail=catalog_refusal("subscriptions.err_bill_refused_running", **why))
+        if was == "paused":
+            return HTTPException(status_code=409, detail=catalog_refusal("subscriptions.err_bill_refused_paused", **why))
+        if was == "draft":
+            return HTTPException(status_code=409, detail=catalog_refusal("subscriptions.err_bill_refused_draft", **why))
+        if was is None:
+            return HTTPException(status_code=409, detail=catalog_refusal("subscriptions.err_bill_refused_import", **why))
+        return HTTPException(status_code=409, detail=catalog_refusal("subscriptions.err_bill_refused_ended", **why))
+    return None
+
+
 async def _bill(session, company, company_id, tid: str, state: dict, schedule: Schedule, k: int, actor,
                 *, auto: bool, send: bool, request: dict | None = None, key: str | None = None) -> str:
     """Create, finalize and claim period ``k``'s document. Caller holds the locks and commits.
@@ -554,31 +608,12 @@ async def _bill(session, company, company_id, tid: str, state: dict, schedule: S
     claim_key = f"sub:{tid}:p{k}:{kind}:r{release}"
     if (earlier := await find_event_by_idempotency(session, company_id, claim_key)) is not None:
         return earlier.entity_id
-    today = business_today((company.settings or {}).get("timezone"))
-    contact_id = state.get("contact_id")
-    contact = (await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})) if contact_id else None
-    contact_state = (contact.state or {}) if contact is not None and contact.entity_type == "contact" else {}
-    service = {"source_agreement": tid, "period_index": k,
-               "service_start": schedule.start(k).isoformat(), "service_end": schedule.service_end(k).isoformat()}
-    lines = [{**li, **service} for li in copy.deepcopy(list(state.get("line_items") or []))]
-    template_name = template_label(state, tid)
-    auto_note = f"Auto-created from subscription template {template_name}"
-    notes = f"{state['notes']}\n{auto_note}".strip() if state.get("notes") else auto_note
-    money_inputs = {f: state[f] for f in HEADER_MONEY_FIELDS if f in state}
-    currency = money_inputs["currency"] = state.get("currency") or (company.settings or {}).get("currency", "USD")
-    money = document_money(money_inputs, lines, currency, keep_unrated_tax=True)
+    # The template may predate a precision change or a tax change; its content is checked first.
+    if (refused := await bill_refusal(session, company_id, tid, state)) is not None:
+        raise refused
     ref = next_draft_ref(company, kind)
     doc_id = f"doc:{ref}"
-    doc = {
-        "doc_type": kind, "ref_id": ref, "contact_id": contact_id,
-        "contact_name": contact_state.get("name") or "", "contact_company_name": contact_state.get("company_name") or "",
-        "line_items": lines, "payment_terms": state.get("payment_terms"), **money_inputs, **money, "amount_outstanding": money["total"], "issue_date": today.isoformat(),
-        "notes": notes, **service,
-    }
-    if due := compute_due_date(today, state.get("payment_terms"), company):
-        doc["due_date"] = due
-    # The template may predate a precision change; what it makes is held to today's units.
-    await require_moving_fits_units(session, company_id, doc_id, "doc", doc, template=template_name)
+    doc = {**await bill_document(session, company, tid, state, schedule, k), "ref_id": ref}
     doc.update(resolve_document_terms(state, company.settings or {}, kind))
     if "customer_note" in state:
         doc["customer_note"] = state.get("customer_note") or ""

@@ -33,7 +33,7 @@ from ui.api_client import APIError, error_message
 from ui.components.shell import base_shell, page_header, toast_header
 from ui.components.table import breadcrumbs, display_enum, select_all_th, empty_state_cta, fmt_money, pagination, per_page_value, search_bar, status_cards
 from ui.config import get_token as _token, get_role as _get_role
-from ui.routes.documents import _action_error
+from ui.routes.documents import _action_error, save_lines
 from ui.routes.reports import _get_company
 from ui.routes.settings import _check_permission
 from ui.i18n import refusal_text, sentence, t
@@ -1333,6 +1333,8 @@ def setup_routes(app) -> None:
                 extra_left_actions=[actions_left],
                 extra_right_actions=[actions_right],
                 suppress_pdf=True,
+                # Paused, its lines take changes for the bills it makes once resumed.
+                lines_url=f"/subscriptions/{entity_id}/lines" if status == "paused" else None,
             ),
             _schedule_section(entity_id, doc) if status not in ENDED else "",
             _billing_section(entity_id, doc),
@@ -1344,6 +1346,11 @@ def setup_routes(app) -> None:
         )
 
     # --- Lifecycle actions ---
+
+    @app.post("/subscriptions/{entity_id}/lines")
+    async def subscription_lines_ui(request: Request, entity_id: str):
+        """The page's line save on a paused agreement (_doc_detail lines_url)."""
+        return await save_lines(request, entity_id, api.patch_subscription_lines)
 
     @app.post("/subscriptions/{entity_id}/{action}")
     async def subscription_action_ui(request: Request, entity_id: str, action: str):

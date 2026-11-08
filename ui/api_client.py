@@ -1647,14 +1647,21 @@ async def _wrap_fields_changed(c, get_path: str, data: dict) -> dict:
     }
 
 
-async def patch_doc(token: str, entity_id: str, data: dict, expected_version: int | None = None) -> dict:
-    """data is a flat dict of field->value; wraps into fields_changed format."""
+async def patch_doc(token: str, entity_id: str, data: dict, expected_version: int | None = None,
+                    *, path: str | None = None) -> dict:
+    """data is a flat dict of field->value; wraps into fields_changed format. ``path`` is a
+    module's own edit of the document (default: Documents' edit)."""
     async with _api_client(token) as c:
         fields_changed = await _wrap_fields_changed(c, f"/docs/{entity_id}", data)
         body: dict = {"fields_changed": fields_changed}
         if expected_version is not None:
             body["expected_version"] = expected_version
-        return _raise(await c.patch(f"/docs/{entity_id}", json=body)).json()
+        return _raise(await c.patch(path or f"/docs/{entity_id}", json=body)).json()
+
+
+async def patch_subscription_lines(token: str, entity_id: str, data: dict, expected_version: int | None = None) -> dict:
+    """A paused subscription's lines, discount and document taxes, through its own line edit."""
+    return await patch_doc(token, entity_id, data, expected_version, path=f"/subscriptions/{entity_id}/lines")
 
 
 async def renumber_doc(token: str, entity_id: str, ref_id: str) -> dict:

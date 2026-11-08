@@ -3363,52 +3363,7 @@ celerpUpdateBulkAlloc();
     # T2: Save line items
     @app.post("/docs/{entity_id}/lines")
     async def save_doc_lines(request: Request, entity_id: str):
-        from starlette.responses import JSONResponse
-        token = _token(request)
-        if not token:
-            return JSONResponse({"error": "Unauthorized"}, status_code=401)
-        try:
-            body = await request.json()
-        except Exception:
-            return JSONResponse({"error": "Invalid JSON"}, status_code=400)
-        # The version the page read: the API refuses the save if the document moved since.
-        expected_version = body.get("expected_version")
-        if expected_version is not None and type(expected_version) is not int:
-            return JSONResponse({"error": "Invalid expected_version"}, status_code=400)
-        # The lines, the header discount and the document taxes are inputs; the API computes the
-        # document's subtotal, discount amount, taxes and total from them.
-        patch_data = {"line_items": body.get("line_items", [])}
-        # Always sent (0 clears it) so removing a discount sticks.
-        if "discount" in body:
-            patch_data["discount"] = float(body.get("discount") or 0)
-            patch_data["discount_type"] = body.get("discount_type") or "flat"
-        # An empty list clears them, so removing the last document tax sticks.
-        if "doc_taxes" in body:
-            patch_data["doc_taxes"] = body["doc_taxes"]
-        try:
-            result = await api.patch_doc(token, entity_id, patch_data, expected_version=expected_version)
-        except APIError as e:
-            if e.status == 401:
-                raise
-            # Saved from an older copy: the page keeps the user's rows and offers Try again.
-            if isinstance(e.data, dict) and e.data.get("code") == "stale_version":
-                return JSONResponse({"code": "stale_version", "error": error_message(e)}, status_code=409)
-            payload = {"error": error_message(e)}
-            # Foreign-reserved rejection: pass the structured conflict list through
-            # so the page can open the resolution modal instead of the inline error.
-            if isinstance(e.data, dict) and e.data.get("conflicts"):
-                payload["reserved_conflicts"] = e.data["conflicts"]
-            return JSONResponse(payload, status_code=e.status)
-        saved = {"ok": True, "version": result.get("version")}
-        # The page shows the taxes, subtotal, discount, total and outstanding the API just computed,
-        # never its own copy.
-        try:
-            doc = await api.get_doc(token, entity_id)
-        except APIError as e:
-            if e.status == 401:
-                raise
-            return JSONResponse({**saved, "error": error_message(e)})
-        return JSONResponse({**saved, "money": _doc_money(doc)})
+        return await save_lines(request, entity_id, api.patch_doc)
 
     async def _proxy_reprice(request: Request, entity_id: str, reprice_fn):
         """Transport-only Web UI adapter; all repricing semantics live in celerp-docs."""
@@ -7197,9 +7152,61 @@ def subscription_meta_cells(doc: dict) -> tuple:
     )
 
 
+async def save_lines(request: Request, entity_id: str, patch):
+    """The page's line save: the posted lines, header discount and document taxes, written by
+    ``patch`` (the API call the page's document takes them through), answered with the money the
+    API computed."""
+    from starlette.responses import JSONResponse
+    token = _token(request)
+    if not token:
+        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+    # The version the page read: the API refuses the save if the document moved since.
+    expected_version = body.get("expected_version")
+    if expected_version is not None and type(expected_version) is not int:
+        return JSONResponse({"error": "Invalid expected_version"}, status_code=400)
+    # The lines, the header discount and the document taxes are inputs; the API computes the
+    # document's subtotal, discount amount, taxes and total from them.
+    patch_data = {"line_items": body.get("line_items", [])}
+    # Always sent (0 clears it) so removing a discount sticks.
+    if "discount" in body:
+        patch_data["discount"] = float(body.get("discount") or 0)
+        patch_data["discount_type"] = body.get("discount_type") or "flat"
+    # An empty list clears them, so removing the last document tax sticks.
+    if "doc_taxes" in body:
+        patch_data["doc_taxes"] = body["doc_taxes"]
+    try:
+        result = await patch(token, entity_id, patch_data, expected_version=expected_version)
+    except APIError as e:
+        if e.status == 401:
+            raise
+        # Saved from an older copy: the page keeps the user's rows and offers Try again.
+        if isinstance(e.data, dict) and e.data.get("code") == "stale_version":
+            return JSONResponse({"code": "stale_version", "error": error_message(e)}, status_code=409)
+        payload = {"error": error_message(e)}
+        # Foreign-reserved rejection: pass the structured conflict list through
+        # so the page can open the resolution modal instead of the inline error.
+        if isinstance(e.data, dict) and e.data.get("conflicts"):
+            payload["reserved_conflicts"] = e.data["conflicts"]
+        return JSONResponse(payload, status_code=e.status)
+    saved = {"ok": True, "version": result.get("version")}
+    # The page shows the taxes, subtotal, discount, total and outstanding the API just computed,
+    # never its own copy.
+    try:
+        doc = await api.get_doc(token, entity_id)
+    except APIError as e:
+        if e.status == 401:
+            raise
+        return JSONResponse({**saved, "error": error_message(e)})
+    return JSONResponse({**saved, "money": _doc_money(doc)})
+
+
 def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: dict | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, free_send_offer: bool = False, email_used: int = 0, email_quota: int = 0, email_resets_on: str | None = None, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_status_doc_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku", relay_error: bool = False, line_offset: int = 0, line_total: int | None = None, line_limit: int = 100,
                 connected_connectors: set[str] | None = None, note_targets: list | None = None, original: dict | None = None,
-                draw_targets: list | None = None) -> FT:
+                draw_targets: list | None = None, lines_url: str | None = None) -> FT:
     def _pick(*keys: str):
         for k in keys:
             if k in doc and doc.get(k) is not None:
@@ -7259,7 +7266,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     # (and the page-save path that persists it) is draft-only, while a finalized audit only gates the
     # Counted cells open (pol["counted_editable"]). Without the edit permission there are no line
     # controls (the API enforces it; the UI must not offer controls that would 403).
-    can_edit_lines = is_draft and _can_edit
+    # A module whose document takes line changes past draft (a paused subscription) names where they
+    # are saved (lines_url); its lines, discount and taxes then edit as a draft's do.
+    lines_open = is_draft or lines_url is not None
+    can_edit_lines = lines_open and _can_edit
     can_count_audit = pol["audit"] and status == _LF and _can_edit
     is_editable = can_edit_lines or can_count_audit
 
@@ -8571,6 +8581,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
    the pager. Bare reads elsewhere resolve against these same global properties. */
 window._CELERP_EID = {repr(entity_id)};
 window._CELERP_BASE = {'"/lists/"' if is_list else '"/docs/"'};
+window._CELERP_LINES_URL = {_json.dumps(lines_url or f"{'/lists/' if is_list else '/docs/'}{entity_id}/lines")};
 // Did this document render with any line items? Drives whether emptying the table
 // persists (deleting the last line must stick) vs. a blank never-used doc (skip).
 window._celerpHadLines = {'true' if line_items else 'false'};
@@ -9949,7 +9960,7 @@ async function _celerpRefreshHeldBadges() {{
     // stored window this page loaded. The server REPLACES positions [offset, offset+original_count)
     // with the submitted rows (a shorter page truncates deleted rows, a longer one inserts) and
     // recomputes totals from the full merged array, so off-page rows are never touched by a page save.
-    const resp = await celerpFetch(_CELERP_BASE + _CELERP_EID + '/lines', {{
+    const resp = await celerpFetch(_CELERP_LINES_URL, {{
         method: 'POST', headers: {{'Content-Type': 'application/json'}},
         body: JSON.stringify(Object.assign({{line_items: lines, offset: _CELERP_LINE_OFFSET,
             original_count: _CELERP_ORIGINAL_COUNT,
@@ -10847,7 +10858,7 @@ async function celerpCsvImport(input, entityId) {{
     # Header-discount affordance: a faint pencil by the Total opens a small editor. Only on a draft
     # of an eligible money doc (sales + supplier order/bill); the discount row itself shows whenever
     # a discount is set (so it stays visible on a finalized doc too).
-    _can_discount = is_draft and doc_type in _HEADER_DISCOUNT_DOC_TYPES and not pol["no_money"]
+    _can_discount = lines_open and doc_type in _HEADER_DISCOUNT_DOC_TYPES and not pol["no_money"]
 
     total_panel = Div(
         Div(Span(t("doc.subtotal"), cls="total-label"),

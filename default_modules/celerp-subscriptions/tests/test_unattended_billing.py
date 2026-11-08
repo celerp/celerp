@@ -9,11 +9,12 @@ failed send keeps the invoice and offers a retry that sends once."""
 from __future__ import annotations
 
 import json
+import uuid
 
 import pytest
 
 from celerp.services.email import EmailResult
-from celerp_subscriptions.billing import ends_failure
+from celerp_subscriptions.billing import ends_failure, write_agreement
 from celerp_subscriptions.periods import BILLED
 from celerp_subscriptions.summary import KINDS as SUMMARY_KINDS, _key as summary_key
 from ui.i18n import t
@@ -69,6 +70,15 @@ async def _auto(client, hd, *, start, catchup=0, send=False, **fields) -> str:
 
 # One line whose tax is still to set: every bill of it is refused with a catalog refusal.
 UNTAXED = [{"description": "Dues", "quantity": 1, "unit_price": 10, "taxes": None}]
+
+
+async def _untaxed(client, session, hd, **fields) -> str:
+    """An agreement on Bill automatically whose line has no tax chosen, as a release before every
+    door asked that its bills can be made left it (a write nobody made keeps what was stored)."""
+    eid = await _auto(client, hd, **fields)
+    await write_agreement(session, uuid.UUID(await company_id(client, hd)), eid, {"line_items": UNTAXED}, None)
+    await session.commit()
+    return eid
 
 
 async def test_unattended_offline_six_months_preview_only(client, session, monkeypatch):
@@ -936,7 +946,7 @@ async def test_a_failed_bill_keeps_its_reason_is_counted_to_check_and_offers_gen
     token = r.json()["access_token"]
     hd = {"Authorization": f"Bearer {token}"}
     cid = await company_id(client, hd)
-    eid = await _auto(client, hd, start="2026-07-01", line_items=UNTAXED)
+    eid = await _untaxed(client, session, hd, start="2026-07-01")
     await tick(session, cid, "2026-07-01")
     refused = (await client.post(f"/subscriptions/{eid}/generate-due", headers=hd,
                                  json={"request_key": "why"})).json()["detail"]
@@ -962,7 +972,7 @@ async def test_a_bill_refused_in_the_readers_language_keeps_that_refusal_as_its_
     freeze_day(monkeypatch, "2026-07-01")
     hd = await register(client)
     cid = await company_id(client, hd)
-    eid = await _auto(client, hd, start="2026-07-01", line_items=UNTAXED)
+    eid = await _untaxed(client, session, hd, start="2026-07-01")
     await tick(session, cid, "2026-07-01")
     assert await billed_docs(session, eid) == []
     refused = (await client.post(f"/subscriptions/{eid}/generate-due", headers=hd,
@@ -997,7 +1007,7 @@ async def test_a_failure_still_happening_stays_on_the_summary_and_counted_past_t
     _on(monkeypatch, "2026-07-01")
     hd = await register(client)
     cid = await company_id(client, hd)
-    eid = await _auto(client, hd, start="2026-07-01", frequency="annually", line_items=UNTAXED)
+    eid = await _untaxed(client, session, hd, start="2026-07-01", frequency="annually")
     await tick(session, cid, "2026-07-01")
     ref = (await template(client, hd, eid))["ref_id"]
     shown = [(0, t("subscriptions.summary_generation_failed_because", ref=ref,
@@ -1020,7 +1030,7 @@ async def test_a_failure_ended_another_way_leaves_no_row(client, session, monkey
     _on(monkeypatch, "2026-07-01")
     hd = await register(client)
     cid = await company_id(client, hd)
-    eid = await _auto(client, hd, start="2026-07-01", frequency="annually", line_items=UNTAXED)
+    eid = await _untaxed(client, session, hd, start="2026-07-01", frequency="annually")
     await tick(session, cid, "2026-07-01")
     assert len(_failed(await summary(client, hd))) == 1
     path = {"skip": "periods/0/skip", "cancel": "cancel", "pause": "pause"}[end]
@@ -1040,7 +1050,7 @@ async def test_a_failure_on_the_first_of_several_due_periods_holds_from_pass_to_
     _on(monkeypatch, "2026-07-15")
     hd = await register(client)
     cid = await company_id(client, hd)
-    eid = await _auto(client, hd, start="2026-07-01", frequency="weekly", catchup=12, line_items=UNTAXED)
+    eid = await _untaxed(client, session, hd, start="2026-07-01", frequency="weekly", catchup=12)
     await tick(session, cid, "2026-07-15")
     first = (await template(client, hd, eid))["billing_failure"]
     assert first["period_index"] == 0
@@ -1101,7 +1111,7 @@ async def test_a_thai_reader_reads_the_failure_and_its_reason_in_thai(client, se
     _on(monkeypatch, "2026-07-01")
     hd = await register(client)
     cid = await company_id(client, hd)
-    keyed = await _auto(client, hd, start="2026-07-01", frequency="annually", line_items=UNTAXED)
+    keyed = await _untaxed(client, session, hd, start="2026-07-01", frequency="annually")
     plain = await _auto(client, hd, start="2026-07-01", frequency="annually")
     real_bill = billing._bill
 
@@ -1126,7 +1136,7 @@ async def test_a_failed_bill_leaves_the_next_agreement_in_the_same_pass_billed(c
     freeze_day(monkeypatch, "2026-07-01")
     hd = await register(client)
     cid = await company_id(client, hd)
-    failing = await _auto(client, hd, start="2026-07-01", line_items=UNTAXED)
+    failing = await _untaxed(client, session, hd, start="2026-07-01")
     billing = await _auto(client, hd, start="2026-07-01")
     await tick(session, cid, "2026-07-01")
     assert await billed_docs(session, failing) == []
@@ -1184,7 +1194,7 @@ async def test_a_stored_time_at_the_edge_of_the_calendar_keeps_the_summary_answe
     hd = await register(client)
     cid = await company_id(client, hd)
     sent = await _auto(client, hd, start="2026-07-01", send=True, contact_id=await contact(client, hd, "edge@test.test"))
-    failed = await _auto(client, hd, start="2026-07-01", line_items=UNTAXED)
+    failed = await _untaxed(client, session, hd, start="2026-07-01")
     await tick(session, cid, "2026-07-01")
     state = {row.entity_id: row.state for row in await billing.agreements(session, cid)}
     period = state[sent]["periods"]["0"]
