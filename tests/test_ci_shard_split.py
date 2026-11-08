@@ -8,13 +8,16 @@ share * 1.6 + 80 <= N, and the matrix runs every group the split makes. The shar
 something while the file measures the tests each job runs, compared by their full ids with
 parameters, as the job collects them: every test a job runs has an entry (a missing one counts
 as the file's average, however slow it is), and no entry names a test no job runs. The ids
-come from the installed test tooling (pytest-playwright adds the browser to them), so the
-collection is only CI's when the tooling here is what CI installs from the dev extra."""
+come from the installed test tooling (pytest shortens long parameters, pytest-playwright adds
+the browser), so the collection is only CI's when the tooling here is what CI installs from the
+dev extra, and the split only stays as measured while the packages that make the ids or assign
+them to shards are pinned exactly there and installed from nowhere else."""
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -30,6 +33,8 @@ from packaging.requirements import Requirement
 ROOT = Path(__file__).resolve().parent.parent
 SLOW_RUNNER = 1.6
 COLLECTION_S = 80
+# A release of any of these can change the collected ids or the shard each id lands on.
+SHAPES_THE_SPLIT = ("pytest", "pytest-playwright", "pytest-split")
 
 
 @cache
@@ -52,11 +57,15 @@ def _flag(args: list[str], name: str) -> list[str]:
     ]
 
 
+def _dev_extra() -> list[Requirement]:
+    dev = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["optional-dependencies"]["dev"]
+    return list(map(Requirement, dev))
+
+
 def _tooling_unlike_ci() -> list[str]:
     """The dev extra's requirements the installed packages do not meet."""
-    dev = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["optional-dependencies"]["dev"]
     unmet = []
-    for req in map(Requirement, dev):
+    for req in _dev_extra():
         if req.marker and not req.marker.evaluate():
             continue
         try:
@@ -105,6 +114,21 @@ def test_the_unit_and_browser_jobs_split_by_the_file():
 
 def test_the_tooling_is_what_ci_installs():
     assert _tooling_unlike_ci() == [], "install the dev extra: pip install -e '.[dev]'"
+
+
+@pytest.mark.parametrize("name", SHAPES_THE_SPLIT)
+def test_what_shapes_the_split_is_pinned_exactly(name):
+    pins = [[(s.operator, "*" in s.version) for s in req.specifier] for req in _dev_extra() if req.name == name]
+    assert pins == [[("==", False)]], f"pin {name} to one version (==) in the dev extra"
+
+
+def test_ci_installs_what_shapes_the_split_only_from_the_dev_extra():
+    jobs = yaml.safe_load((ROOT / ".github" / "workflows" / "ci.yml").read_text())["jobs"]
+    extra = sorted({word for job in jobs.values() for step in job.get("steps", [])
+                    if "pip install" in step.get("run", "")
+                    for word in shlex.split(step["run"].replace("${{", "").replace("}}", ""))
+                    if re.split(r"[<>=!~\[;]", word)[0] in SHAPES_THE_SPLIT})
+    assert extra == [], "install these from the dev extra, where they are pinned"
 
 
 @pytest.mark.parametrize("job", sorted(_split_jobs()))

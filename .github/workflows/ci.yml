@@ -53,7 +53,7 @@ jobs:
             constraints.txt
 
       - name: Install deps
-        run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split -c constraints.txt
+        run: pip install uv && uv pip install --system -e ".[dev]" -c constraints.txt
 
       - name: Tune the throwaway Postgres
         run: bash scripts/ci_tune_postgres.sh postgresql://celerp:celerp@localhost:5432/celerp_test
@@ -175,7 +175,7 @@ jobs:
             constraints.txt
 
       - name: Install deps
-        run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split -c constraints.txt
+        run: pip install uv && uv pip install --system -e ".[dev]" -c constraints.txt
 
       - name: Tune the throwaway Postgres
         run: bash scripts/ci_tune_postgres.sh postgresql://celerp:celerp@localhost:5432/celerp_test
@@ -315,7 +315,7 @@ jobs:
             constraints.txt
 
       - name: Install deps
-        run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split -c constraints.txt
+        run: pip install uv && uv pip install --system -e ".[dev]" -c constraints.txt
 
       - name: Install Chromium for Playwright
         run: python -m playwright install --with-deps chromium
@@ -335,8 +335,8 @@ jobs:
         # 7 runners with pytest-split. Each runner runs its group SERIALLY (no -n): a browser test
         # is CPU-heavy (Chromium + an API + a UI server), so intra-runner parallelism on a 2-vCPU
         # box causes contention timeouts. The thread-based timeout is required for Playwright tests.
-        # A shard takes 8 to 10 minutes; as in the unit job, share * 1.6 + 80 stays within
-        # the 15 minute cap, inside the 22 minute job limit.
+        # As in the unit job, share * 1.6 + 80 stays within the 15 minute cap, inside the 22
+        # minute job limit.
         # As in the unit job, the split balances measured time from tests/.test_durations: a
         # first-run test boots a new install, so one costs as much as fifty others, and a split
         # by count alone put them all on one shard. Refresh the browser entries with
