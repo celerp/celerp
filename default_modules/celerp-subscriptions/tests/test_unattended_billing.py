@@ -969,3 +969,26 @@ async def test_every_savepoint_the_module_opens_holds_its_rows():
     assert {(f, fn) for f, fn, how in opened if how == "savepoint"} >= {
         ("billing.py", "run_due"), ("routes.py", "catch_up_run")}
 
+
+
+@pytest.mark.parametrize("at", ["0001-01-01T00:00:00+05:00", "9999-12-31T23:59:59-05:00"])
+async def test_a_stored_time_at_the_edge_of_the_calendar_keeps_the_summary_answering(client, session, monkeypatch, at):
+    """A send record and a failed bill whose stored time cannot be given in UTC read as a time
+    that cannot be read: the summary answers and keeps both rows."""
+    from celerp_subscriptions import billing
+
+    freeze_day(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    sent = await _auto(client, hd, start="2026-07-01", send=True, contact_id=await contact(client, hd, "edge@test.test"))
+    failed = await _auto(client, hd, start="2026-07-01", line_items=[])
+    await tick(session, cid, "2026-07-01")
+    state = {row.entity_id: row.state for row in await billing.agreements(session, cid)}
+    period = state[sent]["periods"]["0"]
+    await billing.write_agreement(session, cid, sent, {"periods": {**state[sent]["periods"], "0": {
+        **period, "send": {**period["send"], "at": at}}}}, None)
+    await billing.write_agreement(session, cid, failed, {"billing_failure": {**state[failed]["billing_failure"], "at": at}}, None)
+    await session.commit()
+    r = await client.get("/subscriptions/summary", headers=hd)
+    assert r.status_code == 200, r.text
+    assert {row["entity_id"] for row in r.json()["rows"] if row["kind"] != "generated"} == {sent, failed}

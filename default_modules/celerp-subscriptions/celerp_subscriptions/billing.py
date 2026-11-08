@@ -78,12 +78,13 @@ def now_stamp() -> str:
 
 
 def stamp_time(at) -> datetime | None:
-    """A record's stored time in UTC (one with no zone is read as UTC); None when unreadable."""
+    """A record's stored time in UTC (one with no zone is read as UTC); None when unreadable,
+    including a time at the edge of the calendar that has no UTC equivalent."""
     try:
         when = datetime.fromisoformat(str(at))
-    except ValueError:
+        return when.astimezone(timezone.utc) if when.tzinfo else when.replace(tzinfo=timezone.utc)
+    except (ValueError, OverflowError):
         return None
-    return when.astimezone(timezone.utc) if when.tzinfo else when.replace(tzinfo=timezone.utc)
 
 
 def retryable_attempt_time(created_at: datetime | None) -> bool:
