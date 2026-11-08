@@ -20,6 +20,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "default_modules" / "celerp-subscriptions" / "tests"))
 import status_census  # noqa: E402
+from celerp.models.projections import Projection  # noqa: E402
 from celerp_subscriptions.billing import AGREEMENT_STATUSES  # noqa: E402
 from test_subscriptions_upgrade_v280 import _generate, _on, _page, _state, _upgrade, _url  # noqa: E402
 from ui.i18n import t  # noqa: E402
@@ -337,8 +338,9 @@ async def test_a_void_agreement_offers_unvoid_where_its_refusals_name_it(client,
     old = await _upgrade(session, monkeypatch, "2026-11-04")
     hd, eid = old["headers"], old["runs"][NAME]
     await _to(client, old, "void")
-    assert _refusal(await client.post(_url(old, NAME, "/pause"), headers=hd))[0] == "subscriptions.err_status_void"
+    assert _refusal(await client.post(_url(old, NAME, "/cancel"), headers=hd))[0] == "subscriptions.err_status_void"
     page = await _page(monkeypatch, old, NAME)
     assert f'<a href="/docs/{eid}"' in page and t("doc.unvoid", "en") in page
+    assert t("btn.confirm_unvoid", "en") in await _page(monkeypatch, old, NAME, f"/docs/{eid}")
     r = await client.post(f"/docs/{eid}/unvoid", headers=hd, json={"idempotency_key": str(uuid.uuid4())})
     assert r.status_code == 200, r.text

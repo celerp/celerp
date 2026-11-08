@@ -7101,7 +7101,7 @@
   "subscriptions.err_history_not_candidate": "Không thể gán chứng từ đó vào kỳ này. Hãy chọn một trong các kỳ được liệt kê cho chứng từ.",
   "subscriptions.err_period_skipped": "Kỳ đó đã bị bỏ qua. Hãy hoàn tác việc bỏ qua trước khi gán chứng từ vào kỳ.",
   "subscriptions.err_history_not_confirmed": "Chứng từ đó chưa được gán vào kỳ nào nên không có việc gán nào để thu hồi.",
-  "subscriptions.err_history_later_billed": "Một kỳ sau đã được lập hóa đơn nên không thể thu hồi việc gán này.",
+  "subscriptions.err_history_later_billed": "Later periods are billed on {later}, so this document can't go back to review yet. Void {later} and use Reopen on their rows in the periods list first.",
   "subscriptions.summary_generated": "Đã tự động lập hóa đơn {ref}",
   "subscriptions.summary_sent": "Đã tự động gửi {ref}",
   "subscriptions.summary_send_failed": "Không thể gửi {ref}: {error}",
@@ -7139,10 +7139,10 @@
   "subscriptions.catchup_empty": "Không có kỳ lập hóa đơn nào đang chờ rà soát.",
   "subscriptions.catchup_bill": "Lập hóa đơn cho mục đã chọn",
   "subscriptions.catchup_skip": "Bỏ qua mục đã chọn",
-  "subscriptions.summary_banner": "Từ lần xem trước: đã tạo {generated}, đã gửi {sent}, cần kiểm tra {failed} lần gửi.",
+  "subscriptions.summary_banner": "Since you last looked: generated {generated}, sent {sent}, to check {failed}.",
   "subscriptions.summary_open": "Mở bản tổng hợp",
   "subscriptions.summary_title": "Tổng hợp lập hóa đơn tự động",
-  "subscriptions.summary_counts": "Đã tạo: {generated}, đã gửi: {sent}, lần gửi cần kiểm tra: {failed}.",
+  "subscriptions.summary_counts": "Generated {generated}, sent {sent}, to check {failed}.",
   "subscriptions.summary_ack": "Đánh dấu đã đọc",
   "subscriptions.summary_all": "Hiển thị tất cả",
   "subscriptions.summary_unread": "Hiển thị chưa đọc",
@@ -7302,5 +7302,8 @@
   "subscriptions.period_not_billing": "Sẽ không lập hóa đơn",
   "subscriptions.err_period_placed": "Kỳ này đang giữ {ref}, được gán từ lần lập hóa đơn trước. Hãy dùng Thu hồi việc gán ở dòng của kỳ đó trong danh sách kỳ trước.",
   "subscriptions.err_ended_place_cancelled": "{ref} đã bị hủy nên không thể gán chứng từ này vào kỳ nào của nó. Hãy dùng Để riêng để hoàn tất việc rà soát chứng từ cũ.",
-  "subscriptions.err_ended_place_void": "{ref} đã bị vô hiệu nên không thể gán chứng từ này vào kỳ nào của nó tại đây. Hãy dùng Để riêng để hoàn tất việc rà soát chứng từ cũ, hoặc bỏ trạng thái vô hiệu của {ref} trong mục Chứng từ trước."
+  "subscriptions.err_ended_place_void": "{ref} đã bị vô hiệu nên không thể gán chứng từ này vào kỳ nào của nó tại đây. Hãy dùng Để riêng để hoàn tất việc rà soát chứng từ cũ, hoặc bỏ trạng thái vô hiệu của {ref} trong mục Chứng từ trước.",
+  "subscriptions.summary_window": "The summary covers the last {days} days.",
+  "subscriptions.summary_generation_failed_because": "Automatic billing failed for {ref}: {error}",
+  "subscriptions.err_period_placed_later_billed": "This period holds {ref}, placed here from earlier billing, and later periods are billed on {later}. Void {later} and use Reopen on their rows in the periods list, then use Withdraw placement on this period's row."
 }

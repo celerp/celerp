@@ -65,8 +65,8 @@ async def _notices(session, old) -> list[str]:
     return [f"{n.title}: {n.body}" for n in rows]
 
 
-async def _page(monkeypatch, old, name) -> str:
-    """The template's page as the UI renders it from the real API."""
+async def _page(monkeypatch, old, name, path: str | None = None) -> str:
+    """The template's page (or the UI page at ``path``) as the UI renders it from the real API."""
     import httpx
 
     import celerp.main
@@ -81,7 +81,7 @@ async def _page(monkeypatch, old, name) -> str:
     monkeypatch.setattr(api, "_local_client", make)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=ui_app), base_url="http://localhost",
                                  cookies={"celerp_token": old["headers"]["Authorization"][7:]}) as c:
-        r = await c.get(f"/subscriptions/{old['runs'][name]}")
+        r = await c.get(path or f"/subscriptions/{old['runs'][name]}")
     assert r.status_code == 200, r.status_code
     return r.text
 

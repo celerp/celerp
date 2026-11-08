@@ -7101,7 +7101,7 @@
   "subscriptions.err_history_not_candidate": "Dokumen tersebut tidak dapat ditetapkan ke periode itu. Pilih salah satu periode yang tercantum untuk dokumen tersebut.",
   "subscriptions.err_period_skipped": "Periode itu telah dilewati. Batalkan status dilewati terlebih dahulu sebelum menetapkan dokumen ke periode tersebut.",
   "subscriptions.err_history_not_confirmed": "Dokumen tersebut tidak ditetapkan ke periode mana pun, sehingga tidak ada penetapan yang dapat dibatalkan.",
-  "subscriptions.err_history_later_billed": "Periode berikutnya sudah ditagih, sehingga penetapan ini tidak dapat dibatalkan.",
+  "subscriptions.err_history_later_billed": "Later periods are billed on {later}, so this document can't go back to review yet. Void {later} and use Reopen on their rows in the periods list first.",
   "subscriptions.summary_generated": "{ref} ditagih secara otomatis",
   "subscriptions.summary_sent": "{ref} dikirim secara otomatis",
   "subscriptions.summary_send_failed": "Gagal mengirim {ref}: {error}",
@@ -7139,10 +7139,10 @@
   "subscriptions.catchup_empty": "Tidak ada penagihan yang menunggu peninjauan.",
   "subscriptions.catchup_bill": "Tagih yang dipilih",
   "subscriptions.catchup_skip": "Lewati yang dipilih",
-  "subscriptions.summary_banner": "Sejak terakhir Anda melihat: {generated} dibuat, {sent} dikirim, {failed} pengiriman perlu diperiksa.",
+  "subscriptions.summary_banner": "Since you last looked: generated {generated}, sent {sent}, to check {failed}.",
   "subscriptions.summary_open": "Buka ringkasan",
   "subscriptions.summary_title": "Ringkasan penagihan otomatis",
-  "subscriptions.summary_counts": "Dibuat: {generated}, dikirim: {sent}, pengiriman perlu diperiksa: {failed}.",
+  "subscriptions.summary_counts": "Generated {generated}, sent {sent}, to check {failed}.",
   "subscriptions.summary_ack": "Tandai sudah dibaca",
   "subscriptions.summary_all": "Tampilkan semua",
   "subscriptions.summary_unread": "Tampilkan belum dibaca",
@@ -7302,5 +7302,8 @@
   "subscriptions.period_not_billing": "Tidak akan ditagih",
   "subscriptions.err_period_placed": "Periode ini memuat {ref}, ditetapkan dari penagihan sebelumnya. Gunakan Batalkan penetapan pada barisnya di daftar periode terlebih dahulu.",
   "subscriptions.err_ended_place_cancelled": "{ref} dibatalkan, jadi dokumen ini tidak dapat ditetapkan ke salah satu periodenya. Gunakan Sisihkan untuk menyelesaikan peninjauan dokumen lama.",
-  "subscriptions.err_ended_place_void": "{ref} berstatus tidak berlaku, jadi dokumen ini tidak dapat ditetapkan ke salah satu periodenya di sini. Gunakan Sisihkan untuk menyelesaikan peninjauan dokumen lama, atau batalkan status tidak berlaku {ref} di Dokumen terlebih dahulu."
+  "subscriptions.err_ended_place_void": "{ref} berstatus tidak berlaku, jadi dokumen ini tidak dapat ditetapkan ke salah satu periodenya di sini. Gunakan Sisihkan untuk menyelesaikan peninjauan dokumen lama, atau batalkan status tidak berlaku {ref} di Dokumen terlebih dahulu.",
+  "subscriptions.summary_window": "The summary covers the last {days} days.",
+  "subscriptions.summary_generation_failed_because": "Automatic billing failed for {ref}: {error}",
+  "subscriptions.err_period_placed_later_billed": "This period holds {ref}, placed here from earlier billing, and later periods are billed on {later}. Void {later} and use Reopen on their rows in the periods list, then use Withdraw placement on this period's row."
 }

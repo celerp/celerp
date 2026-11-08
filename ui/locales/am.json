@@ -7101,7 +7101,7 @@
   "subscriptions.err_history_not_candidate": "ያን ሰነድ ከዚያ ወቅት ጋር ማዛመድ አይቻልም። ለሰነዱ ከተዘረዘሩት ወቅቶች አንዱን ይምረጡ።",
   "subscriptions.err_period_skipped": "ያ ወቅት ታልፏል። ሰነድ ከማዛመድዎ በፊት ማለፉን ይቀልብሱ።",
   "subscriptions.err_history_not_confirmed": "ያ ሰነድ ከምንም ወቅት ጋር አልተዛመደም፣ ስለዚህ የሚቀለበስ ማዛመድ የለም።",
-  "subscriptions.err_history_later_billed": "በኋላ ላለ ወቅት አስቀድሞ ደረሰኝ ወጥቷል፣ ስለዚህ ይህን ማዛመድ መቀልበስ አይቻልም።",
+  "subscriptions.err_history_later_billed": "Later periods are billed on {later}, so this document can't go back to review yet. Void {later} and use Reopen on their rows in the periods list first.",
   "subscriptions.summary_generated": "ለ{ref} በራስ-ሰር ደረሰኝ ወጥቷል",
   "subscriptions.summary_sent": "{ref} በራስ-ሰር ተልኳል",
   "subscriptions.summary_send_failed": "{ref} መላክ አልተቻለም፦ {error}",
@@ -7139,10 +7139,10 @@
   "subscriptions.catchup_empty": "ግምገማ የሚጠብቅ የደረሰኝ ወቅት የለም።",
   "subscriptions.catchup_bill": "ለተመረጡት ደረሰኝ አውጣ",
   "subscriptions.catchup_skip": "የተመረጡትን ዝለል",
-  "subscriptions.summary_banner": "ከመጨረሻ እይታዎ ጀምሮ፦ የተፈጠሩ {generated}፣ የተላኩ {sent}፣ ለምርመራ የቀሩ መላኪያዎች {failed}።",
+  "subscriptions.summary_banner": "Since you last looked: generated {generated}, sent {sent}, to check {failed}.",
   "subscriptions.summary_open": "ማጠቃለያ ክፈት",
   "subscriptions.summary_title": "የራስ-ሰር ክፍያ ማጠቃለያ",
-  "subscriptions.summary_counts": "የተፈጠሩ {generated}፣ የተላኩ {sent}፣ ለምርመራ የቀሩ መላኪያዎች {failed}።",
+  "subscriptions.summary_counts": "Generated {generated}, sent {sent}, to check {failed}.",
   "subscriptions.summary_ack": "እንደተነበበ ምልክት አድርግ",
   "subscriptions.summary_all": "ሁሉንም አሳይ",
   "subscriptions.summary_unread": "ያልተነበቡትን አሳይ",
@@ -7302,5 +7302,8 @@
   "subscriptions.period_not_billing": "ደረሰኝ አይወጣም",
   "subscriptions.err_period_placed": "ይህ ወቅት ከቀድሞ ክፍያ የተዛመደውን {ref} ይዟል። መጀመሪያ በወቅቶች ዝርዝር ውስጥ ባለው ረድፉ ላይ ማዛመድን ቀልብስ ይጠቀሙ።",
   "subscriptions.err_ended_place_cancelled": "{ref} ተሰርዟል፣ ስለዚህ ይህ ሰነድ ከወቅቶቹ በአንዱ ሊዛመድ አይችልም። የቀድሞ ሰነዶቹን ግምገማ ለመጨረስ ወደ ጎን አስቀምጥ ይጠቀሙ።",
-  "subscriptions.err_ended_place_void": "{ref} ተሽሯል፣ ስለዚህ ይህ ሰነድ እዚህ ከወቅቶቹ በአንዱ ሊዛመድ አይችልም። የቀድሞ ሰነዶቹን ግምገማ ለመጨረስ ወደ ጎን አስቀምጥ ይጠቀሙ፣ ወይም መጀመሪያ በሰነዶች ውስጥ የ{ref}ን ሽረት ይቀልብሱ።"
+  "subscriptions.err_ended_place_void": "{ref} ተሽሯል፣ ስለዚህ ይህ ሰነድ እዚህ ከወቅቶቹ በአንዱ ሊዛመድ አይችልም። የቀድሞ ሰነዶቹን ግምገማ ለመጨረስ ወደ ጎን አስቀምጥ ይጠቀሙ፣ ወይም መጀመሪያ በሰነዶች ውስጥ የ{ref}ን ሽረት ይቀልብሱ።",
+  "subscriptions.summary_window": "The summary covers the last {days} days.",
+  "subscriptions.summary_generation_failed_because": "Automatic billing failed for {ref}: {error}",
+  "subscriptions.err_period_placed_later_billed": "This period holds {ref}, placed here from earlier billing, and later periods are billed on {later}. Void {later} and use Reopen on their rows in the periods list, then use Withdraw placement on this period's row."
 }

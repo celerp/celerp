@@ -3,16 +3,18 @@
 """What unattended billing did, derived on read from the agreements' period records.
 
 Nothing is copied: a billed period records when and whether it was billed unattended,
-and its send records each attempt. A user's acknowledgment is the keys of the rows the page they marked read showed,
-kept in the company settings per user; the summary hides those rows and nothing else. An
-unattended mode whose authorizer no longer holds its permission, and an email waiting to go
-out on its own, are shown while they last; an email that will not go on its own is a row like
-any other. A failed send keeps its reason as a catalog key, worded
-in the reader's language when read.
+and its send records each attempt. The summary covers SUMMARY_WINDOW back from now. A user's
+acknowledgment is the keys of the rows the page they marked read showed, kept in the company
+settings per user; the summary hides those rows and nothing else, and a key leaves storage with
+its row. An unattended mode whose authorizer no longer holds its permission, and an email
+waiting to go out on its own, are shown while they last; an email that will not go on its own is
+a row like any other. A failed send keeps its reason as a catalog key and a failed bill the
+refusal it met, each worded in the reader's language when read.
 """
 from __future__ import annotations
 
 import uuid
+from datetime import timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,9 +24,12 @@ from celerp.models.projections import Projection
 from celerp.services.business_time import company_today
 from celerp.services.company_lock import locked_company
 from celerp_subscriptions import billing
-from ui.i18n import t
+from ui.i18n import refusal_text, t
 
 ACK_SETTING = "subscription_summary_ack"
+# How far back the summary reads: a row whose time is older leaves it, and its key leaves
+# storage on the next Mark as read, so what one user stores stays bounded.
+SUMMARY_WINDOW = timedelta(days=90)
 KINDS = ("generated", "generation_failed", "sent", "send_failed", "send_sending", "send_unconfirmed",
          "send_pending", "billing_lapsed", "sending_lapsed")
 # Each billing.send_status and its summary kind. An email that waits to go out on its own is
@@ -36,6 +41,9 @@ _SEND_KINDS = {"sent": "sent", "failed": "send_failed", "sending": "send_sending
 # The send kinds someone may need to act on: every one but a sent email.
 TO_CHECK = tuple(dict.fromkeys(kind for kind in _SEND_KINDS.values() if kind != "sent"))
 _LAPSED = {"generation": "billing_lapsed", "sending": "sending_lapsed"}
+# The kinds someone may need to act on (counted "to check"), and those that only say what ran.
+NEEDS_YOU = (*TO_CHECK, "generation_failed", *_LAPSED.values())
+INFORMATIONAL = ("generated", "sent")
 
 
 def _key(row: dict) -> str:
@@ -128,7 +136,8 @@ async def modes_answer(session: AsyncSession, company_id, entity_id: str) -> dic
 
 async def _rows(session: AsyncSession, company_id, settings: dict) -> list[dict]:
     """Every row the summary can show, each with its ``key`` (None for one shown while it lasts:
-    an email waiting to go out on its own, a mode whose authorization lapsed)."""
+    an email waiting to go out on its own, a mode whose authorization lapsed). A keyed row whose
+    time is older than SUMMARY_WINDOW is left out (one whose time cannot be read stays)."""
     replayable = await billing.replayable_operations(session, company_id)
     today = await company_today(session, company_id)
     # One whose stored schedule can't be read reports nothing here; the list and its page name it.
@@ -157,19 +166,25 @@ async def _rows(session: AsyncSession, company_id, settings: dict) -> list[dict]
         if failure.get("at"):
             found.append({"entity_id": row.entity_id, "doc_id": row.entity_id,
                           "period_index": failure.get("period_index"),
-                          "kind": "generation_failed", "at": failure["at"]})
+                          "kind": "generation_failed", "at": failure["at"], "reason": failure.get("reason")})
         for mode in billing.modes_in_force(state):
             if await billing.authorizer(session, company_id, settings, state, mode) is None:
                 found.append({"entity_id": row.entity_id, "doc_id": None, "period_index": None,
                               "kind": _LAPSED[mode], "at": None, "lasts": True})
     named = {**docs, **await _states(session, company_id, {r["doc_id"] for r in found
                                                             if r["doc_id"] and r["doc_id"] not in docs})}
+    since = billing.now() - SUMMARY_WINDOW
     out = []
     for r in found:
-        ref = (named.get(r["doc_id"]) or {}).get("ref_id") or r["doc_id"]
         lasts = r.pop("lasts", False)
+        if not lasts and (at := billing.stamp_time(r["at"])) is not None and at < since:
+            continue
+        ref = (named.get(r["doc_id"]) or {}).get("ref_id") or r["doc_id"]
+        reason = refusal_text(r.pop("reason", None))
+        message = (t("subscriptions.summary_generation_failed_because", ref=ref, error=reason) if reason
+                   else _message(r["kind"], ref, r.get("error_key")))
         out.append({"retry_url": None, "again": False, **r, "ref_id": ref if r["doc_id"] else None,
-                    "message": _message(r["kind"], ref, r.get("error_key")), "key": None if lasts else _key(r)})
+                    "message": message, "key": None if lasts else _key(r)})
     return out
 
 

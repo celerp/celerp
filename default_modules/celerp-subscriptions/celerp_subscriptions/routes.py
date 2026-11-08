@@ -133,13 +133,27 @@ def _period_answer(state: dict, k: int) -> dict:
     return {"ok": True, "period": billing.period_row(Schedule.from_state(state), k)}
 
 
-async def _refuse_claimed(session, company_id, entry: dict) -> None:
-    """409 when the period is billed, naming the door that frees it: Withdraw placement for a
-    history placement, Reopen for a bill that no longer bills it (billing_doc), else Void. Its
-    callers answer billing.refuse_ended first, so on an ENDED agreement none of these is named."""
+async def _later_bills(session, company_id, periods: dict[str, dict], earliest: int) -> str:
+    """The refs of the bills (placements aside) of the periods after ``earliest``, oldest first:
+    while any is there a placement from ``earliest`` on cannot be withdrawn."""
+    return ", ".join([await billing.doc_ref(session, company_id, e["doc_id"])
+                      for i, e in sorted(periods.items(), key=lambda p: int(p[0]))
+                      if int(i) > earliest and e.get("state") == BILLED and not e.get("history")])
+
+
+async def _refuse_claimed(session, company_id, periods: dict[str, dict], k) -> None:
+    """409 when period ``k`` is billed, naming the door that frees it: Withdraw placement for a
+    history placement (after voiding and reopening the later bills that hold it, named), Reopen
+    for a bill that no longer bills it (billing_doc), else Void. Its callers answer
+    billing.refuse_ended first, so on an ENDED agreement none of these is named."""
+    entry = periods.get(str(k)) or {}
     if entry.get("state") == BILLED:
         ref = await billing.doc_ref(session, company_id, entry["doc_id"])
         if entry.get("history"):
+            if later := await _later_bills(session, company_id, periods,
+                                           min([*(entry.get("candidates") or []), int(k)])):
+                raise HTTPException(status_code=409, detail=t(
+                    "subscriptions.err_period_placed_later_billed", ref=ref, later=later))
             raise HTTPException(status_code=409, detail=t("subscriptions.err_period_placed", ref=ref))
         await billing.billing_doc(session, company_id, entry["doc_id"])
         raise HTTPException(status_code=409, detail=t("subscriptions.err_period_billed", ref=ref))
@@ -312,7 +326,8 @@ def _build_router() -> APIRouter:
         user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
-        """What unattended billing did since this user's acknowledgment (``all``: everything)."""
+        """What unattended billing did in the last SUMMARY_WINDOW, each row with the ``key`` Mark as
+        read posts for it: every row but those this user marked read (``all``: every row)."""
         return await summary.report(session, company_id, user.id, everything=all)
 
     @router.post("/summary/ack")
@@ -392,7 +407,7 @@ def _build_router() -> APIRouter:
         billing.refuse_ended(proj.state, entity_id)
         periods = _periods(proj.state)
         entry = periods.get(str(k)) or {}
-        await _refuse_claimed(session, company_id, entry)
+        await _refuse_claimed(session, company_id, periods, k)
         if entry.get("state") == SKIPPED:
             return _period_answer(proj.state, k)
         if entry.get("state") == UNRESOLVED:
@@ -414,7 +429,7 @@ def _build_router() -> APIRouter:
         if entry.get("state") == BILLED:
             doc = await billing.doc_state(session, company_id, entry["doc_id"])
             if not after_void or billing.bills(doc):
-                await _refuse_claimed(session, company_id, entry)
+                await _refuse_claimed(session, company_id, periods, k)
             release += 1  # the next document for this period takes a new claim key
             # The document let go never bills again: billing.guard_bill_status reads this.
             written["released_bills"] = {**(proj.state.get("released_bills") or {}), entry["doc_id"]: k}
@@ -561,7 +576,7 @@ def _build_router() -> APIRouter:
             raise HTTPException(status_code=409, detail=t("subscriptions.err_history_not_candidate"))
         await billing.require_history_document(session, company_id, entity_id, proj.state, doc_id)
         if entry.get("state") in CLAIMED_STATES:
-            await _refuse_claimed(session, company_id, entry)
+            await _refuse_claimed(session, company_id, periods, k)
             raise HTTPException(status_code=409, detail=t("subscriptions.err_period_skipped"))
         periods[k] = {"state": BILLED, "doc_id": doc_id, "release_count": entry.get("release_count", 0),
                       "candidates": row.get("candidates") or [], "history": True,
@@ -630,9 +645,9 @@ def _build_router() -> APIRouter:
         earliest = min([*candidates, *([k] if k is not None else [])], default=None)
         # Nothing bills again on an ENDED agreement, so a set-aside always goes back there: Set
         # aside, the way its review finishes, can be undone.
-        if earliest is not None and billing.ended_key(proj.state) is None and any(
-                int(i) > earliest and e.get("state") == BILLED and not e.get("history") for i, e in periods.items()):
-            raise HTTPException(status_code=409, detail=t("subscriptions.err_history_later_billed"))
+        if earliest is not None and billing.ended_key(proj.state) is None and (
+                later := await _later_bills(session, company_id, periods, earliest)):
+            raise HTTPException(status_code=409, detail=t("subscriptions.err_history_later_billed", later=later))
         for c in candidates:
             entry = periods.get(str(c)) or {}
             if c == k or entry.get("state") in (None, RELEASED):

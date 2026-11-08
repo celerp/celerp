@@ -7101,7 +7101,7 @@
   "subscriptions.err_history_not_candidate": "この書類をその期間に割り当てることはできません。表示された候補期間から選択してください。",
   "subscriptions.err_period_skipped": "この期間はスキップ済みです。書類を割り当てる前にスキップを取り消してください。",
   "subscriptions.err_history_not_confirmed": "この書類はどの期間にも割り当てられていないため、取り消す割り当てはありません。",
-  "subscriptions.err_history_later_billed": "後の期間がすでに請求済みのため、この割り当ては取り消せません。",
+  "subscriptions.err_history_later_billed": "Later periods are billed on {later}, so this document can't go back to review yet. Void {later} and use Reopen on their rows in the periods list first.",
   "subscriptions.summary_generated": "{ref}を自動請求しました",
   "subscriptions.summary_sent": "{ref}を自動送信しました",
   "subscriptions.summary_send_failed": "{ref}を送信できませんでした：{error}",
@@ -7139,10 +7139,10 @@
   "subscriptions.catchup_empty": "確認待ちの請求はありません。",
   "subscriptions.catchup_bill": "選択した期間を請求",
   "subscriptions.catchup_skip": "選択した期間をスキップ",
-  "subscriptions.summary_banner": "前回の確認以降：作成{generated}件、送信{sent}件、要確認の送信{failed}件。",
+  "subscriptions.summary_banner": "Since you last looked: generated {generated}, sent {sent}, to check {failed}.",
   "subscriptions.summary_open": "概要を開く",
   "subscriptions.summary_title": "自動請求の概要",
-  "subscriptions.summary_counts": "作成：{generated}件、送信：{sent}件、要確認の送信：{failed}件。",
+  "subscriptions.summary_counts": "Generated {generated}, sent {sent}, to check {failed}.",
   "subscriptions.summary_ack": "既読にする",
   "subscriptions.summary_all": "すべて表示",
   "subscriptions.summary_unread": "未読を表示",
@@ -7302,5 +7302,8 @@
   "subscriptions.period_not_billing": "請求されません",
   "subscriptions.err_period_placed": "この期間には過去の請求から割り当てた{ref}があります。先に期間一覧の該当行で「割り当てを取り消す」を使ってください。",
   "subscriptions.err_ended_place_cancelled": "{ref} はキャンセル済みのため、この書類をその期間に割り当てることはできません。過去の書類の確認を終えるには「対象外にする」を使ってください。",
-  "subscriptions.err_ended_place_void": "{ref} は無効になっているため、ここではこの書類をその期間に割り当てることはできません。過去の書類の確認を終えるには「対象外にする」を使うか、先に書類で{ref}の無効化を解除してください。"
+  "subscriptions.err_ended_place_void": "{ref} は無効になっているため、ここではこの書類をその期間に割り当てることはできません。過去の書類の確認を終えるには「対象外にする」を使うか、先に書類で{ref}の無効化を解除してください。",
+  "subscriptions.summary_window": "The summary covers the last {days} days.",
+  "subscriptions.summary_generation_failed_because": "Automatic billing failed for {ref}: {error}",
+  "subscriptions.err_period_placed_later_billed": "This period holds {ref}, placed here from earlier billing, and later periods are billed on {later}. Void {later} and use Reopen on their rows in the periods list, then use Withdraw placement on this period's row."
 }

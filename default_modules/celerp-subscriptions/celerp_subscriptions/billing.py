@@ -73,8 +73,17 @@ def now() -> datetime:
 
 
 def now_stamp() -> str:
-    """Wall-clock time of a record: what a summary acknowledgment compares."""
+    """Wall-clock time of a record, read back with stamp_time."""
     return now().isoformat()
+
+
+def stamp_time(at) -> datetime | None:
+    """A record's stored time in UTC (one with no zone is read as UTC); None when unreadable."""
+    try:
+        when = datetime.fromisoformat(str(at))
+    except ValueError:
+        return None
+    return when.astimezone(timezone.utc) if when.tzinfo else when.replace(tzinfo=timezone.utc)
 
 
 def retryable_attempt_time(created_at: datetime | None) -> bool:
@@ -860,19 +869,14 @@ def send_state(send: dict | None, now: datetime, *, emailed: bool = False,
     still be with the mail server (recorded as sending less than SEND_TIMEOUT ago), or
     "unconfirmed" (it may not have arrived). Since is when that state began: the time the
     record was written, except that a send cut off by age reads "unconfirmed" from the moment
-    it could no longer be with the mail server. A readable time is given in UTC (one with no
-    zone is read as UTC), so since compares with the summary's acknowledgment as text.
-    (None, None) when there is no record."""
+    it could no longer be with the mail server. A readable time is given in UTC (stamp_time), so
+    one reading has one since, which the summary row's key holds. (None, None) when there is no record."""
     send = send or {}
     recorded, at = send.get("state"), send.get("at")
     if recorded is None:
         return None, None
-    try:
-        began = datetime.fromisoformat(str(at))
-        began = began.astimezone(timezone.utc) if began.tzinfo else began.replace(tzinfo=timezone.utc)
+    if (began := stamp_time(at)) is not None:
         at = began.isoformat()
-    except ValueError:
-        began = None
     if recorded == "sent" or emailed:
         return "sent", at
     if recorded == "pending":
@@ -934,6 +938,14 @@ def entering_modes(before: dict, after: dict) -> list[str]:
     return [m for m in modes_in_force(after) if m not in running]
 
 
+def failure_reason(exc: Exception) -> dict:
+    """Why an unattended bill failed, stored with its billing_failure: ``reason``, the keyed
+    refusal Generate due gives for the same state; nothing for any other failure."""
+    from celerp.error_body import as_refusal, keyed
+    detail = as_refusal(exc.detail) if isinstance(exc, HTTPException) else None
+    return {"reason": detail} if keyed(detail) else {}
+
+
 async def run_due(*, session: AsyncSession, company_id, today: date, budget: int) -> OperationReport:
     """The dispatcher's billing pass for one company (the ``periodic_operation`` slot)."""
     report = OperationReport()
@@ -975,7 +987,7 @@ async def run_due(*, session: AsyncSession, company_id, today: date, budget: int
                     failed_period = k
                     await _bill(session, company, company_id, row.entity_id, proj.state, found[0], k, actor,
                                 auto=True, send=send)
-            except Exception:
+            except Exception as exc:
                 log.exception("Unattended billing of %s failed", row.entity_id)
                 if failed_period is not None:
                     try:
@@ -983,7 +995,8 @@ async def run_due(*, session: AsyncSession, company_id, today: date, budget: int
                         prior = proj.state.get("billing_failure") or {}
                         if prior.get("period_index") != failed_period:
                             await write_agreement(session, company_id, row.entity_id, {
-                                "billing_failure": {"period_index": failed_period, "at": now_stamp()},
+                                "billing_failure": {"period_index": failed_period, "at": now_stamp(),
+                                                    **failure_reason(exc)},
                             }, None)
                             await notify(session, company_id, "notice_billing_failed",
                                           "/subscriptions/summary")

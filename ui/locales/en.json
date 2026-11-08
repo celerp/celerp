@@ -7101,7 +7101,7 @@
   "subscriptions.err_history_not_candidate": "That document can't be placed in that period. Choose one of the periods listed for it.",
   "subscriptions.err_period_skipped": "That period is skipped. Undo the skip first to place a document in it.",
   "subscriptions.err_history_not_confirmed": "That document is not placed in a period, so there is nothing to withdraw.",
-  "subscriptions.err_history_later_billed": "A later period is already billed, so this placement can't be withdrawn.",
+  "subscriptions.err_history_later_billed": "Later periods are billed on {later}, so this document can't go back to review yet. Void {later} and use Reopen on their rows in the periods list first.",
   "subscriptions.summary_generated": "Billed {ref} automatically",
   "subscriptions.summary_sent": "Sent {ref} automatically",
   "subscriptions.summary_send_failed": "Could not send {ref}: {error}",
@@ -7139,10 +7139,10 @@
   "subscriptions.catchup_empty": "No billing is waiting for review.",
   "subscriptions.catchup_bill": "Bill selected",
   "subscriptions.catchup_skip": "Skip selected",
-  "subscriptions.summary_banner": "Since you last looked: generated {generated}, sent {sent}, sends to check {failed}.",
+  "subscriptions.summary_banner": "Since you last looked: generated {generated}, sent {sent}, to check {failed}.",
   "subscriptions.summary_open": "Open the summary",
   "subscriptions.summary_title": "Automatic billing summary",
-  "subscriptions.summary_counts": "Generated {generated}, sent {sent}, sends to check {failed}.",
+  "subscriptions.summary_counts": "Generated {generated}, sent {sent}, to check {failed}.",
   "subscriptions.summary_ack": "Mark as read",
   "subscriptions.summary_all": "Show all",
   "subscriptions.summary_unread": "Show unread",
@@ -7302,5 +7302,8 @@
   "subscriptions.period_not_billing": "Will not bill",
   "subscriptions.err_period_placed": "This period holds {ref}, placed here from earlier billing. Use Withdraw placement on its row in the periods list first.",
   "subscriptions.err_ended_place_cancelled": "{ref} is cancelled, so this document can't be placed in one of its periods. Use Set aside to finish the history review.",
-  "subscriptions.err_ended_place_void": "{ref} is void, so this document can't be placed in one of its periods here. Use Set aside to finish the history review, or unvoid {ref} in Documents first."
+  "subscriptions.err_ended_place_void": "{ref} is void, so this document can't be placed in one of its periods here. Use Set aside to finish the history review, or unvoid {ref} in Documents first.",
+  "subscriptions.summary_window": "The summary covers the last {days} days.",
+  "subscriptions.summary_generation_failed_because": "Automatic billing failed for {ref}: {error}",
+  "subscriptions.err_period_placed_later_billed": "This period holds {ref}, placed here from earlier billing, and later periods are billed on {later}. Void {later} and use Reopen on their rows in the periods list, then use Withdraw placement on this period's row."
 }

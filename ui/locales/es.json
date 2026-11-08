@@ -7101,7 +7101,7 @@
   "subscriptions.err_history_not_candidate": "Ese documento no se puede asignar a ese período. Elija uno de los períodos indicados para él.",
   "subscriptions.err_period_skipped": "Ese período se ha omitido. Deshaga primero la omisión para poder asignarle un documento.",
   "subscriptions.err_history_not_confirmed": "Ese documento no está asignado a ningún período, por lo que no hay ninguna asignación que retirar.",
-  "subscriptions.err_history_later_billed": "Ya se ha facturado un período posterior, así que no se puede retirar esta asignación.",
+  "subscriptions.err_history_later_billed": "Later periods are billed on {later}, so this document can't go back to review yet. Void {later} and use Reopen on their rows in the periods list first.",
   "subscriptions.summary_generated": "{ref} facturado automáticamente",
   "subscriptions.summary_sent": "{ref} enviado automáticamente",
   "subscriptions.summary_send_failed": "No se pudo enviar {ref}: {error}",
@@ -7139,10 +7139,10 @@
   "subscriptions.catchup_empty": "No hay facturas pendientes de revisión.",
   "subscriptions.catchup_bill": "Facturar seleccionados",
   "subscriptions.catchup_skip": "Omitir seleccionados",
-  "subscriptions.summary_banner": "Desde su última consulta: {generated} generados, {sent} enviados y {failed} envíos por revisar.",
+  "subscriptions.summary_banner": "Since you last looked: generated {generated}, sent {sent}, to check {failed}.",
   "subscriptions.summary_open": "Abrir resumen",
   "subscriptions.summary_title": "Resumen de facturación automática",
-  "subscriptions.summary_counts": "Generados: {generated}; enviados: {sent}; envíos por revisar: {failed}.",
+  "subscriptions.summary_counts": "Generated {generated}, sent {sent}, to check {failed}.",
   "subscriptions.summary_ack": "Marcar como leído",
   "subscriptions.summary_all": "Mostrar todos",
   "subscriptions.summary_unread": "Mostrar no leídos",
@@ -7302,5 +7302,8 @@
   "subscriptions.period_not_billing": "No se facturará",
   "subscriptions.err_period_placed": "Este período tiene asignado {ref}, de una facturación anterior. Use primero Retirar asignación en su fila de la lista de períodos.",
   "subscriptions.err_ended_place_cancelled": "{ref} está cancelada, así que este documento no puede asignarse a uno de sus períodos. Use Apartar para terminar la revisión de documentos anteriores.",
-  "subscriptions.err_ended_place_void": "{ref} está anulada, así que este documento no puede asignarse aquí a uno de sus períodos. Use Apartar para terminar la revisión de documentos anteriores, o quite primero la anulación de {ref} en Documentos."
+  "subscriptions.err_ended_place_void": "{ref} está anulada, así que este documento no puede asignarse aquí a uno de sus períodos. Use Apartar para terminar la revisión de documentos anteriores, o quite primero la anulación de {ref} en Documentos.",
+  "subscriptions.summary_window": "The summary covers the last {days} days.",
+  "subscriptions.summary_generation_failed_because": "Automatic billing failed for {ref}: {error}",
+  "subscriptions.err_period_placed_later_billed": "This period holds {ref}, placed here from earlier billing, and later periods are billed on {later}. Void {later} and use Reopen on their rows in the periods list, then use Withdraw placement on this period's row."
 }

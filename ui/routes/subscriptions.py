@@ -11,6 +11,7 @@ the agreement's periods are listed under the document.
 """
 from __future__ import annotations
 
+import json
 import logging
 from urllib.parse import urlencode, urlsplit
 
@@ -24,7 +25,7 @@ from celerp.output.document_context import prepare_document_output
 from celerp.services.record_quantities import template_label
 from celerp_subscriptions.billing import ENDED, bills, send_written
 from celerp_subscriptions.periods import shown
-from celerp_subscriptions.summary import TO_CHECK
+from celerp_subscriptions.summary import NEEDS_YOU, SUMMARY_WINDOW
 from ui.components.activity import change_text, format_timestamp, register_fields
 from ui.components.icons import import_icon
 from ui.components.operation_key import FIELD, operation_key_vals, operation_key_input, required_operation_key, submitted_operation_key
@@ -388,13 +389,15 @@ def _schedule_section(entity_id: str, sub: dict) -> FT:
     )
 
 
-def _bill_date_note(sub: dict, next_bill: str | None) -> FT:
+def _bill_date_note(entity_id: str, sub: dict, next_bill: str | None) -> FT:
     """Shows the first bill date until a period is billed, then the next bill date; for an
-    agreement that has ended, why it bills nothing."""
+    agreement that has ended, why it bills nothing, and on a void one a link to its document's
+    page, where Unvoid is (every refusal on a void agreement names it)."""
     billed = any((e or {}).get("state") == "billed" for e in (sub.get("periods") or {}).values())
     attrs = {"id": "sub-bill-note", "cls": "text-muted", "style": "font-size:.85em"}
     if sub.get("ended"):
-        return Span(sub["ended"], **attrs)
+        unvoid = (" ", A(t("doc.unvoid"), href=f"/docs/{entity_id}")) if sub.get("status") == "void" else ()
+        return Span(sub["ended"], *unvoid, **attrs)
     if not billed and (first := next_bill or sub.get("anchor_date")):
         return Span(sentence("subscriptions.first_bill_on", date=first), **attrs)
     if next_bill:
@@ -450,7 +453,7 @@ def _sub_action_controls(entity_id: str, sub: dict, next_bill: str | None = None
     The schedule itself is set in the Schedule section below the document.
     """
     status = sub.get("status", "draft")
-    note = _bill_date_note(sub, next_bill)
+    note = _bill_date_note(entity_id, sub, next_bill)
     if sub.get("not_moved") and status != "draft":
         # A template from an earlier release that is not on a schedule yet: say why. The
         # Schedule section's frequency and interval move it onto one.
@@ -747,13 +750,18 @@ _FIXED_IN_WEB_ACCESS = ("email.err_no_transport", "email.err_relay_refused")
 
 def _summary_table(rows: list[dict], subs: dict[str, dict]) -> FT:
     """What ran unattended, newest first, each row linked to its agreement and document;
-    an email not sent offers Send, Retry or Send again beside what happened to it, so the
-    action is in view without scrolling. A failure the email settings fix links to that page."""
+    an email not sent offers Send, Retry or Send again beside what happened to it, and a failed
+    bill Generate due, so the action is in view without scrolling. A failure the email settings
+    fix links to that page."""
     def _row(r: dict) -> FT:
         eid = r["entity_id"]
         doc = A(r.get("ref_id") or r["doc_id"], href=f"/docs/{r['doc_id']}") if r.get("doc_id") else "--"
         retry = (_send_button(r["retry_url"], r.get("send"), bool(r.get("again")), r["attempt"], back="summary")
                  if r.get("retry_url") else "")
+        if r["kind"] == "generation_failed":
+            fields = {"period_index": r["period_index"]} if r.get("period_index") is not None else {}
+            retry = Button(t("btn.generate_due"), cls="btn btn--secondary btn--sm", hx_swap="none",
+                           hx_post=f"/subscriptions/{eid}/generate-due", hx_vals=operation_key_vals(**fields))
         fix = (A(t("doc.send_relay_error_link"), href="/settings/cloud")
                if r.get("error_key") in _FIXED_IN_WEB_ACCESS else "")
         return Tr(Td(format_timestamp(r.get("at") or "") or "--"),
@@ -843,10 +851,19 @@ def _history_review(entity_id: str, review: list[dict], set_aside: list[dict]) -
 # Route setup
 # ---------------------------------------------------------------------------
 
+def _posted_keys(raw) -> object:
+    """The ``keys`` field Mark as read posts (one JSON list, so a page of any size is one field),
+    decoded and forwarded as sent: the API refuses anything but a list of keys."""
+    try:
+        return json.loads(raw or "")
+    except ValueError:
+        return raw
+
+
 def _sends_to_check(counts: dict) -> int:
-    """Sends that failed, were cut off, are with the mail server or still wait to go out: each is
-    listed on the summary."""
-    return sum(counts.get(k, 0) for k in TO_CHECK)
+    """Rows someone may need to act on (summary.NEEDS_YOU): a failed bill, a lapsed authorization,
+    and a send that failed, was cut off, is with the mail server or still waits to go out."""
+    return sum(counts.get(k, 0) for k in NEEDS_YOU)
 
 
 async def _held_and_unread(token: str) -> tuple[list[dict], dict, list[str]]:
@@ -1092,10 +1109,12 @@ def setup_routes(app) -> None:
         content = Div(
             page_header(title,
                         Button(t("subscriptions.summary_ack"), hx_post="/subscriptions/summary/ack", hx_swap="none",
-                               hx_vals={"key": [r["key"] for r in rows if r.get("key")]}, cls="btn btn--primary") if rows and not all else "",
+                               hx_vals={"keys": json.dumps([r["key"] for r in rows if r.get("key")])},
+                               cls="btn btn--primary") if rows and not all else "",
                         toggle),
             P(t("subscriptions.summary_counts", generated=counts.get("generated", 0), sent=counts.get("sent", 0),
-                failed=_sends_to_check(counts)), cls="text-muted"),
+                failed=_sends_to_check(counts)), " ", t("subscriptions.summary_window", days=SUMMARY_WINDOW.days),
+              cls="text-muted"),
             _summary_table(rows, subs) if rows else empty_state_cta(
                 t("subscriptions.summary_empty"), t("subscriptions.summary_all"), "/subscriptions/summary?all=1"),
             cls="page-content",
@@ -1108,7 +1127,7 @@ def setup_routes(app) -> None:
         if not token:
             return Response(status_code=401, headers={"HX-Redirect": "/login"})
         try:
-            await api.acknowledge_subscriptions_summary(token, (await request.form()).getlist("key"))
+            await api.acknowledge_subscriptions_summary(token, _posted_keys((await request.form()).get("keys")))
         except APIError as e:
             return _refused(e)
         return _done("/subscriptions/summary", t("subscriptions.done_summary_read"))
