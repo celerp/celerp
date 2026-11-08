@@ -10056,16 +10056,13 @@ async function _celerpRefreshHeldBadges() {{
     // already shown the error: send no request and report the save as failed so
     // callers that gate on a clean save hold position.
     if (lines === null) return false;
-    const sent = _celerpLineState(lines);
     // Persist even when empty if the doc had lines - deleting the last line must stick.
     // Skip only a blank doc that never had any lines (avoids a spurious empty save).
     // Return value: true when nothing needed saving or the save succeeded, false when a
     // save was attempted and failed, so callers that gate on a clean save (page navigation)
     // can hold position instead of discarding unsaved rows.
-    if (!lines.length && !_celerpHadLines) {{
-        window._celerpSavedLines = sent;
-        return true;
-    }}
+    if (!lines.length && !_celerpHadLines) return true;
+    const sent = _celerpLineState(lines);
     const hd = _celerpHeaderDiscount(lines.reduce((s, l) => s + l.line_total, 0));
     const statusEl = document.getElementById('save-status');
     const _docTaxesState = document.getElementById('doc-taxes-state');
