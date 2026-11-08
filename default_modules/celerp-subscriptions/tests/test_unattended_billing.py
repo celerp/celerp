@@ -1034,6 +1034,21 @@ async def test_a_failure_ended_another_way_leaves_no_row(client, session, monkey
     assert "billing_failure" not in await template(client, hd, eid)
 
 
+async def test_a_failure_on_the_first_of_several_due_periods_holds_from_pass_to_pass(client, session, monkeypatch):
+    """With several periods due, the failure is on the first, the one the next pass bills, so a
+    later pass that meets the same refusal keeps it as it was: not dropped and written again."""
+    _on(monkeypatch, "2026-07-15")
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    eid = await _auto(client, hd, start="2026-07-01", frequency="weekly", catchup=12, line_items=UNTAXED)
+    await tick(session, cid, "2026-07-15")
+    first = (await template(client, hd, eid))["billing_failure"]
+    assert first["period_index"] == 0
+    _on(monkeypatch, "2026-07-16")
+    await tick(session, cid, "2026-07-16")
+    assert (await template(client, hd, eid))["billing_failure"] == first
+
+
 async def test_only_a_failure_that_is_there_can_be_ended():
     """A cancel, a void or a billed period ends a failure only when the agreement has one, and only
     the period that failed."""
