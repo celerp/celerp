@@ -93,7 +93,9 @@ dev = [
     # <1.62: 1.62.0 hangs page teardown (tracing/close) under CI load, deadlocking
     # every browser shard at its first document page. Re-test before raising the cap.
     "playwright>=1.43,<1.62",
-    "pytest-playwright>=0.5",
+    # Pinned: its releases change the test ids (0.10 put the browser in every id it parametrizes),
+    # and the shard split's tests/.test_durations is keyed by those ids.
+    "pytest-playwright==0.10.0",
     "pytest-timeout>=2.3",
     "pytest-xdist>=3.5",
     # tests/lock_rank.py parses every lock statement and the test-only write observer
