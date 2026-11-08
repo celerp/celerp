@@ -458,7 +458,7 @@ async def test_the_status_guard_asks_the_actor_for_every_mode_a_change_brings_in
                     answers[name] = exc.status_code
             if to == "active":
                 assert answers["operator"] != 200 and answers["none"] != 200, (was, to, answers)
-                if not module_on and was in ("paused", "cancelled", "void"):
+                if was == "void" or (not module_on and was in ("paused", "cancelled")):
                     assert answers == {"operator": 403, "none": 403, "owner": 200}, (was, to, answers)
 
 
@@ -483,4 +483,31 @@ async def test_documents_unvoid_with_the_module_off_asks_for_the_modes_permissio
     _refused(r)
     assert (await template(client, hd, eid))["status"] == "void"
     assert (await client.post(f"/docs/{eid}/unvoid", headers=hd, json={})).status_code == 200
+    assert (await template(client, hd, eid))["status"] == "active"
+
+
+async def test_unvoid_with_the_module_on_again_asks_for_the_modes_permissions_only(client, session, monkeypatch):
+    """Voided in Documents while the module was off, an automatic agreement is unvoided once the
+    module is on again. Unvoid is the only way out of void (its own page writes no status on a
+    void agreement), so it is not sent back to that page: it asks only for the modes' permissions."""
+    from test_module_off_census import MODULE, _turn_off
+
+    freeze_day(monkeypatch, "2026-01-01")
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    eid = await agreement(client, hd, start="2026-01-01")
+    assert (await schedule(client, hd, eid, generation_mode="auto_invoice", catchup_periods=6)).status_code == 200
+    await tick(session, cid, "2026-01-01")
+    await _turn_off(client, hd, monkeypatch)
+    void = await client.post(f"/docs/{eid}/void", headers=hd, json={"reason": "stop it"})
+    assert void.status_code == 200, void.text
+    assert (await client.post(f"/companies/me/modules/{MODULE}/enable", headers=hd)).status_code == 200
+    monkeypatch.undo()
+    freeze_day(monkeypatch, "2026-01-01")
+    manager, _ = await member(client, session, hd, "manager")
+    await revoke(client, hd, "automate_billing", "manager")
+    _refused(await client.post(f"/docs/{eid}/unvoid", headers=manager, json={}))
+    assert (await template(client, hd, eid))["status"] == "void"
+    r = await client.post(f"/docs/{eid}/unvoid", headers=hd, json={})
+    assert r.status_code == 200, r.text
     assert (await template(client, hd, eid))["status"] == "active"

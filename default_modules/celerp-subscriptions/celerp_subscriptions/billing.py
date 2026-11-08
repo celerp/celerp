@@ -321,13 +321,14 @@ async def guard_agreement_status(*, session, entry, transition) -> None:
     """doc_status_guard: no write of a subscription document, by any writer, leaves its terms
     building no schedule (refuse_unbuildable_terms). The status of an agreement that runs an
     unattended mode, before or after the change, changes only in write_agreement (activate, pause, resume, cancel on its
-    own page). Every other writer (void, unvoid, finalize, revert, an import) is refused (409), and so
-    is any that would leave an agreement a status outside AGREEMENT_STATUSES. A draft starts only
+    own page). Every other writer (void, finalize, revert, an import) is refused (409), except Unvoid,
+    the only way out of void (write_agreement writes no status on a void agreement); so is any
+    that would leave an agreement a status outside AGREEMENT_STATUSES. A draft starts only
     through Activate, which writes its schedule, so a draft leaves draft elsewhere only by void;
     that refusal names Activate. An agreement without a schedule bills nothing (billable). A
-    company that turned the module off runs no mode, so Documents can stop its agreements; a
-    change that brings a mode into force for when it is turned on again (an unvoid) needs that
-    mode's permissions from whoever makes it, as in write_agreement."""
+    company that turned the module off runs no mode, so Documents can stop its agreements. A
+    change that brings a mode into force (an unvoid, or one made for when the module is turned on
+    again) needs that mode's permissions from whoever makes it, as in write_agreement."""
     from celerp.modules.registry import uses_module
 
     if transition.after.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
@@ -335,11 +336,11 @@ async def guard_agreement_status(*, session, entry, transition) -> None:
     refuse_unbuildable_terms(transition.before or {}, transition.after)
     if _WRITING.get() == entry.entity_id or (transition.before or {}).get("status") == transition.after.get("status"):
         return
+    status, was = transition.after.get("status"), (transition.before or {}).get("status")
     company = await session.get(Company, entry.company_id)
     in_force = modes_in_force(transition.before or {}) or modes_in_force(transition.after)
-    if in_force and company is not None and uses_module(company.settings, MODULE):
+    if was != "void" and in_force and company is not None and uses_module(company.settings, MODULE):
         raise HTTPException(status_code=409, detail=t("subscriptions.err_agreement_status_elsewhere"))
-    status, was = transition.after.get("status"), (transition.before or {}).get("status")
     if was == "draft" and status not in ("draft", "void"):
         raise HTTPException(status_code=409, detail=t("subscriptions.err_agreement_activate"))
     if status not in AGREEMENT_STATUSES:
