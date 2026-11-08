@@ -27410,5 +27410,15 @@
     "tests/test_browser/test_save_first_self_saving_fields.py::test_a_quantity_the_user_blanks_is_saved_first_and_refused[chromium]": 2.8560666579578537,
     "tests/test_browser/test_save_first_self_saving_fields.py::test_a_quantity_typed_then_written_off_from_the_field_is_saved_first[chromium]": 5.651447649026522,
     "tests/test_browser/test_save_first_self_saving_fields.py::test_a_reorder_line_shown_blank_leaves_every_action_its_request[chromium]": 2.7363633339991793,
-    "tests/test_browser/test_save_first_self_saving_fields.py::test_an_edit_made_while_a_save_is_in_flight_is_saved_before_issue[chromium]": 3.9480733090022113
+    "tests/test_browser/test_save_first_self_saving_fields.py::test_an_edit_made_while_a_save_is_in_flight_is_saved_before_issue[chromium]": 3.9480733090022113,
+    "tests/test_browser/test_save_first_self_saving_fields.py::test_a_preview_showing_why_it_cannot_leaves_issue_its_request[chromium]": 7.196746657980839,
+    "tests/test_browser/test_save_first_self_saving_fields.py::test_a_quantity_refused_on_its_way_stops_the_write_off_with_its_reason[chromium-5x]": 5.536164114979329,
+    "tests/test_browser/test_save_first_self_saving_fields.py::test_a_quantity_refused_on_its_way_stops_the_write_off_with_its_reason[chromium-9]": 6.320731189975049,
+    "tests/test_browser/test_save_first_self_saving_fields.py::test_a_quantity_whose_save_fails_stops_the_write_off[chromium]": 5.439755560975755,
+    "tests/test_browser/test_save_first_self_saving_fields.py::test_a_refusal_already_shown_stops_the_write_off[chromium]": 6.877713889989536,
+    "tests/test_browser/test_save_first_self_saving_fields.py::test_a_refused_quantity_is_corrected_in_its_own_cell[chromium]": 5.960784834023798,
+    "tests/test_browser/test_save_first_self_saving_fields.py::test_an_open_quantity_editor_holding_a_new_value_stops_the_write_off[chromium]": 5.19999147800263,
+    "tests/test_browser/test_save_first_self_saving_fields.py::test_issue_clicked_straight_from_the_due_date_follows_its_save[chromium-failed]": 3.1604040150123183,
+    "tests/test_browser/test_save_first_self_saving_fields.py::test_issue_clicked_straight_from_the_due_date_follows_its_save[chromium-refused]": 2.585542319022352,
+    "tests/test_browser/test_save_first_self_saving_fields.py::test_issue_clicked_straight_from_the_due_date_follows_its_save[chromium-saved]": 2.108012075012084
 }
