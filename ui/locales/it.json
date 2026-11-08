@@ -7260,6 +7260,7 @@
   "subscriptions.err_bill_not_active": "Solo un abbonamento attivo genera fatture e questo non è attivo. Lo riporti allo stato di bozza in Documenti, poi lo attivi dalla sua pagina.",
   "subscriptions.err_agreement_activate": "Un abbonamento in bozza può iniziare solo tramite «Attiva» nella sua pagina, che imposta la data della prima fatturazione. Da Documenti è possibile invalidarlo, ma non finalizzarlo né emetterlo.",
   "subscriptions.err_bill_refused": "{ref} non può fatturare. {reason} Annulla questo abbonamento e creane uno nuovo che possa farlo.",
+  "subscriptions.err_bill_refused_draft": "{ref} non può fatturare. {reason} Correggilo in questa pagina, poi attivalo.",
   "subscriptions.err_agreement_status_lifecycle": "Un abbonamento può essere solo in bozza, attivo, in pausa, cancellato o invalidato. Ne modifichi lo stato nella sua pagina: lo attivi, lo sospenda, lo riprenda o lo cancelli. In Documenti può invalidarlo, annullarne l'invalidamento o riportarlo in bozza.",
   "subscriptions.runs_generation": "La fatturazione automatica è attiva ed è stata autorizzata da {name}.",
   "subscriptions.runs_sending": "Ogni fattura viene inviata automaticamente al cliente via e-mail, con l'autorizzazione di {name}.",

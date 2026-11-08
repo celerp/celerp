@@ -7260,6 +7260,7 @@
   "subscriptions.err_bill_not_active": "Hanya langganan aktif yang dapat ditagihkan, sedangkan langganan ini tidak aktif. Kembalikan ke draf di Dokumen, lalu aktifkan dari halaman langganan tersebut.",
   "subscriptions.err_agreement_activate": "Langganan yang masih berupa draf hanya dapat dimulai dengan tindakan Aktifkan pada halamannya sendiri, yang menetapkan tanggal tagihan pertama. Melalui Dokumen, langganan dapat dinyatakan tidak berlaku, tetapi tidak dapat difinalisasi atau diterbitkan.",
   "subscriptions.err_bill_refused": "{ref} tidak dapat menagih. {reason} Batalkan langganan ini dan buat langganan baru yang dapat menagih.",
+  "subscriptions.err_bill_refused_draft": "{ref} tidak dapat menagih. {reason} Ubah hal itu di halaman ini, lalu aktifkan.",
   "subscriptions.err_agreement_status_lifecycle": "Status langganan hanya dapat berupa draf, aktif, dijeda, dibatalkan, atau tidak berlaku. Ubah statusnya melalui halaman langganan itu sendiri: aktifkan, jeda, lanjutkan, atau batalkan di sana. Melalui Dokumen, Anda dapat menyatakannya tidak berlaku, membatalkan status tidak berlakunya, atau mengembalikannya ke draf.",
   "subscriptions.runs_generation": "Penagihan otomatis sedang berjalan dengan otorisasi dari {name}.",
   "subscriptions.runs_sending": "Setiap tagihan dikirim secara otomatis melalui email kepada pelanggan dengan otorisasi dari {name}.",

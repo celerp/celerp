@@ -268,6 +268,7 @@ NAMED_DOORS = {
     "subscriptions.err_early_due": ("generate-due", "test_billing_answers"),
     "subscriptions.err_agreement_status_lifecycle": ("status actions", "test_consent_doors"),
     "subscriptions.err_bill_refused": ("cancel, new subscription", "test_bill_refusal_doors"),
+    "subscriptions.err_bill_refused_draft": ("+ Add item, activate", "test_bill_refusal_doors"),
 }
 
 

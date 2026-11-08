@@ -558,26 +558,31 @@ async def bill_document(session, company: Company, tid: str, state: dict, schedu
 
 class BillRefused(HTTPException):
     """A refusal the bill path met (409): the agreement as the subscriptions list names it, the
-    reason inside, then the one way out an agreement whose bill is refused has, since nothing on it
-    changes once activated: cancel it and create a new subscription that bills."""
+    reason inside, then the one way out its status leaves. A draft's lines still change on its
+    page, so a draft is told to change them there and Activate; nothing on an activated agreement
+    changes, so it is told to cancel it and create a new subscription that bills."""
 
     def __init__(self, state: dict, tid: str, exc: Exception):
         from celerp.error_body import as_refusal
 
+        key = "subscriptions.err_bill_refused_draft" if state.get("status") == "draft" else "subscriptions.err_bill_refused"
         super().__init__(status_code=409, detail=catalog_refusal(
-            "subscriptions.err_bill_refused", ref=template_label(state, tid), reason=as_refusal(exc.detail)))
+            key, ref=template_label(state, tid), reason=as_refusal(exc.detail)))
 
 
 class _Unkept(Exception):
     """Ends bill_refusal's savepoint after a bill the path accepted, so nothing it wrote is kept."""
 
 
-async def bill_refusal(session, company: Company, tid: str, state: dict, actor) -> BillRefused | None:
-    """Why the agreement's next bill would be refused, or None: the bill path itself (_bill) run
-    on ``state`` for its oldest open period inside a savepoint that is rolled back, so its
-    refusals are the path's own and nothing it wrote is kept. The doors that make an agreement
-    bill (Activate, Resume, Bill automatically) ask it, holding the company lock first. Objects the
+async def bill_refusal(session, company: Company, tid: str, held: dict, changes: dict,
+                       actor) -> BillRefused | None:
+    """Why the agreement's next bill would be refused once ``changes`` are written over ``held``,
+    or None: the bill path itself (_bill) run on the result for its oldest open period inside a
+    savepoint that is rolled back, so its refusals are the path's own and nothing it wrote is kept.
+    The refusal names the way out ``held``'s status leaves. The doors that make an agreement bill
+    (Activate, Resume, Bill automatically) ask it, holding the company lock first. Objects the
     path changed are read again afterwards, so the caller reads what it held before asking."""
+    state = {**held, **changes}
     k = Schedule.from_state(state).oldest_open(floor=review_floor(state))
     if k is None:
         return None
@@ -590,7 +595,7 @@ async def bill_refusal(session, company: Company, tid: str, state: dict, actor) 
     except _Unkept:
         pass
     except BillRefused as exc:
-        refused = exc
+        refused = BillRefused(held, tid, exc.__cause__)
     await session.refresh(company)
     return refused
 

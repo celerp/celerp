@@ -7260,6 +7260,7 @@
   "subscriptions.err_bill_not_active": "Chỉ gói đăng ký đang hoạt động mới được lập hóa đơn, còn gói này không hoạt động. Hãy đưa về bản nháp trong mục Chứng từ, sau đó kích hoạt trên trang của gói đăng ký.",
   "subscriptions.err_agreement_activate": "Gói đăng ký ở trạng thái nháp chỉ bắt đầu khi dùng lệnh Kích hoạt trên chính trang của nó. Thao tác này đặt ngày lập hóa đơn đầu tiên. Trong mục Chứng từ, bạn có thể vô hiệu hóa gói đăng ký, nhưng không thể hoàn tất hoặc phát hành nó.",
   "subscriptions.err_bill_refused": "{ref} không thể lập hóa đơn. {reason} Hãy hủy gói đăng ký này và tạo gói mới có thể lập hóa đơn.",
+  "subscriptions.err_bill_refused_draft": "{ref} không thể lập hóa đơn. {reason} Hãy sửa điều đó trên trang này rồi kích hoạt.",
   "subscriptions.err_agreement_status_lifecycle": "Gói đăng ký chỉ có thể ở một trong các trạng thái: nháp, đang hoạt động, tạm dừng, đã hủy hoặc vô hiệu. Hãy thay đổi trạng thái trên trang của gói: kích hoạt, tạm dừng, tiếp tục hoặc hủy tại đó. Trong mục Chứng từ, bạn có thể vô hiệu hóa, bỏ trạng thái vô hiệu hoặc đưa gói về bản nháp.",
   "subscriptions.runs_generation": "Tính năng lập hóa đơn tự động đang hoạt động, được {name} cho phép.",
   "subscriptions.runs_sending": "Mỗi hóa đơn được tự động gửi qua email cho khách hàng, theo sự cho phép của {name}.",

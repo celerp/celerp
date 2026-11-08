@@ -3,7 +3,8 @@
 """Nothing on an agreement changes once it is active, so the one way out of a bill that is refused
 is to cancel the agreement and create a new one. Every refusal the bill path raises (_bill: the
 document it makes and finalize's checks, its stock included) reaches the user as
-subscriptions.err_bill_refused naming that way out. billing.bill_refusal is the same path run
+subscriptions.err_bill_refused naming that way out. A draft's lines still change on its page, so
+Activate on a draft answers subscriptions.err_bill_refused_draft: change that there, then Activate. billing.bill_refusal is the same path run
 inside a savepoint that is rolled back, so the doors that make an agreement bill (Activate,
 Resume, Bill automatically) refuse exactly what its bills would. The check is at those doors
 only: recording what happened to a bill already made is never refused.
@@ -36,6 +37,7 @@ from ui.i18n import t  # noqa: E402
 DAY = "2026-03-01"
 UNTAXED = [{**LINE, "taxes": None}]
 REFUSED = "subscriptions.err_bill_refused"
+REFUSED_DRAFT = "subscriptions.err_bill_refused_draft"
 
 # Agreement content each bill check refuses, with the reason the refusal carries.
 MAKERS = {
@@ -62,12 +64,13 @@ def _reason(r) -> str | None:
     return r.json()["detail"]["params"]["reason"]["message_key"]
 
 
-def _says(r, ref: str) -> None:
-    """The refusal names the reason inside, then the one way out: cancel it and create a new one."""
+def _says(r, ref: str, key: str = REFUSED) -> None:
+    """The refusal names the reason inside, then the one way out its status leaves: cancel it and
+    create a new one, or for a draft (``REFUSED_DRAFT``) change that on its page and Activate."""
     detail = r.json()["detail"]
     reason = detail["params"]["reason"]
-    assert r.status_code == 409 and detail["message_key"] == REFUSED, r.text
-    assert detail["message"] == t(REFUSED, "en", ref=ref, reason=t(reason["message_key"], "en", **reason["params"]))
+    assert r.status_code == 409 and detail["message_key"] == key, r.text
+    assert detail["message"] == t(key, "en", ref=ref, reason=t(reason["message_key"], "en", **reason["params"]))
 
 
 async def _stored(session, client, hd, eid: str, **fields) -> None:
@@ -217,13 +220,14 @@ async def test_lines_stored_as_anything_but_mappings_bill_nothing_and_are_refuse
 
 
 async def test_activate_refuses_a_draft_its_bill_refuses(client, owner_ui, monkeypatch):
-    """A draft whose line has no tax chosen: Activate answers err_bill_refused, the draft stays a
-    draft (its lines still change on its page), and once they bill Activate accepts."""
+    """A draft whose line has no tax chosen: Activate answers err_bill_refused_draft, the draft stays
+    a draft (its lines still change on its page, as the refusal says), and once they bill Activate
+    accepts."""
     freeze_day(monkeypatch, DAY)
     hd = owner_ui.api.headers
     eid = await agreement(client, hd, start=DAY, activate=False, line_items=UNTAXED)
     ref = (await template(client, hd, eid))["ref_id"]
-    _says(await client.post(f"/subscriptions/{eid}/activate", headers=hd), ref)
+    _says(await client.post(f"/subscriptions/{eid}/activate", headers=hd), ref, REFUSED_DRAFT)
     assert (await template(client, hd, eid))["status"] == "draft"
     assert t("btn._add_item", "en") in await _page(owner_ui, eid)
     doc = await template(client, hd, eid)
@@ -243,7 +247,8 @@ async def test_an_id_holding_a_nul_is_not_found(client, monkeypatch):
 
 async def test_new_subscription_then_activate_with_no_line_is_refused_where_the_user_is(owner_ui, monkeypatch):
     """The journey through the pages: New Subscription, then Activate before any line. The refusal
-    shows on the agreement's page, which stays a draft offering + Add item."""
+    shows on the agreement's page, naming the way out that page offers (change it there, then
+    Activate): it stays a draft offering + Add item and Activate."""
     freeze_day(monkeypatch, DAY)
     r = await owner_ui.post("/subscriptions/new?direction=sales")
     eid = r.headers["HX-Redirect"].rsplit("/", 1)[1]
@@ -251,9 +256,10 @@ async def test_new_subscription_then_activate_with_no_line_is_refused_where_the_
     r = await owner_ui.post(f"/subscriptions/{eid}/activate")
     assert "HX-Redirect" not in r.headers
     toast = json.loads(r.headers["HX-Trigger"])["celerpToast"]
-    assert toast["message"] == t(REFUSED, "en", ref=ref, reason=t("documents.err_finalize_no_lines", "en")), toast
+    assert toast["message"] == t(REFUSED_DRAFT, "en", ref=ref, reason=t("documents.err_finalize_no_lines", "en")), toast
     assert (await owner_ui.api.get(f"/docs/{eid}")).json()["status"] == "draft"
-    assert t("btn._add_item", "en") in await _page(owner_ui, eid)
+    page = await _page(owner_ui, eid)
+    assert t("btn._add_item", "en") in page and f'hx-post="/subscriptions/{eid}/activate"' in page
 
 
 # --- Recording the send of a bill already made is never refused for the next bill ---

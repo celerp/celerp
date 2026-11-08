@@ -7260,6 +7260,7 @@
   "subscriptions.err_bill_not_active": "Solo las suscripciones activas generan facturas, y esta no está activa. Devuélvala al estado de borrador en Documentos y, después, actívela desde su página.",
   "subscriptions.err_agreement_activate": "Una suscripción en borrador solo se inicia mediante «Activar» en su propia página, lo que establece la fecha de la primera facturación. Desde Documentos puede anularla, pero no finalizarla ni emitirla.",
   "subscriptions.err_bill_refused": "{ref} no puede facturar. {reason} Cancele esta suscripción y cree una nueva que sí pueda.",
+  "subscriptions.err_bill_refused_draft": "{ref} no puede facturar. {reason} Cámbielo en esta página y luego actívela.",
   "subscriptions.err_agreement_status_lifecycle": "Una suscripción solo puede estar en estado de borrador, activa, pausada, cancelada o anulada. Cambie su estado desde su propia página: actívela, páusela, reanúdela o cancélela allí. En Documentos puede anularla, quitar su anulación o devolverla a borrador.",
   "subscriptions.runs_generation": "La facturación automática está en funcionamiento, autorizada por {name}.",
   "subscriptions.runs_sending": "Cada factura se envía automáticamente por correo electrónico al cliente, con autorización de {name}.",

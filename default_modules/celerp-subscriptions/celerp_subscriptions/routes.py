@@ -553,7 +553,7 @@ def _build_router() -> APIRouter:
             if any(schedule.service_end(k) != previous.service_end(k) for k in claimed):
                 raise HTTPException(status_code=409, detail=t("subscriptions.err_term_cuts_claimed"))
         if "generation" in billing.entering_modes(state, merged) and (
-                refused := await billing.bill_refusal(session, company, entity_id, merged, user)) is not None:
+                refused := await billing.bill_refusal(session, company, entity_id, state, changes, user)) is not None:
             raise refused
         await _write(session, company_id, entity_id, changes, user)
         return {"ok": True, "next_bill_date": next_bill_date(merged), "sending_off": sending_off}
@@ -713,7 +713,7 @@ def _build_router() -> APIRouter:
                     skipped.append(billing.period_row(schedule, k))
                 k += 1
             changes["periods"] = periods
-        if (refused := await billing.bill_refusal(session, company, entity_id, {**state, **changes}, user)) is not None:
+        if (refused := await billing.bill_refusal(session, company, entity_id, state, changes, user)) is not None:
             raise refused
         await _write(session, company_id, entity_id, changes, user,
                      drop=("resume_restarts",) if "resume_restarts" in state else ())
@@ -756,7 +756,7 @@ def _build_router() -> APIRouter:
             raise HTTPException(status_code=409, detail=t("subscriptions.err_activate_not_draft"))
         changes = {"status": "active", **await _first_schedule(session, company_id, proj.state)}
         merged = {**proj.state, **changes}
-        if (refused := await billing.bill_refusal(session, company, entity_id, merged, user)) is not None:
+        if (refused := await billing.bill_refusal(session, company, entity_id, proj.state, changes, user)) is not None:
             raise refused
         await _write(session, company_id, entity_id, changes, user)
         return {"ok": True, "next_bill_date": next_bill_date(merged),

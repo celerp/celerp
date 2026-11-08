@@ -395,7 +395,7 @@ def to_check_readers() -> list[tuple[str, str]]:
 
 
 # A refusal names a door when its English tells the person which action to use instead.
-DOOR_WORDS = re.compile(r"\bUse |\b[Uu]nvoid\b|\bReopen\b|Withdraw placement|Set aside|\b[Vv]oid \{|Generate due|Cancel this subscription")
+DOOR_WORDS = re.compile(r"\bUse |\b[Uu]nvoid\b|\bReopen\b|Withdraw placement|Set aside|\b[Vv]oid \{|Generate due|Cancel this subscription|then Activate")
 
 
 def named_door_refusals() -> list[tuple[str, str]]:
