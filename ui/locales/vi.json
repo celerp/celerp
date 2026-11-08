@@ -4618,6 +4618,7 @@
   "documents.err_credit_over_invoice": "Giấy báo có không thể lớn hơn hóa đơn mà nó ghi có. Hãy giảm số tiền trên giấy báo có.",
   "documents.err_send_void": "Chứng từ này đã bị hủy nên không thể gửi. Hãy bỏ hủy trước nếu cần gửi.",
   "documents.err_send_type": "Loại chứng từ này không thể gửi cho liên hệ. Chỉ chứng từ khách hàng và nhà cung cấp mới gửi được.",
+  "documents.err_finalize_no_lines": "Thêm ít nhất một dòng hàng trước khi hoàn tất chứng từ này.",
   "documents.err_finalize_void": "Chứng từ này đã bị hủy nên không thể hoàn tất. Hãy bỏ hủy trước.",
   "documents.err_void_delivered": "Hàng trên chứng từ này đã được giao nên chưa thể hủy. Hãy hoàn tác việc giao hàng (nhận hàng lại) trước, rồi hủy chứng từ.",
   "documents.err_close_not_memo": "Chỉ phiếu ký gửi mới có thể đóng. Chứng từ này không phải phiếu ký gửi.",

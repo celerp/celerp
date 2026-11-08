@@ -4692,6 +4692,7 @@
   "documents.err_credit_over_invoice": "A credit note can't be larger than the invoice it credits. Lower the amounts on the credit note.",
   "documents.err_send_void": "This document is void, so it can't be sent. Unvoid it first if you need to send it.",
   "documents.err_send_type": "This kind of document can't be sent to a contact. Only customer and supplier documents can be sent.",
+  "documents.err_finalize_no_lines": "Add at least one line item before finalizing this document.",
   "documents.err_finalize_void": "This document is void, so it can't be finalized. Unvoid it first.",
   "documents.err_void_delivered": "Goods on this document have been delivered, so it can't be voided yet. Undo the delivery (receive the goods back) first, then void it.",
   "documents.err_close_not_memo": "Only a memo can be closed. This document isn't a memo.",

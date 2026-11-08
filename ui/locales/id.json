@@ -4618,6 +4618,7 @@
   "documents.err_credit_over_invoice": "Nota kredit tidak boleh lebih besar dari faktur yang dikreditkannya. Turunkan jumlah di nota kredit.",
   "documents.err_send_void": "Dokumen ini dibatalkan, jadi tidak bisa dikirim. Batalkan pembatalannya dulu jika perlu mengirimnya.",
   "documents.err_send_type": "Jenis dokumen ini tidak bisa dikirim ke kontak. Hanya dokumen pelanggan dan pemasok yang bisa dikirim.",
+  "documents.err_finalize_no_lines": "Tambahkan setidaknya satu baris item sebelum memfinalkan dokumen ini.",
   "documents.err_finalize_void": "Dokumen ini dibatalkan, jadi tidak bisa difinalisasi. Batalkan pembatalannya dulu.",
   "documents.err_void_delivered": "Barang di dokumen ini sudah dikirim, jadi belum bisa dibatalkan. Batalkan pengiriman dulu (terima barangnya kembali), lalu batalkan dokumennya.",
   "documents.err_close_not_memo": "Hanya memo yang bisa ditutup. Dokumen ini bukan memo.",

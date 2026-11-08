@@ -383,7 +383,6 @@ _PRE_EXISTING_RAW_HTTPEXCEPTION = {
     "default_modules/celerp-docs/celerp_docs/routes.py": {
         "Cannot send a closed memo; reopen it first.",
         "Add at least one line item before sending this document.",
-        "Add at least one line item before finalizing this document.",
         "Cannot void a document with payments; void the payments first",
         "Cannot revert to draft while goods received on this document are still in stock. "
         "Select those lines and use Return Goods first, then revert.",

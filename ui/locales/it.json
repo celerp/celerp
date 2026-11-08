@@ -4618,6 +4618,7 @@
   "documents.err_credit_over_invoice": "Una nota di credito non può superare la fattura a cui si riferisce. Riduci gli importi della nota di credito.",
   "documents.err_send_void": "Questo documento è annullato, quindi non può essere inviato. Ripristinalo prima se devi inviarlo.",
   "documents.err_send_type": "Questo tipo di documento non può essere inviato a un contatto. Si possono inviare solo documenti di clienti e fornitori.",
+  "documents.err_finalize_no_lines": "Aggiungi almeno una riga prima di finalizzare questo documento.",
   "documents.err_finalize_void": "Questo documento è annullato, quindi non può essere finalizzato. Ripristinalo prima.",
   "documents.err_void_delivered": "La merce di questo documento è stata consegnata, quindi non può ancora essere annullato. Annulla prima la consegna (riprendi la merce), poi annullalo.",
   "documents.err_close_not_memo": "Solo un documento di conto visione può essere chiuso. Questo documento non lo è.",

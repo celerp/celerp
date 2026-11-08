@@ -4618,6 +4618,7 @@
   "documents.err_credit_over_invoice": "クレジットノートは元の請求書より大きくできません。クレジットノートの金額を減らしてください。",
   "documents.err_send_void": "この書類は無効のため送信できません。送信が必要な場合は、先に無効を取り消してください。",
   "documents.err_send_type": "この種類の書類は連絡先に送信できません。送信できるのは顧客と仕入先の書類だけです。",
+  "documents.err_finalize_no_lines": "このドキュメントを確定する前に、明細行を1行以上追加してください。",
   "documents.err_finalize_void": "この書類は無効のため確定できません。先に無効を取り消してください。",
   "documents.err_void_delivered": "この書類の商品は納品済みのため、まだ無効にできません。先に納品を取り消して (商品を戻して) から、無効にしてください。",
   "documents.err_close_not_memo": "クローズできるのはメモだけです。この書類はメモではありません。",

@@ -2724,6 +2724,25 @@ async def _shared_lots(session, company_id, entity_id: str, state: dict) -> list
 _BILL_POSTED = frozenset({"purchase_order", "bill"})
 
 
+async def refuse_unfinalizable(session: AsyncSession, company_id, settings: dict, state: dict) -> None:
+    """Every refusal finalizing raises on the document's own content (its lines, their taxes,
+    prices and accounts, its currency), before it reads any stock. finalize_document asks it,
+    and so does a module that must know a document it is about to make will finalize."""
+    from celerp.services import auto_je
+
+    lines = state.get("line_items") or []
+    if not lines:
+        raise HTTPException(status_code=422, detail=catalog_refusal("documents.err_finalize_no_lines"))
+    refuse_unset_line_tax(lines)
+    doc_type = state.get("doc_type")
+    if doc_type in _BILL_POSTED or doc_type == "consignment_in":
+        refuse_unpriced_lines(state)
+    auto_je.refuse_unissuable_taxes(settings, doc_type, state)
+    if doc_type in _BILL_POSTED:
+        await require_line_destinations(session, company_id, lines)
+    _require_doc_rate_http(state, settings.get("currency", "USD"))
+
+
 async def finalize_document(
     entity_id: str,
     company_id: str,
@@ -2747,14 +2766,7 @@ async def finalize_document(
         raise HTTPException(status_code=409, detail=t("documents.err_finalize_void"))
     if row.state.get("finalized"):
         return {"event_id": None, "already_finalized": True}
-    if not (row.state.get("line_items") or []):
-        raise HTTPException(status_code=422, detail="Add at least one line item before finalizing this document.")
-    refuse_unset_line_tax(row.state["line_items"])
-    if row.state.get("doc_type") in _BILL_POSTED or row.state.get("doc_type") == "consignment_in":
-        refuse_unpriced_lines(row.state)
-    auto_je.refuse_unissuable_taxes((_company.settings or {}) if _company else {}, row.state.get("doc_type"), row.state)
-    if row.state.get("doc_type") in _BILL_POSTED:
-        await require_line_destinations(session, company_id, row.state["line_items"])
+    await refuse_unfinalizable(session, company_id, (_company.settings or {}) if _company else {}, row.state)
     if row.state.get("doc_type") == "invoice":
         await _refuse_unsellable_lots(session, company_id, entity_id, row.state)
         await _refuse_unfillable_invoice_lines(session, company_id, entity_id, row.state,
@@ -2771,8 +2783,6 @@ async def finalize_document(
     event_type = "doc.finalized"
 
     _base_currency = (_company.settings.get("currency", "USD") if _company else "USD")
-
-    _require_doc_rate_http(_initial_doc_state, _base_currency)
     # Locked, so the invoice's currency is checked as its last writer left it.
     _cn_invoice = await credit_note_original(session, company_id, _initial_doc_state, for_update=True)
     _cn_invoice_state = dict(_cn_invoice.state) if _cn_invoice is not None else None

@@ -4618,6 +4618,7 @@
   "documents.err_credit_over_invoice": "Un avoir ne peut pas dépasser la facture qu'il crédite. Diminuez les montants de l'avoir.",
   "documents.err_send_void": "Ce document est annulé, il ne peut donc pas être envoyé. Rétablissez-le d'abord si vous devez l'envoyer.",
   "documents.err_send_type": "Ce type de document ne peut pas être envoyé à un contact. Seuls les documents clients et fournisseurs peuvent être envoyés.",
+  "documents.err_finalize_no_lines": "Ajoutez au moins une ligne avant de finaliser ce document.",
   "documents.err_finalize_void": "Ce document est annulé, il ne peut donc pas être finalisé. Rétablissez-le d'abord.",
   "documents.err_void_delivered": "Des marchandises de ce document ont été livrées, il ne peut donc pas encore être annulé. Annulez d'abord la livraison (reprenez les marchandises), puis annulez-le.",
   "documents.err_close_not_memo": "Seul un bon de dépôt peut être clôturé. Ce document n'est pas un bon de dépôt.",

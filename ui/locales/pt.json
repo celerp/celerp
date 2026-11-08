@@ -4618,6 +4618,7 @@
   "documents.err_credit_over_invoice": "Uma nota de crédito não pode ser maior que a fatura que ela credita. Reduza os valores da nota de crédito.",
   "documents.err_send_void": "Este documento está anulado, então não pode ser enviado. Reative-o primeiro se precisar enviá-lo.",
   "documents.err_send_type": "Este tipo de documento não pode ser enviado a um contato. Só documentos de clientes e fornecedores podem ser enviados.",
+  "documents.err_finalize_no_lines": "Adicione pelo menos uma linha antes de finalizar este documento.",
   "documents.err_finalize_void": "Este documento está anulado, então não pode ser finalizado. Reative-o primeiro.",
   "documents.err_void_delivered": "Mercadorias deste documento já foram entregues, então ele ainda não pode ser anulado. Desfaça primeiro a entrega (receba as mercadorias de volta) e depois anule.",
   "documents.err_close_not_memo": "Só um memorando de consignação pode ser encerrado. Este documento não é um.",

@@ -4618,6 +4618,7 @@
   "documents.err_credit_over_invoice": "Una nota de crédito no puede superar la factura que acredita. Baja los importes de la nota de crédito.",
   "documents.err_send_void": "Este documento está anulado, así que no se puede enviar. Reactívelo primero si necesita enviarlo.",
   "documents.err_send_type": "Este tipo de documento no se puede enviar a un contacto. Solo se pueden enviar documentos de clientes y proveedores.",
+  "documents.err_finalize_no_lines": "Añade al menos una línea antes de finalizar este documento.",
   "documents.err_finalize_void": "Este documento está anulado, así que no se puede finalizar. Reactívelo primero.",
   "documents.err_void_delivered": "Se entregaron mercancías de este documento, así que aún no se puede anular. Deshaga primero la entrega (reciba la mercancía de vuelta) y luego anúlelo.",
   "documents.err_close_not_memo": "Solo se puede cerrar un memorándum de consignación. Este documento no lo es.",

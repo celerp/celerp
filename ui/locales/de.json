@@ -4618,6 +4618,7 @@
   "documents.err_credit_over_invoice": "Eine Gutschrift darf nicht höher sein als die Rechnung, die sie gutschreibt. Senken Sie die Beträge auf der Gutschrift.",
   "documents.err_send_void": "Dieses Dokument ist storniert und kann nicht gesendet werden. Heben Sie die Stornierung zuerst auf, wenn Sie es senden müssen.",
   "documents.err_send_type": "Diese Art von Dokument kann nicht an einen Kontakt gesendet werden. Nur Kunden- und Lieferantendokumente können gesendet werden.",
+  "documents.err_finalize_no_lines": "Fügen Sie mindestens eine Position hinzu, bevor Sie dieses Dokument abschließen.",
   "documents.err_finalize_void": "Dieses Dokument ist storniert und kann nicht abgeschlossen werden. Heben Sie die Stornierung zuerst auf.",
   "documents.err_void_delivered": "Waren auf diesem Dokument wurden bereits geliefert, daher kann es noch nicht storniert werden. Machen Sie zuerst die Lieferung rückgängig (Waren zurücknehmen) und stornieren Sie es dann.",
   "documents.err_close_not_memo": "Nur ein Kommissionsschein kann abgeschlossen werden. Dieses Dokument ist kein Kommissionsschein.",
