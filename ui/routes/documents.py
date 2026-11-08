@@ -11138,7 +11138,6 @@ async function celerpCsvImport(input, entityId) {{
     # A converted quotation points at the document it became.
     _converted_to = list_fact(doc, "converted_to") if is_list else None
     if _converted_to:
-        _converted_to = str(_converted_to)
         _contact_rows.append(Div(Div(t("doc.converted_to"), cls="form-label"),
                                  A(_converted_to.split(":", 1)[-1], href=doc_href(_converted_to), cls="table-link"),
                                  cls="form-group"))
