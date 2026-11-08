@@ -1111,7 +1111,7 @@ async def test_a_failed_bill_leaves_the_next_agreement_in_the_same_pass_billed(c
     freeze_day(monkeypatch, "2026-07-01")
     hd = await register(client)
     cid = await company_id(client, hd)
-    failing = await _auto(client, hd, start="2026-07-01", line_items=[])
+    failing = await _auto(client, hd, start="2026-07-01", line_items=UNTAXED)
     billing = await _auto(client, hd, start="2026-07-01")
     await tick(session, cid, "2026-07-01")
     assert await billed_docs(session, failing) == []
@@ -1169,7 +1169,7 @@ async def test_a_stored_time_at_the_edge_of_the_calendar_keeps_the_summary_answe
     hd = await register(client)
     cid = await company_id(client, hd)
     sent = await _auto(client, hd, start="2026-07-01", send=True, contact_id=await contact(client, hd, "edge@test.test"))
-    failed = await _auto(client, hd, start="2026-07-01", line_items=[])
+    failed = await _auto(client, hd, start="2026-07-01", line_items=UNTAXED)
     await tick(session, cid, "2026-07-01")
     state = {row.entity_id: row.state for row in await billing.agreements(session, cid)}
     period = state[sent]["periods"]["0"]

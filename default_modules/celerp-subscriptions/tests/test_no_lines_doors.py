@@ -52,12 +52,13 @@ async def _activate_door(client, hd, ui) -> None:
     """Activate on a draft with no lines names + Add item, which its page offers; a line added
     there, Activate accepts."""
     eid = await agreement(client, hd, start=DAY, activate=False, line_items=[])
-    ref = (await template(client, hd, eid))["ref_id"]
+    doc = await template(client, hd, eid)
+    ref = doc["ref_id"]
     assert _refusal(await client.post(f"/subscriptions/{eid}/activate", headers=hd)) == (
         "subscriptions.err_no_lines_draft", t("subscriptions.err_no_lines_draft", "en", ref=ref))
     assert (await template(client, hd, eid))["status"] == "draft"
     assert t("btn._add_item", "en") in await _page(ui, eid)
-    r = await client.patch(f"/docs/{eid}", headers=hd, json={"fields_changed": {
+    r = await client.patch(f"/docs/{eid}", headers=hd, json={"expected_version": doc["version"], "fields_changed": {
         "line_items": {"old": [], "new": [dict(LINE)]}}})
     assert r.status_code == 200, r.text
     assert (await client.post(f"/subscriptions/{eid}/activate", headers=hd)).status_code == 200
@@ -101,9 +102,26 @@ async def test_an_import_brings_no_billable_agreement_without_lines_and_its_draf
     assert (await client.get(f"/docs/{eid}", headers=hd)).status_code == 404
     assert (await client.post("/docs/import", headers=hd, json=_import(eid, "draft", []))).status_code == 200
     assert t("btn._add_item", "en") in await _page(owner_ui, eid)
+    batch = f"doc:SUBI-M-{uuid.uuid4().hex[:8]}"
+    r = await client.post("/docs/import/batch", headers=hd, json={"records": [_import(batch, "active", [])]})
+    assert r.status_code == 200 and r.json()["created"] == 0, r.text
+    assert any(t("subscriptions.err_no_lines_import", "en", ref=batch.split(":")[1]) in e for e in r.json()["errors"])
     with_lines = f"doc:SUBI-M-{uuid.uuid4().hex[:8]}"
     assert (await client.post("/docs/import", headers=hd,
                               json=_import(with_lines, "active", [dict(LINE)]))).status_code == 200
+
+
+async def test_an_unvoid_never_restores_an_agreement_with_no_lines_to_billing(client, owner_ui, monkeypatch):
+    """A void agreement with no lines that was active before its void stays void on Unvoid, which
+    names New Subscription, the way the Subscriptions page offers."""
+    freeze_day(monkeypatch, DAY)
+    hd, eid = owner_ui.api.headers, f"doc:SUBI-V-{uuid.uuid4().hex[:8]}"
+    record = _import(eid, "void", [])
+    record["data"]["pre_void_status"] = "active"
+    assert (await client.post("/docs/import", headers=hd, json=record)).status_code == 200
+    assert _refusal(await client.post(f"/docs/{eid}/unvoid", headers=hd, json={})) == (
+        "subscriptions.err_no_lines_running", t("subscriptions.err_no_lines_running", "en", ref=eid.split(":")[1]))
+    assert (await template(client, hd, eid))["status"] == "void"
 
 
 async def test_new_subscription_then_activate_with_no_line_is_refused_where_the_user_is(owner_ui, monkeypatch):
@@ -138,8 +156,8 @@ async def test_whatever_status_it_leaves_a_person_never_makes_an_agreement_with_
         billing.refuse_billing_nothing(before, after, person)
     key = {"draft": "subscriptions.err_no_lines_draft", None: "subscriptions.err_no_lines_import"}.get(
         was, "subscriptions.err_no_lines_running")
-    assert refused.value.status_code == 409 and refused.value.detail["message_key"] == key
-    assert refused.value.detail["message"] == t(key, "en", ref="SUBI-T")
+    assert refused.value.status_code == 409 and refused.value.detail.key == key
+    assert refused.value.detail == t(key, "en", ref="SUBI-T")
     billing.refuse_billing_nothing(before, {**after, "line_items": [dict(LINE)]}, person)
     billing.refuse_billing_nothing(before, after, nobody)
 

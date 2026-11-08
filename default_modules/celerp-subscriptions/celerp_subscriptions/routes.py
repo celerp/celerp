@@ -739,7 +739,8 @@ def _build_router() -> APIRouter:
         automatic terms keep the consent of whoever set them, and the answer says what now runs.
         Activate gives the draft its schedule, so it asks only that the agreement is not a
         template still waiting to move onto one; whoever presses it needs the permissions of any
-        mode it brings into force (billing.write_agreement)."""
+        mode it brings into force (billing.write_agreement). A draft with no lines is refused,
+        naming + Add item on its page (billing.refuse_billing_nothing)."""
         proj = await billing.locked_agreement(session, company_id, entity_id, scheduled=False)
         billing.refuse_not_moved(proj.state, entity_id)
         if proj.state.get("status") != "draft":

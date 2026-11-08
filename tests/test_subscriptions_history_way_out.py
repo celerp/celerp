@@ -267,6 +267,9 @@ NAMED_DOORS = {
     "subscriptions.err_period_draft": ("reopen", "test_period_billed_once"),
     "subscriptions.err_early_due": ("generate-due", "test_billing_answers"),
     "subscriptions.err_agreement_status_lifecycle": ("status actions", "test_consent_doors"),
+    "subscriptions.err_no_lines_draft": ("add item, activate", "test_no_lines_doors"),
+    "subscriptions.err_no_lines_import": ("import as draft, add item", "test_no_lines_doors"),
+    "subscriptions.err_no_lines_running": ("new subscription", "test_no_lines_doors"),
 }
 
 

@@ -315,7 +315,8 @@ AGREEMENT_STATUSES = frozenset({"draft", "active", "paused", "cancelled", "void"
 
 async def guard_agreement_status(*, session, entry, transition) -> None:
     """doc_status_guard: no write of a subscription document, by any writer, leaves its terms
-    building no schedule (refuse_unbuildable_terms). The status of an agreement that runs an
+    building no schedule (refuse_unbuildable_terms), and no person's write makes billable an
+    agreement with no lines (refuse_billing_nothing). The status of an agreement that runs an
     unattended mode, before or after the change, changes only in write_agreement (activate, pause, resume, cancel on its
     own page). Every other writer (void, unvoid, finalize, revert, an import) is refused (409), and so
     is any that would leave an agreement a status outside AGREEMENT_STATUSES. A draft starts only
