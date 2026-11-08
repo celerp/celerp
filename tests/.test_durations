@@ -27404,5 +27404,11 @@
     "tests/test_subscriptions_history_way_out.py::test_a_let_go_document_comes_back_in_every_agreement_status[void-True]": 2.0678042479994474,
     "tests/test_subscriptions_history_way_out.py::test_every_status_refusal_has_a_row": 0.017929551017004997,
     "tests/test_subscriptions_history_way_out.py::test_every_status_refusal_names_a_door_that_opens_in_the_state_it_answers[False]": 8.390875569995842,
-    "tests/test_subscriptions_history_way_out.py::test_every_status_refusal_names_a_door_that_opens_in_the_state_it_answers[True]": 6.825880115997279
+    "tests/test_subscriptions_history_way_out.py::test_every_status_refusal_names_a_door_that_opens_in_the_state_it_answers[True]": 6.825880115997279,
+    "tests/test_browser/test_save_first_self_saving_fields.py::test_a_discount_applied_right_before_issue_is_saved_first[chromium]": 7.820727762999013,
+    "tests/test_browser/test_save_first_self_saving_fields.py::test_a_document_tax_removed_right_before_issue_is_saved_first[chromium]": 2.5675891440187115,
+    "tests/test_browser/test_save_first_self_saving_fields.py::test_a_quantity_the_user_blanks_is_saved_first_and_refused[chromium]": 2.8560666579578537,
+    "tests/test_browser/test_save_first_self_saving_fields.py::test_a_quantity_typed_then_written_off_from_the_field_is_saved_first[chromium]": 5.651447649026522,
+    "tests/test_browser/test_save_first_self_saving_fields.py::test_a_reorder_line_shown_blank_leaves_every_action_its_request[chromium]": 2.7363633339991793,
+    "tests/test_browser/test_save_first_self_saving_fields.py::test_an_edit_made_while_a_save_is_in_flight_is_saved_before_issue[chromium]": 3.9480733090022113
 }
