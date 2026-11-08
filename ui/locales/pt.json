@@ -7101,7 +7101,7 @@
   "subscriptions.err_history_not_candidate": "Este documento não pode ser associado a esse período. Escolha um dos períodos indicados para o documento.",
   "subscriptions.err_period_skipped": "Esse período foi ignorado. Anule primeiro essa opção para lhe associar um documento.",
   "subscriptions.err_history_not_confirmed": "Este documento não está associado a nenhum período, pelo que não há nenhuma associação a retirar.",
-  "subscriptions.err_history_later_billed": "Later periods are billed on {later}, so this document can't go back to review yet. Void {later} and use Reopen on their rows in the periods list first.",
+  "subscriptions.err_history_later_billed": "Os períodos posteriores estão faturados em {later}, pelo que este documento ainda não pode voltar à revisão. Anule primeiro {later} e use Reabrir nas linhas deles na lista de períodos.",
   "subscriptions.summary_generated": "{ref} faturado automaticamente",
   "subscriptions.summary_sent": "{ref} enviado automaticamente",
   "subscriptions.summary_send_failed": "Não foi possível enviar {ref}: {error}",
@@ -7139,10 +7139,10 @@
   "subscriptions.catchup_empty": "Não há faturação a aguardar revisão.",
   "subscriptions.catchup_bill": "Faturar selecionados",
   "subscriptions.catchup_skip": "Ignorar selecionados",
-  "subscriptions.summary_banner": "Since you last looked: generated {generated}, sent {sent}, to check {failed}.",
+  "subscriptions.summary_banner": "Desde a última consulta: {generated} gerados, {sent} enviados e {failed} por verificar.",
   "subscriptions.summary_open": "Abrir resumo",
   "subscriptions.summary_title": "Resumo da faturação automática",
-  "subscriptions.summary_counts": "Generated {generated}, sent {sent}, to check {failed}.",
+  "subscriptions.summary_counts": "Gerados: {generated}; enviados: {sent}; por verificar: {failed}.",
   "subscriptions.summary_ack": "Marcar como lido",
   "subscriptions.summary_all": "Mostrar todos",
   "subscriptions.summary_unread": "Mostrar não lidos",
@@ -7303,7 +7303,7 @@
   "subscriptions.err_period_placed": "Este período tem {ref}, associado a partir de uma faturação anterior. Use primeiro Retirar associação na linha dele na lista de períodos.",
   "subscriptions.err_ended_place_cancelled": "{ref} está cancelado, portanto este documento não pode ser associado a um dos seus períodos. Use Colocar de parte para concluir a revisão dos documentos anteriores.",
   "subscriptions.err_ended_place_void": "{ref} está anulado, portanto este documento não pode ser associado aqui a um dos seus períodos. Use Colocar de parte para concluir a revisão dos documentos anteriores, ou desfaça primeiro a anulação de {ref} em Documentos.",
-  "subscriptions.summary_window": "The summary covers the last {days} days.",
-  "subscriptions.summary_generation_failed_because": "Automatic billing failed for {ref}: {error}",
-  "subscriptions.err_period_placed_later_billed": "This period holds {ref}, placed here from earlier billing, and later periods are billed on {later}. Void {later} and use Reopen on their rows in the periods list, then use Withdraw placement on this period's row."
+  "subscriptions.summary_window": "O resumo abrange os últimos {days} dias.",
+  "subscriptions.summary_generation_failed_because": "Falha na faturação automática de {ref}: {error}",
+  "subscriptions.err_period_placed_later_billed": "Este período tem {ref}, associado a partir de uma faturação anterior, e os períodos posteriores estão faturados em {later}. Anule {later} e use Reabrir nas linhas deles na lista de períodos; depois use Retirar associação na linha deste período."
 }

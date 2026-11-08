@@ -7101,7 +7101,7 @@
   "subscriptions.err_history_not_candidate": "Ce document ne peut pas être affecté à cette période. Choisissez l'une des périodes proposées pour ce document.",
   "subscriptions.err_period_skipped": "Cette période a été ignorée. Annulez d'abord cette décision pour y affecter un document.",
   "subscriptions.err_history_not_confirmed": "Ce document n'est affecté à aucune période : aucune affectation ne peut être retirée.",
-  "subscriptions.err_history_later_billed": "Later periods are billed on {later}, so this document can't go back to review yet. Void {later} and use Reopen on their rows in the periods list first.",
+  "subscriptions.err_history_later_billed": "Des périodes ultérieures sont facturées sur {later} : ce document ne peut donc pas encore revenir en revue. Extournez d'abord {later} et utilisez Rouvrir sur leurs lignes dans la liste des périodes.",
   "subscriptions.summary_generated": "{ref} facturé automatiquement",
   "subscriptions.summary_sent": "{ref} envoyé automatiquement",
   "subscriptions.summary_send_failed": "Impossible d'envoyer {ref} : {error}",
@@ -7139,10 +7139,10 @@
   "subscriptions.catchup_empty": "Aucune facturation en attente de vérification.",
   "subscriptions.catchup_bill": "Facturer la sélection",
   "subscriptions.catchup_skip": "Ignorer la sélection",
-  "subscriptions.summary_banner": "Since you last looked: generated {generated}, sent {sent}, to check {failed}.",
+  "subscriptions.summary_banner": "Depuis votre dernière consultation : {generated} générés, {sent} envoyés, {failed} à vérifier.",
   "subscriptions.summary_open": "Ouvrir le récapitulatif",
   "subscriptions.summary_title": "Récapitulatif de facturation automatique",
-  "subscriptions.summary_counts": "Generated {generated}, sent {sent}, to check {failed}.",
+  "subscriptions.summary_counts": "Générés : {generated} ; envoyés : {sent} ; à vérifier : {failed}.",
   "subscriptions.summary_ack": "Marquer comme lu",
   "subscriptions.summary_all": "Tout afficher",
   "subscriptions.summary_unread": "Afficher les non lus",
@@ -7303,7 +7303,7 @@
   "subscriptions.err_period_placed": "Cette période porte {ref}, affecté depuis une facturation antérieure. Utilisez d'abord Retirer l'affectation sur sa ligne dans la liste des périodes.",
   "subscriptions.err_ended_place_cancelled": "{ref} est résilié : ce document ne peut être affecté à aucune de ses périodes. Utilisez Mettre de côté pour terminer la revue des anciens documents.",
   "subscriptions.err_ended_place_void": "{ref} est invalidé : ce document ne peut être affecté ici à aucune de ses périodes. Utilisez Mettre de côté pour terminer la revue des anciens documents, ou annulez d'abord l'invalidation de {ref} dans Documents.",
-  "subscriptions.summary_window": "The summary covers the last {days} days.",
-  "subscriptions.summary_generation_failed_because": "Automatic billing failed for {ref}: {error}",
-  "subscriptions.err_period_placed_later_billed": "This period holds {ref}, placed here from earlier billing, and later periods are billed on {later}. Void {later} and use Reopen on their rows in the periods list, then use Withdraw placement on this period's row."
+  "subscriptions.summary_window": "Le récapitulatif couvre les {days} derniers jours.",
+  "subscriptions.summary_generation_failed_because": "Échec de la facturation automatique pour {ref} : {error}",
+  "subscriptions.err_period_placed_later_billed": "Cette période porte {ref}, affecté depuis une facturation antérieure, et des périodes ultérieures sont facturées sur {later}. Extournez {later} et utilisez Rouvrir sur leurs lignes dans la liste des périodes, puis Retirer l'affectation sur la ligne de cette période."
 }

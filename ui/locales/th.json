@@ -7101,7 +7101,7 @@
   "subscriptions.err_history_not_candidate": "ไม่สามารถจัดเอกสารนี้เข้ารอบดังกล่าวได้ กรุณาเลือกรอบจากรายการที่รองรับสำหรับเอกสารนี้",
   "subscriptions.err_period_skipped": "รอบนี้ถูกข้ามไปแล้ว กรุณายกเลิกการข้ามรอบก่อนจัดเอกสารเข้ารอบ",
   "subscriptions.err_history_not_confirmed": "เอกสารนี้ยังไม่ได้ถูกจัดเข้ารอบใด จึงไม่มีรายการจัดเข้ารอบให้ถอน",
-  "subscriptions.err_history_later_billed": "Later periods are billed on {later}, so this document can't go back to review yet. Void {later} and use Reopen on their rows in the periods list first.",
+  "subscriptions.err_history_later_billed": "รอบหลังจากนี้เรียกเก็บเงินแล้วใน {later} เอกสารนี้จึงยังกลับไปตรวจทานไม่ได้ ให้ใช้ เป็นโมฆะ กับ {later} และใช้ เปิดใหม่ ในแถวของรอบเหล่านั้นในรายการรอบก่อน",
   "subscriptions.summary_generated": "ออกใบแจ้งหนี้ {ref} อัตโนมัติแล้ว",
   "subscriptions.summary_sent": "ส่ง {ref} อัตโนมัติแล้ว",
   "subscriptions.summary_send_failed": "ไม่สามารถส่ง {ref}: {error}",
@@ -7139,10 +7139,10 @@
   "subscriptions.catchup_empty": "ไม่มีรายการออกใบแจ้งหนี้ที่รอตรวจสอบ",
   "subscriptions.catchup_bill": "ออกใบแจ้งหนี้รายการที่เลือก",
   "subscriptions.catchup_skip": "ข้ามรายการที่เลือก",
-  "subscriptions.summary_banner": "Since you last looked: generated {generated}, sent {sent}, to check {failed}.",
+  "subscriptions.summary_banner": "นับจากที่ตรวจสอบครั้งล่าสุด: สร้าง {generated} รายการ ส่ง {sent} รายการ และต้องตรวจสอบ {failed} รายการ",
   "subscriptions.summary_open": "เปิดสรุป",
   "subscriptions.summary_title": "สรุปการออกใบแจ้งหนี้อัตโนมัติ",
-  "subscriptions.summary_counts": "Generated {generated}, sent {sent}, to check {failed}.",
+  "subscriptions.summary_counts": "สร้าง {generated} รายการ ส่ง {sent} รายการ และต้องตรวจสอบ {failed} รายการ",
   "subscriptions.summary_ack": "ทำเครื่องหมายว่าอ่านแล้ว",
   "subscriptions.summary_all": "แสดงทั้งหมด",
   "subscriptions.summary_unread": "แสดงที่ยังไม่อ่าน",
@@ -7303,7 +7303,7 @@
   "subscriptions.err_period_placed": "รอบนี้มี {ref} ที่จัดเข้ารอบจากการเรียกเก็บเงินก่อนหน้า ให้ใช้ ถอนการจัดเข้ารอบ ในแถวของรอบนั้นในรายการรอบก่อน",
   "subscriptions.err_ended_place_cancelled": "{ref} ถูกยกเลิกแล้ว จึงจัดเอกสารนี้เข้ารอบใดของรายการนี้ไม่ได้ ให้ใช้ แยกไว้ เพื่อตรวจเอกสารเก่าให้เสร็จ",
   "subscriptions.err_ended_place_void": "{ref} เป็นโมฆะ จึงจัดเอกสารนี้เข้ารอบใดของรายการนี้ที่นี่ไม่ได้ ให้ใช้ แยกไว้ เพื่อตรวจเอกสารเก่าให้เสร็จ หรือคืนสถานะ {ref} จากโมฆะในเมนูเอกสารก่อน",
-  "subscriptions.summary_window": "The summary covers the last {days} days.",
-  "subscriptions.summary_generation_failed_because": "Automatic billing failed for {ref}: {error}",
-  "subscriptions.err_period_placed_later_billed": "This period holds {ref}, placed here from earlier billing, and later periods are billed on {later}. Void {later} and use Reopen on their rows in the periods list, then use Withdraw placement on this period's row."
+  "subscriptions.summary_window": "สรุปนี้ครอบคลุม {days} วันล่าสุด",
+  "subscriptions.summary_generation_failed_because": "การเรียกเก็บเงินอัตโนมัติสำหรับ {ref} ล้มเหลว: {error}",
+  "subscriptions.err_period_placed_later_billed": "รอบนี้มี {ref} ที่จัดเข้ารอบจากการเรียกเก็บเงินก่อนหน้า และรอบหลังจากนี้เรียกเก็บเงินแล้วใน {later} ให้ใช้ เป็นโมฆะ กับ {later} และใช้ เปิดใหม่ ในแถวของรอบเหล่านั้นในรายการรอบ จากนั้นใช้ ถอนการจัดเข้ารอบ ในแถวของรอบนี้"
 }

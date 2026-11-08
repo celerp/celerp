@@ -7101,7 +7101,7 @@
   "subscriptions.err_history_not_candidate": "Questo documento non può essere assegnato a quel periodo. Scegli uno dei periodi indicati per il documento.",
   "subscriptions.err_period_skipped": "Questo periodo è stato saltato. Annulla prima il salto per potervi assegnare un documento.",
   "subscriptions.err_history_not_confirmed": "Questo documento non è assegnato ad alcun periodo, quindi non c'è alcuna assegnazione da revocare.",
-  "subscriptions.err_history_later_billed": "Later periods are billed on {later}, so this document can't go back to review yet. Void {later} and use Reopen on their rows in the periods list first.",
+  "subscriptions.err_history_later_billed": "I periodi successivi sono fatturati su {later}, quindi questo documento non può ancora tornare in revisione. Usa prima Storna su {later} e Riapri sulle loro righe nell'elenco dei periodi.",
   "subscriptions.summary_generated": "{ref} fatturato automaticamente",
   "subscriptions.summary_sent": "{ref} inviato automaticamente",
   "subscriptions.summary_send_failed": "Impossibile inviare {ref}: {error}",
@@ -7139,10 +7139,10 @@
   "subscriptions.catchup_empty": "Nessuna fatturazione in attesa di revisione.",
   "subscriptions.catchup_bill": "Fattura i selezionati",
   "subscriptions.catchup_skip": "Salta i selezionati",
-  "subscriptions.summary_banner": "Since you last looked: generated {generated}, sent {sent}, to check {failed}.",
+  "subscriptions.summary_banner": "Dall'ultima visita: {generated} generati, {sent} inviati, {failed} da verificare.",
   "subscriptions.summary_open": "Apri il riepilogo",
   "subscriptions.summary_title": "Riepilogo della fatturazione automatica",
-  "subscriptions.summary_counts": "Generated {generated}, sent {sent}, to check {failed}.",
+  "subscriptions.summary_counts": "Generati: {generated}; inviati: {sent}; da verificare: {failed}.",
   "subscriptions.summary_ack": "Segna come letto",
   "subscriptions.summary_all": "Mostra tutti",
   "subscriptions.summary_unread": "Mostra non letti",
@@ -7303,7 +7303,7 @@
   "subscriptions.err_period_placed": "Questo periodo contiene {ref}, assegnato da una fatturazione precedente. Usa prima Revoca assegnazione sulla sua riga nell'elenco dei periodi.",
   "subscriptions.err_ended_place_cancelled": "{ref} è annullato, quindi questo documento non può essere assegnato a uno dei suoi periodi. Usa Metti da parte per completare la revisione dei documenti precedenti.",
   "subscriptions.err_ended_place_void": "{ref} è invalidato, quindi qui questo documento non può essere assegnato a uno dei suoi periodi. Usa Metti da parte per completare la revisione dei documenti precedenti, oppure annulla prima l'invalidamento di {ref} in Documenti.",
-  "subscriptions.summary_window": "The summary covers the last {days} days.",
-  "subscriptions.summary_generation_failed_because": "Automatic billing failed for {ref}: {error}",
-  "subscriptions.err_period_placed_later_billed": "This period holds {ref}, placed here from earlier billing, and later periods are billed on {later}. Void {later} and use Reopen on their rows in the periods list, then use Withdraw placement on this period's row."
+  "subscriptions.summary_window": "Il riepilogo copre gli ultimi {days} giorni.",
+  "subscriptions.summary_generation_failed_because": "Fatturazione automatica non riuscita per {ref}: {error}",
+  "subscriptions.err_period_placed_later_billed": "Questo periodo contiene {ref}, assegnato da una fatturazione precedente, e i periodi successivi sono fatturati su {later}. Usa Storna su {later} e Riapri sulle loro righe nell'elenco dei periodi, poi Revoca assegnazione sulla riga di questo periodo."
 }

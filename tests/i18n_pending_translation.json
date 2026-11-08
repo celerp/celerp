@@ -12,48 +12,5 @@
     "th",
     "vi"
   ],
-  "keys": {
-    "subscriptions.summary_window": {
-      "en": "The summary covers the last {days} days.",
-      "params": [
-        "days"
-      ]
-    },
-    "subscriptions.summary_generation_failed_because": {
-      "en": "Automatic billing failed for {ref}: {error}",
-      "params": [
-        "ref",
-        "error"
-      ]
-    },
-    "subscriptions.summary_counts": {
-      "en": "Generated {generated}, sent {sent}, to check {failed}.",
-      "params": [
-        "generated",
-        "sent",
-        "failed"
-      ]
-    },
-    "subscriptions.summary_banner": {
-      "en": "Since you last looked: generated {generated}, sent {sent}, to check {failed}.",
-      "params": [
-        "generated",
-        "sent",
-        "failed"
-      ]
-    },
-    "subscriptions.err_period_placed_later_billed": {
-      "en": "This period holds {ref}, placed here from earlier billing, and later periods are billed on {later}. Void {later} and use Reopen on their rows in the periods list, then use Withdraw placement on this period's row.",
-      "params": [
-        "ref",
-        "later"
-      ]
-    },
-    "subscriptions.err_history_later_billed": {
-      "en": "Later periods are billed on {later}, so this document can't go back to review yet. Void {later} and use Reopen on their rows in the periods list first.",
-      "params": [
-        "later"
-      ]
-    }
-  }
+  "keys": {}
 }

@@ -7101,7 +7101,7 @@
   "subscriptions.err_history_not_candidate": "Dieser Beleg kann diesem Zeitraum nicht zugeordnet werden. Wählen Sie einen der für ihn aufgeführten Zeiträume.",
   "subscriptions.err_period_skipped": "Dieser Zeitraum wurde übersprungen. Machen Sie das Überspringen rückgängig, bevor Sie ihm einen Beleg zuordnen.",
   "subscriptions.err_history_not_confirmed": "Dieser Beleg ist keinem Zeitraum zugeordnet. Daher gibt es keine Zuordnung zurückzunehmen.",
-  "subscriptions.err_history_later_billed": "Later periods are billed on {later}, so this document can't go back to review yet. Void {later} and use Reopen on their rows in the periods list first.",
+  "subscriptions.err_history_later_billed": "Spätere Zeiträume sind mit {later} abgerechnet, daher kann dieses Dokument noch nicht zurück in die Prüfung. Verwenden Sie zuerst Stornieren für {later} und Wieder öffnen in deren Zeilen der Zeitraumliste.",
   "subscriptions.summary_generated": "{ref} automatisch abgerechnet",
   "subscriptions.summary_sent": "{ref} automatisch versendet",
   "subscriptions.summary_send_failed": "{ref} konnte nicht versendet werden: {error}",
@@ -7139,10 +7139,10 @@
   "subscriptions.catchup_empty": "Keine Abrechnungen warten auf Prüfung.",
   "subscriptions.catchup_bill": "Auswahl abrechnen",
   "subscriptions.catchup_skip": "Auswahl überspringen",
-  "subscriptions.summary_banner": "Since you last looked: generated {generated}, sent {sent}, to check {failed}.",
+  "subscriptions.summary_banner": "Seit Ihrem letzten Besuch: {generated} erstellt, {sent} versendet, {failed} zu prüfen.",
   "subscriptions.summary_open": "Übersicht öffnen",
   "subscriptions.summary_title": "Übersicht der automatischen Abrechnung",
-  "subscriptions.summary_counts": "Generated {generated}, sent {sent}, to check {failed}.",
+  "subscriptions.summary_counts": "Erstellt: {generated}, versendet: {sent}, zu prüfen: {failed}.",
   "subscriptions.summary_ack": "Als gelesen markieren",
   "subscriptions.summary_all": "Alle anzeigen",
   "subscriptions.summary_unread": "Ungelesene anzeigen",
@@ -7303,7 +7303,7 @@
   "subscriptions.err_period_placed": "Diesem Zeitraum ist {ref} aus einer früheren Abrechnung zugeordnet. Verwenden Sie zuerst Zuordnung zurücknehmen in seiner Zeile der Zeitraumliste.",
   "subscriptions.err_ended_place_cancelled": "{ref} ist gekündigt, daher kann dieser Beleg keinem seiner Zeiträume zugeordnet werden. Verwenden Sie Zurückstellen, um die Prüfung der früheren Belege abzuschließen.",
   "subscriptions.err_ended_place_void": "{ref} wurde ungültig gesetzt, daher kann dieser Beleg hier keinem seiner Zeiträume zugeordnet werden. Verwenden Sie Zurückstellen, um die Prüfung der früheren Belege abzuschließen, oder heben Sie zuerst die Ungültigerklärung von {ref} unter Dokumente auf.",
-  "subscriptions.summary_window": "The summary covers the last {days} days.",
-  "subscriptions.summary_generation_failed_because": "Automatic billing failed for {ref}: {error}",
-  "subscriptions.err_period_placed_later_billed": "This period holds {ref}, placed here from earlier billing, and later periods are billed on {later}. Void {later} and use Reopen on their rows in the periods list, then use Withdraw placement on this period's row."
+  "subscriptions.summary_window": "Die Übersicht umfasst die letzten {days} Tage.",
+  "subscriptions.summary_generation_failed_because": "Automatische Abrechnung für {ref} fehlgeschlagen: {error}",
+  "subscriptions.err_period_placed_later_billed": "Diesem Zeitraum ist {ref} aus einer früheren Abrechnung zugeordnet, und spätere Zeiträume sind mit {later} abgerechnet. Verwenden Sie Stornieren für {later} und Wieder öffnen in deren Zeilen der Zeitraumliste, dann Zuordnung zurücknehmen in der Zeile dieses Zeitraums."
 }

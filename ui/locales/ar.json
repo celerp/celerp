@@ -7101,7 +7101,7 @@
   "subscriptions.err_history_not_candidate": "لا يمكن ربط هذا المستند بتلك الفترة. اختر إحدى الفترات المدرجة له.",
   "subscriptions.err_period_skipped": "تم تخطي هذه الفترة. ألغِ التخطي أولاً لتتمكن من ربط مستند بها.",
   "subscriptions.err_history_not_confirmed": "هذا المستند غير مرتبط بأي فترة، لذا لا يوجد ربط يمكن التراجع عنه.",
-  "subscriptions.err_history_later_billed": "Later periods are billed on {later}, so this document can't go back to review yet. Void {later} and use Reopen on their rows in the periods list first.",
+  "subscriptions.err_history_later_billed": "الفترات اللاحقة مفوترة في {later}، لذا لا يمكن إعادة هذا المستند إلى المراجعة بعد. استخدم أولاً «إبطال» على {later} و«إعادة الفتح» في صفوفها ضمن قائمة الفترات.",
   "subscriptions.summary_generated": "تمت فوترة {ref} تلقائياً",
   "subscriptions.summary_sent": "تم إرسال {ref} تلقائياً",
   "subscriptions.summary_send_failed": "تعذّر إرسال {ref}: {error}",
@@ -7139,10 +7139,10 @@
   "subscriptions.catchup_empty": "لا توجد فواتير تنتظر المراجعة.",
   "subscriptions.catchup_bill": "فوترة المحدد",
   "subscriptions.catchup_skip": "تخطي المحدد",
-  "subscriptions.summary_banner": "Since you last looked: generated {generated}, sent {sent}, to check {failed}.",
+  "subscriptions.summary_banner": "منذ آخر مراجعة: أُنشئ {generated}، وأُرسل {sent}، وهناك {failed} عناصر تحتاج إلى فحص.",
   "subscriptions.summary_open": "فتح الملخص",
   "subscriptions.summary_title": "ملخص الفوترة التلقائية",
-  "subscriptions.summary_counts": "Generated {generated}, sent {sent}, to check {failed}.",
+  "subscriptions.summary_counts": "أُنشئ {generated}، وأُرسل {sent}، وهناك {failed} عناصر تحتاج إلى فحص.",
   "subscriptions.summary_ack": "وضع علامة مقروء",
   "subscriptions.summary_all": "عرض الكل",
   "subscriptions.summary_unread": "عرض غير المقروء",
@@ -7303,7 +7303,7 @@
   "subscriptions.err_period_placed": "هذه الفترة مرتبطة بـ {ref} من فوترة سابقة. استخدم «التراجع عن الربط» في صفها ضمن قائمة الفترات أولاً.",
   "subscriptions.err_ended_place_cancelled": "الاشتراك {ref} ملغى، لذا لا يمكن ربط هذا المستند بإحدى فتراته. استخدم «وضع جانباً» لإنهاء مراجعة المستندات السابقة.",
   "subscriptions.err_ended_place_void": "الاشتراك {ref} مُبطَل، لذا لا يمكن ربط هذا المستند بإحدى فتراته هنا. استخدم «وضع جانباً» لإنهاء مراجعة المستندات السابقة، أو ألغِ إبطال {ref} في «المستندات» أولاً.",
-  "subscriptions.summary_window": "The summary covers the last {days} days.",
-  "subscriptions.summary_generation_failed_because": "Automatic billing failed for {ref}: {error}",
-  "subscriptions.err_period_placed_later_billed": "This period holds {ref}, placed here from earlier billing, and later periods are billed on {later}. Void {later} and use Reopen on their rows in the periods list, then use Withdraw placement on this period's row."
+  "subscriptions.summary_window": "يغطي الملخص آخر {days} يومًا.",
+  "subscriptions.summary_generation_failed_because": "فشلت الفوترة التلقائية للاشتراك {ref}: {error}",
+  "subscriptions.err_period_placed_later_billed": "هذه الفترة مرتبطة بـ {ref} من فوترة سابقة، والفترات اللاحقة مفوترة في {later}. استخدم «إبطال» على {later} و«إعادة الفتح» في صفوفها ضمن قائمة الفترات، ثم استخدم «التراجع عن الربط» في صف هذه الفترة."
 }
