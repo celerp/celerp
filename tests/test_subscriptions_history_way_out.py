@@ -304,9 +304,10 @@ async def test_every_refusal_on_a_running_agreement_names_a_door_that_accepts_an
         _on(monkeypatch, day)
         assert (await _generate(client, old, NAME)).status_code == 200
     periods = (await _state(session, old, NAME))["periods"]
-    later = sorted((int(i), e["doc_id"]) for i, e in periods.items()
-                   if int(i) > k and e.get("state") == BILLED and not e.get("history"))
-    assert len(later) >= 2, later
+    # The placement's period and the two bills generated after it, by the periods they bill.
+    assert k == -6 and {i: (e["state"], bool(e.get("history"))) for i, e in periods.items()} == {
+        "-6": (BILLED, True), "0": (BILLED, False), "1": (BILLED, False)}
+    later = [(p, periods[str(p)]["doc_id"]) for p in (0, 1)]
     placed, refs = await ref(a), ", ".join([await ref(d) for _, d in later])
     for door in ("skip", "reopen"):
         assert _refusal(await post(f"/periods/{k}/{door}", reason="Closed")) == (
@@ -330,6 +331,32 @@ async def test_every_refusal_on_a_running_agreement_names_a_door_that_accepts_an
     assert f'hx-post="/subscriptions/{eid}/history/{a}/withdraw"' in await _page(monkeypatch, old, NAME)
     assert (await post(f"/history/{a}/withdraw")).status_code == 200
     assert (await post(f"/history/{a}/confirm", period_index=k)).status_code == 200
+
+
+async def test_a_placement_is_held_only_by_the_bills_after_its_earliest_candidate(monkeypatch):
+    """The bills a placement waits on are the bills (not other placements) of the periods after
+    the earliest period it could stand for, oldest first: one before it or at it, or another
+    placement, never holds it."""
+    from fastapi import HTTPException
+
+    from celerp_subscriptions import billing, routes
+    from celerp_subscriptions.billing import BILLED
+
+    async def doc_ref(_session, _company_id, doc_id):
+        return doc_id.upper()
+
+    monkeypatch.setattr(billing, "doc_ref", doc_ref)
+    periods = {"-9": {"state": BILLED, "doc_id": "before"},
+               "-8": {"state": BILLED, "doc_id": "at"},
+               "-6": {"state": BILLED, "doc_id": "placed", "history": True, "candidates": [-8, -6]},
+               "-7": {"state": BILLED, "doc_id": "between"},
+               "-5": {"state": BILLED, "doc_id": "other", "history": True, "candidates": [-5]},
+               "1": {"state": BILLED, "doc_id": "after"}}
+    assert await routes._later_bills(None, None, periods, -8) == "BETWEEN, AFTER"
+    with pytest.raises(HTTPException) as refused:
+        await routes._refuse_claimed(None, None, periods, -6)
+    assert refused.value.detail == t("subscriptions.err_period_placed_later_billed",
+                                     ref="PLACED", later="BETWEEN, AFTER")
 
 
 async def test_a_void_agreement_offers_unvoid_where_its_refusals_name_it(client, session, monkeypatch):

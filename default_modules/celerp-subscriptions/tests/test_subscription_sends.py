@@ -11,7 +11,7 @@ from __future__ import annotations
 import ast
 import json
 import uuid
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -223,6 +223,34 @@ async def test_no_email_service_links_to_the_page_that_sets_it_up(owner_ui, sess
     assert t("email.err_no_transport", "en") in page
     assert 'href="/settings/cloud"' in page and t("doc.send_relay_error_link", "en") in page
     assert f'href="/subscriptions/{eid}"' in page
+
+
+async def test_an_email_still_waiting_past_the_summary_window_stays_shown(client, session, monkeypatch):
+    """The app stopped between billing and sending and stays off for longer than the summary
+    window, but the period is still inside a wide catch-up window: the email still waits for the
+    next pass, so the summary keeps showing it (it shows while it lasts, not by its age)."""
+    from celerp_subscriptions import billing
+    from celerp_subscriptions.summary import SUMMARY_WINDOW
+
+    def on(day):
+        freeze_day(monkeypatch, day)
+        monkeypatch.setattr(billing, "now", lambda: datetime.fromisoformat(day).replace(hour=12, tzinfo=timezone.utc))
+
+    on("2026-07-01")
+    async with SmtpStub() as stub:
+        with smtp_settings(stub.port):
+            hd = await register(client)
+            cid = await company_id(client, hd)
+            eid = await _sending(client, hd, catchup=6)
+            await billing.run_due(session=session, company_id=uuid.UUID(cid), today=date(2026, 7, 1), budget=10)
+            await session.commit()  # the after-commit send never ran: the app stopped
+            on("2026-10-15")
+            assert billing.now() - SUMMARY_WINDOW > datetime(2026, 7, 1, 12, tzinfo=timezone.utc)
+            periods = (await client.get(f"/subscriptions/{eid}/periods", headers=hd)).json()["rows"]
+            assert next(p for p in periods if p["period_index"] == 0)["send"] == "waiting"
+            # The bill's own row is past the window and gone; its waiting email is not.
+            rows = (await summary(client, hd, all=1))["rows"]
+            assert [(r["kind"], r["key"]) for r in rows] == [("send_pending", None)]
 
 
 async def test_an_email_waiting_after_the_app_stopped_is_shown_and_never_sent_late(client, session, monkeypatch):

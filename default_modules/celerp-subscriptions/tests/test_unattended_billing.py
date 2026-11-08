@@ -949,6 +949,25 @@ async def test_a_failed_bill_keeps_its_reason_is_counted_to_check_and_offers_gen
     assert offered is not None and json.loads(offered["hx-vals"])["period_index"] == page["rows"][0]["period_index"]
 
 
+async def test_a_bill_refused_in_the_readers_language_keeps_that_refusal_as_its_reason(client, session, monkeypatch):
+    """An agreement whose line has its tax still to set fails its bill with a catalog refusal:
+    the summary row gives that refusal, as Generate due words it for the same state."""
+    freeze_day(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    eid = await _auto(client, hd, start="2026-07-01", line_items=[
+        {"description": "Dues", "quantity": 1, "unit_price": 10, "taxes": None}])
+    await tick(session, cid, "2026-07-01")
+    assert await billed_docs(session, eid) == []
+    refused = (await client.post(f"/subscriptions/{eid}/generate-due", headers=hd,
+                                 json={"request_key": "why"})).json()["detail"]
+    assert isinstance(refused, dict) and refused["message_key"] == "documents.err_line_tax_unset"
+    ref = (await template(client, hd, eid))["ref_id"]
+    assert [(r["kind"], r["message"]) for r in (await summary(client, hd))["rows"]] == [
+        ("generation_failed", t("subscriptions.summary_generation_failed_because", ref=ref,
+                                error=t("documents.err_line_tax_unset", line=1)))]
+
+
 async def test_a_failed_bill_leaves_the_next_agreement_in_the_same_pass_billed(client, session, monkeypatch):
     """A bill that fails takes its document back with it, and the next agreement in the same pass
     bills under the reference it frees: the failed document is not left behind to block it."""
