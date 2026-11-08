@@ -267,6 +267,14 @@ async def test_the_line_edit_takes_only_a_paused_agreement_and_only_its_lines(cl
     assert _key(await patch(line_items=[dict(LINE)], frequency="weekly")) == "subscriptions.err_lines_fields"
     assert (await patch(line_items=[{**LINE, "quantity": 2}])).status_code == 200
     assert (await template(client, hd, eid))["line_items"][0]["quantity"] == 2
+    # The page's save takes the header discount with the lines.
+    url = f"/subscriptions/{eid}/lines"
+    doc = await template(client, hd, eid)
+    saved = await owner_ui.post(url, json={"expected_version": doc["version"], "line_items": doc["line_items"],
+                                           "discount": 5, "discount_type": "percentage"})
+    assert saved.status_code == 200, saved.text
+    doc = await template(client, hd, eid)
+    assert (doc["discount"], doc["discount_type"]) == (5, "percentage")
 
 
 async def test_new_subscription_then_activate_with_no_line_is_refused_where_the_user_is(owner_ui, monkeypatch):
