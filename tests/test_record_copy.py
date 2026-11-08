@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import ast
 import sys
+from pathlib import Path
 
+import lifecycle_writers
 from lifecycle_writers import CREATED, ROOT, ROUTES, app_sources, census
 from test_tax_acceptance_matrix import _demo_company
 
@@ -108,6 +110,53 @@ def test_the_writer_census_finds_lifecycle_steps_and_skips_a_sentinel():
             ("issued_at", "finalize_list_record", "list.finalized", "never copied"),
             ("accounting_sync_excluded", "write_doc_patch", "doc.updated", "content")} <= rows
     assert "freeze_onhand" not in {k for k, *_ in rows}
+
+
+WRITERS = Path("celerp/writers.py")
+SYNTHETIC = {lifecycle_writers.PROJ: '''
+def apply_documents_event(current, event_type, data):
+    if event_type == "doc.paid":
+        current["amount_outstanding"] = 0
+    elif event_type == "doc.moved":
+        for k in ("a_key", "b_key"):
+            current[k] = None
+    elif event_type == "doc.fields":
+        current.update(data.get("fields"))
+''', WRITERS: '''
+FIELDS = frozenset({"x_named", "y_named"})
+async def by_names(s, v):
+    await emit(s, "doc.fields", data={"fields": {f: v for f in FIELDS}})
+async def by_unknown_comp(s, src):
+    await emit(s, "doc.fields", data={"fields": {k.upper(): v for k, v in src}})
+async def by_unknown_call(s):
+    await emit(s, "doc.fields", data={"fields": unknown()})
+async def by_subscript(s, key):
+    fields = {}
+    fields[key.lower()] = 1
+    await emit(s, "doc.fields", data={"fields": fields})
+async def by_param(s, fields):
+    await emit(s, "doc.fields", data={"fields": fields})
+'''}
+
+
+def test_the_writer_census_names_every_key_it_follows_and_marks_every_key_it_cannot():
+    """On a small app: a projection branch's own keys (one by a loop over names), and for a branch
+    that applies a part of its payload, each emitter's keys: named through a module collection, or
+    ``<expr>`` where the census cannot follow them, so an unfollowable writer fails the census test."""
+    held = lifecycle_writers.app
+    lifecycle_writers.app = lifecycle_writers._App({k: ast.parse(v) for k, v in SYNTHETIC.items()})
+    try:
+        rows = set(lifecycle_writers.lifecycle_writers())
+    finally:
+        lifecycle_writers.app = held
+    proj, w = f"{lifecycle_writers.PROJ}:apply_documents_event", f"{WRITERS}:"
+    assert rows == {
+        ("amount_outstanding", proj, "doc.paid"), ("a_key", proj, "doc.moved"), ("b_key", proj, "doc.moved"),
+        ("x_named", w + "by_names", "doc.fields"), ("y_named", w + "by_names", "doc.fields"),
+        ("<{k.upper(): v for k, v in src}>", w + "by_unknown_comp", "doc.fields"),
+        ("<unknown()>", w + "by_unknown_call", "doc.fields"),
+        ("<key.lower()>", w + "by_subscript", "doc.fields"),
+        ("<by_param:fields>", w + "by_param", "doc.fields")}
 
 
 async def _scenario(client, session):
