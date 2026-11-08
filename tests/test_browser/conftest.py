@@ -206,23 +206,53 @@ def seeded_user(api_server):
 
 # ── Playwright fixtures ────────────────────────────────────────────────────────
 
+def auth_cookie(name: str, token: str) -> dict:
+    """A session cookie as the UI sets it, lapsing with the token it holds: the UI gives each
+    cookie its token's lifetime, so a browser stops sending an expired access token and the UI
+    renews the session from the refresh cookie. A cookie kept past its token instead sends
+    the expired token, which the UI answers with the sign-in page."""
+    from jose import jwt
+    return {"name": name, "value": token, "domain": "127.0.0.1", "path": "/",
+            "expires": float(jwt.get_unverified_claims(token)["exp"])}
+
+
+def session_cookies(seeded_user) -> list[dict]:
+    """The suite's session as a browser holds it: the access cookie and, as a sign-in sets
+    both, the refresh one beside it, so the session outlives the access token's few minutes
+    for the length of the suite, the way a signed-in user's does."""
+    return [auth_cookie(name, seeded_user[key])
+            for name, key in (("celerp_token", "access_token"), ("celerp_refresh", "refresh_token"))]
+
+
 @pytest.fixture(scope="session")
 def browser_context(playwright, ui_server, seeded_user):
-    """Chromium session context with auth cookie pre-set."""
+    """Chromium session context signed in with the suite's session cookies."""
     browser = playwright.chromium.launch(headless=True)
     ctx = browser.new_context(base_url=ui_server)
-    ctx.add_cookies([{
-        "name": "celerp_token",
-        "value": seeded_user["access_token"],
-        "domain": "127.0.0.1",
-        "path": "/",
-    }])
+    ctx.add_cookies(session_cookies(seeded_user))
     # The health banner reports the real host's RAM/CPU/disk. Under a parallel suite the CPU
     # passes its warning line, and the banner, shown just after load, pushes the page down
     # under whatever a test is hovering. No browser test is about the host's load.
     ctx.route("**/health/system", lambda route: route.fulfill(json={"overall": "ok"}))
     yield ctx
     browser.close()
+
+
+@pytest.fixture(autouse=True)
+def _shared_session_kept(request):
+    """Every test that uses the shared browser leaves it signed in as it found it: its cookies
+    are put back after the test, whoever the test signed the browser in as. A test's own
+    restore could only write back the tokens the suite started with, and with no refresh
+    cookie beside it the session ends once that access token expires, a few minutes into a
+    run; every test after it then lands on the sign-in page."""
+    if "browser_context" not in request.fixturenames:
+        yield
+        return
+    ctx = request.getfixturevalue("browser_context")
+    saved = ctx.cookies()
+    yield
+    ctx.clear_cookies()
+    ctx.add_cookies(saved)
 
 
 @pytest.fixture
@@ -476,37 +506,36 @@ def keep_sign_ins():
         clear_session_registry()
 
 
-def _set_auth_cookie(browser_context, token: str) -> None:
-    browser_context.clear_cookies()
-    browser_context.add_cookies([{
-        "name": "celerp_token", "value": token, "domain": "127.0.0.1", "path": "/",
-    }])
+def set_session_cookies(context, access_token: str, refresh_token: str | None = None) -> None:
+    """Sign *context* in as one session, replacing every cookie it held: the access cookie and,
+    when given, the refresh cookie the UI renews a lapsed access cookie with, as it does for a
+    user. Without one the session ends with its access token."""
+    context.clear_cookies()
+    context.add_cookies([auth_cookie(name, token) for name, token in
+                         (("celerp_token", access_token), ("celerp_refresh", refresh_token)) if token])
 
 
 @pytest.fixture
-def fresh_company(api_server, seeded_user, browser_context, api):
+def fresh_company(api_server, browser_context, api):
     """A brand-new, empty company for tests that need a clean slate, isolated from
     the shared session company's accumulated data (drafts/finals/contacts).
 
     Creates the company (POST /companies), points BOTH the browser page (auth
-    cookie) and the returned API client at it, and restores the session company
-    afterward so other tests are unaffected.
+    cookie) and the returned API client at it; _shared_session_kept puts the browser
+    back on the session company afterward.
     """
     import uuid as _uuid
     r = api.post("/companies", json={"name": f"Isolated {_uuid.uuid4().hex[:6]}"})
     assert r.status_code in (200, 201), f"create company failed: {r.text}"
     new_token = r.json()["access_token"]
 
-    _set_auth_cookie(browser_context, new_token)
+    set_session_cookies(browser_context, new_token, r.json()["refresh_token"])
     client = httpx.Client(
         base_url=api_server, headers={"Authorization": f"Bearer {new_token}"}, timeout=10,
         limits=_API_LIMITS,
     )
-    try:
+    with client:
         yield client
-    finally:
-        client.close()
-        _set_auth_cookie(browser_context, seeded_user["access_token"])
 
 
 @pytest.fixture(scope="session", autouse=True)

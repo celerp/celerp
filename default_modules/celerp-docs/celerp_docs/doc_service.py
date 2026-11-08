@@ -499,20 +499,20 @@ async def hold_missing_woocommerce_order(company_id: str, order_id: str) -> dict
 
 
 async def _notify_goods_taken(session, company_id, moved: list[dict]) -> None:
-    """A store order shipped goods another invoice named: say whose and that the invoice
-    can no longer ship them, in the words the Ship action shows, as a notice that stays
-    until read, since nobody is at the screen when a store order completes."""
+    """A store order shipped goods another invoice named: say whose and how much of them the
+    invoice loses, in the words the Ship action shows, as a notice that stays until read,
+    since nobody is at the screen when a store order completes."""
     from celerp.notifications import service as notif_service
+    from celerp_docs.doc_constants import OUTCOME_SHOWN, lot_taken_message
     from ui.i18n import t
 
     title = "notice.store_order_shipped_set_aside.title"
-    for m in moved:
-        params = {"sku": m.get("sku") or m.get("lot_id"), "doc": m.get("doc_number") or m.get("doc_id")}
+    for m in OUTCOME_SHOWN["taken_from"]({"taken_from": moved}):
+        body, params = lot_taken_message(m, 1, t("documents.lot_no_sku", "en"))
         await notif_service.create(
-            session, company_id, "documents", t(title, "en"),
-            t("documents.cost_moved_with_goods", "en", **params),
+            session, company_id, "documents", t(title, "en"), t(body, "en", **params),
             action_url=f"/docs/{m['doc_id']}", priority="high",
-            i18n={"title": title, "body": "documents.cost_moved_with_goods", "params": params})
+            i18n={"title": title, "body": body, "params": params})
 
 
 async def upsert_order_from_woocommerce(company_id: str, order: dict, operation: str | None = None) -> str:

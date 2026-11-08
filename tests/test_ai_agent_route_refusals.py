@@ -169,6 +169,7 @@ class _Walk:
         self.raised: list[tuple[type, bool, str]] = []  # (exception class, keyed text, where)
         self.carried: dict[type, str] = {}  # exception classes whose text a detail carries
         self._returns: dict = {}
+        self._handed_back: dict = {}  # helper -> the parameters it returns as given
         self._passers: dict = {}
         todo = [(route.endpoint, None) for _path, _methods, route in _api_routes(app)
                 if (route.openapi_extra or {}).get("x-celerp-agent") is True]
@@ -292,6 +293,9 @@ class _Walk:
             values = [n.value for n in ast.walk(tree) if isinstance(n, (ast.Assign, ast.AnnAssign)) and n.value
                       and any(isinstance(target, ast.Name) and target.id == node.id
                               for target in getattr(n, "targets", [getattr(n, "target", None)]))]
+            if not values and node.id in self._handed_back.get(fn, {}):
+                self._handed_back[fn][node.id] = True  # keyed where the caller gives it
+                return True
             if not values and node.id in scope:
                 return _held_keyed(scope[node.id])  # a refusal the module builds once
             return bool(values) and all(keyed(v) for v in values)
@@ -326,7 +330,15 @@ class _Walk:
                 key = node.args[index] if len(node.args) > index else None
                 return not isinstance(key, ast.Constant) or key.value in _EN
             if inspect.isfunction(callee) and _first_party(callee):
-                return self._returns_keyed(callee)
+                if not self._returns_keyed(callee):
+                    return False
+                handed = [name for name, back in self._handed_back[inspect.unwrap(callee)].items() if back]
+                try:
+                    given = inspect.signature(callee).bind_partial(
+                        *node.args, **{k.arg: k.value for k in node.keywords if k.arg}).arguments
+                except TypeError:
+                    return False
+                return all(name in given and keyed(given[name]) for name in handed)
         return False
 
     def _list_keyed(self, name: str, fn, scope, tree) -> bool:
@@ -337,10 +349,12 @@ class _Walk:
         return bool(added) and all(self._keyed(a, fn, scope, tree) for a in added)
 
     def _returns_keyed(self, fn) -> bool:
-        """A helper that builds a detail: every value it returns (other than None) is keyed."""
+        """A helper that builds a detail: every value it returns (other than None) is keyed,
+        or is a parameter it hands back as given, keyed where each caller gives it."""
         fn = inspect.unwrap(fn)
         if fn not in self._returns:
             self._returns[fn] = False
+            self._handed_back[fn] = dict.fromkeys(inspect.signature(fn).parameters, False)
             tree = _tree(fn)
             scope = _scope(fn, tree) if tree is not None else {}
             returns = [n.value for n in ast.walk(tree or ast.Module(body=[])) if isinstance(n, ast.Return)

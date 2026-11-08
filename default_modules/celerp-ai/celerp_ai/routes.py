@@ -45,6 +45,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.accounting_roles import refusal_detail
 from celerp.ai.files import AGENT_UPLOAD_TYPES, XLSX_CONTENT_TYPE
 from celerp.ai.service import PROPOSAL_TTL_S
 from celerp.config import settings
@@ -745,7 +746,7 @@ async def query_in_conversation(
                 )
                 await session.commit()
             except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc))
+                raise HTTPException(status_code=400, detail=refusal_detail(exc))
             except IntegrityError:
                 await session.rollback()
                 raise _conflict("question_in_progress", "ai.err_question_in_progress")

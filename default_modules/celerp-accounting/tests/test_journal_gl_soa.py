@@ -2319,16 +2319,11 @@ async def _issued_credit_note(client, tok, total, issue_date, contact=None) -> s
 async def test_a_credit_note_is_attributed_to_its_own_party_not_the_invoiced_one(client):
     """A credit note never puts its rows on a party it does not belong to.
 
-    Two doors keep that true, and both are checked here. Applying a credit note
-    to another party's invoice is refused outright, so the mismatch cannot be
-    created. And where the note names nobody, its application is attributed to
-    nobody rather than inheriting the invoice's party, which is what would put a
-    credit somebody else's on a reader's statement.
-
-    The application is a transfer within receivables and nets to nothing, so no
-    party's balance moves either way. It is the rows that are wrong, and a reader
-    querying a credit they never received is a conversation the books should
-    never have started.
+    Applying a credit note to another party's invoice is refused outright, so the
+    mismatch cannot be created. Where the note names nobody, its application pays
+    down the invoice, so the invoice's side of it is the invoiced party's (their
+    statement reads what the invoice reads) and the note's side is nobody's, where
+    it cancels the note's own credit.
     """
     tok = await _reg(client)
     invoiced = await _contact(client, tok, name="Invoiced Co")
@@ -2350,14 +2345,16 @@ async def test_a_credit_note_is_attributed_to_its_own_party_not_the_invoiced_one
     soa = (await client.get(f"/accounting/soa/{invoiced}", headers=_h(tok))).json()
     assert all(unnamed not in str(row.get("doc_ref", "")) for row in soa["rows"]), (
         "a credit note naming nobody is not this party's")
-    assert abs(soa["closing_balance"] - 100.0) < 0.01, (
-        "and the transfer nets to nothing, so the balance is the invoice")
+    assert abs(soa["closing_balance"] - 60.0) < 0.01, (
+        "the invoice is paid down by the credit, and so is its party's statement")
+    inv_state = (await client.get(f"/docs/{invoice}", headers=_h(tok))).json()
+    assert abs(inv_state["amount_outstanding"] - soa["closing_balance"]) < 0.01
 
     unattributed = await _ledger(client, tok, "1120", contact_id="")
-    assert abs(unattributed["closing_balance"] + 40.0) < 0.01, (
-        "the note's own credit names nobody, and the application's two legs cancel")
-    assert len(unattributed["lines"]) == 3, (
-        "all three are on the control account, where they can be found")
+    assert abs(unattributed["closing_balance"]) < 0.01, (
+        "the note's own credit names nobody, and so does the side of the application that uses it")
+    assert len(unattributed["lines"]) == 2, (
+        "both are on the control account, where they can be found")
 
 
 @pytest.mark.asyncio
@@ -2803,3 +2800,79 @@ async def test_by_doc_shows_the_postings_of_a_list(client):
     assert entry["source_doc"]["doc_id"] == audit
     assert entry["items_status"] == "no_items"
     assert impact["total_debit"] == impact["total_credit"] == 20.0
+
+
+async def _issued(client, tok, doc_type: str, total: float, contact_id: str | None, issue_date: str) -> str:
+    payload = {
+        "doc_type": doc_type, "issue_date": issue_date,
+        "line_items": [{"name": "Line", "quantity": 1, "unit_price": total, "line_total": total}],
+        "subtotal": total, "tax": 0.0, "total": total,
+    }
+    if contact_id:
+        payload["contact_id"] = contact_id
+    r = await client.post("/docs", headers=_h(tok), json=payload)
+    assert r.status_code == 200, r.text
+    doc_id = r.json()["id"]
+    assert (await client.post(f"/docs/{doc_id}/finalize", headers=_h(tok))).status_code == 200
+    return doc_id
+
+
+_APPLIED_NOTES = [
+    # (note kind, the document it settles, apply route, note named, document named)
+    (kind, target, route, note_named, target_named)
+    for kind, target, route in (("credit_note", "invoice", "apply-to-invoice"),
+                                ("debit_note", "bill", "apply-to-bill"))
+    for note_named in (True, False)
+    for target_named in (True, False)
+    # A supplier credit applies only between two documents of one named supplier.
+    if kind == "credit_note" or (note_named and target_named)
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reversed_", [False, True], ids=["posted", "reversed"])
+@pytest.mark.parametrize("kind,target,route,note_named,target_named", _APPLIED_NOTES)
+async def test_an_applied_note_moves_each_party_by_the_balance_it_moves(
+        client, kind, target, route, note_named, target_named, reversed_):
+    """A note applied to a document moves the document's party's statement by exactly
+    what it takes off the document, and the note's party's (or the unattributed bucket,
+    for a note with no party) by what it uses of the note, whether or not the note or
+    the document names a party, and again when the application is undone out of a
+    locked period. The statements plus the unattributed bucket stay the control account."""
+    tok = await _reg(client)
+    party = await _contact(client, tok, ctype="customer" if target == "invoice" else "vendor")
+    doc = await _issued(client, tok, target, 100.0, party if target_named else None, "2026-01-05")
+    note = await _issued(client, tok, kind, 30.0, party if note_named else None, "2026-01-06")
+    sign = 1 if target == "invoice" else -1  # a customer owes positive, a supplier is owed negative
+
+    async def closing(contact_id: str) -> float:
+        r = await client.get(f"/accounting/soa/{contact_id}", headers=_h(tok))
+        assert r.status_code == 200, r.text
+        return r.json()["closing_balance"]
+
+    async def unattributed() -> float:
+        """The control account's lines no party resolves for, debits positive."""
+        r = await client.get(f"/accounting/ledger/{'1120' if target == 'invoice' else '2110'}",
+                             headers=_h(tok), params={"contact_id": ""})
+        assert r.status_code == 200, r.text
+        return sum(line["debit"] - line["credit"] for line in r.json()["lines"])
+
+    before = (await closing(party), await unattributed())
+    r = await client.post(f"/docs/{note}/{route}", headers=_h(tok),
+                          json={"target_doc_id": doc, "amount": 30.0, "date": "2026-01-10"})
+    assert r.status_code == 200, r.text
+    expected = {party: 0.0, "": 0.0}
+    expected[party if target_named else ""] -= sign * 30.0
+    expected[party if note_named else ""] += sign * 30.0
+    if reversed_:
+        r = await client.post("/accounting/period-lock", headers=_h(tok), json={"lock_date": "2026-01-31"})
+        assert r.status_code == 200, r.text
+        index = next(p["index"] for p in (await client.get(f"/docs/{doc}", headers=_h(tok))).json()["payments"]
+                     if p.get("source_doc_id") == note)
+        r = await client.post(f"/docs/{doc}/void-payment", headers=_h(tok),
+                              json={"payment_index": index, "refund_date": "2026-02-10"})
+        assert r.status_code == 200, r.text
+        expected = {party: 0.0, "": 0.0}
+    after = (await closing(party), await unattributed())
+    assert round(after[0] - before[0], 2) == expected[party], (after, before)
+    assert round(after[1] - before[1], 2) == expected[""], (after, before)

@@ -66,8 +66,8 @@ def _calls(name: str):
 
 
 def _code() -> list[Path]:
-    return [p for p in ROOT.rglob("*.py") if "tests" not in p.parts and ".venv" not in p.parts
-            and "site-packages" not in p.parts]
+    return [p for p in ROOT.rglob("*.py")
+            if not {"tests", ".venv", "site-packages", "node_modules"} & set(p.parts)]
 
 
 def test_every_cost_door_reads_the_cost_through_its_one_owner():

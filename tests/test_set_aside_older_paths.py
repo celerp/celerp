@@ -373,6 +373,8 @@ _WRITERS = {
     ("celerp/events/engine.py", "transition = await ProjectionEngine.apply_event(session, entry)"): "emit_event, the hold check itself",
     ("celerp/routers/ledger.py", "await ProjectionEngine.rebuild(session, company_id=company_id)"): "rebuild from the judged ledger",
     ("celerp/services/company_backup.py", "await ProjectionEngine.rebuild(session, company_id)"): "whole-company restore",
+    ("celerp/services/company_backup.py", "proj.state = state"):
+        "a restored line without a line id gets the id a replay of its record derives",
     ("celerp/services/dev_release_guard.py", "await ProjectionEngine.rebuild(session)"): "rebuild from the judged ledger",
     ("default_modules/celerp-admin/celerp_admin/routes.py", "await ProjectionEngine.rebuild(session, company_id=company_id)"): "rebuild from the judged ledger",
     ("default_modules/celerp-admin/celerp_admin/routes.py", "proj.state = replayed"): "stale projection replayed from the judged ledger",

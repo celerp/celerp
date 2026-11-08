@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from .conftest import _set_auth_cookie
+from .conftest import set_session_cookies
 from .test_company_backup_browser import _WAIT_MS, _add_user, _session_company, _token_for
 
 pytestmark = pytest.mark.browser
@@ -18,7 +18,7 @@ def test_refusal_in_a_users_cell_wraps_inside_the_table(page, browser_context, f
     owner_id = next(u["id"] for u in fresh_company.get("/companies/me/users").json()["items"]
                     if u.get("is_install_owner"))
     uid, _ = _add_user(fresh_company, "owner")
-    _set_auth_cookie(browser_context, _token_for(uid, company))
+    set_session_cookies(browser_context, _token_for(uid, company))
     page.set_viewport_size({"width": 1280, "height": 800})
     page.goto("/settings/general?tab=users")
     page.click(f'td[hx-get="/settings/users/{owner_id}/is_active/edit"]')

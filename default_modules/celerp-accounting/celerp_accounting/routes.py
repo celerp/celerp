@@ -1171,12 +1171,10 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
             je_meta[ev.entity_id] = {**meta, "doc_id": source_id}
             je_ts[ev.entity_id] = str((ev.data or {}).get("ts") or "")[:10]
 
-    # A credit note carries both ids; its own party is the one the entry belongs
-    # to, which is not always the party on the invoice it settles.
+    # A note application carries both ids: the document it settles and the note.
     doc_ids = sorted(
         {m["doc_id"] for m in je_meta.values()}
-        | {m[key] for m in je_meta.values()
-           for key in ("cn_id", "dn_id") if m.get(key)}
+        | {note_id for m in je_meta.values() if (note_id := _applied_note(m)[1])}
     )
     doc_states: dict[str, dict] = {}
     for chunk in _id_chunks(doc_ids):
@@ -1219,16 +1217,15 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
         # The party this entry belongs to, resolved from the document that caused
         # it. Every document-driven posting records its doc_id, so no separate
         # party field has to be stored or backfilled for them.
-        party_state = doc_states.get(meta.get("cn_id") or meta.get("dn_id"), state)
-        contact_id = (party_state.get("contact_id") or party_state.get("customer_id")
-                      or party_state.get("supplier_id"))
+        note_kind, note_id = _applied_note(meta)
+        party_state = doc_states.get(note_id, state) if note_id else state
+        contact_id = _doc_party(party_state)
         doc_type = party_state.get("doc_type") or party_state.get("type") or ""
         numbers = {
             entity_id: number
             for entity_id, number in (
                 (doc_id, state.get("ref_id") or state.get("doc_number")),
-                (meta.get("cn_id") or meta.get("dn_id"),
-                 party_state.get("ref_id") or party_state.get("doc_number")),
+                (note_id, party_state.get("ref_id") or party_state.get("doc_number")),
             )
             if entity_id and number
         }
@@ -1251,10 +1248,46 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
             "booked_items": meta.get("items") or None,
             "doc": state,
         }
-    # A reversal undoes the whole entry on the party line; it names no items, and is headed
-    # by its own memo rather than the event of the entry it undoes.
-    return {je_id: refs[original] if je_id == original else {**refs[original], "is_item_posting": False, "trigger": None}
-            for je_id, original in reverses.items() if original in refs}
+        if note_kind:
+            # An application moves two balances: the settled document's and the
+            # note's. Each line belongs to the party of the balance it moves, told
+            # apart by direction (a receivable is credited on the document's side, a
+            # payable debited), so a note with no party still pays down the
+            # document's party exactly as it pays down the document.
+            doc_side = "credit" if note_kind == "cn" else "debit"
+            note_side = "debit" if doc_side == "credit" else "credit"
+            refs[je_id]["side_parties"] = {doc_side: _doc_party(state), note_side: contact_id}
+    out = {}
+    for je_id, original in reverses.items():
+        if original not in refs:
+            continue
+        ref = refs[original]
+        if je_id != original:
+            # A reversal undoes the whole entry on the party line; it names no items, and is headed
+            # by its own memo rather than the event of the entry it undoes.
+            ref = {**ref, "is_item_posting": False, "trigger": None}
+            if "side_parties" in ref:
+                # A reversal swaps every line's debit and credit, so the sides swap too.
+                ref["side_parties"] = {_SWAPPED_SIDE[side]: party for side, party in ref["side_parties"].items()}
+        out[je_id] = ref
+    return out
+
+
+_SWAPPED_SIDE = {"debit": "credit", "credit": "debit"}
+
+
+def _applied_note(meta: dict) -> tuple[str, str]:
+    """(kind, note id) of a note application entry's metadata ("cn" or "dn"), or
+    ("", "") for any other entry."""
+    for kind in ("cn", "dn"):
+        if meta.get("trigger") == f"{kind}.applied" and meta.get(f"{kind}_id"):
+            return kind, meta[f"{kind}_id"]
+    return "", ""
+
+
+def _doc_party(state: dict) -> str | None:
+    """The party a document names, or None when it names none."""
+    return state.get("contact_id") or state.get("customer_id") or state.get("supplier_id")
 
 
 def _line_party(refs: dict[str, dict], je_id: str, entry: dict, survivors: dict[str, str]) -> str:
@@ -1271,7 +1304,14 @@ def _line_party(refs: dict[str, dict], je_id: str, entry: dict, survivors: dict[
     survives it (merge_survivors), so merged contacts are one party on every report.
     """
     named = entry.get("contact")
-    party = named if isinstance(named, str) and named else (refs.get(je_id) or {}).get("contact_id") or ""
+    ref = refs.get(je_id) or {}
+    if isinstance(named, str) and named:
+        party = named
+    elif "side_parties" in ref:
+        amounts = _line_amounts(entry)
+        party = ref["side_parties"].get("debit" if amounts and amounts[0] > 0 else "credit") or ""
+    else:
+        party = ref.get("contact_id") or ""
     return survivors.get(party, party)
 
 

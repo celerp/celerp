@@ -165,6 +165,13 @@ elif path in ("backfill", "ownership", "restamp"):
                     pause()
                     armed.append(True)
         _data_reconcile.data_backfill_scripts = lambda: [Backfill(1), Backfill(2)]
+        # The stamp moves past both without running them, so the migrate replays them.
+        track = _data_reconcile.track_restamp
+        def skipped_both(conn, *args, **kwargs):
+            ran = track(conn, *args, **kwargs)
+            _data_reconcile.set_meta(conn, _data_reconcile.PENDING_BACKFILLS_KEY, "backfill1,backfill2")
+            return ran
+        _data_reconcile.track_restamp = skipped_both
         cli.main(["migrate", "--db-url", url])
     if path == "restamp":
         # The walker finds the head revision's change missing, so the stamp moves

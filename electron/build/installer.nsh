@@ -6,9 +6,17 @@
 ;   - run over an existing install, it says what will happen: an update (data is
 ;     kept), a reinstall of the same version, or, for an older file, that a newer
 ;     Celerp is already installed, and stops.
-; The in-app updater runs the installer with --updated and is never prompted.
+; The in-app updater runs the installer with --updated. Such an update is never
+; asked the questions above and shows setup's progress window, also when the
+; updater asked for a silent install. It reopens Celerp when it is done, and in
+; every way it can stop it reopens the installed Celerp, which then says the update
+; stopped. Each step is written to install.log in Celerp's logs folder.
 
 !include WordFunc.nsh
+
+; The mutex a running setup holds. Celerp started by hand while it exists says that
+; it is being updated and quits (setup-guard.js asks for the same name).
+!define CELERP_SETUP_MUTEX "CelerpSetupRunning"
 
 !macro customHeader
   Caption "${PRODUCT_NAME} ${VERSION} Setup"
@@ -64,6 +72,30 @@
       ${EndIf}
     ${EndIf}
   ${EndIf}
+  ${If} ${isUpdated}
+    StrCpy $R9 "no"
+    ${If} ${Silent}
+      StrCpy $R9 "yes"
+    ${EndIf}
+    !insertmacro celerpUpdateLog "start: ${VERSION}, mode $installMode, silent asked: $R9"
+    SetSilent normal
+  ${EndIf}
+!macroend
+
+; An update installs where the installed version is, for the user or for the
+; machine, so the install mode page never shows.
+!macro customInstallMode
+  !ifndef BUILD_UNINSTALLER
+    ${If} ${isUpdated}
+      ${If} $hasPerMachineInstallation == "1"
+        StrCpy $isForceMachineInstall "1"
+        !insertmacro celerpUpdateLog "mode forced: machine"
+      ${Else}
+        StrCpy $isForceCurrentInstall "1"
+        !insertmacro celerpUpdateLog "mode forced: current"
+      ${EndIf}
+    ${EndIf}
+  !endif
 !macroend
 
 ; ---------------------------------------------------------------------------------
@@ -114,13 +146,136 @@
   Var celerpFind
   Var celerpBytes
   Var celerpKb
+  Var celerpFound
+  Var celerpSetupMutex
+  ; "1" from the marker to the swap: a stop in between removes the new folder.
+  Var celerpCopying
+
+  ; A file that cannot be written offers Retry and Cancel, never Ignore, so no file is
+  ; left out of an install; Cancel ends in .onInstFailed.
+  AllowSkipFiles off
+!endif
+
+; Every way setup stops early. A copy it had started is removed. In an update it logs
+; why and reopens the installed Celerp, which then says the update stopped, so the
+; user is never left without it.
+; Setup's window hides first, so Celerp's window opens in front of it.
+; The uninstaller build only stops: the installer that ran it reopens Celerp.
+!ifdef BUILD_UNINSTALLER
+  !macro celerpUpdateExit REASON
+    SetErrorLevel 2
+    Quit
+  !macroend
+!endif
+!ifndef BUILD_UNINSTALLER
+  !macro celerpUpdateExit REASON
+    !insertmacro celerpAbandonCopy
+    !insertmacro celerpUpdateLog "stopped: ${REASON}"
+    ${If} ${isUpdated}
+      HideWindow
+      ${StdUtils.ExecShellAsUser} $0 "$INSTDIR\${APP_EXECUTABLE_FILENAME}" "open" "--updated --update-install-failed=${VERSION}"
+      !insertmacro celerpUpdateLog "reopened $INSTDIR\${APP_EXECUTABLE_FILENAME}: $0"
+    ${EndIf}
+    SetErrorLevel 2
+    Quit
+  !macroend
+
+  ; One line in install.log.
+  !macro celerpUpdateLog TEXT
+    Push "${TEXT}"
+    Call celerpWriteUpdateLog
+  !macroend
+
+  ; The functions an update uses. They use stock variables and macros declared after
+  ; this file is included, so the template inserts them after the install section.
+  !macro celerpInstallerFunctions
+    ; Appends the line on the stack to install.log in the user's own logs folder (also
+    ; in a per-machine install), in UTF-16 with the time. A line that cannot be written
+    ; is skipped: the log never stops setup.
+    Function celerpWriteUpdateLog
+      Exch $R9
+      Push $R8
+      Push $0
+      Push $1
+      Push $2
+      Push $3
+      Push $4
+      Push $5
+      Push $6
+      SetShellVarContext current
+      CreateDirectory "$APPDATA\${PRODUCT_NAME}\celerp-data\logs"
+      ClearErrors
+      FileOpen $R8 "$APPDATA\${PRODUCT_NAME}\celerp-data\logs\install.log" a
+      ${IfNot} ${Errors}
+        FileSeek $R8 0 END $0
+        ${If} $0 == 0
+          FileWriteWord $R8 0xFEFF
+        ${EndIf}
+        ${GetTime} "" "L" $0 $1 $2 $3 $4 $5 $6
+        FileWriteUTF16LE $R8 "$2-$1-$0 $4:$5:$6 ${VERSION} $R9$\r$\n"
+        FileClose $R8
+      ${EndIf}
+      ${If} $installMode == "all"
+        SetShellVarContext all
+      ${EndIf}
+      Pop $6
+      Pop $5
+      Pop $4
+      Pop $3
+      Pop $2
+      Pop $1
+      Pop $0
+      Pop $R8
+      Pop $R9
+    FunctionEnd
+
+    ; Closes a Celerp the user opened while the update ran, before the swap moves its
+    ; folder, and says so on the progress page and in the log.
+    Function celerpCloseReopenedApp
+      Push $R0
+      Push $R1
+      Push $1
+      Push $2
+      Push $3
+      Push $4
+      !insertmacro FIND_PROCESS "${APP_EXECUTABLE_FILENAME}" $celerpFound
+      ${IfNot} ${Silent}
+        SetDetailsPrint textonly
+      ${EndIf}
+      !insertmacro CHECK_APP_RUNNING
+      ${IfNot} ${Silent}
+        SetDetailsPrint none
+      ${EndIf}
+      ${If} $celerpFound == 0
+        ; The status line shows about 75 characters, so it gets the short notice.
+        !insertmacro installStage "Closed Celerp. It opens again after the update."
+        !insertmacro celerpUpdateLog "Closed the Celerp that was opened during the update. It opens again when the update is done."
+      ${EndIf}
+      Pop $4
+      Pop $3
+      Pop $2
+      Pop $1
+      Pop $R1
+      Pop $R0
+    FunctionEnd
+
+    ; A section that stopped: a file write answered Cancel. The copy had not reached
+    ; the swap, so the installed version is still in place.
+    Function .onInstFailed
+      !insertmacro celerpUpdateExit "setup stopped while writing its files"
+    FunctionEnd
+  !macroend
 !endif
 
 ; A setup that was stopped (ended in Task Manager, signed out, power lost) cannot
 ; delete its temporary folder, which holds the unpacked app. Each setup marks its
 ; own folder with its process ID, and removes marked folders whose setup is no
 ; longer running. Folders without the mark belong to other installers and are left.
+; It also creates the setup mutex and holds it until setup ends; Windows frees it
+; when setup is stopped, so it never outlives its setup.
 !macro celerpCleanStoppedSetups
+  System::Call 'kernel32::CreateMutexW(p 0, i 0, w "${CELERP_SETUP_MUTEX}") p .s'
+  Pop $celerpSetupMutex
   System::Call 'kernel32::GetCurrentProcessId() i .s'
   Pop $celerpPid
   FileOpen $celerpFile "$PLUGINSDIR\celerp-setup.pid" w
@@ -212,8 +367,7 @@
       DetailPrint "Left as found: $celerpMarker, $celerpStage, $celerpOld"
       ${If} ${FileExists} "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
         MessageBox MB_OK|MB_ICONEXCLAMATION "${PRODUCT_NAME} setup replaces the installed version through new folders next to $INSTDIR, and found $celerpStage, $celerpOld or $celerpMarker there, which it did not make. Move them somewhere else, then run setup again. The installed version is as it was." /SD IDOK
-        SetErrorLevel 2
-        Quit
+        !insertmacro celerpUpdateExit "found folders it did not make next to $INSTDIR"
       ${EndIf}
     ${ElseIf} ${FileExists} "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
       StrCpy $celerpMode "swap"
@@ -227,8 +381,7 @@
   ${If} $celerpMode == "direct"
   ${AndIf} ${FileExists} "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
     MessageBox MB_OK|MB_ICONEXCLAMATION "${PRODUCT_NAME} setup cannot replace the installed version in $INSTDIR safely. Install into another folder, or uninstall ${PRODUCT_NAME} first (your data is kept). The installed version is as it was." /SD IDOK
-    SetErrorLevel 2
-    Quit
+    !insertmacro celerpUpdateExit "cannot replace the install in $INSTDIR safely"
   ${EndIf}
 !macroend
 
@@ -261,8 +414,7 @@
     IntOp ${NEED} ${NEED} + 64
     ${If} ${FREE} < ${NEED}
       MessageBox MB_OK|MB_ICONEXCLAMATION "There is not enough free space on ${VOL} to install ${PRODUCT_NAME}. Setup needs ${NEED} MB there and ${FREE} MB is free. Free up space, then run setup again. Nothing has been changed." /SD IDOK
-      SetErrorLevel 2
-      Quit
+      !insertmacro celerpUpdateExit "not enough free space on ${VOL}"
     ${EndIf}
   ${EndIf}
 !macroend
@@ -333,13 +485,13 @@
     ${If} ${Errors}
       ${If} $celerpMode == "swap"
         MessageBox MB_OK|MB_ICONEXCLAMATION "${PRODUCT_NAME} setup could not start a new folder next to $INSTDIR to replace the installed version. Check that you can create files in $celerpParent, then run setup again. The installed version is as it was." /SD IDOK
-        SetErrorLevel 2
-        Quit
+        !insertmacro celerpUpdateExit "could not start a new folder next to $INSTDIR"
       ${EndIf}
       StrCpy $celerpMode "direct"
     ${Else}
       FileWriteUTF16LE $celerpFile "$celerpMarkerText"
       FileClose $celerpFile
+      StrCpy $celerpCopying "1"
     ${EndIf}
   ${EndIf}
   ${If} $celerpMode == "direct"
@@ -351,7 +503,8 @@
 
 ; A copy that did not finish: the new folder goes and the installed version stays.
 !macro celerpAbandonCopy
-  ${If} $celerpMode != "direct"
+  ${If} $celerpCopying == "1"
+    StrCpy $celerpCopying "0"
     ; a process cannot delete its own working folder
     SetOutPath $TEMP
     RMDir /r "$celerpStage"
@@ -376,9 +529,7 @@
       Pop $celerpKb
       ${If} $celerpKb != ${APP_64_UNPACKED_SIZE}
         MessageBox MB_OK|MB_ICONEXCLAMATION "${PRODUCT_NAME} could not unpack all of its files, usually because the disk is full. Free up space, then run setup again. The installed version is as it was." /SD IDOK
-        !insertmacro celerpAbandonCopy
-        SetErrorLevel 2
-        Quit
+        !insertmacro celerpUpdateExit "the unpacked app is short"
       ${EndIf}
     ${EndIf}
   !endif
@@ -389,6 +540,7 @@
   ${If} $celerpMode != "direct"
     SetOutPath $TEMP
     ${If} $celerpMode == "swap"
+      Call celerpCloseReopenedApp
       StrCpy $celerpTry 0
       ${Do}
         ClearErrors
@@ -400,9 +552,7 @@
         ${If} $celerpTry < 10
           Sleep 1000
         ${ElseIf} ${Cmd} `MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "${PRODUCT_NAME} could not replace the files in $INSTDIR because one of them is in use. Close ${PRODUCT_NAME} and any window open on that folder, then click Retry. Cancel leaves the installed version as it is." /SD IDCANCEL IDCANCEL`
-          !insertmacro celerpAbandonCopy
-          SetErrorLevel 2
-          Quit
+          !insertmacro celerpUpdateExit "files in $INSTDIR in use, Cancel"
         ${Else}
           StrCpy $celerpTry 0
         ${EndIf}
@@ -416,11 +566,11 @@
       ${If} $celerpMode == "swap"
         Rename "$celerpOld" "$INSTDIR"
       ${EndIf}
-      !insertmacro celerpAbandonCopy
       MessageBox MB_OK|MB_ICONEXCLAMATION "${PRODUCT_NAME} could not move its new files into $INSTDIR. The installed version is as it was." /SD IDOK
-      SetErrorLevel 2
-      Quit
+      !insertmacro celerpUpdateExit "could not move the new files into $INSTDIR"
     ${EndIf}
+    StrCpy $celerpCopying "0"
+    !insertmacro celerpUpdateLog "swapped: the new files are in $INSTDIR"
     SetOutPath $INSTDIR
     ; The packed and unpacked app are no longer needed, and the old uninstaller may
     ; need the room in the temporary folder to move the old files aside.
@@ -432,7 +582,9 @@
 ; The version being replaced has moved aside: its uninstaller runs there. That
 ; uninstaller takes its folder from InstallLocation, not from the folder it is given,
 ; so InstallLocation names the moved folder while it runs; registryAddInstallInfo
-; then sets it back to $INSTDIR.
+; then sets it back to $INSTDIR. celerpFinishReplace also sets it back before the marker
+; goes, and the next setup after one stopped while it named the moved folder finds the
+; install from the marker (celerpInstallDirOfStoppedSwap).
 !macro celerpOldVersionLocation
   ${If} $celerpMode == "swap"
   ${AndIf} $installationDir == $INSTDIR
@@ -451,6 +603,86 @@
   ${EndIf}
 !macroend
 
+; Sets a registry value that reads FROM to TO, and leaves any other value as it is.
+!macro celerpMoveRegStr ROOT KEY NAME FROM TO
+  Push $0
+  ReadRegStr $0 ${ROOT} ${KEY} ${NAME}
+  ${If} $0 == ${FROM}
+    WriteRegStr ${ROOT} ${KEY} ${NAME} ${TO}
+  ${EndIf}
+  Pop $0
+!macroend
+
+; $INSTDIR as just read from InstallLocation in registry root ROOT. A setup stopped
+; while the version it replaced was being removed can leave InstallLocation naming
+; that version's moved-aside folder <parent>\~O<rest>. Beside it is the marker
+; <parent>\~S<rest>, naming the install it was replacing: setup and every reopen use
+; that folder, InstallLocation names it again, and setup then finishes the stopped swap
+; (celerpPrepareReplace). The same folders are a running setup's own swap while its
+; old version's uninstaller removes the moved-aside folder it was handed, so only a
+; setup applies this, and only when no Celerp setup holds the setup mutex: each setup
+; creates it in its install section, after its folder is chosen here.
+!macro celerpInstallDirOfStoppedSwap ROOT
+  !ifndef BUILD_UNINSTALLER
+    Push $0
+    Push $1
+    Push $2
+    Push $3
+    Push $4
+    Push $5
+    Push $6
+    StrCpy $4 $INSTDIR
+    ${GetParent} "$INSTDIR" $1
+    StrLen $2 "$1\~O"
+    StrCpy $0 $INSTDIR $2
+    StrCpy $3 $INSTDIR "" $2
+    ${If} $1 != ""
+    ${AndIf} $0 == "$1\~O"
+    ${AndIf} $3 != ""
+      ; SYNCHRONIZE. Error 2 means no setup holds the mutex; any other failure means one does.
+      System::Call 'kernel32::OpenMutexW(i 0x00100000, i 0, w "${CELERP_SETUP_MUTEX}") p .r5 ?e'
+      Pop $6
+      ${If} $5 != 0
+        System::Call 'kernel32::CloseHandle(p r5)'
+      ${EndIf}
+      StrCpy $0 ""
+      ${If} $5 == 0
+      ${AndIf} $6 == 2
+        ClearErrors
+        FileOpen $2 "$1\~S$3" r
+        ${IfNot} ${Errors}
+          FileReadUTF16LE $2 $0
+          FileClose $2
+        ${EndIf}
+      ${EndIf}
+      StrCpy $2 "${PRODUCT_NAME} setup is replacing $1\"
+      StrLen $5 $2
+      StrCpy $6 $0 $5
+      ${If} $6 == $2
+        ; the marker names <parent>\<two letters, the first not ~><rest>
+        StrCpy $6 $0 "" $5
+        StrCpy $5 $6 "" 2
+        StrCpy $0 $6 1
+        StrCpy $2 $6 1 1
+        ${If} $5 == $3
+        ${AndIf} $0 != "~"
+        ${AndIf} $0 != "\"
+        ${AndIf} $2 != "\"
+          StrCpy $INSTDIR "$1\$6"
+          !insertmacro celerpMoveRegStr ${ROOT} "${INSTALL_REGISTRY_KEY}" InstallLocation "$4" "$INSTDIR"
+        ${EndIf}
+      ${EndIf}
+    ${EndIf}
+    Pop $6
+    Pop $5
+    Pop $4
+    Pop $3
+    Pop $2
+    Pop $1
+    Pop $0
+  !endif
+!macroend
+
 !macro celerpUninstallOldVersions
   !insertmacro uninstallOldVersion SHELL_CONTEXT
   !insertmacro handleUninstallResult SHELL_CONTEXT
@@ -460,18 +692,19 @@
   ${endIf}
 !macroend
 
-; Once the new version is in place, an old uninstaller that fails is reported, not
-; fatal: what it leaves in the old folder is removed with the folder.
+; Once the new version is in place, an old uninstaller that fails is reported and
+; logged, not fatal: what it leaves in the old folder is removed with the folder.
 !macro celerpUninstallCheck
   ${If} ${Errors}
     DetailPrint `Uninstall was not successful. Not able to launch uninstaller!`
+    !insertmacro celerpUpdateLog "old version uninstall: its uninstaller did not start, code $R0"
   ${ElseIf} $R0 != 0
     ${If} $celerpMode == "direct"
       MessageBox MB_OK|MB_ICONEXCLAMATION "$(uninstallFailed): $R0"
-      SetErrorLevel 2
-      Quit
+      !insertmacro celerpUpdateExit "uninstall of the old version failed: $R0"
     ${EndIf}
     DetailPrint `Uninstall was not successful. Uninstaller error code: $R0.`
+    !insertmacro celerpUpdateLog "old version uninstall: code $R0"
   ${EndIf}
 !macroend
 
@@ -485,6 +718,10 @@
 
 !macro celerpFinishReplace
   ${If} $celerpMode == "swap"
+    ; an old uninstaller that did not remove its registry keys left InstallLocation
+    ; naming the moved folder, which only the marker can resolve
+    !insertmacro celerpMoveRegStr HKEY_CURRENT_USER "${INSTALL_REGISTRY_KEY}" InstallLocation "$celerpOld" "$INSTDIR"
+    !insertmacro celerpMoveRegStr SHELL_CONTEXT "${INSTALL_REGISTRY_KEY}" InstallLocation "$celerpOld" "$INSTDIR"
     RMDir /r "$celerpOld"
   ${EndIf}
   ${If} $celerpMode != "direct"

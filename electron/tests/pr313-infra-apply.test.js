@@ -125,8 +125,29 @@ describe("fullRelaunch", () => {
       relaunch: () => calls.push("relaunch"),
       quit: () => calls.push("quit"),
     };
-    restart.fullRelaunch(appRef);
+    restart.fullRelaunch(appRef, ["Celerp.exe"]);
     expect(calls).toEqual(["relaunch", "quit"]);
+  });
+
+  test("a relaunch drops the arguments of an update that stopped, so the new instance does not report it again", () => {
+    const relaunched = [];
+    const appRef = { relaunch: (opts) => relaunched.push(opts), quit: () => {} };
+    restart.fullRelaunch(appRef, ["Celerp.exe", "--updated", "--update-install-failed=2.8.1", "--inspect"]);
+    expect(relaunched).toEqual([{ args: ["--inspect"] }]);
+  });
+
+  test("a relaunch after an installer that did not start carries only the new failure", () => {
+    const relaunched = [];
+    const appRef = { relaunch: (opts) => relaunched.push(opts), quit: () => {} };
+    restart.fullRelaunch(appRef, ["Celerp.exe", "--update-install-failed=2.8.0"], ["--update-install-failed=2.8.1"]);
+    expect(relaunched).toEqual([{ args: ["--update-install-failed=2.8.1"] }]);
+  });
+
+  test("every relaunch in the main process goes through fullRelaunch", () => {
+    const fs = require("fs");
+    const path = require("path");
+    const main = fs.readFileSync(path.join(__dirname, "..", "app-main.js"), "utf8");
+    expect(main.match(/\.relaunch\(/g)).toBeNull();
   });
 });
 

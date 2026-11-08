@@ -220,18 +220,18 @@ async def test_resetting_the_last_company_starts_over(real_engine, real_client, 
 async def test_installation_upgrade_markers_survive_a_reset(real_engine, real_client, tmp_path, monkeypatch):
     """The upgrade markers table is created at runtime rather than by a model; it belongs
     to the installation, so a reset keeps it and its rows."""
-    from celerp.migrations._data_reconcile import BACKFILL_VERSION_KEY, get_meta, set_meta
+    from celerp.migrations._data_reconcile import PENDING_BACKFILLS_KEY, get_meta, set_meta
     _local_files(monkeypatch, tmp_path)
     shared, solo, a, b = await _two_companies(real_engine, tmp_path)
     async with real_engine.begin() as conn:
-        await conn.run_sync(set_meta, BACKFILL_VERSION_KEY, "9.9.9")
+        await conn.run_sync(set_meta, PENDING_BACKFILLS_KEY, "z9")
 
     r = await real_client.post(RESET, json={"company_name": "Harbor Goods Ltd"},
                                headers=auth(await token(real_engine, shared, a)))
 
     assert r.status_code == 200, r.text
     async with real_engine.connect() as conn:
-        assert await conn.run_sync(get_meta, BACKFILL_VERSION_KEY) == "9.9.9"
+        assert await conn.run_sync(get_meta, PENDING_BACKFILLS_KEY) == "z9"
 
 
 async def test_wrong_name_is_refused_and_nothing_changes(real_engine, real_client, tmp_path, monkeypatch):

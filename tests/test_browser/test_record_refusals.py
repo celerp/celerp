@@ -13,7 +13,7 @@ from playwright.sync_api import Page, expect
 
 from ui.i18n import t
 
-from .conftest import _set_auth_cookie, wait_for_topbar
+from .conftest import set_session_cookies, wait_for_topbar
 from .test_company_backup_browser import _add_user, _token_for
 from .test_gl_impact_screens import _demo_company, _stocked_item
 
@@ -44,7 +44,7 @@ def _viewer_without_documents(api) -> str:
 def test_a_list_opened_by_its_link_without_view_documents_says_so(page: Page, ui_server, fresh_company):
     api = fresh_company
     lst = _finalized_quotation_list(api)
-    _set_auth_cookie(page.context, _viewer_without_documents(api))
+    set_session_cookies(page.context, _viewer_without_documents(api))
 
     for url in (f"/lists/{lst['id']}", "/lists"):
         page.goto(f"{ui_server}{url}")

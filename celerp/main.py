@@ -17,12 +17,10 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from celerp import __version__, runtime as _runtime
 _runtime.watch_supervisor_pipe()
-from celerp.accounting_roles import catalog_refusal
+from celerp.accounting_roles import KeyedRefusal, catalog_refusal
 from celerp.error_body import error_response
 from celerp.db import create_tables, engine, lifecycle_engine, mask_db_credentials
 from celerp.openapi_parameters import describe_parameters
-from celerp.inventory_codes import CodeConflictError
-from celerp.projections.engine import UnhandledEventsError
 from celerp.services.account_roles import PostingRoleError
 from celerp.services.business_time import InvalidTimezoneError
 from celerp.services.journal_accounts import UnbalancedJournalEntry
@@ -808,11 +806,13 @@ async def rate_limit_handler(request: Request, _exc: RateLimitExceeded):
     return error_response(request, 429, catalog_refusal("error.rate_limited"))
 
 
-@app.exception_handler(CodeConflictError)
-async def code_conflict_handler(request: Request, exc: CodeConflictError):
-    # The event boundary raises a CodeConflictError (barcode or RFID / EPC) when a write
-    # introduces a physical code another item already holds. One handler on the shared
-    # base maps every physical-code collision to 409.
+@app.exception_handler(KeyedRefusal)
+async def keyed_refusal_handler(request: Request, exc: KeyedRefusal):
+    # A keyed refusal no route answered itself (a physical code another item holds, a rebuild
+    # with events no handler knows, books that cannot be read safely) refuses the request as
+    # a conflict with its own message, never a server error. The route's session closes
+    # without committing, so the request stores nothing. Refusals answered otherwise keep
+    # their own handlers below.
     return error_response(request, 409, exc.detail)
 
 
@@ -822,12 +822,6 @@ async def invalid_timezone_handler(request: Request, exc: InvalidTimezoneError):
     # is refused before it stores anything, without a try in every route. The message names
     # the page that sets the time zone, and the code lets a page link there.
     return error_response(request, 422, catalog_refusal("error.company_timezone_unknown"), code="company_timezone")
-
-
-@app.exception_handler(UnhandledEventsError)
-async def unhandled_events_handler(request: Request, exc: UnhandledEventsError):
-    # Every rebuild door (ledger, doctor, admin) is refused the same way before it changes anything.
-    return error_response(request, 409, exc.detail)
 
 
 @app.exception_handler(PostingRoleError)

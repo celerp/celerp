@@ -1,8 +1,8 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""Revert to draft is offered where the API takes it: on a credit note settled by its
-credit alone, never on an invoice an issued credit note settled, which goes back to draft
-only after that credit note does."""
+"""Revert to draft is offered where the API takes it, from the reasons its revert rule gives
+(revert_refused): on a credit note settled by its credit alone, never on an invoice an issued
+credit note settled, which goes back to draft only after that credit note does."""
 
 from __future__ import annotations
 
@@ -19,16 +19,17 @@ def _doc(doc_type: str, **fields) -> dict:
 
 
 def test_an_invoice_settled_by_a_credit_note_offers_no_revert():
-    html = to_xml(_doc_detail(_doc("invoice", status="partial", amount_outstanding=40.0, credited=40.0)))
+    html = to_xml(_doc_detail(_doc("invoice", status="partial", amount_outstanding=40.0, credited=40.0,
+                                    revert_refused=["credit_note"])))
     assert _REVERT not in html
 
 
 def test_a_credit_note_settled_by_its_credit_offers_revert():
     html = to_xml(_doc_detail(_doc("credit_note", status="paid", amount_outstanding=0.0, credited=40.0,
-                                   original_doc_id="doc:i1")))
+                                   original_doc_id="doc:i1", revert_refused=[])))
     assert _REVERT in html
 
 
 def test_an_issued_invoice_with_nothing_settled_offers_revert():
-    html = to_xml(_doc_detail(_doc("invoice", status="final", amount_outstanding=80.0)))
+    html = to_xml(_doc_detail(_doc("invoice", status="final", amount_outstanding=80.0, revert_refused=[])))
     assert _REVERT in html

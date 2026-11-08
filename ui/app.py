@@ -64,6 +64,18 @@ from starlette.responses import HTMLResponse
 # Public paths that don't require auth
 _PUBLIC = {"/login", "/setup", "/logout", "/static", "/health", "/api/labels/preview",
            "/forgot-password"}
+# The pages under /setup a signed-in person opens, so a lapsed session renews there as on
+# every other page; the rest of /setup is the first run, which has no session yet.
+_SIGNED_IN_SETUP = {"/setup/activating", "/setup/cloud", "/setup/company", "/setup/new-company",
+                    "/setup/restore-backup/done", "/setup/start-company/restore-backup/done"}
+
+
+def _under(path: str, prefixes: set[str]) -> bool:
+    return any(path == p or path.startswith(p + "/") for p in prefixes)
+
+
+def _is_public(path: str) -> bool:
+    return _under(path, _PUBLIC) and not _under(path, _SIGNED_IN_SETUP)
 
 def _next_qs(req: Request) -> str:
     """'&next=<encoded page>' for a login bounce, so signing back in returns
@@ -87,7 +99,7 @@ def _next_qs(req: Request) -> str:
 def _auth_guard(req: Request):
     """Redirect unauthenticated requests to login/setup before they reach any route."""
     path = req.url.path
-    if any(path == p or path.startswith(p + "/") for p in _PUBLIC):
+    if _is_public(path):
         return None
     if req.cookies.get(COOKIE_NAME):
         return None
@@ -157,7 +169,7 @@ class TokenRefreshMiddleware:
 
         request = Request(scope, receive)
         path = request.url.path
-        if any(path == p or path.startswith(p + "/") for p in _PUBLIC):
+        if _is_public(path):
             await self._app(scope, receive, send)
             return
 

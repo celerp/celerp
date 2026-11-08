@@ -570,7 +570,7 @@ async def _check_stale_projections(
 
         replayed: dict = {}
         for ev in events:
-            replayed = ProjectionEngine._apply(replayed, ev.event_type, ev.data)
+            replayed = ProjectionEngine.replay(replayed, ev)
 
         # Compare key fields (ignore metadata like updated_at)
         if replayed != proj.state:

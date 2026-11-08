@@ -118,6 +118,16 @@ async def test_list_conversion_carries_line_ids(client, h):
 
 
 @pytest.mark.asyncio
+async def test_quotation_conversion_carries_line_ids(client, h):
+    q = await doc(client, h, [line(None, 1, sku="One"), line(None, 2, sku="Two")], doc_type="quotation", finalize=False)
+    ids = await line_ids(client, h, q)
+    assert _well_formed(ids)
+    r = await client.post(f"/docs/{q}/convert", headers=h, json={})
+    assert r.status_code == 200, r.text
+    assert await line_ids(client, h, r.json()["target_doc_id"]) == ids
+
+
+@pytest.mark.asyncio
 async def test_list_duplicate_gets_fresh_ids(client, h):
     q = await quotation(client, h, [line(None, 1, sku="One"), line(None, 1, sku="Two")])
     ids = await line_ids(client, h, q)

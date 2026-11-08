@@ -356,6 +356,25 @@ def _signature_applied(inspector, sig: RevisionSignature) -> bool:
     return False
 
 
+def startup_requirements(metadata, sigs_by_rev: dict[str, list[RevisionSignature]]) -> dict[str, frozenset[str]]:
+    """For each kernel table that exists only once the app has started, the tables no
+    revision creates that it needs. Those the startup alone creates from the models
+    need themselves; a table holding a foreign key to one needs what that one needs,
+    since a revision can create it only after the startup has. An install that has
+    never started the app lacks every one of them."""
+    created = {sig.table for sigs in sigs_by_rev.values() for sig in sigs if sig.kind == "create_table"}
+    needs = {name: {name} for name in metadata.tables if name not in created}
+    grew = True
+    while grew:
+        grew = False
+        for name, table in metadata.tables.items():
+            wanted = set().union(*(needs.get(fk.column.table.name, set()) for fk in table.foreign_keys))
+            if wanted - needs.get(name, set()):
+                needs[name] = needs.get(name, set()) | wanted
+                grew = True
+    return {name: frozenset(tables) for name, tables in needs.items()}
+
+
 def load_kernel_metadata():
     """Return the current kernel model schema. Loaded modules register their own
     tables on the same Base; those are not the kernel's."""
@@ -369,6 +388,26 @@ def load_kernel_metadata():
     for table in {m.local_table for m in Base.registry.mappers if m.class_.__module__.startswith("celerp.")}:
         table.to_metadata(kernel)
     return kernel
+
+
+def _evidence(revisions, sigs_by_rev, inspector, expected_metadata) -> list[tuple[str, bool | None]]:
+    """Each revision, newest→oldest, with whether the live schema holds its changes:
+    None for one with no evidence to read. Historical objects the kernel no longer
+    owns are ignored, when ``expected_metadata`` is supplied, and so is a table only
+    the startup creates (``startup_requirements``) until the startup has created what
+    it needs: before that its absence says nothing about which revisions ran."""
+    startup = startup_requirements(expected_metadata, sigs_by_rev) if expected_metadata is not None else {}
+    out = []
+    for rev in revisions:
+        if getattr(rev, "revision", None) is None:
+            continue
+        sigs = [
+            sig for sig in sigs_by_rev.get(rev.revision, [])
+            if _signature_expected(expected_metadata, sig)
+            and all(_table_exists(inspector, t) for t in startup.get(sig.table, ()))
+        ]
+        out.append((rev.revision, all(_signature_applied(inspector, sig) for sig in sigs) if sigs else None))
+    return out
 
 
 def find_safe_stamp(
@@ -387,22 +426,32 @@ def find_safe_stamp(
     When ``expected_metadata`` is supplied, historical objects no longer owned
     by the current kernel are ignored; this prevents a create_all database from
     being judged against obsolete intermediate schema while still detecting a
-    missing current column/index in any older revision.
+    missing current column/index in any older revision (``_evidence``).
     """
-    revs = [r for r in revisions if getattr(r, "revision", None) is not None]
-    evidence = []  # (position, applied) for each revision with schema evidence
-    for i, rev in enumerate(revs):
-        sigs = [
-            sig for sig in sigs_by_rev.get(rev.revision, [])
-            if _signature_expected(expected_metadata, sig)
-        ]
-        if sigs:
-            evidence.append((i, all(_signature_applied(inspector, sig) for sig in sigs)))
-
+    revs = _evidence(revisions, sigs_by_rev, inspector, expected_metadata)
+    evidence = [(i, applied) for i, (_, applied) in enumerate(revs) if applied is not None]
     if not evidence:
         return "base"
     gaps = [i for i, applied in evidence if not applied]
     if not gaps:
-        return revs[0].revision
+        return revs[0][0]
     below = [i for i, _ in evidence if i > max(gaps)]
-    return revs[below[0]].revision if below else "base"
+    return revs[below[0]][0] if below else "base"
+
+
+def held_revisions(
+    revisions: Iterable,
+    sigs_by_rev: dict[str, list[RevisionSignature]],
+    inspector,
+    *,
+    expected_metadata=None,
+) -> frozenset[str]:
+    """Every revision whose own changes the live schema holds: each one it can read
+    is there, or it has none (a data backfill). Of the revisions a database's stamp
+    says ran, these are the ones a restamp below them must not run again. One whose
+    changes are all out of reach (a module's table, a table the startup has not
+    created yet) is not held: nothing shows they are there (``_evidence``)."""
+    return frozenset(
+        rev for rev, applied in _evidence(revisions, sigs_by_rev, inspector, expected_metadata)
+        if applied or (applied is None and not sigs_by_rev.get(rev))
+    )

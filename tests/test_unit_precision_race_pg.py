@@ -310,7 +310,10 @@ async def test_an_item_created_after_its_unit_changed_just_before_its_lock_sees_
 
 # Only reads that validate nothing may use the unlocked units read; every writer goes through
 # get_company_units (inventory) or _get_unit_map (documents), both read under the company lock.
+# A document page and a refusal's advice only read the Revert to Draft rule (revert_check).
 _DISPLAY_READERS = {
+    "celerp/services/auto_je.py": {"_cogs_line_unknown_key"},
+    "default_modules/celerp-docs/celerp_docs/routes.py": {"get_doc"},
     "default_modules/celerp-inventory/celerp_inventory/routes.py": {
         "query_items", "items_metadata", "get_item", "split_preview", "export_items_csv"},
     "default_modules/celerp-inventory/celerp_inventory/search.py": {"flatten_item_rows"},

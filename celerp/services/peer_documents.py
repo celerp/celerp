@@ -164,6 +164,8 @@ async def receive_document(
         if not isinstance(line, dict):
             raise HTTPException(422, "Invalid document line")
         moved = dict(line)
+        # A line id names a line within the sender's record; the copy's lines keep their own.
+        moved.pop("line_id", None)
         if moved.get("entity_id") in parcels and await peer_identity(
                 session, target_company=grant.company_id, source_company=grant.source_company_id,
                 entity_type="item", source_entity_id=moved["entity_id"]) is None:
@@ -206,7 +208,7 @@ async def receive_document(
     target = await session.get(Projection, (grant.company_id, claim.target_id))
     target_status = (target.state or {}).get("status") if target is not None else None
     if target is not None and "line_items" in incoming:
-        _keep_receipt_fields(incoming["line_items"], target.state or {}, parcels)
+        _keep_own_line_fields(incoming["line_items"], target.state or {}, parcels)
     if source_status == "void":
         from celerp.services.money import round_money
         from celerp_docs.routes import DocVoidBody, void_document
@@ -344,14 +346,18 @@ async def _add_taxes(session: AsyncSession, company: Company, incoming: dict, *,
                       record=record, company=sender, action_url=page)
 
 
-def _keep_receipt_fields(lines: list[dict], target: dict, parcels: set[str]) -> None:
-    """What a line received and the parcel its receipt created belong to the receiving
-    company's own receipts, which are brought to the source's after the import; each line
-    keeps the receiving document's values for them meanwhile."""
+def _keep_own_line_fields(lines: list[dict], target: dict, parcels: set[str]) -> None:
+    """Each line keeps the receiving document's line at the same position's id, which is that
+    record's own identity for the line, never the source's. What a line received and the parcel
+    its receipt created belong to the receiving company's own receipts, which are brought to
+    the source's after the import; each line keeps the receiving document's values for them
+    meanwhile."""
     received = set(target.get("received_item_ids") or [])
     held = target.get("line_items") or []
     for index, line in enumerate(lines):
         before = held[index] if index < len(held) and isinstance(held[index], dict) else {}
+        if "line_id" in before:
+            line["line_id"] = before["line_id"]
         if "quantity_received" in before:
             line["quantity_received"] = before["quantity_received"]
         else:
@@ -476,9 +482,9 @@ async def _replay_fulfilment(session: AsyncSession, grant, target_id: str, shipp
                              actor_id) -> None:
     """Bring the receiving document's shipments to the source's: take back the goods it
     shipped that the source took back, then ship the lines whose items the source shipped
-    and it has not."""
+    and it has not, all of them or none: a line it cannot ship refuses the copy."""
     from celerp_docs.routes import (
-        RevertLinesRequest, _fulfill_lines_impl, _get_doc, _revert_lines_impl,
+        RevertLinesRequest, _fulfill_lines_impl, _get_doc, _refuse_skipped, _revert_lines_impl,
     )
 
     wanted = {await _map_identity(session, grant, "item", source) for source in shipped}
@@ -493,5 +499,7 @@ async def _replay_fulfilment(session: AsyncSession, grant, target_id: str, shipp
     indices = [i for i, line in enumerate(row.state.get("line_items") or [])
                if (line.get("entity_id") or line.get("item_id")) in wanted - done]
     if indices:
-        await _fulfill_lines_impl(target_id, indices, str(grant.company_id),
-                                  SimpleNamespace(id=actor_id), session, commit=False)
+        result = await _fulfill_lines_impl(target_id, indices, str(grant.company_id),
+                                           SimpleNamespace(id=actor_id), session, commit=False)
+        if result.get("skipped"):
+            _refuse_skipped("fulfill", result["skipped"])

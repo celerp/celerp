@@ -109,19 +109,6 @@ def _es():
     i18n.set_lang("es")
 
 
-def test_fulfill_confirm_has_opening_question_mark_in_es():
-    """Red statement: the confirm was built as the button label plus "?", so Spanish read
-    "Marcar como enviado?" with no opening mark."""
-    import re
-    from ui.routes.documents import _li_bulk_toolbar
-    _es()
-    html = to_xml(_li_bulk_toolbar("doc:1", False, show_fulfill=True))
-    confirm = re.search(r'id="li-bulk-fulfill-btn"[^>]*hx-confirm="([^"]*)"', html) \
-        or re.search(r'hx-confirm="([^"]*)"[^>]*id="li-bulk-fulfill-btn"', html)
-    assert confirm, html
-    assert confirm.group(1).startswith("¿") and confirm.group(1).endswith("?")
-
-
 def test_file_delete_confirm_is_a_catalog_sentence():
     """Red statement: the confirm was "Eliminar archivo: name?", a label glued to a name."""
     from ui.components.files import files_section

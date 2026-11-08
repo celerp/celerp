@@ -19,7 +19,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from celerp.accounting_roles import catalog_refusal
+from celerp.accounting_roles import catalog_refusal, refusal_detail
 from celerp.db import get_session, sqlstate
 from celerp.events.engine import emit_event
 from celerp.importers.results import failure_reason
@@ -351,7 +351,7 @@ async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company
             try:
                 business_timezone(payload.settings.get("timezone"))
             except ValueError as exc:
-                raise HTTPException(status_code=422, detail=str(exc)) from exc
+                raise HTTPException(status_code=422, detail=refusal_detail(exc)) from exc
         require_phone(payload.settings.get("phone"))
         company.settings = merged
     await session.commit()

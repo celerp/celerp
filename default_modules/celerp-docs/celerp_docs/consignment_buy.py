@@ -34,7 +34,7 @@ from decimal import Decimal
 from fastapi import HTTPException
 from sqlalchemy import select
 
-from celerp.accounting_roles import CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD, AccountRole, refusal
+from celerp.accounting_roles import CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD, AccountRole, refusal, refusal_detail
 from celerp.events.engine import emit_event
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
@@ -441,7 +441,7 @@ async def buy_consignment(session, *, company_id, user_id, consignment_id: str, 
                 ts=day, trigger="doc.converted_to_bill", memo=f"COGS adjustment: consigned goods bought on {ref}",
                 context={"bill_id": bill_id})
         except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise HTTPException(status_code=409, detail=refusal_detail(exc)) from exc
     return bill_id
 
 

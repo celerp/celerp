@@ -354,10 +354,6 @@ _PRE_EXISTING_RAW_HTTPEXCEPTION = {
         "Add at least one line item before sending this document.",
         "Add at least one line item before finalizing this document.",
         "Cannot void a document with payments; void the payments first",
-        "Cannot revert to draft while goods received on this document are still in stock. "
-        "Select those lines and use Return Goods first, then revert.",
-        "Cannot revert to draft while lines are still out on memo or sold. Select those "
-        "lines and use Set as available first, then revert.",
         "This payment has been refunded in full, so there is nothing left to void.",
         "Credit note applications cannot be deleted. Void the payment instead.",
         ": it is not on this . Add it to the  first.",

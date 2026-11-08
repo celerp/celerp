@@ -82,7 +82,12 @@ celerp = "celerp.cli:main"
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0",
+    # Pinned, as are pytest-playwright and pytest-split below: pytest and pytest-playwright make
+    # the test ids (9.2 shortened long string parameters to argname+index, pytest-playwright 0.10
+    # put the browser in every id it parametrizes), pytest-split assigns them to shards, and the
+    # split's tests/.test_durations is keyed by those ids. tests/test_ci_shard_split.py holds
+    # each of the three to an exact pin.
+    "pytest==9.2.0",
     # >=1.4: earlier releases left the main thread's loop unclosed after an async test, and a
     # later sync test calling asyncio.run() dropped it, failing whichever test ran next.
     "pytest-asyncio>=1.4",
@@ -93,7 +98,8 @@ dev = [
     # <1.62: 1.62.0 hangs page teardown (tracing/close) under CI load, deadlocking
     # every browser shard at its first document page. Re-test before raising the cap.
     "playwright>=1.43,<1.62",
-    "pytest-playwright>=0.5",
+    "pytest-playwright==0.10.0",
+    "pytest-split==0.11.0",
     "pytest-timeout>=2.3",
     "pytest-xdist>=3.5",
     # tests/lock_rank.py parses every lock statement and the test-only write observer

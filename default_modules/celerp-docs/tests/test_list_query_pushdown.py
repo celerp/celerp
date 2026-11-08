@@ -420,6 +420,7 @@ async def test_line_page_patch_stale_version_409(client):
     r = await client.patch(f"/lists/{q}/line-page", headers=_h(t),
                            json={"line_items": page, "offset": 0, "expected_version": stale})
     assert r.status_code == 409, r.text
+    assert r.json()["detail"]["code"] == "stale_version"
     assert (await _state(client, t, q))["line_items"] == before, "stale save must write nothing"
 
 

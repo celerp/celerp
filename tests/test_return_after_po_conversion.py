@@ -612,8 +612,7 @@ async def test_bill_holding_goods_it_received_still_reverts_and_voids_only_once_
     await _converted(client, session, auth, po)
     r = await client.post(f"/docs/{po}/revert-to-draft", headers=auth["headers"], json={})
     assert r.status_code == 409, r.text
-    assert r.json()["detail"] == ("Cannot revert to draft while goods received on this document are still "
-                                  "in stock. Select those lines and use Return Goods first, then revert.")
+    assert r.json()["detail"]["message_key"] == "docs.revert_received_in_stock"
     r = await client.post(f"/docs/{po}/void", headers=auth["headers"], json={})
     assert r.status_code == 409, r.text
     assert refusal_text(r.json()["detail"]) == "This document can't be voided: it still holds received goods. Return them with Return Goods, then void it."

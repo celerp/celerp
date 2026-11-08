@@ -108,7 +108,8 @@ BOOKS_CURRENCY_READERS = {
     ("routes.py", "create_transfer"): "a writer reading back the line it just built",
     ("routes.py", "cash_flow"): "the cash flow statement, books currency over every cash account",
     ("routes.py", "matches"): "journal search matching a typed figure against books-currency amounts",
-    ("routes.py", "_norm"): "retry comparison of a manual entry, base and foreign amounts both compared",
+    ("routes.py", "_line_party"): "which side of a note application a control line is on, not how much",
+    ("routes.py", "_norm"):"retry comparison of a manual entry, base and foreign amounts both compared",
     ("migration_sink.py", "reconcile"): "migration totals against the source books, books currency",
 }
 _AMOUNTS = {"debit", "credit", "fx_debit", "fx_credit"}

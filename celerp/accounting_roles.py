@@ -368,6 +368,12 @@ class Refused(KeyedRefusal, ValueError):
     a ValueError refuses this one too."""
 
 
+def refusal_detail(exc: Exception):
+    """The detail a route answers a caught exception with: its own ``detail`` when it has
+    one, so a keyed refusal keeps its key, else its text."""
+    return getattr(exc, "detail", str(exc))
+
+
 def no_account_chosen() -> dict:
     """The refusal for setting a posting account with none chosen."""
     return refusal("posting.choose_account", "Choose an account.")

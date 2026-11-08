@@ -291,7 +291,7 @@ async def test_return_line_request_is_checked(client, session, auth):
         {"lines": [{"line_id": "nope", "quantity_returned": 1}]},
         {"lines": [{"line_id": ids[1], "quantity_returned": 1}]},  # nothing received on it
         {"lines": [{"line_id": ids[0], "quantity_returned": 1}, {"line_id": ids[0], "quantity_returned": 1}]},
-        {"lines": [{"line_index": 0, "quantity_returned": 1}]},  # the line has an id
+        {"lines": [{"line_index": 0, "quantity_returned": 1}]},  # names no line id
         {"lines": [{"quantity_returned": 1}]},
         {"lines": []},
         {"items": [], "lines": []},
@@ -348,28 +348,6 @@ async def test_return_line_sharing_a_lot_it_cannot_tell_apart_is_refused(client,
     assert r.status_code == 409, r.text
     assert r.json()["detail"]["message_key"] == "docs.return_line_shared"
     assert await _qty(session, auth, lot) == 20
-
-
-async def _drop_line_ids(session, auth, doc_id: str) -> None:
-    """Store the document's lines without ids, as lines written before line ids were kept
-    still are: every line write since gives each line an id."""
-    session.expire_all()
-    row = await session.get(Projection, {"company_id": auth["company_id"], "entity_id": doc_id})
-    row.state = {**row.state, "line_items": [
-        {k: v for k, v in li.items() if k != "line_id"} for li in row.state["line_items"]]}
-    await session.commit()
-
-
-async def test_legacy_line_without_id_returns_by_position(client, session, auth):
-    bill = await _doc(client, auth, "bill", _stock_lines(1, qty=4))
-    await _finalize(client, auth, bill)
-    await _drop_line_ids(session, auth, bill)
-    r = await _post(client, auth, bill, {"po_line_index": 0, "quantity_received": 4})
-    assert r.status_code == 200, r.text
-    [parcel] = (await _state(session, auth, bill))["received_item_ids"]
-    r = await _return_lines(client, auth, bill, {"line_index": 0, "quantity_returned": 1})
-    assert r.status_code == 200, r.text
-    assert await _qty(session, auth, parcel) == 3
 
 
 async def test_return_goods_form_posts_selected_lines(client, session, auth, monkeypatch):
