@@ -41,7 +41,6 @@ COMPANION_SETS = {
 }
 COMPANION_DROPS = {
     "resume_restarts": "resume drops it as the agreement becomes active",
-    "billing_failure": "the bill that clears a failure records its period",
     "generated_doc_ids": "the migration's move drops it as it places the bills",
     "next_run_date": "the same move drops it",
 }

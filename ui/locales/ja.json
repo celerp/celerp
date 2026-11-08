@@ -7225,6 +7225,7 @@
   "subscriptions.history_send_sent": "{start}から{end}までの期間の請求書をメールで送信しました。",
   "subscriptions.history_send_failed": "{start}から{end}までの期間の請求書をメールで送信できませんでした。",
   "subscriptions.history_billing_failed": "{start}から{end}までの期間の自動請求に失敗しました。",
+  "subscriptions.history_billing_failure_ended": "自動請求の失敗は解消されました。",
   "subscriptions.consent_generation_withdrawn": "自動請求の承認が取り消されました",
   "subscriptions.consent_sending_withdrawn": "自動送信の承認が取り消されました",
   "subscriptions.th_more_due": "その他の請求期限到来期間",
@@ -7303,7 +7304,7 @@
   "subscriptions.err_period_placed": "この期間には過去の請求から割り当てた{ref}があります。先に期間一覧の該当行で「割り当てを取り消す」を使ってください。",
   "subscriptions.err_ended_place_cancelled": "{ref} はキャンセル済みのため、この書類をその期間に割り当てることはできません。過去の書類の確認を終えるには「対象外にする」を使ってください。",
   "subscriptions.err_ended_place_void": "{ref} は無効になっているため、ここではこの書類をその期間に割り当てることはできません。過去の書類の確認を終えるには「対象外にする」を使うか、先に書類で{ref}の無効化を解除してください。",
-  "subscriptions.summary_window": "サマリーは直近{days}日間を対象とします。",
+  "subscriptions.summary_window": "請求書とメールは {days} 日間一覧に表示されます。請求の失敗、失効した承認、送信待ちのメールは、解決されるまで表示されます。",
   "subscriptions.summary_generation_failed_because": "{ref} の自動請求に失敗しました：{error}",
   "subscriptions.err_period_placed_later_billed": "この期間には過去の請求から割り当てた{ref}があり、後の期間は{later}で請求済みです。{later}を「無効化」し、期間一覧のそれぞれの行で「再開」を使ってから、この期間の行で「割り当てを取り消す」を使ってください。"
 }

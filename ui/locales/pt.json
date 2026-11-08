@@ -7225,6 +7225,7 @@
   "subscriptions.history_send_sent": "Fatura do período de {start} a {end} enviada por e-mail.",
   "subscriptions.history_send_failed": "Não foi possível enviar por e-mail a fatura do período de {start} a {end}.",
   "subscriptions.history_billing_failed": "Falha no faturamento automático do período de {start} a {end}.",
+  "subscriptions.history_billing_failure_ended": "Falha na faturação automática resolvida.",
   "subscriptions.consent_generation_withdrawn": "Autorização para faturamento automático revogada",
   "subscriptions.consent_sending_withdrawn": "Autorização para envio automático revogada",
   "subscriptions.th_more_due": "Mais períodos a faturar",
@@ -7303,7 +7304,7 @@
   "subscriptions.err_period_placed": "Este período tem {ref}, associado a partir de uma faturação anterior. Use primeiro Retirar associação na linha dele na lista de períodos.",
   "subscriptions.err_ended_place_cancelled": "{ref} está cancelado, portanto este documento não pode ser associado a um dos seus períodos. Use Colocar de parte para concluir a revisão dos documentos anteriores.",
   "subscriptions.err_ended_place_void": "{ref} está anulado, portanto este documento não pode ser associado aqui a um dos seus períodos. Use Colocar de parte para concluir a revisão dos documentos anteriores, ou desfaça primeiro a anulação de {ref} em Documentos.",
-  "subscriptions.summary_window": "O resumo abrange os últimos {days} dias.",
+  "subscriptions.summary_window": "Faturas e emails ficam listados durante {days} dias. Uma falha de faturação, uma autorização caducada ou um email à espera de envio fica listado até ser resolvido.",
   "subscriptions.summary_generation_failed_because": "Falha na faturação automática de {ref}: {error}",
   "subscriptions.err_period_placed_later_billed": "Este período tem {ref}, associado a partir de uma faturação anterior, e os períodos posteriores estão faturados em {later}. Anule {later} e use Reabrir nas linhas deles na lista de períodos; depois use Retirar associação na linha deste período."
 }

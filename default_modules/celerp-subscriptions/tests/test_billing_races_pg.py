@@ -466,25 +466,20 @@ async def test_mark_as_read_leaves_a_failure_that_arrived_after_the_page_was_rea
         assert "send_failed" in _send_kinds((await client.get("/subscriptions/summary", headers=owner)).json())
 
 
-@pytest.mark.parametrize("kind", ["generated", "generation_failed"])
 async def test_mark_as_read_leaves_a_row_stamped_before_the_page_and_committed_after_it(
-        committed_engine, monkeypatch, kind):
-    """The unattended pass stamps a bill (or its failure) when it makes it and commits once at the
-    end of the pass. The owner opens the summary while the pass still runs, so the page cannot show
-    the row, though the row's time is earlier than the page's. The pass commits and the owner
+        committed_engine, monkeypatch):
+    """The unattended pass stamps a bill when it makes it and commits once at the end of the pass
+    (a billing failure has no key: it is shown while it lasts, whatever is marked read). The
+    owner opens the summary while the pass still runs, so the page cannot show the row, though
+    the row's time is earlier than the page's. The pass commits and the owner
     presses Mark as read on the page as loaded: the row was never shown, so it stays listed."""
     from agreement_kit import contact
-    from celerp_docs import routes as docs_routes
     from celerp_subscriptions import billing
 
     freeze_day(monkeypatch, "2026-07-01")
     factory = _factory(committed_engine)
     seeded = await _company(factory)
     owner, cid = seeded["h"]["owner"], seeded["company_id"]
-    if kind == "generation_failed":
-        async def broken(*_args, **_kwargs):
-            raise ValueError("synthetic finalize failure")
-        monkeypatch.setattr(docs_routes, "finalize_document", broken)
     async with _app_client(factory) as (client, _pending):
         eid = await agreement(client, owner, start="2026-07-01",
                               contact_id=await contact(client, owner, "midpass@example.test"))
@@ -494,12 +489,12 @@ async def test_mark_as_read_leaves_a_row_stamped_before_the_page_and_committed_a
             await billing.run_due(session=pass_session, company_id=cid, today=date(2026, 7, 1), budget=1)
             shown = (await asyncio.wait_for(client.get("/subscriptions/summary", headers=owner), 30)).json()
             await pass_session.commit()
-        assert kind not in [r["kind"] for r in shown["rows"]]
+        assert "generated" not in [r["kind"] for r in shown["rows"]]
         everything = (await client.get("/subscriptions/summary", headers=owner, params={"all": "true"})).json()
-        made = next(r for r in everything["rows"] if r["kind"] == kind)
+        made = next(r for r in everything["rows"] if r["kind"] == "generated")
         assert (await mark_read(client, owner, shown)).status_code == 200
         after = (await client.get("/subscriptions/summary", headers=owner)).json()
-        assert [r["kind"] for r in after["rows"] if r["entity_id"] == eid] == [kind], (made, after)
+        assert [r["kind"] for r in after["rows"] if r["entity_id"] == eid] == ["generated"], (made, after)
         # Marked read from a page that shows it, it goes.
         assert (await mark_read(client, owner, after)).status_code == 200
         assert (await client.get("/subscriptions/summary", headers=owner)).json()["rows"] == []

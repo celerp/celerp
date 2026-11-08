@@ -7225,6 +7225,7 @@
   "subscriptions.history_send_sent": "Đã gửi email hóa đơn cho kỳ từ {start} đến {end}.",
   "subscriptions.history_send_failed": "Không thể gửi email hóa đơn cho kỳ từ {start} đến {end}.",
   "subscriptions.history_billing_failed": "Lập hóa đơn tự động thất bại cho kỳ từ {start} đến {end}.",
+  "subscriptions.history_billing_failure_ended": "Đã xóa lỗi lập hóa đơn tự động.",
   "subscriptions.consent_generation_withdrawn": "Đã thu hồi quyền cho phép lập hóa đơn tự động",
   "subscriptions.consent_sending_withdrawn": "Đã thu hồi quyền cho phép gửi tự động",
   "subscriptions.th_more_due": "Các kỳ đến hạn khác",
@@ -7303,7 +7304,7 @@
   "subscriptions.err_period_placed": "Kỳ này đang giữ {ref}, được gán từ lần lập hóa đơn trước. Hãy dùng Thu hồi việc gán ở dòng của kỳ đó trong danh sách kỳ trước.",
   "subscriptions.err_ended_place_cancelled": "{ref} đã bị hủy nên không thể gán chứng từ này vào kỳ nào của nó. Hãy dùng Để riêng để hoàn tất việc rà soát chứng từ cũ.",
   "subscriptions.err_ended_place_void": "{ref} đã bị vô hiệu nên không thể gán chứng từ này vào kỳ nào của nó tại đây. Hãy dùng Để riêng để hoàn tất việc rà soát chứng từ cũ, hoặc bỏ trạng thái vô hiệu của {ref} trong mục Chứng từ trước.",
-  "subscriptions.summary_window": "Bản tóm tắt bao gồm {days} ngày gần nhất.",
+  "subscriptions.summary_window": "Hóa đơn và email được liệt kê trong {days} ngày. Lỗi lập hóa đơn, ủy quyền đã hết hiệu lực hoặc email đang chờ gửi sẽ được liệt kê cho đến khi được xử lý.",
   "subscriptions.summary_generation_failed_because": "Lập hóa đơn tự động thất bại cho {ref}: {error}",
   "subscriptions.err_period_placed_later_billed": "Kỳ này đang giữ {ref}, được gán từ lần lập hóa đơn trước, và các kỳ sau đã được lập hóa đơn trên {later}. Hãy dùng Vô hiệu cho {later} và Mở lại ở các dòng của chúng trong danh sách kỳ, sau đó dùng Thu hồi việc gán ở dòng của kỳ này."
 }

@@ -7225,6 +7225,7 @@
   "subscriptions.history_send_sent": "أُرسلت فاتورة الفترة من {start} إلى {end} بالبريد الإلكتروني.",
   "subscriptions.history_send_failed": "تعذر إرسال فاتورة الفترة من {start} إلى {end} بالبريد الإلكتروني.",
   "subscriptions.history_billing_failed": "فشلت الفوترة التلقائية للفترة من {start} إلى {end}.",
+  "subscriptions.history_billing_failure_ended": "تمت إزالة فشل الفوترة التلقائية.",
   "subscriptions.consent_generation_withdrawn": "تم سحب تفويض الفوترة التلقائية",
   "subscriptions.consent_sending_withdrawn": "تم سحب تفويض الإرسال التلقائي",
   "subscriptions.th_more_due": "فترات أخرى مستحقة",
@@ -7303,7 +7304,7 @@
   "subscriptions.err_period_placed": "هذه الفترة مرتبطة بـ {ref} من فوترة سابقة. استخدم «التراجع عن الربط» في صفها ضمن قائمة الفترات أولاً.",
   "subscriptions.err_ended_place_cancelled": "الاشتراك {ref} ملغى، لذا لا يمكن ربط هذا المستند بإحدى فتراته. استخدم «وضع جانباً» لإنهاء مراجعة المستندات السابقة.",
   "subscriptions.err_ended_place_void": "الاشتراك {ref} مُبطَل، لذا لا يمكن ربط هذا المستند بإحدى فتراته هنا. استخدم «وضع جانباً» لإنهاء مراجعة المستندات السابقة، أو ألغِ إبطال {ref} في «المستندات» أولاً.",
-  "subscriptions.summary_window": "يغطي الملخص آخر {days} يومًا.",
+  "subscriptions.summary_window": "تبقى الفواتير والرسائل في القائمة لمدة {days} يومًا. ويبقى فشل الفوترة أو التفويض المنتهي أو الرسالة التي تنتظر الإرسال في القائمة حتى تتم معالجته.",
   "subscriptions.summary_generation_failed_because": "فشلت الفوترة التلقائية للاشتراك {ref}: {error}",
   "subscriptions.err_period_placed_later_billed": "هذه الفترة مرتبطة بـ {ref} من فوترة سابقة، والفترات اللاحقة مفوترة في {later}. استخدم «إبطال» على {later} و«إعادة الفتح» في صفوفها ضمن قائمة الفترات، ثم استخدم «التراجع عن الربط» في صف هذه الفترة."
 }

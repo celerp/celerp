@@ -7225,6 +7225,7 @@
   "subscriptions.history_send_sent": "ส่งใบแจ้งหนี้ของรอบวันที่ {start} ถึง {end} ทางอีเมลแล้ว",
   "subscriptions.history_send_failed": "ไม่สามารถส่งใบแจ้งหนี้ของรอบวันที่ {start} ถึง {end} ทางอีเมลได้",
   "subscriptions.history_billing_failed": "การออกใบแจ้งหนี้อัตโนมัติสำหรับรอบวันที่ {start} ถึง {end} ล้มเหลว",
+  "subscriptions.history_billing_failure_ended": "ล้างความล้มเหลวของการเรียกเก็บเงินอัตโนมัติแล้ว",
   "subscriptions.consent_generation_withdrawn": "เพิกถอนการอนุญาตให้ออกใบแจ้งหนี้อัตโนมัติแล้ว",
   "subscriptions.consent_sending_withdrawn": "เพิกถอนการอนุญาตให้ส่งอัตโนมัติแล้ว",
   "subscriptions.th_more_due": "รอบอื่นที่ถึงกำหนด",
@@ -7303,7 +7304,7 @@
   "subscriptions.err_period_placed": "รอบนี้มี {ref} ที่จัดเข้ารอบจากการเรียกเก็บเงินก่อนหน้า ให้ใช้ ถอนการจัดเข้ารอบ ในแถวของรอบนั้นในรายการรอบก่อน",
   "subscriptions.err_ended_place_cancelled": "{ref} ถูกยกเลิกแล้ว จึงจัดเอกสารนี้เข้ารอบใดของรายการนี้ไม่ได้ ให้ใช้ แยกไว้ เพื่อตรวจเอกสารเก่าให้เสร็จ",
   "subscriptions.err_ended_place_void": "{ref} เป็นโมฆะ จึงจัดเอกสารนี้เข้ารอบใดของรายการนี้ที่นี่ไม่ได้ ให้ใช้ แยกไว้ เพื่อตรวจเอกสารเก่าให้เสร็จ หรือคืนสถานะ {ref} จากโมฆะในเมนูเอกสารก่อน",
-  "subscriptions.summary_window": "สรุปนี้ครอบคลุม {days} วันล่าสุด",
+  "subscriptions.summary_window": "บิลและอีเมลจะแสดงในรายการ {days} วัน ส่วนการเรียกเก็บเงินที่ล้มเหลว การอนุญาตที่หมดอายุ หรืออีเมลที่รอส่ง จะแสดงอยู่จนกว่าจะได้รับการแก้ไข",
   "subscriptions.summary_generation_failed_because": "การเรียกเก็บเงินอัตโนมัติสำหรับ {ref} ล้มเหลว: {error}",
   "subscriptions.err_period_placed_later_billed": "รอบนี้มี {ref} ที่จัดเข้ารอบจากการเรียกเก็บเงินก่อนหน้า และรอบหลังจากนี้เรียกเก็บเงินแล้วใน {later} ให้ใช้ เป็นโมฆะ กับ {later} และใช้ เปิดใหม่ ในแถวของรอบเหล่านั้นในรายการรอบ จากนั้นใช้ ถอนการจัดเข้ารอบ ในแถวของรอบนี้"
 }

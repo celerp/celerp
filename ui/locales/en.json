@@ -7225,6 +7225,7 @@
   "subscriptions.history_send_sent": "Emailed the bill for {start} to {end}.",
   "subscriptions.history_send_failed": "Could not email the bill for {start} to {end}.",
   "subscriptions.history_billing_failed": "Automatic billing failed for {start} to {end}.",
+  "subscriptions.history_billing_failure_ended": "Automatic billing failure cleared.",
   "subscriptions.consent_generation_withdrawn": "Automatic billing authorization withdrawn",
   "subscriptions.consent_sending_withdrawn": "Automatic sending authorization withdrawn",
   "subscriptions.th_more_due": "More periods due",
@@ -7303,7 +7304,7 @@
   "subscriptions.err_period_placed": "This period holds {ref}, placed here from earlier billing. Use Withdraw placement on its row in the periods list first.",
   "subscriptions.err_ended_place_cancelled": "{ref} is cancelled, so this document can't be placed in one of its periods. Use Set aside to finish the history review.",
   "subscriptions.err_ended_place_void": "{ref} is void, so this document can't be placed in one of its periods here. Use Set aside to finish the history review, or unvoid {ref} in Documents first.",
-  "subscriptions.summary_window": "The summary covers the last {days} days.",
+  "subscriptions.summary_window": "Bills and emails stay listed for {days} days. A billing failure, a lapsed authorization or an email waiting to go out stays listed until it is resolved.",
   "subscriptions.summary_generation_failed_because": "Automatic billing failed for {ref}: {error}",
   "subscriptions.err_period_placed_later_billed": "This period holds {ref}, placed here from earlier billing, and later periods are billed on {later}. Void {later} and use Reopen on their rows in the periods list, then use Withdraw placement on this period's row."
 }

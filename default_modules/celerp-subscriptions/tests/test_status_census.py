@@ -317,6 +317,32 @@ def test_one_writer_records_each_send():
     assert {w.function for w in status_census.send_writers()} == {status_census.SEND_WRITER}
 
 
+# Each writer of an agreement's billing failure, and the test that runs it: run_due writes it
+# and drops one that no longer holds (paused), write_agreement drops it with the change that ends
+# it (its period skipped or billed, the agreement cancelled). The summary is its one reader
+# outside billing, and the UI's _to_check the one reader of the kinds counted to check.
+FAILURE_WRITERS = {
+    ("billing.run_due", "writes"): "test_a_second_different_reason_replaces_the_first",
+    ("billing._drop_failure", "drops"): "test_a_failure_ended_another_way_leaves_no_row",
+    ("billing.write_agreement", "drops"): "test_a_failure_ended_another_way_leaves_no_row",
+}
+FAILURE_READERS = {"summary._rows": "test_a_failure_still_happening_stays_on_the_summary_and_counted_past_the_window"}
+TO_CHECK_READERS = {"subscriptions._to_check": "test_a_failed_bill_keeps_its_reason_is_counted_to_check_and_offers_generate_due"}
+
+
+def test_the_billing_failure_has_the_writers_and_readers_its_tests_walk():
+    """The failure is one current fact per agreement (SEND-STATE): a writer or reader the census
+    finds that this table does not name fails here until a test runs it."""
+    import test_unattended_billing
+
+    uses = status_census.failure_uses()
+    assert {(fn, how) for _w, fn, how in uses if how != "reads"} == set(FAILURE_WRITERS)
+    assert {fn for _w, fn, how in uses if how == "reads" and not fn.startswith("billing.")} == set(FAILURE_READERS)
+    assert {fn for _w, fn in status_census.to_check_readers()} == set(TO_CHECK_READERS)
+    walked = {*FAILURE_WRITERS.values(), *FAILURE_READERS.values(), *TO_CHECK_READERS.values()}
+    assert [name for name in walked if not callable(getattr(test_unattended_billing, name, None))] == []
+
+
 def test_every_send_on_a_persons_behalf_names_the_attempt():
     """A person's Send names the attempt they saw, so a repeat of the same click (a second tab,
     a double click, a retried request) is answered as stored, never sent again (P2e-4)."""

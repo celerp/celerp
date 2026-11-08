@@ -7225,6 +7225,7 @@
   "subscriptions.history_send_sent": "Facture de la période du {start} au {end} envoyée par e-mail.",
   "subscriptions.history_send_failed": "Impossible d'envoyer par e-mail la facture de la période du {start} au {end}.",
   "subscriptions.history_billing_failed": "Échec de la facturation automatique pour la période du {start} au {end}.",
+  "subscriptions.history_billing_failure_ended": "Échec de la facturation automatique levé.",
   "subscriptions.consent_generation_withdrawn": "Autorisation de facturation automatique révoquée",
   "subscriptions.consent_sending_withdrawn": "Autorisation d'envoi automatique révoquée",
   "subscriptions.th_more_due": "Autres périodes à facturer",
@@ -7303,7 +7304,7 @@
   "subscriptions.err_period_placed": "Cette période porte {ref}, affecté depuis une facturation antérieure. Utilisez d'abord Retirer l'affectation sur sa ligne dans la liste des périodes.",
   "subscriptions.err_ended_place_cancelled": "{ref} est résilié : ce document ne peut être affecté à aucune de ses périodes. Utilisez Mettre de côté pour terminer la revue des anciens documents.",
   "subscriptions.err_ended_place_void": "{ref} est invalidé : ce document ne peut être affecté ici à aucune de ses périodes. Utilisez Mettre de côté pour terminer la revue des anciens documents, ou annulez d'abord l'invalidation de {ref} dans Documents.",
-  "subscriptions.summary_window": "Le récapitulatif couvre les {days} derniers jours.",
+  "subscriptions.summary_window": "Les factures et les e-mails restent listés pendant {days} jours. Un échec de facturation, une autorisation expirée ou un e-mail en attente d'envoi reste listé jusqu'à sa résolution.",
   "subscriptions.summary_generation_failed_because": "Échec de la facturation automatique pour {ref} : {error}",
   "subscriptions.err_period_placed_later_billed": "Cette période porte {ref}, affecté depuis une facturation antérieure, et des périodes ultérieures sont facturées sur {later}. Extournez {later} et utilisez Rouvrir sur leurs lignes dans la liste des périodes, puis Retirer l'affectation sur la ligne de cette période."
 }

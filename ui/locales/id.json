@@ -7225,6 +7225,7 @@
   "subscriptions.history_send_sent": "Tagihan periode {start} hingga {end} telah dikirim melalui email.",
   "subscriptions.history_send_failed": "Gagal mengirim tagihan untuk periode {start} hingga {end} melalui email.",
   "subscriptions.history_billing_failed": "Penagihan otomatis gagal untuk periode {start} hingga {end}.",
+  "subscriptions.history_billing_failure_ended": "Kegagalan penagihan otomatis telah dihapus.",
   "subscriptions.consent_generation_withdrawn": "Izin penagihan otomatis dicabut",
   "subscriptions.consent_sending_withdrawn": "Izin pengiriman otomatis dicabut",
   "subscriptions.th_more_due": "Periode jatuh tempo lainnya",
@@ -7303,7 +7304,7 @@
   "subscriptions.err_period_placed": "Periode ini memuat {ref}, ditetapkan dari penagihan sebelumnya. Gunakan Batalkan penetapan pada barisnya di daftar periode terlebih dahulu.",
   "subscriptions.err_ended_place_cancelled": "{ref} dibatalkan, jadi dokumen ini tidak dapat ditetapkan ke salah satu periodenya. Gunakan Sisihkan untuk menyelesaikan peninjauan dokumen lama.",
   "subscriptions.err_ended_place_void": "{ref} berstatus tidak berlaku, jadi dokumen ini tidak dapat ditetapkan ke salah satu periodenya di sini. Gunakan Sisihkan untuk menyelesaikan peninjauan dokumen lama, atau batalkan status tidak berlaku {ref} di Dokumen terlebih dahulu.",
-  "subscriptions.summary_window": "Ringkasan mencakup {days} hari terakhir.",
+  "subscriptions.summary_window": "Tagihan dan email tetap tercantum selama {days} hari. Kegagalan penagihan, otorisasi yang kedaluwarsa, atau email yang menunggu dikirim tetap tercantum sampai diselesaikan.",
   "subscriptions.summary_generation_failed_because": "Penagihan otomatis gagal untuk {ref}: {error}",
   "subscriptions.err_period_placed_later_billed": "Periode ini memuat {ref}, ditetapkan dari penagihan sebelumnya, dan periode berikutnya sudah ditagih pada {later}. Gunakan Batalkan pada {later} dan Buka kembali pada barisnya di daftar periode, lalu gunakan Batalkan penetapan pada baris periode ini."
 }

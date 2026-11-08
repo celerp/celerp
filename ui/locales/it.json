@@ -7225,6 +7225,7 @@
   "subscriptions.history_send_sent": "Fattura per il periodo dal {start} al {end} inviata via email.",
   "subscriptions.history_send_failed": "Impossibile inviare via email la fattura per il periodo dal {start} al {end}.",
   "subscriptions.history_billing_failed": "Fatturazione automatica non riuscita per il periodo dal {start} al {end}.",
+  "subscriptions.history_billing_failure_ended": "Errore di fatturazione automatica risolto.",
   "subscriptions.consent_generation_withdrawn": "Autorizzazione alla fatturazione automatica revocata",
   "subscriptions.consent_sending_withdrawn": "Autorizzazione all'invio automatico revocata",
   "subscriptions.th_more_due": "Altri periodi da fatturare",
@@ -7303,7 +7304,7 @@
   "subscriptions.err_period_placed": "Questo periodo contiene {ref}, assegnato da una fatturazione precedente. Usa prima Revoca assegnazione sulla sua riga nell'elenco dei periodi.",
   "subscriptions.err_ended_place_cancelled": "{ref} è annullato, quindi questo documento non può essere assegnato a uno dei suoi periodi. Usa Metti da parte per completare la revisione dei documenti precedenti.",
   "subscriptions.err_ended_place_void": "{ref} è invalidato, quindi qui questo documento non può essere assegnato a uno dei suoi periodi. Usa Metti da parte per completare la revisione dei documenti precedenti, oppure annulla prima l'invalidamento di {ref} in Documenti.",
-  "subscriptions.summary_window": "Il riepilogo copre gli ultimi {days} giorni.",
+  "subscriptions.summary_window": "Fatture ed email restano in elenco per {days} giorni. Un errore di fatturazione, un'autorizzazione scaduta o un'email in attesa di invio resta in elenco finché non viene risolto.",
   "subscriptions.summary_generation_failed_because": "Fatturazione automatica non riuscita per {ref}: {error}",
   "subscriptions.err_period_placed_later_billed": "Questo periodo contiene {ref}, assegnato da una fatturazione precedente, e i periodi successivi sono fatturati su {later}. Usa Storna su {later} e Riapri sulle loro righe nell'elenco dei periodi, poi Revoca assegnazione sulla riga di questo periodo."
 }

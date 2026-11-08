@@ -243,13 +243,16 @@ async def write_agreement(session: AsyncSession, company_id, entity_id: str, cha
     (409 naming unvoid) and the void is never rewritten as another status. An ENDED agreement
     bills no period again, so a person's write that changes what its periods claim is refused
     (ended_refusal), whichever action makes it, a placement's withdrawal included; its terms, a
-    period's send record and its history review (Set aside, and Return of a set-aside) still change."""
+    period's send record and its history review (Set aside, and Return of a set-aside) still change.
+    A change that ends the agreement's billing failure (ends_failure) drops it in the same event."""
     before = (await session.execute(select(Projection.state).where(
         Projection.company_id == company_id, Projection.entity_id == entity_id))).scalar_one_or_none() or {}
     changes = {k: v for k, v in changes.items() if shown(k, before.get(k)) != shown(k, v)}
     if before.get("status") == "void" and "status" in changes:
         raise HTTPException(status_code=409, detail=t(
             "subscriptions.err_status_void", ref=before.get("ref_id") or entity_id))
+    if ends_failure(before, changes):
+        drop = (*drop, "billing_failure")
     drop = tuple(k for k in drop if k in before and k not in changes)
     if actor_id is not None and (refusal := ended_refusal(
             before, {**{k: v for k, v in before.items() if k not in drop}, **changes})):
@@ -361,6 +364,17 @@ ENDED = {"cancelled": "subscriptions.err_ended_cancelled", "void": "subscription
 # Why placing an earlier document in a period of one is refused, naming Set aside: the way its
 # history review still finishes.
 ENDED_PLACE = {"cancelled": "subscriptions.err_ended_place_cancelled", "void": "subscriptions.err_ended_place_void"}
+
+
+def ends_failure(before: dict, changes: dict) -> bool:
+    """Whether a change ends the agreement's billing failure: its period is billed or skipped,
+    or the agreement is cancelled or voided. run_due writes the failure and drops one that no
+    longer holds; this is the only other way it ends."""
+    failure = before.get("billing_failure") or {}
+    if not failure:
+        return False
+    entry = (changes.get("periods") or {}).get(str(failure.get("period_index")))
+    return changes.get("status") in ENDED or (isinstance(entry, dict) and entry.get("state") in (BILLED, SKIPPED))
 
 
 def claims(state: dict) -> tuple:
@@ -551,13 +565,12 @@ async def _bill(session, company, company_id, tid: str, state: dict, schedule: S
                        "by": str(actor.id) if actor.id else None, "auto": auto}
     if send:
         record_send(periods, k, None, state="pending", n=0)
-    drop = ("billing_failure",) if state.get("billing_failure") else ()
     metadata = None
     if key:
-        after = {**{f: v for f, v in state.items() if f not in drop}, "periods": periods}
+        after = {**state, "periods": periods}
         metadata = {"request": request, "result": await _result(
             session, company_id, doc_id, k, Schedule.from_state(after), after, already_billed=False)}
-    await write_agreement(session, company_id, tid, {"periods": periods}, actor.id, drop=drop, key=key, metadata=metadata)
+    await write_agreement(session, company_id, tid, {"periods": periods}, actor.id, key=key, metadata=metadata)
     return doc_id
 
 
@@ -940,12 +953,31 @@ def entering_modes(before: dict, after: dict) -> list[str]:
 
 
 def failure_reason(exc: Exception) -> dict:
-    """Why an unattended bill failed, stored with its billing_failure: ``reason``, the keyed
-    refusal Generate due gives for the same state (keyed, or the sentence it answers with);
-    nothing for any other failure."""
+    """Why an unattended bill failed, stored with its billing_failure: ``reason``, the refusal
+    Generate due gives for the same state as its catalog key and params, so each reader reads it
+    in their language; nothing for any other failure (one with no key reads as failed, and
+    Generate due gives its refusal as it is)."""
     from celerp.error_body import as_refusal, keyed
     detail = as_refusal(exc.detail) if isinstance(exc, HTTPException) else None
-    return {"reason": detail} if keyed(detail) or (isinstance(detail, str) and detail) else {}
+    return {"reason": detail} if keyed(detail) else {}
+
+
+def still_failing(state: dict, found: tuple[Schedule, list[int]] | None) -> bool:
+    """Whether the agreement's billing failure still holds: its period is the one the agreement
+    would bill on its own next (``found``, unattended_due as stored)."""
+    return found is not None and found[1][0] == (state.get("billing_failure") or {}).get("period_index")
+
+
+async def _drop_failure(session: AsyncSession, company_id, entity_id: str, today: date) -> None:
+    """Drop a billing failure that no longer holds (still_failing, decided again as locked):
+    the agreement was paused, set to bill by hand or rescheduled since the pass that failed."""
+    try:
+        async with savepoint(session):
+            proj = await locked_agreement(session, company_id, entity_id)
+            if proj.state.get("billing_failure") and not still_failing(proj.state, unattended_due(proj.state, today)):
+                await write_agreement(session, company_id, entity_id, {}, None, drop=("billing_failure",))
+    except Exception:
+        log.exception("Dropping the billing failure of %s failed", entity_id)
 
 
 async def run_due(*, session: AsyncSession, company_id, today: date, budget: int) -> OperationReport:
@@ -961,6 +993,8 @@ async def run_due(*, session: AsyncSession, company_id, today: date, budget: int
             report.after_commit.append(_deliverer(company_id, row.entity_id, k))
             queued_sends += 1
         found = unattended_due(state, today)
+        if state.get("billing_failure") and not still_failing(state, found):
+            await _drop_failure(session, company_id, row.entity_id, today)
         if found is None:
             continue
         if outside_window(state, *found, today):
@@ -995,10 +1029,10 @@ async def run_due(*, session: AsyncSession, company_id, today: date, budget: int
                     try:
                         proj = await locked_agreement(session, company_id, row.entity_id)
                         prior = proj.state.get("billing_failure") or {}
-                        if prior.get("period_index") != failed_period:
+                        why = failure_reason(exc)
+                        if (prior.get("period_index"), prior.get("reason")) != (failed_period, why.get("reason")):
                             await write_agreement(session, company_id, row.entity_id, {
-                                "billing_failure": {"period_index": failed_period, "at": now_stamp(),
-                                                    **failure_reason(exc)},
+                                "billing_failure": {"period_index": failed_period, "at": now_stamp(), **why},
                             }, None)
                             await notify(session, company_id, "notice_billing_failed",
                                           "/subscriptions/summary")

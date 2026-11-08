@@ -7225,6 +7225,7 @@
   "subscriptions.history_send_sent": "Factura del período del {start} al {end} enviada por correo.",
   "subscriptions.history_send_failed": "No se ha podido enviar por correo la factura del período del {start} al {end}.",
   "subscriptions.history_billing_failed": "Ha fallado la facturación automática del período del {start} al {end}.",
+  "subscriptions.history_billing_failure_ended": "Error de facturación automática resuelto.",
   "subscriptions.consent_generation_withdrawn": "Autorización de facturación automática revocada",
   "subscriptions.consent_sending_withdrawn": "Autorización de envío automático revocada",
   "subscriptions.th_more_due": "Más períodos pendientes",
@@ -7303,7 +7304,7 @@
   "subscriptions.err_period_placed": "Este período tiene asignado {ref}, de una facturación anterior. Use primero Retirar asignación en su fila de la lista de períodos.",
   "subscriptions.err_ended_place_cancelled": "{ref} está cancelada, así que este documento no puede asignarse a uno de sus períodos. Use Apartar para terminar la revisión de documentos anteriores.",
   "subscriptions.err_ended_place_void": "{ref} está anulada, así que este documento no puede asignarse aquí a uno de sus períodos. Use Apartar para terminar la revisión de documentos anteriores, o quite primero la anulación de {ref} en Documentos.",
-  "subscriptions.summary_window": "El resumen abarca los últimos {days} días.",
+  "subscriptions.summary_window": "Las facturas y los correos permanecen en la lista {days} días. Un error de facturación, una autorización caducada o un correo pendiente de envío permanece en la lista hasta que se resuelva.",
   "subscriptions.summary_generation_failed_because": "Error al facturar automáticamente {ref}: {error}",
   "subscriptions.err_period_placed_later_billed": "Este período tiene asignado {ref}, de una facturación anterior, y los períodos posteriores están facturados en {later}. Anule {later} y use Reabrir en sus filas de la lista de períodos; después use Retirar asignación en la fila de este período."
 }

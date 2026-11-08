@@ -318,7 +318,11 @@ def _build_router() -> APIRouter:
         await session.commit()
         return {"results": results}
 
-    @router.get("/summary")
+    @router.get("/summary", description=(
+        f"What unattended billing did: each bill and email of the last {summary.SUMMARY_WINDOW.days} days, and "
+        "each billing failure, lapsed authorization and email waiting to go out while it lasts, each row with the "
+        "``key`` Mark as read posts for it (none for a row shown while it lasts): every row but those this user "
+        "marked read (``all``: every row)."))
     async def get_summary(
         all: bool = False,
         company_id: uuid.UUID = Depends(get_current_company_id),
@@ -326,8 +330,6 @@ def _build_router() -> APIRouter:
         user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
-        """What unattended billing did in the last SUMMARY_WINDOW, each row with the ``key`` Mark as
-        read posts for it: every row but those this user marked read (``all``: every row)."""
         return await summary.report(session, company_id, user.id, everything=all)
 
     @router.post("/summary/ack")

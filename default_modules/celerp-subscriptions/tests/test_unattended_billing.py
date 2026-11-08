@@ -65,6 +65,10 @@ async def _auto(client, hd, *, start, catchup=0, send=False, **fields) -> str:
     return eid
 
 
+# One line whose tax is still to set: every bill of it is refused with a catalog refusal.
+UNTAXED = [{"description": "Dues", "quantity": 1, "unit_price": 10, "taxes": None}]
+
+
 async def test_unattended_offline_six_months_preview_only(client, session, monkeypatch):
     freeze_day(monkeypatch, "2026-01-01")
     hd = await register(client)
@@ -686,7 +690,7 @@ async def test_auto_arrears_bills_on_first_bill_date_with_zero_catchup(client, s
     await tick(session, cid, "2026-02-01")
     assert [d["period_index"] for d in await billed_docs(session, eid)] == [0]
 
-async def test_failed_generation_is_visible_once_and_clears_after_recovery(client, session, monkeypatch):
+async def test_failed_generation_is_visible_once_while_it_lasts_and_clears_after_recovery(client, session, monkeypatch):
     from celerp_docs import routes as docs_routes
 
     freeze_day(monkeypatch, "2026-07-01")
@@ -709,12 +713,13 @@ async def test_failed_generation_is_visible_once_and_clears_after_recovery(clien
     page = await summary(client, hd)
     assert page["counts"]["generation_failed"] == 1  # once, not once per pass
     assert (await mark_read(client, hd, page)).status_code == 200
-    assert (await summary(client, hd))["counts"]["generation_failed"] == 0
+    assert (await summary(client, hd))["counts"]["generation_failed"] == 1  # shown while it lasts
 
     monkeypatch.setattr(docs_routes, "finalize_document", original)
     await tick(session, cid, "2026-07-01")
     assert [d["period_index"] for d in await billed_docs(session, eid)] == [0]
     assert "billing_failure" not in await template(client, hd, eid)
+    assert (await summary(client, hd))["counts"]["generation_failed"] == 0
 
 
 async def test_revoked_document_permission_stops_automated_generation(client, session, monkeypatch):
@@ -912,9 +917,10 @@ async def test_the_summary_covers_its_window_so_mark_as_read_stores_only_rows_in
 
 
 async def test_a_failed_bill_keeps_its_reason_is_counted_to_check_and_offers_generate_due(client, session, monkeypatch):
-    """An agreement billing on its own with no line items fails its bill: the summary row says
-    why (the refusal Generate due would give), the summary line and the list banner count it to
-    check in the warning style, and the row offers Generate due, the door that fixes it."""
+    """An agreement billing on its own whose line has its tax still to set fails its bill: the
+    summary row says why (the refusal Generate due would give), the summary line and the list
+    banner count it to check in the warning style, and the row offers Generate due, the door
+    that fixes it."""
     import uuid
 
     from bs4 import BeautifulSoup
@@ -928,15 +934,14 @@ async def test_a_failed_bill_keeps_its_reason_is_counted_to_check_and_offers_gen
     token = r.json()["access_token"]
     hd = {"Authorization": f"Bearer {token}"}
     cid = await company_id(client, hd)
-    eid = await _auto(client, hd, start="2026-07-01", line_items=[])
+    eid = await _auto(client, hd, start="2026-07-01", line_items=UNTAXED)
     await tick(session, cid, "2026-07-01")
     refused = (await client.post(f"/subscriptions/{eid}/generate-due", headers=hd,
                                  json={"request_key": "why"})).json()["detail"]
     page = await summary(client, hd)
     ref = (await template(client, hd, eid))["ref_id"]
     assert [(r["kind"], r["message"]) for r in page["rows"]] == [
-        ("generation_failed", t("subscriptions.summary_generation_failed_because", ref=ref,
-                                error=refused if isinstance(refused, str) else refused["message"]))]
+        ("generation_failed", t("subscriptions.summary_generation_failed_because", ref=ref, error=refused["message"]))]
     assert set(KINDS) == set(NEEDS_YOU) | set(INFORMATIONAL) and not set(NEEDS_YOU) & set(INFORMATIONAL)
     async with ui_signed_in(token) as ui:
         listing = BeautifulSoup((await ui.get("/subscriptions")).text, "html.parser")
@@ -955,8 +960,7 @@ async def test_a_bill_refused_in_the_readers_language_keeps_that_refusal_as_its_
     freeze_day(monkeypatch, "2026-07-01")
     hd = await register(client)
     cid = await company_id(client, hd)
-    eid = await _auto(client, hd, start="2026-07-01", line_items=[
-        {"description": "Dues", "quantity": 1, "unit_price": 10, "taxes": None}])
+    eid = await _auto(client, hd, start="2026-07-01", line_items=UNTAXED)
     await tick(session, cid, "2026-07-01")
     assert await billed_docs(session, eid) == []
     refused = (await client.post(f"/subscriptions/{eid}/generate-due", headers=hd,
@@ -966,6 +970,127 @@ async def test_a_bill_refused_in_the_readers_language_keeps_that_refusal_as_its_
     assert [(r["kind"], r["message"]) for r in (await summary(client, hd))["rows"]] == [
         ("generation_failed", t("subscriptions.summary_generation_failed_because", ref=ref,
                                 error=t("documents.err_line_tax_unset", line=1)))]
+
+
+def _on(monkeypatch, day: str) -> None:
+    from datetime import datetime, timezone
+
+    from celerp_subscriptions import billing
+
+    instant = datetime.fromisoformat(day).replace(hour=12, tzinfo=timezone.utc)
+    freeze_day(monkeypatch, day)
+    monkeypatch.setattr(billing, "now", lambda: instant)
+
+
+def _failed(page: dict) -> list:
+    return [(r["period_index"], r["message"]) for r in page["rows"] if r["kind"] == "generation_failed"]
+
+
+async def test_a_failure_still_happening_stays_on_the_summary_and_counted_past_the_window(client, session, monkeypatch):
+    """A failure is a current fact, not an event in the window: an annual agreement whose bill is
+    refused every pass stays on the summary, counted to check, months past SUMMARY_WINDOW, and
+    Mark as read does not hide it while it lasts."""
+    from celerp_subscriptions.summary import SUMMARY_WINDOW
+
+    _on(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    eid = await _auto(client, hd, start="2026-07-01", frequency="annually", line_items=UNTAXED)
+    await tick(session, cid, "2026-07-01")
+    ref = (await template(client, hd, eid))["ref_id"]
+    shown = [(0, t("subscriptions.summary_generation_failed_because", ref=ref,
+                   error=t("documents.err_line_tax_unset", line=1)))]
+    later = f"2026-{7 + SUMMARY_WINDOW.days // 30 + 1:02d}-15"
+    _on(monkeypatch, later)
+    await tick(session, cid, later)
+    page = await summary(client, hd)
+    assert await billed_docs(session, eid) == []
+    assert _failed(page) == shown and page["counts"]["generation_failed"] == 1
+    assert (await mark_read(client, hd, page)).status_code == 200
+    assert _failed(await summary(client, hd)) == shown
+
+
+@pytest.mark.parametrize("end", ["skip", "cancel", "pause"])
+async def test_a_failure_ended_another_way_leaves_no_row(client, session, monkeypatch, end):
+    """Skipping the failed period or cancelling the agreement ends the failure in the same write;
+    pausing it ends the failure on the next pass (run_due drops one that no longer holds). Either
+    way no row is left counted to check offering a Generate due that refuses."""
+    _on(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    eid = await _auto(client, hd, start="2026-07-01", frequency="annually", line_items=UNTAXED)
+    await tick(session, cid, "2026-07-01")
+    assert len(_failed(await summary(client, hd))) == 1
+    path = {"skip": "periods/0/skip", "cancel": "cancel", "pause": "pause"}[end]
+    r = await client.post(f"/subscriptions/{eid}/{path}", headers=hd, json={"reason": "x"} if end == "skip" else None)
+    assert r.status_code == 200, r.text
+    if end == "pause":
+        _on(monkeypatch, "2026-07-02")
+        await tick(session, cid, "2026-07-02")
+    page = await summary(client, hd)
+    assert _failed(page) == [] and page["counts"]["generation_failed"] == 0
+    assert "billing_failure" not in await template(client, hd, eid)
+
+
+async def test_a_second_different_reason_replaces_the_first(client, session, monkeypatch):
+    """The same period fails again for another refusal: the stored reason and the row are the
+    latest one; the same refusal again writes nothing new."""
+    from fastapi import HTTPException
+
+    from celerp_subscriptions import billing
+
+    _on(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    eid = await _auto(client, hd, start="2026-07-01", frequency="annually")
+    refusal = {"key": "subscriptions.err_bill_paused"}
+
+    async def refuse(*_a, **_k):
+        raise HTTPException(status_code=409, detail=t(refusal["key"]))
+
+    monkeypatch.setattr(billing, "_bill", refuse)
+    await tick(session, cid, "2026-07-01")
+    first = (await template(client, hd, eid))["billing_failure"]
+    _on(monkeypatch, "2026-07-02")
+    await tick(session, cid, "2026-07-02")
+    assert (await template(client, hd, eid))["billing_failure"] == first
+    refusal["key"] = "subscriptions.err_bill_draft"
+    _on(monkeypatch, "2026-07-03")
+    await tick(session, cid, "2026-07-03")
+    stored = (await template(client, hd, eid))["billing_failure"]
+    assert stored["reason"]["message_key"] == "subscriptions.err_bill_draft" and stored["at"] != first["at"]
+    ref = (await template(client, hd, eid))["ref_id"]
+    assert _failed(await summary(client, hd)) == [(0, t("subscriptions.summary_generation_failed_because", ref=ref,
+                                                       error=t("subscriptions.err_bill_draft")))]
+
+
+async def test_a_thai_reader_reads_the_failure_and_its_reason_in_thai(client, session, monkeypatch):
+    """The reason is kept as its catalog key, so a Thai reader's row is Thai throughout; a refusal
+    with no key keeps no reason, so its row still reads in the reader's language."""
+    from fastapi import HTTPException
+
+    from celerp_subscriptions import billing
+
+    _on(monkeypatch, "2026-07-01")
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    keyed = await _auto(client, hd, start="2026-07-01", frequency="annually", line_items=UNTAXED)
+    plain = await _auto(client, hd, start="2026-07-01", frequency="annually")
+    real_bill = billing._bill
+
+    async def bill(session, company, company_id, entity_id, *args, **kwargs):
+        if entity_id == plain:
+            raise HTTPException(status_code=409, detail="A sentence with no key.")
+        return await real_bill(session, company, company_id, entity_id, *args, **kwargs)
+
+    monkeypatch.setattr(billing, "_bill", bill)
+    await tick(session, cid, "2026-07-01")
+    refs = {e: (await template(client, hd, e))["ref_id"] for e in (keyed, plain)}
+    rows = (await client.get("/subscriptions/summary", headers={**hd, "Accept-Language": "th"})).json()["rows"]
+    assert {r["entity_id"]: r["message"] for r in rows if r["kind"] == "generation_failed"} == {
+        keyed: t("subscriptions.summary_generation_failed_because", "th", ref=refs[keyed],
+                 error=t("documents.err_line_tax_unset", "th", line=1)),
+        plain: t("subscriptions.summary_generation_failed", "th", ref=refs[plain])}
 
 
 async def test_a_failed_bill_leaves_the_next_agreement_in_the_same_pass_billed(client, session, monkeypatch):

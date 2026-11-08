@@ -6,10 +6,11 @@ Nothing is copied: a billed period records when and whether it was billed unatte
 and its send records each attempt. The summary covers SUMMARY_WINDOW back from now. A user's
 acknowledgment is the keys of the rows the page they marked read showed, kept in the company
 settings per user; the summary hides those rows and nothing else, and a key leaves storage with
-its row. An unattended mode whose authorizer no longer holds its permission, and an email
-waiting to go out on its own, are shown while they last; an email that will not go on its own is
-a row like any other. A failed send keeps its reason as a catalog key and a failed bill the
-refusal it met, each worded in the reader's language when read.
+its row. An unattended mode whose authorizer no longer holds its permission, an email waiting
+to go out on its own, and a billing failure (one current fact on its agreement, which run_due
+writes and drops) are shown while they last, whatever their age; an email that will not go on
+its own is a row like any other. A failed send keeps its reason as a catalog key and a failed
+bill the keyed refusal it met, each worded in the reader's language when read.
 """
 from __future__ import annotations
 
@@ -136,8 +137,9 @@ async def modes_answer(session: AsyncSession, company_id, entity_id: str) -> dic
 
 async def _rows(session: AsyncSession, company_id, settings: dict) -> list[dict]:
     """Every row the summary can show, each with its ``key`` (None for one shown while it lasts:
-    an email waiting to go out on its own, a mode whose authorization lapsed). A keyed row whose
-    time is older than SUMMARY_WINDOW is left out (one whose time cannot be read stays)."""
+    an email waiting to go out on its own, a mode whose authorization lapsed, a billing failure).
+    A keyed row whose time is older than SUMMARY_WINDOW is left out (one whose time cannot be
+    read stays)."""
     replayable = await billing.replayable_operations(session, company_id)
     today = await company_today(session, company_id)
     # One whose stored schedule can't be read reports nothing here; the list and its page name it.
@@ -162,11 +164,10 @@ async def _rows(session: AsyncSession, company_id, settings: dict) -> list[dict]
                               "again": billing.sends_again(status, send, replayable),
                               "retry_url": (f"/subscriptions/{row.entity_id}/periods/{k}/send"
                                             if status != "sent" else None)})
-        failure = state.get("billing_failure") or {}
-        if failure.get("at"):
+        if failure := state.get("billing_failure"):
             found.append({"entity_id": row.entity_id, "doc_id": row.entity_id,
-                          "period_index": failure.get("period_index"),
-                          "kind": "generation_failed", "at": failure["at"], "reason": failure.get("reason")})
+                          "period_index": failure.get("period_index"), "kind": "generation_failed",
+                          "at": failure.get("at"), "reason": failure.get("reason"), "lasts": True})
         for mode in billing.modes_in_force(state):
             if await billing.authorizer(session, company_id, settings, state, mode) is None:
                 found.append({"entity_id": row.entity_id, "doc_id": None, "period_index": None,

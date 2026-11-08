@@ -27,6 +27,10 @@ the action from what is stored, never from what the action intended.
   (the one refusal naming the door that frees each kind of claim);
 - ``ack_doors()``: every function of the module or its UI that reads or writes the summary
   acknowledgment (only ``summary.acknowledge`` writes it, from the keys of the rows the page showed);
+- ``failure_uses()``: every function of the module or its UI that writes, drops or reads an
+  agreement's billing failure (only run_due writes it; it, write_agreement and run_due's
+  _drop_failure drop it), and ``to_check_readers()``: every function that reads the kinds the
+  summary counts "to check";
 - ``named_door_refusals()``: every catalog refusal the module raises whose English names a door to
   use instead (the named-door way-out guard walks each: the door accepts, and the page has it);
 - ``badge_renders()``: every ``doc_detail_badges`` render a module registers, and whether it
@@ -344,6 +348,50 @@ def ack_doors() -> list[tuple[str, str, str]]:
     return rows
 
 
+FAILURE = "billing_failure"
+TO_CHECK = "NEEDS_YOU"
+
+
+def _uses(name: str, match) -> list[tuple[str, str, ast.AST, dict]]:
+    """(where, path.function, node, parents) of every node ``match`` finds in a function's own
+    body, over the module and its UI."""
+    found = []
+    for path in [*sorted(PACKAGE.glob("*.py")), *ui_files()]:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            nodes = list(_own(fn))
+            parents = {c: n for n in [fn, *nodes] for c in ast.iter_child_nodes(n)}
+            found += [(f"{_rel(path)}:{n.lineno}", f"{path.stem}.{fn.name}", n, parents)
+                      for n in nodes if match(n)]
+    return found
+
+
+def failure_uses() -> list[tuple[str, str, str]]:
+    """(where, function, writes|drops|reads) of every use of the agreement's billing failure in
+    the module and its UI: a dict display keyed by it writes it, a drop of it (the ``drop``
+    argument, or a tuple bound to ``drop``) drops it, anything else reads it."""
+    rows = []
+    for where, fn, node, parents in _uses(FAILURE, lambda n: isinstance(n, ast.Constant) and n.value == FAILURE):
+        up = parents.get(node)
+        if isinstance(up, ast.Dict) and node in up.keys:
+            how = "writes"
+        elif isinstance(up, ast.Tuple) and (
+                isinstance(parents.get(up), ast.keyword) and parents[up].arg == "drop"
+                or isinstance(parents.get(up), ast.Assign) and ast.unparse(parents[up].targets[0]) == "drop"):
+            how = "drops"
+        else:
+            how = "reads"
+        rows.append((where, fn, how))
+    return rows
+
+
+def to_check_readers() -> list[tuple[str, str]]:
+    """(where, function) of every function that reads the kinds counted "to check"."""
+    return [(where, fn) for where, fn, _n, _p in _uses(TO_CHECK, lambda n: isinstance(n, ast.Name) and n.id == TO_CHECK)]
+
+
 # A refusal names a door when its English tells the person which action to use instead.
 DOOR_WORDS = re.compile(r"\bUse |\b[Uu]nvoid\b|\bReopen\b|Withdraw placement|Set aside|\b[Vv]oid \{|Generate due")
 
@@ -570,6 +618,14 @@ def main() -> None:
     print(f"\n# Uses of the summary acknowledgment ({len(acks)})")
     for where, fn, how in acks:
         print(f"{fn:36} {where:70} {how}")
+    failures = failure_uses()
+    print(f"\n# Uses of the billing failure ({len(failures)})")
+    for where, fn, how in failures:
+        print(f"{fn:36} {where:70} {how}")
+    checks = to_check_readers()
+    print(f"\n# Readers of the kinds counted to check ({len(checks)})")
+    for where, fn in checks:
+        print(f"{fn:36} {where}")
     named = named_door_refusals()
     print(f"\n# Refusals naming a door ({len(named)})")
     for key, text in named:

@@ -211,9 +211,9 @@ def _periods_change(c: dict) -> str | None:
 
 
 def _billing_failure_change(c: dict) -> str | None:
-    """A failed automatic bill names its period; clearing the failure is not a change of its own."""
+    """A failed automatic bill names its period; the failure ending says so."""
     if c.get("drop"):
-        return None
+        return t("subscriptions.history_billing_failure_ended") if c.get("old") else None
     span = (c.get("dates") or {}).get(str((c.get("new") or {}).get("period_index")))
     return sentence("subscriptions.history_billing_failed", start=span[0], end=span[1]) if span \
         else t("subscriptions.notice_billing_failed_title")
@@ -593,9 +593,9 @@ def _list_banners(catch_up: list[dict], summary: dict) -> list:
     counts = summary.get("counts") or {}
     if any(counts.values()):
         banners.append(Div(t("subscriptions.summary_banner", generated=counts.get("generated", 0),
-                             sent=counts.get("sent", 0), failed=_sends_to_check(counts)), " ",
+                             sent=counts.get("sent", 0), failed=_to_check(counts)), " ",
                            A(t("subscriptions.summary_open"), href="/subscriptions/summary"),
-                           cls="flash flash--warning" if _sends_to_check(counts) else "flash flash--info"))
+                           cls="flash flash--warning" if _to_check(counts) else "flash flash--info"))
     return banners
 
 
@@ -860,7 +860,7 @@ def _posted_keys(raw) -> object:
         return raw
 
 
-def _sends_to_check(counts: dict) -> int:
+def _to_check(counts: dict) -> int:
     """Rows someone may need to act on (summary.NEEDS_YOU): a failed bill, a lapsed authorization,
     and a send that failed, was cut off, is with the mail server or still waits to go out."""
     return sum(counts.get(k, 0) for k in NEEDS_YOU)
@@ -1113,7 +1113,7 @@ def setup_routes(app) -> None:
                                cls="btn btn--primary") if rows and not all else "",
                         toggle),
             P(t("subscriptions.summary_counts", generated=counts.get("generated", 0), sent=counts.get("sent", 0),
-                failed=_sends_to_check(counts)), " ", t("subscriptions.summary_window", days=SUMMARY_WINDOW.days),
+                failed=_to_check(counts)), " ", t("subscriptions.summary_window", days=SUMMARY_WINDOW.days),
               cls="text-muted"),
             _summary_table(rows, subs) if rows else empty_state_cta(
                 t("subscriptions.summary_empty"), t("subscriptions.summary_all"), "/subscriptions/summary?all=1"),

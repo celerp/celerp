@@ -7225,6 +7225,7 @@
   "subscriptions.history_send_sent": "ከ{start} እስከ {end} ያለው ወቅት መጠየቂያ በኢሜይል ተልኳል።",
   "subscriptions.history_send_failed": "ከ{start} እስከ {end} ላለው ወቅት መጠየቂያ በኢሜይል መላክ አልተቻለም።",
   "subscriptions.history_billing_failed": "ከ{start} እስከ {end} ላለው ወቅት ራስ-ሰር መጠየቂያ ማዘጋጀት አልተሳካም።",
+  "subscriptions.history_billing_failure_ended": "የራስ-ሰር የክፍያ መጠየቂያ ውድቀት ተጠርጓል።",
   "subscriptions.consent_generation_withdrawn": "ራስ-ሰር የክፍያ መጠየቂያ ማዘጋጀት ፈቃድ ተሰርዟል",
   "subscriptions.consent_sending_withdrawn": "ራስ-ሰር የመላክ ፈቃድ ተሰርዟል",
   "subscriptions.th_more_due": "ተጨማሪ የደረሱ ወቅቶች",
@@ -7303,7 +7304,7 @@
   "subscriptions.err_period_placed": "ይህ ወቅት ከቀድሞ ክፍያ የተዛመደውን {ref} ይዟል። መጀመሪያ በወቅቶች ዝርዝር ውስጥ ባለው ረድፉ ላይ ማዛመድን ቀልብስ ይጠቀሙ።",
   "subscriptions.err_ended_place_cancelled": "{ref} ተሰርዟል፣ ስለዚህ ይህ ሰነድ ከወቅቶቹ በአንዱ ሊዛመድ አይችልም። የቀድሞ ሰነዶቹን ግምገማ ለመጨረስ ወደ ጎን አስቀምጥ ይጠቀሙ።",
   "subscriptions.err_ended_place_void": "{ref} ተሽሯል፣ ስለዚህ ይህ ሰነድ እዚህ ከወቅቶቹ በአንዱ ሊዛመድ አይችልም። የቀድሞ ሰነዶቹን ግምገማ ለመጨረስ ወደ ጎን አስቀምጥ ይጠቀሙ፣ ወይም መጀመሪያ በሰነዶች ውስጥ የ{ref}ን ሽረት ይቀልብሱ።",
-  "subscriptions.summary_window": "ማጠቃለያው ያለፉትን {days} ቀናት ይሸፍናል።",
+  "subscriptions.summary_window": "ደረሰኞች እና ኢሜይሎች ለ{days} ቀናት በዝርዝሩ ውስጥ ይቆያሉ። የክፍያ መጠየቂያ ውድቀት፣ ጊዜው ያለፈ ፈቃድ ወይም ለመላክ የሚጠብቅ ኢሜይል እስኪፈታ ድረስ በዝርዝሩ ውስጥ ይቆያል።",
   "subscriptions.summary_generation_failed_because": "ለ{ref} ራስ-ሰር የክፍያ መጠየቂያ አልተሳካም፦ {error}",
   "subscriptions.err_period_placed_later_billed": "ይህ ወቅት ከቀድሞ ክፍያ የተዛመደውን {ref} ይዟል፣ በኋላ ያሉ ወቅቶችም በ{later} ደረሰኝ ወጥቶላቸዋል። {later}ን በውድቅ አድርግ ይሰርዙ እና በወቅቶች ዝርዝር ውስጥ ባሉት ረድፎቻቸው ላይ እንደገና ክፈት ይጠቀሙ፣ ከዚያ በዚህ ወቅት ረድፍ ላይ ማዛመድን ቀልብስ ይጠቀሙ።"
 }
