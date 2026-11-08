@@ -46,6 +46,19 @@ OWNER = {
 }
 
 
+def pause(browser) -> None:
+    """Wait 2 s through Playwright, so it takes in the window's navigations meanwhile.
+
+    The sync API handles browser events only during its own calls: after a plain
+    time.sleep, every page still reports the URL it had when the driver connected.
+    """
+    pages = [p for c in browser.contexts for p in c.pages]
+    if pages:
+        pages[0].wait_for_timeout(2000)
+    else:
+        time.sleep(2)
+
+
 def celerp_page(browser):
     """Celerp's own page in its window, or None while the window is between pages."""
     pages = [p for c in browser.contexts for p in c.pages if p.url.startswith("http://127.0.0.1")]
@@ -72,7 +85,7 @@ def sign_in(browser, end: float) -> int:
                 page.goto(page.url.split("/setup")[0] + "/")
         except Error:
             pass   # the window is between pages
-        time.sleep(2)
+        pause(browser)
     print(f"no signed-in page in time (last page {path}, setup sent: {sent})")
     return 1
 
@@ -91,7 +104,7 @@ def install(browser, end: float) -> int:
             return 0
         if state and state["status"] == "error":
             break
-        time.sleep(2)
+        pause(browser)
     print(f"the update was not downloaded: {state}")
     return 1
 
@@ -124,7 +137,7 @@ def refusal(browser, end: float) -> int:
                     break
         except Error:
             pass   # the window is between pages
-        time.sleep(2)
+        pause(browser)
     shown = "shown" if asked is not None else "not shown"
     print(f"the refusal screen was {shown}; the update was not downloaded: {state}")
     return 1
@@ -142,7 +155,7 @@ def card(browser, end: float, text: str) -> int:
         if said == text:
             print(f"the update card says '{said}'")
             return 0
-        time.sleep(2)
+        pause(browser)
     print(f"the update card says '{said}' (want '{text}')")
     return 1
 
@@ -154,9 +167,9 @@ def main(command: str, port: int, seconds: int, *args: str) -> int:
             try:
                 browser = pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
                 break
-            except Error:
+            except Error as e:
                 if time.monotonic() > end:
-                    print(f"no Celerp window on port {port} in {seconds} s")
+                    print(f"no Celerp window on port {port} in {seconds} s: {str(e)[:600]}")
                     return 1
                 time.sleep(2)
         return {"sign-in": sign_in, "install": install, "refusal": refusal, "card": card}[command](browser, end, *args)
