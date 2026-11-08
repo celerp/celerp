@@ -1029,18 +1029,21 @@ async def test_a_failure_still_happening_stays_on_the_summary_and_counted_past_t
     assert _failed(await summary(client, hd)) == shown
 
 
-@pytest.mark.parametrize("end", ["cancel", "pause"])
+@pytest.mark.parametrize("end", ["cancel", "pause", "skip"])
 async def test_a_failure_ended_another_way_leaves_no_row(client, session, monkeypatch, end):
-    """Cancelling the agreement ends the failure in the same write; pausing it ends the failure on
-    the next pass (run_due drops one that no longer holds). Either way no row is left counted to
-    check offering a Generate due that refuses."""
+    """Cancelling the agreement, or skipping the failed period while it still bills, ends the
+    failure in the same write; pausing it ends the failure on the next pass (run_due drops one that
+    no longer holds). Either way no row is left counted to check offering a Generate due that refuses."""
     _on(monkeypatch, "2026-07-01")
     hd = await register(client)
     cid = await company_id(client, hd)
     eid = await _untaxed(client, session, hd, start="2026-07-01", frequency="annually")
     await tick(session, cid, "2026-07-01")
     assert len(_failed(await summary(client, hd))) == 1
-    r = await client.post(f"/subscriptions/{eid}/{end}", headers=hd)
+    if end == "skip":
+        r = await client.post(f"/subscriptions/{eid}/periods/0/skip", headers=hd, json={"reason": "x"})
+    else:
+        r = await client.post(f"/subscriptions/{eid}/{end}", headers=hd)
     assert r.status_code == 200, r.text
     if end == "pause":
         _on(monkeypatch, "2026-07-02")
