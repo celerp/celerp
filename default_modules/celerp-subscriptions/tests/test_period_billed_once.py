@@ -10,6 +10,10 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from sqlalchemy import select
+
+from celerp.models.projections import Projection
+from celerp.models.subscription_email import SubscriptionEmailAttempt
 
 from agreement_kit import agreement, billed_docs, freeze_day, generate_due, register, template
 from ui.i18n import t
@@ -107,8 +111,15 @@ async def test_a_let_go_document_takes_its_period_from_a_newer_one_that_bills_no
     eid = await agreement(client, hd, start="2026-03-01")
     first, second = await _billed_then_let_go(client, hd, eid, _void)
     await _void(client, hd, second["doc_id"])
+    cid = (await session.execute(select(Projection.company_id).where(Projection.entity_id == eid))).scalar_one()
+    session.add(SubscriptionEmailAttempt(company_id=cid, operation_id=uuid.uuid4(), doc_id=second["doc_id"],
+                                         attempt_number=1, payload_json="{}"))
+    await session.commit()
     assert (await client.post(f"/docs/{first['doc_id']}/unvoid", headers=hd, json=_key())).status_code == 200
     assert (await template(client, hd, eid))["released_bills"] == {second["doc_id"]: 0}
+    # Let go as Reopen lets it go: its email attempts in flight are discarded with it.
+    assert (await session.execute(select(SubscriptionEmailAttempt).where(
+        SubscriptionEmailAttempt.doc_id == second["doc_id"]))).first() is None
     key, params = _refusal(await client.post(f"/docs/{second['doc_id']}/unvoid", headers=hd, json=_key()))
     assert (key, params["ref"], params["newer"]) == ("subscriptions.err_bill_rebilled", second["ref_id"], first["ref_id"])
     assert await _live(session, eid) == [first["ref_id"]]

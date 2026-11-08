@@ -494,14 +494,10 @@ async def guard_bill_status(*, session, entry, transition) -> None:
         newer = held.get("doc_id") if held.get("state") == BILLED else None
         newer_doc = await doc_state(session, company_id, newer) if newer else None
         if bills(newer_doc):
-            # The period's dates: the schedule's, or the newer bill's own while the terms build none.
-            start, end = newer_doc.get("service_start") or "--", newer_doc.get("service_end") or "--"
-            if unscheduled(agreement.state) is None:
-                schedule = Schedule.from_state(agreement.state)
-                start, end = schedule.start(k).isoformat(), schedule.service_end(k).isoformat()
+            # The period's dates as the newer bill states them: they need no schedule.
             raise HTTPException(status_code=409, detail=t(
                 "subscriptions.err_bill_rebilled", ref=ref, agreement=label, newer=newer_doc.get("ref_id") or newer,
-                start=start, end=end))
+                start=newer_doc.get("service_start") or "--", end=newer_doc.get("service_end") or "--"))
         if newer:
             released[newer] = k
         periods[str(k)] = {"state": BILLED, "doc_id": doc_id, "release_count": held.get("release_count", 0),
