@@ -4,13 +4,10 @@
 from the code. The documents projection names the keys of each event branch; for a branch that
 applies its event's payload, every call that emits the event is a writer, with the keys its
 payload can hold, followed through local names and callers. A key it cannot name is ``<expr>``.
-
-    python tests/lifecycle_writers.py    # key, writer, event, where record_copy places it
 """
 from __future__ import annotations
 
 import ast
-import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -32,8 +29,9 @@ def _callee(call):
     return getattr(call.func, "id", getattr(call.func, "attr", ""))
 
 class _App:
-    def __init__(self):
-        self.trees = {rel: ast.parse(p.read_text(encoding="utf-8")) for rel, p in app_sources()}
+    def __init__(self, trees=None):
+        self.trees = trees if trees is not None else {
+            rel: ast.parse(p.read_text(encoding="utf-8")) for rel, p in app_sources()}
         self.consts, self.collections, self.fns, self.calls = {}, {}, {}, {}
         for rel, tree in self.trees.items():
             for n in tree.body:
@@ -71,14 +69,12 @@ class _App:
         if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
             names = [self.name(e) for e in node.elts]
             return set(names) if None not in names else None
-        return None
 
     def name(self, node):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return node.value
         if isinstance(node, (ast.Name, ast.Attribute)):
             return self.consts.get(getattr(node, "id", getattr(node, "attr", None)))
-        return None
 
     def entity_types(self):
         seen = {}
@@ -277,7 +273,6 @@ def _payload_arg(call):
         positional, _ = _params(fn)
         if "data" in positional and positional.index("data") < len(call.args):
             return call.args[positional.index("data")]
-    return None
 
 
 def lifecycle_writers():
@@ -336,9 +331,3 @@ def census() -> list[tuple[str, str, str, str]]:
     content = content_keys()
     return [(k, w, e, "never copied" if k in NEVER_COPIED else "content" if k in content else "NO")
             for k, w, e in lifecycle_writers()]
-
-
-if __name__ == "__main__":
-    sys.path[:0] = [str(ROOT), str(ROOT / "default_modules/celerp-docs"), str(ROOT / "default_modules/celerp-contacts")]
-    for row in census():
-        print("\t".join(row))

@@ -17817,6 +17817,7 @@
     "tests/test_record_copy.py::test_every_key_a_writer_sets_on_an_existing_record_is_never_copied_or_content": 5.762,
     "tests/test_record_copy.py::test_the_census_finds_a_door_that_names_the_creation_event_by_a_constant": 6.165,
     "tests/test_record_copy.py::test_the_writer_census_finds_lifecycle_steps_and_skips_a_sentinel": 1.745,
+    "tests/test_record_copy.py::test_the_writer_census_names_every_key_it_follows_and_marks_every_key_it_cannot": 0.174,
     "tests/test_record_copy_content.py::test_a_list_duplicate_and_its_invoice_keep_the_commission_and_from_block": 2.814,
     "tests/test_record_copy_content.py::test_a_quotation_document_converted_keeps_the_commission_and_from_block": 2.81,
     "tests/test_record_copy_content.py::test_an_audit_list_duplicate_keeps_its_location": 2.913,
