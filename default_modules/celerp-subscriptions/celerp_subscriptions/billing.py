@@ -968,7 +968,7 @@ async def run_due(*, session: AsyncSession, company_id, today: date, budget: int
         while report.done < budget:
             failed_period = None
             try:
-                async with attempt(session):
+                async with savepoint(session):
                     # Decided again from the agreement as locked: the read above may be stale.
                     company = await locked_company(session, company_id)
                     if (company is None or not company.is_active
@@ -1124,7 +1124,7 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
                 await session.commit()
                 return send
             try:
-                async with attempt(session):
+                async with savepoint(session):
                     message = await doc_email(session, company_id, doc_id, doc.state, to, actor)
                     html, body = email._with_footer(message["body_html"], message["body_text"])
                     message = {**message, "body_html": html, "body_text": body, "branded": False}
@@ -1180,7 +1180,7 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
         await write_agreement(session, company_id, template_id, {"periods": periods}, actor.id)
         if result.ok:
             try:
-                async with attempt(session):
+                async with savepoint(session):
                     await mark_doc_sent(session, company_id, doc_id, actor, DocSendBody(
                         sent_via="email", sent_to=message["to"],
                         idempotency_key=f"send:{doc_id}:{n}"), source="subscription")
@@ -1195,7 +1195,7 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
 
 
 @asynccontextmanager
-async def attempt(session: AsyncSession):
+async def savepoint(session: AsyncSession):
     """A savepoint whose failure the caller catches and carries on after. Every row written
     inside it is held until it ends, so its rollback takes each of them out of the session: a
     row the session no longer held would come back on a later read as one the rollback cannot

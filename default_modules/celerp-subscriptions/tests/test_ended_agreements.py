@@ -137,4 +137,8 @@ async def test_an_ended_agreements_page_says_it_will_not_bill(owner_ui, monkeypa
              for tds in (tr.find_all("td") for tr in soup.select("#sub-periods tr")) if len(tds) > 2}
     assert cells["2026-03-01"] == t("subscriptions.period_not_billing", "en"), cells
     assert t("subscriptions.period_overdue", "en") not in cells.values(), cells
-    assert soup.select_one("#sub-bill-note").get_text(strip=True) == t(_UNBILLABLE[status], "en")
+    note = soup.select_one("#sub-bill-note")
+    door = note.find("a")
+    assert note.get_text(strip=True) == t(_UNBILLABLE[status], "en") + (door.get_text(strip=True) if door else "")
+    # A void agreement's note links to Unvoid on its document page; a cancelled one has no door to name.
+    assert (door["href"] if door else None) == (f"/docs/{eid}" if status == "void" else None)

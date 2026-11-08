@@ -259,7 +259,7 @@ async def migrate_company(session: AsyncSession, company_id, *, force: bool = Fa
         if not is_legacy(proj.state):
             continue
         try:
-            async with billing.attempt(session):
+            async with billing.savepoint(session):
                 review = await _migrate_template(session, company_id, proj, conflicts)
         except Exception:
             failed.append(f"{_ref(proj)}: {billing.not_moved(proj.state)}")
@@ -328,7 +328,7 @@ async def migrate_schedules_hook(*, session: AsyncSession) -> None:
 
     for company_id in (await session.execute(select(Company.id).order_by(Company.id))).scalars().all():
         try:
-            async with billing.attempt(session):
+            async with billing.savepoint(session):
                 result = await migrate_company(session, company_id)
         except Exception:
             log.exception("Moving templates of company %s onto schedules failed; the next start retries", company_id)

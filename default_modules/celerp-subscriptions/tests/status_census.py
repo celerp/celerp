@@ -359,7 +359,7 @@ def named_door_refusals() -> list[tuple[str, str]]:
 
 
 def savepoints() -> list[tuple[str, str, str]]:
-    """(file, function, opener) of every savepoint the module opens: ``attempt`` (billing.attempt)
+    """(file, function, opener) of every savepoint the module opens: ``savepoint`` (billing.savepoint)
     or a bare ``begin_nested``, under the innermost function that opens it."""
     found = set()
 
@@ -370,7 +370,7 @@ def savepoints() -> list[tuple[str, str, str]]:
                 continue
             if isinstance(child, ast.Call):
                 name = child.func.attr if isinstance(child.func, ast.Attribute) else getattr(child.func, "id", "")
-                if name in ("attempt", "begin_nested"):
+                if name in ("savepoint", "begin_nested"):
                     found.add((path.name, fn, name))
             visit(child, path, fn)
 

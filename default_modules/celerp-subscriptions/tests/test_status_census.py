@@ -142,7 +142,7 @@ async def _summary_ack(ui, session, monkeypatch, arm):
     keys = [row["key"] for row in (await ui.api.get("/subscriptions/summary")).json()["rows"] if row["key"]]
     assert keys
     arm()
-    r = await ui.post("/subscriptions/summary/ack", data={"key": keys})
+    r = await ui.post("/subscriptions/summary/ack", data={"keys": json.dumps(keys)})
     _not_refused(r)
     assert r.headers["HX-Redirect"] == "/subscriptions/summary" and _toast(r)["type"] == "success"
     assert (await ui.api.get("/subscriptions/summary")).json()["rows"] == []
