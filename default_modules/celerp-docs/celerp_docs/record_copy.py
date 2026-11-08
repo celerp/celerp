@@ -8,8 +8,8 @@ enters on a line, which the line save steps own (line_bodies): a count, an adjus
 a draw or a receipt stays with the source line. The record keeps its contact and the currency its
 line prices are in; everything else (terms, notes, commission, the From block, a List's location,
 custom fields) is for the user to fill on the copy. A conversion (conversion_of) also keeps the money
-the other side agreed to and its payment term (CONVERSION_KEYS), so it charges what was quoted. The
-door adds the new record's kind, number and where it came from.
+the other side agreed to, a tax amount with no rate included, and its payment term (CONVERSION_KEYS),
+so it charges what was quoted. The door adds the new record's kind, number and where it came from.
 """
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ def copy_of(state: dict, settings: dict) -> dict:
 def conversion_of(state: dict, settings: dict, *, tax_rate_key: str = "tax_rate") -> dict:
     """A copy of ``state`` (copy_of) that keeps its CONVERSION_KEYS too. A List holds its header tax
     rate as ``tax`` (beside ``tax_amount``), so its door passes ``tax_rate_key="tax"``."""
-    kept = {k: state[k] for k in CONVERSION_KEYS - {"tax_rate"} if k in state}
+    kept = {k: state[k] for k in CONVERSION_KEYS - {"tax_rate", tax_rate_key} if k in state}
     if state.get(tax_rate_key) is not None:
         kept["tax_rate"] = state[tax_rate_key]
     return {**copy_of(state, settings), **kept}
