@@ -214,6 +214,14 @@ class TestSubscriptionActions:
             r = await owner_ui.post(f"/subscriptions/{eid}/delete")
         assert r.status_code == 404
 
+    @pytest.mark.parametrize("path", ["periods/0/delete", "history/doc:x/delete"])
+    async def test_an_unknown_period_or_history_action_is_not_found_and_calls_nothing(self, owner_ui, path):
+        """The route is the one check on the action: the client posts whatever it is given."""
+        eid = await _active_subscription(owner_ui)
+        with patch("ui.api_client._api_client", side_effect=AssertionError("API called")):
+            r = await owner_ui.post(f"/subscriptions/{eid}/{path}")
+        assert r.status_code == 404
+
     async def test_the_detail_page_buttons_post_in_place(self, owner_ui):
         eid = await _active_subscription(owner_ui)
         html = (await owner_ui.get(f"/subscriptions/{eid}")).text

@@ -2150,8 +2150,6 @@ async def get_subscription_periods(token: str, entity_id: str, *, before: int | 
 
 
 async def subscription_period_action(token: str, entity_id: str, k: int, action: str, body: dict | None = None) -> dict:
-    if action not in PERIOD_ACTIONS:
-        raise ValueError(f"Unknown period action: {action}")
     async with _api_client(token) as c:
         return _raise(await c.post(f"/subscriptions/{entity_id}/periods/{k}/{action}", json=body)).json()
 
@@ -2166,8 +2164,6 @@ HISTORY_ACTIONS = ("confirm", "set-aside", "withdraw")
 
 async def subscription_history_action(token: str, entity_id: str, doc_id: str, action: str,
                                       body: dict | None = None) -> dict:
-    if action not in HISTORY_ACTIONS:
-        raise ValueError(f"Unknown history action: {action}")
     async with _api_client(token) as c:
         return _raise(await c.post(f"/subscriptions/{entity_id}/history/{doc_id}/{action}", json=body)).json()
 
