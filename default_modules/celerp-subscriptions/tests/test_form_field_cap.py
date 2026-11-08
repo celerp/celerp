@@ -174,3 +174,17 @@ async def test_retry_on_a_refused_row_posts_its_period_as_the_one_item_field(own
     monkeypatch.setattr(api, "generate_all_due", generate)
     r = await owner_ui.post("/subscriptions/generate-due", data=json.loads(button["hx-vals"]))
     assert r.status_code == 200 and [(i["entity_id"], i["period_index"]) for i in sent] == [("doc:SUB-0", 3)]
+
+
+@pytest.mark.parametrize("value", ['{"doc:SUB-0|0": 1}', '"doc:SUB-0|0"', "doc:SUB-0|0", ""])
+async def test_an_item_field_that_is_not_a_list_chooses_nothing(owner_ui, monkeypatch, value):
+    import ui.api_client as api
+    from ui.i18n import t
+    sent = []
+
+    async def generate(token, items):
+        sent.extend(items)
+        return {"billed": 0, "refused": 0, "results": []}
+    monkeypatch.setattr(api, "generate_all_due", generate)
+    r = await owner_ui.post("/subscriptions/generate-due", data={"item": value, "idempotency_key": "k"})
+    assert not sent and t("label.select_rows_first", "en") in r.headers.get("HX-Trigger", "")
