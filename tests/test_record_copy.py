@@ -31,16 +31,25 @@ def _app_sources():
             yield rel, path
 
 
-def _creates(fn: ast.AST) -> bool:
+def _creation_constants() -> set[str]:
+    """Names the app binds to a creation event (``DOC_CREATED = "doc.created"``), so a door that
+    passes the constant is found as surely as one that writes the string."""
+    return {t.id for _, path in _app_sources() for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant) and node.value.value in CREATED
+            for t in node.targets if isinstance(t, ast.Name)}
+
+
+def _creates(fn: ast.AST, constants: set[str]) -> bool:
     """The function writes a new document or list: it passes a creation event to a call (an emit,
-    an upsert, an import row) or calls the document create service. A projection handler only
-    compares against the event's name, so it is not a door."""
+    an upsert, an import row), by its name or by a constant bound to it, or calls the document
+    create service. A projection handler only compares against the event's name, so it is not a door."""
     for node in ast.walk(fn):
         if not isinstance(node, ast.Call):
             continue
         if getattr(node.func, "id", getattr(node.func, "attr", "")) == "create_doc_record":
             return True
-        if any(isinstance(a, ast.Constant) and a.value in CREATED for a in [*node.args, *(k.value for k in node.keywords)]):
+        if any((isinstance(a, ast.Constant) and a.value in CREATED) or getattr(a, "id", getattr(a, "attr", None)) in constants
+               for a in [*node.args, *(k.value for k in node.keywords)]):
             return True
     return False
 
@@ -68,11 +77,11 @@ def copy_doors() -> list[tuple[str, str, str]]:
     """Every function that creates a document or list, with how it builds it: ``allowlist``
     (through inherited_content), ``wholesale`` (copies unnamed keys of a source) or ``named``
     (every key it writes is named: a payload, a literal or a fixed field set)."""
-    rows = []
+    rows, constants = [], _creation_constants()
     for rel, path in _app_sources():
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for fn in ast.walk(tree):
-            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or not _creates(fn):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or not _creates(fn, constants):
                 continue
             calls = {getattr(n.func, "id", getattr(n.func, "attr", "")) for n in ast.walk(fn) if isinstance(n, ast.Call)}
             how = "allowlist" if "inherited_content" in calls else "wholesale" if _wholesale(fn) else "named"
@@ -85,6 +94,11 @@ def test_every_door_that_creates_a_record_names_what_it_takes():
     assert [d for d in doors if d[2] == "wholesale"] == []
     through = {name for _, name, how in doors if how == "allowlist"}
     assert {"duplicate_list", "convert_list", "convert_doc", "buy_consignment"} <= through, doors
+
+
+def test_the_census_finds_a_door_that_names_the_creation_event_by_a_constant():
+    names = {name for _, name, _ in copy_doors()}
+    assert {"create_imported_doc", "_doc_record"} <= names
 
 
 def test_the_rule_places_each_key_on_one_side_only():
