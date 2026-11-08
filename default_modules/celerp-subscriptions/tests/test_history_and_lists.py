@@ -268,6 +268,20 @@ def test_only_the_one_writer_records_an_agreement_change():
     assert found == allowed, found
 
 
+async def test_history_names_a_failed_automatic_bill_and_the_failure_ending(owner_ui, session, monkeypatch):
+    """The background pass fails to bill the period and the owner cancels: History says the bill
+    failed for that period, then that the failure cleared."""
+    freeze_day(monkeypatch, "2026-07-01")
+    eid = await agreement(owner_ui.api, {}, start="2026-07-01", frequency="annually",
+                          line_items=[{"description": "Dues", "quantity": 1, "unit_price": 10, "taxes": None}])
+    assert (await schedule(owner_ui.api, {}, eid, generation_mode="auto_invoice")).status_code == 200
+    await tick(session, await company_id(owner_ui.api, {}), "2026-07-01")
+    assert (await owner_ui.api.post(f"/subscriptions/{eid}/cancel")).status_code == 200
+    text = await _history(owner_ui, eid)
+    assert sentence("subscriptions.history_billing_failed", "en", start="2026-07-01", end="2027-06-30") in text
+    assert t("subscriptions.history_billing_failure_ended", "en") in text
+
+
 # --- Who did it: work nobody started by hand reads "Automatically" (P4e-1) ---------
 
 async def test_history_names_unattended_billing_as_automatic(owner_ui, session, monkeypatch):
