@@ -20,7 +20,7 @@ from datetime import date, timedelta
 
 from playwright.sync_api import Page, expect
 
-from .conftest import wait_for_topbar
+from .conftest import htmx_settled, wait_for_topbar
 from .test_demo_items_link import _seed_demo_items
 from ui.i18n import t
 
@@ -68,12 +68,14 @@ def test_a_refused_numbering_format_stays_in_its_row_and_can_be_changed(page: Pa
     row = page.locator("tr", has=page.locator('[hx-post="/settings/numbering/audit/reset"]'))
     row.locator('[hx-get="/settings/numbering/audit/prefix/edit"]').click()
     field = row.locator('input[name="value"]')
+    htmx_settled(field)
     field.fill("QUO")
     field.press("Tab")
     error = row.locator(".cell-error")
     error.wait_for()
     assert "Quotation" in error.inner_text()
     assert field.input_value() == "QUO" and row.get_by_role("button", name="Reset").is_visible()
+    htmx_settled(row)
     field.fill("AUDX")
     field.press("Tab")
     row.locator(".numbering-preview", has_text="AUDX-").wait_for()
@@ -101,6 +103,7 @@ def test_a_refused_numbering_pattern_reads_in_the_users_language(page: Page, ui_
             if cell.count():
                 cell.click()
             field = row.locator('input[name="value"]')
+            htmx_settled(row)
             field.fill(pattern)
             field.press("Tab")
             # Each refusal replaces the one before it, so wait for this pattern's own text.
