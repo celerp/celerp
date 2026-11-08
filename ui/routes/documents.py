@@ -10149,7 +10149,6 @@ function _celerpPersist() {{
    save has shown its own reason and the action does not run. */
 async function celerpSaveThenPost(url) {{
     clearTimeout(_celerpSaveTimer);
-    _celerpSaveTimer = null;
     if (!(await _celerpPersist())) return;
     htmx.ajax('POST', url, {{swap: 'none'}});
 }}
