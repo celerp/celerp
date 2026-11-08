@@ -536,6 +536,7 @@ async function mayOpenDatabase(dbUrl) {
       encoding: "utf8",
     }),
     t: translator(path.join(APP_DIR, "ui", "locales"), app.getLocale()),
+    windows: process.platform === "win32",
     stop: () => lifecycle.shutdown(),
     offerUpdate: showRefusalScreen,
     dialog,
@@ -544,14 +545,30 @@ async function mayOpenDatabase(dbUrl) {
   });
 }
 
+const LOADING_PAGE = path.join(__dirname, "assets", "loading.html");
+
+// The refusal screen's words while this copy is refused (null until then). A refusal
+// lasts until Celerp restarts, so it is never cleared.
+let refusal = null;
+
 // The refusal screen (assets/refusal.js) in the window, with the updater ready for
 // the user's Update Celerp. Nothing checks by itself: the user decides.
 async function showRefusalScreen(view) {
-  configureAutoUpdater();
-  if (!mainWindow || mainWindow.isDestroyed()) createWindow();
-  await mainWindow.loadFile(path.join(__dirname, "assets", "loading.html"));
-  await mainWindow.webContents.executeJavaScript(`window.showRefusal(${JSON.stringify(view)})`);
+  refusal = view;
+  await mainWindow.loadFile(LOADING_PAGE); // its did-finish-load draws the screen
   mainWindow.show();
+  configureAutoUpdater();
+}
+
+// While this copy is refused, every page the window loads ends on the refusal screen:
+// loading.html draws it with the updater's current state (a reload, a force reload),
+// and anything else that replaced it (a dropped file) goes back to loading.html.
+function drawRefusal() {
+  if (!refusal) return;
+  mainWindow.webContents.executeJavaScript(
+    `typeof window.showRefusal === "function" && (window.showRefusal(${JSON.stringify(refusal)}), true)`,
+  ).then((drawn) => { if (!drawn) mainWindow.loadFile(LOADING_PAGE); })
+    .catch((err) => console.error("[refusal] could not draw the refusal screen:", err?.message ?? String(err)));
 }
 
 /**
@@ -1030,6 +1047,10 @@ function configureAutoUpdater() {
       });
     }
   });
+
+  // An update that stopped is also told in a dialog: the user asked for it and saw
+  // Celerp close, so the update card or the refusal screen alone could be missed.
+  if (updateState.getUpdateState().failure === "stopped") showUpdateFailure(updateState.getUpdateState());
 }
 
 function setupAutoUpdater() {
@@ -1037,12 +1058,7 @@ function setupAutoUpdater() {
   configureAutoUpdater();
 
   // After a failed install the user decides when to check again, from the update card.
-  // An update that stopped is also told in a dialog: the user asked for it and saw
-  // Celerp close, so the card alone could be missed.
-  if (installFailedArg) {
-    if (updateState.getUpdateState().failure === "stopped") showUpdateFailure(updateState.getUpdateState());
-    return startPeriodicChecks();
-  }
+  if (installFailedArg) return startPeriodicChecks();
 
   // Delay initial check until the renderer has loaded and registered its IPC handlers.
   // Firing immediately at app-ready risks emitting update-available/log events before
@@ -1072,10 +1088,11 @@ const updateLogger = Object.fromEntries(["info", "warn", "error"].map((level) =>
 }]));
 
 // Periodic re-check every 4 hours in case a new release ships while app is open.
+// The timer never keeps the process alive by itself.
 function startPeriodicChecks() {
   setInterval(() => {
     autoUpdater.checkForUpdates().catch(() => {});
-  }, 4 * 60 * 60 * 1000);
+  }, 4 * 60 * 60 * 1000).unref();
 }
 
 function setLoadingStatus(msg) {
@@ -1090,8 +1107,10 @@ function setLoadingStatus(msg) {
 // the API process exit so watchForRestart respawns API + UI, leaving the embedded
 // Postgres running, which is quicker than a full relaunch that stops
 // and starts everything. Falls back to a full relaunch only if the sentinel can't
-// be written or no API process is running.
+// be written or no API process is running. A refused copy has no servers to
+// recycle, so it relaunches, which checks the data again.
 function requestServerRestart() {
+  if (refusal) return fullRelaunch(app, process.argv);
   try {
     const sentinel = path.join(path.dirname(PYTHON_CONFIG_PATH), ".restart_requested");
     fs.writeFileSync(sentinel, "");
@@ -1117,8 +1136,9 @@ function setupAppMenu() {
       {
         label: "Import Module…",
         click: () => {
-          // The modules page opens its import dialog when ?import=1 is present.
-          if (mainWindow && uiPort) mainWindow.loadURL(`http://127.0.0.1:${uiPort}/modules?import=1`);
+          // The modules page opens its import dialog when ?import=1 is present. A refused
+          // copy has no modules page, so its window stays on the refusal screen.
+          if (mainWindow && uiPort && !refusal) mainWindow.loadURL(`http://127.0.0.1:${uiPort}/modules?import=1`);
         },
       },
       {
@@ -1360,10 +1380,13 @@ function createWindow() {
   // Show loading page immediately so there is never a white frame.
   // Main process calls setLoadingStatus() to update the status line
   // while services boot. Once ready, loadURL() switches to the real UI.
-  mainWindow.loadFile(path.join(__dirname, "assets", "loading.html"));
+  mainWindow.loadFile(LOADING_PAGE);
   mainWindow.once("ready-to-show", () => mainWindow.show());
 
-  mainWindow.webContents.on("did-finish-load", () => showPendingHandoff());
+  mainWindow.webContents.on("did-finish-load", () => {
+    showPendingHandoff();
+    drawRefusal();
+  });
 
   // Open external links in the default browser, not in the app. Validate the scheme
   // first so a hostile link can never hand file:/javascript: to the OS via openExternal.
@@ -1408,6 +1431,7 @@ function createWindow() {
 // replace the bundle, so the servers and the database have exited before the
 // installer is handed over; its app.quit() then finds nothing left to stop.
 ipcMain.on("install-update", async () => {
+  updateState.installing();
   isQuitting = true;  // prevent the macOS hide-on-close handler from blocking quit
   await lifecycle.shutdown();
   installingUpdate = true;

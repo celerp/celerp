@@ -8,7 +8,7 @@ const path = require("path");
 const { EventEmitter } = require("events");
 const { loadAppMain } = require("./app-main-loader.lib");
 const {
-  DOWNLOAD_URL, HELP_URL, REFUSED_EXIT, compatibilityArgs, readDecision, refusalView, invalidRecordDialog, mayOpenData,
+  DOWNLOAD_URL, HELP_URL, REFUSED_EXIT, UPDATE_FAILURES, compatibilityArgs, readDecision, refusalView, invalidRecordDialog, mayOpenData,
 } = require("../compatibility");
 const { translator } = require("../locale");
 const { openData, reopenData } = require("../boot");
@@ -72,13 +72,32 @@ describe("refusal screen", () => {
       checking: "Checking...",
       downloading: "Downloading... {pct}%",
       ready: "v{version} ready to install",
-      noUpdate: "No newer version is available yet. You can download the installer and run it yourself.",
+      noUpdate: "No newer version is available yet.",
+      notReleased: "Your data has not been changed. Celerp can open it once version 2.6.0 or newer is available.",
+      checkAgain: "Check again",
+      restarting: "Restarting...",
+      installing: "Installing v{version}. Celerp will be back in about a minute.",
+      failed: {
+        check: "Celerp couldn't check for updates. Check your internet connection and try again later.",
+        download: "Update download failed",
+        save: "Celerp downloaded the update, but Windows would not let Celerp save it.",
+        verify: "The downloaded update did not pass its security check, so Celerp did not use it.",
+        install: "Celerp could not start the installer.",
+        stopped: "The update stopped before it finished, so Celerp is still on the version you had.",
+        inactive: "This copy of Celerp cannot update itself. Download the installer and run it yourself.",
+      },
     });
   });
 
+  test("on Windows the update installs in its setup window, which takes longer", function test_view_windows() {
+    expect(refusalView(readDecision(NEWER), t, true).installing).toBe(
+      "Installing v{version}. Celerp will be back in about two minutes.");
+  });
+
   test("an unknown schema was written by a newer Celerp", function test_view_unknown() {
-    expect(refusalView(readDecision(UNKNOWN), t).message).toBe(
-      "Your data was last opened with a newer version of Celerp than this copy (2.5.3).");
+    const view = refusalView(readDecision(UNKNOWN), t);
+    expect(view.message).toBe("Your data was last opened with a newer version of Celerp than this copy (2.5.3).");
+    expect(view.notReleased).toBe("Your data has not been changed. Celerp can open it once a newer version is available.");
   });
 
   test("every string is translated in every locale", function test_view_translated() {
@@ -86,9 +105,16 @@ describe("refusal screen", () => {
     for (const locale of locales.filter((l) => l !== "en")) {
       const own = translator(path.join(__dirname, "..", "..", "ui", "locales"), locale);
       const view = refusalView(readDecision(NEWER), own);
-      for (const key of ["message", "detail", "update", "quit", "noUpdate"]) {
-        expect([locale, view[key]]).not.toEqual([locale, refusalView(readDecision(NEWER), t)[key]]);
+      const english = refusalView(readDecision(NEWER), t);
+      for (const key of ["message", "detail", "update", "quit", "noUpdate", "notReleased", "restarting", "installing"]) {
+        expect([locale, view[key]]).not.toEqual([locale, english[key]]);
       }
+      for (const failure of UPDATE_FAILURES) {
+        expect([locale, failure, view.failed[failure]]).not.toEqual([locale, failure, english.failed[failure]]);
+      }
+      expect(view.notReleased).toContain("2.6.0");
+      expect(refusalView(readDecision(UNKNOWN), own).notReleased)
+        .not.toBe(refusalView(readDecision(UNKNOWN), t).notReleased);
       expect(view.message).toContain("2.6.0");
       expect(invalidRecordDialog(own).message).not.toBe(invalidRecordDialog(t).message);
     }
@@ -193,25 +219,44 @@ describe("app-main startup", () => {
   };
 
   // The app window: records the pages it loads, the refusal screen it is sent and
-  // when it shows. The loading page's status lines are not recorded.
-  function recordingWindow(events) {
+  // when it shows. The loading page's status lines are not recorded. Every page it
+  // loads finishes loading at once. `page.foreign` stands for a page that is not
+  // loading.html (a dropped file): it has no showRefusal.
+  function recordingWindow(events, page) {
     return function BrowserWindow() {
       const ignore = () => {};
-      return {
-        loadFile: async (file) => { events.push(`loadFile:${path.basename(file)}`); },
+      const loaded = [];
+      const finish = () => { page.foreign = false; [...loaded].forEach((fn) => fn()); };
+      const win = {
+        loadFile: async (file) => { events.push(`loadFile:${path.basename(file)}`); finish(); },
         loadURL: (url) => events.push(`loadURL:${url}`),
         show: () => events.push("show"),
         isDestroyed: () => false,
         once: ignore, on: ignore,
         webContents: {
-          on: ignore, once: ignore, send: ignore, setWindowOpenHandler: ignore,
-          executeJavaScript: async (js) => { if (!js.includes("setLoadingStatus")) events.push(`js:${js}`); },
+          on: (event, fn) => { if (event === "did-finish-load") loaded.push(fn); },
+          once: (event, fn) => {
+            if (event !== "did-finish-load") return;
+            const once = () => { loaded.splice(loaded.indexOf(once), 1); fn(); };
+            loaded.push(once);
+          },
+          send: ignore, setWindowOpenHandler: ignore, getURL: () => "",
+          executeJavaScript: async (js) => {
+            if (js.includes("setLoadingStatus")) return undefined;
+            if (page.foreign) return false;
+            events.push(`js:${js}`);
+            return true;
+          },
         },
+        // The page finishes loading again, as on View > Reload.
+        reload: () => [...loaded].forEach((fn) => fn()),
       };
+      page.win = win;
+      return win;
     };
   }
 
-  async function startPackaged(result, marker = "2.6.0", { config = EXTERNAL, preflight } = {}) {
+  async function startPackaged(result, marker = "2.6.0", { config = EXTERNAL, preflight, argv } = {}) {
     const userData = fs.mkdtempSync(path.join(os.tmpdir(), "celerp-compat-"));
     const dataDir = path.join(userData, "celerp-data");
     const moduleDir = path.join(dataDir, "modules");
@@ -232,7 +277,8 @@ describe("app-main startup", () => {
     const events = [];
     const name = (bin, args) => args.slice(0, 3).map((a) => path.basename(a)).join(" ");
     let started;
-    const { listeners, updater } = loadAppMain({
+    const page = {};
+    const loaded = loadAppMain({
       app: {
         isPackaged: true,
         getPath: () => userData,
@@ -241,14 +287,16 @@ describe("app-main startup", () => {
         whenReady: () => ({ then: (fn) => { started = Promise.resolve().then(fn); } }),
         exit: (code) => events.push(`exit:${code}`),
         quit: () => events.push("quit"),
+        relaunch: () => events.push("relaunch"),
       },
       dialog: {
         showMessageBoxSync: (opts) => { events.push(`messageSync:${opts.message}`); return 1; },
-        showMessageBox: async (opts) => { events.push(`message:${opts.message}`); return { response: 1 }; },
+        // With or without the window it belongs to.
+        showMessageBox: async (...args) => { events.push(`message:${args.at(-1).message}`); return { response: 1 }; },
         showErrorBox: (title) => events.push(`error:${title}`),
       },
       shell: { openExternal: (url) => events.push(`open:${url}`) },
-      BrowserWindow: recordingWindow(events),
+      BrowserWindow: recordingWindow(events, page),
       extraFakes: {
         child_process: {
           spawnSync: (bin, args) => { events.push(`spawnSync:${name(bin, args)}`); return result; },
@@ -266,16 +314,18 @@ describe("app-main startup", () => {
         },
       },
       resourcesPath: resources,
+      ...(argv ? { argv } : {}),
     });
-    updater.checkForUpdates = async () => { events.push("checkForUpdates"); };
+    loaded.updater.checkForUpdates = async () => { events.push("checkForUpdates"); return { updateInfo: {} }; };
     await started;
-    return { events, before, after: snapshot(dataDir), listeners, updater };
+    return { events, before, after: snapshot(dataDir), listeners: loaded.listeners, handlers: loaded.handlers,
+             updater: loaded.updater, loaded, page };
   }
 
   // The refusal screen, as the window receives it, after the cold start's loading page.
   const REFUSAL_SCREEN = [
     "loadFile:loading.html",
-    expect.stringMatching(/^js:window\.showRefusal\(\{"message":"Your data was last opened with Celerp 2\.6\.0, which is newer than this copy \(2\.5\.3\)\."/),
+    expect.stringMatching(/^js:.*window\.showRefusal\(\{"message":"Your data was last opened with Celerp 2\.6\.0, which is newer than this copy \(2\.5\.3\)\."/),
     "show",
   ];
 
@@ -302,6 +352,58 @@ describe("app-main startup", () => {
       listeners["quit-app"]();
       expect(events.at(-1)).toBe("quit");
     });
+
+  test("a reload, or a page that replaced the screen, ends on the refusal screen with the updater's state",
+    async function test_app_main_refusal_survives_reload() {
+      const { events, page, updater, handlers } = await startPackaged(NEWER);
+      events.length = 0;
+      page.win.reload();
+      await new Promise(setImmediate);
+      expect(events).toEqual([REFUSAL_SCREEN[1]]);
+      // A dropped file replaced loading.html: the window goes back to it and draws the screen.
+      events.length = 0;
+      page.foreign = true;
+      page.win.reload();
+      await new Promise(setImmediate);
+      expect(events).toEqual(["loadFile:loading.html", REFUSAL_SCREEN[1]]);
+      // The page reads where the update stands from the main process.
+      updater.emit("update-available", { version: "2.6.0" });
+      expect(handlers["get-update-state"]()).toMatchObject({ status: "downloading", version: "2.6.0" });
+    });
+
+  test("File menu doors land on the refusal screen: Import Module stays, Restart Celerp relaunches",
+    async function test_app_main_refusal_menu() {
+      const { events, loaded } = await startPackaged(NEWER);
+      events.length = 0;
+      loaded.menuItem("Import Module…").click();
+      expect(events).toEqual([]);
+      loaded.menuItem("Restart Celerp").click();
+      expect(events).toEqual(["relaunch", "quit"]);
+    });
+
+  test("a setup that stopped is told when Celerp reopens on the refusal screen, once",
+    async function test_app_main_refusal_tells_stopped_update() {
+      const { events, handlers, updater, loaded } = await startPackaged(NEWER, "2.6.0", {
+        argv: [process.execPath, "--updated", "--update-install-failed=2.6.0"] });
+      await new Promise(setImmediate);
+      const stopped = "message:The update stopped before it finished, so Celerp is still on the version you had.";
+      expect(events.slice(2)).toEqual([...REFUSAL_SCREEN, stopped]);
+      expect(handlers["get-update-state"]()).toMatchObject({ status: "error", failure: "stopped" });
+      // The updater is set up once, whichever path asks first: no second dialog, no second listener.
+      const errorListeners = updater.listenerCount("error");
+      loaded.setupAutoUpdater();
+      await new Promise(setImmediate);
+      expect(events.filter((e) => e === stopped)).toHaveLength(1);
+      expect(updater.listenerCount("error")).toBe(errorListeners);
+    });
+
+  test("Restart to install is told to the next page that loads", async function test_app_main_refusal_installing() {
+    const { listeners, handlers, updater } = await startPackaged(NEWER);
+    updater.quitAndInstall = () => {};
+    updater.emit("update-downloaded", { version: "2.6.0" });
+    await listeners["install-update"]();
+    expect(handlers["get-update-state"]()).toMatchObject({ status: "downloaded", installing: true });
+  });
 
   test("an unreadable version record gets its own dialog, then quits", async function test_app_main_invalid_record() {
     const { events, before, after } = await startPackaged(INVALID);

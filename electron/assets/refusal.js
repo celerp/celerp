@@ -12,35 +12,44 @@
   }
 
   /**
-   * What the screen shows for the updater's state (update-state.js): the status
-   * line, the main button's label and action ("update" checks, "restart" installs),
-   * and whether that button waits. `notAvailable` is set when the user's check found
-   * nothing newer. A failed check or download is told in the update failure dialog,
-   * so the screen offers Update Celerp again.
+   * What the screen shows for the updater's state (update-state.js): the detail line,
+   * the status line, the main button's label and action ("update" checks, "restart"
+   * installs), and whether that button waits. Every state says where it stands: a
+   * failure names what failed and offers Update Celerp again, and once nothing newer is
+   * found the screen stops promising an update and offers Check again.
    */
-  function screenFor(view, state, notAvailable) {
+  function screenFor(view, state) {
     if (state.status === "downloaded") {
-      return { status: fill(view.ready, { version: state.version }), label: view.restart, action: "restart", busy: false };
+      return state.installing
+        ? { detail: view.detail, status: fill(view.installing, { version: state.version }), label: view.restarting,
+            action: "restart", busy: true }
+        : { detail: view.detail, status: fill(view.ready, { version: state.version }), label: view.restart,
+            action: "restart", busy: false };
     }
-    const update = { label: view.update, action: "update" };
+    const update = { detail: state.upToDate ? view.notReleased : view.detail,
+                     label: state.upToDate ? view.checkAgain : view.update, action: "update" };
     if (state.status === "downloading") {
       return { ...update, status: fill(view.downloading, { pct: Math.round(state.percent) }), busy: true };
     }
     if (state.checking) return { ...update, status: view.checking, busy: true };
-    if (state.status === "idle" && notAvailable) return { ...update, status: view.noUpdate, busy: false };
-    return { ...update, status: "", busy: false };
+    if (state.status === "error") return { ...update, status: view.failed[state.failure] ?? view.failed.check, busy: false };
+    return { ...update, status: state.upToDate ? view.noUpdate : "", busy: false };
   }
 
-  /** Show the screen for `view` in `doc`, driven by the preload bridge `celerp`. */
+  /**
+   * Show the screen for `view` in `doc`, driven by the preload bridge `celerp`. The
+   * state is the main process's (update-state.js), replayed on every load, so a page
+   * that loads again shows where the update stands; a click shows its result at once.
+   */
   function showRefusal(doc, celerp, view) {
     const el = (id) => doc.getElementById(id);
     let state = { status: "idle", checking: false };
-    let notAvailable = false;
     let action = "update";
 
     function render() {
-      const screen = screenFor(view, state, notAvailable);
+      const screen = screenFor(view, state);
       action = screen.action;
+      el("refusal-detail").textContent = screen.detail;
       el("status").textContent = screen.status;
       el("refusal-update").textContent = screen.label;
       el("refusal-update").disabled = screen.busy;
@@ -53,12 +62,12 @@
     };
 
     el("refusal-message").textContent = view.message;
-    el("refusal-detail").textContent = view.detail;
     el("refusal-download").textContent = view.download;
     el("refusal-download").href = view.downloadUrl;
     el("refusal-quit").textContent = view.quit;
     el("refusal-update").addEventListener("click", () => {
       if (action === "restart") {
+        follow({ ...state, installing: true });
         celerp.installUpdate();
         return;
       }
@@ -66,12 +75,10 @@
       celerp.checkForUpdates();
     });
     el("refusal-quit").addEventListener("click", () => celerp.quit());
-    celerp.onUpdateLog(follow);
-    celerp.onUpdateAvailable(follow);
-    celerp.onDownloadProgress(follow);
-    celerp.onUpdateDownloaded(follow);
-    celerp.onUpdateError(follow);
-    celerp.onUpdateNotAvailable((next) => { notAvailable = true; follow(next); });
+    for (const on of ["onUpdateLog", "onUpdateAvailable", "onDownloadProgress", "onUpdateDownloaded", "onUpdateError",
+                      "onUpdateNotAvailable"]) {
+      celerp[on](follow);
+    }
     el("loading").hidden = true;
     el("refusal").hidden = false;
     render();
