@@ -259,9 +259,15 @@ def _write_off_list(page, ui_server, api, sku: str) -> str:
     return iid
 
 
+def _qty_editor(page):
+    """The qty editor once htmx has bound it: a swapped-in cell carries htmx-added until its settle
+    step attaches the save trigger, and a key pressed before that is lost."""
+    return page.locator("td.col-qtyout:not(.htmx-added) input:visible").first
+
+
 def _type_qty(page, qty: str, then: str | None = None) -> None:
     page.locator("td.col-qtyout").first.dblclick()
-    cell = page.locator("td.col-qtyout input:visible").first
+    cell = _qty_editor(page)
     cell.fill(qty)
     if then:
         with page.expect_response(lambda r: "/writeoff-line/" in r.url and r.request.method == "PATCH"):
@@ -345,7 +351,7 @@ def test_a_refused_quantity_is_corrected_in_its_own_cell(page, ui_server, api):
     iid = _write_off_list(page, ui_server, api, "WO-CORRECTED")
     _type_qty(page, "30", "Enter")
     page.locator("td.col-qtyout .cell-error").first.wait_for(timeout=5000)
-    cell = page.locator("td.col-qtyout input:visible").first
+    cell = _qty_editor(page)
     cell.fill("5")
     with page.expect_response(lambda r: "/writeoff-line/" in r.url and r.request.method == "PATCH"):
         cell.press("Enter")
