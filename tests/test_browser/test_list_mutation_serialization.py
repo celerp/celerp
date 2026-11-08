@@ -119,8 +119,8 @@ def test_header_patch_on_a_page_with_a_typed_line_saves_both(page, ui_server, ap
     patches = []
     page.on("request", lambda q: q.method == "PATCH" and q.url.endswith("/field/reference") and patches.append(q))
     qty.fill("2")
-    # The typed quantity is an unsaved edit, and no blur save starts for it on its own.
-    qty.evaluate("el => { window._celerpLineRevision += 1; _celerpQuietBlur(el); }")
+    # The typed quantity differs from the stored one, and no blur save starts for it on its own.
+    qty.evaluate("el => _celerpQuietBlur(el)")
     _edit_reference(page, list_id, "after")
     state = _both_saved(api, list_id)
     page.wait_for_timeout(100)  # deliver the request events the API polling above did not

@@ -256,9 +256,11 @@ def test_a_door_folds_in_the_waiting_line_save_and_a_failed_save_sends_nothing(p
     stub = """(saved) => {
         window._celerpPersistOnce = async () => {
             console.log("line save");
-            if (saved) window._celerpSavedLineRevision = window._celerpLineRevision;
+            if (saved) _celerpMarkLinesStored();
             return saved;
         };
+        const price = document.querySelector('#line-body [data-name="unit_price"]');
+        price.value = String(Number(price.value) + 1);
         celerpAutoSave();
     }"""
     unskip = page.get_by_role("button", name=t("btn.unskip", "en"), exact=True).first

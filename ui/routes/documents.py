@@ -8695,13 +8695,27 @@ if (!window._celerpEntityVersionListener) {{
 // The server remains the concurrency authority across tabs; this queue only prevents this
 // page from racing its own line saves, header patches, and repricing requests.
 window._celerpMutationTail = window._celerpMutationTail || Promise.resolve(true);
-// Local line revisions distinguish unsaved DOM edits from a merely stale server
-// version (for example after a scan response is lost). A save only acknowledges
-// the revision it actually serialized; edits made while it is in flight stay dirty.
-window._celerpLineRevision = 0;
-window._celerpSavedLineRevision = 0;
+// The page's line edits are unsaved exactly while what a line save would send differs from
+// what is stored: the state the stored rows rendered or were installed with, or the state the
+// last successful save sent (an edit made while it was in flight stays unsaved). A field put
+// back with Escape leaves nothing unsaved, and a cell that saves itself is never sent by a line
+// save, so it never makes the page unsaved. Line ids and line totals follow from the fields.
+function _celerpLineFrame() {{
+    const hd = _celerpHeaderDiscount(0);
+    const taxes = document.getElementById('doc-taxes-state');
+    return JSON.stringify([hd.value, hd.type, taxes ? taxes.value : null]);
+}}
+function _celerpLineState(lines, frame) {{
+    if (lines === null) return null;
+    return JSON.stringify([lines.map(({{line_id, line_total, ...fields}}) => fields), frame || _celerpLineFrame()]);
+}}
 function _celerpLinesDirty() {{
-    return window._celerpLineRevision !== window._celerpSavedLineRevision;
+    if (!window._CELERP_CAN_EDIT_LINES) return false;
+    const now = _celerpLineState(_celerpCollectLines());
+    return now === null || now !== window._celerpSavedLines;
+}}
+function _celerpMarkLinesStored(frame) {{
+    if (window._CELERP_CAN_EDIT_LINES) window._celerpSavedLines = _celerpLineState(_celerpCollectLines(), frame);
 }}
 function _celerpMutate(run) {{
     const next = window._celerpMutationTail.then(run, run);
@@ -8967,9 +8981,9 @@ function _celerpPickerStatus(text) {{
         try {{
             if (lockDraftLines) {{
                 const completed = await _celerpMutate(async () => {{
-                    // Queue ordering handles saves already in flight. Revision tracking
-                    // handles a pending/newer DOM edit without forcing a clean stale DOM
-                    // through /lines, which would break scan retry after a lost response.
+                    // Queue ordering handles saves already in flight. Only rows that differ
+                    // from the stored ones save first: a clean stale DOM forced through /lines
+                    // would break scan retry after a lost response.
                     if (_celerpLinesDirty()) {{
                         const ok = await _celerpPersistOnce();
                         if (!ok) {{
@@ -9982,7 +9996,7 @@ function _celerpShowStoredMoney(money) {{
 }}
 async function _celerpInstallLineBody(html, version) {{
     let page = null;
-    const revision = window._celerpLineRevision;
+    const frame = _celerpLineFrame();
     if (!html) {{
         const fresh = await _celerpFetchLineBody();
         html = fresh ? fresh.outerHTML : '';
@@ -10000,9 +10014,10 @@ async function _celerpInstallLineBody(html, version) {{
     // The installed rows are the stored window now, so the next save replaces exactly them.
     if (swapped.dataset.lineCount != null) _CELERP_ORIGINAL_COUNT = Number(swapped.dataset.lineCount);
     celerpUpdateTotals();
-    // An edit made while the page was fetched (a document tax removed) stays: its own save
-    // brings the server's figures.
-    if (page && revision === window._celerpLineRevision) _celerpShowStoredMoney(_celerpMoneyOn(page));
+    // The installed rows are stored. An edit made while the page was fetched (a document tax
+    // removed) stays unsaved: its own save brings the server's figures.
+    _celerpMarkLinesStored(frame);
+    if (page && !_celerpLinesDirty()) _celerpShowStoredMoney(_celerpMoneyOn(page));
     _celerpMarkScanned(false);
     _celerpHadLines = true;
     if (version != null) _celerpEntityVersion = version;
@@ -10034,7 +10049,6 @@ async function _celerpRefreshHeldBadges() {{
 }}
 """ if _draft_show_item_status else "") + f"""async function _celerpPersistOnce() {{
     if (!window._CELERP_CAN_EDIT_LINES) return true;
-    const revision = window._celerpLineRevision;
     const lines = _celerpCollectLines();
     // The rows the collector sent, in its order, so the saved line ids land on them.
     const savedRows = Array.from(document.querySelectorAll('#{line_body_id} tr')).filter(_celerpRowHasContent);
@@ -10042,13 +10056,14 @@ async function _celerpRefreshHeldBadges() {{
     // already shown the error: send no request and report the save as failed so
     // callers that gate on a clean save hold position.
     if (lines === null) return false;
+    const sent = _celerpLineState(lines);
     // Persist even when empty if the doc had lines - deleting the last line must stick.
     // Skip only a blank doc that never had any lines (avoids a spurious empty save).
     // Return value: true when nothing needed saving or the save succeeded, false when a
     // save was attempted and failed, so callers that gate on a clean save (page navigation)
     // can hold position instead of discarding unsaved rows.
     if (!lines.length && !_celerpHadLines) {{
-        window._celerpSavedLineRevision = Math.max(window._celerpSavedLineRevision, revision);
+        window._celerpSavedLines = sent;
         return true;
     }}
     const hd = _celerpHeaderDiscount(lines.reduce((s, l) => s + l.line_total, 0));
@@ -10067,9 +10082,8 @@ async function _celerpRefreshHeldBadges() {{
             _docTaxesState ? {{doc_taxes: JSON.parse(_docTaxesState.value || '[]').filter(x => x !== null)}} : {{}}))
     }});
     if (resp.ok) {{
-        // A newer edit may have happened while this request was in flight. Only
-        // acknowledge the revision serialized by this request; the newer one stays dirty.
-        window._celerpSavedLineRevision = Math.max(window._celerpSavedLineRevision, revision);
+        // What this request sent is stored; an edit made while it was in flight stays unsaved.
+        window._celerpSavedLines = sent;
         // Advance the cached version to the one this save produced, so the tab's next
         // autosave/reprice pins the state it just wrote.
         try {{
@@ -10079,7 +10093,7 @@ async function _celerpRefreshHeldBadges() {{
                 savedRows.forEach((row, i) => _celerpSetRowLineId(row, data.line_ids[i]));
             // The server's money for what was just saved, unless a newer edit is already pending
             // (its own save brings fresher figures).
-            if (data && data.money && revision === window._celerpLineRevision) _celerpShowStoredMoney(data.money);
+            if (data && data.money && !_celerpLinesDirty()) _celerpShowStoredMoney(data.money);
         }} catch (_e) {{}}
         // The rows just written become this page's stored window, so a follow-up save
         // in the same view replaces the new window length, not the original one.
@@ -10116,16 +10130,12 @@ async function _celerpRefreshHeldBadges() {{
             // what is saved, and say why.
             statusEl.textContent = '';
             if (window.celerpToast) celerpToast(msg, 'error');
-            window._celerpSavedLineRevision = window._celerpLineRevision;
             await _celerpInstallLineBody('', null);
         }}
         return false;
     }}
 }}
 function _celerpPersist() {{
-    // Direct persistence callers mutate the rendered line state before saving.
-    // Incrementing here is intentionally harmless when autosave already marked it.
-    window._celerpLineRevision += 1;
     return _celerpMutate(_celerpPersistOnce);
 }}
 /* Save first: every htmx request that changes something (any verb but GET), whichever control on
@@ -10138,15 +10148,6 @@ function _celerpPersist() {{
    is the only write in between (another tab's write makes the save fail). */
 if (!window._celerpSaveFirstBound) {{
     window._celerpSaveFirstBound = true;
-    // An edit in a line is unsaved from the moment it is made, not only once its field blurs:
-    // a tax picked from a select still has focus when the request's control is used.
-    ['input', 'change'].forEach(function(type) {{
-        document.addEventListener(type, function(e) {{
-            const el = e.target;
-            if (el.closest && el.closest('#{line_body_id}') && !el.classList.contains('li-select'))
-                window._celerpLineRevision += 1;
-        }}, true);
-    }});
     document.addEventListener('htmx:confirm', function(e) {{
         const d = e.detail;
         if (d.verb === 'get' || d.celerpSaved || !_celerpLinesDirty()) return;
@@ -10263,7 +10264,6 @@ function _celerpShowReservedConflicts(conflicts) {{
 window._celerpSaveTimer = null;
 function celerpAutoSave() {{
     if (window._celerpBlurQuietly) return;
-    window._celerpLineRevision += 1;
     clearTimeout(_celerpSaveTimer);
     _celerpSaveTimer = setTimeout(() => {{
         _celerpSaveTimer = null;
@@ -10356,6 +10356,10 @@ function _celerpApplyRepriceWarnings() {{
     }}
 }}
 _celerpApplyRepriceWarnings();
+// The rows this section renders with are the stored ones (the script runs again with every
+// section swapped in). The totals panel below the lines is read once the page is parsed.
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => _celerpMarkLinesStored(), {{once: true}});
+else _celerpMarkLinesStored();
 if (!window._celerpRepriceWarningAfterSwap) {{
     window._celerpRepriceWarningAfterSwap = _celerpApplyRepriceWarnings;
     document.body.addEventListener('htmx:afterSwap', window._celerpRepriceWarningAfterSwap);
