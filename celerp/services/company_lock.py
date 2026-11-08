@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import json
+
 from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
@@ -17,11 +19,12 @@ from celerp.models.projections import Projection
 # each transaction takes its company's lock; the refusal, once raised, blocks the commit.
 AUTHORITY = "celerp_request_authority"
 _REFUSED = "celerp_authority_refused"
-# What the locks taken in this transaction proved, each with the (sub)transaction that
-# took it: "locked" (lock_company held its row, company id), "loaded" (locked_company,
+# What the locks taken in this transaction proved or found, each with the (sub)transaction
+# that took it: "locked" (lock_company held its row, company id), "loaded" (locked_company,
 # company id), "deleting" (lock_company_for_deletion holds its row, company id), "judged"
-# (the authority judged again, company id as text) and "modules" (the modules judged,
-# (company id as text, names)). PostgreSQL releases a lock taken in a
+# (the authority judged again, company id as text), "modules" (the modules judged,
+# (company id as text, names)) and "locked_state" (each document lock_projections locked, as
+# it stood then: (entity id, its state as JSON), read back by locked_state). PostgreSQL releases a lock taken in a
 # savepoint when that savepoint rolls back, so what it proved goes with it (_proofs_released).
 _PROOFS = "celerp_lock_proofs"
 
@@ -209,7 +212,17 @@ async def lock_projections(session: AsyncSession, company_id, entity_ids) -> dic
         .with_for_update()
         .execution_options(populate_existing=True)
     )).scalars().all()
+    for r in rows:
+        if r.entity_type == "doc":
+            note(session, "locked_state", (r.entity_id, json.dumps(r.state or {}, default=str)))
     return {r.entity_id: r for r in rows}
+
+
+def locked_state(session, entity_id: str) -> dict | None:
+    """The state a document had when this transaction first locked it (lock_projections): what
+    it stands at again once a refusal rolls the transaction back. None when it was not locked."""
+    first = next((state for eid, state in noted(session, "locked_state") if eid == entity_id), None)
+    return None if first is None else json.loads(first)
 
 
 async def locked_company(session: AsyncSession, company_id) -> Company | None:

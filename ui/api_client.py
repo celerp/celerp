@@ -1719,38 +1719,43 @@ async def reopen_doc(token: str, entity_id: str, idempotency_key: str | None = N
 
 
 async def fulfill_lines(token: str, entity_id: str, *, line_ids: list[str] | None = None,
-                        line_entity_ids: list[str] | None = None, idempotency_key: str | None = None) -> dict:
-    """Ship the chosen lines, named by line id (or, on older rows, by their item)."""
+                        idempotency_key: str | None = None, dry_run: bool = False,
+                        binding: str | None = None) -> dict:
+    """Ship the chosen lines, named by line id. ``dry_run``: what it would do, changing nothing;
+    ``binding``: the preview's, so the action refuses anything but what it showed."""
     async with _api_client(token) as c:
         return _raise(await c.post(f"/docs/{entity_id}/fulfill-lines", json={
-            "line_ids": line_ids or [], "line_entity_ids": line_entity_ids or [],
-            "idempotency_key": idempotency_key})).json()
+            "line_ids": line_ids or [], "idempotency_key": idempotency_key, "dry_run": dry_run,
+            "binding": binding})).json()
 
 
 async def set_lines_available(token: str, entity_id: str, *, line_ids: list[str] | None = None,
-                              line_entity_ids: list[str] | None = None,
                               quantities: dict[str, float] | None = None,
-                              idempotency_key: str | None = None, is_list: bool = False) -> dict:
+                              idempotency_key: str | None = None, is_list: bool = False,
+                              dry_run: bool = False, binding: str | None = None) -> dict:
     """Set as available in one request: lines holding stock give it back, lines that shipped
     take their goods back. quantities={line_id: qty_coming_back} takes back only part of a
-    memo line; the rest stays out with the customer."""
+    memo line; the rest stays out with the customer. ``dry_run``: what it would do, changing
+    nothing; ``binding``: the preview's, so the action refuses anything but what it showed."""
     base = "/lists" if is_list else "/docs"
     async with _api_client(token) as c:
         return _raise(await c.post(f"{base}/{entity_id}/set-available", json={
-            "line_ids": line_ids or [], "line_entity_ids": line_entity_ids or [],
-            "quantities": quantities or None, "idempotency_key": idempotency_key})).json()
+            "line_ids": line_ids or [], "quantities": quantities or None, "idempotency_key": idempotency_key,
+            "dry_run": dry_run, "binding": binding})).json()
 
 
-async def reserve_lines(token: str, entity_id: str, *, line_ids: list[str] | None = None,
-                        line_entity_ids: list[str] | None = None, new_status: str,
-                        idempotency_key: str | None = None, is_list: bool = False) -> dict:
+async def reserve_lines(token: str, entity_id: str, *, line_ids: list[str] | None = None, new_status: str,
+                        idempotency_key: str | None = None, is_list: bool = False, dry_run: bool = False,
+                        binding: str | None = None) -> dict:
     """Set lines reserved or available (ledger-neutral). is_list routes to the list router,
-    whose reserve-lines wrapper serves list rows (the docs router 404s them)."""
+    whose reserve-lines wrapper serves list rows (the docs router 404s them). ``dry_run``: what
+    it would do, changing nothing; ``binding``: the preview's, so the action refuses anything
+    but what it showed."""
     base = "/lists" if is_list else "/docs"
     async with _api_client(token) as c:
         return _raise(await c.post(f"{base}/{entity_id}/reserve-lines", json={
-            "line_ids": line_ids or [], "line_entity_ids": line_entity_ids or [],
-            "new_status": new_status, "idempotency_key": idempotency_key})).json()
+            "line_ids": line_ids or [], "new_status": new_status, "idempotency_key": idempotency_key,
+            "dry_run": dry_run, "binding": binding})).json()
 
 
 async def receive_return(token: str, entity_id: str, items: list[dict], notes: str | None = None,
@@ -2570,9 +2575,9 @@ async def move_transfer(token: str, entity_id: str, to_location_id: str) -> dict
         return _raise(await c.post(f"/lists/{entity_id}/move", json={"to_location_id": to_location_id})).json()
 
 
-async def set_scanned(token: str, entity_id: str, item_ids: list[str] | None = None, scanned: bool = True) -> dict:
+async def set_scanned(token: str, entity_id: str, line_ids: list[str], scanned: bool = True) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/lists/{entity_id}/set-scanned", json={"item_ids": item_ids or [], "scanned": scanned})).json()
+        return _raise(await c.post(f"/lists/{entity_id}/set-scanned", json={"line_ids": line_ids, "scanned": scanned})).json()
 
 
 async def change_list_type(token: str, entity_id: str, list_type: str) -> dict:
@@ -2699,12 +2704,11 @@ async def invoice_lines_preview(token: str, memo_id: str, body: dict) -> dict:
 
 
 async def back_to_memo(token: str, entity_id: str, *, line_ids: list[str] | None = None,
-                       line_entity_ids: list[str] | None = None, idempotency_key: str | None = None) -> dict:
+                       idempotency_key: str | None = None) -> dict:
     """Send chosen lines of a draft invoice back to the memos they were invoiced from."""
     async with _api_client(token) as c:
         return _raise(await c.post(f"/docs/{entity_id}/back-to-memo", json={
-            "line_ids": line_ids or [], "line_entity_ids": line_entity_ids or [],
-            "idempotency_key": idempotency_key})).json()
+            "line_ids": line_ids or [], "idempotency_key": idempotency_key})).json()
 
 
 async def set_memo_tax_rate(token: str, memo_id: str, rate: float, binding: str, idempotency_key: str) -> dict:

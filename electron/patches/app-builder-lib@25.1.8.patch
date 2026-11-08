@@ -1,97 +1,27 @@
-diff --git a/templates/nsis/multiUser.nsh b/templates/nsis/multiUser.nsh
-index 3de631b..3f62ce1 100644
---- a/templates/nsis/multiUser.nsh
-+++ b/templates/nsis/multiUser.nsh
-@@ -11,6 +11,39 @@
- # current Install Mode ("all" or "CurrentUser")
- Var installMode
+diff --git a/templates/nsis/include/allowOnlyOneInstallerInstance.nsh b/templates/nsis/include/allowOnlyOneInstallerInstance.nsh
+index 97b27fce6798e30e3e631221435f09b3579e77c3..9893ed92e3cc36a0fc91c3051742f55752c840f7 100644
+--- a/templates/nsis/include/allowOnlyOneInstallerInstance.nsh
++++ b/templates/nsis/include/allowOnlyOneInstallerInstance.nsh
+@@ -63,7 +63,7 @@
+         Goto doStopProcess
+       ${endIf}
+       MessageBox MB_OKCANCEL|MB_ICONEXCLAMATION "$(appRunning)" /SD IDOK IDOK doStopProcess
+-      Quit
++      !insertmacro celerpUpdateExit "the running Celerp was left open"
  
-+# /D=<folder> overrides the install folder. As NSIS itself reads it, it is the last
-+# argument and is never quoted, so everything after it, spaces included, is the folder.
-+# NSIS removes /D= from $CMDLINE, so it is read from the process command line.
-+!macro installDirFromCommandLine
-+  Push $0
-+  Push $1
-+  Push $2
-+  Push $3
-+  System::Call 'kernel32::GetCommandLineW() t .r3'
-+  StrLen $2 $3
-+  StrCpy $1 0
-+  ${DoWhile} $1 < $2
-+    StrCpy $0 $3 4 $1
-+    ${If} $0 S== " /D="
-+      IntOp $1 $1 + 4
-+      StrCpy $INSTDIR $3 "" $1
-+      ${Do}
-+        StrCpy $0 $INSTDIR 1 -1
-+        ${If} $0 != " "
-+          ${ExitDo}
-+        ${endif}
-+        StrCpy $INSTDIR $INSTDIR -1
-+      ${Loop}
-+      ${ExitDo}
-+    ${endif}
-+    IntOp $1 $1 + 1
-+  ${Loop}
-+  Pop $3
-+  Pop $2
-+  Pop $1
-+  Pop $0
-+!macroend
-+
- !ifndef INSTALL_MODE_PER_ALL_USERS
-   !ifndef ONE_CLICK
-     Var hasPerUserInstallation
-@@ -28,23 +61,24 @@ Var installMode
-       StrCpy $INSTDIR $perUserInstallationFolder
-     ${else}
-       StrCpy $0 "$LocalAppData\Programs"
--      System::Store S
--      # Win7 has a per-user programfiles known folder and this can be a non-default location
-+      Push $1
-+      Push $2
-+      # UserProgramFiles is the per-user install root and can be a non-default location
-+      StrCpy $2 0
-       System::Call 'SHELL32::SHGetKnownFolderPath(g "${FOLDERID_UserProgramFiles}", i ${KF_FLAG_CREATE}, p 0, *p .r2)i.r1'
-       ${If} $1 == 0
--        System::Call '*$2(&w${NSIS_MAX_STRLEN} .s)'
--        StrCpy $0 $1
-+        System::Call 'KERNEL32::lstrcpynW(w .r0, p r2, i ${NSIS_MAX_STRLEN})p'
-+      ${endif}
-+      # SHGetKnownFolderPath may return allocated memory even on failure
-+      ${If} $2 != 0
-         System::Call 'OLE32::CoTaskMemFree(p r2)'
-       ${endif}
--      System::Store L
-+      Pop $2
-+      Pop $1
-       StrCpy $INSTDIR "$0\${APP_FILENAME}"
-     ${endif}
+       doStopProcess:
  
--    # allow /D switch to override installation path https://github.com/electron-userland/electron-builder/issues/1551
--    ${StdUtils.GetParameter} $R0 "D" ""
--    ${If} $R0 != ""
--      StrCpy $INSTDIR $R0
--    ${endif}
-+    !insertmacro installDirFromCommandLine
- 
-   !macroend
- !endif
-@@ -83,11 +117,7 @@ Var installMode
-       StrCpy $INSTDIR "$0\${APP_FILENAME}"
-     ${endif}
- 
--    # allow /D switch to override installation path https://github.com/electron-userland/electron-builder/issues/1551
--    ${StdUtils.GetParameter} $R0 "D" ""
--    ${If} $R0 != ""
--      StrCpy $INSTDIR $R0
--    ${endif}
-+    !insertmacro installDirFromCommandLine
- 
-   !macroend
- !endif
+@@ -108,7 +108,7 @@
+         # Ask user to close it manually
+         ${if} $R1 > 1
+           MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(appCannotBeClosed)" /SD IDCANCEL IDRETRY loop
+-          Quit
++          !insertmacro celerpUpdateExit "the running Celerp could not be closed"
+         ${else}
+           Goto loop
+         ${endIf}
 diff --git a/templates/nsis/include/extractAppPackage.nsh b/templates/nsis/include/extractAppPackage.nsh
-index f5470bf..769407c 100644
+index f5470bf52e923dc47266cea4684c76ef78ced451..f8a02ea4abe136a7fe0331b812b6f4fbf160de52 100644
 --- a/templates/nsis/include/extractAppPackage.nsh
 +++ b/templates/nsis/include/extractAppPackage.nsh
 @@ -1,3 +1,14 @@
@@ -117,7 +47,20 @@ index f5470bf..769407c 100644
    !insertmacro compute_files_for_current_arch
  
    !ifdef COMPRESS
-@@ -94,9 +106,11 @@
+@@ -81,9 +93,10 @@
+   !ifdef ZIP_COMPRESSION
+     nsisunz::Unzip "$PLUGINSDIR\app-$packageArch.zip" "$INSTDIR"
+     Pop $R0
+-    StrCmp $R0 "success" +3
++    ${If} $R0 != "success"
+       MessageBox MB_OK|MB_ICONEXCLAMATION "$(decompressionFailed)$\n$R0"
+-      Quit
++      !insertmacro celerpUpdateExit "the app files could not be unpacked: $R0"
++    ${EndIf}
+   !else
+     !insertmacro extractUsing7za "$PLUGINSDIR\app-$packageArch.7z"
+   !endif
+@@ -94,9 +107,11 @@
    CreateDirectory "$PLUGINSDIR\7z-out"
    ClearErrors
    SetOutPath "$PLUGINSDIR\7z-out"
@@ -129,7 +72,7 @@ index f5470bf..769407c 100644
  
    # Retry counter
    StrCpy $R1 0
-@@ -105,6 +119,7 @@
+@@ -105,6 +120,7 @@
      IntOp $R1 $R1 + 1
  
      # Attempt to copy files in atomic way
@@ -137,7 +80,7 @@ index f5470bf..769407c 100644
      CopyFiles /SILENT "$PLUGINSDIR\7z-out\*" $OUTDIR
      IfErrors 0 DoneExtract7za
  
-@@ -113,21 +128,13 @@
+@@ -113,22 +129,12 @@
        # Try copying a few times before asking for a user action.
        Goto RetryExtract7za
      ${else}
@@ -157,15 +100,38 @@ index f5470bf..769407c 100644
 -    Goto DoneExtract7za
 -
 -  AbortExtract7za:
+-    Quit
 +    # Stop rather than extract over the top while ignoring errors: that reports
 +    # success with files missing, for example on a full disk.
-+    !insertmacro celerpAbandonCopy
-+    SetErrorLevel 2
-     Quit
++    !insertmacro celerpUpdateExit "the app files could not be copied to $INSTDIR"
  
    RetryExtract7za:
+     Sleep 1000
+diff --git a/templates/nsis/include/installUtil.nsh b/templates/nsis/include/installUtil.nsh
+index 47367741632726ba0886ac516461dbe98b7aea58..b1aa31fa8570fcc05bc41aa77572a4588c43c681 100644
+--- a/templates/nsis/include/installUtil.nsh
++++ b/templates/nsis/include/installUtil.nsh
+@@ -128,8 +128,7 @@ Function handleUninstallResult
+   ${if} $R0 != 0
+     MessageBox MB_OK|MB_ICONEXCLAMATION "$(uninstallFailed): $R0"
+     DetailPrint `Uninstall was not successful. Uninstaller error code: $R0.`
+-    SetErrorLevel 2
+-    Quit
++    !insertmacro celerpUpdateExit "uninstall of the old version failed: $R0"
+   ${endif}
+ FunctionEnd
+ 
+@@ -181,6 +180,8 @@ Function uninstallOldVersion
+     Return
+   ${endif}
+ 
++  !insertmacro celerpOldVersionLocation
++
+   ${if} $installMode == "CurrentUser"
+   ${orIf} $rootKey == "HKEY_CURRENT_USER"
+     StrCpy $0 "/currentuser"
 diff --git a/templates/nsis/installSection.nsh b/templates/nsis/installSection.nsh
-index 053772f..240b9f8 100644
+index 053772f55ca6ece52f0a34c4fa0f05c9a5f07bd2..42759718eb6a250af51c0c5bb7200a48c271c6cb 100644
 --- a/templates/nsis/installSection.nsh
 +++ b/templates/nsis/installSection.nsh
 @@ -1,6 +1,7 @@
@@ -209,16 +175,149 @@ index 053772f..240b9f8 100644
  !insertmacro registryAddInstallInfo
  !insertmacro addStartMenuLink $keepShortcuts
  !insertmacro addDesktopLink $keepShortcuts
-diff --git a/templates/nsis/include/installUtil.nsh b/templates/nsis/include/installUtil.nsh
-index 4736774..85f0c7f 100644
---- a/templates/nsis/include/installUtil.nsh
-+++ b/templates/nsis/include/installUtil.nsh
-@@ -181,6 +181,8 @@ Function uninstallOldVersion
-     Return
-   ${endif}
+@@ -102,9 +107,16 @@ ${endIf}
+   !endif
+   !insertmacro quitSuccess
+ !else
+-  # for assisted installer run only if silent, because assisted installer has run after finish option
++  # an assisted install starts the app itself only when silent (an interactive one offers it on the
++  # finish page) or in an update, which reopens Celerp and ends here, without the finish page
+   ${if} ${isForceRun}
+-  ${andIf} ${Silent}
+-    !insertmacro doStartApp
++    ${if} ${Silent}
++    ${orIf} ${isUpdated}
++      !insertmacro doStartApp
++    ${endIf}
++  ${endIf}
++  ${if} ${isUpdated}
++    !insertmacro celerpUpdateLog "done: ${VERSION} is installed"
++    !insertmacro quitSuccess
+   ${endIf}
+ !endif
+diff --git a/templates/nsis/installer.nsi b/templates/nsis/installer.nsi
+index 1b88a9d50a66474859e2653d48992b8aa5c7a67c..f4b10c82de55e8d5ef2318e16365994299de73a6 100644
+--- a/templates/nsis/installer.nsi
++++ b/templates/nsis/installer.nsi
+@@ -116,6 +116,10 @@ Section "install" INSTALL_SECTION_ID
+   !endif
+ SectionEnd
  
-+  !insertmacro celerpOldVersionLocation
++!ifndef BUILD_UNINSTALLER
++  !insertmacro celerpInstallerFunctions
++!endif
 +
-   ${if} $installMode == "CurrentUser"
-   ${orIf} $rootKey == "HKEY_CURRENT_USER"
-     StrCpy $0 "/currentuser"
+ Function setInstallSectionSpaceRequired
+   !insertmacro setSpaceRequired ${INSTALL_SECTION_ID}
+ FunctionEnd
+diff --git a/templates/nsis/multiUser.nsh b/templates/nsis/multiUser.nsh
+index 3de631bf0ce5095d03062ba98a68c5249904911e..3f62ce1f058e51529eb1edf8c9aee9813979c99d 100644
+--- a/templates/nsis/multiUser.nsh
++++ b/templates/nsis/multiUser.nsh
+@@ -11,6 +11,39 @@
+ # current Install Mode ("all" or "CurrentUser")
+ Var installMode
+ 
++# /D=<folder> overrides the install folder. As NSIS itself reads it, it is the last
++# argument and is never quoted, so everything after it, spaces included, is the folder.
++# NSIS removes /D= from $CMDLINE, so it is read from the process command line.
++!macro installDirFromCommandLine
++  Push $0
++  Push $1
++  Push $2
++  Push $3
++  System::Call 'kernel32::GetCommandLineW() t .r3'
++  StrLen $2 $3
++  StrCpy $1 0
++  ${DoWhile} $1 < $2
++    StrCpy $0 $3 4 $1
++    ${If} $0 S== " /D="
++      IntOp $1 $1 + 4
++      StrCpy $INSTDIR $3 "" $1
++      ${Do}
++        StrCpy $0 $INSTDIR 1 -1
++        ${If} $0 != " "
++          ${ExitDo}
++        ${endif}
++        StrCpy $INSTDIR $INSTDIR -1
++      ${Loop}
++      ${ExitDo}
++    ${endif}
++    IntOp $1 $1 + 1
++  ${Loop}
++  Pop $3
++  Pop $2
++  Pop $1
++  Pop $0
++!macroend
++
+ !ifndef INSTALL_MODE_PER_ALL_USERS
+   !ifndef ONE_CLICK
+     Var hasPerUserInstallation
+@@ -28,23 +61,25 @@ Var installMode
+       StrCpy $INSTDIR $perUserInstallationFolder
+     ${else}
+       StrCpy $0 "$LocalAppData\Programs"
+-      System::Store S
+-      # Win7 has a per-user programfiles known folder and this can be a non-default location
++      Push $1
++      Push $2
++      # UserProgramFiles is the per-user install root and can be a non-default location
++      StrCpy $2 0
+       System::Call 'SHELL32::SHGetKnownFolderPath(g "${FOLDERID_UserProgramFiles}", i ${KF_FLAG_CREATE}, p 0, *p .r2)i.r1'
+       ${If} $1 == 0
+-        System::Call '*$2(&w${NSIS_MAX_STRLEN} .s)'
+-        StrCpy $0 $1
++        System::Call 'KERNEL32::lstrcpynW(w .r0, p r2, i ${NSIS_MAX_STRLEN})p'
++      ${endif}
++      # SHGetKnownFolderPath may return allocated memory even on failure
++      ${If} $2 != 0
+         System::Call 'OLE32::CoTaskMemFree(p r2)'
+       ${endif}
+-      System::Store L
++      Pop $2
++      Pop $1
+       StrCpy $INSTDIR "$0\${APP_FILENAME}"
+     ${endif}
+ 
+-    # allow /D switch to override installation path https://github.com/electron-userland/electron-builder/issues/1551
+-    ${StdUtils.GetParameter} $R0 "D" ""
+-    ${If} $R0 != ""
+-      StrCpy $INSTDIR $R0
+-    ${endif}
++    !insertmacro installDirFromCommandLine
++    !insertmacro celerpInstallDirOfStoppedSwap HKCU
+ 
+   !macroend
+ !endif
+@@ -83,11 +118,8 @@ Var installMode
+       StrCpy $INSTDIR "$0\${APP_FILENAME}"
+     ${endif}
+ 
+-    # allow /D switch to override installation path https://github.com/electron-userland/electron-builder/issues/1551
+-    ${StdUtils.GetParameter} $R0 "D" ""
+-    ${If} $R0 != ""
+-      StrCpy $INSTDIR $R0
+-    ${endif}
++    !insertmacro installDirFromCommandLine
++    !insertmacro celerpInstallDirOfStoppedSwap HKLM
+ 
+   !macroend
+ !endif
+diff --git a/templates/nsis/multiUserUi.nsh b/templates/nsis/multiUserUi.nsh
+index 52a83df6f654d3634be226db36010545bab9467f..d33882605601b8ccb39a777dd3cf633211444aa7 100644
+--- a/templates/nsis/multiUserUi.nsh
++++ b/templates/nsis/multiUserUi.nsh
+@@ -49,7 +49,11 @@ Var isForceCurrentInstall
+       ${ifNot} ${UAC_IsAdmin}
+         ShowWindow $HWNDPARENT ${SW_HIDE}
+         !insertmacro UAC_RunElevated
+-        Quit
++        ${If} $0 = 0
++        ${AndIf} $1 = 1
++          Quit
++        ${EndIf}
++        !insertmacro celerpUpdateExit "elevation did not run setup: $0 $1"
+       ${endIf}
+ 
+       !insertmacro setInstallModePerAllUsers

@@ -297,7 +297,7 @@ async def test_memo_line_with_draws_operations_boundary_transports(client, sessi
     other = await contact(client, h, "Store B")
 
     if transport == "api_patch":
-        r = await _patch(client, h, s.memo, {"line_items": [li for li in _page_lines(before)
+        r = await _patch(client, h, s.memo, {"line_items": [li for li in _stored_lines(before)
                                                             if li["line_id"] != s.lids["D"]]})
         assert r.status_code == 409 and key_of(r) == "docs.memo_line_drawn", r.text
         allowed = await _patch(client, h, s.memo, {"internal_note": "Back Friday"})

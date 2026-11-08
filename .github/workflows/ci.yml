@@ -24,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+        group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33]
 
     services:
       postgres:
@@ -53,9 +53,12 @@ jobs:
             constraints.txt
 
       - name: Install deps
-        run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split -c constraints.txt
+        run: pip install uv && uv pip install --system -e ".[dev]" -c constraints.txt
 
-      - name: Run tests (shard ${{ matrix.group }}/32)
+      - name: Tune the throwaway Postgres
+        run: bash scripts/ci_tune_postgres.sh postgresql://celerp:celerp@localhost:5432/celerp_test
+
+      - name: Run tests (shard ${{ matrix.group }}/33)
         env:
           ALLOW_INSECURE_JWT: "true"
           CELERP_LOCK_RANK_DIR: lockgraph
@@ -64,22 +67,22 @@ jobs:
           # Each test process writes what the write observer saw here; the census job reads all shards.
           CELERP_MUTATION_CENSUS: ${{ runner.temp }}/mutation-census
         # ubuntu-latest has 2 vCPUs, so a single `-n auto` run can't keep up.
-        # pytest-split fans the suite across 32 parallel runners; each still uses -n auto
+        # pytest-split fans the suite across 33 parallel runners; each still uses -n auto
         # within its 2 cores.
         # Process tests run in their own job so the split stays even.
         # The split balances measured time from tests/.test_durations (refresh it with
-        # --store-durations when a test file is added or a shard nears the cap). The same
+        # --store-durations when a test is added or a shard nears the cap). The same
         # shard runs up to 1.6 times slower on a slow runner, and collection takes
         # about 80s, so share * 1.6 + 80 stays within the timeout below
         # (tests/test_ci_shard_split.py reads that timeout, holds the split to it and the
-        # file to the tests this job runs). The file sits under tests/ so the
+        # file to the tests this job and the browser job run). The file sits under tests/ so the
         # repo-wide name checks, which skip tests/, never read its test ids. A test missing
         # from it counts as the average, so a split by count alone would put the slow
         # backup and reset files in one shard.
         run: >
           timeout 600 pytest tests/ default_modules/*/tests/ -n auto -q --tb=short --no-cov
           -m "not browser and not embedded_pg and not process and not integration"
-          --splits 32 --group ${{ matrix.group }} --splitting-algorithm least_duration
+          --splits 33 --group ${{ matrix.group }} --splitting-algorithm least_duration
           --durations-path tests/.test_durations
           --ignore=tests/test_visual.py
           --ignore=tests/test_browser
@@ -172,7 +175,10 @@ jobs:
             constraints.txt
 
       - name: Install deps
-        run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split -c constraints.txt
+        run: pip install uv && uv pip install --system -e ".[dev]" -c constraints.txt
+
+      - name: Tune the throwaway Postgres
+        run: bash scripts/ci_tune_postgres.sh postgresql://celerp:celerp@localhost:5432/celerp_test
 
       - name: Run process tests
         env:
@@ -261,6 +267,9 @@ jobs:
       - name: Install deps
         run: pip install uv && uv pip install --system -e ".[dev]" -c constraints.txt
 
+      - name: Tune the throwaway Postgres
+        run: bash scripts/ci_tune_postgres.sh postgresql://celerp:celerp@localhost:5432/celerp_test
+
       - name: Run the integration suite
         env:
           ALLOW_INSECURE_JWT: "true"
@@ -277,7 +286,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [1, 2, 3, 4, 5, 6]
+        group: [1, 2, 3, 4, 5, 6, 7]
 
     services:
       postgres:
@@ -306,12 +315,15 @@ jobs:
             constraints.txt
 
       - name: Install deps
-        run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split -c constraints.txt
+        run: pip install uv && uv pip install --system -e ".[dev]" -c constraints.txt
 
       - name: Install Chromium for Playwright
         run: python -m playwright install --with-deps chromium
 
-      - name: Run browser tests (shard ${{ matrix.group }}/6)
+      - name: Tune the throwaway Postgres
+        run: bash scripts/ci_tune_postgres.sh postgresql://celerp:celerp@localhost:5432/celerp_test
+
+      - name: Run browser tests (shard ${{ matrix.group }}/7)
         env:
           ALLOW_INSECURE_JWT: "true"
           # Each xdist worker gets its own database AND its own server ports (see
@@ -320,19 +332,20 @@ jobs:
           # The servers run in the test process, so the write observer sees every request.
           CELERP_MUTATION_CENSUS: ${{ runner.temp }}/mutation-census
         # Clear the default `-m 'not browser'` addopts, select browser tests, and shard them across
-        # 6 runners with pytest-split. Each runner runs its group SERIALLY (no -n): a browser test
+        # 7 runners with pytest-split. Each runner runs its group SERIALLY (no -n): a browser test
         # is CPU-heavy (Chromium + an API + a UI server), so intra-runner parallelism on a 2-vCPU
         # box causes contention timeouts. The thread-based timeout is required for Playwright tests.
-        # A shard takes 8 to 10 minutes; the 15 minute cap leaves room for a slow runner
-        # inside the 22 minute job limit.
+        # As in the unit job, share * 1.6 + 80 stays within the 15 minute cap, inside the 22
+        # minute job limit.
         # As in the unit job, the split balances measured time from tests/.test_durations: a
         # first-run test boots a new install, so one costs as much as fifty others, and a split
         # by count alone put them all on one shard. Refresh the browser entries with
-        # --store-durations when a browser test is added or a shard nears the cap.
+        # --store-durations when a browser test is added or a shard nears the cap; the same
+        # tests/test_ci_shard_split.py holds this job's split to its timeout and its entries.
         run: >
           timeout 900 pytest tests/test_browser -m browser -o addopts=""
           --timeout=120 --timeout-method=thread --no-cov --tb=short -p no:cacheprovider
-          --splits 6 --group ${{ matrix.group }} --splitting-algorithm least_duration
+          --splits 7 --group ${{ matrix.group }} --splitting-algorithm least_duration
           --durations-path tests/.test_durations
 
       - name: Upload the write observer's census

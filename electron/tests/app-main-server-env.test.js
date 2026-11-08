@@ -39,6 +39,31 @@ test("the UI server is given the same data folder as the API server",
     expect(envs.ui.CELERP_DATA_DIR).toBe(dataDir);
   });
 
+test("both servers are told they run in the desktop app",
+  async function test_both_servers_get_the_desktop_channel() {
+    const userData = fs.mkdtempSync(path.join(os.tmpdir(), "celerp-env-"));
+    const envs = {};
+    const childProcess = {
+      execFileSync: () => "",
+      spawn: (bin, args, opts) => {
+        envs[args.some((a) => a === "ui.app:app") ? "ui" : "api"] = opts.env;
+        const server = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter() });
+        setImmediate(() => server.emit("error", new Error("test boundary")));
+        return server;
+      },
+    };
+    const { startServer } = loadAppMain({
+      app: { getPath: () => userData },
+      extraFakes: { child_process: childProcess },
+    });
+
+    await expect(startServer("api", "postgresql://db", {})).rejects.toThrow("test boundary");
+    await expect(startServer("ui", "postgresql://db", {})).rejects.toThrow("test boundary");
+
+    expect(envs.api.CELERP_INSTALL_CHANNEL).toBe("electron");
+    expect(envs.ui.CELERP_INSTALL_CHANNEL).toBe("electron");
+  });
+
 test("a UI server that could not start stops the wait for its port",
   async function test_a_ui_server_that_could_not_start_stops_the_wait_for_its_port() {
     let probes = 0;

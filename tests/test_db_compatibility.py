@@ -23,6 +23,10 @@ from sqlalchemy.pool import NullPool
 from alembic_support import alembic_run, history_by_hand
 
 from celerp.db_url import sync_url
+from celerp.migrations._data_reconcile import (
+    PENDING_BACKFILLS_KEY, RETIRED_META_KEYS, data_backfill_scripts, pending_backfills,
+    replay_data_backfills,
+)
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 UNKNOWN = "ffff00c0ffee"
@@ -36,6 +40,10 @@ pytestmark = [
         not DATABASE_URL.startswith("postgresql"), reason="needs a live Postgres database"
     ),
 ]
+
+
+def _backfills() -> set[str]:
+    return {sc.revision for sc in data_backfill_scripts()}
 
 
 def _head() -> str:
@@ -453,11 +461,19 @@ def test_older_schema_with_older_marker_migrates_forward(scratch, monkeypatch):
     after = snapshot(url)
     assert after["alembic_version"] == [(_head(),)]
     assert after["sentinel"] == [(1, "sentinel-before")]
-    # A data-only revision one behind head has no schema of its own to find, so the
-    # restamp lands below it and it replays, leaving the marker that makes it run once.
-    replayed = {"company_modules_chosen_per_company"}
-    assert [m for m in after["instance_meta"] if m[0] not in replayed] == [
-        (OPENED_KEY, RUNNING), ("projection_version", "2.5.3")]
+    # The stamp is the record of what ran: every data backfill in its history counts as
+    # run, so the restamp leaves none of those pending and none replays. A data backfill
+    # above the older stamp never ran: the restamp moves past it and leaves it pending,
+    # and the reconcile runs it once.
+    skipped = [(PENDING_BACKFILLS_KEY, rev) for rev in [_head()] if rev in _backfills()]
+    assert after["instance_meta"] == [*skipped, (OPENED_KEY, RUNNING), ("projection_version", "2.5.3")]
+    engine = sa.create_engine(sync_url(url), poolclass=NullPool)
+    try:
+        assert replay_data_backfills(engine) == ([rev for _key, rev in skipped], [])
+        with engine.connect() as conn:
+            assert pending_backfills(conn) == []
+    finally:
+        engine.dispose()
 
 
 def test_older_backup_restored_and_migrated_forward(scratch, tmp_path, monkeypatch):
@@ -541,10 +557,27 @@ def test_current_database_start_changes_nothing(scratch, tmp_path, monkeypatch):
     from celerp.cli import _migrate_to_head
     from celerp.config import settings
     monkeypatch.setattr(settings, "data_dir", tmp_path)
-    url = scratch("head", RUNNING, backfill=RUNNING, opened=RUNNING)
+    url = scratch("head", RUNNING, opened=RUNNING)
     before = snapshot(url)
     assert _migrate_to_head(url) is True
     assert snapshot(url) == before
+
+
+@pytest.mark.parametrize("key", RETIRED_META_KEYS)
+def test_a_start_removes_each_marker_no_version_reads_any_more(scratch, tmp_path, monkeypatch, key):
+    """A marker an earlier release wrote and nothing reads now goes on the next start;
+    every marker this version reads stays as it was."""
+    from celerp.cli import _migrate_to_head
+    from celerp.config import settings
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    url = scratch("head", RUNNING, opened=RUNNING)
+    kept = snapshot(url)["instance_meta"]
+    engine = sa.create_engine(sync_url(url), poolclass=NullPool)
+    with engine.begin() as conn:
+        conn.execute(sa.text("INSERT INTO instance_meta VALUES (:k, '2.5.0')"), {"k": key})
+    engine.dispose()
+    assert _migrate_to_head(url) is True
+    assert snapshot(url)["instance_meta"] == kept
 
 
 # ── The newest Celerp that began opening the database ────────────────────────

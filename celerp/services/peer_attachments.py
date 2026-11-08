@@ -10,6 +10,7 @@ import uuid
 from fastapi import HTTPException, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.accounting_roles import refusal_detail
 from celerp.events.engine import find_event_by_idempotency
 from celerp.models.projections import Projection
 from celerp.services.attachments import MAX_FILE_BYTES, storing
@@ -71,7 +72,7 @@ async def receive_attachment(
         try:
             meta = await files.file(raw, file.filename, mime, att_id=target_file_id)
         except ValueError as exc:
-            raise HTTPException(422, str(exc)) from exc
+            raise HTTPException(422, refusal_detail(exc)) from exc
         from celerp.services.attachments import attach_file as record_file
         result = await record_file(
             session, grant.company_id, "doc", target_doc_id, meta, None,

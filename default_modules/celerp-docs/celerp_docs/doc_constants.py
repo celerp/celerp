@@ -34,6 +34,12 @@ INBOUND_DOC_TYPES: frozenset[str] = frozenset({"consignment_in", "bill"})
 DRAFT_REVERT_STATUSES = frozenset({"final", "sent", "awaiting_payment"})
 INBOUND_DRAFT_REVERT_STATUSES = DRAFT_REVERT_STATUSES | {"received", "partially_received", "fulfilled"}
 DRAFT_REVERT_RETURNED = frozenset({"partial_returned", "returned"})
+# The reasons POST /revert-to-draft refuses a document for (routes.revert_check, listed as
+# GET /docs/{id} revert_refused) that keep the document page from offering Revert to Draft:
+# a document in no status to go back from, and one whose payments or credit notes are undone
+# first, each from its own place on the page. Every other refusal names the step that clears
+# it, so the button stays and answers with that refusal.
+REVERT_HIDDEN_BY = frozenset({"status", "payments", "credit_note"})
 
 # Statuses each document type sends goods back to its supplier in (POST /return-items): once
 # goods have come in on it, and until all of them have gone back. A bill or purchase order
@@ -116,6 +122,11 @@ def is_shareable(entity_type: str, state: dict) -> bool:
 # Production orders are internal demand (invoice-to-self) - never sent to a customer.
 NO_SEND_DOC_TYPES: frozenset[str] = frozenset({"bill", "consignment_in", "purchase_order", "production_order"})
 
+# Documents whose issue posts their stored total to the books. Once issued, a line can only be
+# removed from one through Revert to Draft, which voids that entry and posts the new total on
+# the next issue (routes.assert_finalized_edit).
+TOTAL_POSTED_DOC_TYPES: frozenset[str] = frozenset({"invoice", "bill", "credit_note", "debit_note"})
+
 # Internal demand documents: not a sale/purchase, so excluded from revenue/AR/AP/sales accounting.
 # A production order is "invoice-to-self" demand that feeds the manufacturing queue.
 NON_FINANCIAL_DOC_TYPES: frozenset[str] = frozenset({"production_order"})
@@ -128,3 +139,109 @@ NO_SEND_STATUSES: frozenset[str] = frozenset({"paid", "void", "closed"})
 # owner drawings and family use. Never cogs: cost of sales belongs to sold stock alone. Shared by the
 # API check and the UI picker so the two never diverge.
 WRITEOFF_ACCOUNT_TYPES: frozenset[str] = frozenset({"expense", "equity"})
+
+# Why each bulk line action leaves a chosen line as it is. Per action (as _line_action names it),
+# per kind of line it leaves: (catalog key of the notice naming such lines after the action, key
+# of the refusal's reason when every chosen line is of a kind with one, so none was a line the
+# action could act on, followed by the action's next step, LINE_REFUSAL_NEXT), each key with a
+# _one and a _many form naming {lines}. A choice that held a line
+# the action could act on (an idle one) is refused with the notices instead: there was nothing
+# to change, and choosing again would not help. Every notice and refusal of an action reads its
+# own entry, so a line is never given another action's reason; the confirm built from its preview
+# words each kind it leaves with documents.will_skip_<kind>. The kinds an action lists are the lines it leaves: Ship counts a service line shipped,
+# so it has no service kind, and leaves a line that has already shipped (one invoiced from a
+# memo, whose goods went out on the memo, as drawn) or whose goods are not free to ship. Mark as scanned leaves a line already marked, and Clear scanned one not marked.
+_NO_ITEM = ("documents.lines_skipped", "lines.no_stock")
+_SERVICE = ("documents.service_lines_skipped", "lines.service_no_stock")
+_DRAW = {"memo_no_item": ("documents.memo_lines_skipped", "lines.memo_no_stock")}
+LINE_SKIP_REASONS: dict[str, dict[str, tuple[str, str | None]]] = {
+    "fulfill": {"no_item": _NO_ITEM, "shipped": ("documents.shipped_lines_skipped", None),
+                "drawn": ("documents.drawn_lines_skipped", None),
+                "unavailable": ("documents.unavailable_lines_skipped", None)},
+    "reserve": {"no_item": _NO_ITEM, "service": _SERVICE},
+    "revert": {"no_item": _NO_ITEM, "service": _SERVICE},
+    "set-available": {"no_item": _NO_ITEM, "service": _SERVICE,
+                      "idle": ("documents.idle_lines_skipped", None)},
+    "invoice": _DRAW,
+    "convert": _DRAW,
+    "back_to_memo": {"own": ("documents.own_lines_skipped", "docs.back_to_memo_not_drawn")},
+    "set-scanned": {"no_item": ("documents.scan_lines_skipped", "lines.scan_no_stock"),
+                    "scanned": ("documents.scanned_lines_skipped", None),
+                    "not_scanned": ("documents.unscanned_lines_skipped", None)},
+    # Print labels runs in the page; a choice of only such lines keeps its own error.
+    "labels": {"no_item": ("documents.labels_skipped", None)},
+}
+
+# The next step a refusal naming every chosen line gives (LINE_SKIP_REASONS), per action with a
+# refusal: said once, after the reason for each kind of line, so it holds for every kind (a
+# service is an inventory item but holds no stock) and is never repeated. A catalog key with a
+# _one and a _many form, by the number of lines refused.
+_CHOOSE_STOCK = "lines.choose_stock"
+LINE_REFUSAL_NEXT: dict[str, str] = {
+    "fulfill": _CHOOSE_STOCK, "reserve": _CHOOSE_STOCK, "revert": _CHOOSE_STOCK, "set-available": _CHOOSE_STOCK,
+    "invoice": _CHOOSE_STOCK, "convert": _CHOOSE_STOCK, "set-scanned": _CHOOSE_STOCK,
+    "back_to_memo": "docs.back_to_memo_delete_instead",
+}
+
+
+def _order(value) -> tuple:
+    """A value as a sort key that orders an empty value (None) first and never compares it
+    with a value of its own type."""
+    return (value is not None, value if value is not None else 0)
+
+
+def _shown(entries: list[dict] | None, keys: tuple[str, ...]) -> list[dict]:
+    """Each entry's ``keys`` only (None for a key it lacks), ordered by those keys' values in turn."""
+    return sorted(({k: e.get(k) for k in keys} for e in entries or []), key=lambda e: [_order(e[k]) for k in keys])
+
+
+def lot_name(entry: dict) -> str | None:
+    """The name a lot taken from another invoice (an answer's ``taken_from`` entry) is shown by:
+    its SKU, else its item's name; None when it has neither."""
+    return entry.get("sku") or entry.get("name") or None
+
+
+# How much of a lot another invoice held a shipment takes (a ``taken_from`` entry's ``takes``,
+# auto_je.LotTaken): the question asked before it ships and the notice said after, each worded for
+# that outcome, all it held (it can no longer ship the lot) or part (it has less of it to ship).
+# A ``takes`` the entry lacks reads as part, true in either case.
+LOT_TAKEN: dict[str, tuple[str, str]] = {
+    "all": ("documents.will_take_from", "documents.cost_moved_with_goods"),
+    "part": ("documents.will_take_part_from", "documents.cost_part_moved_with_goods"),
+}
+
+
+def lot_taken_message(shown: dict, when: int, unnamed: str) -> tuple[str, dict]:
+    """The message (catalog key, params) for a lot taken from another invoice, from its shown
+    entry (OUTCOME_SHOWN's ``taken_from``): asked before shipping (``when`` 0) or said after (1),
+    worded for how much of the lot it takes, naming the lot by its name, ``unnamed`` (the
+    reader's words for a lot with no SKU or name) when it has none, and never by an id."""
+    return LOT_TAKEN[shown["takes"]][when], {"sku": shown["lot"] or unnamed, "doc": shown["doc_number"]}
+
+
+def _takes(entry: dict) -> str:
+    """A ``taken_from`` entry's ``takes`` as a LOT_TAKEN kind."""
+    return entry.get("takes") if entry.get("takes") in LOT_TAKEN else "part"
+
+
+# What a stock line action's preview shows, part by part, from its answer: the lines it acts on,
+# each line it leaves with why, the lines whose shipment it takes back and each lot it takes from
+# another invoice. Each part holds exactly what its confirm words (a line by number and name, a
+# lot by its name (lot_name), the invoice by number and how much of the lot it takes) with the ids
+# that make it the same line, lot or invoice, so the binding (routes.outcome_binding) digests what
+# the question (the page's _preview_confirm) reads and nothing else: shared by the two so they
+# never diverge. A lot carved off is left out, as it is new each time the action runs; a lot taken
+# from another invoice is the one it is carved from. A field an entry lacks reads as None.
+OUTCOME_SHOWN = {
+    "acted": lambda answer: answer["acted"],
+    "skipped": lambda answer: _shown(answer.get("skipped"), ("line", "kind", "name", "line_id")),
+    "taken_back": lambda answer: _shown(answer.get("taken_back"), ("line", "name", "line_id")),
+    "taken_from": lambda answer: _shown([{**e, "lot": lot_name(e), "takes": _takes(e)}
+                                         for e in answer.get("taken_from") or []],
+                                        ("doc_number", "takes", "lot", "doc_id", "lot_id")),
+}
+
+
+def outcome_shown(answer: dict) -> dict:
+    """A stock line action's preview ``answer`` as what it shows (OUTCOME_SHOWN), part by part."""
+    return {part: show(answer) for part, show in OUTCOME_SHOWN.items()}

@@ -7,6 +7,7 @@
 "use strict";
 
 const path = require("path");
+const { UPDATED_ARG, INSTALL_FAILED_ARG } = require("./setup-guard");
 
 /**
  * Compute the restart sentinel path, mirroring celerp/config.py:
@@ -177,10 +178,16 @@ function restartUrl(currentUrl, uiPort, formerUiPorts = new Set()) {
  * Kept as a pure exported primitive (app injected) so it is unit-testable without
  * an Electron runtime.
  *
- * @param {{ relaunch: () => void, quit: () => void }} appRef
+ * The new instance gets this one's arguments less those of an update that failed or
+ * stopped, which tell only the start they came with; `extraArgs` adds this restart's own.
+ *
+ * @param {{ relaunch: (opts: { args: string[] }) => void, quit: () => void }} appRef
+ * @param {string[]} argv this instance's process.argv
+ * @param {string[]} [extraArgs]
  */
-function fullRelaunch(appRef) {
-  appRef.relaunch();
+function fullRelaunch(appRef, argv, extraArgs = []) {
+  const kept = argv.slice(1).filter((arg) => arg !== UPDATED_ARG && !arg.startsWith(INSTALL_FAILED_ARG));
+  appRef.relaunch({ args: [...kept, ...extraArgs] });
   appRef.quit();
 }
 

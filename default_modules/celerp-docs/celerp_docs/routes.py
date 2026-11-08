@@ -6,19 +6,21 @@ from __future__ import annotations
 import asyncio
 import bisect
 import hashlib
+import inspect
 import json
 import math
 import uuid
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, fields as _dc_fields, replace as _dc_replace
 from datetime import datetime, timezone, date as _date
 from decimal import Decimal
 from collections.abc import Awaitable, Callable, Iterable
-from typing import ClassVar, Literal, NamedTuple
+from typing import Annotated, ClassVar, Literal, NamedTuple
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 
-from pydantic import BaseModel, Field, ValidationError, field_validator, model_serializer, model_validator
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError, field_validator, model_serializer, model_validator
 from sqlalchemy import select, func as _func, text
 import sqlalchemy as _sa
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,10 +43,10 @@ from celerp_docs.doc_projections import RESTORE_POINT, UNISSUED_STATUSES, list_l
 from celerp_docs.taxes import TaxApplication
 from celerp.services.field_schema import reject_system_item_fields
 from celerp.services.locations import require_company_location, require_ship_from
-from celerp.accounting_roles import CONSIGNOR_FIELD, CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, VALUED_FROM_KEY, AccountRole, Refused, catalog_refusal, refusal
+from celerp.accounting_roles import CONSIGNOR_FIELD, CONSIGNOR_PAYABLE_FIELD, LOT_ACCOUNT_FIELD, VALUED_FROM_KEY, AccountRole, Refused, catalog_refusal, refusal, refusal_detail
 from celerp.services.account_roles import current_settings, is_consigned, lineage, lot_account, new_lot_account, role_map
 from celerp.services.background import spawn_background
-from celerp.services.company_lock import lock_company, lock_projections, locked_company
+from celerp.services.company_lock import lock_company, lock_projections, locked_company, locked_state
 from celerp.services.goods_cost import GOODS_COST_UNKNOWN, negative_cost_error
 from celerp.services.journal_accounts import require_destinations, require_line_destinations, require_settlement_account
 from celerp.services.lot_origin import in_stock, is_stock_type, rerun_after_placing
@@ -54,7 +56,7 @@ from celerp.services.payments import lock_recorded_unmatched, recorded_unmatched
 from celerp.tax_regimes import default_line_taxes, set_new_line_taxes, side_taxes
 from celerp.services.business_time import business_date_at, business_date_of, company_today
 from celerp.services.landed_cost import compute_bill_landed_allocation
-from celerp.services.line_measures import (FULL, floor_to_unit, line_label, proposed_sell_qty, splitting_allowed,
+from celerp.services.line_measures import (FULL, floor_to_unit, line_label, line_name, proposed_sell_qty, splitting_allowed,
                                           splitting_off)
 from celerp.services.document_lines import (
     DrawnLine, MemoDraw, MemoReturn, assert_line_holds_respected, assert_new_references_eligible,
@@ -69,7 +71,7 @@ from celerp.services.auth import AuthContext, get_auth_context, get_current_comp
 from celerp.services.permissions import assert_role_permission, get_current_company_settings, locked_authority, reject_price_change, require_permission, role_has_permission
 from celerp_docs.sequences import next_doc_ref, next_draft_ref, peek_draft_ref, require_doc_type, get_all_sequences, update_sequence, list_sequence_key
 from celerp_docs.search import doc_q_clause
-from celerp.services.units import build_unit_map, default_receive_as, get_company_units, is_non_stock_line, is_pieces_unit, is_weight_unit, line_receive_kind, require_moving_fits_units, sum_quantities, unit_decimals, validate_line_quantity
+from celerp.services.units import build_unit_map, default_receive_as, get_company_units, is_non_stock_line, is_pieces_unit, is_weight_unit, line_receive_kind, read_company_units, require_moving_fits, require_moving_fits_units, sum_quantities, unit_decimals, validate_line_quantity
 from celerp.services.money import allocate_pro_rata, books_currency, checked_exchange_rate, discount_from_inputs, doc_rate, document_line_amount, document_line_unit, require_doc_rate, received_share, round_basis, round_money, round_rate, to_base, to_decimal, to_stored_float
 from celerp.services.pricing import DEFAULT_PRICE_LIST_NAME, coerce_price, get_price_config, is_cost_list_name, line_price_list, price_keys_in, resolve_price
 from celerp.services.terms import resolve_document_terms
@@ -79,7 +81,7 @@ from celerp_contacts.references import (
 )
 from celerp.output.document_context import prepare_document_output
 from celerp.output.doc_print import fmt_money
-from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, DRAFT_REVERT_RETURNED, DRAFT_REVERT_STATUSES, INBOUND_DRAFT_REVERT_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, CREDIT_APPLICATION_METHODS, CONVERTIBLE_STATUSES
+from celerp_docs.doc_constants import WRITEOFF_ACCOUNT_TYPES, INBOUND_DOC_TYPES, DRAFT_REVERT_RETURNED, DRAFT_REVERT_STATUSES, INBOUND_DRAFT_REVERT_STATUSES, LEGACY_CONTACT_FIELDS, LIFECYCLE_OWNED_FIELDS, NON_FINANCIAL_DOC_TYPES, RESERVABLE_DOC_STATUSES, REVERTIBLE_STATUSES, LINE_REFUSAL_NEXT, LINE_SKIP_REASONS, outcome_shown, SALES_PRICED_DOC_TYPES, SUPPLIER_RETURN_STATUSES, TOTAL_POSTED_DOC_TYPES, CREDIT_APPLICATION_METHODS, CONVERTIBLE_STATUSES
 from celerp.services.record_quantities import FULFILLABLE_STATUSES, QUOTATION_SPENT_STATUSES, RECEIVABLE_STATUSES, sent_out_by
 from celerp.services.doc_balance import DOC_FIELD_FALLBACKS, MEMO_DRAW_STATUSES, doc_value, is_awaiting_payment, is_open_credit, is_overdue_document, is_owed, is_paid_document, outstanding_balance
 from celerp.services.list_behavior import (
@@ -328,8 +330,41 @@ def _refuse_protected_fields(fields_changed: dict) -> None:
         )
 
 
+# The type of every field a line declares, read from the line model. A line's taxes are left
+# to their own check (refuse_malformed_taxes), which also reads what older versions stored.
+_LINE_FIELD_TYPES = {
+    name: TypeAdapter(Annotated[(field.annotation, *field.metadata)]) if field.metadata else TypeAdapter(field.annotation)
+    for name, field in LineItem.model_fields.items() if name != "taxes"
+}
+
+
+def refuse_malformed_input(values: dict) -> None:
+    """Refuse (422) ``line_items`` in *values* that are not a list of objects, or a line holding
+    a field of the wrong type (naming the line and the field), then taxes no total can be computed from
+    (refuse_malformed_taxes), before any check reads them. Every write that takes a document's
+    or a List's lines from outside (a save, a create, an import, a peer) checks it first, so
+    nothing of a refused write is stored.
+
+    Only the types of the fields the line model declares are checked: keys it does not declare
+    and an empty value (null) pass, and so do the model's rules across fields, which lines that
+    older versions stored do not all meet."""
+    lines = values.get("line_items", [])
+    if not (isinstance(lines, list) and all(isinstance(line, dict) for line in lines)):
+        raise HTTPException(status_code=422, detail=catalog_refusal("error.invalid_input_fields", fields="line_items"))
+    for number, line in enumerate(lines, 1):
+        for key, value in line.items():
+            if value is None or key not in _LINE_FIELD_TYPES:
+                continue
+            try:
+                _LINE_FIELD_TYPES[key].validate_python(value)
+            except ValidationError:
+                raise HTTPException(status_code=422, detail=catalog_refusal(
+                    "line.invalid_field", line=number, sku=_line_label(line), field=key)) from None
+    refuse_malformed_taxes(values)
+
+
 def _stale_doc(key: str) -> HTTPException:
-    """A document edit refused because it was made from an older copy; the code lets the page
+    """A document or list edit refused because it was made from an older copy; the code lets the page
     keep the user's rows and offer Try again instead of an ordinary error."""
     return HTTPException(status_code=409, detail={**refusal(key, t(key)), "code": "stale_version"})
 
@@ -462,6 +497,9 @@ class DocReopenBody(BaseModel):
 # ── Preview, then confirm ─────────────────────────────────────────────────────
 # A write with a preview (``dry_run``) confirms only the preview shown: the preview answers
 # with a binding, and the write refuses a binding that differs from what it would write now.
+# A stock line action binds the outcome of its preview (outcome_binding): the lines it acts on,
+# the lines it leaves and why, what it takes back and what it takes from other invoices, each as
+# its confirm words it (OUTCOME_SHOWN), so an edit that changes none of these never refuses it.
 
 # Request fields that never change what a write does; every other field is bound to its preview.
 PREVIEW_UNBOUND_FIELDS = frozenset({"idempotency_key", "dry_run", "binding"})
@@ -473,6 +511,58 @@ def preview_binding(rows: list[Projection | None], body: BaseModel) -> str:
     shown = {"rows": [[row.entity_id, row.version] if row else None for row in rows],
              "request": body.model_dump(mode="json", exclude=set(PREVIEW_UNBOUND_FIELDS))}
     return hashlib.sha256(json.dumps(shown, sort_keys=True).encode()).hexdigest()
+
+
+def outcome_binding(result: dict) -> str:
+    """What a stock line action's preview shows (outcome_shown), as one digest."""
+    return hashlib.sha256(json.dumps(outcome_shown(result), sort_keys=True).encode()).hexdigest()
+
+
+# What each key of a bulk line action's answer means, for the API reference (answers_with).
+LINE_ANSWER_KEYS = {
+    "acted": "the line ids of the chosen lines it acts on",
+    "skipped": "the chosen lines it leaves as they are, each with its number (``line``), name, ``kind`` and ``line_id``",
+    "skipped_notice": "the messages saying why it leaves those lines",
+    "taken_back": ("the shipped lines whose shipment it reverses, taking their goods back into stock, "
+                   "each with its number (``line``), name and ``line_id``"),
+    "taken_back_notice": "the message naming those lines",
+    "binding": ("this answer as one digest; send it back with the action to have the action refused "
+                "(409 ``lines.preview_differs``), changing nothing, if it would now do anything else"),
+    "fulfillment_status": "the record's shipping status after the action",
+    "fulfilled": ("the items it ships; in a preview, a part of a lot it would carve off is named by an id "
+                  "the action does not keep"),
+    "taken_from": ("the other open invoices whose goods it ships, each with the lot's ``sku`` and ``name`` "
+                   "as text (null when it has none), ``takes`` (``all``: that invoice can no longer ship the lot; "
+                   "``part``: it has less of it to ship), ``lot_id``, ``doc_id`` and ``doc_number``"),
+    "reverted": "the items it takes back whole",
+    "partially_returned": ("for each line returned in part, the new in-stock item split off, with its "
+                           "``item_id``, ``sku`` and ``quantity``"),
+    "new_status": "the status the lines are set to",
+    "reserved": "the items it holds for this record",
+    "released": "the items whose hold it gives back",
+    "removed": "the line ids it takes off the invoice",
+    "reopened_memos": "the memos the lines go back to",
+    "changed": "how many lines it changes",
+    "target_doc_id": "the invoice the goods are billed on",
+    "draw_id": "the draw's id on the memo",
+    "event_id": "the id of the event that records the draw",
+    "invoiced": "how many memo lines it bills",
+    "memo_ref": "the memo's number",
+}
+
+
+# Every stock line action answers these beside its own keys (_line_action_answer).
+_STOCK_ANSWER = ("acted", "skipped", "skipped_notice", "binding")
+
+
+def answers_with(*keys: str):
+    """Add to the decorated endpoint's API reference what each of ``keys`` in its answer means
+    (LINE_ANSWER_KEYS). Placed under the route decorator, which reads the reference."""
+    def describe(endpoint):
+        endpoint.__doc__ = (inspect.cleandoc(endpoint.__doc__ or "") + "\n\nThe answer: "
+                            + "; ".join(f"``{k}``: {LINE_ANSWER_KEYS[k]}" for k in keys) + ".")
+        return endpoint
+    return describe
 
 
 class MemoTaxRateBody(BaseModel):
@@ -588,49 +678,48 @@ class DocBatchImportRequest(BaseModel):
 
 
 class FulfillLinesRequest(BaseModel):
-    """The lines an action applies to: ``line_ids`` names each line by its line id.
-
-    ``line_entity_ids`` names lines by the item they bind, for clients written before
-    lines had ids; each item must be on exactly one line. Send one of the two.
-    ``idempotency_key`` names one submission: sending it again returns the first result."""
-    line_ids: list[str] = Field(default_factory=list)
-    line_entity_ids: list[str] = Field(default_factory=list)
-    idempotency_key: str | None = None
+    """The lines an action applies to: send ``line_ids`` or ``line_entity_ids``."""
+    line_ids: list[str] = Field(default_factory=list, description="The chosen lines, each by its line id.")
+    line_entity_ids: list[str] = Field(default_factory=list, description=(
+        "The chosen lines, each by the item it binds; each item must be on exactly one line."))
+    idempotency_key: str | None = Field(default=None, description=(
+        "Names one submission: sending it again returns the first result."))
+    # Not part of the request a key names: the preview and the action it confirms share one.
+    dry_run: bool = Field(default=False, exclude=True, description=(
+        "Answer what the action would do, as the action itself decides it, and change nothing: "
+        "the lines it would act on, leave and take back, or the refusal it would give, with its binding."))
+    binding: str | None = Field(default=None, exclude=True, description=(
+        "The binding of the preview the user confirmed. The action is refused (409 lines.preview_differs), "
+        "changing nothing, when it would now act on, leave or take back other lines than that preview said."))
 
     @field_validator("line_ids", "line_entity_ids")
     @classmethod
-    def strip_empty(cls, v: list[str]) -> list[str]:
-        """Drop empty strings and de-duplicate: bulk selects may include value="" rows."""
-        return list(dict.fromkeys(eid for eid in v if eid))
+    def distinct(cls, v: list[str]) -> list[str]:
+        """De-duplicate. An empty line id is kept, so a row sent without one is refused as
+        not on the record rather than dropped from the choice unseen."""
+        return list(dict.fromkeys(v))
 
 
 class RevertLinesRequest(FulfillLinesRequest):
-    """Revert whole lines, or return part of one.
-
-    ``quantities`` maps a chosen line (its line id, or its item id when lines are chosen
-    by item) to the quantity coming back. Omit it, or give the whole quantity out, to take
-    it all back. A smaller quantity is a partial
-    return: that much is split off and comes back into stock, and the remainder stays out
-    with the customer, so goods still in their hands are never written off as returned.
-
-    ``weights`` / ``pieces`` carry the returned lot's measures for parcels tracked by a
-    measure the quantity does not imply (a piece-sold parcel that also carries a weight).
-    A measure not stated for a part-returned parcel is unknown on both sides, never guessed.
-    """
-    quantities: dict[str, FiniteFloat] | None = None
-    weights: dict[str, FiniteFloat] | None = None
-    pieces: dict[str, int] | None = None
+    """Revert whole lines, or return part of one. A partial return splits off what comes back
+    into stock and leaves the remainder out with the customer, so goods still in their hands
+    are never written off as returned."""
+    quantities: dict[str, FiniteFloat] | None = Field(default=None, description=(
+        "The quantity coming back per chosen line, by its line id (or its item id when lines are chosen by item). "
+        "Omitted, or the whole quantity out: it all comes back. A smaller quantity is a partial return."))
+    weights: dict[str, FiniteFloat] | None = Field(default=None, description=(
+        "The returned lot's weight per line, for a parcel whose quantity does not imply it. "
+        "Not stated for a part-returned parcel: unknown on both sides, never guessed."))
+    pieces: dict[str, int] | None = Field(default=None, description=(
+        "The returned lot's pieces per line, for a parcel whose quantity does not imply them. "
+        "Not stated for a part-returned parcel: unknown on both sides, never guessed."))
 
 
 class ReserveLinesRequest(FulfillLinesRequest):
-    """Set selected lines to a ledger-neutral stock status.
-
-    ``new_status`` is the target: ``reserved`` marks lines held for this document (stamps it as
-    owner); ``available`` releases lines this document reserved back to the pool. Neither draws
-    stock nor posts COGS - that is Set-as-shipped (fulfill-lines). Inherits the strip-empty /
-    de-duplicate validator from FulfillLinesRequest.
-    """
-    new_status: Literal["reserved", "available"]
+    """Set selected lines to a ledger-neutral stock status. Neither status draws stock nor posts
+    COGS - that is Set-as-shipped (fulfill-lines)."""
+    new_status: Literal["reserved", "available"] = Field(description=(
+        "reserved: hold the lines' goods for this record. available: give back what this record holds."))
 
 
 def _assert_date_order(patch: dict, current: dict | None = None) -> None:
@@ -1521,7 +1610,7 @@ async def patch_sequence(doc_type: str, payload: SequencePatch, company_id: str 
     try:
         result = update_sequence(company, doc_type, prefix=payload.prefix, pattern=payload.pattern, next_num=payload.next)
     except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=422, detail=refusal_detail(e))
     await session.commit()
     return result
 
@@ -1692,15 +1781,17 @@ async def _numbers_or_recorded(session: AsyncSession, company_id, ids) -> dict[s
         return {}
 
 
-async def _drawn_on(session: AsyncSession, company_id, state: dict) -> list[tuple[str, str | None]]:
+async def _drawn_on(session: AsyncSession, company_id, state: dict,
+                    numbers=None) -> list[tuple[str, str | None]]:
     """The invoices holding goods drawn from a memo *state* that have not come back (a take
     with unreturned lines, memo_draws), in draw order, by current number and status; empty
     for any other document. Whether a take counts is the memo's own record; the status only
-    names a blocking draft."""
+    names a blocking draft. A caller that needs no status reads ``numbers`` with
+    _numbers_or_recorded, so a number it cannot read is the one the memo recorded."""
     if state.get("doc_type") != "memo":
         return []
     takes = [t for t in memo_draws(state) if t["lines"]]
-    current = await _current_doc_numbers(session, company_id, {t["invoice_id"] for t in takes})
+    current = await (numbers or _current_doc_numbers)(session, company_id, {t["invoice_id"] for t in takes})
     return [current.get(t["invoice_id"], (t.get("doc_number") or t["invoice_id"], None)) for t in takes]
 
 
@@ -1835,6 +1926,8 @@ async def get_doc(entity_id: str, company_id: str = Depends(get_current_company_
             # The note degrades to nothing, as the memo labels do; the stored totals stand.
             doc.pop("memo_fixed_taken", None)
     doc["line_holds"] = await _line_holds(session, company_id, entity_id)
+    doc["revert_refused"] = (await revert_check(session, company_id, entity_id, row.state,
+                                                await read_company_units(session, company_id))).reasons
     returnable = doc.get("status") in SUPPLIER_RETURN_STATUSES.get(doc.get("doc_type"), ())
     if doc.get("doc_type") in ("bill", "consignment_in", "purchase_order") and (
             returnable or doc.get("returned_items")):
@@ -2148,21 +2241,28 @@ _LI_FINALIZED_EDITABLE = frozenset({"description", "account_code"})
 
 def assert_finalized_edit(state: dict, fields_changed: dict) -> None:
     """Refuse (409) a change to a finalized document beyond its corrective fields, and a line
-    change beyond each line's description and account."""
+    change beyond each line's description and account. Each line is compared over every key
+    the stored line or the save holds, so a field the save leaves out counts as removed. A
+    document whose issue posted its total keeps every line too, and a save that leaves one out
+    is refused as a structural edit: its total, and what a payment collects, follow the lines
+    as issued."""
     if set(fields_changed) - _FINALIZED_EDITABLE_FIELDS:
         _assert_doc_editable(state)
     if "line_items" not in fields_changed:
         return
-    existing_by_idx = {i: li for i, li in enumerate(state.get("line_items") or [])}
-    for i, incoming in enumerate(fields_changed["line_items"].get("new") or []):
-        original = existing_by_idx.get(i, {})
-        for k, v in incoming.items():
+    stored = state.get("line_items") or []
+    incoming = fields_changed["line_items"].get("new") or []
+    if state.get("doc_type") in TOTAL_POSTED_DOC_TYPES and len(incoming) < len(stored):
+        _assert_doc_editable(state)
+    for i, line in enumerate(incoming):
+        original = stored[i] if i < len(stored) else {}
+        for k in [*original, *(k for k in line if k not in original)]:
             if k in _LI_FINALIZED_EDITABLE:
                 continue
-            orig_v = original.get(k)
-            if k == "line_id" and not orig_v:
-                continue  # a legacy line is given its id on its first save
-            if v != orig_v:
+            if line.get(k) != original.get(k):
+                # Revert to Draft refuses a void document, which comes back through Unvoid.
+                if state.get("status") == "void":
+                    _assert_doc_editable(state)
                 raise HTTPException(
                     status_code=409,
                     detail=catalog_refusal("documents.err_line_field_finalized", field=k, line=i + 1),
@@ -2201,7 +2301,7 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     fields_changed = dict(payload.fields_changed)
     require_currency_code((fields_changed.get("currency") or {}).get("new"))
     _refuse_protected_fields(fields_changed)
-    refuse_malformed_taxes({k: (v or {}).get("new") for k, v in fields_changed.items()})
+    refuse_malformed_input({k: (v or {}).get("new") for k, v in fields_changed.items()})
     if scan_runs is not None:
         fields_changed[SCAN_RUNS_FIELD] = {"new": scan_runs}
     selecting = "contact_id" in fields_changed
@@ -2908,6 +3008,15 @@ async def void_document(entity_id: str, payload: DocVoidBody, company_id: str, u
         raise HTTPException(status_code=409, detail=refusal(
             "docs.void_already_void",
             "This document is already void. To bring it back, unvoid it."))
+    # Goods must be back before the paper can go void, or the stock records point
+    # at a dead document with no UI path to bring the items home (the fulfillment
+    # toolbar only renders on live statuses). Mirrors the revert-to-draft guards.
+    delivered = None
+    if row.state.get("fulfillment_status") in ("fulfilled", "partial"):
+        delivered = HTTPException(status_code=409, detail=await goods_out_refusal(
+            session, company_id, entity_id, row.state, catalog_refusal("documents.err_void_delivered")))
+        if _unclearable(delivered.detail):
+            raise delivered
     _reject_if_closed(row.state, "void it")
     if drawn := await _drawn_on(session, company_id, row.state):
         memo = _ref(row)
@@ -2920,17 +3029,13 @@ async def void_document(entity_id: str, payload: DocVoidBody, company_id: str, u
         await refuse_on_void_invoice(session, company_id, row.state)
     if row.state.get("doc_type") == "debit_note":
         await _refuse_void_under_supplier_credit(session, company_id, row.state)
-    await _refuse_undo_under_credit_note(session, company_id, row.state, entity_id, "void")
+    if (refused := await _undo_under_credit_note(session, company_id, row.state, entity_id, "void")) is not None:
+        raise refused
     current_status = row.state.get("status")
     if current_status in ("paid", "partial") and not settled_by_credit_only(row.state):
         raise HTTPException(status_code=409, detail="Cannot void a document with payments; void the payments first")
-    # Goods must be back before the paper can go void, or the stock records point
-    # at a dead document with no UI path to bring the items home (the fulfillment
-    # toolbar only renders on live statuses). Mirrors the revert-to-draft guards.
-    if row.state.get("fulfillment_status") in ("fulfilled", "partial"):
-        raise HTTPException(
-            status_code=409,
-            detail=t("documents.err_void_delivered"))
+    if delivered is not None:
+        raise delivered
     # Goods the document was imported with are opening stock: no receipt here brought them in,
     # so no void takes them back, whether they are still held or went back by return.
     if row.state.get("received_items") and await _imported_receipt_held(session, company_id, entity_id):
@@ -3036,7 +3141,7 @@ async def _settle_moved_cost(session, company_id, user_id, doc_id: str, state: d
         await auto_je.reconcile_doc_cogs(session, company_id=company_id, user_id=user_id, doc_id=doc_id,
                                          cycle_tag=tag, ts=None, trigger=trigger)
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=refusal_detail(exc)) from exc
 
 
 async def _credit_note_owed(session, company_id, user_id, cn_id: str, cn_state: dict, invoice: Projection,
@@ -3235,7 +3340,7 @@ async def refuse_on_void_invoice(session, company_id, cn: dict) -> None:
     """A credit note reverses part of its invoice's sale. Once that invoice is void the
     sale no longer exists, so nothing is refunded, applied or restored against the
     credit note (409). A supplier credit note's bill is never voided while the note is
-    issued (_refuse_undo_under_credit_note), so it has no such case."""
+    issued (_undo_under_credit_note), so it has no such case."""
     original = str(cn.get("original_doc_id") or "") if cn.get("doc_type") == "credit_note" else ""
     invoice = await session.get(Projection, {"company_id": company_id, "entity_id": original}) if original else None
     if invoice is None or (invoice.state or {}).get("status") != "void":
@@ -3250,21 +3355,25 @@ async def refuse_on_void_invoice(session, company_id, cn: dict) -> None:
 
 
 async def _issued_credit_note_rows(session, company_id, invoice_id: str,
-                                   note_type: str = "credit_note") -> list[Projection]:
+                                   note_type: str = "credit_note", as_locked: bool = False) -> list[Projection]:
     """The issued (not draft, not void) credit notes against an invoice, or with ``note_type``
-    debit_note the supplier credit notes against a bill or purchase order."""
+    debit_note the supplier credit notes against a bill or purchase order. ``as_locked`` judges
+    each note as this transaction first locked it (company_lock.locked_state): as a refusal
+    leaves it."""
     rows = (await session.execute(select(Projection).where(
         Projection.company_id == company_id, Projection.entity_type == "doc",
         Projection.state["doc_type"].as_string() == note_type,
         Projection.state["original_doc_id"].as_string() == invoice_id,
     ).order_by(Projection.entity_id))).scalars().all()
-    return [r for r in rows if (r.state or {}).get("status") not in (None, "draft", "void")]
+    return [r for r in rows if ((as_locked and locked_state(session, r.entity_id)) or r.state or {}).get("status")
+            not in (None, "draft", "void")]
 
 
-async def issued_credit_notes(session, company_id, invoice_id: str, note_type: str = "credit_note") -> list[str]:
+async def issued_credit_notes(session, company_id, invoice_id: str, note_type: str = "credit_note",
+                              as_locked: bool = False) -> list[str]:
     """The numbers of the issued notes of ``note_type`` against a document."""
     return sorted(str(r.state.get("doc_number") or r.state.get("ref_id") or r.entity_id)
-                  for r in await _issued_credit_note_rows(session, company_id, invoice_id, note_type))
+                  for r in await _issued_credit_note_rows(session, company_id, invoice_id, note_type, as_locked))
 
 
 def imported_settlement_free(data: dict) -> dict:
@@ -3414,28 +3523,30 @@ async def settle_imported_credit(session, company_id, user_id, entity_id: str, d
         await auto_je.void_imported_used(session, company_id=company_id, user_id=user_id, doc_id=cn_id)
 
 
-async def _refuse_undo_under_credit_note(session, company_id, state: dict, invoice_id: str, action: str) -> None:
+async def _undo_under_credit_note(session, company_id, state: dict, invoice_id: str, action: str,
+                                  as_locked: bool = False) -> HTTPException | None:
     """An invoice is undone only after the credit notes issued against it, as its payments are,
-    and a bill or purchase order only after the supplier credit notes issued against it."""
+    and a bill or purchase order only after the supplier credit notes issued against it: the
+    refusal while any is issued, else None."""
     doc_type = state.get("doc_type")
     if doc_type not in ("invoice", *_NOTE_APPLICATIONS["debit_note"].targets):
-        return
+        return None
     supplier = doc_type != "invoice"
     numbers = await issued_credit_notes(session, company_id, invoice_id,
-                                        "debit_note" if supplier else "credit_note")
+                                        "debit_note" if supplier else "credit_note", as_locked)
     if not numbers:
-        return
+        return None
     listed = ", ".join(numbers)
     undone = "voided" if action == "void" else "reverted to draft"
     if supplier:
-        raise HTTPException(status_code=409, detail=refusal(
+        return HTTPException(status_code=409, detail=refusal(
             f"docs.{action}_under_supplier_credit_note",
             f"This document cannot be {undone}: supplier credit notes {listed} are issued against it. "
             f"Void those supplier credit notes first, then try again.", numbers=listed))
-    raise HTTPException(status_code=409, detail=refusal(
+    return HTTPException(status_code=409, detail=await goods_out_refusal(session, company_id, invoice_id, state, refusal(
         f"docs.{action}_under_credit_note",
         f"This invoice cannot be {undone}: credit notes {listed} are issued against it. Void those "
-        f"credit notes first, then try again.", numbers=listed))
+        f"credit notes first, then try again.", numbers=listed)))
 
 
 @router.post("/{entity_id}/close")
@@ -3598,6 +3709,138 @@ async def set_memo_tax_rate(
     return {"event_id": entry.id, "version": entry.id, **result}
 
 
+@dataclass(frozen=True)
+class RevertCheck:
+    """Every reason a document cannot go back to draft now, as (reason, refusal) in the order
+    Revert to Draft answers them, and how it goes back once nothing is refused: to its
+    purchase order (``to_order``), or having sent back all it received (``emptied``)."""
+    refusals: tuple[tuple[str, HTTPException], ...]
+    to_order: bool = False
+    emptied: bool = False
+
+    @property
+    def reasons(self) -> list[str]:
+        return [reason for reason, _ in self.refusals]
+
+
+def _refuse(refusals: list, reason: str, detail) -> None:
+    """Add one reason Revert to Draft is refused, with the refusal it answers."""
+    refusals.append((reason, HTTPException(status_code=409, detail=detail)))
+
+
+# The refusal no step clears: report it. It answers ahead of every refusal a step clears, so
+# the user is never sent to take a step (voiding a payment) that still ends at it.
+_UNCLEARABLE = "error.cogs_line_unknown_out"
+
+
+def _unclearable(detail) -> bool:
+    return isinstance(detail, dict) and detail.get("message_key") == _UNCLEARABLE
+
+
+async def goods_out_refusal(session, company_id, entity_id: str, state: dict, refused: dict) -> dict:
+    """``refused``, the refusal of Void or Revert to Draft naming the step that clears it (Set
+    as available, voiding a credit note), unless goods the document shipped are on none of its
+    lines. That step books their cost again and is refused then too
+    (auto_je._recognized_by_account), so the answer is that refusal's: report it."""
+    from celerp.services.auto_je import unplaced_shipments
+
+    unplaced = await unplaced_shipments(session, company_id, entity_id, state)
+    return catalog_refusal(_UNCLEARABLE, **unplaced) if unplaced else refused
+
+
+async def revert_check(session, company_id, entity_id: str, state: dict, units: list[dict],
+                       as_locked: bool = False) -> RevertCheck:
+    """The one rule for Revert to Draft. The route answers the first refusal (one no step clears
+    comes first), GET /docs/{id}
+    lists the reasons (``revert_refused``) and the document page offers the button from them
+    (REVERT_HIDDEN_BY), and a refusal that would send the user to Revert to Draft picks its
+    advice from them (auto_je._recognized_by_account). Only the freight a returned bill folded
+    into its lots is judged later, as it goes back, under the locks on those lots. ``as_locked``
+    judges the document and its credit notes as this transaction first locked them: as they
+    stand again once a refusal undoes it. ``units`` are the company's units as the caller
+    reads them (units.require_moving_fits), so only the revert itself takes the company lock."""
+    if as_locked:
+        state = locked_state(session, entity_id) or state
+    refusals: list[tuple[str, HTTPException]] = []
+
+    if (under_note := await _undo_under_credit_note(session, company_id, state, entity_id, "revert",
+                                                    as_locked)) is not None:
+        refusals.append(("credit_note", under_note))
+    # A note a return raised holds the return's credit, so a draft of it could be edited or
+    # deleted while the bill stays settled by it. Voiding it takes the return back instead.
+    if state.get("doc_type") == "debit_note" and state.get("source_return"):
+        _refuse(refusals, "return_note", refusal(
+            "debit_note.revert_return",
+            "This supplier credit note was raised by a return, so it cannot go back to draft. To undo "
+            "the return, void the credit note: the goods go back into stock and the bill owes them again."))
+    # Inbound docs (bill, consignment_in) can also revert from received/fulfilled statuses.
+    _is_inbound = state.get("doc_type", "") in INBOUND_DOC_TYPES
+    revertable = INBOUND_DRAFT_REVERT_STATUSES if _is_inbound else DRAFT_REVERT_STATUSES
+    to_order = False
+    # A document that sent back everything it received reverts too: a bill whose goods all came
+    # in on the purchase order it was made from goes back to the order, which keeps them, and
+    # any other reverses its receipts and returns with it. A bill that received goods itself
+    # after it was made from an order has no draft to go back to that holds them, so it is voided.
+    # Goods the document was imported with are opening stock, which no revert takes back.
+    if state.get("received_items") and await _imported_receipt_held(session, company_id, entity_id):
+        _refuse(refusals, "imported_receipt", refusal(
+            "docs.revert_imported_receipt",
+            "This document cannot go back to draft: it was imported holding goods already in stock, which "
+            "the opening balances carry. Send back any goods it still holds with Return Goods, then settle "
+            "what it still owes with a payment."))
+    emptied = _is_inbound and await _sent_all_back(session, company_id, entity_id, state)
+    if emptied and state.get("doc_type") == "bill":
+        on_order = await _order_receipts_only(session, company_id, entity_id)
+        if on_order is False:
+            _refuse(refusals, "returned_bill", refusal(
+                "docs.revert_returned_bill",
+                "This bill cannot go back to draft: goods were received on it after it was made from its "
+                "purchase order. To cancel the bill, void it."))
+        to_order = on_order is True
+    if to_order or emptied:
+        revertable = revertable | DRAFT_REVERT_RETURNED
+    # Payments make a document paid or partial, so they alone refuse it there: once they are
+    # voided it is back in a status that reverts.
+    paid = float(state.get("amount_paid", 0) or 0) != 0
+    status = state.get("status")
+    if status not in revertable and not settled_by_credit_only(state) and not (paid and status in ("partial", "paid")):
+        _refuse(refusals, "status", refusal(
+            "documents.err_revert_status",
+            "Only a finalized, sent or awaiting-payment document can go back to Draft. This one is already "
+            "a draft, paid or void."))
+    if paid:
+        _refuse(refusals, "payments", refusal(
+            "documents.err_revert_has_payments",
+            "This document has payments, so it can't go back to Draft. Void the payments first."))
+    # Both blocks below name the button on the document's lines that clears them, so the
+    # user is sent to the action rather than left to guess where goods are returned.
+    if state.get("received_items") and not (to_order or emptied):
+        _refuse(refusals, "received", refusal(
+            "docs.revert_received_in_stock",
+            "Cannot revert to draft while goods received on this document are still in stock. "
+            "Select those lines and use Return Goods first, then revert."))
+    if drawn := await _drawn_on(session, company_id, state, _numbers_or_recorded):
+        memo = str(state.get("ref_id") or state.get("doc_number") or entity_id)
+        _refuse(refusals, "drawn", refusal(
+            "docs.memo_revert_while_drawn",
+            f"Memo {memo} can't go back to Draft while its products are on invoice {drawn[0][0]}. Send them "
+            "back to the memo or void that invoice first. To finish a memo whose products sold, close it instead.",
+            memo=memo, invoice=drawn[0][0]))
+    # Fulfilled items are tracked in state["fulfilled_items"]; each entry with a non-null
+    # item_id is an inventory item that is now out on memo or sold.
+    if any(fi.get("item_id") is not None for fi in state.get("fulfilled_items") or []):
+        _refuse(refusals, "out", await goods_out_refusal(session, company_id, entity_id, state, refusal(
+            "docs.revert_lines_out",
+            "Cannot revert to draft while lines are still out on memo or sold. "
+            "Select those lines and use Set as available first, then revert.")))
+    try:
+        await require_moving_fits(session, company_id, entity_id, "doc", {**state, "status": "draft"}, units)
+    except HTTPException as exc:
+        refusals.append(("units", exc))
+    refusals.sort(key=lambda reason: not _unclearable(reason[1].detail))
+    return RevertCheck(tuple(refusals), to_order=to_order, emptied=emptied)
+
+
 @router.post("/{entity_id}/revert-to-draft")
 async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     from celerp.services import auto_je
@@ -3609,75 +3852,10 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
         return done
     state = row.state
     previous_status = state.get("status")
-    await _refuse_undo_under_credit_note(session, company_id, state, entity_id, "revert")
-    # A note a return raised holds the return's credit, so a draft of it could be edited or
-    # deleted while the bill stays settled by it. Voiding it takes the return back instead.
-    if state.get("doc_type") == "debit_note" and state.get("source_return"):
-        raise HTTPException(status_code=409, detail=refusal(
-            "debit_note.revert_return",
-            "This supplier credit note was raised by a return, so it cannot go back to draft. To undo "
-            "the return, void the credit note: the goods go back into stock and the bill owes them again."))
-    # Inbound docs (bill, consignment_in) can also revert from received/fulfilled statuses.
-    _doc_type = state.get("doc_type", "")
-    _is_inbound = _doc_type in INBOUND_DOC_TYPES
-    _REVERTABLE = INBOUND_DRAFT_REVERT_STATUSES if _is_inbound else DRAFT_REVERT_STATUSES
-    to_order = False
-    # A document that sent back everything it received reverts too: a bill whose goods all came
-    # in on the purchase order it was made from goes back to the order, which keeps them, and
-    # any other reverses its receipts and returns with it. A bill that received goods itself
-    # after it was made from an order has no draft to go back to that holds them, so it is voided.
-    # Goods the document was imported with are opening stock, which no revert takes back.
-    if state.get("received_items") and await _imported_receipt_held(session, company_id, entity_id):
-        raise HTTPException(status_code=409, detail=refusal(
-            "docs.revert_imported_receipt",
-            "This document cannot go back to draft: it was imported holding goods already in stock, which "
-            "the opening balances carry. Send back any goods it still holds with Return Goods, then settle "
-            "what it still owes with a payment."))
-    emptied = _is_inbound and await _sent_all_back(session, company_id, entity_id, state)
-    if emptied and state.get("doc_type") == "bill":
-        on_order = await _order_receipts_only(session, company_id, entity_id)
-        if on_order is False:
-            raise HTTPException(status_code=409, detail=refusal(
-                "docs.revert_returned_bill",
-                "This bill cannot go back to draft: goods were received on it after it was made from its "
-                "purchase order. To cancel the bill, void it."))
-        to_order = on_order is True
-    if to_order or emptied:
-        _REVERTABLE = _REVERTABLE | DRAFT_REVERT_RETURNED
-    if previous_status not in _REVERTABLE and not settled_by_credit_only(state):
-        raise HTTPException(status_code=409, detail=t("documents.err_revert_status"))
-    if float(state.get("amount_paid", 0) or 0) != 0:
-        raise HTTPException(status_code=409, detail=t("documents.err_revert_has_payments"))
-    # Both blocks below name the button on the document's lines that clears them, so the
-    # user is sent to the action rather than left to guess where goods are returned.
-    if state.get("received_items") and not (to_order or emptied):
-        raise HTTPException(
-            status_code=409,
-            detail="Cannot revert to draft while goods received on this document are still in stock. "
-                   "Select those lines and use Return Goods first, then revert.",
-        )
-
-    # Block revert when any line item has been fulfilled. Fulfilled items are tracked in
-    # state["fulfilled_items"]; each entry with a non-null item_id is an inventory item that is
-    # now out on memo or sold.
-    if drawn := await _drawn_on(session, company_id, state):
-        memo = _ref(row)
-        raise HTTPException(status_code=409, detail=refusal(
-            "docs.memo_revert_while_drawn",
-            f"Memo {memo} can't go back to Draft while its products are on invoice {drawn[0][0]}. Send them "
-            "back to the memo or void that invoice first. To finish a memo whose products sold, close it instead.",
-            memo=memo, invoice=drawn[0][0]))
-    fulfilled_items = [
-        fi for fi in (state.get("fulfilled_items") or [])
-        if fi.get("item_id") is not None
-    ]
-    if fulfilled_items:
-        raise HTTPException(
-            status_code=409,
-            detail="Cannot revert to draft while lines are still out on memo or sold. "
-                   "Select those lines and use Set as available first, then revert.",
-        )
-    await require_moving_fits_units(session, company_id, entity_id, "doc", {**state, "status": "draft"})
+    check = await revert_check(session, company_id, entity_id, state, await get_company_units(session, company_id))
+    if check.refusals:
+        raise check.refusals[0][1]
+    to_order, emptied = check.to_order, check.emptied
 
     event_data: dict = {"reverted_by": str(user.id), "previous_status": previous_status}
     if payload.reason:
@@ -3886,7 +4064,7 @@ async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = D
                 cycle_tag=f"unvoid-{entry.id}", ts=None, trigger="doc.unvoided",
             )
         except ValueError as exc:
-            raise HTTPException(status_code=409, detail=getattr(exc, "detail", str(exc))) from exc
+            raise HTTPException(status_code=409, detail=refusal_detail(exc)) from exc
 
     # TODO: actual re-fulfillment after unvoid would need inventory availability check.
     # For now, restore the fulfillment_status field so the UI reflects prior state.
@@ -5544,7 +5722,7 @@ async def record_receipt(session: AsyncSession, company_id, row: Projection, pay
             try:
                 rate_known = doc_rate(row.state, base_currency) is not None
             except ValueError as exc:
-                raise HTTPException(status_code=422, detail=str(exc)) from exc
+                raise HTTPException(status_code=422, detail=refusal_detail(exc)) from exc
             if rate_known:
                 cost = await _received_goods_cost(session, company_id, row.state, it.model_copy(update={"cost_price": None}), stock_qty,
                                                   before)
@@ -7074,17 +7252,10 @@ class ReturnItem(_StatedMeasures):
 
 
 class ReturnLine(_StatedMeasures):
-    """A document line to send goods back from, by its id (or its position when it has none),
-    and the stock units to send back. The server finds the lots."""
-    line_id: str | None = None
-    line_index: int | None = None
+    """A document line to send goods back from, by its id, and the stock units to send back.
+    The server finds the lots."""
+    line_id: str
     quantity_returned: FiniteFloat = Field(gt=0)
-
-    @model_validator(mode="after")
-    def _names_one_line(self):
-        if (self.line_id is None) == (self.line_index is None):
-            raise ValueError("Name each line by its line_id, or by line_index when it has no id.")
-        return self
 
 
 class ReturnBody(BaseModel):
@@ -7109,7 +7280,9 @@ class ReturnBody(BaseModel):
 
 
 def _line_label(line: dict) -> str:
-    return str(line.get("sku") or line.get("name") or line.get("description") or "--")
+    """The line's SKU, name or description, the first one set; a value that is not text (the
+    line model declares all three text) is malformed input and is never shown."""
+    return next((v for k in ("sku", "name", "description") if isinstance(v := line.get(k), str) and v), "--")
 
 
 # Which of a line's lots make up its quantity is worked out from what the lots from each
@@ -7294,12 +7467,8 @@ async def _return_lines_as_lots(session: AsyncSession, company_id, doc_id: str, 
     doc_lines = doc.get("line_items") or []
     picked: list[int] = []
     for ln in lines:
-        if ln.line_id is not None:
-            found = [i for i, li in enumerate(doc_lines) if li.get("line_id") == ln.line_id]
-            index = found[0] if len(found) == 1 else None
-        else:
-            index = (ln.line_index if 0 <= ln.line_index < len(doc_lines)
-                     and not doc_lines[ln.line_index].get("line_id") else None)
+        found = [i for i, li in enumerate(doc_lines) if li.get("line_id") == ln.line_id]
+        index = found[0] if len(found) == 1 else None
         if index is None:
             raise HTTPException(status_code=422, detail=refusal(
                 "docs.return_line_unknown",
@@ -9020,7 +9189,7 @@ async def create_list_record(payload: ListCreatePayload, company_id, role: str, 
     if (done := await _replay()) is not None:
         return done
     require_currency_code(payload.currency)
-    refuse_malformed_taxes({"line_items": payload.line_items})
+    refuse_malformed_input({"line_items": payload.line_items})
     # The contact first, as every contact-reference writer takes it (its lock takes the
     # company lock, then the contact row).
     contact = await _lock_selected_contact(session, company_id, settings, role, payload.contact_id or "")
@@ -9083,7 +9252,7 @@ async def write_list_patch(session: AsyncSession, company_id, role: str, setting
     fields_changed = dict(payload.fields_changed)
     require_currency_code((fields_changed.get("currency") or {}).get("new"))
     _refuse_protected_fields(fields_changed)
-    refuse_malformed_taxes({k: (v or {}).get("new") for k, v in fields_changed.items()})
+    refuse_malformed_input({k: (v or {}).get("new") for k, v in fields_changed.items()})
     selecting = "contact_id" in fields_changed
     new_contact_id = str((fields_changed.get("contact_id") or {}).get("new") or "")
     if selecting and "line_items" in fields_changed:
@@ -9107,9 +9276,9 @@ async def write_list_patch(session: AsyncSession, company_id, role: str, setting
     # touch independent fields and stay backward compatible without a version.
     _new_lines = (fields_changed.get("line_items") or {}).get("new")
     if isinstance(_new_lines, list) and payload.expected_version is None:
-        raise HTTPException(status_code=409, detail=t("documents.err_list_stale"))
+        raise _stale_doc("documents.err_list_stale")
     if payload.expected_version is not None and row.version != payload.expected_version:
-        raise HTTPException(status_code=409, detail=t("documents.err_list_changed"))
+        raise _stale_doc("documents.err_list_changed")
     _new_values = {f: (c or {}).get("new") for f, c in fields_changed.items()}
     if selecting:
         # Lines a selection reprices are computed from the locked List, so they cannot
@@ -9124,7 +9293,7 @@ async def write_list_patch(session: AsyncSession, company_id, role: str, setting
     try:
         _validate_shipment_values(_new_values)
     except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=422, detail=refusal_detail(e))
     if "discount" in _new_values and discount_from_inputs(_new_values, 0, row.state.get("currency")) is None:
         raise HTTPException(status_code=422, detail=t("documents.err_discount_number"))
     if isinstance(_new_lines, list):
@@ -9606,14 +9775,14 @@ async def patch_list_line_page(
     the window is exactly the submitted page's own length (a pure in-place replace that never drops
     off-window rows), so a delete or insert must carry the loaded window length, which the editor
     always sends."""
-    refuse_malformed_taxes({"line_items": payload.line_items})
+    refuse_malformed_input({"line_items": payload.line_items})
     row = await _get_list_for_update(session, company_id, entity_id)
     if row.state.get("status") != "draft":
         raise HTTPException(status_code=409, detail=t("documents.err_list_not_draft"))
     if payload.expected_version is None:
-        raise HTTPException(status_code=409, detail=t("documents.err_list_stale"))
+        raise _stale_doc("documents.err_list_stale")
     if row.version != payload.expected_version:
-        raise HTTPException(status_code=409, detail=t("documents.err_list_changed"))
+        raise _stale_doc("documents.err_list_changed")
 
     page = payload.line_items
     if len(page) > _PAGE_LIMIT_MAX:
@@ -9649,9 +9818,7 @@ async def patch_list_line_page(
     # The optimistic version guard above already pins `stored` to exactly what the client loaded, so
     # any window outside it means the client's view is stale: reject and reload rather than mutate.
     if offset > len(stored) or offset + original_count > len(stored):
-        raise HTTPException(
-            status_code=409,
-            detail=t("documents.err_list_changed"))
+        raise _stale_doc("documents.err_list_changed")
     # No positional id comparison: the page replaces the WHOLE window [offset:offset+original_count],
     # so a delete or insert legitimately shifts the surviving rows out of id-for-id alignment with
     # `stored`. Concurrency is guarded by the version pin (every save bumps the list version), not by
@@ -9738,6 +9905,7 @@ async def finalize_list_record(entity_id: str, company_id: str, user, session: A
 
 
 @lists_router.post("/{entity_id}/reserve-lines")
+@answers_with("new_status", "reserved", "released", "taken_back", "taken_back_notice", *_STOCK_ANSWER)
 async def reserve_list_lines(
     entity_id: str,
     body: ReserveLinesRequest,
@@ -9747,7 +9915,11 @@ async def reserve_list_lines(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Reserve or release chosen lines of a List of any type (ledger-neutral). Release works
-    in any status; newly reserving stock needs a draft or finalized List."""
+    in any status; newly reserving stock needs a draft or finalized List.
+
+    Lines with no inventory item and service lines are left as they are and listed in the
+    answer's ``skipped`` (each line's number, name, kind and line id), with ``skipped_notice``
+    saying why. A choice of only such lines is refused (422), naming them."""
     # Company first, as the document path does, so a document being created with one of
     # these items either sees the reservation or is seen by it.
     row = await _get_list_for_update(session, company_id, entity_id)
@@ -9759,6 +9931,7 @@ async def reserve_list_lines(
 
 
 @lists_router.post("/{entity_id}/set-available")
+@answers_with("new_status", "reserved", "released", *_STOCK_ANSWER)
 async def set_list_lines_available(
     entity_id: str,
     body: FulfillLinesRequest,
@@ -9768,7 +9941,12 @@ async def set_list_lines_available(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Give back what chosen List lines hold. A List never ships, so a line whose goods are
-    sold or out on memo is refused: they are taken back on the document that shipped them."""
+    sold or out on memo is refused: they are taken back on the document that shipped them.
+
+    Lines with no inventory item, service lines and lines holding nothing are left as they
+    are and listed in the answer's ``skipped`` (each line's number, name, kind and line id),
+    with ``skipped_notice`` saying why. A choice in which no line holds anything is refused
+    (422), naming the lines."""
     row = await _get_list_for_update(session, company_id, entity_id)
 
     async def run(indices: list[int]) -> dict:
@@ -9782,8 +9960,14 @@ async def set_list_lines_available(
                 shipped.setdefault(by, []).append(str(line_items[i].get("sku") or i + 1))
         if shipped:
             raise HTTPException(status_code=422, detail=shipped_elsewhere(shipped))
-        return await _reserve_lines_impl(row, entity_id, "available", indices, user, session,
-                                         may_acquire=False, commit=False)
+        acting, _counted, left = _acting_lines(line_items, indices, locked, "set-available")
+        idle = [i for i in acting if not by_line.get(i)]
+        skipped = left + _skipped_lines(line_items, idle, "idle")
+        if len(idle) == len(acting):
+            _refuse_skipped("set-available", skipped)
+        result = await _reserve_lines_impl(row, entity_id, "available", [i for i in acting if i not in idle],
+                                           user, session, may_acquire=False, commit=False)
+        return {**result, "skipped": skipped}
 
     return await _line_action(session, company_id, user, row, "set-available", body, run)
 
@@ -10147,7 +10331,7 @@ async def import_list(
         ))
     role, settings = await locked_authority(session, company_id, user.id, ("edit_documents", "import_export_data"))
     _assert_list_import_permissions(settings, role, body.data)
-    refuse_malformed_taxes(body.data)
+    refuse_malformed_input(body.data)
 
     replay = await find_event_by_idempotency(session, company_id, body.idempotency_key)
     if replay is not None:
@@ -10280,7 +10464,7 @@ async def batch_import_lists(
             skipped += 1
             continue
         try:
-            refuse_malformed_taxes(rec.data)
+            refuse_malformed_input(rec.data)
             await _lock_imported_contact(session, company_id, "list", rec.data)
             await _assert_import_number_free(session, company_id, "list", rec.data)
             entry = await emit_event(
@@ -10311,8 +10495,8 @@ async def batch_import_lists(
 def _selected_line_indices(line_items: list[dict], body: FulfillLinesRequest) -> list[int]:
     """The lines a request names, as positions in ``line_items``, in document order.
 
-    ``line_ids`` must each name a line on the record. A legacy ``line_entity_ids`` entry
-    names the line that binds that item, and only when exactly one line does: an item on
+    ``line_ids`` must each name a line on the record. A ``line_entity_ids`` entry picks
+    the line that binds that item, and only when exactly one line does: an item on
     several lines does not say which of them is meant."""
     if body.line_ids and body.line_entity_ids:
         raise HTTPException(status_code=422, detail=refusal(
@@ -10370,16 +10554,90 @@ async def _line_stock(
     return locked, by_line
 
 
+def _line_lot(line_items: list[dict], index: int, locked: dict[str, Projection]) -> Projection | None:
+    """The locked lot line ``index`` binds, or None when it binds no item that exists."""
+    return locked.get(str(line_item_id(line_items[index]) or ""))
+
+
 def _stock_line(line_items: list[dict], index: int, locked: dict[str, Projection]) -> Projection | None:
-    """The lot line ``index`` binds, or None for a non-stock line (a service or charge).
-    A line that binds no item has nothing to reserve or ship and is refused."""
-    proj = locked.get(str(line_item_id(line_items[index]) or ""))
-    if proj is None:
-        raise HTTPException(status_code=422, detail=refusal(
-            "lines.no_item", f"Line {index + 1} names no inventory item.", line=index + 1))
-    if is_non_stock_line(proj.state.get("inventory_type"), proj.state.get("sell_by")):
+    """The lot line ``index`` binds, or None for a line with no stock to act on (no item, or a
+    service or charge item)."""
+    proj = _line_lot(line_items, index, locked)
+    if proj is None or is_non_stock_line(proj.state.get("inventory_type"), proj.state.get("sell_by")):
         return None
     return proj
+
+
+def _named_lines(line_items: list[dict], indices) -> list[dict]:
+    """The lines at ``indices``, each named by its number and label and carrying its line id."""
+    return [{"line": i + 1, "name": line_label(line_items[i]), "line_id": line_items[i].get("line_id")}
+            for i in indices]
+
+
+def _skipped_lines(line_items: list[dict], indices: list[int], kind: str) -> list[dict]:
+    """The lines at ``indices`` a line action leaves as they are (_named_lines); ``kind`` is a
+    kind of LINE_SKIP_REASONS."""
+    return [{**named, "kind": kind} for named in _named_lines(line_items, indices)]
+
+
+def _skip_messages(action: str, skipped: list[dict], *, refuse: bool = False) -> list[dict]:
+    """One message per kind in ``skipped`` naming its lines, as ``6 "GIA Certificate"``, in
+    ``action``'s own words (LINE_SKIP_REASONS): the notice that they were left as they are. With
+    ``refuse``, one message: the reason for each kind that none of the chosen lines is one the
+    action acts on, then the action's next step once (LINE_REFUSAL_NEXT), so no page can show
+    the step apart from its reasons. A kind the action has no reason for is a KeyError, never
+    another action's wording."""
+    reasons = LINE_SKIP_REASONS[action]
+    unknown = {s["kind"] for s in skipped} - set(reasons)
+    if unknown:
+        raise KeyError(f"{action} has no skip reason for {sorted(unknown)}")
+    messages = []
+    for kind, keys in reasons.items():
+        of_kind = [s for s in skipped if s["kind"] == kind]
+        if of_kind:
+            key = f"{keys[refuse]}_{'one' if len(of_kind) == 1 else 'many'}"
+            messages.append(catalog_refusal(key, lines=", ".join(line_name(s["line"], s["name"]) for s in of_kind)))
+            messages += _merged_reasons([s["reason"] for s in of_kind if s.get("reason")])
+    if refuse:
+        step = catalog_refusal(f"{LINE_REFUSAL_NEXT[action]}_{'one' if len(skipped) == 1 else 'many'}")
+        return [catalog_refusal("lines.reasons_then_next", reasons=messages, next=step)]
+    return messages
+
+
+def _acting_lines(line_items: list[dict], indices: list[int], locked: dict[str, Projection],
+                  action: str) -> tuple[list[int], list[int], list[dict]]:
+    """Which chosen lines the bulk line action ``action`` acts on: ``(acting, counted, skipped)``.
+
+    A line with stock acts. A line whose item is not stock is skipped when the action has a
+    reason for leaving a service (LINE_SKIP_REASONS) and otherwise counted (Ship counts it
+    shipped); a line with no item is skipped (one whose
+    item no longer exists never gets here: _lock_item_sku_lots refuses it as stock changed). A choice of lines none of which acts or counts is refused, naming them.
+    With no ``indices`` (lots chosen by item) nothing is skipped or refused."""
+    count_service = "service" not in LINE_SKIP_REASONS[action]
+    acting: list[int] = []
+    counted: list[int] = []
+    no_item: list[int] = []
+    service: list[int] = []
+    for i in indices:
+        if _stock_line(line_items, i, locked) is not None:
+            acting.append(i)
+        elif _line_lot(line_items, i, locked) is None:
+            no_item.append(i)
+        else:
+            (counted if count_service else service).append(i)
+    skipped = _skipped_lines(line_items, no_item, "no_item") + _skipped_lines(line_items, service, "service")
+    if indices and not acting and not counted:
+        _refuse_skipped(action, skipped)
+    return acting, counted, skipped
+
+
+def _refuse_skipped(action: str, skipped: list[dict], status_code: int = 422) -> None:
+    """Refuse a choice every line of which ``action`` leaves as it is, naming them: with the
+    action's refusal, its next step in the same message, when no chosen line was one it could
+    act on; otherwise with its notices, as there was nothing to change."""
+    reasons = LINE_SKIP_REASONS[action]
+    msgs = _skip_messages(action, skipped, refuse=all(reasons[s["kind"]][1] for s in skipped))
+    raise HTTPException(status_code=status_code, detail={**msgs[0], "also": msgs[1:]})
 
 
 def _line_plan(
@@ -10449,18 +10707,21 @@ def _stands_in(bound: Projection, owner_id: str, draws: list) -> bool:
             and any(lot.get("claim") != "reserved" for lot, _take, _full in draws))
 
 
+def _merged_reasons(reasons: list[dict]) -> list[dict]:
+    """``reasons`` (each _unavailable's) with the goods other documents shipped named in one
+    reason, each document with its own lines, placed last so they end with the next step."""
+    by_doc: dict[str, list[str]] = {}
+    for r in reasons:
+        for went in (r["params"]["went"] if r.get("message_key") == "lines.shipped_elsewhere" else ()):
+            by_doc.setdefault(went["params"]["doc"], []).append(went["params"]["lines"])
+    merged = [r for r in reasons if r.get("message_key") != "lines.shipped_elsewhere"]
+    return merged + [shipped_elsewhere(by_doc)] if by_doc else merged
+
+
 def _refuse_unavailable(reasons: list[dict]) -> None:
-    """Refuse lines that cannot be taken. Goods other documents shipped are named in one
-    reason, each document with its own lines, placed last so the refusal ends with the
-    next step."""
+    """Refuse lines that cannot be taken, each with why (_merged_reasons)."""
     if reasons:
-        by_doc: dict[str, list[str]] = {}
-        for r in reasons:
-            for went in (r["params"]["went"] if r.get("message_key") == "lines.shipped_elsewhere" else ()):
-                by_doc.setdefault(went["params"]["doc"], []).append(went["params"]["lines"])
-        reasons = [r for r in reasons if r.get("message_key") != "lines.shipped_elsewhere"]
-        if by_doc:
-            reasons.append(shipped_elsewhere(by_doc))
+        reasons = _merged_reasons(reasons)
         text = " ".join(r["message"] for r in reasons)
         raise HTTPException(status_code=422, detail=refusal(
             "lines.unavailable", f"Not available: {text}", reasons=reasons))
@@ -10525,26 +10786,6 @@ async def _apply_split_plan(
         )
         state["line_items"] = new_lines
     return children
-
-
-async def _give_lines_ids(session, *, company_id, uid, owner: Projection, source: str) -> None:
-    """Give each line of ``owner`` that has no line id (a record from an older version) its
-    id, through the owner's own update event, so a hold or a shipment names its line the
-    way it does on a newer record. A record whose lines all have ids is left alone."""
-    state = owner.state
-    lines = state.get("line_items") or []
-    if all(li.get("line_id") for li in lines if isinstance(li, dict)):
-        return
-    new_lines = [dict(li) if isinstance(li, dict) else li for li in lines]
-    # emit_event gives every id-less line of the new set its id, in place.
-    await emit_event(
-        session, company_id=uuid.UUID(str(company_id)), entity_id=owner.entity_id,
-        entity_type=owner.entity_type, event_type=f"{owner.entity_type}.updated",
-        data={"fields_changed": {"line_items": {"old": lines, "new": new_lines}}},
-        actor_id=uid, location_id=None, source=source,
-        idempotency_key=str(uuid.uuid4()), metadata_={},
-    )
-    state["line_items"] = new_lines
 
 
 async def _set_lot_status(session, *, company_id, uid, owner: Projection, lot_id: str,
@@ -10762,8 +11003,12 @@ async def _fulfill_lines_impl(
 
     Each line ships what it holds and, when that is short of its quantity, free stock as a
     reservation would take it; a line holding more than its quantity is refused until it is
-    reserved again. Another line's hold is never shipped. A shortage on any line refuses the
-    whole request. Inbound doc types (bill, consignment_in) must use POST /receive instead.
+    reserved again. Another line's hold is never shipped. A line ships once: one that has
+    shipped is left as it is until its goods are taken back, and so is one whose goods are
+    sold, held or out on another record; both are named in ``skipped`` (the latter with why,
+    as _unavailable says it), and a choice none of
+    whose lines ships is refused. A shortage on any line refuses the whole request. Inbound
+    doc types (bill, consignment_in) must use POST /receive instead.
     """
     from celerp.services import auto_je
 
@@ -10779,17 +11024,21 @@ async def _fulfill_lines_impl(
             "lines.fulfil_status", f"Lines cannot be fulfilled while this record's status is {state.get('status')}.",
             doc_status=state.get("status")))
 
-    await _give_lines_ids(session, company_id=company_id, uid=user.id, owner=row, source="fulfillment")
     line_items = state.get("line_items", [])
     locked, by_line = await _line_stock(session, company_id, entity_id, line_items, indices)
+    indices, counted, left = _acting_lines(line_items, indices, locked, "fulfill")
+    _out, line_of = await _lots_out(session, company_id, entity_id, state, locked.values())
+    already = [i for i in indices if i in set(line_of.values())]
+    indices = [i for i in indices if i not in already]
+    service_lines = set(counted)
     unit_map = await _get_unit_map(session, company_id)
     company = await session.get(Company, company_id)
     company_settings = (company.settings or {}) if company else {}
     ship_from = state.get("from_location_id") or None
 
     blocked: list[str] = []
-    unavailable: list[dict] = []
-    service_lines: set[int] = set()
+    # Lines whose goods are not free to ship, each with why (_unavailable).
+    unavailable: dict[int, dict] = {}
     remaining: dict[str, float] = {}
     # (line index, lot, quantity taken, whole lot) in plan order.
     shipments: list[tuple[int, Projection, float, bool]] = []
@@ -10800,9 +11049,6 @@ async def _fulfill_lines_impl(
     plan_items = list(line_items)
     for idx in indices:
         bound = _stock_line(line_items, idx, locked)
-        if bound is None:
-            service_lines.add(idx)
-            continue
         line = line_items[idx]
         sku = bound.state.get("sku", "")
         line_qty = invoiced = float(line.get("quantity") or 0)
@@ -10812,6 +11058,7 @@ async def _fulfill_lines_impl(
                     f"{sku}: nothing left to ship: invoiced {invoiced:g}, credited {cut:g}, shipped 0"))
             line = plan_items[idx] = _less_credited_line(line, (invoiced - cut) / invoiced)
             line_qty = invoiced - cut
+        planned_before = dict(remaining)
         draws, short, own, skipped = _line_plan(
             plan_items, idx, locked, by_line, entity_id, company_settings, remaining, ship_from)
         held = sum(lot["quantity"] for lot in own)
@@ -10820,7 +11067,10 @@ async def _fulfill_lines_impl(
             continue
         if short > 1e-9 or _stands_in(bound, entity_id, draws):
             if reason := _unavailable(bound, entity_id):
-                unavailable.append(reason)
+                # Left as it is: what it planned to take stays free for the other lines.
+                unavailable[idx] = reason
+                remaining.clear()
+                remaining.update(planned_before)
             elif skipped and short > 1e-9:
                 raise HTTPException(status_code=409, detail=splitting_off(
                     str(skipped[0]["state"].get("sku") or sku), "ship"))
@@ -10858,7 +11108,12 @@ async def _fulfill_lines_impl(
         reasons = "; ".join(blocked)
         raise HTTPException(status_code=409, detail=refusal(
             "lines.cannot_fulfil", f"Cannot fulfill: {reasons}", reasons=reasons))
-    _refuse_unavailable(unavailable)
+    drawn = [i for i in already if line_items[i].get("drawn_from")]
+    left += (_skipped_lines(line_items, [i for i in already if i not in drawn], "shipped")
+             + _skipped_lines(line_items, drawn, "drawn")) + [
+        {**s, "reason": unavailable[s["line"] - 1]} for s in _skipped_lines(line_items, list(unavailable), "unavailable")]
+    if left and not shipments and not service_lines:
+        _refuse_skipped("fulfill", left)
 
     now_dt = datetime.now(timezone.utc)
     now = now_dt.isoformat()
@@ -10886,8 +11141,10 @@ async def _fulfill_lines_impl(
         whole = {proj.entity_id: proj for _idx, proj, _take, full in shipments if full}
         told = {(m["lot_id"], m["doc_id"]) for m in taken_from}
         for lot_id, docs in (await auto_je.other_invoices_naming(session, cid, entity_id, whole)).items():
-            taken_from += [{"sku": whole[lot_id].state.get("sku") or lot_id, "lot_id": lot_id,
-                            "doc_id": d["doc_id"], "doc_number": d["doc_number"]}
+            lot = whole[lot_id].state or {}
+            taken_from += [auto_je.taken_entry(sku=lot.get("sku"), name=lot.get("name"),
+                                               takes=auto_je.LotTaken.ALL.value, lot_id=lot_id,
+                                               doc_id=d["doc_id"], doc_number=d["doc_number"])
                            for d in docs if (lot_id, d["doc_id"]) not in told]
 
     # A part of a lot ships as its own lot carved off first; a line whose bound lot is
@@ -10940,7 +11197,7 @@ async def _fulfill_lines_impl(
                 ts=fulfillment_date, trigger="doc.fulfilled",
             )
         except ValueError as exc:
-            raise HTTPException(status_code=409, detail=getattr(exc, "detail", str(exc))) from exc
+            raise HTTPException(status_code=409, detail=refusal_detail(exc)) from exc
 
     # Optimistically compute doc fulfillment_status. Service lines count as fulfilled (they are
     # rendered, not drawn from stock) so a service-only or mixed doc can reach "fulfilled".
@@ -11001,7 +11258,54 @@ async def _fulfill_lines_impl(
 
     if commit:
         await session.commit()
-    return {"fulfillment_status": doc_fulfillment_status, "fulfilled": shipped, "taken_from": taken_from}
+    return {"fulfillment_status": doc_fulfillment_status, "fulfilled": shipped, "taken_from": taken_from,
+            "skipped": left}
+
+
+def binds_its_outcome(model: type) -> bool:
+    """Whether requests of ``model`` are a stock line action's, bound to the outcome of its
+    preview (outcome_binding). The memo draw binds its request instead (draw_problems)."""
+    return issubclass(model, FulfillLinesRequest) and not issubclass(model, InvoiceLinesRequest)
+
+
+def _taken_back_notice(taken_back: list[dict]) -> dict:
+    """The message naming the shipped lines a line action took back into stock, reversing
+    their shipment."""
+    key = f"documents.taken_back_{'one' if len(taken_back) == 1 else 'many'}"
+    return catalog_refusal(key, lines=", ".join(line_name(s["line"], s["name"]) for s in taken_back))
+
+
+def _line_action_answer(action: str, result: dict, chosen: list[str], *, binds: bool) -> dict:
+    """``result`` of the line action ``action`` on the lines ``chosen`` (their line ids), with
+    the lines it acted on (``acted``), the notices naming the lines it left and the shipped
+    lines it took back, and with ``binds`` its ``binding`` (outcome_binding). The lines it
+    left are listed in line order."""
+    if result.get("skipped"):
+        result["skipped"] = sorted(result["skipped"], key=lambda s: s["line"])
+    left = {s["line_id"] for s in result.get("skipped") or []}
+    result["acted"] = [lid for lid in chosen if lid not in left]
+    if result.get("skipped"):
+        result["skipped_notice"] = _skip_messages(action, result["skipped"])
+    if result.get("taken_back"):
+        result["taken_back_notice"] = [_taken_back_notice(result["taken_back"])]
+    if binds:
+        result["binding"] = outcome_binding(result)
+    return result
+
+
+@contextmanager
+def _no_commit(session):
+    """Refuse any commit on ``session`` inside the block: a preview's writes are rolled back."""
+    def refuse(sync_session):
+        # A savepoint's release is not a commit: the rollback still undoes it.
+        if not sync_session.in_nested_transaction():
+            raise RuntimeError("a line action preview may not commit")
+    sync = session.sync_session
+    _sa.event.listen(sync, "before_commit", refuse)
+    try:
+        yield
+    finally:
+        _sa.event.remove(sync, "before_commit", refuse)
 
 
 async def _line_action(session, company_id, user, owner: Projection, action: str,
@@ -11010,8 +11314,13 @@ async def _line_action(session, company_id, user, owner: Projection, action: str
     """Run one line action on ``owner`` once per key: resolve the chosen lines (with
     ``select_lines``, by default _selected_line_indices), call ``run(indices)`` and record
     the request and its result, even when it changed nothing, so the same key replays that
-    result and a different request under it is refused. ``operation``: the key and digest
-    of the caller's own request, when it is not ``body``."""
+    result and a different request under it is refused. The result names the lines it acted
+    on (``acted``) beside those it left (``skipped``). With ``body.dry_run`` the action runs
+    the same way and all it wrote is rolled back unrecorded, so a preview is the action's own
+    answer, never a second rule. An action that binds its outcome (binds_its_outcome) answers
+    with its ``binding``, and sent with a binding refuses, changing nothing, when its own
+    differs. ``operation``: the key and digest of
+    the caller's own request, when it is not ``body``."""
     key, digest = operation or _operation(f"{action}-lines", owner.entity_id, body)
     record_id = f"line_action:{_step_id(key)}"
     if (done := await _earlier_run(session, company_id, key, event_type="line_action.recorded",
@@ -11025,16 +11334,25 @@ async def _line_action(session, company_id, user, owner: Projection, action: str
     if owner.state.get("doc_type") == "memo" and action in ("fulfill", "reserve", "set-available", "revert"):
         numbers = await _current_doc_numbers(session, company_id, {t["invoice_id"] for t in memo_draws(owner.state)})
         refuse_drawn_memo_line_action(owner.state, indices, {i: n for i, (n, _) in numbers.items()})
-    result = await run(indices)
-    # Read after the action, which gives lines from an older version their ids; Back to memo
-    # takes its lines off, and only drawn lines, which always have ids, go back.
-    if not removes:
-        line_items = owner.state.get("line_items", [])
-    chosen = [str(line_items[i].get("line_id")) for i in indices if line_items[i].get("line_id")]
+    # Read before the action: Back to memo takes its lines off.
+    chosen = [str(lid) for i in indices if (lid := line_items[i].get("line_id"))]
+    binds_outcome = binds_its_outcome(type(body))
+    if body.dry_run:
+        with _no_commit(session):
+            try:
+                return _line_action_answer(action, await run(indices), chosen, binds=binds_outcome)
+            finally:
+                await session.rollback()
+    result = _line_action_answer(action, await run(indices), chosen, binds=binds_outcome)
+    if binds_outcome and body.binding is not None and body.binding != result["binding"]:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=refusal(
+            "lines.preview_differs",
+            "The lines changed after the preview, so nothing was changed. Check the new preview, then confirm again."))
     await emit_event(
         session, company_id=uuid.UUID(str(company_id)), entity_id=record_id,
         entity_type="line_action", event_type="line_action.recorded",
-        data={"owner_id": owner.entity_id, "action": action, "line_ids": chosen},
+        data={"owner_id": owner.entity_id, "action": action, "line_ids": result["acted"]},
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=key, metadata_={"request": digest, "result": result},
     )
@@ -11043,6 +11361,7 @@ async def _line_action(session, company_id, user, owner: Projection, action: str
 
 
 @router.post("/{entity_id}/fulfill-lines")
+@answers_with("fulfillment_status", "fulfilled", "taken_from", *_STOCK_ANSWER)
 async def fulfill_lines(
     entity_id: str,
     body: FulfillLinesRequest,
@@ -11051,6 +11370,14 @@ async def fulfill_lines(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    """Ship chosen lines of an invoice or memo in one request.
+
+    A service line counts as shipped. A line with no inventory item, a line that has already
+    shipped and a line whose goods are sold, held or out on another record are left as they
+    are and listed in the answer's ``skipped`` (its number, name, kind and line id), with
+    ``skipped_notice`` saying why, and for goods not free to ship where they are and what to do
+    first; ``acted`` lists the lines it ships. A choice of only such
+    lines is refused (422), naming them."""
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     return await _line_action(
         session, company_id, user, row, "fulfill", body,
@@ -11159,7 +11486,7 @@ async def _reverse_whole_lines(
                 ts=reversal_date, trigger="doc.fulfillment_reversed",
             )
         except ValueError as exc:
-            raise HTTPException(status_code=409, detail=getattr(exc, "detail", str(exc))) from exc
+            raise HTTPException(status_code=409, detail=refusal_detail(exc)) from exc
 
     # Optimistically compute doc fulfillment_status. A line drawn from a memo went out on
     # the memo, not by this document's delivery, so its lots never count as delivered here.
@@ -11215,9 +11542,10 @@ async def _reverse_whole_lines(
 
 
 def _revert_selection(line_items: list[dict], body: FulfillLinesRequest) -> list[int]:
-    """The lines a revert names. A legacy ``line_entity_ids`` body names the lots to take
-    back themselves (a lot drawn from another lot of a line's product is on no line), so it
-    selects no line; the lots are proved one by one instead."""
+    """The lines a revert names. A ``line_entity_ids`` body, which picks lines by the item
+    they bind, names the lots to take back themselves (a lot drawn from another lot of a
+    line's product is on no line), so it selects no line; the lots are proved one by one
+    instead."""
     if body.line_entity_ids and not body.line_ids:
         return []
     return _selected_line_indices(line_items, body)
@@ -11275,12 +11603,12 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
     """Take back what this document shipped, whole or in part, without committing.
 
     ``indices`` are the chosen lines: each gives back every lot it shipped. With none, the
-    legacy body names the lots. Every lot is proved before anything changes: it is out
+    body picks lines by the item they bind and names the lots. Every lot is proved before anything changes: it is out
     (sold or on memo) for this document and its shipment's line can be told. Any line or
     lot that fails refuses the whole request. ``holding`` is given when the user chose Set as
     available, and the refusal names that action: a line in it gives back a hold elsewhere,
-    so having nothing out is not an error for it; the status is checked only when something
-    is to come back."""
+    so having nothing out is not an error for it, and a line outside it with nothing out is
+    left as it is and named; the status is checked only when something is to come back."""
     set_available = holding is not None
     company_id = row.company_id
     entity_id = row.entity_id
@@ -11309,7 +11637,9 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
         Projection.entity_id.in_(named),
     ))).scalars().all()) if named else set()
     owned = {p.entity_id for p in await _memo_allocation_items(session, company_id, entity_id)}
-    locked = await _lock_item_sku_lots(session, company_id, owned | present)
+    chosen_items = {str(line_item_id(line_items[i]) or "") for i in indices} - {""}
+    locked = await _lock_item_sku_lots(session, company_id, owned | present | chosen_items)
+    indices, _counted, left = _acting_lines(line_items, indices, locked, "revert")
     out, line_of = await _lots_out(session, company_id, entity_id, state, locked.values())
 
     def _sku(eid: str) -> str:
@@ -11321,11 +11651,13 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
                        sku=_sku(eid))
 
     errors: list[dict] = []
+    idle: list[int] = []
     # (key the request names it by, lots it covers) per chosen line or legacy lot.
     groups: list[tuple[str, list[Projection], str | None]] = []
+    # The lines with goods out that come back.
+    out_lines: set[int] = set()
     if indices:
         chosen_skus = {str(line_items[i].get("sku") or "").strip() for i in indices} - {""}
-        chosen_items = {str(line_item_id(line_items[i]) or "") for i in indices} - {""}
         for eid, idx in line_of.items():
             if idx is None and (eid in chosen_items or _sku(eid).strip() in chosen_skus):
                 errors.append(_unattributed(eid))
@@ -11334,8 +11666,7 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
             name = line_items[i].get('sku') or line_items[i].get('description') or i + 1
             if not lots:
                 if set_available and i not in holding:
-                    errors.append(refusal("lines.available_nothing_held",
-                                          f"{name}: nothing is held or out on this line", name=name))
+                    idle.append(i)
                 elif not set_available:
                     errors.append(refusal("lines.revert_nothing_out", f"{name}: nothing is out on this line",
                                           name=name))
@@ -11344,6 +11675,7 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
                                           name=name))
                 continue
             groups.append((str(line_items[i].get("line_id")), lots, line_item_id(line_items[i])))
+            out_lines.add(i)
     else:
         for eid in body.line_entity_ids:
             proj = locked.get(eid)
@@ -11362,7 +11694,9 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
                 errors.append(_unattributed(eid))
             else:
                 groups.append((eid, [proj], eid))
+                out_lines.add(line_of[eid])
 
+    skipped = left + _skipped_lines(line_items, idle, "idle")
     to_revert: list[str] = []
     # lot -> quantity coming back, for lots where only part of it returns.
     partial_plan: dict[str, tuple[float, str]] = {}
@@ -11405,9 +11739,12 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
             "lines.cannot_set_available", f"Cannot set as available: {reasons}", reasons=errors)
             if set_available else
             refusal("lines.cannot_revert", f"Cannot take back: {reasons}", reasons=errors))
+    # Set as available names the shipped lines it takes back; taking back is all Revert does.
+    taken_back = {"taken_back": _named_lines(line_items, sorted(out_lines))} if set_available else {}
     if set_available:
         if not groups:
-            return {"fulfillment_status": state.get("fulfillment_status"), "reverted": [], "partially_returned": []}
+            return {"fulfillment_status": state.get("fulfillment_status"), "reverted": [], "partially_returned": [],
+                    "skipped": skipped, **taken_back}
         _check_revert_status(state)
 
     cid = uuid.UUID(str(company_id))
@@ -11452,10 +11789,13 @@ async def _revert_lines_impl(row: Projection, body: RevertLinesRequest, indices:
         "reverted": to_revert,
         # Lots that came back in part: the new in-stock parcel per part-returned line.
         "partially_returned": returned_brief,
+        "skipped": skipped,
+        **taken_back,
     }
 
 
 @router.post("/{entity_id}/revert-lines")
+@answers_with("fulfillment_status", "reverted", "partially_returned", *_STOCK_ANSWER)
 async def revert_lines(
     entity_id: str,
     body: RevertLinesRequest,
@@ -11465,6 +11805,10 @@ async def revert_lines(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Take back goods this memo or invoice shipped (Set as available on shipped lines).
+
+    Lines with no inventory item and service lines are left as they are and listed in the
+    answer's ``skipped`` (each line's number, name, kind and line id), with ``skipped_notice``
+    saying why. A choice of only such lines is refused (422), naming them.
 
     Inbound doc types (bill, consignment_in) must use DELETE /receive instead.
     """
@@ -11483,15 +11827,14 @@ async def revert_lines(
 
 
 class InvoiceLinesRequest(RevertLinesRequest):
-    """Invoice goods out on a memo. ``line_ids`` names the memo lines and ``quantities`` the
-    units of each to invoice, by line id (omitted: every unit the line has out).
-    ``target_doc_id`` names a draft invoice of the same customer to add them to; without it
-    a new invoice is made. ``dry_run`` returns what the draw would bill and leave on the memo
-    without writing anything, with its ``binding``; sending that ``binding`` back with the draw
-    refuses it unless it is exactly the draw the preview showed (preview_binding)."""
-    target_doc_id: str | None = None
-    dry_run: bool = False
-    binding: str | None = None
+    """Invoice goods out on a memo: ``line_ids`` names the memo lines and ``quantities`` the
+    units of each to invoice, by line id (omitted: every unit the line has out)."""
+    target_doc_id: str | None = Field(default=None, description=(
+        "A draft invoice of the same customer to add the goods to; without it a new invoice is made."))
+    dry_run: bool = Field(default=False, description=(
+        "Answer what the draw would bill and leave on the memo, with its binding, and write nothing."))
+    binding: str | None = Field(default=None, description=(
+        "The binding of the preview the user confirmed: the draw is refused unless it is exactly that draw."))
 
     @model_validator(mode="after")
     def _names_lines_by_id(self):
@@ -11590,9 +11933,10 @@ def _terms_text(terms: dict, currency: str | None) -> str:
 
 
 def draw_problems(snap: _DrawSnapshot, body: InvoiceLinesRequest, *,
-                  everything: bool = False) -> tuple[list[dict], list[tuple[int, float]]]:
+                  everything: bool = False) -> tuple[list[dict], list[tuple[int, float]], list[dict]]:
     """Everything that stops this draw, in the one order the preview and the write report it,
-    and the chosen (memo line index, units) picks. A memo in a status goods cannot be invoiced
+    the chosen (memo line index, units) picks, and the chosen lines with no item, which the
+    draw leaves on the memo and names (refused when every chosen line is one). A memo in a status goods cannot be invoiced
     from stops the check there: nothing else about it means anything. ``everything``: the draw
     is Invoice all, so no line chosen means nothing is out."""
     memo, target = snap.memo.state, snap.target
@@ -11605,7 +11949,7 @@ def draw_problems(snap: _DrawSnapshot, body: InvoiceLinesRequest, *,
             "Check the new preview, then confirm again.", memo=memo_ref))
     if memo.get("status") not in MEMO_DRAW_STATUSES:
         key = "documents.err_memo_nothing_out" if memo.get("status") == "converted" else "documents.err_memo_issue_first"
-        return [*problems, refusal(key, t(key))], []
+        return [*problems, refusal(key, t(key))], [], []
     if paid := _memo_payment_refusal(snap.memo, "docs.draw_memo_has_payment", "invoice its products"):
         problems.append(paid)
 
@@ -11613,6 +11957,7 @@ def draw_problems(snap: _DrawSnapshot, body: InvoiceLinesRequest, *,
     index_of = {li.get("line_id"): i for i, li in enumerate(lines) if li.get("line_id")}
     quantities = body.quantities or {}
     picks: list[tuple[int, float]] = []
+    no_item: list[int] = []
     if not body.line_ids:
         key = "documents.err_memo_nothing_out" if everything else "lines.none_selected"
         problems.append(refusal(key, t(key) if everything else "Choose at least one line."))
@@ -11622,6 +11967,9 @@ def draw_problems(snap: _DrawSnapshot, body: InvoiceLinesRequest, *,
                                     "A line you chose is no longer on this record. Select Try again, then choose again."))
             continue
         i = index_of[lid]
+        if not line_item_id(lines[i]):
+            no_item.append(i)
+            continue
         name = lines[i].get("sku") or lines[i].get("description") or i + 1
         out = snap.out(i)
         qty = float(quantities.get(lid, out))
@@ -11638,6 +11986,9 @@ def draw_problems(snap: _DrawSnapshot, body: InvoiceLinesRequest, *,
                                     f"{name}: {qty:g} chosen, but {out:g} is out on memo {memo_ref}.",
                                     name=name, qty=f"{qty:g}", out=f"{out:g}", memo=memo_ref))
         picks.append((i, qty))
+    skipped = _skipped_lines(lines, no_item, "memo_no_item")
+    if skipped and len(no_item) == len(body.line_ids):
+        problems.extend(_skip_messages("invoice", skipped, refuse=True))
     chosen = [lines[i] for i, _ in picks]
     chosen_skus = {str(li.get("sku") or "").strip() for li in chosen} - {""}
     chosen_items = {str(line_item_id(li) or "") for li in chosen} - {""}
@@ -11696,7 +12047,7 @@ def draw_problems(snap: _DrawSnapshot, body: InvoiceLinesRequest, *,
                 f"Memo {memo_ref} has a tax amount of {amount} with no rate, so it can't be added to {_ref(target)}, "
                 f"which already has products. Invoice these products onto a new invoice, or set a tax rate in the "
                 f"memo's totals that matches {_ref(target)}.", memo=memo_ref, amount=amount, target=_ref(target)))
-    return problems, picks
+    return problems, picks, skipped
 
 
 @dataclass(frozen=True)
@@ -11764,7 +12115,7 @@ async def _draw_preview(session, company_id, memo_id: str, body: InvoiceLinesReq
     _refuse_not_memo(memo.state)
     target = await _get_doc(session, company_id, body.target_doc_id) if body.target_doc_id else None
     snap = await _draw_snapshot(session, company_id, memo, target, lock=False)
-    problems, picks = draw_problems(snap, body)
+    problems, picks, skipped = draw_problems(snap, body)
     if target is None:
         company = await session.get(Company, company_id)
         invoice_id, doc_number = None, peek_draft_ref(company, "invoice")
@@ -11772,7 +12123,7 @@ async def _draw_preview(session, company_id, memo_id: str, body: InvoiceLinesReq
         invoice_id, doc_number = target.entity_id, _ref(target)
     preview = {"target": {"id": invoice_id, "ref_id": doc_number},
                "binding": preview_binding([snap.memo, snap.target], body), "problems": problems,
-               "lines": [], "fixed_taken": {}, "tax": None, "totals_after": {}, "left_on_memo": {}}
+               "skipped_notice": _skip_messages("invoice", skipped), "lines": [], "fixed_taken": {}, "tax": None, "totals_after": {}, "left_on_memo": {}}
     if problems:
         return preview
     bill = _draw_bill(snap, picks, "preview", invoice_id or f"doc:{doc_number}", doc_number)
@@ -11870,6 +12221,7 @@ async def _write_draw(session, company_id, role: str, settings: dict, user, comp
 
 
 @router.post("/{entity_id}/invoice-lines")
+@answers_with("target_doc_id", "draw_id", "event_id", "invoiced", "memo_ref", "acted", "skipped", "skipped_notice")
 async def invoice_lines(
     entity_id: str,
     body: InvoiceLinesRequest,
@@ -11908,16 +12260,15 @@ async def _draw_from_memo(session, company_id, role: str, settings: dict, user, 
         if target_id and (target is None or target.entity_type != "doc"):
             raise HTTPException(status_code=404, detail=t("documents.document_not_found"))
         request = body
-        if operation:
-            await _give_lines_ids(session, company_id=company_id, uid=user.id, owner=memo_row, source="memo_draw")
         snap = await _draw_snapshot(session, company_id, memo_row, target, lock=True)
         if operation:
             lines = memo_row.state.get("line_items") or []
             request = body.model_copy(update={"line_ids": [lines[i]["line_id"] for i in sorted(snap.lots)]})
-        problems, picks = draw_problems(snap, request, everything=bool(operation))
+        problems, picks, skipped = draw_problems(snap, request, everything=bool(operation))
         if problems:
             raise HTTPException(status_code=409, detail={**problems[0], "also": problems[1:]})
-        return await _write_draw(session, company_id, role, settings, user, company, key, snap, picks, request)
+        written = await _write_draw(session, company_id, role, settings, user, company, key, snap, picks, request)
+        return {**written, "skipped": skipped, "invoiced": len(picks), "memo_ref": _ref(memo_row)}
 
     def chosen(line_items: list[dict], request: FulfillLinesRequest) -> list[int]:
         # Unknown lines are reported with every other problem of the draw (draw_problems).
@@ -11928,6 +12279,7 @@ async def _draw_from_memo(session, company_id, role: str, settings: dict, user, 
 
 
 @router.post("/{entity_id}/back-to-memo")
+@answers_with("removed", "reopened_memos", *_STOCK_ANSWER)
 async def back_to_memo(
     entity_id: str,
     body: FulfillLinesRequest,
@@ -11941,7 +12293,9 @@ async def back_to_memo(
 ) -> dict:
     """Send chosen lines of a draft invoice back to the memos they were invoiced from: their
     goods go back on their memo lines, the lines leave the invoice, and the fixed amounts of a
-    memo none of whose lines stay come off the invoice's header (released_header_money)."""
+    memo none of whose lines stay come off the invoice's header (released_header_money). A
+    chosen line of the invoice's own did not come from a memo, so it stays on the invoice and
+    is named in ``skipped``; a choice of only such lines is refused."""
     # Company, invoice, memos, lots: the order every writer of these rows takes.
     await locked_company(session, company_id)
     row = await _get_doc(session, company_id, entity_id, for_update=True)
@@ -11956,25 +12310,25 @@ async def back_to_memo(
                 "Revert it to Draft first, or void it to send all its products back to their memos.",
                 invoice=_ref(row)))
         lines = state.get("line_items") or []
-        chosen = [lines[i] for i in indices]
-        own = [line_label(li) for li in chosen if not li.get("drawn_from")]
-        if own or not chosen:
-            names = ", ".join(own)
-            raise HTTPException(status_code=409, detail=refusal(
-                "docs.back_to_memo_not_drawn",
-                f"{names} did not come from a memo, so there is no memo to send it back to. "
-                "Delete the line instead.", lines=names))
+        own = [i for i in indices if not lines[i].get("drawn_from")]
+        chosen = [lines[i] for i in indices if i not in own]
+        if not chosen:
+            _refuse_skipped("back_to_memo", _skipped_lines(lines, own, "own"), status_code=409)
         removed = frozenset(li["line_id"] for li in chosen)
+        kept = [li for li in lines if li.get("line_id") not in removed]
+        # Numbered as the invoice stands once the drawn lines have gone back.
+        stays = {lines[i]["line_id"] for i in own}
+        left = _skipped_lines(kept, [i for i, li in enumerate(kept) if li["line_id"] in stays], "own")
         reopened, released = await _return_to_source_memo(
             session, company_id=company_id, uid=user.id, owner=row, line_ids=set(removed))
         fields = {k: {"new": v} for k, v in released_header_money(
             state, [t for takes in released.values() for t in takes]).items()}
-        fields["line_items"] = {"new": [li for li in lines if li.get("line_id") not in removed]}
+        fields["line_items"] = {"new": kept}
         await write_doc_patch(session, company_id, role, settings, user, entity_id,
                               DocPatch(fields_changed=fields, expected_version=row.version,
                                        idempotency_key=_step_key(key, "invoice")),
                               memo_draw=MemoReturn(removed))
-        return {"removed": sorted(removed), "reopened_memos": reopened}
+        return {"removed": sorted(removed), "reopened_memos": reopened, "skipped": left}
 
     return await _line_action(session, company_id, user, row, "back_to_memo", body, run)
 
@@ -11991,7 +12345,7 @@ async def _reserve_lines_impl(
     surplus goes back to stock last-picked first, so the line keeps its bound lot. Taking
     new stock needs ``may_acquire`` (the record's status allows reserving); keeping or
     giving back stock does not. A line this document already shipped is taken back into
-    stock and held again in the same request. Every line is planned before anything
+    stock and held again in the same request, and named in ``taken_back``. Every line is planned before anything
     changes, so a shortage or refusal on one line changes nothing on any line.
     """
     from celerp.services import auto_je
@@ -12000,6 +12354,7 @@ async def _reserve_lines_impl(
     state = row.state
     line_items = state.get("line_items", [])
     locked, by_line = await _line_stock(session, company_id, entity_id, line_items, indices)
+    indices, _counted, left = _acting_lines(line_items, indices, locked, "reserve")
     uid = user.id
 
     if new_status == "available":
@@ -12013,10 +12368,8 @@ async def _reserve_lines_impl(
             await _set_lot_status(session, company_id=company_id, uid=uid, owner=row, lot_id=eid, line_id=None)
         if commit:
             await session.commit()
-        return {"new_status": new_status, "reserved": [], "released": released}
+        return {"new_status": new_status, "reserved": [], "released": released, "skipped": left}
 
-    await _give_lines_ids(session, company_id=company_id, uid=uid, owner=row, source="reservation")
-    line_items = state.get("line_items", [])
     unit_map = await _get_unit_map(session, company_id)
     company = await session.get(Company, company_id)
     company_settings = (company.settings or {}) if company else {}
@@ -12058,10 +12411,7 @@ async def _reserve_lines_impl(
     changes: list[tuple[str, int, Projection, float]] = []
     for idx in indices:
         bound = _stock_line(line_items, idx, locked)
-        sku = str((bound.state if bound else {}).get("sku") or line_items[idx].get("sku") or f"Line {idx + 1}")
-        if bound is None:
-            raise HTTPException(status_code=422, detail=refusal(
-                "lines.not_stock", f"{sku} is not a stock item, so nothing can be reserved.", sku=sku))
+        sku = str(bound.state.get("sku") or line_items[idx].get("sku") or f"Line {idx + 1}")
         if idx in shipped:
             if not may_acquire:
                 needs_status.append(sku)
@@ -12184,10 +12534,12 @@ async def _reserve_lines_impl(
 
     if commit:
         await session.commit()
-    return {"new_status": new_status, "reserved": held, "released": released}
+    return {"new_status": new_status, "reserved": held, "released": released, "skipped": left,
+            "taken_back": _named_lines(line_items, sorted(shipped))}
 
 
 @router.post("/{entity_id}/reserve-lines")
+@answers_with("new_status", "reserved", "released", "taken_back", "taken_back_notice", *_STOCK_ANSWER)
 async def reserve_lines(
     entity_id: str,
     body: ReserveLinesRequest,
@@ -12197,7 +12549,11 @@ async def reserve_lines(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Reserve or release chosen lines of an invoice or memo (ledger-neutral). Release works
-    in any status; newly reserving stock needs a status that allows reserving."""
+    in any status; newly reserving stock needs a status that allows reserving.
+
+    Lines with no inventory item and service lines are left as they are and listed in the
+    answer's ``skipped`` (each line's number, name, kind and line id), with ``skipped_notice``
+    saying why. A choice of only such lines is refused (422), naming them."""
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     doc_type = row.state.get("doc_type", "")
     allowed = RESERVABLE_DOC_STATUSES.get(doc_type)
@@ -12219,19 +12575,26 @@ class SetAvailableRequest(RevertLinesRequest):
 async def _set_available_impl(row: Projection, body: SetAvailableRequest, indices: list[int], user, session) -> dict:
     """Give back holds and take back shipments on the chosen lines, without committing.
     Every line is proved before anything changes, so the lines come back together or not
-    at all."""
-    _locked, by_line = await _line_stock(session, row.company_id, row.entity_id,
-                                         row.state.get("line_items", []), indices)
+    at all. A line with nothing held or out is left as it is and named; a choice of only such
+    lines is refused, naming them."""
+    line_items = row.state.get("line_items", [])
+    locked, by_line = await _line_stock(session, row.company_id, row.entity_id, line_items, indices)
+    indices, _counted, left = _acting_lines(line_items, indices, locked, "set-available")
     holding = frozenset(i for i in indices if by_line.get(i))
     taken = await _revert_lines_impl(row, body, indices, user, session, holding=holding)
+    skipped = left + taken["skipped"]
+    if not holding and not (taken["reverted"] or taken["partially_returned"]):
+        _refuse_skipped("set-available", skipped)
     released: list[str] = []
     if holding:
         released = (await _reserve_lines_impl(row, row.entity_id, "available", sorted(holding), user, session,
                                               may_acquire=False, commit=False))["released"]
-    return {**taken, "released": released}
+    return {**taken, "released": released, "skipped": skipped}
 
 
 @router.post("/{entity_id}/set-available")
+@answers_with("fulfillment_status", "reverted", "partially_returned", "released", "taken_back",
+              "taken_back_notice", *_STOCK_ANSWER)
 async def set_lines_available(
     entity_id: str,
     body: SetAvailableRequest,
@@ -12241,7 +12604,13 @@ async def set_lines_available(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Set chosen lines of an invoice or memo as available in one request: holds are given
-    back and shipped goods are taken back, all or nothing."""
+    back and shipped goods are taken back, and the lines it acts on change together or not
+    at all.
+
+    Lines with no inventory item, service lines and lines with nothing held or out are left
+    as they are and listed in the answer's ``skipped`` (each line's number, name, kind and
+    line id), with ``skipped_notice`` saying why. A choice in which no line has anything held
+    or out is refused (422), naming the lines."""
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     doc_type = row.state.get("doc_type", "")
     if doc_type not in RESERVABLE_DOC_STATUSES:
@@ -13141,7 +13510,7 @@ async def upload_doc_file(
         try:
             meta = await store.upload(file)
         except ValueError as exc:
-            raise HTTPException(status_code=413, detail=str(exc))
+            raise HTTPException(status_code=413, detail=refusal_detail(exc))
         # Read after the upload so a document deleted meanwhile, or an uploader who has
         # lost access, leaves no file behind.
         await _get_doc(session, company_id, entity_id, for_update=True)
@@ -13768,7 +14137,6 @@ async def _apply_scan_run(session: AsyncSession, company_id: str, entity_id: str
                              else 1 if empty and sb.unstocked == "one" else on_hand)
             else:
                 line = {**lines[idx], "quantity": float(held + step)}
-                line["line_id"] = line.get("line_id") or uuid.uuid4().hex
             sku = lot.state.get("sku") or code
             if sb.unstocked != "snapshot":
                 # The same per-line rule as an ordinary writer: a stocked line carries a quantity its
@@ -13965,40 +14333,44 @@ async def set_audit_count(
 
 
 class SetScannedBody(BaseModel):
-    item_ids: list[str] = Field(default_factory=list)
-    scanned: bool = True
+    line_ids: list[str] = Field(default_factory=list, description="The chosen audit lines, each by its line id.")
+    scanned: bool = Field(default=True, description="true: mark the lines as scanned. false: clear the mark.")
 
 
 @lists_router.post("/{entity_id}/set-scanned")
+@answers_with("changed", "skipped", "skipped_notice")
 async def set_scanned(
-    entity_id: str, payload: SetScannedBody = SetScannedBody(),
+    entity_id: str, payload: SetScannedBody,
     company_id=Depends(get_current_company_id), _: None = require_permission("edit_documents"), user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Toggle the scanned/accounted-for highlight (audited_at) on audit lines. scanned=True marks the
-    rows as scanned (stamps audited_at), scanned=False clears it. Pass item_ids to target specific
-    rows, or none for every line. The highlight otherwise persists indefinitely."""
+    """Toggle the scanned/accounted-for highlight (audited_at) on the audit lines ``line_ids``
+    names. scanned=True marks the rows as scanned (stamps audited_at), scanned=False clears it.
+    A line with no inventory item, or one already marked (clearing: not marked), is left as it
+    is and named in ``skipped``; a choice of only such lines is refused (422) and changes
+    nothing. The highlight otherwise persists indefinitely."""
     row = await _get_audit(session, company_id, entity_id, for_update=True)
     if row.state.get("status") != FINALIZED:
         raise HTTPException(status_code=409, detail=t("documents.err_count_finalize_first"))
-    targets = set(payload.item_ids)
-    stamp = datetime.now(timezone.utc).isoformat() if payload.scanned else None
     lines = [dict(l) for l in (row.state.get("line_items") or [])]
-    changed = 0
-    for l in lines:
-        if targets and l.get("item_id") not in targets:
-            continue
-        already = l.get("audited_at") is not None
-        if payload.scanned and not already:
-            l["audited_at"] = stamp
-            changed += 1
-        elif not payload.scanned and already:
-            l["audited_at"] = None
-            changed += 1
-    if changed:
-        await _set_list_fields(session, company_id, entity_id, user, {"line_items": lines})
-        await session.commit()
-    return {"changed": changed}
+    indices = _selected_line_indices(lines, FulfillLinesRequest(line_ids=payload.line_ids))
+    no_item = [i for i in indices if not line_item_id(lines[i])]
+    already = [i for i in indices if i not in no_item and (lines[i].get("audited_at") is not None) == payload.scanned]
+    skipped = sorted(_skipped_lines(lines, no_item, "no_item")
+                     + _skipped_lines(lines, already, "scanned" if payload.scanned else "not_scanned"),
+                     key=lambda s: s["line"])
+    if len(skipped) == len(indices):
+        _refuse_skipped("set-scanned", skipped)
+    stamp = datetime.now(timezone.utc).isoformat() if payload.scanned else None
+    changed = [i for i in indices if i not in no_item and i not in already]
+    for i in changed:
+        lines[i]["audited_at"] = stamp
+    await _set_list_fields(session, company_id, entity_id, user, {"line_items": lines})
+    await session.commit()
+    result = {"changed": len(changed), "skipped": skipped}
+    if skipped:
+        result["skipped_notice"] = _skip_messages("set-scanned", skipped)
+    return result
 
 
 @lists_router.post("/{entity_id}/adjust")

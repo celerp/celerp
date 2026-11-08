@@ -907,6 +907,10 @@ _REVIEWED: dict[tuple[str, str], str] = {
     ("celerp/services/auto_je.py", "doc_lot_pool"):
         "costs a document line from its lots: reached from Documents, which needs Inventory, and "
         "from the boot COGS backfill, which fails without writing and retries at a later boot",
+    ("celerp/services/auto_je.py", "_cogs_line_unknown_key"):
+        "words a refusal of an invoice's shipped goods by the Documents revert rule: an invoice "
+        "line exists only where Documents wrote it, and the boot COGS backfill that may meet one "
+        "fails without writing and retries at a later boot",
     ("celerp/services/auto_je.py", "create_for_online_fees"): _PAYMENT_STEP,
     ("celerp/services/document_lines.py", "_memo_takes_by_line"):
         "reads what invoices took from a memo, and imports Documents only for a memo, which only "
@@ -927,7 +931,8 @@ _REVIEWED: dict[tuple[str, str], str] = {
     ("ui/routes/contacts.py", "setup_routes"): _OWN_UI,
     **{(_DOCS_UI, name): _OWN_UI for name in (
         "_hold_refusal", "_physical_lots", "_sales_options", "_doc_line_actions",
-        "_writeoff_account_choices", "_payment_section", "_doc_detail", "setup_routes")},
+        "_writeoff_account_choices", "_payment_section", "_doc_detail", "_line_skip_strings",
+        "_preview_confirm", "_lot_taken_text", "setup_routes")},
     **{(_DOCS_UI, name): "builds document lines from selected items; called only from Inventory's "
        "own bulk actions (ui/routes/inventory.py), so it runs only while Inventory runs"
        for name in ("_line_items_from_inventory", "_reorder_po_line")},

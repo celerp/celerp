@@ -97,6 +97,24 @@ def test_set_scanned_network_failure_is_shown(page, ui_server, api):
     assert _error_toast(page).strip()
 
 
+def test_mark_as_scanned_clicked_again_while_it_runs_sends_once(page, ui_server, api):
+    """A double click on Mark as scanned scans once: the second click would answer that the
+    lines were already scanned."""
+    audit_id = _finalized_audit(page, ui_server, api)
+    page.goto(f"{ui_server}/lists/{audit_id}", wait_until="domcontentloaded")
+    page.locator("#line-body tr .li-select").first.check()
+    page.locator("#li-bulk-select").select_option(value="li-mark-scanned")
+    sent = _posts(page, "/set-scanned")
+    button = page.locator("#li-bulk-markscan-btn")
+    with page.expect_response(lambda r: r.url.endswith("/set-scanned")):
+        button.dblclick()
+    # A second click landing after the first answer is held by the click event the button's
+    # onclick passes, not by the busy flag, which is already off.
+    button.dispatch_event("click", {"detail": 2})
+    page.wait_for_timeout(1000)
+    assert len(sent) == 1, sent
+
+
 def test_reserve_does_not_run_after_a_failed_save(page, ui_server, api):
     item = _item(api, _location(api))
     r = api.post("/lists", json={"list_type": "quotation", "status": "draft", "line_items": [

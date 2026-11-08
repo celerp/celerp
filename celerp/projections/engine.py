@@ -153,8 +153,19 @@ class ProjectionEngine:
         return handler(state, event_type, data)
 
     @staticmethod
-    def _next_fields(state: dict, entry: LedgerEntry, fallback_version: int) -> dict:
+    def replay(state: dict, entry: LedgerEntry) -> dict:
+        """The state after ``entry``: a document or List line stored without a line id gets
+        the id derived from its record id and position, so every build of the state agrees."""
         next_state = ProjectionEngine._apply(state, entry.event_type, entry.data)
+        if entry.entity_type in ("doc", "list"):
+            # Imported here: document_lines imports lot_origin, which imports this module.
+            from celerp.services.document_lines import fill_line_ids
+            fill_line_ids(next_state, entry.entity_id)
+        return next_state
+
+    @staticmethod
+    def _next_fields(state: dict, entry: LedgerEntry, fallback_version: int) -> dict:
+        next_state = ProjectionEngine.replay(state, entry)
         now = datetime.now(timezone.utc)
 
         location_id = next_state.get("location_id")

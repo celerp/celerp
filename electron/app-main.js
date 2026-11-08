@@ -18,9 +18,11 @@ const { autoUpdater } = require("electron-updater");
 const path = require("path");
 const fs = require("fs");
 const childProcess = require("child_process");
+const os = require("os");
 const { execFileSync } = childProcess;
 const net = require("net");
 const { parseHandoffUrl, handoffFromArgs, handoffRestorePath, handoffOpenScript } = require("./handoff-protocol");
+const { setupRunning, UPDATED_ARG, INSTALL_FAILED_ARG } = require("./setup-guard");
 let EmbeddedPostgres; // loaded via dynamic import() - embedded-postgres is ESM-only
 
 // ── Asar path fix for embedded-postgres ─────────────────────────────────────
@@ -670,6 +672,9 @@ function serverEnv(dbUrl, cfg) {
     CELERP_DATA_DIR: DATA_DIR,
     CELERP_CONFIG: PYTHON_CONFIG_PATH,
     CELERP_MODE: "desktop",
+    // The install channel: the API refuses a pip self-update in the desktop app, and the UI
+    // server picks the desktop's update texts and Settings cards by it.
+    CELERP_INSTALL_CHANNEL: "electron",
     CELERP_API_PORT: String(apiPort),
     CELERP_UI_PORT: String(uiPort),
     CELERP_PG_BIN_DIR: pgBinDir(),
@@ -710,7 +715,6 @@ function startApi(dbUrl, cfg) {
     } catch { /* non-fatal: the command then says it cannot reach the database */ }
     const env = {
       ...serverEnv(dbUrl, cfg),
-      CELERP_INSTALL_CHANNEL: "electron",
       // C2: make the desktop app version authoritative everywhere. The PC-browser/relay
       // path reads the version from /health (it has no window.celerp), so pass the Electron
       // app version through to the API; /health reports it instead of the Python package
@@ -946,11 +950,14 @@ const updateState = serveUpdateState(ipcMain, () => mainWindow, autoUpdater, app
 // Set once the servers have stopped for the installer, so an error then is the install failing.
 let installingUpdate = false;
 
-// Celerp restarts after an installer that did not start, with this argument and
-// the version, so the restarted app shows the failed install.
-const INSTALL_FAILED_ARG = "--update-install-failed=";
+// Celerp restarts after an installer that did not start, with INSTALL_FAILED_ARG and
+// the version, so the restarted app shows the failed install. Setup that started and
+// then stopped reopens Celerp with UPDATED_ARG as well: the update stopped.
 const installFailedArg = process.argv.find((arg) => arg.startsWith(INSTALL_FAILED_ARG));
-if (installFailedArg) updateState.installFailed(installFailedArg.slice(INSTALL_FAILED_ARG.length), "");
+if (installFailedArg) {
+  updateState.installFailed(installFailedArg.slice(INSTALL_FAILED_ARG.length), "",
+    process.argv.includes(UPDATED_ARG) ? "stopped" : "install");
+}
 
 // Tell the user an update failed, in a dialog they cannot miss, in plain words
 // by what failed (state.failure). A download that failed its security check
@@ -959,7 +966,7 @@ if (installFailedArg) updateState.installFailed(installFailedArg.slice(INSTALL_F
 async function showUpdateFailure(state) {
   const t = translator(path.join(APP_DIR, "ui", "locales"), app.getLocale());
   const verify = state.failure === "verify";
-  const advice = t(`shell.update_advice_${state.failure}`);
+  const advice = t(`shell.update_advice_${state.failure}`, { folder: LOG_DIR });
   const options = {
     type: "warning",
     buttons: [t(verify ? "btn.check_again" : "btn.download_installer"), t("btn.close")],
@@ -984,7 +991,10 @@ function setupAutoUpdater() {
   if (!app.isPackaged) return;
 
   autoUpdater.autoDownload = true;
+  // Setup reopens Celerp when it is done (quitAndInstall runs it with --force-run).
+  autoUpdater.autoRunAppAfterInstall = true;
   autoUpdater.autoInstallOnAppQuit = false;
+  autoUpdater.logger = updateLogger;
   autoUpdater.allowPrerelease = false;
 
   autoUpdater.on("error", (err) => {
@@ -999,17 +1009,20 @@ function setupAutoUpdater() {
     if (installingUpdate) {
       installingUpdate = false;
       const { version } = updateState.getUpdateState();
-      updateState.installFailed(version, message);
+      updateState.installFailed(version, message, "install");
       showUpdateFailure(updateState.getUpdateState()).finally(() => {
-        app.relaunch({ args: [...process.argv.slice(1).filter((arg) => !arg.startsWith(INSTALL_FAILED_ARG)),
-                              INSTALL_FAILED_ARG + version] });
-        app.quit();
+        fullRelaunch(app, process.argv, [INSTALL_FAILED_ARG + version]);
       });
     }
   });
 
   // After a failed install the user decides when to check again, from the update card.
-  if (installFailedArg) return startPeriodicChecks();
+  // An update that stopped is also told in a dialog: the user asked for it and saw
+  // Celerp close, so the card alone could be missed.
+  if (installFailedArg) {
+    if (updateState.getUpdateState().failure === "stopped") showUpdateFailure(updateState.getUpdateState());
+    return startPeriodicChecks();
+  }
 
   // Delay initial check until the renderer has loaded and registered its IPC handlers.
   // Firing immediately at app-ready risks emitting update-available/log events before
@@ -1025,6 +1038,18 @@ function setupAutoUpdater() {
 
   startPeriodicChecks();
 }
+
+// electron-updater's own account of its checks, downloads and installs, in
+// LOG_DIR/update.log. Opened on its first line; a log that cannot be written never
+// stops the updater.
+let updateLog;
+const updateLogger = Object.fromEntries(["info", "warn", "error"].map((level) => [level, (message) => {
+  if (updateLog === undefined) {
+    updateLog = openProcessLog("update.log");
+    updateLog?.on("error", () => {});
+  }
+  updateLog?.write(`${new Date().toISOString()} ${level} ${message}\n`);
+}]));
 
 // Periodic re-check every 4 hours in case a new release ships while app is open.
 function startPeriodicChecks() {
@@ -1043,7 +1068,7 @@ function setLoadingStatus(msg) {
 
 // Restart the way the in-app "Restart" button does: drop the sentinel and let
 // the API process exit so watchForRestart respawns API + UI, leaving the embedded
-// Postgres running, which is quicker than a full app.relaunch()/quit() that stops
+// Postgres running, which is quicker than a full relaunch that stops
 // and starts everything. Falls back to a full relaunch only if the sentinel can't
 // be written or no API process is running.
 function requestServerRestart() {
@@ -1059,8 +1084,7 @@ function requestServerRestart() {
   } catch (e) {
     console.error("[restart] sentinel write failed; falling back to full relaunch:", e);
   }
-  app.relaunch();
-  app.quit();
+  fullRelaunch(app, process.argv);
 }
 
 function setupAppMenu() {
@@ -1367,7 +1391,8 @@ ipcMain.on("install-update", async () => {
   isQuitting = true;  // prevent the macOS hide-on-close handler from blocking quit
   await lifecycle.shutdown();
   installingUpdate = true;
-  autoUpdater.quitAndInstall(true, true);
+  // Not silent: setup shows its progress window, and reopens Celerp when it is done.
+  autoUpdater.quitAndInstall(false);
 });
 
 // restart-app: renderer triggers a full relaunch via window.celerp.restartApp()
@@ -1375,7 +1400,7 @@ ipcMain.on("install-update", async () => {
 // resolveDatabaseConfig(readConfig()) against the newly-saved celerp-config.json,
 // which is the only path that opens the new database - the sentinel-recycle path
 // reuses the boot-bound dbUrl and would not apply it.
-ipcMain.on("restart-app", () => fullRelaunch(app));
+ipcMain.on("restart-app", () => fullRelaunch(app, process.argv));
 
 // get-version: renderer fetches the current app version
 ipcMain.handle("get-version", () => app.getVersion());
@@ -1396,6 +1421,20 @@ ipcMain.handle("uninstall-keep-data", () => _doUninstallKeepData());
 
 // uninstall-delete-data: delete all user data then quit.
 ipcMain.handle("uninstall-delete-data", () => _doUninstallDeleteData());
+
+// ── Windows: a start by hand while setup runs ───────────────────────────────
+// Setup is replacing the app folder, so this copy says Celerp is being updated and
+// quits before it runs anything; setup opens Celerp when it is done.
+if (setupRunning({ platform: process.platform, argv: process.argv, tempDir: os.tmpdir(),
+                   spawnSync: childProcess.spawnSync, log: console.warn })) {
+  app.whenReady().then(() => {
+    const t = translator(path.join(APP_DIR, "ui", "locales"), app.getLocale());
+    return dialog.showMessageBox({ type: "info", title: "Celerp", message: t("shell.update_setup_running"),
+                                   buttons: [t("btn.close")] });
+  }).catch((err) => console.error("[startup] could not say that setup runs:", err?.message ?? String(err)))
+    .finally(() => app.quit());
+  return;  // CommonJS module: top-level return is valid
+}
 
 // ── Windows: de-elevate before doing anything else ──────────────────────────
 // The bundled Postgres refuses to run under a Windows administrator token. The

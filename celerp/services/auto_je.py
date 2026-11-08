@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from enum import Enum
 from datetime import datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -53,6 +54,7 @@ from celerp.services.account_roles import (
     surviving_key,
 )
 from celerp.services.business_time import business_date_of
+from celerp.services.record_quantities import sent_out_by
 from celerp.services import doc_asset_lines
 from celerp.services.company_lock import lock_company
 from celerp.services.document_lines import line_item_id
@@ -3366,7 +3368,13 @@ class _Shipments:
     fulfillment event for the doc not reversed) and the lots it took back into stock and
     no longer holds, each with the quantity that came back (a lot reversed and then
     reserved to the doc again is still held for it, so it is in neither), and per
-    (doc, lot) the line id and line index its latest fulfillment for the doc recorded."""
+    (doc, lot) the line id and line index its latest fulfillment for the doc recorded.
+
+    Only the doc's current issue counts: what it shipped before its last revert to draft
+    belongs to the earlier issue, whose costs the revert voided and whose lines may since
+    have changed. A lot the doc still holds out (sent_out_by) keeps its earlier history,
+    though: the revert is refused while a lot is out, so such a lot means a guard was
+    bypassed, and it must still reach the line refusal rather than drop out of the books."""
 
     out: dict[str, list[Projection]] = field(default_factory=dict)
     back: dict[str, list[tuple[Projection, float]]] = field(default_factory=dict)
@@ -3389,23 +3397,31 @@ async def _shipments(session, company_id, doc_ids) -> _Shipments:
     if not doc_ids:
         return result
     rows = (await session.execute(
-        _select(LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.data, LedgerEntry.metadata_).where(
+        _select(LedgerEntry.id, LedgerEntry.entity_id, LedgerEntry.event_type, LedgerEntry.data,
+                LedgerEntry.metadata_).where(
             LedgerEntry.company_id == company_id,
             LedgerEntry.entity_type == "item",
             LedgerEntry.event_type.in_(("item.fulfilled", "item.fulfillment_reversed")),
             LedgerEntry.data["source_doc_id"].as_string().in_(sorted(doc_ids)),
         ).order_by(LedgerEntry.id)
     )).all()
-    last: dict[tuple[str, str], tuple[str, dict]] = {}
-    for entity_id, event_type, data, metadata_ in rows:
+    reverted = dict((await session.execute(
+        _select(LedgerEntry.entity_id, func.max(LedgerEntry.id)).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.entity_id.in_(sorted(doc_ids)),
+            LedgerEntry.event_type == "doc.reverted_to_draft",
+        ).group_by(LedgerEntry.entity_id)
+    )).all())
+    last: dict[tuple[str, str], tuple[str, dict, bool]] = {}
+    for entry_id, entity_id, event_type, data, metadata_ in rows:
         key = (str((data or {}).get("source_doc_id")), entity_id)
-        last[key] = (event_type, data or {})
+        last[key] = (event_type, data or {}, entry_id <= reverted.get(key[0], 0))
         if event_type == "item.fulfilled":
             result.recorded[key] = recorded_line(SimpleNamespace(metadata_=metadata_))
     lots = await _load_rows(session, company_id, {lot_id for _doc, lot_id in last})
-    for (doc_id, lot_id), (event_type, data) in sorted(last.items()):
+    for (doc_id, lot_id), (event_type, data, earlier) in sorted(last.items()):
         row = lots.get(lot_id)
-        if row is None:
+        if row is None or (earlier and not sent_out_by(row.state or {}, doc_id)):
             continue
         if event_type == "item.fulfilled":
             result.out.setdefault(doc_id, []).append(row)
@@ -3554,14 +3570,59 @@ async def _sold_key(session, company_id, lot_id: str, state: dict, books: _Books
     return await sold_lot_key(session, company_id, lot_id, state)
 
 
+def _placed(shipments: _Shipments, doc_id: str, doc_state: dict):
+    """The invoice's lots out and back in its current issue, each with the index of the line
+    it is on (None when no line holds it)."""
+    def _line(lot: Projection) -> int | None:
+        line_id, recorded = shipments.recorded.get((doc_id, lot.entity_id), (None, None))
+        return line_of_lot(doc_state.get("line_items", []), lot.entity_id, lot.state or {}, recorded, line_id)
+
+    return ([(lot, _line(lot)) for lot in shipments.out.get(doc_id, [])],
+            [(lot, qty, _line(lot)) for lot, qty in shipments.back.get(doc_id, [])])
+
+
+def _unplaced_params(doc_id: str, doc_state: dict, lots) -> dict:
+    return {"doc": _doc_number(doc_id, doc_state),
+            "items": ", ".join(str((lot.state or {}).get("sku") or lot.entity_id) for lot in lots)}
+
+
+async def unplaced_shipments(session, company_id, doc_id: str, doc_state: dict) -> dict | None:
+    """The params of error.cogs_line_unknown_out when goods the invoice shipped or took back
+    in its current issue are on none of its lines, else None. Only data an earlier release
+    saved holds such goods: an issued invoice keeps its lines now."""
+    out, back = _placed(await _shipments(session, company_id, {doc_id}), doc_id, doc_state)
+    unknown = [lot for lot, idx in out if idx is None] + [lot for lot, _qty, idx in back if idx is None]
+    return _unplaced_params(doc_id, doc_state, unknown) if unknown else None
+
+
+async def _cogs_line_unknown_key(session, company_id, doc_id: str, doc_state: dict, still_out: bool) -> str:
+    """The refusal for goods no line of the invoice holds, by the way out the app takes: a new
+    issue (Revert to Draft, then Issue Invoice) places goods that came back, so its advice
+    follows the revert rule (celerp_docs.routes.revert_check), read as the invoice stands once
+    this refusal undoes the action. Nothing refused names the revert; payments alone name
+    voiding them first. Anything else, or goods still out, which no revert takes back, leaves
+    no step to take, so it asks for a report."""
+    from celerp_docs.routes import revert_check
+
+    from celerp.services.units import read_company_units
+
+    reasons = (await revert_check(session, company_id, doc_id, doc_state, await read_company_units(session, company_id),
+                                  as_locked=True)).reasons
+    if still_out:
+        reasons.append("out")
+    if not reasons:
+        return "error.cogs_line_unknown"
+    return "error.cogs_line_unknown_paid" if reasons == ["payments"] else "error.cogs_line_unknown_out"
+
+
 async def _recognized_by_account(
     session, company_id, doc_id: str, doc_state: dict, books: _Books,
 ) -> tuple[dict[str, float], dict[int, dict[str, float]], dict[int, float]]:
     """What an invoice recognizes today, per inventory account, in two parts: the actual
     cost of the lots it shipped, and, per line, its allocation's share (with every cost
     correction since) for the goods it has not shipped, with the quantity not shipped.
-    Raises Refused when a shipped or returned lot cannot be matched to one of the
-    invoice's lines."""
+    Raises Refused when a lot shipped or returned in this issue cannot be matched to one
+    of the invoice's lines."""
     recognized = books.recognized[doc_id]
     shipped: dict[str, float] = {}
     held: dict[int, dict[str, float]] = {}
@@ -3571,24 +3632,21 @@ async def _recognized_by_account(
         for code, amount in by_account.items():
             into[code] = into.get(code, 0.0) + amount
 
-    def _line(lot: Projection) -> int | None:
-        line_id, recorded = books.shipments.recorded.get((doc_id, lot.entity_id), (None, None))
-        return line_of_lot(doc_state.get("line_items", []), lot.entity_id, lot.state or {}, recorded, line_id)
-
+    # Every lot shipped or returned must be on exactly one line; the refusal names them all.
+    out, back = _placed(books.shipments, doc_id, doc_state)
+    unknown_out = [lot for lot, idx in out if idx is None]
+    unknown = unknown_out + [lot for lot, _qty, idx in back if idx is None]
+    if unknown:
+        raise Refused(await _cogs_line_unknown_key(session, company_id, doc_id, doc_state, bool(unknown_out)),
+                      **_unplaced_params(doc_id, doc_state, unknown))
     shipped_qty: dict[int, float] = {}
     back_qty: dict[int, float] = {}
-    for lot in books.shipments.out.get(doc_id, []):
-        idx = _line(lot)
-        if idx is None:
-            raise Refused("error.cogs_line_unknown")
+    for lot, idx in out:
         cost = lot_cost_of_sale(lot.state or {})
         if cost:
             _add(shipped, {await _sold_key(session, company_id, lot.entity_id, lot.state or {}, books): cost})
         shipped_qty[idx] = shipped_qty.get(idx, 0.0) + float((lot.state or {}).get("quantity") or 0)
-    for lot, qty in books.shipments.back.get(doc_id, []):
-        idx = _line(lot)
-        if idx is None:
-            raise Refused("error.cogs_line_unknown")
+    for _lot, qty, idx in back:
         back_qty[idx] = back_qty.get(idx, 0.0) + qty
     repriced = books.repriced.get((doc_id, recognized.cycle), {})
     for idx, alloc in recognized.allocations.items():
@@ -3615,7 +3673,8 @@ class UnshippedClaim:
     """Goods on hand a finalized invoice costed and has not shipped: ``qty`` units of
     lot ``lot_id`` on line ``line``, ``amount`` of the invoice's recognized cost on
     ``key``, and the value the lot holds now (``on_hand``). A claim read for its quantity
-    only (unshipped_claims, not costed) has no key and no amount."""
+    only (unshipped_claims, not costed) has no key and no amount. A claim moving to another
+    invoice (moved_costs) has ``left``: the units of the lot its invoice still holds after."""
 
     doc_id: str
     line: int
@@ -3624,6 +3683,27 @@ class UnshippedClaim:
     key: str | None
     amount: float
     on_hand: float
+    left: float = 0.0
+
+
+class LotTaken(str, Enum):
+    """How much of a lot another open invoice held a shipment takes from it (create_for_cost_moves,
+    and the fulfill route for a lot shipped whole): all of it, so that invoice can no longer ship
+    the lot, or part, so it has less of it to ship."""
+
+    ALL = "all"
+    PART = "part"
+
+
+def taken_entry(*, sku, name, takes, lot_id, doc_id, doc_number) -> dict:
+    """One lot a shipment takes from another open invoice (create_for_cost_moves, and the
+    fulfill route for a lot shipped whole): the lot's ``sku`` and ``name``, ``takes`` (a
+    LotTaken value) and the ``doc_number`` of the invoice it is taken from, with their ids. Every
+    leaf is text, or None when the record holds nothing there, whatever type the stored lot or
+    invoice holds (an item PATCH keeps a SKU sent as a number), so the entries sort and are
+    worded alike."""
+    leaves = {"sku": sku, "name": name, "takes": takes, "lot_id": lot_id, "doc_id": doc_id, "doc_number": doc_number}
+    return {k: None if v is None or v == "" else str(v) for k, v in leaves.items()}
 
 
 def _on_hand_value(row: Projection) -> _Dec | None:
@@ -3838,7 +3918,7 @@ async def other_invoices_naming(session, company_id, doc_id: str, lot_ids) -> di
         return {}
     out: dict[str, list[dict]] = {}
     for other, state in (await _open_invoices(session, company_id, exclude=doc_id, lots=ids)).items():
-        number = str(state.get("doc_number") or state.get("ref_id") or other)
+        number = _doc_number(other, state)
         named: dict[str, float] = {}
         for li in state.get("line_items") or []:
             lot = str(line_item_id(li) or "")
@@ -3851,10 +3931,14 @@ async def other_invoices_naming(session, company_id, doc_id: str, lot_ids) -> di
     return out
 
 
+def _doc_number(doc_id: str, state: dict) -> str:
+    """The number a reader knows document ``doc_id`` by."""
+    return str(state.get("doc_number") or state.get("ref_id") or doc_id)
+
+
 async def _doc_number_of(session, company_id, doc_id: str) -> str:
     doc = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
-    state = (doc.state if doc is not None else None) or {}
-    return str(state.get("doc_number") or state.get("ref_id") or doc_id)
+    return _doc_number(doc_id, (doc.state if doc is not None else None) or {})
 
 
 async def refuse_stranding_set_aside(session, company_id, lot_id: str, before: dict, after: dict,
@@ -4043,14 +4127,25 @@ async def moved_costs(session, company_id, *, doc_id: str, cycle_tag: str,
         on = [c for c in claims if c.lot_id == lot_id]
         remaining = float((row.state or {}).get("quantity") or 0) - take if row is not None else 0.0
         over = min(take, sum(c.qty for c in on) - max(remaining, 0.0))
+        moved: list[tuple[UnshippedClaim, float]] = []
         for claim in reversed(on):
             if over <= 1e-9:
                 break
             qty = min(claim.qty, over)
             over -= qty
+            moved.append((claim, qty))
+        # What each invoice still holds of the lot once its moving units are gone.
+        left = {c.doc_id: 0.0 for c, _ in moved}
+        for c in on:
+            if c.doc_id in left:
+                left[c.doc_id] += c.qty
+        for c, qty in moved:
+            left[c.doc_id] -= qty
+        for claim, qty in moved:
             moving.setdefault(claim.doc_id, []).append(
                 UnshippedClaim(doc_id=claim.doc_id, line=claim.line, lot_id=lot_id, qty=qty, key=claim.key,
-                               amount=claim.amount * qty / claim.qty if claim.qty else 0.0, on_hand=claim.on_hand))
+                               amount=claim.amount * qty / claim.qty if claim.qty else 0.0, on_hand=claim.on_hand,
+                               left=max(left[claim.doc_id], 0.0)))
     return moving
 
 
@@ -4061,8 +4156,8 @@ async def create_for_cost_moves(session, *, company_id, user_id, doc_id: str, do
     Cr cost of goods sold for the other, at the cost that invoice set them aside at.
     Inventory is not touched: it gave the goods up once, when they were set aside. The
     other invoice holds that many fewer units (recognized_cogs) and is costed for them
-    when it ships. Returns the invoices the goods were taken from, for the notice:
-    {sku, lot_id, doc_id, doc_number}."""
+    when it ships. Returns the invoices the goods were taken from, for the notice: a
+    taken_entry for each lot, ``takes`` all the invoice held of it or part."""
     if not moving:
         return []
     cogs_code = await resolve(session, company_id, R.COGS)
@@ -4092,8 +4187,10 @@ async def create_for_cost_moves(session, *, company_id, user_id, doc_id: str, do
                                   "amount": c.amount} for c in claims]},
         )
         for lot_id in dict.fromkeys(c.lot_id for c in claims):
-            notice.append({"sku": (rows[lot_id].state or {}).get("sku") if lot_id in rows else lot_id,
-                           "lot_id": lot_id, "doc_id": from_doc, "doc_number": from_number})
+            lot = (rows[lot_id].state or {}) if lot_id in rows else {}
+            takes = LotTaken.PART if any(c.left > 1e-9 for c in claims if c.lot_id == lot_id) else LotTaken.ALL
+            notice.append(taken_entry(sku=lot.get("sku"), name=lot.get("name"), takes=takes.value,
+                                      lot_id=lot_id, doc_id=from_doc, doc_number=from_number))
     return notice
 
 

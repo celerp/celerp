@@ -73,7 +73,7 @@ _CASES = {
     "doc-items-csv": ("POST", "/docs/doc:INV-1/items/csv",
                       {"files": {"file": ("lines.csv", b"sku,quantity\nA1,1\n", "text/csv")}}, {"get_doc": _ended}),
     "doc-scan": ("POST", "/docs/doc:INV-1/scan", {"data": {"barcode": "A1"}}, {"scan_codes": _ended}),
-    "list-set-scanned": ("POST", "/lists/list:Q-1/set-scanned", {"data": {"scanned": "1"}},
+    "list-set-scanned": ("POST", "/lists/list:Q-1/set-scanned", {"data": {"scanned": "1", "line_id": "ln-1"}},
                          {"set_scanned": _ended}),
     "doc-page": ("GET", "/docs/doc:INV-1", {}, {"get_doc": _ended}),
     "list-page": ("GET", "/lists/list:Q-1", {}, {"get_list_page": _ended}),

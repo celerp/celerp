@@ -18,9 +18,12 @@ const errorLine = (message) => (message ? "Update error: " + message : "Update e
 
 const RELEASES = "https://github.com/celerp/celerp/releases";
 
+// A release number such as 2.8.1 or 2.8.1-beta.2, so the link stays on a release page.
+const RELEASE_VERSION = /^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$/;
+
 // The release page with the installer for `version`, or the latest release.
 function releasePageUrl(version) {
-  return version ? `${RELEASES}/tag/v${version}` : `${RELEASES}/latest`;
+  return RELEASE_VERSION.test(version || "") ? `${RELEASES}/tag/v${version}` : `${RELEASES}/latest`;
 }
 
 function initialUpdateState() {
@@ -69,18 +72,19 @@ function toPercent(value) {
  *   result: not-available (up to date), found, or another error.
  * - a failed download (downloadFailed) stays until a retried download finishes
  *   or the user dismisses it: checks, found and progress leave it as it is.
- * - "install-failed" (the installer did not start) replaces any state, even
+ * - "install-failed" (the installer did not start, failure "install", or setup
+ *   started and then stopped, failure "stopped") replaces any state, even
  *   downloaded, with a failed download that offers the installer.
  *
  * @param {{status: string, version: string, percent: number, message: string,
  *          checking: boolean, downloadFailed: boolean, failure: string, releaseUrl: string}} state
  * @param {{type: "check"|"dismiss"|"found"|"progress"|"downloaded"|"not-available"|"error"|"install-failed",
- *          version?: string, percent?: number, message?: string}} event
+ *          version?: string, percent?: number, message?: string, failure?: string}} event
  */
 function nextUpdateState(state, event) {
   if (event.type === "install-failed") {
-    return failedState(state, "install", { version: event.version || state.version, message: event.message || "",
-                                           downloadFailed: true });
+    return failedState(state, event.failure, { version: event.version || state.version,
+                                                 message: event.message || "", downloadFailed: true });
   }
   if (state.status === "downloaded") return null;
   const failedDownload = state.status === "error" && state.downloadFailed;
@@ -132,10 +136,11 @@ function nextUpdateState(state, event) {
  * @param {(channel: string, state: object) => void} send
  * @param {(state: object) => void} [onFailure]
  * @returns {{getUpdateState: () => object, dismissError: () => void, userChecks: () => void,
- *            installFailed: (version: string, message: string) => void}}
+ *            installFailed: (version: string, message: string, failure: "install"|"stopped") => void}}
  *   getUpdateState returns a copy with its log and revision; dismissError clears a failed
  *   download, at the user's request; userChecks marks the next check as the user's;
- *   installFailed records an installer that did not start.
+ *   installFailed records an installer that did not start, or with "stopped" a setup
+ *   that started and then stopped; with no message it adds no log line.
  */
 function trackUpdater(updater, send, onFailure = () => {}) {
   let state = initialUpdateState();
@@ -200,8 +205,8 @@ function trackUpdater(updater, send, onFailure = () => {}) {
     getUpdateState: snapshot,
     dismissError: () => apply("update-log", { type: "dismiss" }, () => ""),
     userChecks: () => { userAsked = true; },
-    installFailed: (version, message) =>
-      apply("update-error", { type: "install-failed", version, message }, () => errorLine(message)),
+    installFailed: (version, message, failure) =>
+      apply("update-error", { type: "install-failed", version, message, failure }, () => (message ? errorLine(message) : "")),
   };
 }
 

@@ -15,7 +15,7 @@ import httpx
 import pytest
 from playwright.sync_api import Page, expect
 
-from .conftest import css_class
+from .conftest import css_class, set_session_cookies
 
 pytestmark = pytest.mark.browser
 
@@ -101,7 +101,7 @@ def test_no_arrow_without_import_button(page: Page, fresh_company, api_server):
     lr = httpx.post(f"{api_server}/auth/login", json={"email": email, "password": "Viewer12345!"}, timeout=10)
     assert lr.status_code == 200, lr.text
     token = lr.json()["access_token"]
-    page.context.add_cookies([{"name": "celerp_token", "value": token, "domain": "127.0.0.1", "path": "/"}])
+    set_session_cookies(page.context, token)
     errors: list[str] = []
     page.on("pageerror", lambda e: errors.append(str(e)))
     page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)

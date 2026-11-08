@@ -77,12 +77,16 @@ async def set_list_lines(client, h, list_id: str, lines: list[dict]):
         "fields_changed": {"line_items": {"new": lines}}, "expected_version": v})
 
 
-async def drop_line_ids(session, entity_id: str) -> None:
-    """Store the record's lines without ids, as records imported from older versions are."""
+async def backfill_line_ids(session, entity_id: str) -> None:
+    """Store the record's lines as a record imported from an older version holds them once
+    the backfill has run: each with the id derived from the record and its position."""
     from celerp.models.projections import Projection
+    from celerp.services.document_lines import fill_line_ids
     from sqlalchemy import select
     session.expire_all()
     row = (await session.execute(select(Projection).where(Projection.entity_id == entity_id))).scalar_one()
-    row.state = {**row.state, "line_items": [
+    state = {**row.state, "line_items": [
         {k: v for k, v in li.items() if k != "line_id"} for li in row.state["line_items"]]}
+    assert fill_line_ids(state, entity_id)
+    row.state = state
     await session.commit()
