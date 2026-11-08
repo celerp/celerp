@@ -288,13 +288,16 @@ async def _sending(client, monkeypatch):
     return hd, await company_id(client, hd), eid, purchase_only
 
 
-async def test_resume_with_every_period_billed_has_no_bill_to_ask_and_is_accepted(client, monkeypatch):
-    """An agreement whose one period is billed has no next bill, so Resume asks nothing and runs."""
+async def test_resume_with_every_period_billed_has_no_bill_to_ask_and_is_accepted(client, session, monkeypatch):
+    """An agreement whose one period is billed has no next bill, so Resume asks nothing and runs,
+    whatever its content: a line with no tax chosen, which a bill would refuse, is never billed."""
     freeze_day(monkeypatch, "2026-03-01")
     hd = await register(client)
-    eid = await agreement(client, hd, start="2026-03-01", end_date="2026-04-01")
+    eid = await agreement(client, hd, start="2026-03-01", term_end="2026-04-01")
     assert (await generate_due(client, hd, eid)).status_code == 200
     assert (await client.post(f"/subscriptions/{eid}/pause", headers=hd)).status_code == 200
+    await write_agreement(session, uuid.UUID(await company_id(client, hd)), eid, {"line_items": UNTAXED}, None)
+    await session.commit()
     r = await client.post(f"/subscriptions/{eid}/resume", headers=hd)
     assert r.status_code == 200, r.text
     assert (await template(client, hd, eid))["status"] == "active"
