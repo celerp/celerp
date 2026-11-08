@@ -183,7 +183,7 @@ async def test_an_ended_agreement_answers_its_rule_first_and_the_door_it_names_c
     """Over every claim door x every kind of claim it acts on: the ended rule answers before any
     claimed-period refusal (a document placed in a period by another reads Set aside, never
     Withdraw placement or Reopen), and Set aside, the door it names, succeeds and its Return
-    succeeds too, with a later period billed."""
+    succeeds too, with a later period billed (which, while the agreement ran, kept the placement)."""
     from celerp_subscriptions.billing import BILLED, ENDED, ENDED_PLACE
 
     old = await _upgrade(session, monkeypatch, "2026-11-04", before_start=_two_in_one_period)
@@ -208,6 +208,9 @@ async def test_an_ended_agreement_answers_its_rule_first_and_the_door_it_names_c
     assert r.status_code == 200, r.text
     open_k = max(int(i) for i in periods) + 1
     assert (await post(f"/periods/{open_k + 1}/skip", reason="Closed")).status_code == 200
+    # While it runs, a later period is billed after the placement, so the placement stays.
+    r = await post(f"/history/{a}/withdraw")
+    assert r.status_code == 409 and r.json()["detail"]["message_key"] == "subscriptions.err_history_later_billed", r.text
     await _to(client, old, status)
     ref = (await _state(session, old, NAME))["ref_id"]
     claims = {"open": open_k, "billed": billed, "void_bill": void_bill, "placed": k, "skipped": open_k + 1}

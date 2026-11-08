@@ -353,17 +353,19 @@ class TestBillingPages:
     async def test_summary_page_lists_unattended_rows_and_mark_as_read_empties_it(self, owner_ui, session, monkeypatch):
         from agreement_kit import agreement, company_id, freeze_day, schedule, tick
         freeze_day(monkeypatch, "2026-03-01")
-        eid = await agreement(owner_ui.api, {}, start="2026-03-01")
-        assert (await schedule(owner_ui.api, {}, eid, generation_mode="auto_invoice")).status_code == 200
+        eids = [await agreement(owner_ui.api, {}, start="2026-03-01") for _ in range(2)]
+        for eid in eids:
+            assert (await schedule(owner_ui.api, {}, eid, generation_mode="auto_invoice")).status_code == 200
         await tick(session, await company_id(owner_ui.api, {}), "2026-03-01")
         listing = (await owner_ui.get("/subscriptions?direction=sales")).text
-        assert t("subscriptions.summary_banner", "en", generated=1, sent=0, failed=0) in listing
+        assert t("subscriptions.summary_banner", "en", generated=2, sent=0, failed=0) in listing
         page = (await owner_ui.get("/subscriptions/summary")).text
-        assert f'href="/subscriptions/{eid}"' in page and t("subscriptions.summary_ack", "en") in page
+        assert all(f'href="/subscriptions/{eid}"' in page for eid in eids) and t("subscriptions.summary_ack", "en") in page
         r = await owner_ui.post("/subscriptions/summary/ack", data=_hx_vals(page, "/subscriptions/summary/ack"))
         _loads_with(r, "/subscriptions/summary", t("subscriptions.done_summary_read", "en"))
         assert t("subscriptions.summary_empty", "en") in (await owner_ui.get("/subscriptions/summary")).text
-        assert f'href="/subscriptions/{eid}"' in (await owner_ui.get("/subscriptions/summary?all=1")).text
+        everything = (await owner_ui.get("/subscriptions/summary?all=1")).text
+        assert all(f'href="/subscriptions/{eid}"' in everything for eid in eids)
 
     async def test_history_review_places_a_document_and_withdraw_returns_it(self, owner_ui):
         eid = await _active_subscription(owner_ui)

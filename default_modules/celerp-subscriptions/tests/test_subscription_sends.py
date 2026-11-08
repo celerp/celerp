@@ -241,6 +241,10 @@ async def test_an_email_waiting_after_the_app_stopped_is_shown_and_never_sent_la
             await session.commit()  # the after-commit send never ran: the app stopped
             row = await _send_row(client, hd, eid)
             assert row["kind"] == "send_pending" and row["retry_url"] == f"/subscriptions/{eid}/periods/0/send"
+            # Shown while it waits: it has no key, so Mark as read leaves it listed.
+            assert row["key"] is None
+            assert (await mark_read(client, hd, await summary(client, hd))).status_code == 200
+            assert (await _send_row(client, hd, eid))["kind"] == "send_pending"
             periods = (await client.get(f"/subscriptions/{eid}/periods", headers=hd)).json()["rows"]
             assert next(p for p in periods if p["period_index"] == 0)["send"] == "waiting"
             assert (await schedule(client, hd, eid, auto_send=False)).status_code == 200

@@ -119,9 +119,15 @@ async def test_unattended_stops_when_authorizer_loses_permission(client, session
     docs = await billed_docs(session, sending_by_manager)
     assert [(d["period_index"], d["status"]) for d in docs] == [(0, "final")]
     assert mail.sent == []
-    text = str(await summary(client, hd))
+    lapsed = {"billing_lapsed", "sending_lapsed"}
+    page = await summary(client, hd)
+    text = str(page)
     assert "Automatic billing stopped: authorization lapsed" in text
     assert "Automatic sending stopped: authorization lapsed" in text
+    # Shown while the authorization stays lapsed: no key, so Mark as read leaves both listed.
+    assert [r["key"] for r in page["rows"] if r["kind"] in lapsed] == [None, None]
+    assert (await mark_read(client, hd, page)).status_code == 200
+    assert sorted(r["kind"] for r in (await summary(client, hd))["rows"] if r["kind"] in lapsed) == sorted(lapsed)
 
 
 async def test_auto_send_separate_from_auto_invoice(client, session, monkeypatch, mail):
