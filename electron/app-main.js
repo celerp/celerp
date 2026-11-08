@@ -524,23 +524,51 @@ function runMigrations(dbUrl) {
 
 /**
  * Whether this copy may open the database (see compatibility.js). On a refusal the
- * user has been told why; the bundled database is stopped and the app quits.
+ * bundled database is stopped and the user is told why: data a newer Celerp opened
+ * gets the refusal screen, which updates Celerp in place; an unreadable version
+ * record gets its dialog and the app quits.
  */
 async function mayOpenDatabase(dbUrl) {
-  const allowed = mayOpenData({
+  return mayOpenData({
     check: () => childProcess.spawnSync(pythonBin(), compatibilityArgs(dbUrl), {
       cwd: APP_DIR,
       env: databaseCommandEnv(dbUrl),
       encoding: "utf8",
     }),
+    t: translator(path.join(APP_DIR, "ui", "locales"), app.getLocale()),
+    windows: process.platform === "win32",
+    stop: () => lifecycle.shutdown(),
+    offerUpdate: showRefusalScreen,
     dialog,
     shell,
+    quit: () => app.exit(0),
   });
-  if (!allowed) {
-    await lifecycle.shutdown();
-    app.exit(0);
-  }
-  return allowed;
+}
+
+const LOADING_PAGE = path.join(__dirname, "assets", "loading.html");
+
+// The refusal screen's words while this copy is refused (null until then). A refusal
+// lasts until Celerp restarts, so it is never cleared.
+let refusal = null;
+
+// The refusal screen (assets/refusal.js) in the window, with the updater ready for
+// the user's Update Celerp. Nothing checks by itself: the user decides.
+async function showRefusalScreen(view) {
+  refusal = view;
+  await mainWindow.loadFile(LOADING_PAGE); // its did-finish-load draws the screen
+  mainWindow.show();
+  configureAutoUpdater();
+}
+
+// While this copy is refused, every page the window loads ends on the refusal screen:
+// loading.html draws it with the updater's current state (a reload, a force reload),
+// and anything else that replaced it (a dropped file) goes back to loading.html.
+function drawRefusal() {
+  if (!refusal) return;
+  mainWindow.webContents.executeJavaScript(
+    `typeof window.showRefusal === "function" && (window.showRefusal(${JSON.stringify(refusal)}), true)`,
+  ).then((drawn) => { if (!drawn) mainWindow.loadFile(LOADING_PAGE); })
+    .catch((err) => console.error("[refusal] could not draw the refusal screen:", err?.message ?? String(err)));
 }
 
 /**
@@ -987,8 +1015,12 @@ async function showUpdateFailure(state) {
   }
 }
 
-function setupAutoUpdater() {
-  if (!app.isPackaged) return;
+// The updater's settings and error handling, once: the refusal screen needs them
+// without the checks setupAutoUpdater schedules.
+let updaterConfigured = false;
+function configureAutoUpdater() {
+  if (!app.isPackaged || updaterConfigured) return;
+  updaterConfigured = true;
 
   autoUpdater.autoDownload = true;
   // Setup reopens Celerp when it is done (quitAndInstall runs it with --force-run).
@@ -1016,13 +1048,17 @@ function setupAutoUpdater() {
     }
   });
 
-  // After a failed install the user decides when to check again, from the update card.
   // An update that stopped is also told in a dialog: the user asked for it and saw
-  // Celerp close, so the card alone could be missed.
-  if (installFailedArg) {
-    if (updateState.getUpdateState().failure === "stopped") showUpdateFailure(updateState.getUpdateState());
-    return startPeriodicChecks();
-  }
+  // Celerp close, so the update card or the refusal screen alone could be missed.
+  if (updateState.getUpdateState().failure === "stopped") showUpdateFailure(updateState.getUpdateState());
+}
+
+function setupAutoUpdater() {
+  if (!app.isPackaged) return;
+  configureAutoUpdater();
+
+  // After a failed install the user decides when to check again, from the update card.
+  if (installFailedArg) return startPeriodicChecks();
 
   // Delay initial check until the renderer has loaded and registered its IPC handlers.
   // Firing immediately at app-ready risks emitting update-available/log events before
@@ -1052,10 +1088,11 @@ const updateLogger = Object.fromEntries(["info", "warn", "error"].map((level) =>
 }]));
 
 // Periodic re-check every 4 hours in case a new release ships while app is open.
+// The timer never keeps the process alive by itself.
 function startPeriodicChecks() {
   setInterval(() => {
     autoUpdater.checkForUpdates().catch(() => {});
-  }, 4 * 60 * 60 * 1000);
+  }, 4 * 60 * 60 * 1000).unref();
 }
 
 function setLoadingStatus(msg) {
@@ -1070,8 +1107,10 @@ function setLoadingStatus(msg) {
 // the API process exit so watchForRestart respawns API + UI, leaving the embedded
 // Postgres running, which is quicker than a full relaunch that stops
 // and starts everything. Falls back to a full relaunch only if the sentinel can't
-// be written or no API process is running.
+// be written or no API process is running. A refused copy has no servers to
+// recycle, so it relaunches, which checks the data again.
 function requestServerRestart() {
+  if (refusal) return fullRelaunch(app, process.argv);
   try {
     const sentinel = path.join(path.dirname(PYTHON_CONFIG_PATH), ".restart_requested");
     fs.writeFileSync(sentinel, "");
@@ -1097,8 +1136,9 @@ function setupAppMenu() {
       {
         label: "Import Module…",
         click: () => {
-          // The modules page opens its import dialog when ?import=1 is present.
-          if (mainWindow && uiPort) mainWindow.loadURL(`http://127.0.0.1:${uiPort}/modules?import=1`);
+          // The modules page opens its import dialog when ?import=1 is present. A refused
+          // copy has no modules page, so its window stays on the refusal screen.
+          if (mainWindow && uiPort && !refusal) mainWindow.loadURL(`http://127.0.0.1:${uiPort}/modules?import=1`);
         },
       },
       {
@@ -1340,10 +1380,13 @@ function createWindow() {
   // Show loading page immediately so there is never a white frame.
   // Main process calls setLoadingStatus() to update the status line
   // while services boot. Once ready, loadURL() switches to the real UI.
-  mainWindow.loadFile(path.join(__dirname, "assets", "loading.html"));
+  mainWindow.loadFile(LOADING_PAGE);
   mainWindow.once("ready-to-show", () => mainWindow.show());
 
-  mainWindow.webContents.on("did-finish-load", () => showPendingHandoff());
+  mainWindow.webContents.on("did-finish-load", () => {
+    showPendingHandoff();
+    drawRefusal();
+  });
 
   // Open external links in the default browser, not in the app. Validate the scheme
   // first so a hostile link can never hand file:/javascript: to the OS via openExternal.
@@ -1388,6 +1431,7 @@ function createWindow() {
 // replace the bundle, so the servers and the database have exited before the
 // installer is handed over; its app.quit() then finds nothing left to stop.
 ipcMain.on("install-update", async () => {
+  updateState.installing();
   isQuitting = true;  // prevent the macOS hide-on-close handler from blocking quit
   await lifecycle.shutdown();
   installingUpdate = true;
@@ -1401,6 +1445,9 @@ ipcMain.on("install-update", async () => {
 // which is the only path that opens the new database - the sentinel-recycle path
 // reuses the boot-bound dbUrl and would not apply it.
 ipcMain.on("restart-app", () => fullRelaunch(app, process.argv));
+
+// quit-app: the refusal screen's Quit. Closing the window would only hide it on macOS.
+ipcMain.on("quit-app", () => app.quit());
 
 // get-version: renderer fetches the current app version
 ipcMain.handle("get-version", () => app.getVersion());
@@ -1666,8 +1713,8 @@ app.whenReady().then(async () => {
         // A restart can follow a backup restore that replaced the database wholesale
         // (possibly with an older schema). Check and reconcile it before the servers
         // come back, exactly like a cold boot; skipping this leaves the code querying
-        // columns the restored schema does not have. A refusal has already quit;
-        // returning it keeps the UI from starting.
+        // columns the restored schema does not have. A refusal has already stopped
+        // the servers and told the user; returning it keeps the UI from starting.
         return reopenData({
           mayOpenData: () => mayOpenDatabase(url),
           runMigrations: () => runMigrations(url),

@@ -115,7 +115,8 @@ function packagedApp({ argv = process.argv } = {}) {
     resourcesPath: resourcesFolder(),
   });
   const checks = [];
-  loaded.updater.checkForUpdates = () => { checks.push(true); return Promise.resolve(); };
+  // electron-updater resolves a check that ran with its result.
+  loaded.updater.checkForUpdates = () => { checks.push(true); return Promise.resolve({ updateInfo: {} }); };
   let loadedHandler = null;
   loaded.setMainWindow({ isDestroyed: () => false,
                          webContents: { once: (e, fn) => { loadedHandler = fn; }, send: () => {} } });

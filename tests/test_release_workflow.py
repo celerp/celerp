@@ -982,3 +982,40 @@ def test_the_installed_candidate_must_be_newer_than_the_previous_release(install
     assert (r.returncode == 0) is is_newer, r.stdout + r.stderr
     if not is_newer:
         assert "::error::" in r.stdout
+
+
+def _windows_update_step(name: str) -> dict:
+    wf = yaml.safe_load((_WORKFLOWS / "packaged-upgrade-smoke.yml").read_text())
+    return next(s for s in wf["jobs"]["upgrade"]["steps"] if s.get("name") == name)
+
+
+def test_each_previous_release_update_check_starts_on_fresh_data():
+    run = _windows_update_step("In-app update from a running Celerp (Windows)")["run"]
+    remove = run[run.index("function RemoveCelerp"):run.index("function InstallFresh")]
+    lines = [line.strip() for line in remove.splitlines()]
+    removed = next(i for i, line in enumerate(lines)
+                   if line.startswith('Remove-Item "$env:APPDATA\\Celerp\\celerp-data" -Recurse -Force'))
+    assert lines[removed + 1].startswith('if (Test-Path "$env:APPDATA\\Celerp\\celerp-data") { Fail ')
+    assert "Stop-Process" in remove.split("UninstallString")[0]
+    assert "RemoveCelerp" in run[run.index("function InstallFresh"):run.index("function StartCelerp")]
+    assert "InstallFresh $previous" in run[run.index("function StartPrevious"):run.index("function RestartToInstall")]
+
+
+def test_an_older_copy_on_newer_data_updates_from_its_refusal_screen():
+    run = _windows_update_step("In-app update from a running Celerp (Windows)")["run"]
+    check = "\n".join(line.strip() for line in run[run.index("# check_update_from_newer_data"):].splitlines())
+    checked = "\nif ($LASTEXITCODE -ne 0) { Fail "   # each drive step fails the check at once
+    order = ["InstallFresh $candidate", '"Version: $newer"', "ci_update_drive.py sign-in 9223 300" + checked,
+             "CloseCelerp", "WriteAllText($meta.FullName, $metadata)", '"version: $newer"',
+             "ci_update_drive.py refusal 9223 600" + checked, 'WaitFor "setup window"', "ExpectNewRunning"]
+    positions = [check.index(marker) for marker in order]
+    assert positions == sorted(positions)
+
+
+def test_a_failed_windows_update_check_uploads_its_logs_and_screen():
+    shot = _windows_update_step("Logs and screen of a failed update check (Windows)")
+    upload = _windows_update_step("Upload the logs and screen of a failed update check (Windows)")
+    assert shot["if"] == upload["if"] == "failure() && runner.os == 'Windows'"
+    assert "celerp-data\\logs" in shot["run"] and "screen.png" in shot["run"]
+    assert upload["uses"].startswith("actions/upload-artifact@")
+    assert upload["with"]["path"] == "${{ runner.temp }}/failure"
