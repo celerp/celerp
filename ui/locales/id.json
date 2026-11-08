@@ -7274,6 +7274,7 @@
   "subscriptions.err_bill_refused_ended": "{ref} tidak bisa menagih. {reason} Langganan ini tidak bisa diubah lagi, jadi gunakan Langganan Baru di halaman Langganan untuk membuat langganan yang menagih.",
   "subscriptions.err_lines_paused_only": "Baris {ref} hanya bisa diubah di sini selama dijeda. Jeda, ubah barisnya, lalu lanjutkan.",
   "subscriptions.err_lines_fields": "Di sini hanya baris, diskon, dan pajak dokumen yang berubah, bukan: {fields}.",
+  "subscriptions.err_lines_unreadable": "{field} tidak dapat dibaca di sini. Kirim baris sebagai daftar baris, dan diskon sebagai angka.",
   "subscriptions.err_agreement_status_lifecycle": "Status langganan hanya dapat berupa draf, aktif, dijeda, dibatalkan, atau tidak berlaku. Ubah statusnya melalui halaman langganan itu sendiri: aktifkan, jeda, lanjutkan, atau batalkan di sana. Melalui Dokumen, Anda dapat menyatakannya tidak berlaku, membatalkan status tidak berlakunya, atau mengembalikannya ke draf.",
   "subscriptions.runs_generation": "Penagihan otomatis sedang berjalan dengan otorisasi dari {name}.",
   "subscriptions.runs_sending": "Setiap tagihan dikirim secara otomatis melalui email kepada pelanggan dengan otorisasi dari {name}.",

@@ -125,7 +125,8 @@ async def locked_agreement(session: AsyncSession, company_id, entity_id: str, *,
     committed it: every schedule operation reads and writes it under this lock. With
     ``scheduled`` (every operation that reads the schedule; pause, cancel and Activate do not),
     an agreement its stored terms build no schedule from is refused (refuse_unscheduled)."""
-    proj = (await lock_projections(session, company_id, [entity_id])).get(entity_id)
+    # Postgres stores no NUL, so an id holding one names no agreement.
+    proj = (await lock_projections(session, company_id, [entity_id])).get(entity_id) if "\x00" not in entity_id else None
     if not proj or proj.state.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
         raise HTTPException(status_code=404, detail=t("subscriptions.err_not_found"))
     if scheduled:

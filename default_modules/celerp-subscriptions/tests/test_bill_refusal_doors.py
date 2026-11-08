@@ -138,7 +138,7 @@ async def test_lines_stored_as_anything_but_mappings_bill_nothing_and_are_refuse
 
 
 def _key(r) -> str | None:
-    detail = r.json().get("detail") if r.status_code in (409, 422) else None
+    detail = r.json().get("detail") if r.status_code in (404, 409, 422) else None
     return detail.get("message_key") if isinstance(detail, dict) else None
 
 
@@ -292,6 +292,33 @@ async def test_the_line_edit_takes_only_a_paused_agreement_and_only_its_lines(cl
     assert saved.status_code == 200, saved.text
     doc = await template(client, hd, eid)
     assert (doc["discount"], doc["discount_type"]) == (5, "percentage")
+
+
+@pytest.mark.parametrize("field,value", [("line_items", v) for v in (None, 7, "x", {}, [None], ["x"], [[]], [{**LINE}, 5])]
+                         + [("discount", v) for v in ("x", "NaN", None, [], {}, True)], ids=repr)
+async def test_the_line_edit_refuses_lines_or_a_discount_it_cannot_read(client, owner_ui, monkeypatch, field, value):
+    """Lines that are not a list of lines, or a discount that is not a number, are refused naming
+    the field, and nothing is stored: the page still opens and Resume still runs."""
+    freeze_day(monkeypatch, DAY)
+    hd = owner_ui.api.headers
+    eid = await agreement(client, hd, start=DAY)
+    assert (await client.post(f"/subscriptions/{eid}/pause", headers=hd)).status_code == 200
+    doc = await template(client, hd, eid)
+    r = await client.patch(f"/subscriptions/{eid}/lines", headers=hd, json={
+        "expected_version": doc["version"], "fields_changed": {field: {"old": doc.get(field), "new": value}}})
+    assert r.status_code == 422 and _key(r) == "subscriptions.err_lines_unreadable", r.text
+    assert r.json()["detail"]["params"] == {"field": field}
+    assert (await template(client, hd, eid))["version"] == doc["version"]
+    assert (await owner_ui.get(f"/subscriptions/{eid}")).status_code == 200
+    assert (await client.post(f"/subscriptions/{eid}/resume", headers=hd)).status_code == 200
+
+
+async def test_an_id_holding_a_nul_is_not_found(client, monkeypatch):
+    """Postgres stores no NUL, so no agreement has one in its id: refused as not found, never a 500."""
+    hd = await register(client)
+    for r in (await client.patch("/subscriptions/doc:A%00B/lines", headers=hd, json={"fields_changed": {}}),
+              await client.post("/subscriptions/doc:A%00B/pause", headers=hd)):
+        assert r.status_code == 404 and _key(r) == "subscriptions.err_not_found", r.text
 
 
 async def test_new_subscription_then_activate_with_no_line_is_refused_where_the_user_is(owner_ui, monkeypatch):

@@ -7274,6 +7274,7 @@
   "subscriptions.err_bill_refused_ended": "{ref} không thể lập hóa đơn. {reason} Nó không thể thay đổi nữa, vì vậy hãy dùng Đăng ký mới trên trang Đăng ký để tạo một đăng ký có thể lập hóa đơn.",
   "subscriptions.err_lines_paused_only": "Các dòng của {ref} chỉ thay đổi được ở đây khi đang tạm dừng. Hãy tạm dừng, thay đổi các dòng, rồi tiếp tục.",
   "subscriptions.err_lines_fields": "Ở đây chỉ thay đổi các dòng, chiết khấu và thuế của chứng từ, không phải: {fields}.",
+  "subscriptions.err_lines_unreadable": "Không thể đọc {field} ở đây. Hãy gửi các dòng dưới dạng danh sách dòng và chiết khấu dưới dạng số.",
   "subscriptions.err_agreement_status_lifecycle": "Gói đăng ký chỉ có thể ở một trong các trạng thái: nháp, đang hoạt động, tạm dừng, đã hủy hoặc vô hiệu. Hãy thay đổi trạng thái trên trang của gói: kích hoạt, tạm dừng, tiếp tục hoặc hủy tại đó. Trong mục Chứng từ, bạn có thể vô hiệu hóa, bỏ trạng thái vô hiệu hoặc đưa gói về bản nháp.",
   "subscriptions.runs_generation": "Tính năng lập hóa đơn tự động đang hoạt động, được {name} cho phép.",
   "subscriptions.runs_sending": "Mỗi hóa đơn được tự động gửi qua email cho khách hàng, theo sự cho phép của {name}.",

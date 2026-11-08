@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date
+from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
@@ -36,6 +37,24 @@ BATCH_CAP = 50
 PLACING_FIELDS = ("anchor_date", "frequency", "custom_interval_days", "billing_timing")
 # What a paused agreement's own line edit changes: what its future bills carry.
 LINE_FIELDS = frozenset({"line_items", "discount", "discount_type", "doc_taxes"})
+
+
+def _unreadable_line_field(fields_changed: dict) -> str | None:
+    """The field of a paused agreement's line edit its bills cannot be computed from, or None:
+    lines that are not a list of lines, or a discount that is not a finite number."""
+    new = {f: (c or {}).get("new") for f, c in fields_changed.items()}
+    lines = new.get("line_items", [])
+    if not (isinstance(lines, list) and all(isinstance(li, dict) for li in lines)):
+        return "line_items"
+    if "discount" in new:
+        try:
+            if not Decimal(str(new["discount"])).is_finite():
+                return "discount"
+        except InvalidOperation:
+            return "discount"
+    return None
+
+
 # What a template not yet on a schedule may change: the terms that let it move onto one.
 _MOVING_FIELDS = {"frequency", "custom_interval_days"}
 
@@ -737,6 +756,8 @@ def _build_router() -> APIRouter:
                 "subscriptions.err_lines_paused_only", ref=proj.state.get("ref_id") or entity_id))
         if other := sorted(set(payload.fields_changed) - LINE_FIELDS):
             raise HTTPException(status_code=422, detail=t("subscriptions.err_lines_fields", fields=", ".join(other)))
+        if field := _unreadable_line_field(payload.fields_changed):
+            raise HTTPException(status_code=422, detail=t("subscriptions.err_lines_unreadable", field=field))
         result = await write_doc_patch(session, company_id, role, settings, user, entity_id, payload, lines_open=True)
         await session.commit()
         return result

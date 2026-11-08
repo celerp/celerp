@@ -7274,6 +7274,7 @@
   "subscriptions.err_bill_refused_ended": "{ref} no puede facturar. {reason} Ya no se puede cambiar, así que use Nueva suscripción en la página Suscripciones para crear una que facture.",
   "subscriptions.err_lines_paused_only": "Las líneas de {ref} solo se pueden cambiar aquí mientras está en pausa. Páuselo, cámbielas y después reanúdelo.",
   "subscriptions.err_lines_fields": "Aquí solo cambian las líneas, el descuento y los impuestos del documento, no: {fields}.",
+  "subscriptions.err_lines_unreadable": "Aquí no se puede leer {field}. Envía las líneas como una lista de líneas y el descuento como un número.",
   "subscriptions.err_agreement_status_lifecycle": "Una suscripción solo puede estar en estado de borrador, activa, pausada, cancelada o anulada. Cambie su estado desde su propia página: actívela, páusela, reanúdela o cancélela allí. En Documentos puede anularla, quitar su anulación o devolverla a borrador.",
   "subscriptions.runs_generation": "La facturación automática está en funcionamiento, autorizada por {name}.",
   "subscriptions.runs_sending": "Cada factura se envía automáticamente por correo electrónico al cliente, con autorización de {name}.",

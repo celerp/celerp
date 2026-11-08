@@ -7274,6 +7274,7 @@
   "subscriptions.err_bill_refused_ended": "{ref} ne peut pas facturer. {reason} Il ne peut plus être modifié, utilisez donc Nouvel abonnement sur la page Abonnements pour en créer un qui facture.",
   "subscriptions.err_lines_paused_only": "Les lignes de {ref} ne peuvent être modifiées ici que pendant sa pause. Mettez-le en pause, modifiez-les, puis reprenez-le.",
   "subscriptions.err_lines_fields": "Seuls les lignes, la remise et les taxes du document changent ici, pas : {fields}.",
+  "subscriptions.err_lines_unreadable": "Impossible de lire {field} ici. Envoyez les lignes sous forme de liste de lignes, et la remise sous forme de nombre.",
   "subscriptions.err_agreement_status_lifecycle": "Un abonnement ne peut avoir que l'un de ces statuts : brouillon, actif, en pause, résilié ou invalidé. Changez son statut sur sa propre page : activez-le, mettez-le en pause, reprenez-le ou résiliez-le. Dans Documents, vous pouvez l'invalider, annuler son invalidation ou le remettre en brouillon.",
   "subscriptions.runs_generation": "La facturation automatique est en cours, avec l'autorisation de {name}.",
   "subscriptions.runs_sending": "Chaque facture est envoyée automatiquement au client par e-mail, avec l'autorisation de {name}.",

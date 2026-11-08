@@ -7274,6 +7274,7 @@
   "subscriptions.err_bill_refused_ended": "{ref} ማስከፈል አይችልም። {reason} ከእንግዲህ ሊለወጥ አይችልም፣ ስለዚህ የሚያስከፍል አዲስ ለመጀመር በምዝገባዎች ገጽ ላይ አዲስ ምዝገባ ይጠቀሙ።",
   "subscriptions.err_lines_paused_only": "የ{ref} መስመሮች እዚህ ሊለወጡ የሚችሉት ለአፍታ በቆመበት ጊዜ ብቻ ነው። ለአፍታ ያቁሙት፣ ይለውጧቸው፣ ከዚያ ያስቀጥሉት።",
   "subscriptions.err_lines_fields": "እዚህ የሚለወጡት መስመሮቹ፣ ቅናሹ እና የሰነዱ ግብሮች ብቻ ናቸው እንጂ፦ {fields} አይደሉም።",
+  "subscriptions.err_lines_unreadable": "{field} እዚህ ሊነበብ አልቻለም። መስመሮቹን እንደ የመስመሮች ዝርዝር፣ ቅናሹን ደግሞ እንደ ቁጥር ይላኩ።",
   "subscriptions.err_agreement_status_lifecycle": "የደንበኝነት ምዝገባ ሁኔታ ረቂቅ፣ ንቁ፣ ለጊዜው የቆመ፣ የተሰረዘ ወይም የተሻረ ብቻ ሊሆን ይችላል። ሁኔታውን በራሱ ገጽ ላይ ይቀይሩ፤ እዚያው ያግብሩት፣ ለጊዜው ያቁሙት፣ ይቀጥሉት ወይም ይሰርዙት። በሰነዶች ውስጥ ሊሽሩት፣ ሽረቱን ሊቀለብሱ ወይም ወደ ረቂቅ ሊመልሱት ይችላሉ።",
   "subscriptions.runs_generation": "በራስ-ሰር የክፍያ መጠየቂያ ማዘጋጀት አሁን እየሠራ ነው፤ ፈቃዱን የሰጠው {name} ነው።",
   "subscriptions.runs_sending": "እያንዳንዱ የክፍያ መጠየቂያ በራስ-ሰር ለደንበኛው በኢሜይል ይላካል፤ ፈቃዱን የሰጠው {name} ነው።",

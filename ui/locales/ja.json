@@ -7274,6 +7274,7 @@
   "subscriptions.err_bill_refused_ended": "{ref} は請求できません。{reason} これ以上変更できないため、サブスクリプションページの 新規購読 で請求できるものを作成してください。",
   "subscriptions.err_lines_paused_only": "{ref} の明細行をここで変更できるのは一時停止中だけです。一時停止し、変更してから再開してください。",
   "subscriptions.err_lines_fields": "ここで変更できるのは明細行、割引、書類の税金だけです。次は変更できません: {fields}。",
+  "subscriptions.err_lines_unreadable": "ここでは {field} を読み取れません。明細は明細のリストとして、割引は数値として送信してください。",
   "subscriptions.err_agreement_status_lifecycle": "サブスクリプションの状態は、下書き、有効、一時停止、解約済み、無効のいずれかです。状態の変更はそのページで行い、有効化、一時停止、再開、解約を選択してください。書類では無効化、無効化の解除、下書きへの差し戻しができます。",
   "subscriptions.runs_generation": "{name} の承認により、自動請求が稼働しています。",
   "subscriptions.runs_sending": "{name} の承認により、各請求書が顧客へ自動的にメール送信されます。",

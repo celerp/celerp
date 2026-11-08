@@ -7274,6 +7274,7 @@
   "subscriptions.err_bill_refused_ended": "{ref} non può fatturare. {reason} Non si può più modificare, quindi usa Nuovo abbonamento nella pagina Abbonamenti per crearne uno che fatturi.",
   "subscriptions.err_lines_paused_only": "Le righe di {ref} si possono modificare qui solo mentre è in pausa. Mettilo in pausa, modificale, poi riprendilo.",
   "subscriptions.err_lines_fields": "Qui cambiano solo le righe, lo sconto e le imposte del documento, non: {fields}.",
+  "subscriptions.err_lines_unreadable": "Qui non è possibile leggere {field}. Invia le righe come elenco di righe e lo sconto come numero.",
   "subscriptions.err_agreement_status_lifecycle": "Un abbonamento può essere solo in bozza, attivo, in pausa, cancellato o invalidato. Ne modifichi lo stato nella sua pagina: lo attivi, lo sospenda, lo riprenda o lo cancelli. In Documenti può invalidarlo, annullarne l'invalidamento o riportarlo in bozza.",
   "subscriptions.runs_generation": "La fatturazione automatica è attiva ed è stata autorizzata da {name}.",
   "subscriptions.runs_sending": "Ogni fattura viene inviata automaticamente al cliente via e-mail, con l'autorizzazione di {name}.",

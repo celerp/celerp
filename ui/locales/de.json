@@ -7274,6 +7274,7 @@
   "subscriptions.err_bill_refused_ended": "{ref} kann nicht abrechnen. {reason} Es lässt sich nicht mehr ändern. Starten Sie daher mit Neues Abonnement auf der Seite Abonnements eines, das abrechnet.",
   "subscriptions.err_lines_paused_only": "Die Positionen von {ref} lassen sich hier nur ändern, solange es pausiert ist. Pausieren Sie es, ändern Sie sie und setzen Sie es dann fort.",
   "subscriptions.err_lines_fields": "Hier ändern sich nur die Positionen, der Rabatt und die Dokumentsteuern, nicht: {fields}.",
+  "subscriptions.err_lines_unreadable": "{field} kann hier nicht gelesen werden. Senden Sie die Positionen als Liste von Positionen und den Rabatt als Zahl.",
   "subscriptions.err_agreement_status_lifecycle": "Ein Abonnement kann nur den Status Entwurf, Aktiv, Pausiert, Gekündigt oder Ungültig haben. Ändern Sie seinen Status auf seiner eigenen Seite: Aktivieren, Pausieren, Fortsetzen oder Kündigen. Unter Dokumente können Sie es ungültig setzen, die Ungültigerklärung aufheben oder es auf Entwurf zurücksetzen.",
   "subscriptions.runs_generation": "Die automatische Abrechnung ist aktiv und wurde von {name} autorisiert.",
   "subscriptions.runs_sending": "Jede Rechnung wird automatisch per E-Mail an den Kunden gesendet. Dies wurde von {name} autorisiert.",

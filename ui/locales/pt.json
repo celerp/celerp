@@ -7274,6 +7274,7 @@
   "subscriptions.err_bill_refused_ended": "{ref} não pode faturar. {reason} Ele não pode mais ser alterado, então use Nova assinatura na página Assinaturas para criar uma que fature.",
   "subscriptions.err_lines_paused_only": "As linhas de {ref} só podem ser alteradas aqui enquanto está pausado. Pause-o, altere-as e depois retome-o.",
   "subscriptions.err_lines_fields": "Aqui só mudam as linhas, o desconto e os impostos do documento, não: {fields}.",
+  "subscriptions.err_lines_unreadable": "Não é possível ler {field} aqui. Envie as linhas como uma lista de linhas e o desconto como um número.",
   "subscriptions.err_agreement_status_lifecycle": "Uma assinatura só pode estar em rascunho, ativa, pausada, cancelada ou anulada. Altere o status na própria página: ative, pause, retome ou cancele por lá. Em Documentos, é possível anulá-la, desfazer a anulação ou revertê-la para rascunho.",
   "subscriptions.runs_generation": "A cobrança automática está em funcionamento, com autorização de {name}.",
   "subscriptions.runs_sending": "Cada fatura é enviada automaticamente por e-mail ao cliente, com autorização de {name}.",

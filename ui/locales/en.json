@@ -7274,6 +7274,7 @@
   "subscriptions.err_bill_refused_ended": "{ref} can't bill. {reason} It can't be changed anymore, so use New Subscription on the Subscriptions page to start one that bills.",
   "subscriptions.err_lines_paused_only": "{ref}'s lines can be changed here only while it's paused. Pause it, change them, then resume it.",
   "subscriptions.err_lines_fields": "Only the lines, discount and document taxes change here, not: {fields}.",
+  "subscriptions.err_lines_unreadable": "{field} can't be read here. Send the lines as a list of lines, and the discount as a number.",
   "subscriptions.err_agreement_status_lifecycle": "A subscription is only ever draft, active, paused, cancelled or void. Change its status on its own page: activate, pause, resume or cancel it there. Documents can void it, unvoid it or revert it to draft.",
   "subscriptions.runs_generation": "Automatic billing runs now, authorized by {name}.",
   "subscriptions.runs_sending": "Each bill is emailed to the customer automatically, authorized by {name}.",
