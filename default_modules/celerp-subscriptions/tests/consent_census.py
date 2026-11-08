@@ -10,6 +10,8 @@ consent term (billing.CONSENT_TERMS):
 - ``route_doors()``: every subscriptions route whose agreement writes, followed through the
   module's own functions to write_agreement, set or drop status or a consent term (an argument
   the census cannot resolve counts as a door).
+- ``billable_routes()``: every subscriptions route that writes an agreement's status as active,
+  the doors that make it billable (test_no_lines_doors refuses each for an agreement with no lines).
 - ``outside_writes()``: every write of an agreement in the module that does not go through
   write_agreement, with the status and consent-term keys it writes.
 - ``marker_writers()``: every function in the code that sets billing's write marker, the mark the
@@ -207,6 +209,26 @@ def route_doors() -> dict[str, tuple[str, list[str], list[str]]]:
         if keys & fields or unresolved:
             found[fn.name] = (label, sorted(keys & fields), unresolved)
     return found
+
+
+def billable_routes() -> dict[str, str]:
+    """{route function: method and path} for every subscriptions route that writes an agreement's
+    status as "active" (a literal ``"status": "active"`` in the route or a module function it
+    calls), the doors through which a person makes an agreement billable here."""
+    pkg = _Package(PACKAGE)
+
+    def activates(fn, seen: frozenset) -> bool:
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Dict) and any(
+                    isinstance(k, ast.Constant) and k.value == "status" and isinstance(v, ast.Constant)
+                    and v.value == "active" for k, v in zip(node.keys, node.values)):
+                return True
+            if isinstance(node, ast.Call) and (name := _callee(node)) in pkg.functions and name not in seen:
+                if any(activates(callee, seen | {name}) for callee in pkg.functions[name]):
+                    return True
+        return False
+
+    return {fn.name: label for label, fn in _routes(pkg) if activates(fn, frozenset({fn.name}))}
 
 
 def outside_writes() -> dict[str, list[str]]:

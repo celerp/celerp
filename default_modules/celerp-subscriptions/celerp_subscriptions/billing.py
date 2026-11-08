@@ -329,6 +329,7 @@ async def guard_agreement_status(*, session, entry, transition) -> None:
     if transition.after.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
         return
     refuse_unbuildable_terms(transition.before or {}, transition.after)
+    refuse_billing_nothing(transition.before or {}, transition.after, entry)
     if _WRITING.get() == entry.entity_id or (transition.before or {}).get("status") == transition.after.get("status"):
         return
     company = await session.get(Company, entry.company_id)
@@ -342,6 +343,24 @@ async def guard_agreement_status(*, session, entry, transition) -> None:
         raise HTTPException(status_code=409, detail=t("subscriptions.err_agreement_status_lifecycle"))
     await require_mode_permissions(session, entry.company_id, entry.actor_id,
                                    entering_modes(transition.before or {}, transition.after))
+
+
+# Why a person may not make an agreement with no lines billable, by the status it leaves: a
+# draft takes lines on its own page, an import (no status before) in its file, and any other
+# status takes none, so a new agreement is the way on.
+_NO_LINES = {"draft": "subscriptions.err_no_lines_draft", None: "subscriptions.err_no_lines_import"}
+
+
+def refuse_billing_nothing(before: dict, after: dict, entry) -> None:
+    """A 409 when a person's write (Activate, Resume, an import, an unvoid: any writer, since the
+    status guard sees each) makes billable an agreement with no lines, whose every bill would be
+    refused for having none, naming the way to give it lines. A write nobody made (the upgrade, a
+    restore) keeps what was stored."""
+    if entry.actor_id is None or after.get("line_items") or billable(before) or not billable(after):
+        return
+    raise HTTPException(status_code=409, detail=t(
+        _NO_LINES.get(before.get("status"), "subscriptions.err_no_lines_running"),
+        ref=after.get("ref_id") or entry.entity_id))
 
 
 def billable(state: dict) -> bool:
