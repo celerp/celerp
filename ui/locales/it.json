@@ -7122,7 +7122,7 @@
   "documents.will_skip_idle_one": "La riga {lines} non ha prodotti riservati né usciti, quindi rimarrà invariata.",
   "documents.will_skip_idle_many": "Le righe {lines} non hanno prodotti riservati né usciti, quindi rimarranno invariate.",
   "documents.will_take_from": "Il lotto {sku} è sulla fattura {doc}: spedirlo da qui significa che non potrà più essere spedito dalla fattura {doc}.",
-  "documents.lot_no_sku": "(nessuno SKU)",
+  "documents.lot_no_sku": "(senza SKU)",
   "documents.will_take_part_from": "Il lotto {sku} è sulla fattura {doc}: spedirlo qui lascia alla fattura {doc} meno quantità da spedire.",
   "documents.memo_lines_skipped_one": "La riga {lines} del memo non è un articolo di magazzino, quindi resta sul memo.",
   "documents.memo_lines_skipped_many": "Le righe {lines} del memo non sono articoli di magazzino, quindi restano sul memo.",
