@@ -27378,5 +27378,14 @@
     "tests/test_tax_seeds.py::test_the_catalog_carries_the_rates_in_force[SG]": 0.004157066985499114,
     "tests/test_tax_seeds.py::test_the_catalog_carries_the_rates_in_force[TH]": 0.004114316019695252,
     "tests/test_tax_seeds.py::test_the_catalog_carries_the_rates_in_force[VN]": 0.0040854900144040585,
-    "tests/test_user_journeys.py::TestWorkflows::test_subscription_generate_due": 0.010293925006408244
+    "tests/test_user_journeys.py::TestWorkflows::test_subscription_generate_due": 0.010293925006408244,
+    "tests/test_browser/test_subscriptions_table_layout.py::test_every_subscriptions_table_is_drawn_here": 0.2368283140240237,
+    "tests/test_browser/test_subscriptions_table_layout.py::test_the_last_column_stays_in_view_at_1440[chromium-_catch_up_card]": 1.2925757479970343,
+    "tests/test_browser/test_subscriptions_table_layout.py::test_the_last_column_stays_in_view_at_1440[chromium-_due_panel]": 1.4165492589963833,
+    "tests/test_browser/test_subscriptions_table_layout.py::test_the_last_column_stays_in_view_at_1440[chromium-_history_review]": 0.1755472109944094,
+    "tests/test_browser/test_subscriptions_table_layout.py::test_the_last_column_stays_in_view_at_1440[chromium-_outcome_table]": 1.4309450859873323,
+    "tests/test_browser/test_subscriptions_table_layout.py::test_the_last_column_stays_in_view_at_1440[chromium-_periods_table]": 0.18716226499236654,
+    "tests/test_browser/test_subscriptions_table_layout.py::test_the_last_column_stays_in_view_at_1440[chromium-_sub_table]": 1.4263159300026018,
+    "tests/test_browser/test_subscriptions_table_layout.py::test_the_last_column_stays_in_view_at_1440[chromium-_summary_table]": 0.18924097799754236,
+    "default_modules/celerp-subscriptions/tests/test_unattended_billing.py::test_a_documents_void_leaves_the_failure_to_the_next_pass": 1.254354881006293
 }
