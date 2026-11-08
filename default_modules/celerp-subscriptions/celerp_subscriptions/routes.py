@@ -46,13 +46,13 @@ def _unreadable_line_field(fields_changed: dict) -> str | None:
     lines = new.get("line_items", [])
     if not (isinstance(lines, list) and all(isinstance(li, dict) for li in lines)):
         return "line_items"
-    if "discount" in new:
-        try:
-            if not Decimal(str(new["discount"])).is_finite():
-                return "discount"
-        except InvalidOperation:
-            return "discount"
-    return None
+    if "discount" not in new:
+        return None
+    try:
+        readable = Decimal(str(new["discount"])).is_finite()
+    except InvalidOperation:
+        readable = False
+    return None if readable else "discount"
 
 
 # What a template not yet on a schedule may change: the terms that let it move onto one.
