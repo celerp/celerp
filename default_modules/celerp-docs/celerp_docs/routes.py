@@ -10241,7 +10241,7 @@ async def duplicate_list(
     new_data = copy_of(state, company.settings)
     new_data.update({"ref_id": ref_id, "source_list_id": entity_id,
                      **({"list_type": state["list_type"]} if state.get("list_type") else {}),
-                     "line_items": strip_line_ids(state.get("line_items"))})
+                     "line_items": strip_line_ids(new_data["line_items"])})
     await require_moving_fits_units(session, company_id, new_entity_id, "list", new_data)
     entry = await _emit_list(session, company_id, new_entity_id, "list.created", new_data, user)
     await session.commit()

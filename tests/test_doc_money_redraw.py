@@ -85,13 +85,13 @@ def test_every_document_page_write_leaves_no_older_money_on_screen():
 def test_every_money_header_field_is_redrawn():
     """Every header field the page edits in place whose value goes into the document's money is
     one whose save redraws the money figures."""
-    from celerp_docs.routes import _DOC_MONEY_INPUTS
+    from celerp_docs.doc_money import DOC_MONEY_INPUTS
     from ui.routes import documents
 
     edited = set(re.findall(r'_cell\("([a-z_]+)"', inspect.getsource(documents))) | {"tax_rate"}
-    money = (_DOC_MONEY_INPUTS | {"conversion_rate"}) & edited
+    money = (DOC_MONEY_INPUTS | {"conversion_rate"}) & edited
     assert money and money <= documents.DOC_MONEY_FIELDS, money - documents.DOC_MONEY_FIELDS
-    assert documents.DOC_MONEY_FIELDS <= _DOC_MONEY_INPUTS | {"conversion_rate"}
+    assert documents.DOC_MONEY_FIELDS <= DOC_MONEY_INPUTS | {"conversion_rate"}
 
 
 @pytest.mark.asyncio

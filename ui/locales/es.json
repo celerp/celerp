@@ -2660,7 +2660,7 @@
   "documents.tip_convert_quote_memo": "Convierte este presupuesto en una nota para que la mercancía se envíe a prueba antes de facturarla.",
   "documents.tip_create_credit_note": "Crear una nota de crédito a partir de esta factura. La nota de crédito se rellenará automáticamente con las partidas de esta factura.",
   "documents.tip_create_shipping_doc": "Crear un documento de envío a partir de las partidas de este documento. Imprimirlo como albarán de entrega (sin precios) o como factura comercial para la aduana.",
-  "documents.tip_duplicate_list": "Crear un borrador editable de esta lista.",
+  "documents.tip_duplicate_list": "Inicia un nuevo borrador con el contacto y las líneas de esta lista. Las notas, las condiciones y los demás datos quedan para que los completes tú.",
   "documents.tip_eye_customs": "Abrir este artículo en el catálogo (allí figuran el código HS y el origen)",
   "documents.tip_finalize_list": "Finalizar este {word} y bloquear su contenido para que pueda enviarse, convertirse o procesarse.",
   "documents.tip_mark_sent": "Registrar este documento como enviado sin enviarlo por correo electrónico (por ejemplo, si lo ha enviado en mano).",

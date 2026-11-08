@@ -2660,7 +2660,7 @@
   "documents.tip_convert_quote_memo": "Chuyển báo giá này thành bản ghi nhớ để hàng hóa được xuất ra để phê duyệt trước khi lập hóa đơn.",
   "documents.tip_create_credit_note": "Tạo phiếu tín dụng từ hóa đơn này. Phiếu tín dụng sẽ được điền sẵn các mục hàng của hóa đơn này.",
   "documents.tip_create_shipping_doc": "Tạo chứng từ vận chuyển từ các dòng của tài liệu này. In tài liệu này dưới dạng Phiếu giao hàng (không bao gồm giá) hoặc Hóa đơn thương mại để làm thủ tục hải quan.",
-  "documents.tip_duplicate_list": "Tạo bản nháp có thể chỉnh sửa của danh sách này.",
+  "documents.tip_duplicate_list": "Tạo bản nháp mới với liên hệ và các dòng của danh sách này. Ghi chú, điều khoản và các chi tiết khác để trống cho bạn tự điền.",
   "documents.tip_eye_customs": "Mở mặt hàng này trong danh mục (mã HS và nguồn gốc được lưu tại đó)",
   "documents.tip_finalize_list": "Hoàn tất {word} này và khóa nội dung của nó để có thể gửi, chuyển đổi hoặc thực hiện các thao tác tiếp theo.",
   "documents.tip_mark_sent": "Ghi nhận tài liệu này là đã gửi mà không cần gửi qua email (ví dụ: nếu bạn gửi bằng tay).",

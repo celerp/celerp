@@ -92,10 +92,18 @@ async def test_every_line_key_the_lifecycle_writes_stays_with_the_source(client,
         "list_type": "quotation", "contact_id": cust, "line_items": [{"item_id": lot["id"], "quantity": 1, "unit_price": 9}]})))["id"]
     await _ok(await client.post(f"/lists/{qid}/finalize", headers=h))
     await _ok(await client.post(f"/lists/{qid}/send", headers=h, json={"sent_via": "manual"}))
-    await _ok(await client.post(f"/lists/{qid}/convert", headers=h, json={"target_type": "invoice"}))
+    inv = (await _ok(await client.post(f"/lists/{qid}/convert", headers=h, json={"target_type": "invoice"})))["target_doc_id"]
     rows = (await session.execute(select(Projection).where(
         Projection.company_id == auth["company_id"], Projection.entity_type.in_(("doc", "list"))))).scalars().all()
     held = {k for r in rows for li in r.state.get("line_items") or [] if isinstance(li, dict) for k in li}
     assert {"counted_qty", "adjusted", "prior_qty", "disposed_qty"} <= held, sorted(held)
     copied = {k for r in rows for li in copy_of(r.state, {})["line_items"] for k in li}
     assert copied <= ENTERED | {"line_id"}, sorted(copied - ENTERED)
+    # And through the doors: every List duplicated, and the invoice its quotation converted to.
+    made = [(await _ok(await client.get(f"/docs/{inv}", headers=h)))["line_items"]]
+    for r in rows:
+        if r.entity_type == "list":
+            dup = (await _ok(await client.post(f"/lists/{r.entity_id}/duplicate", headers=h)))["id"]
+            made.append((await _ok(await client.get(f"/lists/{dup}", headers=h)))["line_items"])
+    stored = {k for lines in made for li in lines for k in li}
+    assert stored <= ENTERED | {"line_id"}, sorted(stored - ENTERED)

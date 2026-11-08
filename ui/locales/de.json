@@ -2661,7 +2661,7 @@
   "documents.tip_convert_quote_memo": "Wandeln Sie dieses Angebot in ein Memo um, damit die Ware vor der Rechnungsstellung zur Freigabe versandt wird.",
   "documents.tip_create_credit_note": "Erstellen Sie aus dieser Rechnung eine Gutschrift. Die Gutschrift wird automatisch mit den Einzelposten dieser Rechnung vorbelegt.",
   "documents.tip_create_shipping_doc": "Erstellen Sie aus den Positionen dieses Dokuments einen Versandbeleg. Drucken Sie ihn als Lieferschein (ohne Preise) oder als Handelsrechnung für den Zoll aus.",
-  "documents.tip_duplicate_list": "Erstellen Sie einen bearbeitbaren Entwurf dieser Liste.",
+  "documents.tip_duplicate_list": "Erstellt einen neuen Entwurf mit dem Kontakt und den Positionen dieser Liste. Notizen, Bedingungen und weitere Angaben füllen Sie selbst aus.",
   "documents.tip_eye_customs": "Öffnen Sie diesen Artikel im Katalog (HS-Code und Herkunft sind dort hinterlegt).",
   "documents.tip_finalize_list": "Schließen Sie dieses {word} ab und sperren Sie dessen Inhalt, damit es versendet, konvertiert oder bearbeitet werden kann.",
   "documents.tip_mark_sent": "Erfassen Sie diesen Beleg als versendet, ohne ihn per E-Mail zu versenden (z. B. wenn Sie ihn manuell versendet haben).",

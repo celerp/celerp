@@ -149,7 +149,7 @@ def _held_many_bills(job: dict) -> bool:
 
 def _many_bills_notice(job: dict, tier: str | None, lang: str) -> list[FT]:
     """Beneath a reading job's reply: the plan's tip when a file of it held several bills."""
-    return [_bills_tip(tier, lang, "ai-msg flash flash--warning")] if _held_many_bills(job) else []
+    return [_bills_tip(tier, lang, "ai-reply-notice flash flash--warning")] if _held_many_bills(job) else []
 
 
 def _refusal_text(status: int | None, data: dict, lang: str) -> tuple[str, bool] | None:

@@ -2660,7 +2660,7 @@
   "documents.tip_convert_quote_memo": "Transforme esta cotação em um memorando para que as mercadorias sejam enviadas para aprovação antes do faturamento.",
   "documents.tip_create_credit_note": "Crie uma nota de crédito a partir desta fatura. A nota de crédito será preenchida automaticamente com os itens desta fatura.",
   "documents.tip_create_shipping_doc": "Crie um documento de remessa a partir das linhas deste documento. Imprima-o como uma Nota de Entrega (sem preços) ou uma Fatura Comercial para a alfândega.",
-  "documents.tip_duplicate_list": "Crie uma cópia preliminar editável desta lista.",
+  "documents.tip_duplicate_list": "Inicia um novo rascunho com o contato e as linhas desta lista. Notas, condições e outros detalhes ficam para você preencher.",
   "documents.tip_eye_customs": "Abrir este item no catálogo (o código HS e a origem estão lá)",
   "documents.tip_finalize_list": "Finalizar este {word} e bloquear seu conteúdo para que possa ser enviado, convertido ou processado.",
   "documents.tip_mark_sent": "Registre este documento como enviado sem enviá-lo por e-mail (por exemplo, se você o enviou manualmente).",

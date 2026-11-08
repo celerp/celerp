@@ -2558,7 +2558,9 @@ th.cell--right { text-align: right !important; }
 .ai-messages { flex: 1; overflow-y: auto; padding: 1.25rem 1rem; display: flex; flex-direction: column; gap: 0.75rem; }
 
 /* Message bubbles - shared between showcase terminal and chat */
-.ai-msg { padding: 0.65rem 1rem; border-radius: var(--radius); max-width: 78%; white-space: pre-wrap; font-size: 0.88rem; line-height: 1.6; word-break: break-word; }
+/* A notice under a reply (.ai-reply-notice) is boxed like a bubble; only a bubble keeps its text's own line breaks. */
+.ai-msg, .ai-reply-notice { padding: 0.65rem 1rem; border-radius: var(--radius); max-width: 78%; font-size: 0.88rem; line-height: 1.6; word-break: break-word; }
+.ai-msg { white-space: pre-wrap; }
 .ai-msg--user { background: var(--c-accent); color: #fff; align-self: flex-end; border-bottom-right-radius: 3px; }
 .ai-msg--ai { background: var(--c-bg2); color: var(--c-text); align-self: flex-start; border: 1px solid var(--c-border); border-bottom-left-radius: 3px; }
 .ai-msg--thinking { background: transparent; color: #8892a4; align-self: flex-start; font-style: italic; font-size: 0.8rem; border: 1px dashed rgba(255,255,255,0.12); padding: 0.4rem 0.75rem; }

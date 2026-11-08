@@ -2661,7 +2661,7 @@
   "documents.tip_convert_quote_memo": "Trasforma questo preventivo in una nota, in modo che la merce venga spedita in prova prima della fatturazione.",
   "documents.tip_create_credit_note": "Crea una nota di credito da questa fattura. La nota di credito verrà precompilata con le righe di questa fattura.",
   "documents.tip_create_shipping_doc": "Crea un documento di spedizione dalle righe di questo documento. Stampalo come bolla di consegna (senza prezzi) o come fattura commerciale per la dogana.",
-  "documents.tip_duplicate_list": "Creare una bozza modificabile di questo elenco.",
+  "documents.tip_duplicate_list": "Avvia una nuova bozza con il contatto e le righe di questo elenco. Note, condizioni e altri dettagli restano da compilare.",
   "documents.tip_eye_customs": "Aprire questa voce nel catalogo (il codice HS e l’origine sono riportati lì)",
   "documents.tip_finalize_list": "Finalizzare questo {word} e bloccarne il contenuto in modo che possa essere inviato, convertito o elaborato.",
   "documents.tip_mark_sent": "Registrare questo documento come inviato senza inviarlo via e-mail (ad esempio, se è stato inviato a mano).",

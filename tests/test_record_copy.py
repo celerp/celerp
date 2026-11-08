@@ -1,22 +1,30 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """A record made from another record (a List duplicated or converted, a quotation converted, a
-consignment bought) is the whole source less the keys that belong to its lifecycle, by one rule
-(record_copy.copy_of). Its own status, outcome, sending, numbering, links and scans stay with the
-source; what the user entered is copied (test_record_copy_content).
+consignment bought) is built by one rule (record_copy.copy_of): the source's parties and its lines,
+as a new draft. Its status, outcome, sending, numbering, links and scans stay with the source, and so
+does what each line records of its lifecycle (test_record_copy_lines).
 
-The guards come from the code: every door that creates a document or list either builds it through
-copy_of or names every key it writes, and every key a writer sets on an existing document or list
-(tests/lifecycle_writers.py) is either never copied or content the code declares the user enters."""
+The guard comes from the code: every door that creates a document or list either builds it through
+copy_of or names every key it writes."""
 from __future__ import annotations
 
 import ast
-import sys
 from pathlib import Path
 
-import lifecycle_writers
-from lifecycle_writers import CREATED, ROOT, ROUTES, app_sources, census
 from test_tax_acceptance_matrix import _demo_company
+
+ROOT = Path(__file__).resolve().parent.parent
+CREATED = {"doc.created", "list.created"}
+
+
+def app_sources():
+    for top in ("celerp", "ui", "default_modules"):
+        for path in sorted((ROOT / top).rglob("*.py")):
+            rel = path.relative_to(ROOT)
+            if "tests" in rel.parts or path.name.startswith(("test_", "conftest")):
+                continue
+            yield rel, path
 
 
 def _creation_constants() -> set[str]:
@@ -89,76 +97,6 @@ def test_the_census_finds_a_door_that_names_the_creation_event_by_a_constant():
     assert {"create_imported_doc", "_doc_record"} <= names
 
 
-# The edit form's writers take the fields the user edits, by name (refusing the protected ones);
-# the one other computed key is the id a platform returns for a pushed invoice, and no door copies
-# an invoice.
-FORM_WRITERS = {f"{ROUTES}:write_doc_patch", f"{ROUTES}:write_list_patch"}
-PUSHED_ID = "<f'{platform}_{data.get('entity', 'invoice')}_id'>"
-
-
-def test_every_key_a_writer_sets_on_an_existing_record_is_never_copied_or_content():
-    rows = census()
-    unplaced = [r for r in rows if r[3] == "NO" and not (r[0].startswith("<") and r[1] in FORM_WRITERS)
-                and not (r[0] == PUSHED_ID and r[2] == "doc.pushed")]
-    assert unplaced == []
-
-
-def test_the_writer_census_finds_lifecycle_steps_and_skips_a_sentinel():
-    rows = {(k, w.rsplit(":", 1)[1], e, p) for k, w, e, p in census()}
-    assert {("sent_at", "_set_list_fields", "list.updated", "never copied"),
-            ("woocommerce_status", "upsert_order_from_woocommerce", "doc.updated", "never copied"),
-            ("issued_at", "finalize_list_record", "list.finalized", "never copied"),
-            ("accounting_sync_excluded", "write_doc_patch", "doc.updated", "content")} <= rows
-    assert "freeze_onhand" not in {k for k, *_ in rows}
-
-
-WRITERS = Path("celerp/writers.py")
-SYNTHETIC = {lifecycle_writers.PROJ: '''
-def apply_documents_event(current, event_type, data):
-    if event_type == "doc.paid":
-        current["amount_outstanding"] = 0
-    elif event_type == "doc.moved":
-        for k in ("a_key", "b_key"):
-            current[k] = None
-    elif event_type == "doc.fields":
-        current.update(data.get("fields"))
-''', WRITERS: '''
-FIELDS = frozenset({"x_named", "y_named"})
-async def by_names(s, v):
-    await emit(s, "doc.fields", data={"fields": {f: v for f in FIELDS}})
-async def by_unknown_comp(s, src):
-    await emit(s, "doc.fields", data={"fields": {k.upper(): v for k, v in src}})
-async def by_unknown_call(s):
-    await emit(s, "doc.fields", data={"fields": unknown()})
-async def by_subscript(s, key):
-    fields = {}
-    fields[key.lower()] = 1
-    await emit(s, "doc.fields", data={"fields": fields})
-async def by_param(s, fields):
-    await emit(s, "doc.fields", data={"fields": fields})
-'''}
-
-
-def test_the_writer_census_names_every_key_it_follows_and_marks_every_key_it_cannot():
-    """On a small app: a projection branch's own keys (one by a loop over names), and for a branch
-    that applies a part of its payload, each emitter's keys: named through a module collection, or
-    ``<expr>`` where the census cannot follow them, so an unfollowable writer fails the census test."""
-    held = lifecycle_writers.app
-    lifecycle_writers.app = lifecycle_writers._App({k: ast.parse(v) for k, v in SYNTHETIC.items()})
-    try:
-        rows = set(lifecycle_writers.lifecycle_writers())
-    finally:
-        lifecycle_writers.app = held
-    proj, w = f"{lifecycle_writers.PROJ}:apply_documents_event", f"{WRITERS}:"
-    assert rows == {
-        ("amount_outstanding", proj, "doc.paid"), ("a_key", proj, "doc.moved"), ("b_key", proj, "doc.moved"),
-        ("x_named", w + "by_names", "doc.fields"), ("y_named", w + "by_names", "doc.fields"),
-        ("<{k.upper(): v for k, v in src}>", w + "by_unknown_comp", "doc.fields"),
-        ("<unknown()>", w + "by_unknown_call", "doc.fields"),
-        ("<key.lower()>", w + "by_subscript", "doc.fields"),
-        ("<by_param:fields>", w + "by_param", "doc.fields")}
-
-
 async def _scenario(client, session):
     """A quotation List finalized, marked as sent and converted to an invoice, then duplicated."""
     auth, contacts = await _demo_company(client, session, "USD")
@@ -189,8 +127,10 @@ async def test_a_duplicate_of_a_converted_sent_list_is_a_fresh_draft_that_conver
                 "share_token"):
         assert not copy.get(key), (key, copy.get(key))
     assert copy["status"] == "draft" and copy["source_list_id"] == lid
-    for key in ("contact_id", "contact_name", "payment_terms", "notes", "customer_note", "discount", "tax", "list_type"):
+    for key in ("contact_id", "contact_name", "list_type"):
         assert copy.get(key) == src.get(key), key
+    for key in ("payment_terms", "notes", "customer_note", "discount", "tax"):  # for the user to fill on the copy
+        assert src.get(key) and not copy.get(key), (key, copy.get(key))
     assert [li["name"] for li in copy["line_items"]] == ["A"]
     # The draft copy is refused for not being finalized, never as "already converted".
     r = await client.post(f"/lists/{dup}/convert", headers=h, json={"target_type": "invoice"})
@@ -221,6 +161,5 @@ def test_a_list_names_its_conversion_and_sending_only_beside_the_status_that_mak
 
 
 if __name__ == "__main__":  # the census: python tests/test_record_copy.py
-    sys.path[:0] = [str(ROOT / "tests")]
     for row in copy_doors():
         print("\t".join(row))

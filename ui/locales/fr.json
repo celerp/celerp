@@ -2661,7 +2661,7 @@
   "documents.tip_convert_quote_memo": "Transformer ce devis en note de service afin que les marchandises soient expédiées pour validation avant facturation.",
   "documents.tip_create_credit_note": "Créer une note de crédit à partir de cette facture. La note de crédit sera préremplie avec les lignes de cette facture.",
   "documents.tip_create_shipping_doc": "Crée un bon de livraison à partir des lignes de ce document. Imprime-le sous forme de bon de livraison (sans prix) ou de facture commerciale pour les formalités douanières.",
-  "documents.tip_duplicate_list": "Créer une ébauche modifiable de cette liste.",
+  "documents.tip_duplicate_list": "Crée un nouveau brouillon avec le contact et les lignes de cette liste. Les notes, les conditions et les autres informations restent à remplir par vous.",
   "documents.tip_eye_customs": "Ouvrir cet article dans le catalogue (le code SH et l’origine s’y trouvent)",
   "documents.tip_finalize_list": "Finaliser ce {word} et verrouiller son contenu afin qu’il puisse être envoyé, converti ou traité.",
   "documents.tip_mark_sent": "Enregistrer ce document comme envoyé sans l’envoyer par e-mail (par exemple, si vous l’avez envoyé manuellement).",

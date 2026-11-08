@@ -2975,7 +2975,7 @@
   "documents.tip_convert_quote_memo": "Turn this quote into a memo so the goods go out on approval before invoicing.",
   "documents.tip_create_credit_note": "Create a credit note from this invoice. The CN will be pre-populated with this invoice's line items.",
   "documents.tip_create_shipping_doc": "Create a shipping document from this document's lines. Print it as a Delivery Note (no prices) or a Commercial Invoice for customs.",
-  "documents.tip_duplicate_list": "Create an editable draft copy of this list.",
+  "documents.tip_duplicate_list": "Start a new draft with this list's contact and lines. Notes, terms and other details are left for you to fill in.",
   "documents.tip_eye_customs": "Open this item in the catalog (HS code and origin live there)",
   "documents.tip_finalize_list": "Finalize this {word} and lock its contents so it can be sent, converted, or acted on.",
   "documents.tip_mark_sent": "Record this document as sent without emailing it (for example, if you sent it by hand).",

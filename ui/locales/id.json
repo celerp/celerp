@@ -2660,7 +2660,7 @@
   "documents.tip_convert_quote_memo": "Ubah penawaran ini menjadi memo agar barang dapat dikirim setelah mendapat persetujuan sebelum difaktur.",
   "documents.tip_create_credit_note": "Buat nota kredit dari faktur ini. Nota kredit tersebut akan diisi secara otomatis dengan item-item pada faktur ini.",
   "documents.tip_create_shipping_doc": "Buat dokumen pengiriman dari baris-baris pada dokumen ini. Cetak sebagai Nota Pengiriman (tanpa harga) atau Faktur Komersial untuk bea cukai.",
-  "documents.tip_duplicate_list": "Buat salinan draf yang dapat diedit dari daftar ini.",
+  "documents.tip_duplicate_list": "Mulai draf baru dengan kontak dan baris dari daftar ini. Catatan, termin, dan detail lainnya dibiarkan kosong untuk Anda isi.",
   "documents.tip_eye_customs": "Buka item ini di katalog (kode HS dan asal tercantum di sana)",
   "documents.tip_finalize_list": "Selesaikan {word} ini dan kunci isinya agar dapat dikirim, dikonversi, atau ditindaklanjuti.",
   "documents.tip_mark_sent": "Catat dokumen ini sebagai telah dikirim tanpa mengirimkannya melalui email (misalnya, jika Anda mengirimkannya secara manual).",
