@@ -215,6 +215,20 @@ async def test_numbering_cell_changed_is_saved(ui_client):
     assert saved.await_args.args[1:] == ("transfer", {"prefix": "QUOTE"})
 
 
+async def test_numbering_reset_shows_the_row_as_saved(ui_client):
+    """Reset sends next 1 and redraws the row from the sequences read after it, so the row shows
+    what the counter now holds."""
+    after = {**_LEGACY_TRANSFER, "next": 1, "preview": "LST-2611-0001"}
+    saved = AsyncMock(return_value={})
+    ui_client.cookies.update(_authed())
+    with patch("ui.api_client.get_doc_sequences", new=AsyncMock(side_effect=[[_LEGACY_TRANSFER], [after]])), \
+         patch("ui.api_client.patch_doc_sequence", new=saved):
+        r = await ui_client.post("/settings/numbering/transfer/reset", headers={"HX-Request": "true"})
+    assert saved.await_args.args[1:] == ("transfer", {"next": 1})
+    assert r.status_code == 200 and r.text.lstrip().startswith("<tr")
+    assert "LST-2611-0001" in r.text and "LST-2611-0041" not in r.text
+
+
 @pytest.mark.parametrize("lang", ["en", "th"])
 async def test_a_refused_numbering_save_keeps_the_row_open_with_the_reason(ui_client, lang):
     """A refused save leaves the whole row in place, the typed value still open in its cell,
