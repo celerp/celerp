@@ -27,7 +27,7 @@ from fastapi import HTTPException
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from agreement_kit import (  # noqa: E402
-    LINE, agreement, billed_docs, company_id, freeze_day, register, schedule, template)
+    LINE, agreement, billed_docs, company_id, freeze_day, generate_due, register, schedule, template)
 from consent_census import billable_routes  # noqa: E402
 
 from celerp_subscriptions import billing  # noqa: E402
@@ -292,6 +292,31 @@ async def test_the_line_edit_takes_only_a_paused_agreement_and_only_its_lines(cl
     assert saved.status_code == 200, saved.text
     doc = await template(client, hd, eid)
     assert (doc["discount"], doc["discount_type"]) == (5, "percentage")
+
+
+async def test_a_paused_line_edit_keeps_line_ids_and_each_bill_has_its_own(client, owner_ui, session, monkeypatch):
+    """A paused agreement's line edit keeps the id of a line it keeps and gives a new line its
+    own; each bill is a record of its own, so its lines never share the agreement's ids or
+    another period's."""
+    freeze_day(monkeypatch, DAY)
+    hd = owner_ui.api.headers
+    eid = await agreement(client, hd, start="2026-01-01")
+    kept = (await template(client, hd, eid))["line_items"][0]["line_id"]
+    assert (await client.post(f"/subscriptions/{eid}/pause", headers=hd)).status_code == 200
+    doc = await template(client, hd, eid)
+    edited = await client.patch(f"/subscriptions/{eid}/lines", headers=hd, json={
+        "expected_version": doc["version"], "fields_changed": {"line_items": {
+            "old": doc["line_items"], "new": [{**LINE, "quantity": 2}, {**LINE, "description": "Setup"}]}}})
+    assert edited.status_code == 200, edited.text
+    ids = [li["line_id"] for li in (await template(client, hd, eid))["line_items"]]
+    assert ids[0] == kept and ids[1] and ids[1] != kept
+    assert (await client.post(f"/subscriptions/{eid}/resume", headers=hd, json={})).status_code == 200
+    for _ in range(2):
+        assert (await generate_due(client, hd, eid)).status_code == 200
+    bills = await billed_docs(session, eid)
+    bill_ids = [li["line_id"] for bill in bills for li in bill["line_items"]]
+    assert len(bills) == 2 and all(bill_ids)
+    assert len(set(bill_ids)) == len(bill_ids) and not set(bill_ids) & set(ids)
 
 
 @pytest.mark.parametrize("field,value", [("line_items", v) for v in (None, 7, "x", {}, [None], ["x"], [[]], [{**LINE}, 5])]

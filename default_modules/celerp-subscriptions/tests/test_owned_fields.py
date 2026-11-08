@@ -51,7 +51,6 @@ SERVER_BUILT = {
     "default_modules/celerp-docs/celerp_docs/routes.py::reprice_doc": "writes the line prices it computes",
     "default_modules/celerp-docs/celerp_docs/routes.py::convert_list": "builds the document from the list's lines",
     "default_modules/celerp-docs/celerp_docs/routes.py::_apply_split_plan": "writes only line items",
-    "default_modules/celerp-docs/celerp_docs/routes.py::_give_lines_ids": "writes only line items",
     "default_modules/celerp-fixed-assets/celerp_fixed_assets/demo.py::seed_demo_assets": "seeds the demo documents it builds",
     "default_modules/celerp-fixed-assets/celerp_fixed_assets/demo.py::_follow_books_currency": "writes the currency",
     "default_modules/celerp-fixed-assets/celerp_fixed_assets/sales.py::_draft": "builds the sale draft from the asset",

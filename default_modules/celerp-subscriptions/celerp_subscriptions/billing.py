@@ -35,6 +35,7 @@ from celerp.models.subscription_email import SubscriptionEmailAttempt
 from celerp.services import email
 from celerp.services.business_time import business_today
 from celerp.services.company_lock import lock_projections, locked_company
+from celerp.services.document_lines import strip_line_ids
 from celerp.services.permissions import missing_permission, role_has_permission
 from celerp.services.record_quantities import template_label
 from celerp.services.terms import resolve_document_terms
@@ -546,8 +547,10 @@ async def bill_document(session, company: Company, tid: str, state: dict, schedu
     service = {"source_agreement": tid, "period_index": k,
                "service_start": schedule.start(k).isoformat(), "service_end": schedule.service_end(k).isoformat()}
     # Only mappings are lines: anything else stored holds none, which the bill's checks then refuse.
+    # The bill is a record of its own, so its lines get ids of their own.
     stored = state.get("line_items")
-    lines = [{**li, **service} for li in copy.deepcopy(stored if isinstance(stored, list) else []) if isinstance(li, dict)]
+    lines = [{**li, **service} for li in strip_line_ids(copy.deepcopy(stored if isinstance(stored, list) else []))
+             if isinstance(li, dict)]
     auto_note = f"Auto-created from subscription template {template_label(state, tid)}"
     notes = f"{state['notes']}\n{auto_note}".strip() if state.get("notes") else auto_note
     money_inputs = {f: state[f] for f in HEADER_MONEY_FIELDS if f in state}

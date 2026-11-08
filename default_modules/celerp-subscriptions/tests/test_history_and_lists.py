@@ -6,11 +6,13 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from pathlib import Path
 
 from bs4 import BeautifulSoup
 
 from agreement_kit import agreement, company_id, freeze_day, generate_due, schedule, tick
+from celerp_subscriptions.billing import write_agreement
 from ui.i18n import sentence, t
 
 REPO = Path(__file__).resolve().parents[3]
@@ -272,10 +274,15 @@ async def test_history_names_a_failed_automatic_bill_and_the_failure_ending(owne
     """The background pass fails to bill the period and the owner cancels: History says the bill
     failed for that period, then that the failure cleared."""
     freeze_day(monkeypatch, "2026-07-01")
-    eid = await agreement(owner_ui.api, {}, start="2026-07-01", frequency="annually",
-                          line_items=[{"description": "Dues", "quantity": 1, "unit_price": 10, "taxes": None}])
+    eid = await agreement(owner_ui.api, {}, start="2026-07-01", frequency="annually")
     assert (await schedule(owner_ui.api, {}, eid, generation_mode="auto_invoice")).status_code == 200
-    await tick(session, await company_id(owner_ui.api, {}), "2026-07-01")
+    cid = await company_id(owner_ui.api, {})
+    # A line with no tax chosen, as a release before every door asked that its bills can be made
+    # left it, so the pass cannot bill the period.
+    untaxed = [{"description": "Dues", "quantity": 1, "unit_price": 10, "taxes": None}]
+    await write_agreement(session, uuid.UUID(cid), eid, {"line_items": untaxed}, None)
+    await session.commit()
+    await tick(session, cid, "2026-07-01")
     assert (await owner_ui.api.post(f"/subscriptions/{eid}/cancel")).status_code == 200
     text = await _history(owner_ui, eid)
     assert sentence("subscriptions.history_billing_failed", "en", start="2026-07-01", end="2027-06-30") in text
