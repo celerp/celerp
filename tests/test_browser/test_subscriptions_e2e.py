@@ -170,3 +170,20 @@ def test_activate_straight_after_typing_a_price_activates_at_that_price(page, ui
     page.get_by_role("button", name=t("btn.activate", "en"), exact=True).click()
     doc = _activated(page, api, eid)
     assert doc["status"] == "active" and float(doc["line_items"][0]["unit_price"]) == 12345.0, doc["line_items"]
+
+
+def test_activate_is_not_sent_when_the_typed_price_fails_to_save(page, ui_server, api):
+    """The lines save fails: Activate stays unsent and the agreement stays a draft at its stored price."""
+    from ui.i18n import t
+
+    eid = _draft(api, {"unit_price": 9800.0, "line_total": 9800.0, "taxes": []})
+    page.goto(f"{ui_server}/subscriptions/{eid}", wait_until="domcontentloaded")
+    page.route("**/lines", lambda r: r.fulfill(status=500, body="boom") if r.request.method == "POST" else r.continue_())
+    posted: list = []
+    page.on("request", lambda q: q.method == "POST" and q.url.endswith("/activate") and posted.append(q.url))
+    page.locator("#line-body input[data-name=unit_price]").first.fill("12345")
+    with page.expect_response(lambda r: r.url.endswith("/lines") and r.request.method == "POST"):
+        page.get_by_role("button", name=t("btn.activate", "en"), exact=True).click()
+    page.wait_for_timeout(1000)
+    doc = api.get(f"/docs/{eid}").json()
+    assert not posted and doc["status"] == "draft" and float(doc["line_items"][0]["unit_price"]) == 9800.0, (posted, doc)

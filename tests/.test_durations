@@ -27378,6 +27378,7 @@
     "tests/test_doc_detail_next_bill_date.py::test_without_the_module_the_stored_date_shows": 0.40783819199714344,
     "tests/test_browser/test_subscriptions_e2e.py::test_activate_after_choosing_only_a_line_tax_activates_on_that_tax[chromium]": 1.1181690860103117,
     "tests/test_browser/test_subscriptions_e2e.py::test_activate_straight_after_typing_a_price_activates_at_that_price[chromium]": 1.2178054830001201,
+    "tests/test_browser/test_subscriptions_e2e.py::test_activate_is_not_sent_when_the_typed_price_fails_to_save[chromium]": 2.4,
     "default_modules/celerp-subscriptions/tests/test_period_billed_once.py::test_a_let_go_document_claims_its_reopened_period_back[finalize]": 2.0758704890031368,
     "default_modules/celerp-subscriptions/tests/test_period_billed_once.py::test_a_let_go_document_claims_its_reopened_period_back[send]": 1.8640305589942727,
     "default_modules/celerp-subscriptions/tests/test_period_billed_once.py::test_a_let_go_document_claims_its_reopened_period_back[unvoid]": 1.921717371995328,
