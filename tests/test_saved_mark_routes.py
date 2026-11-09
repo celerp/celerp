@@ -296,22 +296,25 @@ _NOT_STORED = {
 }
 
 
-# The saves that redraw the whole page instead of the cell: (verb, url, form, API mocks).
-_STORED_REDRAWN = {
+# The saves answered other than with a new cell (a page redraw, a notice): (verb, url, form, API mocks).
+_STORED_OTHERWISE = {
     "a document's customer": ("patch", f"/docs/{DOC}/field/contact_id", {"value": "contact:1"},
                               {"patch_doc": AsyncMock(return_value={"version": 3})}),
     "a list's type": ("patch", f"/lists/{LST}/field/list_type", {"value": "invoice"},
                       {"change_list_type": AsyncMock(return_value={"version": 3})}),
     "a list's customer": ("patch", f"/lists/{LST}/field/contact_id", {"value": "contact:1"},
                           {"patch_list": AsyncMock(return_value={"version": 3})}),
+    "a memo's tax rate": ("patch", f"/docs/{DOC}/field/tax_rate", {"value": "7", "binding": "b", "idempotency_key": "k"},
+                          {"get_doc": AsyncMock(return_value=_MEMO), "set_memo_tax_rate": AsyncMock(
+                              return_value={"version": 3, "previous_tax": 5, "tax": 7})}),
 }
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("case", list(_STORED_REDRAWN))
-async def test_a_stored_change_that_redraws_the_page_carries_the_saved_mark(case):
+@pytest.mark.parametrize("case", list(_STORED_OTHERWISE))
+async def test_a_stored_change_answered_without_a_new_cell_carries_the_saved_mark(case):
     from ui.routes.documents import SAVED_MARK
-    answer = await _send(*_STORED_REDRAWN[case])
+    answer = await _send(*_STORED_OTHERWISE[case])
     assert answer.status_code < 300 and answer.headers.get(SAVED_MARK), (answer.status_code, answer.text[:200])
 
 
