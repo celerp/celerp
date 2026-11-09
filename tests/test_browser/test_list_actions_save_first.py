@@ -328,3 +328,114 @@ def test_a_failed_save_on_its_way_stops_the_action_even_when_the_retry_saves(pag
     page.wait_for_timeout(800)
     assert not any(u.endswith(path) for _, u, in log), log
     assert api.get(f"/lists/{list_id}").json()["status"] == "draft"
+
+
+# A write-off line comes back from a row save exactly as stored, so the write-off after it removes
+# the quantity typed for it.
+
+def test_a_row_save_leaves_a_write_off_line_as_stored(page, ui_server, api):
+    list_id, _ = _draft_writeoff(api)
+    line_id = api.get(f"/lists/{list_id}").json()["line_items"][0]["line_id"]
+    assert api.post(f"/lists/{list_id}/writeoff-line", json={"line_id": line_id, "qty_out": 2}).status_code == 200
+    before = api.get(f"/lists/{list_id}").json()["line_items"][0]
+    page.goto(f"{ui_server}/lists/{list_id}", wait_until="load")
+    _save_row(page, "Spoiled in transit")
+    after = api.get(f"/lists/{list_id}").json()["line_items"][0]
+    assert after == {**before, "description": "Spoiled in transit"}
+
+
+def test_a_row_edit_then_write_off_takes_the_typed_quantity(page, ui_server, api):
+    list_id, item_id = _draft_writeoff(api)
+    answer_confirms(page)
+    page.goto(f"{ui_server}/lists/{list_id}", wait_until="load")
+    with page.expect_response(lambda r: "/writeoff-line/" in r.url and r.request.method == "PATCH"):
+        _type_qty_out(page, "2")
+        page.keyboard.press("Enter")
+    page.locator('#line-body tr input[data-name="description"]').first.fill("Spoiled in transit")
+    _click(page, "Write off stock")
+    assert _written_off(page, api, list_id) == [2]
+    assert _on_hand(api, item_id) == 3
+
+
+# A quantity out whose save failed or was refused stays unsaved on the page: clicking Write off
+# stock again sends nothing and says why, rather than writing off the stored quantity.
+
+@pytest.mark.parametrize("typed,failure", [("2", "failed"), ("9", "refused")])
+def test_a_second_click_after_an_unsaved_quantity_sends_nothing(page, ui_server, api, typed, failure):
+    list_id, item_id = _draft_writeoff(api)
+    line_id = api.get(f"/lists/{list_id}").json()["line_items"][0]["line_id"]
+    assert api.post(f"/lists/{list_id}/writeoff-line", json={"line_id": line_id, "qty_out": 4}).status_code == 200
+    if failure == "failed":
+        _fail(page, "**/writeoff-line/**", "PATCH", 500, {"detail": _BLOCKED})
+    answer_confirms(page)
+    page.goto(f"{ui_server}/lists/{list_id}", wait_until="load")
+    log = _sent(page)
+    _type_qty_out(page, typed)
+    _click(page, "Write off stock")
+    page.wait_for_timeout(2000)
+    page.evaluate("document.querySelectorAll('.toast, #global-ui-error').forEach(e => e.remove())")
+    _click(page, "Write off stock")
+    page.locator(".toast--error").first.wait_for(timeout=8000)
+    page.wait_for_timeout(800)
+    assert not any(u.endswith("/action/write-off") for _, u in log), log
+    assert api.get(f"/lists/{list_id}").json()["status"] == "draft"
+    assert _on_hand(api, item_id) == 5
+
+
+# A tab whose record was changed elsewhere since it loaded: the action's save carries the page's
+# version, so the server refuses it with its own message and nothing acts, as Finalize does on main.
+
+def _draft_doc(api, doc_type: str) -> str:
+    r = api.post("/docs", json={"doc_type": doc_type, "status": "draft", "line_items": [
+        {"name": "W", "description": "W", "quantity": 1, "unit_price": 100.0, "line_total": 100.0, "taxes": []}],
+        "total": 100.0, **({"frequency": "monthly", "start_date": "2027-03-01"}
+                           if doc_type == "subscription_invoice" else {})})
+    assert r.status_code in (200, 201), r.text
+    return r.json()["id"]
+
+
+def _change_lines_elsewhere(page, path: str) -> None:
+    other = page.context.new_page()
+    other.goto(path, wait_until="load")
+    with other.expect_response(lambda r: r.url.split("?")[0].endswith("/lines") and r.request.method == "POST") as r:
+        qty = other.locator('#line-body tr input[data-name="quantity"]').first
+        qty.fill("7")
+        qty.evaluate("e => e.blur()")
+    assert r.value.status == 200, r.value.text()
+    other.close()
+
+
+_STALE = {"invoice": ("/docs/", "Issue Invoice", "/action/finalize"),
+          "quotation": ("/docs/", "Finalize", "/action/finalize"),
+          "purchase_order": ("/docs/", "Convert to Bill", "/action/finalize"),
+          "subscription_invoice": ("/subscriptions/", "Activate", "/activate"),
+          "issue": ("/lists/", "Issue", "/action/finalize"),
+          "duplicate": ("/lists/", "Duplicate", "/action/duplicate"),
+          "writeoff": ("/lists/", "Write off stock", "/action/write-off")}
+
+
+@pytest.mark.parametrize("case", sorted(_STALE))
+def test_a_stale_tab_acts_on_nothing(page, ui_server, api, case):
+    from ui.i18n import t
+
+    base, label, path = _STALE[case]
+    if case == "writeoff":
+        list_id, _ = _draft_writeoff(api)
+        eid = list_id
+    else:
+        eid = _draft_list(api) if base == "/lists/" else _draft_doc(api, case)
+    answer_confirms(page)
+    page.goto(f"{ui_server}{base}{eid}", wait_until="load")
+    if case == "writeoff":
+        line_id = api.get(f"/lists/{eid}").json()["line_items"][0]["line_id"]
+        assert api.post(f"/lists/{eid}/writeoff-line", json={"line_id": line_id, "qty_out": 3}).status_code == 200
+    else:
+        _change_lines_elsewhere(page, f"{ui_server}{base}{eid}")
+    log = _sent(page)
+    _click(page, label)
+    message = t("documents.err_list_changed" if base == "/lists/" else "documents.err_doc_changed", "en")
+    page.locator("#save-status", has_text=message).wait_for(timeout=8000)
+    page.wait_for_timeout(800)
+    assert not any(u.endswith(path) for _, u in log), log
+    stored = api.get(f"{'/lists/' if base == '/lists/' else '/docs/'}{eid}").json()
+    assert stored["status"] == "draft"

@@ -2775,6 +2775,7 @@
   "documents.email_body": "Here is {type} #{number}.",
   "documents.email_subject": "{type} #{number} from {company}",
   "documents.enter_a_number": "Enter a number",
+  "documents.lines_unsaved": "A line change is not saved yet. Save it or put it back, then try again.",
   "documents.duplicate_item_on_document": "This item is already on the document. Change the quantity on the existing line instead of adding it again.",
   "documents.finalize_label_consignment_in": "Issue Consignment In",
   "documents.finalize_label_credit_note": "Issue Credit Note",

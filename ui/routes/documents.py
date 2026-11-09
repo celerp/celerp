@@ -8307,6 +8307,11 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 _qty_disabled = _locks["qty_locked"]
                 _qty_measure = "weight" if _meta.get("qty_is_weight") else ("pieces" if _meta.get("qty_is_pieces") else "")
                 _pcs_val, _weight_val, _wu, _qip, _qiw = resolve_line_measures(li, item_meta=_meta)
+                if pol["writeoff"]:
+                    # A write-off line's measures are those of the part written off, which the
+                    # write-off carries as the line states them: the row holds only what the line
+                    # states, never the lot's, and its quantity (the lot's) never fills them in.
+                    _pcs_val, _weight_val, _qty_measure = li.get("pieces"), li.get("weight"), ""
                 _desc_cell = Td(Div(
                     _desc_inner,
                     _measure_pcs_field(_pcs_val, locked=bool(_locks["pcs_locked"]),
@@ -8834,6 +8839,7 @@ window._L = {_json.dumps({
     "double_click_rename": t("documents.double_click_rename"),
     "save_failed": t("documents.save_failed"),
     "invalid_qty": t("documents.enter_a_number"),
+    "lines_unsaved": t("documents.lines_unsaved"),
     "dup_on_doc": t("documents.duplicate_item_on_document"),
     "reprice_failed": t("documents.reprice_failed"),
     "reprice_partial_title": t("documents.reprice_partial_title"),
@@ -10217,20 +10223,34 @@ if (!window._celerpLineCellsBound) {{
 async function _celerpLineCellsSaved() {{
     return (await Promise.all(window._celerpLineCellSaves.values())).every(Boolean);
 }}
-/* An action that runs on the stored lines (persist_then_post): ask its question first, then wait
-   for every line edit still being saved, save rows with unsaved edits, and post only when all of
-   it is stored. A clean page saves nothing, as paging does: a rows save rewrites every line
-   through the editor. A save that fails or is refused meanwhile, one already on its way included,
-   shows its own message and sends nothing. */
-async function _celerpPostOnLines(url, question) {{
+/* A line edit the page holds that is not stored: rows changed since their last save, a line cell
+   save still on its way, an open line cell editor whose value differs from the one it opened with,
+   or a line cell showing a save's error. */
+function _celerpLinesUnsaved() {{
+    const body = document.getElementById('{line_body_id}');
+    const cells = body ? [...body.querySelectorAll('[hx-patch]')] : [];
+    return _celerpLinesDirty() || window._celerpLineCellSaves.size > 0
+        || cells.some((el) => el._v !== undefined && el.value !== el._v)
+        || !!(body && body.querySelector('.cell-error'));
+}}
+/* An action that runs on the stored lines (persist_then_post), as Finalize does on main: ask its
+   question first, wait for line cell saves on their way, then save the lines with the page's
+   version, so a page changed elsewhere is refused with the server's own message. It is posted
+   only when all of it is stored: a save that fails or is refused, one already on its way
+   included, shows its own message, and an edit still unsaved after it says so; nothing is sent. */
+async function _celerpPostOnLines(url, question, form) {{
     const failures = window._celerpLineSaveFailures;
     if (question && !(await celerpConfirm(question))) return;
     if (!(await _celerpLineCellsSaved())) return;
     clearTimeout(_celerpSaveTimer);
     _celerpSaveTimer = null;
-    if (_celerpLinesDirty() && !(await _celerpPersist())) return;
+    if (!(await _celerpPersist())) return;
     if (window._celerpLineSaveFailures !== failures) return;
-    htmx.ajax('POST', url, {{swap: 'none'}});
+    if (_celerpLinesUnsaved()) {{
+        celerpToast(_L.lines_unsaved, 'error');
+        return;
+    }}
+    htmx.ajax('POST', url, form ? {{source: form, swap: 'none'}} : {{swap: 'none'}});
 }}
 /* Swap to another page of the same draft list. Paging must never silently drop unsaved
    edits: a dirty page saves first, and a failed save (including a stale-version conflict)
