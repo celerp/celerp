@@ -1488,5 +1488,11 @@
   "count": 1,
   "class": "not reached from a route",
   "reason": "Runs only inside the migration runner, which schedule_run starts in a task and a session of its own, outside the request that asked for the run: the batch checkpoint deletes the linked files' cleanup tasks. Driven by tests/test_migration_attachment_durability.py::test_a_batch_names_its_company_in_every_run_and_cleanup_write."
+ },
+ {
+  "site": "default_modules/celerp-subscriptions/celerp_subscriptions/billing.py _run execute",
+  "count": 1,
+  "class": "not reached from a route",
+  "reason": "Runs only after the unattended billing pass commits: run_due queues _expire_attempts_for on its report, and celerp_docs.periodic.run_company, called only by the dispatcher's tick and loop with a session of its own, runs it outside any request. It deletes the company's stored send messages past their retention. Driven by default_modules/celerp-subscriptions/tests/test_subscription_sends.py::test_the_pass_drops_stored_messages_past_their_retention."
  }
 ]

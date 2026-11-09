@@ -57,6 +57,7 @@ def _used_url(proc: subprocess.CompletedProcess) -> str | None:
     return found.group(1) if found else None
 
 
+@pytest.mark.timeout(120)
 def test_an_inherited_database_url_is_never_used():
     proc = _import_conftest({
         "DATABASE_URL": "postgresql+asyncpg://celerp:celerp@app-server.invalid:5432/celerp",
@@ -66,6 +67,7 @@ def test_an_inherited_database_url_is_never_used():
     assert _used_url(proc) == _local_test_url()
 
 
+@pytest.mark.timeout(120)
 @pytest.mark.parametrize("url", [
     "postgresql+asyncpg://celerp:celerp@localhost:5432/celerp",
     "postgresql+asyncpg://celerp:celerp@db.example.com:5432/celerp_test",
@@ -100,6 +102,7 @@ def test_no_opt_in_means_no_existing_server():
         opted_in_test_database({TEST_DATABASE_VAR: "postgresql://u@db.example.com/celerp_test"})
 
 
+@pytest.mark.timeout(120)
 def test_an_opted_in_server_is_never_retuned():
     """A worker's start on an opted-in server creates its database and changes no server setting."""
     proc = _import_conftest({TEST_DATABASE_VAR: _local_test_url(), "DATABASE_URL": _local_test_url(),

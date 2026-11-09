@@ -131,6 +131,7 @@ async def test_dispatcher_skips_company_staged_for_migration(committed_engine, o
     assert await _written(factory, live) == ["periodic-a", "periodic-b"]
 
 
+@pytest.mark.timeout(120)
 def test_check_dispatcher_does_not_import_fixed_assets():
     """The dispatcher and subscription billing import nothing from fixed assets, so
     they run for a company that does not use it."""

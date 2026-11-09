@@ -563,17 +563,20 @@ def _boot_checkin(cfg_file) -> tuple[str, str]:
 class TestFirstBootMarker:
     """What a fresh process reports in its startup check-in."""
 
+    @pytest.mark.timeout(120)
     def test_fresh_install_reports_first_boot_then_relaunch_does_not(self, tmp_path):
         cfg_file = tmp_path / "celerp" / "config.toml"
         assert _boot_checkin(cfg_file)[0] == "True"
         assert _boot_checkin(cfg_file)[0] == "False"
 
+    @pytest.mark.timeout(120)
     def test_each_launch_sends_a_new_boot_id(self, tmp_path):
         cfg_file = tmp_path / "celerp" / "config.toml"
         first, second = _boot_checkin(cfg_file)[1], _boot_checkin(cfg_file)[1]
         assert first not in ("None", "") and second not in ("None", "")
         assert first != second
 
+    @pytest.mark.timeout(120)
     def test_config_written_by_init_is_still_first_boot(self, tmp_path):
         cfg_file = tmp_path / "celerp" / "config.toml"
         cfg_file.parent.mkdir(parents=True)

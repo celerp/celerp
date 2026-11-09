@@ -265,6 +265,63 @@ async def test_one_confirmed_send_again_sends_one_message_however_often_it_arriv
     assert first.json()["send"] == "sent"
 
 
+async def test_a_send_overtaken_while_in_flight_drops_its_stored_message(committed_engine, monkeypatch):
+    """A confirmed Send again is with the mail server for longer than a send can take (the
+    computer slept), so the period reads as cut off and the user confirms Send again once more.
+    The newer send goes; the older one, answering last, is answered with the send as stored
+    and drops its own stored message. Only the cut-off attempt's message stays, kept to
+    its retention; the newer one's went when it was sent."""
+    from agreement_kit import contact
+    from celerp.models.subscription_email import SubscriptionEmailAttempt
+    from celerp.services import email
+    from celerp_subscriptions import billing
+
+    freeze_day(monkeypatch, "2026-07-01")
+    factory = _factory(committed_engine)
+    seeded = await _company(factory)
+    owner, cid = seeded["h"]["owner"], seeded["company_id"]
+    async with _app_client(factory) as (client, _pending):
+        recipient = await contact(client, owner, "overtaken@example.test")
+        eid = await agreement(client, owner, start="2026-07-01", contact_id=recipient)
+        assert (await schedule(client, owner, eid, generation_mode="auto_invoice", auto_send=True)).status_code == 200
+        async with factory() as s:
+            assert (await billing.run_due(session=s, company_id=cid, today=date(2026, 7, 1), budget=1)).done == 1
+            await s.commit()
+
+        cut = []
+
+        async def cut_off(*, operation_id=None, **_kwargs):
+            cut.append(operation_id)
+            return email.EmailResult(False, "delivery outcome unknown", unconfirmed=True)
+        monkeypatch.setattr(email, "send_email", cut_off)
+        assert (await billing.deliver(factory, cid, eid, 0))["state"] == "unconfirmed"
+
+        started, release, calls = asyncio.Event(), asyncio.Event(), []
+
+        async def first_waits(*, operation_id=None, **_kwargs):
+            calls.append(operation_id)
+            if len(calls) == 1:
+                started.set()
+                await release.wait()
+            return email.EmailResult(True, "accepted")
+        monkeypatch.setattr(email, "send_email", first_waits)
+        url = f"/subscriptions/{eid}/periods/0/send"
+        older = asyncio.create_task(client.post(url, headers=owner, json={"again": True, "attempt": 1}))
+        try:
+            await asyncio.wait_for(started.wait(), 30)
+            monkeypatch.setattr(billing, "SEND_TIMEOUT", billing.SEND_TIMEOUT * 0)
+            newer = await client.post(url, headers=owner, json={"again": True, "attempt": 2})
+        finally:
+            release.set()
+        older = await asyncio.wait_for(older, 30)
+    assert newer.status_code == older.status_code == 200, (newer.text, older.text)
+    assert newer.json()["send"] == older.json()["send"] == "sent"
+    async with factory() as s:
+        kept = (await s.execute(select(SubscriptionEmailAttempt.operation_id).where(
+            SubscriptionEmailAttempt.company_id == cid))).scalars().all()
+    assert len(calls) == 2 and [str(o) for o in kept] == cut
+
+
 async def test_a_send_in_flight_reads_sending_and_is_not_sent_again(committed_engine, monkeypatch):
     """The unattended pass is emailing a period and the mail server is slow to answer. The
     owner opens the agreement meanwhile: the period reads as sending, with no Send again, and a

@@ -51,6 +51,7 @@ def _run_dir(env, run_id):
     return env["data_dir"] / "migration_runs" / str(run_id)
 
 
+@pytest.mark.timeout(120)
 def test_app_imports_without_posix_only_modules():
     """The app starts on Windows, where the POSIX-only fcntl, termios, pwd and grp do not exist."""
     blocked = ("fcntl", "termios", "pwd", "grp")

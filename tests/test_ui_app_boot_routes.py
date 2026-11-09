@@ -11,6 +11,8 @@ import subprocess
 import sys
 import textwrap
 
+import pytest
+
 from test_helpers import REPO_ROOT
 
 # Boots ui.app as the desktop does (MODULE_DIR plus the enabled list), with the
@@ -42,6 +44,7 @@ def _default_module_names() -> list[str]:
                   if (p / "__init__.py").exists() and not is_core_folded(p.name))
 
 
+@pytest.mark.timeout(120)
 def test_ui_starts_with_every_default_module_and_registers_each_page_once(tmp_path):
     module_dir = str(REPO_ROOT / "default_modules")
     enabled = ",".join(_default_module_names())
@@ -67,6 +70,7 @@ _DEV_BOOT = textwrap.dedent("""
 """)
 
 
+@pytest.mark.timeout(120)
 def test_dev_run_without_module_dir_loads_the_default_modules(tmp_path):
     """`uvicorn ui.app:app` with MODULE_DIR unset searches the module trees
     `celerp start` gives it, so the document and label pages are there."""

@@ -510,3 +510,26 @@ async def test_an_invoice_emailed_through_the_documents_api_settles_its_period_e
     assert t("subscriptions.period_send_unconfirmed") not in status
     sm = await summary(api, {})
     assert sm["counts"]["send_unconfirmed"] == 0 and sm["counts"]["send_failed"] == 0
+
+
+async def test_the_pass_drops_stored_messages_past_their_retention(client, session):
+    """A stored message is kept only while its send can still be replayed: the pass deletes
+    the company's ones older than that and keeps the rest."""
+    from datetime import timedelta
+    from sqlalchemy import select
+    from celerp.models.subscription_email import SubscriptionEmailAttempt
+    from celerp_subscriptions import billing
+
+    hd = await register(client)
+    cid = await company_id(client, hd)
+    stamp = datetime.now(timezone.utc)
+    old, fresh = uuid.uuid4(), uuid.uuid4()
+    for op, n, at in ((old, 1, stamp - billing.EMAIL_ATTEMPT_RETENTION - timedelta(hours=1)),
+                      (fresh, 2, stamp - billing.EMAIL_ATTEMPT_RETENTION + timedelta(hours=1))):
+        session.add(SubscriptionEmailAttempt(company_id=uuid.UUID(cid), operation_id=op, doc_id="doc:kept",
+                                             attempt_number=n, payload_json="{}", created_at=at))
+    await session.commit()
+    await tick(session, cid, "2026-07-01")
+    kept = (await session.execute(select(SubscriptionEmailAttempt.operation_id).where(
+        SubscriptionEmailAttempt.company_id == uuid.UUID(cid)))).scalars().all()
+    assert kept == [fresh]

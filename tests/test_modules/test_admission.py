@@ -2101,6 +2101,7 @@ def _ui_process(token: str, database_url: str, module_dir: Path, enabled: str,
     return json.loads(out.stdout.strip().splitlines()[-1])
 
 
+@pytest.mark.timeout(120)
 @pytest.mark.parametrize("dashboard_running", [True, False])
 async def test_ui_process_offers_core_pages_only_for_running_modules(
         dashboard_running, committed_engine, tmp_path):
@@ -2151,6 +2152,7 @@ def _two_sided_module(base: Path, folder: str, *, fail_ui: bool = False,
     return _write_module(base, folder, manifest, files), inner
 
 
+@pytest.mark.timeout(120)
 async def test_ui_route_failure_stops_the_module_in_the_api_process(
         committed_engine, _modules, tmp_path, monkeypatch):
     """Two processes: this one is the API, the UI is a real ui.app import. No module
@@ -2198,6 +2200,7 @@ async def test_ui_route_failure_stops_the_module_in_the_api_process(
     assert f"/{healthy_inner}/home" in ui["paths"]
 
 
+@pytest.mark.timeout(120)
 async def test_importing_the_ui_writes_no_module_outcome(committed_engine, _modules, tmp_path):
     """The UI records a module it could not start only once it runs, never while
     its code is being imported."""
@@ -2909,6 +2912,7 @@ def _held_protected_names(*folder: Path) -> list[str]:
     return out.stdout.split()
 
 
+@pytest.mark.timeout(300)
 def test_core_modules_import_protected_functions_where_they_are_used():
     """Protected functions are imported inside the code that uses them, so no core
     module and no bundled first-party module holds one, or a protected module,
@@ -2917,6 +2921,7 @@ def test_core_modules_import_protected_functions_where_they_are_used():
     assert _held_protected_names() == []
 
 
+@pytest.mark.timeout(300)
 def test_protected_names_held_in_containers_are_found(tmp_path):
     pkg = tmp_path / f"held_{_uid()}"
     pkg.mkdir()

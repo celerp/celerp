@@ -32,3 +32,18 @@ async def test_a_text_field_is_saved_to_its_own_record(url, saver, answer, versi
     save.assert_awaited_once()
     assert save.await_args.args[1:] == (url.split("/")[2], {"terms_text": "Net 30"})
     assert f'"version": {version}' in r.headers["HX-Trigger"]
+
+
+@pytest.mark.asyncio
+async def test_a_list_text_field_save_is_stored_on_the_list(owner_ui):
+    """Through the real API: the list keeps the saved terms, and the answer names the list's
+    new version for the page's next save."""
+    from line_actions_support import quotation, state
+
+    list_id = await quotation(owner_ui.api, {})
+    before = (await state(owner_ui.api, {}, list_id))["version"]
+    r = await owner_ui.post(f"/lists/{list_id}/field/terms_text", data={"terms_text": "Net 30"})
+    assert r.status_code == 204, r.text
+    stored = await state(owner_ui.api, {}, list_id)
+    assert stored["terms_text"] == "Net 30" and stored["version"] > before
+    assert f'"version": {stored["version"]}' in r.headers["HX-Trigger"]

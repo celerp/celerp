@@ -66,6 +66,7 @@ def test_pyproject_declares_lock_as_package_data():
     assert "first_party.lock.json" in text
 
 
+@pytest.mark.timeout(600)
 def test_built_wheel_includes_first_party_lock(tmp_path):
     """Build the wheel and confirm the lock is inside it - the one failure that
     would fail-close every pip install fleet-wide and no source-tree test catches.
