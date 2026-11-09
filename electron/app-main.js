@@ -553,7 +553,8 @@ let refusal = null;
 
 // The refusal screen (assets/refusal.js) in the window, with the updater ready for
 // the user's Update Celerp. Nothing checks by itself: the user decides. Only a release
-// that opens the data is downloaded (update-state.js downloadOnlyFrom).
+// that opens the data is downloaded, offered or installed, including one the running
+// app downloaded before (update-state.js downloadOnlyFrom).
 async function showRefusalScreen(view) {
   refusal = view;
   updateState.downloadOnlyFrom(view.recorded);
@@ -1432,7 +1433,8 @@ function createWindow() {
 // ShipIt (Squirrel.Mac) aborts if ANY instance of the app is running when it tries to
 // replace the bundle, so the servers and the database have exited before the
 // installer is handed over; its app.quit() then finds nothing left to stop. Only a
-// downloaded update is handed over, once: a repeated click while installing is ignored.
+// downloaded update that can open the data is handed over (update-state.js installing),
+// once: a repeated click while installing is ignored.
 ipcMain.on("install-update", async () => {
   if (!updateState.installing()) return;
   isQuitting = true;  // prevent the macOS hide-on-close handler from blocking quit

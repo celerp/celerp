@@ -684,3 +684,117 @@ test("a release that is older than the data, or not a release number, cannot ope
         .toEqual([latest, 0, "too-old"]);
     }
   });
+
+// The running app's own check found `latest` (autoDownload on, no rule yet).
+async function runningAppFound(latest) {
+  const feed = releaseFeed(latest);
+  await feed.served.check();
+  return feed;
+}
+
+test("a release downloaded before the data was refused, which cannot open it, is too-old and is never installed",
+  async function test_downloaded_before_refusal_is_too_old() {
+    const { updater, told, served } = await runningAppFound("2.9.0");
+    updater.emit("update-downloaded", { version: "2.9.0" });
+    served.downloadOnlyFrom("2.9.1");
+    expect(stateOf(served.getUpdateState())).toEqual({ ...IDLE, status: "too-old", version: "2.9.0" });
+    expect(served.installing()).toBe(false);
+    expect(stateOf(served.getUpdateState())).toEqual({ ...IDLE, status: "too-old", version: "2.9.0" });
+    expect(told).toEqual([]);
+  });
+
+test("a release still downloading when the data was refused, which cannot open it, stays too-old when it finishes",
+  async function test_downloading_before_refusal_is_too_old() {
+    const sent = [];
+    const updater = releaseFeed("2.9.0").updater;
+    const served = serveUpdateState({ handle: () => {} }, () => ({ webContents: { send: (c, s) => sent.push(s) } }),
+      updater, true);
+    await served.check();
+    updater.emit("download-progress", { percent: 40 });
+    served.downloadOnlyFrom("2.9.1");
+    expect(served.getUpdateState()).toMatchObject({ status: "too-old", version: "2.9.0", percent: 0 });
+    sent.length = 0;
+    updater.emit("download-progress", { percent: 80 });
+    updater.emit("update-downloaded", { version: "2.9.0" });
+    expect(sent.map((s) => s.status)).toEqual(["too-old", "too-old"]);
+    expect(served.getUpdateState()).toMatchObject({ status: "too-old", version: "2.9.0" });
+    expect(served.installing()).toBe(false);
+  });
+
+test("a release downloaded before the data was refused, which opens it, is still offered and installs",
+  async function test_downloaded_before_refusal_that_opens_the_data_installs() {
+    const { updater, served } = await runningAppFound("2.9.1");
+    updater.emit("update-downloaded", { version: "2.9.1" });
+    served.downloadOnlyFrom("2.9.1");
+    expect(stateOf(served.getUpdateState())).toEqual({ ...DOWNLOADED, version: "2.9.1" });
+    expect(served.installing()).toBe(true);
+    expect(served.getUpdateState()).toMatchObject({ status: "downloaded", installing: true });
+  });
+
+test("a setup that stopped for a release that cannot open the data is too-old, with no failure to tell",
+  function test_stopped_install_of_too_old_release() {
+    const { served } = releaseFeed("2.9.0");
+    served.installFailed("2.9.0", "", "stopped");
+    served.downloadOnlyFrom("2.9.1");
+    expect(stateOf(served.getUpdateState())).toEqual({ ...IDLE, status: "too-old", version: "2.9.0" });
+  });
+
+test("with no rule, a downloaded release is offered and installs whatever its version",
+  async function test_no_rule_downloaded_installs() {
+    const { updater, served } = await runningAppFound("2.0.1");
+    updater.emit("update-downloaded", { version: "2.0.1" });
+    expect(stateOf(served.getUpdateState())).toEqual(DOWNLOADED);
+    expect(served.installing()).toBe(true);
+  });
+
+test("release numbers are compared only in update-state.js: every other part of the app reads its judged state",
+  function test_one_version_judge_census() {
+    const fs = require("fs");
+    const path = require("path");
+    const root = path.join(__dirname, "..");
+    const sources = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) return ["node_modules", "tests", "dist"].includes(e.name) ? [] : sources(full);
+      return e.name.endsWith(".js") ? [full] : [];
+    });
+    const users = sources(root).filter((f) => /\b(compareVersions|opensData)\b/.test(fs.readFileSync(f, "utf8")))
+      .map((f) => path.relative(root, f));
+    expect(users).toEqual(["update-state.js"]);
+  });
+
+test("for data a newer Celerp opened, a release found with no version cannot open it and is not downloaded",
+  async function test_release_with_no_version_is_too_old() {
+    const { updater, served } = releaseFeed(undefined);
+    served.downloadOnlyFrom("2.9.1");
+    await served.checkForUser();
+    expect(updater.downloadUpdate).not.toHaveBeenCalled();
+    expect(served.getUpdateState()).toMatchObject({ status: "too-old", version: "" });
+  });
+
+test("after the user's check found a release that cannot open the data, a later download failure of the app's own check is not told",
+  async function test_too_old_result_ends_the_users_check() {
+    const { updater, told, served } = releaseFeed("2.9.0");
+    served.downloadOnlyFrom("2.9.1");
+    await served.checkForUser();
+    updater.checkForUpdates = async () => { updater.emit("update-available", { version: "2.9.2" }); return { updateInfo: {} }; };
+    updater.downloadUpdate = jest.fn(() => { updater.emit("error", new Error("net::ERR_CONNECTION_RESET")); return Promise.resolve([]); });
+    await served.check();
+    expect(updater.downloadUpdate).toHaveBeenCalledTimes(1);
+    expect(served.getUpdateState()).toMatchObject({ status: "error", failure: "download", version: "2.9.2" });
+    expect(told).toEqual([]);
+  });
+
+test("a check the user asks for that fails while a release that cannot open the data is downloading tells nothing",
+  async function test_user_check_failure_during_too_old_download_is_not_told() {
+    const { updater, told, served } = await runningAppFound("2.9.0");
+    updater.emit("download-progress", { percent: 40 });
+    served.downloadOnlyFrom("2.9.1");
+    updater.checkForUpdates = async () => {
+      const err = new Error("net::ERR_INTERNET_DISCONNECTED");
+      updater.emit("error", err);
+      throw err;
+    };
+    await served.checkForUser();
+    expect(told).toEqual([]);
+    expect(served.getUpdateState()).toMatchObject({ status: "too-old", version: "2.9.0" });
+  });

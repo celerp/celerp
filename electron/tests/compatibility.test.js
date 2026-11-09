@@ -429,6 +429,28 @@ describe("app-main startup", () => {
     expect(handlers["get-update-state"]()).toMatchObject({ status: "downloaded", installing: true });
   });
 
+  test("a downloaded release that cannot open the data shows as too-old, and Restart to install runs nothing",
+    async function test_app_main_refusal_never_installs_a_release_that_cannot_open_the_data() {
+      const { events, listeners, handlers, updater } = await startPackaged(NEWER);
+      const installs = [];
+      updater.quitAndInstall = (...args) => { installs.push(args); };
+      updater.emit("update-downloaded", { version: "2.5.9" });
+      events.length = 0;
+      await listeners["install-update"]();
+      expect(handlers["get-update-state"]()).toMatchObject({ status: "too-old", version: "2.5.9", installing: false });
+      expect(installs).toEqual([]);
+      expect(events).toEqual([]);
+    });
+
+  test("a setup that stopped for a release that cannot open the data tells nothing on the refusal screen",
+    async function test_app_main_refusal_stopped_too_old_release() {
+      const { events, handlers } = await startPackaged(NEWER, "2.6.0", {
+        argv: [process.execPath, "--updated", "--update-install-failed=2.5.9"] });
+      await new Promise(setImmediate);
+      expect(events.slice(2)).toEqual(REFUSAL_SCREEN);
+      expect(handlers["get-update-state"]()).toMatchObject({ status: "too-old", version: "2.5.9", failure: "" });
+    });
+
   test("an unreadable version record gets its own dialog, then quits", async function test_app_main_invalid_record() {
     const { events, before, after } = await startPackaged(INVALID);
     expect(events).toEqual([

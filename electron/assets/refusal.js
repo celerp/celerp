@@ -17,9 +17,9 @@
    * installs), whether that button waits, and whether it shows at all (offer). Every
    * state says where it stands: a failure names what failed and offers Update Celerp
    * again, once nothing newer is found the screen stops promising an update and offers
-   * Check again, and a release found that cannot open the data (the updater's
-   * "too-old", update-state.js) is never offered: the screen says no release opens it yet,
-   * leaving the installer page and Quit.
+   * Check again, and a release that cannot open the data, found, downloading or downloaded
+   * (the judged state "too-old", update-state.js), is never offered: the screen says no
+   * release opens it yet, leaving the installer page and Quit.
    */
   function screenFor(view, state) {
     if (state.status === "too-old") {

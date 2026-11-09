@@ -47,6 +47,19 @@ function compareVersions(a, b) {
 // Whether release `version` can open data `recorded` opened: it is at least that version.
 const opensData = (recorded, version) => compareVersions(version, recorded) >= 0;
 
+/**
+ * The state as it is shown and acted on, judged against `recorded`, the version that opened
+ * the data (empty: no rule). A state that names a release (downloading, downloaded, or any
+ * other with a version) which cannot open the data is "too-old", whatever it was: nothing of
+ * that release is downloaded, offered, installed or told as failed. This is the only place a
+ * release is compared with the data.
+ */
+function judgeUpdateState(state, recorded) {
+  const namesRelease = state.status === "downloading" || state.status === "downloaded" || Boolean(state.version);
+  if (!recorded || !namesRelease || opensData(recorded, state.version)) return state;
+  return Object.freeze({ ...initialUpdateState(), status: "too-old", version: state.version });
+}
+
 function initialUpdateState() {
   return Object.freeze({ status: "idle", version: "", percent: 0, message: "", checking: false,
                          downloadFailed: false, failure: "", releaseUrl: "", upToDate: false, installing: false });
@@ -100,14 +113,12 @@ function toPercent(value) {
  * - "installing" marks a downloaded update as handed to its installer.
  * - "inactive" is a check the user asked for that ran nothing: a failed check.
  * - not-available sets upToDate, which any later result clears.
- * - "too-old" is a release found that cannot open the data, so it is not downloaded. It is
- *   the check's last word: nothing that follows moves it, not even an error.
  *
  * @param {{status: string, version: string, percent: number, message: string,
  *          checking: boolean, downloadFailed: boolean, failure: string, releaseUrl: string,
  *          upToDate: boolean, installing: boolean}} state
  * @param {{type: "check"|"dismiss"|"found"|"progress"|"downloaded"|"not-available"|"error"|"install-failed"|
- *                "installing"|"inactive"|"too-old",
+ *                "installing"|"inactive",
  *          version?: string, percent?: number, message?: string, failure?: string}} event
  */
 function nextUpdateState(state, event) {
@@ -115,7 +126,6 @@ function nextUpdateState(state, event) {
     return failedState(state, event.failure, { version: event.version || state.version,
                                                  message: event.message || "", downloadFailed: true });
   }
-  if (state.status === "too-old") return null;
   if (state.status === "downloaded") {
     return event.type === "installing" && !state.installing ? Object.freeze({ ...state, installing: true }) : null;
   }
@@ -136,8 +146,6 @@ function nextUpdateState(state, event) {
       const same = state.status === "downloading" && state.version === version;
       return next({ status: "downloading", version, percent: same ? state.percent : 0 });
     }
-    case "too-old":
-      return next({ status: "too-old", version: event.version || "", percent: 0 });
     case "progress":
       if (failedDownload) return null;
       return next({ status: "downloading", percent: toPercent(event.percent) });
@@ -169,11 +177,11 @@ function nextUpdateState(state, event) {
  * failure after a check the user asked for (userChecks); the app's own checks
  * and downloads fail on the update card only.
  *
- * Once downloadOnlyFrom(recorded) names a version (data a newer Celerp opened), every check runs
- * with the updater's own downloading off, and a release found is downloaded only if it
- * opens that data (opensData); one that cannot ends the check as "too-old", so nothing of
- * it is downloaded, offered or told as failed. The updater's autoDownload is put back when
- * the check ends.
+ * Once downloadOnlyFrom(recorded) names a version (data a newer Celerp opened), every state
+ * read, sent or acted on is judged against it (judgeUpdateState), including one reached
+ * before the rule was set. Every check then runs with the updater's own downloading off,
+ * and a release found is downloaded only if the judged state is not "too-old"; installing
+ * refuses a "too-old" state. The updater's autoDownload is put back when the check ends.
  *
  * @param {{on: (event: string, fn: Function) => void, checkForUpdates: () => Promise,
  *          downloadUpdate: () => Promise, autoDownload: boolean}} updater
@@ -188,8 +196,9 @@ function nextUpdateState(state, event) {
  *   installFailed records an installer that did not start, or with "stopped" a setup
  *   that started and then stopped; with no message it adds no log line; installing marks
  *   the downloaded update as handed to its installer and returns whether it did, so the
- *   hand-over happens once; checkedNothing records a check the user asked for that ran
- *   nothing (failure "inactive"); check runs one updater check (see below).
+ *   hand-over happens once and never for a "too-old" release; checkedNothing records a
+ *   check the user asked for that ran nothing (failure "inactive"); check runs one updater
+ *   check (see below).
  */
 function trackUpdater(updater, send, onFailure = () => {}) {
   let state = initialUpdateState();
@@ -206,7 +215,8 @@ function trackUpdater(updater, send, onFailure = () => {}) {
   // Empty (no version on record, as for an unknown schema): any release downloads.
   let recorded = "";
 
-  const snapshot = () => ({ ...state, log: [...log], revision });
+  const judged = () => judgeUpdateState(state, recorded);
+  const snapshot = () => ({ ...judged(), log: [...log], revision });
 
   // Apply `event`; `lineFor(state)` gives the log line for it, if any.
   // `logIgnored` still logs the line when the state ignores the event.
@@ -228,7 +238,7 @@ function trackUpdater(updater, send, onFailure = () => {}) {
     apply("update-error", { type: "error", message }, () => errorLine(message), true);
     if (userAsked) {
       userAsked = false;
-      onFailure(snapshot());
+      if (judged().status !== "too-old") onFailure(snapshot());
     }
   }
 
@@ -257,17 +267,13 @@ function trackUpdater(updater, send, onFailure = () => {}) {
     apply("update-log", { type: "check" }, () => "Checking for update..."));
   updater.on("update-available", (info) => {
     loggedStep = -1;
-    const version = info && info.version;
-    if (recorded && !opensData(recorded, version)) {
-      userAsked = false;
-      apply("update-available", { type: "too-old", version },
-        (s) => (s.version ? "Found v" + s.version : "Found an update") + ", which cannot open this data.");
-      return;
-    }
-    apply("update-available", { type: "found", version },
-      (s) => (s.version ? "Found v" + s.version : "Found an update") + ", downloading...");
+    apply("update-available", { type: "found", version: info && info.version },
+      (s) => (s.version ? "Found v" + s.version : "Found an update") +
+        (judged().status === "too-old" ? ", which cannot open this data." : ", downloading..."));
+    // A release that cannot open the data is the check's result: nothing downloads, nothing is told.
+    if (judged().status === "too-old") userAsked = false;
     // A failed download is told by the updater's "error" event.
-    if (recorded) updater.downloadUpdate().catch(() => {});
+    else if (recorded) updater.downloadUpdate().catch(() => {});
   });
   updater.on("download-progress", (progress) =>
     apply("download-progress", { type: "progress", percent: progress && progress.percent }, (s) => {
@@ -294,7 +300,7 @@ function trackUpdater(updater, send, onFailure = () => {}) {
     userChecks: () => { userAsked = true; },
     installFailed: (version, message, failure) =>
       apply("update-error", { type: "install-failed", version, message, failure }, () => (message ? errorLine(message) : "")),
-    installing: () => apply("update-log", { type: "installing" }, () => ""),
+    installing: () => judged().status !== "too-old" && apply("update-log", { type: "installing" }, () => ""),
     checkedNothing: () => {
       userAsked = false;
       apply("update-error", { type: "inactive" }, () => "This copy of Celerp cannot update itself.");

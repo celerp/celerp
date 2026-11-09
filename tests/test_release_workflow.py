@@ -1023,11 +1023,47 @@ def test_the_refused_text_fills_every_placeholder_of_its_message():
     assert set(re.findall(r"\{\w+\}", en[key])) == set(re.findall(r'\.Replace\("(\{\w+\})"', line)) != set()
 
 
+# A bounded wait as the step writes it: WaitFor's seconds, a drive call's deadline, a fixed pause.
+_BOUNDED_WAIT = re.compile(r'^(?:WaitFor "[^"]*" (\d+)|python scripts/ci_update_drive\.py \S+ \$script:port (\d+)|Start-Sleep (\d+)$)')
+
+
+def _bounded_wait_seconds(run: str) -> int:
+    """The longest the step's script can wait: its bounded waits, with each function's own waits
+    counted at every call."""
+    bodies: dict[str, list[str]] = {}
+    main: list[str] = []
+    lines = iter(run.splitlines())
+    for line in lines:
+        name = re.match(r"function (\w+)", line)
+        if not name:
+            main.append(line)
+            continue
+        body = bodies[name.group(1)] = [line]
+        if line.rstrip().endswith("{"):   # a body over several lines ends at its own closing brace
+            while body[-1] != "}":
+                body.append(next(lines))
+    bodies.pop("WaitFor")   # its 2 s poll is inside the seconds each WaitFor is given
+
+    def total(body: list[str]) -> int:
+        seconds = 0
+        for line in (raw.strip() for raw in body):
+            wait = _BOUNDED_WAIT.match(line)
+            if wait:
+                seconds += int(next(n for n in wait.groups() if n))
+            elif line.split(" ")[0] in bodies:
+                seconds += total(bodies[line.split(" ")[0]])
+        return seconds
+
+    return total(main)
+
+
 def test_the_update_step_outlasts_its_bounded_waits_and_fits_in_its_job():
-    wf = yaml.safe_load((_WORKFLOWS / "packaged-upgrade-smoke.yml").read_text())
+    text = (_WORKFLOWS / "packaged-upgrade-smoke.yml").read_text()
+    wf = yaml.safe_load(text)
     step = _windows_update_step("In-app update from a running Celerp (Windows)")
-    # The sum of the step's bounded waits, as its workflow comment states it.
-    assert step["timeout-minutes"] * 60 >= 7875
+    waits = _bounded_wait_seconds(step["run"])
+    assert step["timeout-minutes"] * 60 >= waits
+    assert f"Its bounded waits add up to {waits} s" in text   # the comment says what the test sums
     assert wf["jobs"]["upgrade"]["timeout-minutes"] > step["timeout-minutes"]
 
 
