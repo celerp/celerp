@@ -316,6 +316,8 @@ async def test_a_stored_change_answered_without_a_new_cell_carries_the_saved_mar
     from ui.routes.documents import SAVED_MARK
     answer = await _send(*_STORED_OTHERWISE[case])
     assert answer.status_code < 300 and answer.headers.get(SAVED_MARK), (answer.status_code, answer.text[:200])
+    redrawn = answer.headers.get("HX-Redirect") or answer.headers.get("HX-Reswap") == "none"
+    assert redrawn and not answer.text, (dict(answer.headers), answer.text[:200])
 
 
 @pytest.mark.asyncio
