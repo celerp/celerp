@@ -2043,6 +2043,8 @@
   "shell.data_no_update": "Belum ada versi yang lebih baru.",
   "shell.data_not_released": "Data Anda tidak diubah. Celerp dapat membukanya setelah versi {recorded} atau yang lebih baru tersedia.",
   "shell.data_not_released_schema": "Data Anda tidak diubah. Celerp dapat membukanya setelah versi yang lebih baru tersedia.",
+  "shell.data_release_too_old": "Celerp {version} adalah rilis terbaru, dan belum dapat membuka data ini.",
+  "shell.data_restart_to_check": "Data Anda tidak diubah. Mulai ulang Celerp untuk mencari versi yang dapat membukanya.",
   "shell.data_invalid_record": "Celerp tidak dapat membaca versi mana yang terakhir membuka data Anda, jadi Celerp tidak membukanya. Data Anda tidak diubah.",
   "shell.checking": "Memeriksa...",
   "shell.restarting": "Sedang memulai ulang...",

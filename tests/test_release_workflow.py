@@ -1001,15 +1001,95 @@ def test_each_previous_release_update_check_starts_on_fresh_data():
     assert "InstallFresh $previous" in run[run.index("function StartPrevious"):run.index("function RestartToInstall")]
 
 
-def test_an_older_copy_on_newer_data_updates_from_its_refusal_screen():
+def test_an_older_copy_on_newer_data_updates_from_its_refusal_screen_and_opens_the_data():
     run = _windows_update_step("In-app update from a running Celerp (Windows)")["run"]
     check = "\n".join(line.strip() for line in run[run.index("# check_update_from_newer_data"):].splitlines())
     checked = "\nif ($LASTEXITCODE -ne 0) { Fail "   # each drive step fails the check at once
-    order = ["InstallFresh $candidate", '"Version: $newer"', "ci_update_drive.py sign-in 9223 300" + checked,
-             "CloseCelerp", "WriteAllText($meta.FullName, $metadata)", '"version: $newer"',
-             "ci_update_drive.py refusal 9223 600" + checked, 'WaitFor "setup window"', "ExpectNewRunning"]
-    positions = [check.index(marker) for marker in order]
+    # The candidate opens fresh data as itself, plays an older copy with its package version
+    # lowered, is refused, updates from the refusal screen, and the reinstalled candidate (its
+    # package version put back by setup) opens the data.
+    order = ["InstallFresh $candidate", "$metadata = [IO.File]::ReadAllText($meta)",
+             "ci_update_drive.py sign-in $script:port 300" + checked, "CloseCelerp",
+             '"Version: $older"', '"version: $newer"', "StartCelerp", '$en["shell.data_newer"]',
+             "ci_update_drive.py refused $script:port 180 $refusedText" + checked,
+             "ci_update_drive.py refusal $script:port 600" + checked, 'WaitFor "setup window"', "ExpectNewRunning",
+             "if ([IO.File]::ReadAllText((PackageMetadata)) -ne $metadata) { Fail ", "CloseCelerp\nStartCelerp",
+             "ci_update_drive.py sign-in $script:port 300" + checked, "opened the data"]
+    positions = [check.index(marker, check.index(order[i - 1]) if i else 0) for i, marker in enumerate(order)]
     assert positions == sorted(positions)
+    # The older copy is older than the data it opened, and the feed's release is newer.
+    assert '.Replace("{recorded}", $real).Replace("{running}", $older)' in check
+    assert '"Version: $newer"' not in check
+
+
+def test_the_refused_text_fills_every_placeholder_of_its_message():
+    run = _windows_update_step("In-app update from a running Celerp (Windows)")["run"]
+    line = next(line.strip() for line in run.splitlines() if line.strip().startswith("$refusedText = "))
+    key = re.search(r'\$en\["([\w.]+)"\]', line).group(1)
+    en = json.loads((_WORKFLOWS.parent.parent / "ui" / "locales" / "en.json").read_text(encoding="utf-8"))
+    assert set(re.findall(r"\{\w+\}", en[key])) == set(re.findall(r'\.Replace\("(\{\w+\})"', line)) != set()
+
+
+# A bounded wait as the step writes it: WaitFor's seconds, a drive call's deadline, a fixed pause.
+_BOUNDED_WAIT = re.compile(r'^(?:WaitFor "[^"]*" (\d+)|python scripts/ci_update_drive\.py \S+ \$script:port (\d+)|Start-Sleep (\d+)$)')
+
+
+def _bounded_wait_seconds(run: str) -> int:
+    """The longest the step's script can wait: its bounded waits, with each function's own waits
+    counted at every call."""
+    bodies: dict[str, list[str]] = {}
+    main: list[str] = []
+    lines = iter(run.splitlines())
+    for line in lines:
+        name = re.match(r"function (\w+)", line)
+        if not name:
+            main.append(line)
+            continue
+        body = bodies[name.group(1)] = [line]
+        if line.rstrip().endswith("{"):   # a body over several lines ends at its own closing brace
+            while body[-1] != "}":
+                body.append(next(lines))
+    bodies.pop("WaitFor")   # its 2 s poll is inside the seconds each WaitFor is given
+
+    def total(body: list[str]) -> int:
+        seconds = 0
+        for line in (raw.strip() for raw in body):
+            wait = _BOUNDED_WAIT.match(line)
+            if wait:
+                seconds += int(next(n for n in wait.groups() if n))
+            elif line.split(" ")[0] in bodies:
+                seconds += total(bodies[line.split(" ")[0]])
+        return seconds
+
+    return total(main)
+
+
+def test_the_update_step_outlasts_its_bounded_waits_and_fits_in_its_job():
+    text = (_WORKFLOWS / "packaged-upgrade-smoke.yml").read_text()
+    wf = yaml.safe_load(text)
+    step = _windows_update_step("In-app update from a running Celerp (Windows)")
+    waits = _bounded_wait_seconds(step["run"])
+    assert step["timeout-minutes"] * 60 >= waits
+    assert f"Its bounded waits add up to {waits} s" in text   # the comment says what the test sums
+    assert wf["jobs"]["upgrade"]["timeout-minutes"] > step["timeout-minutes"]
+
+
+def test_the_rename_prompt_is_found_through_the_bounded_wait_and_needs_a_window_handle():
+    run = _windows_update_step("In-app update from a running Celerp (Windows)")["run"]
+    lines = [line.strip() for line in run.splitlines()]
+    wait = lines.index('WaitFor "rename prompt" 300 {')
+    assert lines[wait + 2] == "try {" and "catch" in "".join(lines[wait + 3:wait + 8])
+    assert not any(line.startswith("for (") for line in lines)   # no hand-rolled wait loop
+    handle = lines.index("$handle = $prompt.Current.NativeWindowHandle")
+    # A missing handle ($null) fails as well as 0.
+    assert lines[handle + 1].startswith("if (-not $handle) { Fail ")
+    assert "PostMessage([IntPtr]$handle," in run
+
+
+def test_install_log_is_read_once_where_its_mode_line_is_checked():
+    run = _windows_update_step("In-app update from a running Celerp (Windows)")["run"]
+    expect = run[run.index("function ExpectNewRunning"):run.index("# check_update_with_held_file_reopens_old_version")]
+    assert expect.count("$log = InstallLog") == 1
 
 
 def test_a_failed_windows_update_check_uploads_its_logs_and_screen():

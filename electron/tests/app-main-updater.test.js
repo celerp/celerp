@@ -79,7 +79,7 @@ function resourcesFolder() {
 // A packaged app whose window has loaded. quit() runs before-quit and then
 // will-quit as Electron does, and the app has quit only if no handler held it.
 // Dialogs wait until the test answers them with answer(response).
-function packagedApp({ argv = process.argv } = {}) {
+function packagedApp({ argv = process.argv, check = () => Promise.resolve({ updateInfo: {} }) } = {}) {
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), "celerp-user-"));
   const shown = [];
   const answers = [];
@@ -116,7 +116,7 @@ function packagedApp({ argv = process.argv } = {}) {
   });
   const checks = [];
   // electron-updater resolves a check that ran with its result.
-  loaded.updater.checkForUpdates = () => { checks.push(true); return Promise.resolve({ updateInfo: {} }); };
+  loaded.updater.checkForUpdates = () => { checks.push(true); return check(); };
   let loadedHandler = null;
   loaded.setMainWindow({ isDestroyed: () => false,
                          webContents: { once: (e, fn) => { loadedHandler = fn; }, send: () => {} } });
@@ -240,6 +240,41 @@ test("Restart to install runs setup in its own window and lets it reopen Celerp"
     expect(t.updater.autoRunAppAfterInstall).toBe(true);
     expect(calls).toEqual([[false]]);
     expect(spawned).toEqual([["--updated", "--force-run"]]);   // never /S
+  });
+
+test("a second Restart to install while Celerp is installing changes nothing: one shutdown, one setup",
+  async function test_install_update_is_one_shot() {
+    const t = packagedApp();
+    const calls = [];
+    t.updater.quitAndInstall = (...args) => { calls.push(args); };
+    t.updater.emit("update-available", { version: "2.8.1" });
+    t.updater.emit("update-downloaded", { version: "2.8.1" });
+    const before = t.handlers["get-update-state"]().revision;
+    await Promise.all([t.listeners["install-update"](), t.listeners["install-update"]()]);
+    await t.listeners["install-update"]();
+    await settle();
+    expect(calls).toEqual([[false]]);
+    const state = t.handlers["get-update-state"]();
+    expect(state).toMatchObject({ status: "downloaded", installing: true });
+    expect(state.revision).toBe(before + 1);
+  });
+
+test("Restart to install with nothing downloaded starts no setup",
+  async function test_install_update_needs_a_download() {
+    const t = packagedApp();
+    const calls = [];
+    t.updater.quitAndInstall = (...args) => { calls.push(args); };
+    await t.listeners["install-update"]();
+    await settle();
+    expect(calls).toEqual([]);
+  });
+
+test("the app's first check runs through the one check: a rejection with no error event shows on the update card",
+  async function test_app_first_check_rejection_fails() {
+    const t = packagedApp({ check: () => Promise.reject(new Error("timeout")) });
+    await settle();
+    expect(t.handlers["get-update-state"]()).toMatchObject({ status: "error", failure: "check", message: "timeout" });
+    expect(t.shown).toEqual([]);
   });
 
 test("Celerp reopened by a setup that stopped says the update stopped and where its logs are",
