@@ -1005,9 +1005,9 @@ def test_an_older_copy_on_newer_data_updates_from_its_refusal_screen():
     run = _windows_update_step("In-app update from a running Celerp (Windows)")["run"]
     check = "\n".join(line.strip() for line in run[run.index("# check_update_from_newer_data"):].splitlines())
     checked = "\nif ($LASTEXITCODE -ne 0) { Fail "   # each drive step fails the check at once
-    order = ["InstallFresh $candidate", '"Version: $newer"', "ci_update_drive.py sign-in 9223 300" + checked,
+    order = ["InstallFresh $candidate", '"Version: $newer"', "ci_update_drive.py sign-in $script:port 300" + checked,
              "CloseCelerp", "WriteAllText($meta.FullName, $metadata)", '"version: $newer"',
-             "ci_update_drive.py refusal 9223 600" + checked, 'WaitFor "setup window"', "ExpectNewRunning"]
+             "ci_update_drive.py refusal $script:port 600" + checked, 'WaitFor "setup window"', "ExpectNewRunning"]
     positions = [check.index(marker) for marker in order]
     assert positions == sorted(positions)
 
