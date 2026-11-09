@@ -417,7 +417,6 @@
   "btn.reset_columns_title": "إعادة تعيين الأعمدة إلى الإعدادات الافتراضية",
   "btn.restart_now": "أعد التشغيل الآن",
   "btn.restart_to_install": "إعادة التشغيل للتثبيت",
-  "btn.restart_and_check": "إعادة التشغيل والبحث عن تحديث",
   "btn.download_installer": "تنزيل برنامج التثبيت",
   "btn.update_celerp": "تحديث Celerp",
   "btn.quit": "إنهاء",

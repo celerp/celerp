@@ -19,7 +19,7 @@ const VIEW = {
   checkAgain: "Check again", restarting: "Restarting...",
   tooOld: "Celerp {version} is the newest release, and it cannot open this data yet.",
   installing: "Installing v{version}. Celerp will be back in about a minute.",
-  relaunch: "Restart and check for an update",
+  relaunch: "Restart Now",
   relaunchDetail: "Your data has not been changed. Restart Celerp to check for a version that can open it.",
   failed: { check: "Celerp couldn't check for updates.", stopped: "The update stopped before it finished.",
             inactive: "This copy of Celerp cannot update itself." },

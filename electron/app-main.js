@@ -556,7 +556,7 @@ let refusal = null;
 // compatibility check runs before setupAutoUpdater), so the version rule is set first and
 // only a release that opens the data is downloaded, offered or installed. When the running
 // app's updater was used before the refusal (a restart that refused), that process checks
-// nothing more and the screen offers Restart and check instead (update-state.js
+// nothing more and the screen offers Restart Now instead (update-state.js
 // downloadOnlyFrom).
 async function showRefusalScreen(view) {
   refusal = view;
@@ -1449,7 +1449,7 @@ ipcMain.on("install-update", async () => {
 
 // restart-app: renderer triggers a full relaunch via window.celerp.restartApp()
 // to apply a saved infrastructure change (DB/storage mode), or from the refusal
-// screen's Restart and check. A cold start re-runs
+// screen's Restart Now. A cold start re-runs
 // resolveDatabaseConfig(readConfig()) against the newly-saved celerp-config.json,
 // which is the only path that opens the new database - the sentinel-recycle path
 // reuses the boot-bound dbUrl and would not apply it.

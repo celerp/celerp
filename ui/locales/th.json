@@ -417,7 +417,6 @@
   "btn.reset_columns_title": "รีเซ็ตคอลัมน์เป็นค่าเริ่มต้น",
   "btn.restart_now": "รีสตาร์ตตอนนี้",
   "btn.restart_to_install": "รีสตาร์ทเพื่อติดตั้ง",
-  "btn.restart_and_check": "รีสตาร์ทและตรวจหาอัปเดต",
   "btn.download_installer": "ดาวน์โหลดตัวติดตั้ง",
   "btn.update_celerp": "อัปเดต Celerp",
   "btn.quit": "ออก",

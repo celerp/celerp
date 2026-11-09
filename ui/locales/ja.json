@@ -417,7 +417,6 @@
   "btn.reset_columns_title": "列をデフォルトにリセット",
   "btn.restart_now": "今すぐ再起動",
   "btn.restart_to_install": "再起動してインストール",
-  "btn.restart_and_check": "再起動して更新を確認",
   "btn.download_installer": "インストーラーをダウンロード",
   "btn.update_celerp": "Celerp を更新",
   "btn.quit": "終了",

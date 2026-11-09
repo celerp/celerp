@@ -417,7 +417,6 @@
   "btn.reset_columns_title": "Réinitialiser les colonnes aux valeurs par défaut",
   "btn.restart_now": "Redémarrer maintenant",
   "btn.restart_to_install": "Redémarrer pour installer",
-  "btn.restart_and_check": "Redémarrer et rechercher une mise à jour",
   "btn.download_installer": "Télécharger le programme d'installation",
   "btn.update_celerp": "Mettre à jour Celerp",
   "btn.quit": "Quitter",

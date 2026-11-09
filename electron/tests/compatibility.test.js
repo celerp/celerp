@@ -79,7 +79,7 @@ describe("refusal screen", () => {
       checkAgain: "Check again",
       restarting: "Restarting...",
       installing: "Installing v{version}. Celerp will be back in about a minute.",
-      relaunch: "Restart and check for an update",
+      relaunch: "Restart Now",
       relaunchDetail: "Your data has not been changed. Restart Celerp to check for a version that can open it.",
       failed: {
         check: "Celerp couldn't check for updates. Check your internet connection and try again later.",
@@ -463,7 +463,7 @@ describe("app-main startup", () => {
       expect(events).toEqual([]);
     });
 
-  test("a setup that stopped for a release that cannot open the data offers Restart and check, which relaunches without it",
+  test("a setup that stopped for a release that cannot open the data offers Restart Now, which relaunches without it",
     async function test_app_main_refusal_stopped_too_old_release() {
       const { events, handlers, listeners } = await startPackaged(NEWER, "2.6.0", {
         argv: [process.execPath, "--updated", "--update-install-failed=2.5.9"] });
