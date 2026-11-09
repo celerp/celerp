@@ -14,6 +14,8 @@ import pytest
 from celerp_docs.doc_constants import (
     LIFECYCLE_OWNED_FIELDS, SCHEDULE_OWNED_FIELDS, SCHEDULE_REMOVED_FIELDS, SCHEDULE_TERM_FIELDS,
 )
+from celerp_docs.doc_money import CONVERSION_KEYS, DOC_TOTAL_FIELDS
+from celerp_docs.record_copy import LINE_KEYS, RECORD_KEYS
 
 from agreement_kit import LINE, agreement, freeze_day, register
 from owned_fields_census import doors, writes, written_keys
@@ -49,7 +51,6 @@ SERVER_BUILT = {
     "default_modules/celerp-docs/celerp_docs/routes.py::_supplier_credit_for_return":
         "builds the supplier credit from the return",
     "default_modules/celerp-docs/celerp_docs/routes.py::reprice_doc": "writes the line prices it computes",
-    "default_modules/celerp-docs/celerp_docs/routes.py::convert_list": "builds the document from the list's lines",
     "default_modules/celerp-docs/celerp_docs/routes.py::_apply_split_plan": "writes only line items",
     "default_modules/celerp-fixed-assets/celerp_fixed_assets/demo.py::seed_demo_assets": "seeds the demo documents it builds",
     "default_modules/celerp-fixed-assets/celerp_fixed_assets/demo.py::_follow_books_currency": "writes the currency",
@@ -80,6 +81,15 @@ def test_every_writer_of_documents_checks_owned_fields_or_says_why_it_need_not()
     assert not unchecked - set(SERVER_BUILT), (
         f"these write documents and run no owned-field check: {sorted(unchecked - set(SERVER_BUILT))}")
     assert not set(SERVER_BUILT) - unchecked, f"stale entries: {sorted(set(SERVER_BUILT) - unchecked)}"
+
+
+def test_the_copy_rule_keeps_no_owned_or_removed_field():
+    """A record copied or converted from another (record_copy) keeps only the keys it names, and a
+    bought consignment's bill adds its totals: none of them is a field the lifecycle or the
+    schedule owns, or one an earlier release kept on a template."""
+    kept = RECORD_KEYS | LINE_KEYS | CONVERSION_KEYS | set(DOC_TOTAL_FIELDS)
+    owned = kept & (LIFECYCLE_OWNED_FIELDS | SCHEDULE_OWNED_FIELDS | SCHEDULE_REMOVED_FIELDS)
+    assert not owned, f"the copy rule keeps owned or removed fields: {sorted(owned)}"
 
 
 def _refused(r, key: str) -> bool:

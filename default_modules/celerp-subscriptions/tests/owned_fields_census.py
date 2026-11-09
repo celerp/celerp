@@ -25,9 +25,10 @@ SOURCE_TOPS = ("celerp", "default_modules", "premium_modules")
 SINK = "write_agreement"
 DOC_WRITE_EVENTS = {"doc.created", "doc.updated"}
 # What a writing function runs that keeps owned and removed fields out of a caller's data:
-# the create payload's validator, the edit refusal, the import refusal, or a strip by the set.
+# the create payload's validator, the edit refusal, the import refusal, a strip by the set, or
+# the copy rule, which keeps only the keys it names (test_owned_fields checks none is owned).
 OWNED_FIELD_CHECKS = {"_refuse_protected_fields", "schedule_fields_refusal", "LIFECYCLE_OWNED_FIELDS",
-                      "_DOC_IMPORT_UPSERT_EXCLUDED", "DocCreatePayload"}
+                      "_DOC_IMPORT_UPSERT_EXCLUDED", "DocCreatePayload", "copy_of", "conversion_of"}
 
 
 class Unresolved(Exception):
