@@ -204,6 +204,27 @@ def _open_share(page, ui_server, api):
     return ctx
 
 
+_STOP = "stop"  # the agreement set to stop at the end of its period, which a draft refuses
+
+
+def _anchor(api, ctx):
+    return (_get(api, f"/docs/{ctx['eid']}") or {}).get("anchor_date")
+
+
+def _open_agreement(page, ui_server, api):
+    from .test_subscriptions_e2e import _draft
+    eid = _draft(api, {"unit_price": 100.0, "line_total": 100.0, "taxes": []})
+    return _goto(page, ui_server, api, f"/subscriptions/{eid}", _anchor, eid=eid)
+
+
+def _edit_schedule(page, ctx, value):
+    if value == _STOP:
+        page.locator("select[hx-patch$='/schedule/cancel_at_period_end']").select_option("true")
+    else:
+        page.locator("input[hx-patch$='/schedule/anchor_date']").fill(value)
+    return value
+
+
 SCENARIOS: dict[tuple[str, str], Scenario] = {
     ("PATCH", "/docs/{entity_id}/field/{field}"): Scenario(
         open=lambda page, ui, api: _goto(page, ui, api, _invoice(api), _doc("due_date")),
@@ -252,6 +273,11 @@ SCENARIOS: dict[tuple[str, str], Scenario] = {
         act=_click("button[hx-delete$='/share']"), sent=("DELETE", "/share"), stored=_share_expiry,
         saved="2027-06-30", refused="2020-01-01",
         reason="The expiry date has already passed. Choose a future date.", kept=False),
+    ("PATCH", "/subscriptions/{entity_id}/schedule/{field}"): Scenario(
+        open=_open_agreement, edit=_edit_schedule,
+        act=lambda page: page.get_by_role("button", name="Activate", exact=True).click(),
+        sent=("POST", "/activate"), stored=_anchor, saved="2027-04-15", refused=_STOP,
+        reason="A draft has no current period yet."),
 }
 
 
@@ -305,3 +331,56 @@ def test_a_stored_field_save_sends_the_action_once_after_it(page, ui_server, api
     assert len(sent) == 1 and marked and marked[0] < sent[0], log
     if s.kept:
         assert s.stored(api, ctx) == value
+
+
+class _SwappedOut:
+    """The document field route as it is, except that an answer without the saved mark becomes a bare
+    empty 200: no toast, and the swap takes the field out of the page."""
+
+    def __init__(self, route):
+        self.route = route
+
+    async def __call__(self, scope, receive, send):
+        from starlette.responses import Response
+        answer: list = []
+
+        async def keep(message):
+            answer.append(message)
+        await self.route.app(scope, receive, keep)
+        if any(k.lower() == SAVED_MARK.encode() for k, _ in answer[0]["headers"]):
+            for message in answer:
+                await send(message)
+        else:
+            await Response("", 200)(scope, receive, send)
+
+
+@pytest.fixture()
+def refusal_swaps_the_field_out():
+    from starlette.routing import Route
+    from ui.app import app as ui_app
+    path = "/docs/{entity_id}/field/{field}"
+    routes = list(ui_app.router.routes)
+    real = next(r for r in routes if getattr(r, "path", "") == path and "PATCH" in (r.methods or ()))
+    ui_app.router.routes.insert(0, Route(path, _SwappedOut(real), methods=["PATCH"]))
+    try:
+        yield
+    finally:
+        ui_app.router.routes[:] = routes
+
+
+def test_a_refusal_that_takes_the_field_out_of_the_page_stops_the_action(
+        page, ui_server, api, refusal_swaps_the_field_out):
+    """How a save ended is read from its own request: a refusal whose answer removes the field, so
+    nothing is left on the page to say so, still sends nothing."""
+    s = SCENARIOS[("PATCH", "/docs/{entity_id}/field/{field}")]
+    ctx = s.open(page, ui_server, api)
+    log = _watch(page)
+    s.edit(page, ctx, s.refused)
+    s.act(page)
+    toast = page.locator(".toast--error .toast__msg").first
+    toast.wait_for(timeout=8000)
+    page.wait_for_timeout(1500)  # the action would have been confirmed and sent by now
+    assert toast.inner_text().strip().startswith(_NOT_SAVED), toast.inner_text()
+    assert page.locator("input[hx-patch$='/field/due_date']").count() == 0
+    assert _actions(log, s.sent) == [], log
+    assert s.stored(api, ctx) == ctx["stored"]

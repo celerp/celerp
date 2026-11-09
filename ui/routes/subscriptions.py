@@ -33,7 +33,7 @@ from ui.api_client import APIError, error_message
 from ui.components.shell import base_shell, page_header, toast_header
 from ui.components.table import breadcrumbs, display_enum, select_all_th, empty_state_cta, fmt_money, pagination, per_page_value, search_bar, status_cards
 from ui.config import get_token as _token, get_role as _get_role
-from ui.routes.documents import _action_error
+from ui.routes.documents import _action_error, _saved
 from ui.routes.reports import _get_company
 from ui.routes.settings import _check_permission
 from ui.i18n import refusal_text, sentence, t
@@ -1444,4 +1444,4 @@ def setup_routes(app) -> None:
             if saved.get("sending_off"):
                 return HTMLResponse(to_xml(views), headers=toast_header(t("subscriptions.sending_off_manual"), "success"))
             return views
-        return await _redrawn(draw, said=t("subscriptions.sending_off_manual") if saved.get("sending_off") else "")
+        return _saved(await _redrawn(draw, said=t("subscriptions.sending_off_manual") if saved.get("sending_off") else ""))

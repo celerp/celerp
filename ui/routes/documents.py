@@ -7358,9 +7358,10 @@ def _save_first_gate() -> FT:
    also said in a toast, since the control clicked may be far from them. It also waits for a
    field that saves itself: one left a moment ago whose delayed save has not fired yet, and any
    change already on its way, so a click straight from an edited cell runs on the saved value.
-   A field's save counts as saved only when its answer carries the server's saved mark; any other
-   answer (a refusal in whatever shape, a failure) is not saved, and its reason is the answer's
-   toast text, else "not saved". Nothing is sent while a field elsewhere on the page shows what
+   A field's save counts as saved only when its answer carries the server's saved mark, read from
+   the save's own request; any other answer (a refusal in whatever shape, a failure, an answer that
+   takes the field off the page) is not saved, and its reason is the answer's toast text, else
+   "not saved". Nothing is sent while a field elsewhere on the page shows what
    is not saved: its save was not saved and the field is still there, a refusal is showing, or an
    open editor holds a value it has not sent; nor when a save the request waited for was not
    saved, even once its cell has put the stored value back. The click is answered with the
@@ -7395,14 +7396,14 @@ if (!window._celerpSaveFirstBound) {{
         const open = Array.from(document.querySelectorAll('input, textarea')).some(el => el._v !== undefined && el.value !== el._v && other(el));
         return open ? notSavedText : '';
     }};
-    document.addEventListener('htmx:afterRequest', function(e) {{
-        const el = e.detail.elt, xhr = e.detail.xhr;
-        if (e.detail.requestConfig.verb === 'get' || !el.matches('input, select, textarea')) return;
-        if (xhr && xhr.getResponseHeader({_json.dumps(SAVED_MARK)})) {{ failed.delete(el); return; }}
+    // How a field's save ended, read from its own request once it is over: saved only when the answer
+    // carries the saved mark. `el` is the field that sent it, taken when the request started.
+    const outcome = function(el, xhr) {{
+        if (xhr.getResponseHeader({_json.dumps(SAVED_MARK)})) {{ failed.delete(el); return; }}
         let reason = '';
         try {{ reason = JSON.parse(xhr.getResponseHeader('HX-Trigger')).celerpToast.message; }} catch (_) {{}}
         failed.set(el, {{reason: reason || notSavedText, n: ++notSaved}});
-    }});
+    }};
     document.addEventListener('focusout', function(e) {{
         const el = e.target;
         const delay = /delay:(\\w+)/.exec((el.getAttribute && el.getAttribute('hx-trigger')) || '');
@@ -7413,11 +7414,16 @@ if (!window._celerpSaveFirstBound) {{
     }}, true);
     document.addEventListener('htmx:trigger', e => scheduled.delete(e.target));
     document.addEventListener('htmx:beforeSend', function(e) {{
-        const xhr = e.detail.xhr;
+        const xhr = e.detail.xhr, el = e.detail.elt, cause = e.detail.requestConfig.triggeringEvent;
         // A preview reads the figures an action would give and stores nothing: no save to wait for.
-        if (e.detail.requestConfig.verb === 'get' || e.detail.elt.closest('[data-preview]')) return;
+        if (e.detail.requestConfig.verb === 'get' || el.closest('[data-preview]')) return;
+        // A field's own save is any request not sent by a click or a submit, which are actions.
+        const save = !cause || !['click', 'submit'].includes(cause.type);
         inFlight.add(xhr);
-        xhr.addEventListener('loadend', () => inFlight.delete(xhr));
+        xhr.addEventListener('loadend', function() {{
+            if (save) outcome(el, xhr);
+            inFlight.delete(xhr);
+        }});
     }});
     const fieldsSaved = () => new Promise(function wait(done) {{
         if (fieldSaving()) setTimeout(() => wait(done), 50); else done();
