@@ -490,11 +490,6 @@
   "reason": "No test requests this route; its source reaches api DELETE."
  },
  {
-  "route": "ui POST /docs/{entity_id}/field/{field}",
-  "class": "never requested",
-  "reason": "No test requests this route; its source reaches api PATCH."
- },
- {
   "route": "ui POST /docs/{entity_id}/files",
   "class": "requested, no durable write",
   "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
@@ -518,11 +513,6 @@
   "route": "ui PATCH /docs/{entity_id}/line/{li_index}/field/{field}",
   "class": "requested, no durable write",
   "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api PATCH."
- },
- {
-  "route": "ui POST /docs/{entity_id}/notes",
-  "class": "never requested",
-  "reason": "No test requests this route; its source reaches api POST."
  },
  {
   "route": "ui DELETE /docs/{entity_id}/notes/{note_id}",
@@ -1031,11 +1021,6 @@
  },
  {
   "route": "ui POST /stars/dismiss",
-  "class": "requested, no durable write",
-  "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
- },
- {
-  "route": "ui POST /subscriptions/import/confirm",
   "class": "requested, no durable write",
   "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."
  },
