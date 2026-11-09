@@ -7,28 +7,6 @@
 (function (root) {
   "use strict";
 
-  /**
-   * Compare release numbers such as 2.8.1, 2.8.1-beta.2 or 2.8.1b2: below 0, 0 or above 0
-   * as `a` is older than, the same as or newer than `b`; NaN when either is not a release
-   * number. A prerelease is older than its release.
-   */
-  function compareVersions(a, b) {
-    const parse = (v) => /^(\d+)\.(\d+)\.(\d+)(.*)$/.exec(String(v ?? ""));
-    const x = parse(a);
-    const y = parse(b);
-    if (!x || !y) return NaN;
-    for (let i = 1; i <= 3; i++) {
-      if (Number(x[i]) !== Number(y[i])) return Number(x[i]) - Number(y[i]);
-    }
-    if (x[4] === y[4]) return 0;
-    if (!x[4] || !y[4]) return x[4] ? -1 : 1;
-    return x[4].localeCompare(y[4], "en", { numeric: true });
-  }
-
-  // Whether the release the updater found can open the data: at least the version that
-  // opened it (view.recorded). With no version on record any release may, so it is offered.
-  const opensData = (view, version) => !view.recorded || compareVersions(version, view.recorded) >= 0;
-
   function fill(text, values) {
     return text.replace(/\{(\w+)\}/g, (whole, key) => (key in values ? String(values[key]) : whole));
   }
@@ -39,11 +17,12 @@
    * installs), whether that button waits, and whether it shows at all (offer). Every
    * state says where it stands: a failure names what failed and offers Update Celerp
    * again, once nothing newer is found the screen stops promising an update and offers
-   * Check again, and a release found that cannot open the data is never offered: the
-   * screen says no release opens it yet, leaving the installer page and Quit.
+   * Check again, and a release found that cannot open the data (the updater's
+   * "too-old", update-state.js) is never offered: the screen says no release opens it yet,
+   * leaving the installer page and Quit.
    */
   function screenFor(view, state) {
-    if (state.version && !opensData(view, state.version)) {
+    if (state.status === "too-old") {
       return { detail: view.notReleased, status: fill(view.tooOld, { version: state.version }), label: view.update,
                action: "update", busy: true, offer: false };
     }
@@ -118,6 +97,6 @@
     return celerp.getUpdateState().then(follow);
   }
 
-  if (typeof module !== "undefined") module.exports = { compareVersions, screenFor, showRefusal };
+  if (typeof module !== "undefined") module.exports = { screenFor, showRefusal };
   else root.showRefusal = (view) => showRefusal(root.document, root.celerp, view);
 })(this);

@@ -552,9 +552,11 @@ const LOADING_PAGE = path.join(__dirname, "assets", "loading.html");
 let refusal = null;
 
 // The refusal screen (assets/refusal.js) in the window, with the updater ready for
-// the user's Update Celerp. Nothing checks by itself: the user decides.
+// the user's Update Celerp. Nothing checks by itself: the user decides. Only a release
+// that opens the data is downloaded (update-state.js downloadOnlyFrom).
 async function showRefusalScreen(view) {
   refusal = view;
+  updateState.downloadOnlyFrom(view.recorded);
   await mainWindow.loadFile(LOADING_PAGE); // its did-finish-load draws the screen
   mainWindow.show();
   configureAutoUpdater();

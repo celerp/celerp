@@ -54,8 +54,8 @@ const UPDATE_FAILURES = ["check", "download", "save", "verify", "install", "stop
  * The words of the refusal screen (assets/refusal.js) for an updatable refusal, in
  * the user's language (`t`, as locale.js translator returns). On Windows (`windows`)
  * the update installs in a setup window, which takes longer. `recorded` is the version
- * that opened the data, from the check's decision: the screen offers only a release at
- * least that new (empty for an unknown schema, which records no newer version).
+ * that opened the data, from the check's decision: the updater downloads only a release
+ * at least that new (empty for an unknown schema, which records no newer version).
  */
 function refusalView(decision, t, windows) {
   const newer = decision.status === "newer_app";

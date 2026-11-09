@@ -1015,6 +1015,22 @@ def test_an_older_copy_on_newer_data_updates_from_its_refusal_screen():
     assert positions == sorted(positions)
 
 
+def test_the_refused_text_fills_every_placeholder_of_its_message():
+    run = _windows_update_step("In-app update from a running Celerp (Windows)")["run"]
+    line = next(line.strip() for line in run.splitlines() if line.strip().startswith("$refusedText = "))
+    key = re.search(r'\$en\["([\w.]+)"\]', line).group(1)
+    en = json.loads((_WORKFLOWS.parent.parent / "ui" / "locales" / "en.json").read_text(encoding="utf-8"))
+    assert set(re.findall(r"\{\w+\}", en[key])) == set(re.findall(r'\.Replace\("(\{\w+\})"', line)) != set()
+
+
+def test_the_update_step_outlasts_its_bounded_waits_and_fits_in_its_job():
+    wf = yaml.safe_load((_WORKFLOWS / "packaged-upgrade-smoke.yml").read_text())
+    step = _windows_update_step("In-app update from a running Celerp (Windows)")
+    # The sum of the step's bounded waits, as its workflow comment states it.
+    assert step["timeout-minutes"] * 60 >= 7875
+    assert wf["jobs"]["upgrade"]["timeout-minutes"] > step["timeout-minutes"]
+
+
 def test_the_rename_prompt_is_found_through_the_bounded_wait_and_needs_a_window_handle():
     run = _windows_update_step("In-app update from a running Celerp (Windows)")["run"]
     lines = [line.strip() for line in run.splitlines()]
@@ -1022,7 +1038,8 @@ def test_the_rename_prompt_is_found_through_the_bounded_wait_and_needs_a_window_
     assert lines[wait + 2] == "try {" and "catch" in "".join(lines[wait + 3:wait + 8])
     assert not any(line.startswith("for (") for line in lines)   # no hand-rolled wait loop
     handle = lines.index("$handle = $prompt.Current.NativeWindowHandle")
-    assert lines[handle + 1].startswith("if ($handle -eq 0) { Fail ")
+    # A missing handle ($null) fails as well as 0.
+    assert lines[handle + 1].startswith("if (-not $handle) { Fail ")
     assert "PostMessage([IntPtr]$handle," in run
 
 

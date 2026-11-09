@@ -6,7 +6,7 @@
 // bridge: Update Celerp runs the app's updater and ends at Restart to install.
 const fs = require("fs");
 const path = require("path");
-const { compareVersions, screenFor, showRefusal } = require("../assets/refusal");
+const { screenFor, showRefusal } = require("../assets/refusal");
 
 const VIEW = {
   message: "Your data was last opened with Celerp 2.6.0, which is newer than this copy (2.5.3).",
@@ -16,7 +16,7 @@ const VIEW = {
   downloading: "Downloading... {pct}%", ready: "v{version} ready to install",
   noUpdate: "No newer version is available yet.",
   notReleased: "Your data has not been changed. Celerp can open it once version 2.6.0 or newer is available.",
-  checkAgain: "Check again", restarting: "Restarting...", recorded: "2.6.0",
+  checkAgain: "Check again", restarting: "Restarting...",
   tooOld: "Celerp {version} is the newest release, and it cannot open this data yet.",
   installing: "Installing v{version}. Celerp will be back in about a minute.",
   failed: { check: "Celerp couldn't check for updates.", stopped: "The update stopped before it finished.",
@@ -163,63 +163,35 @@ test("loading.html carries the screen's elements and loads its script", function
   expect(html).toMatch(/<div class="refusal" id="refusal" hidden>/);
 });
 
-test("release numbers compare by their numbers, and a prerelease is older than its release",
-  function test_compare_versions() {
-    for (const [a, b, sign] of [
-      ["2.6.0", "2.6.0", 0], ["2.6.1", "2.6.0", 1], ["2.5.9", "2.6.0", -1], ["2.10.0", "2.9.9", 1],
-      ["3.0.0", "2.99.99", 1], ["2.6.0-beta.1", "2.6.0", -1], ["2.6.0", "2.6.0b1", 1],
-      ["2.6.0-beta.2", "2.6.0-beta.10", -1], ["2.6.0-beta.1", "2.6.0-beta.1", 0],
-    ]) {
-      expect([a, b, Math.sign(compareVersions(a, b))]).toEqual([a, b, sign]);
-    }
-    for (const [a, b] of [["", "2.6.0"], ["2.6", "2.6.0"], ["latest", "2.6.0"], ["2.6.0", undefined]]) {
-      expect(compareVersions(a, b)).toBeNaN();
-    }
-  });
-
-// What the screen offers once the updater has found a release, for data Celerp 2.6.0 opened.
-async function foundRelease(version, view = VIEW) {
+// What the screen shows once the updater has found a release (update-state.js decides whether
+// it opens the data, which 2.6.0 opened): "downloading" for one it downloads, "too-old" otherwise.
+async function foundRelease(version, status) {
   const p = page();
-  await showRefusal(p.doc, p.celerp, view);
+  await showRefusal(p.doc, p.celerp, VIEW);
   p.el("refusal-update").click();
-  p.on.onUpdateAvailable({ ...IDLE, status: "downloading", version, percent: 0, revision: 2 });
+  p.on.onUpdateAvailable({ ...IDLE, status, version, percent: 0, revision: 2 });
   return p;
 }
 
-test("a release older than the version that opened the data is not offered: the screen says no release opens it yet",
+test("a release that cannot open the data is not offered: the screen says no release opens it yet",
   async function test_older_release_is_not_offered() {
-    for (const version of ["2.5.9", "2.6.0-beta.1", "not-a-version"]) {
-      const p = await foundRelease(version);
-      expect([version, p.el("refusal-detail").textContent]).toEqual([version, VIEW.notReleased]);
-      expect(p.el("status").textContent).toBe(`Celerp ${version} is the newest release, and it cannot open this data yet.`);
-      expect(p.el("refusal-update").hidden).toBe(true);
-      // Its download finishing offers nothing to install either.
-      p.on.onUpdateDownloaded({ ...IDLE, status: "downloaded", version, percent: 100, revision: 3 });
-      expect(p.el("refusal-update").hidden).toBe(true);
-      expect(p.el("status").textContent).toMatch(/cannot open this data yet/);
-      p.el("refusal-update").click();
-      expect(p.calls).toEqual(["check"]);
-      // Quit and the installer page stay.
-      expect(p.el("refusal-quit").hidden).toBe(false);
-      expect(p.el("refusal-download").href).toBe(VIEW.downloadUrl);
-    }
+    const p = await foundRelease("2.5.9", "too-old");
+    expect(p.el("refusal-detail").textContent).toBe(VIEW.notReleased);
+    expect(p.el("status").textContent).toBe("Celerp 2.5.9 is the newest release, and it cannot open this data yet.");
+    expect(p.el("refusal-update").hidden).toBe(true);
+    p.el("refusal-update").click();
+    expect(p.calls).toEqual(["check"]);
+    // Quit and the installer page stay.
+    expect(p.el("refusal-quit").hidden).toBe(false);
+    expect(p.el("refusal-download").href).toBe(VIEW.downloadUrl);
   });
 
-test("a release at or past the version that opened the data is offered as the way out",
-  async function test_equal_or_newer_release_is_offered() {
-    for (const version of ["2.6.0", "2.6.1", "3.0.0"]) {
-      const p = await foundRelease(version);
-      expect([version, p.el("refusal-detail").textContent, p.el("refusal-update").hidden])
-        .toEqual([version, VIEW.detail, false]);
-      p.on.onUpdateDownloaded({ ...IDLE, status: "downloaded", version, percent: 100, revision: 3 });
-      expect(p.el("refusal-update")).toMatchObject({ textContent: "Restart to install", hidden: false, disabled: false });
-      p.el("refusal-update").click();
-      expect(p.calls).toEqual(["check", "install"]);
-    }
-  });
-
-test("with no version on record (an unknown schema) any release found is offered",
-  async function test_unknown_schema_offers_any_release() {
-    const p = await foundRelease("2.5.4", { ...VIEW, recorded: "" });
+test("a release being downloaded is offered as the way out, and ends at Restart to install",
+  async function test_downloading_release_is_offered() {
+    const p = await foundRelease("2.6.0", "downloading");
     expect([p.el("refusal-detail").textContent, p.el("refusal-update").hidden]).toEqual([VIEW.detail, false]);
+    p.on.onUpdateDownloaded({ ...IDLE, status: "downloaded", version: "2.6.0", percent: 100, revision: 3 });
+    expect(p.el("refusal-update")).toMatchObject({ textContent: "Restart to install", hidden: false, disabled: false });
+    p.el("refusal-update").click();
+    expect(p.calls).toEqual(["check", "install"]);
   });

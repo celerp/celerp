@@ -3,7 +3,7 @@
 "use strict";
 
 const { EventEmitter } = require("events");
-const { trackUpdater, serveUpdateState } = require("../update-state");
+const { compareVersions, trackUpdater, serveUpdateState } = require("../update-state");
 
 // A fake electron-updater: the tracker only subscribes to its events.
 function setup() {
@@ -576,4 +576,111 @@ test("every update check in the app goes through the one check that handles a re
     const calls = sources.flatMap((f) =>
       (fs.readFileSync(path.join(__dirname, "..", f), "utf8").match(/\.checkForUpdates\(/g) || []).map(() => f));
     expect(calls).toEqual(["update-state.js"]);
+  });
+
+// A fake electron-updater that checks as the real one does: it tells the release it found, then
+// downloads it itself only while autoDownload is on. Its own download is a second downloadUpdate call.
+function releaseFeed(latest) {
+  const updater = new EventEmitter();
+  updater.autoDownload = true;
+  updater.downloadUpdate = jest.fn(() => Promise.resolve([]));
+  updater.checkForUpdates = jest.fn(async () => {
+    updater.emit("checking-for-update");
+    updater.emit("update-available", { version: latest });
+    if (updater.autoDownload) updater.downloadUpdate();
+    return { updateInfo: { version: latest } };
+  });
+  const told = [];
+  const served = serveUpdateState({ handle: () => {} }, () => null, updater, true, (state) => told.push(state));
+  return { updater, told, served };
+}
+
+test("for data a newer Celerp opened, a release that cannot open it is never downloaded, and nothing about it is told",
+  async function test_too_old_release_is_not_downloaded() {
+    const { updater, told, served } = releaseFeed("2.9.0");
+    served.downloadOnlyFrom("2.9.1");
+    await served.checkForUser();
+    expect(updater.downloadUpdate).not.toHaveBeenCalled();
+    expect(stateOf(served.getUpdateState())).toEqual({ ...IDLE, status: "too-old", version: "2.9.0" });
+    expect(served.getUpdateState().log.at(-1)).toBe("Found v2.9.0, which cannot open this data.");
+    // An updater error after it (nothing is downloading) is logged, and changes nothing.
+    updater.emit("error", new Error("EPERM: operation not permitted, rename 'x.exe'"));
+    expect(told).toEqual([]);
+    expect(stateOf(served.getUpdateState())).toEqual({ ...IDLE, status: "too-old", version: "2.9.0" });
+    expect(served.getUpdateState().log.at(-1)).toMatch(/^Update error: EPERM/);
+    // The app's own downloads are left as they were.
+    expect(updater.autoDownload).toBe(true);
+  });
+
+test("for data a newer Celerp opened, a release that opens it downloads once and installs as before",
+  async function test_release_that_opens_the_data_downloads() {
+    for (const latest of ["2.9.1", "2.10.0"]) {
+      const { updater, served } = releaseFeed(latest);
+      served.downloadOnlyFrom("2.9.1");
+      await served.checkForUser();
+      expect([latest, updater.downloadUpdate.mock.calls.length]).toEqual([latest, 1]);
+      expect(updater.autoDownload).toBe(true);
+      updater.emit("update-downloaded", { version: latest });
+      expect(served.getUpdateState()).toMatchObject({ status: "downloaded", version: latest });
+      expect(served.installing()).toBe(true);
+    }
+  });
+
+test("a download that fails after a release that opens the data was found is told, with that release's installer",
+  async function test_release_that_opens_the_data_failure_is_told() {
+    const { updater, told, served } = releaseFeed("2.9.1");
+    updater.downloadUpdate = jest.fn(() => {
+      const err = new Error("EPERM: operation not permitted, rename 'x.exe'");
+      updater.emit("error", err);
+      return Promise.reject(err);
+    });
+    served.downloadOnlyFrom("2.9.1");
+    await served.checkForUser();
+    await Promise.resolve();
+    expect(told.map((s) => [s.failure, s.releaseUrl]))
+      .toEqual([["save", "https://github.com/celerp/celerp/releases/tag/v2.9.1"]]);
+  });
+
+test("with no version on record (an unknown schema) any release found downloads",
+  async function test_unknown_schema_downloads_any_release() {
+    const { updater, served } = releaseFeed("2.5.4");
+    served.downloadOnlyFrom("");
+    await served.checkForUser();
+    expect(updater.downloadUpdate).toHaveBeenCalledTimes(1);
+    expect(served.getUpdateState()).toMatchObject({ status: "downloading", version: "2.5.4" });
+  });
+
+test("the running app's own checks and the user's checks still download by themselves",
+  async function test_running_app_checks_auto_download() {
+    const { updater, served } = releaseFeed("2.9.0");
+    await served.check();
+    await served.checkForUser();
+    expect(updater.autoDownload).toBe(true);
+    expect(updater.downloadUpdate).toHaveBeenCalledTimes(2);
+    expect(served.getUpdateState()).toMatchObject({ status: "downloading", version: "2.9.0" });
+  });
+
+test("release numbers compare by their numbers, and a prerelease is older than its release",
+  function test_compare_versions() {
+    for (const [a, b, sign] of [
+      ["2.6.0", "2.6.0", 0], ["2.6.1", "2.6.0", 1], ["2.5.9", "2.6.0", -1], ["2.10.0", "2.9.9", 1],
+      ["3.0.0", "2.99.99", 1], ["2.6.0-beta.1", "2.6.0", -1], ["2.6.0", "2.6.0b1", 1],
+      ["2.6.0-beta.2", "2.6.0-beta.10", -1], ["2.6.0-beta.1", "2.6.0-beta.1", 0],
+    ]) {
+      expect([a, b, Math.sign(compareVersions(a, b))]).toEqual([a, b, sign]);
+    }
+    for (const [a, b] of [["", "2.6.0"], ["2.6", "2.6.0"], ["latest", "2.6.0"], ["2.6.0", undefined]]) {
+      expect(compareVersions(a, b)).toBeNaN();
+    }
+  });
+
+test("a release that is older than the data, or not a release number, cannot open it",
+  async function test_unreadable_or_older_release_is_too_old() {
+    for (const latest of ["2.9.0", "2.9.1-beta.1", "not-a-version"]) {
+      const { updater, served } = releaseFeed(latest);
+      served.downloadOnlyFrom("2.9.1");
+      await served.checkForUser();
+      expect([latest, updater.downloadUpdate.mock.calls.length, served.getUpdateState().status])
+        .toEqual([latest, 0, "too-old"]);
+    }
   });

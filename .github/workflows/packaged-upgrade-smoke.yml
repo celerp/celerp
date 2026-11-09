@@ -92,7 +92,8 @@ jobs:
             asset: Celerp-Setup.exe
             artifact: binaries-windows-latest
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    # Room for the Windows in-app update step (135 min) and the steps before it.
+    timeout-minutes: 180
     env:
       GH_TOKEN: ${{ github.token }}
       PREVIOUS: ${{ needs.candidate.outputs.previous }}
@@ -270,7 +271,8 @@ jobs:
       - name: In-app update from a running Celerp (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        timeout-minutes: 30
+        # Its bounded waits add up to 7875 s (131 min): the four checks wait at most 1680 + 1695 + 2100 + 2400 s.
+        timeout-minutes: 135
         run: |
           $ErrorActionPreference = "Stop"
           python -m pip install --quiet "playwright>=1.43,<1.62"
@@ -447,9 +449,9 @@ jobs:
             $script:prompt
           }
           # Cancel through the box's own command (WM_COMMAND IDCANCEL), the message its Cancel button sends.
-          # A handle of 0 would post to this thread's own queue, so the box would never hear it.
+          # A handle of 0 (or none) would post to this thread's own queue, so the box would never hear it.
           $handle = $prompt.Current.NativeWindowHandle
-          if ($handle -eq 0) { Fail "the rename prompt has no window handle" }
+          if (-not $handle) { Fail "the rename prompt has no window handle" }
           Add-Type -Namespace Win32 -Name Box -MemberDefinition '[DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr w, IntPtr l);'
           if (-not [Win32.Box]::PostMessage([IntPtr]$handle, 0x0111, [IntPtr]2, [IntPtr]::Zero)) { Fail "could not send Cancel to the rename prompt" }
           WaitFor "Celerp $old reopened with the failed update" 300 {

@@ -357,6 +357,26 @@ describe("app-main startup", () => {
       expect(events.at(-1)).toBe("quit");
     });
 
+  test("Update Celerp on the refusal screen downloads only a release that opens the data; a failure after one that cannot tells nothing",
+    async function test_app_main_refusal_downloads_only_a_release_that_opens_the_data() {
+      for (const [latest, downloads] of [["2.5.9", 0], ["2.6.0", 1]]) {
+        const { events, handlers, updater } = await startPackaged(NEWER);
+        updater.downloadUpdate = jest.fn(() => Promise.resolve([]));
+        updater.checkForUpdates = async () => {
+          updater.emit("update-available", { version: latest });
+          if (updater.autoDownload) updater.downloadUpdate();
+          return { updateInfo: { version: latest } };
+        };
+        await handlers["check-for-updates"]();
+        expect([latest, updater.downloadUpdate.mock.calls.length, updater.autoDownload]).toEqual([latest, downloads, true]);
+        if (downloads) continue;
+        updater.emit("error", new Error("EPERM: operation not permitted, rename 'x.exe'"));
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(events.filter((e) => e.startsWith("message:"))).toEqual([]);
+        expect(handlers["get-update-state"]()).toMatchObject({ status: "too-old", version: "2.5.9" });
+      }
+    });
+
   test("a reload, or a page that replaced the screen, ends on the refusal screen with the updater's state",
     async function test_app_main_refusal_survives_reload() {
       const { events, page, updater, handlers } = await startPackaged(NEWER);

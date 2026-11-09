@@ -192,3 +192,9 @@ def test_refused_fails_on_another_message_or_no_screen(drive, capsys):
     ui = types.SimpleNamespace(url="http://127.0.0.1:5000/", wait_for_timeout=lambda _ms: None)
     assert drive.refused(_browser(ui), drive.time.monotonic() + 0.05, "anything") == 1
     assert "the refusal screen was not shown" in capsys.readouterr().out
+
+
+def test_refused_fails_when_the_expected_sentence_is_only_part_of_the_message(drive, capsys):
+    screen = _Screen([])
+    assert drive.refused(_browser(screen), drive.time.monotonic() + 0.05, "Your data was last opened with Celerp") == 1
+    assert "(want 'Your data was last opened with Celerp')" in capsys.readouterr().out
