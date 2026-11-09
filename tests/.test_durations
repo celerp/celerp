@@ -26002,6 +26002,7 @@
     "tests/test_valuation_cost_gap.py::test_cost_gap_reads_unknown_cost_and_sale_gap_reads_without_a_price": 0.5,
     "tests/test_value_error_refusals_keep_their_key.py::test_no_value_error_handler_flattens_a_keyed_refusal": 2.749137240985874,
     "tests/test_value_error_refusals_keep_their_key.py::test_refusal_detail_keeps_a_keyed_refusal_and_reads_plain_text": 0.005,
+    "tests/test_version_order.py::test_version_order_pairs_are_packaging_order[ 2.9.0\\n|2.9.0]": 0.001,
     "tests/test_version_order.py::test_version_order_pairs_are_packaging_order[1!1.0.0|2.9.0]": 0.001,
     "tests/test_version_order.py::test_version_order_pairs_are_packaging_order[2.10.0|2.9.9]": 0.001,
     "tests/test_version_order.py::test_version_order_pairs_are_packaging_order[2.5.9|2.6.0]": 0.001,
