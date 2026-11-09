@@ -26042,6 +26042,8 @@
     "tests/test_version_order.py::test_version_order_pairs_are_packaging_order[2.9.0.post1|2.9.0+local]": 0.001,
     "tests/test_version_order.py::test_version_order_pairs_are_packaging_order[2.9.0.post1|2.9.0]": 0.001,
     "tests/test_version_order.py::test_version_order_pairs_are_packaging_order[2.9.0.post1|2.9.1]": 0.001,
+    "tests/test_version_order.py::test_version_order_pairs_are_packaging_order[2.9.0.post|2.9.0.post0]": 0.001,
+    "tests/test_version_order.py::test_version_order_pairs_are_packaging_order[2.9.0.post|2.9.0]": 0.001,
     "tests/test_version_order.py::test_version_order_pairs_are_packaging_order[2.9.0a1|2.9.0-alpha.1]": 0.001,
     "tests/test_version_order.py::test_version_order_pairs_are_packaging_order[2.9.0b1.dev1|2.9.0b1]": 0.001,
     "tests/test_version_order.py::test_version_order_pairs_are_packaging_order[2.9.0b1|2.9.0-beta.1]": 0.001,
