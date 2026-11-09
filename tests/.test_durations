@@ -19946,6 +19946,8 @@
     "tests/test_record_copy.py::test_a_list_names_its_conversion_and_sending_only_beside_the_status_that_makes_them_true": 0.003,
     "tests/test_record_copy.py::test_every_door_that_creates_a_record_names_what_it_takes": 5.898,
     "tests/test_record_copy.py::test_the_census_finds_a_door_that_names_the_creation_event_by_a_constant": 6.165,
+    "tests/test_record_copy_lines.py::test_a_copy_keeps_the_payment_term_its_due_date_follows": 0.22740238200640306,
+    "tests/test_record_copy_lines.py::test_a_copy_of_a_record_with_no_term_has_neither_term_nor_due_date": 0.2226893509796355,
     "tests/test_record_copy_lines.py::test_a_duplicate_keeps_what_the_user_entered_on_its_lines_and_its_parties": 2.92,
     "tests/test_record_copy_lines.py::test_a_duplicate_of_an_adjusted_audit_moves_nothing_and_the_source_still_undoes": 2.89,
     "tests/test_record_copy_lines.py::test_a_line_naming_its_item_as_entity_id_is_copied_under_item_id": 0.3,
