@@ -384,3 +384,21 @@ def test_a_refusal_that_takes_the_field_out_of_the_page_stops_the_action(
     assert page.locator("input[hx-patch$='/field/due_date']").count() == 0
     assert _actions(log, s.sent) == [], log
     assert s.stored(api, ctx) == ctx["stored"]
+
+
+def test_a_refused_save_from_a_control_that_is_not_a_form_field_stops_the_action(page, ui_server, api):
+    """A field's save is told by its request, whatever element sent it: a refused save sent from the
+    field's display cell, its answer swapped nowhere, still sends nothing."""
+    s = SCENARIOS[("PATCH", "/docs/{entity_id}/field/{field}")]
+    ctx = s.open(page, ui_server, api)
+    log = _watch(page)
+    page.evaluate("""([url, value]) => htmx.ajax('PATCH', url, {
+        source: document.querySelector("[hx-get$='/field/due_date/edit']"), values: {value}, swap: 'none'})""",
+                  [f"{ctx['path']}/field/due_date", s.refused])
+    s.act(page)
+    toast = page.locator(".toast--error .toast__msg").first
+    toast.wait_for(timeout=8000)
+    page.wait_for_timeout(1500)  # the action would have been confirmed and sent by now
+    assert toast.inner_text().strip().startswith(s.reason), toast.inner_text()
+    assert _actions(log, s.sent) == [], log
+    assert s.stored(api, ctx) == ctx["stored"]
