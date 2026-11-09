@@ -673,7 +673,10 @@ test("release numbers order as packaging.version orders them, the order that dec
       expect([a, b, Number.isNaN(got) ? null : Math.sign(got)]).toEqual([a, b, sign]);
       if (sign !== null) expect([b, a, Math.sign(compareVersions(b, a))]).toEqual([b, a, -sign || 0]);
     }
-    expect(compareVersions("2.6.0", undefined)).toBeNaN();
+    // packaging.version reads only text: anything else is not a version.
+    for (const [a, b] of [["2.6.0", undefined], [null, "2.6.0"], [["2.6.0"], "2.6.0"], [2.6, "2.6"], [{}, "2.6.0"]]) {
+      expect(compareVersions(a, b)).toBeNaN();
+    }
   });
 
 test("a release that is older than the data, or not a release number, cannot open it",

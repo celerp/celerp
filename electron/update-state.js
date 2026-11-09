@@ -37,7 +37,7 @@ const PRE_RANK = { a: 0, alpha: 0, b: 1, beta: 1, c: 2, rc: 2, pre: 2, preview: 
 
 // The sort key packaging.version gives `v`, or null when it is not a version.
 function versionKey(v) {
-  const m = PEP440.exec(String(v ?? "").trim());
+  const m = typeof v === "string" && PEP440.exec(v.trim());
   if (!m) return null;
   const [, epoch, release, pre, preN, postImplicit, postWord, postN, dev, devN, local] = m;
   const post = postImplicit ?? (postWord ? postN ?? "0" : undefined);
