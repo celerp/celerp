@@ -207,7 +207,7 @@ jobs:
               Where-Object { (Get-ItemProperty $_.PSPath).DisplayName -like "Celerp*" } |
               Select-Object -First 1
           }
-          function Installed { (Get-ItemProperty (Entry).PSPath).DisplayVersion }
+          function Installed { $entry = Entry; if ($entry) { (Get-ItemProperty $entry.PSPath).DisplayVersion } }  # none while setup replaces it
           function InstallDir {
             $u = (Get-ItemProperty (Entry).PSPath).UninstallString
             if ($u -notmatch '^"([^"]+)"') { throw "unexpected UninstallString: $u" }
@@ -279,7 +279,7 @@ jobs:
               Where-Object { (Get-ItemProperty $_.PSPath).DisplayName -like "Celerp*" } |
               Select-Object -First 1
           }
-          function Installed { (Get-ItemProperty (Entry).PSPath).DisplayVersion }
+          function Installed { $entry = Entry; if ($entry) { (Get-ItemProperty $entry.PSPath).DisplayVersion } }  # none while setup replaces it
           function InstallDir {
             $u = (Get-ItemProperty (Entry).PSPath).UninstallString
             if ($u -notmatch '^"([^"]+)"') { throw "unexpected UninstallString: $u" }
@@ -363,11 +363,16 @@ jobs:
           updaterCacheDirName: celerp-updater
           "@
           }
-          function StartCelerp { Start-Process (Join-Path (InstallDir) "Celerp.exe") -ArgumentList "--remote-debugging-port=9223" }
+          # A new debugging port on every start: Windows holds a just-closed port for minutes, and Celerp then listens on none.
+          $script:port = 9222
+          function StartCelerp([string]$extra = "") { $script:port++; Start-Process (Join-Path (InstallDir) "Celerp.exe") -ArgumentList "$extra --remote-debugging-port=$($script:port)".Trim() }
           # Closed as a user closes it, so its database stops before the next start.
           function CloseCelerp {
-            Get-Process Celerp | Where-Object MainWindowHandle -ne 0 | ForEach-Object { $null = $_.CloseMainWindow() }
-            WaitFor "Celerp to close" 120 { -not (Get-Process Celerp -ErrorAction SilentlyContinue) }
+            # Asked again on every pass: a Celerp still starting has no window yet to close.
+            WaitFor "Celerp to close" 120 {
+              Get-Process Celerp -ErrorAction SilentlyContinue | Where-Object MainWindowHandle -ne 0 | ForEach-Object { $null = $_.CloseMainWindow() }
+              -not (Get-Process Celerp -ErrorAction SilentlyContinue)
+            }
           }
           # The previous release, fresh, pointed at the feed and started.
           function StartPrevious {
@@ -377,7 +382,7 @@ jobs:
           }
           # Restart to install, once the running previous release has downloaded the update.
           function RestartToInstall {
-            python scripts/ci_update_drive.py install 9223 600
+            python scripts/ci_update_drive.py install $script:port 600
             if ($LASTEXITCODE -ne 0) { Fail "the previous release $old did not download and start the update" }
             WaitFor "setup window" 180 { SetupWindow }
             Write-Host "setup window: $((SetupWindow).MainWindowTitle)"
@@ -387,7 +392,8 @@ jobs:
             WaitFor "Celerp $new running" 600 { (Installed) -eq $new -and (Running) }
             $log = InstallLog
             if ($log -notmatch "mode forced: current") { Fail "install.log has no mode forced line" }
-            if ($log -notmatch "done: $([regex]::Escape($new)) is installed") { Fail "install.log has no success line" }
+            WaitFor "install.log success line" 180 { (InstallLog) -match "done: $([regex]::Escape($new)) is installed" }  # setup writes it after the swap
+            $log = InstallLog
             if ((Get-Content "$logs\update.log" -Raw -ErrorAction SilentlyContinue) -match "not signed") {
               Fail "update.log has a signature error"
             }
@@ -413,7 +419,7 @@ jobs:
           # check_update_with_held_file_reopens_old_version
           StartPrevious
           # Signed in, so the Celerp that setup reopens shows its update card.
-          python scripts/ci_update_drive.py sign-in 9223 300
+          python scripts/ci_update_drive.py sign-in $script:port 300
           if ($LASTEXITCODE -ne 0) { Fail "could not set up the company on the previous release $old" }
           $en = Get-Content (Join-Path (InstallDir) "resources\app\ui\locales\en.json") -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
           # Setup reopens Celerp with --updated: a release that knows a stopped update says so.
@@ -428,18 +434,19 @@ jobs:
           $AE = [Windows.Automation.AutomationElement]
           $scope = [Windows.Automation.TreeScope]
           $boxes = [Windows.Automation.PropertyCondition]::new($AE::ClassNameProperty, "#32770")
+          # PowerShell 7 has no client-side providers, so the box's buttons read as plain panes: find them by name.
           $button = { param($name) [Windows.Automation.PropertyCondition]::new($AE::NameProperty, $name) }
-          $cancel = $null
-          WaitFor "rename prompt" 300 {
-            foreach ($box in $AE::RootElement.FindAll($scope::Children, $boxes)) {
-              if ($box.FindFirst($scope::Descendants, (& $button "Retry"))) {
-                $script:cancel = $box.FindFirst($scope::Descendants, (& $button "Cancel"))
-                if ($script:cancel) { return $true }
-              }
+          # The prompt is owned by setup's window, so it can sit under it in the tree, beside setup's own Cancel.
+          $prompt = $null
+          for ($end = (Get-Date).AddSeconds(300); -not $prompt -and (Get-Date) -lt $end; Start-Sleep 2) {
+            foreach ($box in $AE::RootElement.FindAll($scope::Descendants, $boxes)) {
+              if ($box.FindFirst($scope::Children, (& $button "Retry"))) { $prompt = $box; break }
             }
-            $false
           }
-          $cancel.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()
+          if (-not $prompt) { Fail "no rename prompt in 300 s" }
+          # Cancel through the box's own command (WM_COMMAND IDCANCEL), the message its Cancel button sends.
+          Add-Type -Namespace Win32 -Name Box -MemberDefinition '[DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr w, IntPtr l);'
+          if (-not [Win32.Box]::PostMessage([IntPtr]$prompt.Current.NativeWindowHandle, 0x0111, [IntPtr]2, [IntPtr]::Zero)) { Fail "could not send Cancel to the rename prompt" }
           WaitFor "Celerp $old reopened with the failed update" 300 {
             (Running) | Where-Object { $_.CommandLine -match "--update-install-failed=$([regex]::Escape($new))" }
           }
@@ -452,8 +459,8 @@ jobs:
           $reopened = (Running) | Where-Object { $_.CommandLine -match "--update-install-failed=" } | Select-Object -First 1
           $reopenedArgs = $reopened.CommandLine -replace '^("[^"]*"|\S+)\s*', ''
           CloseCelerp
-          Start-Process (Join-Path (InstallDir) "Celerp.exe") -ArgumentList "$reopenedArgs --remote-debugging-port=9223"
-          python scripts/ci_update_drive.py card 9223 180 $failedText
+          StartCelerp $reopenedArgs
+          python scripts/ci_update_drive.py card $script:port 180 $failedText
           if ($LASTEXITCODE -ne 0) { Fail "the update card of the reopened $old does not say '$failedText'" }
           Stop-Process $holder -Force
           Write-Host "check_update_with_held_file_reopens_old_version: Cancel kept $old, which reopened and says '$failedText'"
@@ -474,14 +481,14 @@ jobs:
           $metadata = [IO.File]::ReadAllText($meta.FullName)
           [IO.File]::WriteAllText($meta.FullName, ($metadata -replace "(?m)^Version: .*$", "Version: $newer"))
           StartCelerp
-          python scripts/ci_update_drive.py sign-in 9223 300
+          python scripts/ci_update_drive.py sign-in $script:port 300
           if ($LASTEXITCODE -ne 0) { Fail "the candidate as $newer did not open fresh data" }
           CloseCelerp
           [IO.File]::WriteAllText($meta.FullName, $metadata)
           (Get-Content "$feed\latest.yml") -replace "^version: .*$", "version: $newer" | Set-Content -Encoding Ascii "$feed\latest.yml"
           Remove-Item "$logs\install.log", "$logs\update.log" -ErrorAction SilentlyContinue
           StartCelerp
-          python scripts/ci_update_drive.py refusal 9223 600
+          python scripts/ci_update_drive.py refusal $script:port 600
           if ($LASTEXITCODE -ne 0) { Fail "the candidate on data $newer opened did not update from its refusal screen" }
           WaitFor "setup window" 180 { SetupWindow }
           ExpectNewRunning

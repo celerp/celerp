@@ -53,6 +53,9 @@ class _Screen:
         self.lag = lag
         self.since = 0   # polls since the state last changed
 
+    def wait_for_timeout(self, _ms):
+        pass   # the driver's pause between polls
+
     def evaluate(self, js):
         if "hidden" in js:
             self.looks += 1
@@ -88,7 +91,7 @@ def _browser(*pages):
 def test_update_celerp_then_restart_to_install(drive):
     screen = _Screen([{"status": "downloading", "percent": 50},
                       {"status": "downloaded", "version": "2.8.2"}])
-    ui = types.SimpleNamespace(url="http://127.0.0.1:5000/")
+    ui = types.SimpleNamespace(url="http://127.0.0.1:5000/", wait_for_timeout=lambda _ms: None)
     assert drive.refusal(_browser(ui, screen), drive.time.monotonic() + 60) == 0
     assert screen.clicks == [("#refusal-update", "Update Celerp"), ("#refusal-update", "Restart to install")]
 
@@ -107,7 +110,7 @@ def test_the_driver_waits_for_the_screen_to_catch_up(drive):
 
 
 def test_no_refusal_screen_fails_the_check_in_time(drive, capsys):
-    ui = types.SimpleNamespace(url="http://127.0.0.1:5000/")
+    ui = types.SimpleNamespace(url="http://127.0.0.1:5000/", wait_for_timeout=lambda _ms: None)
     assert drive.refusal(_browser(ui), drive.time.monotonic() + 0.05) == 1
     assert "the refusal screen was not shown" in capsys.readouterr().out
 
