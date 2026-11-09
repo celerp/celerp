@@ -19,6 +19,7 @@ from sqlalchemy import event, select, text
 from celerp.models.projections import Projection
 from celerp.services.company_lock import locked_company
 from test_tax_acceptance_matrix import _demo_company
+from fasthtml.common import to_xml
 from ui.i18n import refusal_text, t
 
 pytestmark = pytest.mark.asyncio
@@ -136,6 +137,59 @@ async def test_a_number_at_the_limit_is_stored_and_one_past_it_is_refused(client
     assert r.status_code == 200, r.text
     r = await client.post(f"/{kind}", headers=h, json={**body, "ref_id": "R" * 101, **_payload(contacts)})
     assert r.status_code == 422 and r.json()["detail"]["params"] == {"max": 100, "length": 101}, r.text
+
+
+async def test_a_generated_number_past_the_limit_is_refused_and_the_counter_stays(client, session):
+    """The counter's own numbers meet the limit too: at next 9 under a 98-character prefix,
+    {PREFIX}-{#} gives a 100-character number 9, and number 10 (101 characters) is refused
+    with the limit, leaving the counter where it was."""
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    prefix = "P" * 98
+    r = await client.patch("/docs/sequences/quotation", headers=h,
+                           json={"prefix": prefix, "pattern": "{PREFIX}-{#}", "next": 9})
+    assert r.status_code == 200, r.text
+    r = await _quote_doc(client, h, contacts)
+    assert r.status_code == 200, r.text
+    assert await _ref(client, h, r.json()["id"]) == f"{prefix}-9"
+    r = await _quote_doc(client, h, contacts)
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "documents.err_number_too_long"
+    assert detail["params"] == {"max": 100, "length": 101}
+    assert (await _rows(client, h))["quotation"]["next"] == 10
+
+
+async def test_skipping_held_numbers_past_the_limit_is_refused_and_the_preview_says_so(client, session):
+    """Numbers already held are skipped; when the skip reaches a number too long to store, the
+    next document is refused with the limit, the counter does not move, and the Numbering row
+    shows the refusal instead of a number nothing can be stored under."""
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    prefix = "P" * 97
+    for n in (98, 99):
+        assert (await _quote_doc(client, h, contacts, ref_id=f"{prefix}-{n}")).status_code == 200
+    r = await client.patch("/docs/sequences/quotation", headers=h,
+                           json={"prefix": prefix, "pattern": "{PREFIX}-{#}", "next": 98})
+    assert r.status_code == 200, r.text
+    row = r.json()
+    assert row["preview"] is None, row
+    assert row["refusal"]["message_key"] == "documents.err_number_too_long"
+    assert row["refusal"]["params"] == {"max": 100, "length": 101}
+    r = await _quote_doc(client, h, contacts)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["params"] == {"max": 100, "length": 101}
+    assert (await _rows(client, h))["quotation"]["next"] == 98
+
+
+async def test_the_numbering_row_shows_a_refused_preview_as_its_message():
+    from ui.routes.settings_sales import _numbering_row
+    from celerp.accounting_roles import catalog_refusal
+    refusal = catalog_refusal("documents.err_number_too_long", max=100, length=101)
+    html = to_xml(_numbering_row("quotation", {"prefix": "P", "pattern": "{PREFIX}-{#}", "next": 98,
+                                               "preview": None, "refusal": refusal}))
+    assert refusal_text(refusal) in html
+    assert "numbering-preview" not in html
 
 
 async def test_a_document_cannot_be_renumbered_to_a_number_a_list_holds(client, session):

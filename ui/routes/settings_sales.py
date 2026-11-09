@@ -350,7 +350,8 @@ def _numbering_row(dt: str, seq: dict, *, editing: tuple[str, str] | None = None
         cell("prefix", seq.get("prefix") or EMPTY),
         cell("pattern", seq.get("pattern") or EMPTY),
         cell("next", str(seq.get("next", 1))),
-        Td(Code(seq.get("preview", ""), cls="numbering-preview")),
+        Td(P(refusal_text(seq["refusal"]), cls="cell-error", role="alert") if seq.get("refusal")
+           else Code(seq.get("preview", ""), cls="numbering-preview")),
         Td(Button(t("btn.reset"), hx_post=f"/settings/numbering/{dt}/reset",
                   hx_target="closest tr", hx_swap="outerHTML",
                   cls="btn btn--xs btn--secondary"),

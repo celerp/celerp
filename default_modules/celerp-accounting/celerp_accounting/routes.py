@@ -1066,22 +1066,37 @@ def _je_memo(memo: str, ref: dict | None) -> str:
 _DOC_SOURCE_KEYS = ("doc_id", "cn_id", "dn_id", "from_doc_id", "list_id")
 
 
-# A write-off's cost corrections recorded before their entry named the List exactly carry
-# the List id followed by this marker; the ledger is append-only, so they are read back to
-# their List (_source_meta) rather than rewritten.
-_LIST_COST_SCOPE = ":cost:"
+# A write-off's cost corrections recorded by 2.8.0 named their scope as the List: the List id,
+# ":cost:", the 24-hex restatement identity and the lot, under trigger writeoff_cost.adjusted and
+# entry id je:auto:{scope}:writeoff_cost:0. The ledger is append-only, so those entries are read
+# back to the List their scope began with (_source_meta) rather than rewritten; the List is all
+# before the last such marker, so a List whose own number holds ":cost:" keeps it. Nothing else
+# writes that shape: a correction now names its List exactly and keeps its scope in the entry id.
+_LEGACY_COST_TRIGGER = "writeoff_cost.adjusted"
+_LEGACY_COST_SCOPE = re.compile(r"(?P<list_id>.+):cost:[0-9a-f]{24}:.+")
 
 
-def _source_meta(meta: dict) -> dict:
-    """An entry's ledger metadata with each source key naming its record."""
+def _source_meta(entity_id: str, meta: dict) -> dict:
+    """An entry's ledger metadata with each source key naming its record: the source keys as
+    written, except a 2.8.0 write-off cost correction, whose list_id is read back to its List."""
     list_id = meta.get("list_id")
-    if isinstance(list_id, str) and _LIST_COST_SCOPE in list_id:
-        return {**meta, "list_id": list_id.split(_LIST_COST_SCOPE, 1)[0]}
+    if (meta.get("trigger") == _LEGACY_COST_TRIGGER and isinstance(list_id, str)
+            and entity_id == f"je:auto:{list_id}:writeoff_cost:0"
+            and (legacy := _LEGACY_COST_SCOPE.fullmatch(list_id))):
+        return {**meta, "list_id": legacy["list_id"]}
     return meta
 
 
+def _names_record(entity_id: str, meta: dict, record_id: str) -> bool:
+    """Whether a ledger entry's source keys (_source_meta) name ``record_id``."""
+    source = _source_meta(entity_id, meta)
+    return any(source.get(key) == record_id for key in _DOC_SOURCE_KEYS)
+
+
 def _linked_doc_events(doc_id: str, dialect_name: str):
-    """Match all actual document-reference keys using the native indexed PG containment op."""
+    """The ledger rows that may name ``doc_id``: every source key matched with the native
+    indexed PG containment op, plus the 2.8.0 cost corrections by their entry id. A superset;
+    _names_record settles which of them name it."""
     from celerp.models.ledger import LedgerEntry
 
     if dialect_name == "postgresql":
@@ -1092,8 +1107,7 @@ def _linked_doc_events(doc_id: str, dialect_name: str):
         named = [metadata.contains({key: doc_id}) for key in _DOC_SOURCE_KEYS]
     else:
         named = [LedgerEntry.metadata_[key].as_string() == doc_id for key in _DOC_SOURCE_KEYS]
-    # The cost corrections _source_meta reads back to their List, found by their entry id.
-    legacy = LedgerEntry.entity_id.startswith(f"je:auto:{doc_id}{_LIST_COST_SCOPE}", autoescape=True)
+    legacy = LedgerEntry.entity_id.startswith(f"je:auto:{doc_id}:cost:", autoescape=True)
     return or_(*named, legacy)
 
 
@@ -1165,7 +1179,7 @@ async def _je_doc_refs(session: AsyncSession, company_id: uuid.UUID, je_ids: lis
     je_meta: dict[str, dict] = {}
     je_ts: dict[str, str] = {}
     for ev in ledger_events:
-        meta = _source_meta(ev.metadata_ or {})
+        meta = _source_meta(ev.entity_id, ev.metadata_ or {})
         source_id = meta.get("doc_id") or meta.get("cn_id") or meta.get("dn_id") or meta.get("list_id")
         if source_id:
             je_meta[ev.entity_id] = {**meta, "doc_id": source_id}
@@ -1751,13 +1765,13 @@ async def journal_by_doc(
     from celerp.models.ledger import LedgerEntry
 
     linked = _linked_doc_events(doc_id, session.get_bind().dialect.name)
-    entry_ids = sorted(set((await session.execute(
-        select(LedgerEntry.entity_id).where(
+    entry_ids = sorted({entity_id for entity_id, meta in (await session.execute(
+        select(LedgerEntry.entity_id, LedgerEntry.metadata_).where(
             LedgerEntry.company_id == company_id,
             LedgerEntry.event_type == "acc.journal_entry.created",
             linked,
         )
-    )).scalars().all()))
+    )).all() if _names_record(entity_id, meta or {}, doc_id)})
     survivors = await merge_survivors(session, company_id)
     payload, refs, base = await _journal_payload(
         session, company_id, None, None, survivors=survivors, entry_ids=entry_ids

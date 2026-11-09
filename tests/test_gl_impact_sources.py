@@ -16,6 +16,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
 from sqlalchemy import select
 
 from celerp.models.ledger import LedgerEntry
@@ -92,13 +93,17 @@ async def _unresolved_sources(session, company_id) -> list[tuple[str, str, str]]
     return sorted(row for row in named if row[2] not in known)
 
 
-async def _written_off_then_corrected(client, session):
-    """A demo item written off in full on a write-off List, then the disposed lot's cost corrected:
-    the correction posts its own entry to the List's expense account."""
+async def _written_off_then_corrected(client, session, prefix=None):
+    """A demo item written off in full on a write-off List (numbered under ``prefix`` when given),
+    then the disposed lot's cost corrected: the correction posts its own entry to the List's
+    expense account."""
     from test_tax_acceptance_matrix import _demo_company
 
     auth, _contacts = await _demo_company(client, session, "USD")
     h = auth["headers"]
+    if prefix is not None:
+        r = await client.patch("/docs/sequences/writeoff", headers=h, json={"prefix": prefix})
+        assert r.status_code == 200, r.text
     items = (await client.get("/items?limit=50", headers=h)).json()
     items = items.get("items", items) if isinstance(items, dict) else items
     item = next(i for i in items if float(i.get("quantity") or 0) > 0 and float(i.get("cost_total") or 0) > 0)
@@ -137,11 +142,12 @@ async def test_a_write_off_shows_the_cost_correction_it_posted(client, session):
     assert await _unresolved_sources(session, auth["company_id"]) == []
 
 
-async def test_a_cost_correction_recorded_by_2_8_0_shows_on_its_write_off(client, session):
+@pytest.mark.parametrize("prefix", [None, "WO:cost:ABC"])
+async def test_a_cost_correction_recorded_by_2_8_0_shows_on_its_write_off(client, session, prefix):
     """2.8.0 named a write-off's cost correction by its scope (List id, ":cost:", restatement, lot)
     rather than the List id. The ledger keeps those rows as written, so an upgraded company's
-    write-off still lists them, read back to the List."""
-    auth, wo, correction = await _written_off_then_corrected(client, session)
+    write-off still lists them, read back to the List, even one whose own number holds ":cost:"."""
+    auth, wo, correction = await _written_off_then_corrected(client, session, prefix)
     h = auth["headers"]
     session.expire_all()
     rows = (await session.execute(select(LedgerEntry).where(
@@ -149,7 +155,9 @@ async def test_a_cost_correction_recorded_by_2_8_0_shows_on_its_write_off(client
         LedgerEntry.entity_id.like(f"je:auto:{wo}:cost:%")))).scalars().all()
     assert rows, "the correction posted no entry under its scope"
     for row in rows:
-        row.metadata_ = {**(row.metadata_ or {}), "list_id": row.entity_id.removeprefix("je:auto:")}
+        # 2.8.0 wrote the scope as the entry's list_id; its entry id is that scope, kind and cycle.
+        scope = row.entity_id.removeprefix("je:auto:").removesuffix(":writeoff_cost:0")
+        row.metadata_ = {**(row.metadata_ or {}), "list_id": scope}
     await session.commit()
 
     gl = await _gl(client, h, wo)
@@ -158,6 +166,35 @@ async def test_a_cost_correction_recorded_by_2_8_0_shows_on_its_write_off(client
     assert {e["je_id"] for e in gl["entries"]} >= {r.entity_id for r in rows}
     expense = [l["debit"] for e in gl["entries"] for l in e["lines"] if l["account"] == "6950"]
     assert correction in expense, expense
+
+
+async def test_a_list_whose_number_holds_cost_keeps_its_own_postings(client, session):
+    """A List's number is free text. A write-off numbered "WO:cost:ABC-..." is that List exactly: its
+    postings show on its own GL Impact and in a party-filtered ledger, never on the List numbered
+    "WO" that names a customer."""
+    auth, wo, correction = await _written_off_then_corrected(client, session, "WO:cost:ABC")
+    h = auth["headers"]
+    assert wo.startswith("list:WO:cost:ABC"), wo
+    contacts = (await client.get("/crm/contacts?limit=500", headers=h)).json()
+    contacts = contacts.get("items", contacts) if isinstance(contacts, dict) else contacts
+    customer = next(c.get("entity_id") or c.get("id") for c in contacts if c.get("contact_type") in ("customer", "both"))
+    r = await client.post("/lists", headers=h, json={
+        "list_type": "quotation", "ref_id": "WO", "contact_id": customer,
+        "line_items": [{"name": "A", "quantity": 1, "unit_price": 100}]})
+    assert r.status_code == 200, r.text
+    assert r.json()["id"] == "list:WO"
+
+    gl = await _gl(client, h, wo)
+    assert len(gl["entries"]) == 2, [e["je_id"] for e in gl["entries"]]
+    expense = [l["debit"] for e in gl["entries"] for l in e["lines"] if l["account"] == "6950"]
+    assert correction in expense, expense
+    assert (await _gl(client, h, "list:WO"))["entries"] == []
+
+    ledger = await client.get("/accounting/ledger/6950", headers=h, params={"contact_id": customer})
+    assert ledger.status_code == 200, ledger.text
+    assert ledger.json()["lines"] == [], ledger.json()["lines"]
+    unattributed = await client.get("/accounting/ledger/6950", headers=h, params={"contact_id": ""})
+    assert correction in [l["debit"] for l in unattributed.json()["lines"]], unattributed.json()["lines"]
 
 
 async def test_a_purchase_order_received_in_parts_names_the_items_of_each_receipt(client, session):
