@@ -25676,8 +25676,6 @@
     "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-manufacturing.settings]": 1.225,
     "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-reports.filtering-and-export]": 0.457,
     "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-reports.operational-reports]": 1.297,
-    "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-subscriptions.import]": 0.365,
-    "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-subscriptions.overview]": 1.332,
     "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-verticals.business-type]": 0.412,
     "tests/test_browser/test_help_capture.py::test_help_capture_every_page[chromium-verticals.category-library]": 1.438,
     "tests/test_browser/test_i18n_ui.py::test_combobox_type_without_select_then_blur_restores[chromium]": 2.403,
@@ -28086,5 +28084,6 @@
     "tests/test_version_order.py::test_version_order_pairs_are_packaging_order[3.0.0|2.99.99]": 0.001,
     "tests/test_version_order.py::test_version_order_pairs_are_packaging_order[latest|2.6.0]": 0.001,
     "tests/test_version_order.py::test_version_order_pairs_are_packaging_order[v2.9.0|2.9.0]": 0.001,
-    "tests/test_version_order.py::test_version_order_pairs_are_packaging_order[|2.6.0]": 0.001
+    "tests/test_version_order.py::test_version_order_pairs_are_packaging_order[|2.6.0]": 0.001,
+    "default_modules/celerp-subscriptions/tests/test_owned_fields.py::test_the_copy_rule_keeps_no_owned_or_removed_field": 0.27863255800912157
 }
