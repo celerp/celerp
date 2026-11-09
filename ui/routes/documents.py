@@ -7444,9 +7444,10 @@ if (!window._celerpSaveFirstBound) {{
                 return;
             }}
             if (!d.elt.isConnected) {{
-                // The save's answer redrew the control clicked: the one now in its place runs, from the top.
+                // The save's answer redrew the control clicked: the one now in its place runs, from the top,
+                // once htmx has taken it up (it does so as the swap settles).
                 const again = document.querySelector('[hx-' + d.verb + '="' + CSS.escape(d.path) + '"]');
-                if (again) htmx.trigger(again, d.triggeringEvent ? d.triggeringEvent.type : 'click');
+                if (again) {{ htmx.process(again); htmx.trigger(again, d.triggeringEvent ? d.triggeringEvent.type : 'click'); }}
                 return;
             }}
             const pinned = d.etc && d.etc.values;
