@@ -374,42 +374,26 @@ def test_an_open_quantity_editor_holding_a_new_value_stops_the_write_off(page, u
     _nothing_written_off(page, api, iid, sent, _NOT_SAVED)
 
 
-_DUE_DATE_ANSWERS = {
-    "saved": (None, None),
-    "failed": (lambda rt: rt.fulfill(status=500, body="boom"), _NOT_SAVED),
-    "refused": (lambda rt: rt.fulfill(status=200, content_type="text/html",
-                                      body='<p class="cell-error">That date is refused</p>'), "That date is refused"),
-}
-
-
-@pytest.mark.parametrize("outcome", list(_DUE_DATE_ANSWERS))
-def test_issue_clicked_straight_from_the_due_date_follows_its_save(page, ui_server, api, outcome):
-    """Due date is a header field that saves itself on blur. Issue clicked straight from it is sent
-    once its save lands; when that save fails or is refused, Issue is not sent and the reason is
-    said in a toast, so the invoice stays a draft with the date it had."""
-    answer, reason = _DUE_DATE_ANSWERS[outcome]
+def test_issue_clicked_straight_from_a_due_date_whose_save_fails_is_not_sent(page, ui_server, api):
+    """Due date saves itself on blur. When that save fails on the server, Issue clicked straight from
+    it is not sent and the reason is said in a toast, so the invoice stays a draft with the date it
+    had. Real refusals and saves of this field are in test_saved_mark_guard.py."""
     r = api.post("/docs", json={"doc_type": "invoice", "status": "draft", "due_date": "2026-12-01", "line_items": [
         {"name": "Widget", "quantity": 1, "unit_price": 100.0, "line_total": 100.0}]})
     assert r.status_code in (200, 201), r.text
     path = f"/docs/{r.json()['id']}"
     answer_confirms(page)
     page.goto(f"{ui_server}{path}", wait_until="load")
-    if answer:
-        page.route(re.compile(r".*/field/due_date$"), lambda rt: answer(rt) if rt.request.method != "GET" else rt.continue_())
+    page.route(re.compile(r".*/field/due_date$"),
+               lambda rt: rt.fulfill(status=500, body="boom") if rt.request.method != "GET" else rt.continue_())
     issues: list = []
     page.on("request", lambda q: q.url.endswith("/action/finalize") and issues.append(q.url))
     page.locator("[hx-get$='/field/due_date/edit']").first.click()
     field = page.locator("input[hx-patch$='/field/due_date']").first
     field.wait_for(timeout=5000)
     field.fill("2027-03-15")
-    if reason is None:
-        _issued(page, api, path)
-        page.wait_for_timeout(500)
-        assert len(issues) == 1
-        assert api.get(path).json()["due_date"].startswith("2027-03-15")
-        return
     page.locator("button[hx-post$='/action/finalize']").first.click()
-    page.locator(".toast__msg", has_text=reason).first.wait_for(timeout=8000)
+    page.locator(".toast__msg", has_text=_NOT_SAVED).first.wait_for(timeout=8000)
     page.wait_for_timeout(1500)  # Issue would have been confirmed and sent by now
     assert issues == []
     doc = api.get(path).json()

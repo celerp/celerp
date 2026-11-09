@@ -10,7 +10,6 @@ is in the guard."""
 from __future__ import annotations
 
 import ast
-import importlib
 import os
 import re
 from pathlib import Path
@@ -200,8 +199,9 @@ def _self_saving() -> set[tuple[str, str]]:
 
 
 def test_every_self_saving_control_route_is_in_the_browser_guard():
-    guard = importlib.import_module("tests.test_browser.test_saved_mark_guard")
-    assert set(guard.SCENARIOS) == _self_saving()
+    tree = ast.parse((Path(__file__).parent / "test_browser" / "test_saved_mark_guard.py").read_text())
+    table = next(n.value for n in tree.body if isinstance(n, ast.AnnAssign) and n.target.id == "SCENARIOS")
+    assert {ast.literal_eval(k) for k in table.keys} == _self_saving()
 
 
 def test_the_enumeration_finds_a_new_self_saving_control():

@@ -195,10 +195,12 @@ def _open_share(page, ui_server, api):
     path = _invoice(api, "final")
     assert api.post(f"{path}/share", json={"expires_at": "2027-01-31"}).status_code in (200, 201)
     ctx = _goto(page, ui_server, api, path, _share_expiry)
-    # The page offers Share only once the instance is linked to the relay; the panel is the route's own.
-    page.evaluate("p => { document.body.insertAdjacentHTML('beforeend', '<div id=\"guard-share\"></div>');"
-                  " return htmx.ajax('GET', p + '/share', '#guard-share'); }", path)
-    page.locator("#guard-share input[name='expires_at']").wait_for(timeout=5000)
+    # The page offers Share only once the instance is linked to the relay; the panel is the route's own,
+    # in the body its controls answer into.
+    body = "share-body-" + path.rsplit("/", 1)[1].replace(":", "-")
+    page.evaluate("([p, b]) => { const d = document.createElement('div'); d.id = b; document.body.append(d);"
+                  " return htmx.ajax('GET', p + '/share', '#' + b); }", [path, body])
+    page.locator(f"#{body} input[name='expires_at']").wait_for(timeout=5000)
     return ctx
 
 

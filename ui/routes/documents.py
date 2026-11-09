@@ -7365,7 +7365,8 @@ def _save_first_gate() -> FT:
    open editor holds a value it has not sent; nor when a save the request waited for was not
    saved, even once its cell has put the stored value back. The click is answered with the
    reason in a toast. Once saved, the request meets its own
-   confirmation, as it would have. Capture phase, so it runs before any confirmation listener.
+   confirmation, as it would have; when the save's answer redrew the control clicked, the control
+   now in its place is clicked instead. Capture phase, so it runs before any confirmation listener.
    The line save itself is a fetch, not an htmx request. A request that pinned the version before
    the save is pinned to the one the save produced: this tab's own save is the only write in
    between (another tab's write makes the save fail). */
@@ -7440,6 +7441,12 @@ if (!window._celerpSaveFirstBound) {{
                 // A refusal's own toast may be showing already: say it once.
                 const showing = Array.from(document.querySelectorAll('.toast__msg')).some(m => m.textContent.startsWith(text));
                 if (text && !showing && window.celerpToast) celerpToast(text, 'error');
+                return;
+            }}
+            if (!d.elt.isConnected) {{
+                // The save's answer redrew the control clicked: the one now in its place runs, from the top.
+                const again = document.querySelector('[hx-' + d.verb + '="' + CSS.escape(d.path) + '"]');
+                if (again) htmx.trigger(again, d.triggeringEvent ? d.triggeringEvent.type : 'click');
                 return;
             }}
             const pinned = d.etc && d.etc.values;
