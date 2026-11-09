@@ -143,19 +143,19 @@ function nextUpdateState(state, event) {
  * failure after a check the user asked for (userChecks); the app's own checks
  * and downloads fail on the update card only.
  *
- * @param {{on: (event: string, fn: Function) => void}} updater
+ * @param {{on: (event: string, fn: Function) => void, checkForUpdates: () => Promise}} updater
  * @param {(channel: string, state: object) => void} send
  * @param {(state: object) => void} [onFailure]
  * @returns {{getUpdateState: () => object, dismissError: () => void, userChecks: () => void,
  *            installFailed: (version: string, message: string, failure: "install"|"stopped") => void,
- *            installing: () => void, checkedNothing: () => void}}
+ *            installing: () => boolean, checkedNothing: () => void, check: () => Promise}}
  *   getUpdateState returns a copy with its log and revision; dismissError clears a failed
  *   download, at the user's request; userChecks marks the next check as the user's;
  *   installFailed records an installer that did not start, or with "stopped" a setup
  *   that started and then stopped; with no message it adds no log line; installing marks
- *   the downloaded update as handed to its installer, kept for the next page that loads
- *   but not sent, since the page that asked for it shows it already; checkedNothing
- *   records a check the user asked for that ran nothing (failure "inactive").
+ *   the downloaded update as handed to its installer and returns whether it did, so the
+ *   hand-over happens once; checkedNothing records a check the user asked for that ran
+ *   nothing (failure "inactive"); check runs one updater check (see below).
  */
 function trackUpdater(updater, send, onFailure = () => {}) {
   let state = initialUpdateState();
@@ -166,19 +166,50 @@ function trackUpdater(updater, send, onFailure = () => {}) {
   let revision = 0;
   // Set while a check the user asked for has no result yet.
   let userAsked = false;
+  // Counts the updater's "error" events, so a check can tell whether its failure was told.
+  let errors = 0;
 
   const snapshot = () => ({ ...state, log: [...log], revision });
 
   // Apply `event`; `lineFor(state)` gives the log line for it, if any.
   // `logIgnored` still logs the line when the state ignores the event.
+  // Returns whether anything changed.
   function apply(channel, event, lineFor, logIgnored) {
     const next = nextUpdateState(state, event);
-    if (!next && !logIgnored) return;
+    if (!next && !logIgnored) return false;
     if (next) state = next;
     const line = lineFor(state);
     if (line) log = log.concat(line).slice(-MAX_LOG_LINES);
     revision += 1;
     send(channel, snapshot());
+    return true;
+  }
+
+  function failed(err) {
+    errors += 1;
+    const message = typeof err === "string" ? err : (err && err.message) || "";
+    apply("update-error", { type: "error", message }, () => errorLine(message), true);
+    if (userAsked) {
+      userAsked = false;
+      onFailure(snapshot());
+    }
+  }
+
+  // Run one updater check. electron-updater tells a failed check with an "error" event
+  // and a rejection; a rejection that came without its event fails the check the same
+  // way, so nothing is left checking. Resolves { result } when the check ran, else null.
+  function check() {
+    const seen = errors;
+    let running;
+    try {
+      running = Promise.resolve(updater.checkForUpdates());
+    } catch (err) {
+      running = Promise.reject(err);
+    }
+    return running.then((result) => ({ result }), (err) => {
+      if (errors === seen) failed(err);
+      return null;
+    });
   }
 
   // Once downloaded the state is final, so a later check changes nothing, not
@@ -207,14 +238,7 @@ function trackUpdater(updater, send, onFailure = () => {}) {
     userAsked = false;
     apply("update-not-available", { type: "not-available" }, () => "");
   });
-  updater.on("error", (err) => {
-    const message = typeof err === "string" ? err : (err && err.message) || "";
-    apply("update-error", { type: "error", message }, () => errorLine(message), true);
-    if (userAsked) {
-      userAsked = false;
-      onFailure(snapshot());
-    }
-  });
+  updater.on("error", failed);
 
   return {
     getUpdateState: snapshot,
@@ -222,11 +246,12 @@ function trackUpdater(updater, send, onFailure = () => {}) {
     userChecks: () => { userAsked = true; },
     installFailed: (version, message, failure) =>
       apply("update-error", { type: "install-failed", version, message, failure }, () => (message ? errorLine(message) : "")),
-    installing: () => { state = nextUpdateState(state, { type: "installing" }) ?? state; },
+    installing: () => apply("update-log", { type: "installing" }, () => ""),
     checkedNothing: () => {
       userAsked = false;
       apply("update-error", { type: "inactive" }, () => "This copy of Celerp cannot update itself.");
     },
+    check,
   };
 }
 
@@ -241,14 +266,16 @@ function trackUpdater(updater, send, onFailure = () => {}) {
  * @param {{on: (event: string, fn: Function) => void, checkForUpdates: () => Promise}} updater
  * @param {boolean} canCheck
  * @param {(state: object) => void} [onFailure] see trackUpdater
- * @returns {{getUpdateState: () => object, installFailed: Function, installing: Function, checkForUser: () => void}}
- *   installFailed and installing as in trackUpdater; checkForUser runs a check as the user's.
+ * @returns {{getUpdateState: () => object, installFailed: Function, installing: Function, check: () => Promise,
+ *            checkForUser: () => void}}
+ *   installFailed, installing and check (the app's own checks) as in trackUpdater;
+ *   checkForUser runs a check as the user's.
  *   A check that resolves with no result (electron-updater does that, with no event, when
  *   this copy cannot update itself: an AppImage run without APPIMAGE, a snap) is a failed
  *   check, so the user is never left waiting on it.
  */
 function serveUpdateState(ipcMain, getWindow, updater, canCheck, onFailure) {
-  const { getUpdateState, dismissError, userChecks, installFailed, installing, checkedNothing } = trackUpdater(updater, (channel, state) => {
+  const { getUpdateState, dismissError, userChecks, installFailed, installing, checkedNothing, check } = trackUpdater(updater, (channel, state) => {
     const win = getWindow();
     if (win) win.webContents.send(channel, state);
   }, onFailure);
@@ -259,11 +286,10 @@ function serveUpdateState(ipcMain, getWindow, updater, canCheck, onFailure) {
     dismissError();
     if (!canCheck) return;
     userChecks();
-    updater.checkForUpdates().then((result) => { if (!result) checkedNothing(); })
-      .catch(() => {}); // errors handled by the "error" event
+    return check().then((ran) => { if (ran && !ran.result) checkedNothing(); });
   };
   ipcMain.handle("check-for-updates", checkForUser);
-  return { getUpdateState, installFailed, installing, checkForUser };
+  return { getUpdateState, installFailed, installing, check, checkForUser };
 }
 
 module.exports = { initialUpdateState, nextUpdateState, trackUpdater, serveUpdateState };

@@ -450,17 +450,22 @@ test("nothing newer is kept as upToDate until the next result, which clears it",
     }
   });
 
-test("a downloaded update handed to its installer is kept for the next page, once, and not sent",
-  function test_installing_is_kept_not_sent() {
+test("a downloaded update handed to its installer is a change like any other: sent with a higher revision, once",
+  function test_installing_is_sent_with_a_higher_revision() {
     const { updater, sent } = downloadedSetup();
     const tracked = trackUpdater(updater, (channel, payload) => sent.push([channel, payload]));
     updater.emit("update-downloaded", { version: "2.0.1" });
     sent.length = 0;
     const before = tracked.getUpdateState();
-    tracked.installing();
-    expect(stateOf(tracked.getUpdateState())).toEqual({ ...DOWNLOADED, installing: true });
-    expect(tracked.getUpdateState().revision).toBe(before.revision);
-    expect(sent).toEqual([]);
+    expect(tracked.installing()).toBe(true);
+    const after = tracked.getUpdateState();
+    expect(stateOf(after)).toEqual({ ...DOWNLOADED, installing: true });
+    expect(after.revision).toBeGreaterThan(before.revision);
+    expect(sent).toEqual([["update-log", after]]);
+    // A second hand-over changes nothing and sends nothing.
+    expect(tracked.installing()).toBe(false);
+    expect(tracked.getUpdateState()).toEqual(after);
+    expect(sent.length).toBe(1);
     // An installer that did not start replaces it with the failed install.
     tracked.installFailed("2.0.1", "", "install");
     expect(tracked.getUpdateState()).toMatchObject({ status: "error", failure: "install", installing: false });
@@ -472,7 +477,7 @@ test("nothing but a downloaded update can be handed to its installer", function 
     const tracked = trackUpdater(updater, () => {});
     for (const [event, payload] of events) updater.emit(event, payload);
     const before = tracked.getUpdateState();
-    tracked.installing();
+    expect(tracked.installing()).toBe(false);
     expect(tracked.getUpdateState()).toEqual(before);
   }
 });
@@ -508,4 +513,67 @@ test("a check that ran nothing is not the user's any more: a later failure of th
     await new Promise(setImmediate);
     updater.emit("error", new Error("getaddrinfo ENOTFOUND github.com"));
     expect(told).toEqual([]);
+  });
+
+test("a check that rejects with no error event ends as a failed check, never checking forever",
+  async function test_rejected_check_without_error_event_fails() {
+    const { handlers, updater, windowSent } = serveSetup(true);
+    updater.checkForUpdates = jest.fn(() => {
+      updater.emit("checking-for-update");
+      return Promise.reject(new Error("net::ERR_INTERNET_DISCONNECTED"));
+    });
+    await handlers["check-for-updates"]();
+    await new Promise(setImmediate);
+    const state = handlers["get-update-state"]();
+    expect(stateOf(state)).toEqual({ ...IDLE, status: "error", failure: "check", releaseUrl: LATEST,
+                                     message: "net::ERR_INTERNET_DISCONNECTED" });
+    expect(state.log).toEqual(["Checking for update...", "Update error: net::ERR_INTERNET_DISCONNECTED"]);
+    expect(windowSent.at(-1)).toEqual(["update-error", state]);
+  });
+
+test("a check that rejects after its error event is logged once, and told to the user once",
+  async function test_rejected_check_with_error_event_logs_once() {
+    const ipcMain = { handle: (channel, fn) => { ipcMain[channel] = fn; } };
+    const updater = new EventEmitter();
+    updater.checkForUpdates = () => {
+      const err = new Error("getaddrinfo ENOTFOUND github.com");
+      updater.emit("error", err);
+      return Promise.reject(err);
+    };
+    const told = [];
+    serveUpdateState(ipcMain, () => null, updater, true, (state) => told.push(state.failure));
+    await ipcMain["check-for-updates"]();
+    await new Promise(setImmediate);
+    expect(ipcMain["get-update-state"]().log).toEqual(["Update error: getaddrinfo ENOTFOUND github.com"]);
+    expect(told).toEqual(["check"]);
+  });
+
+test("a check that throws before it returns a promise fails the same way",
+  async function test_check_that_throws_fails() {
+    const { handlers, updater } = serveSetup(true);
+    updater.checkForUpdates = () => { throw new Error("no feed"); };
+    await handlers["check-for-updates"]();
+    await new Promise(setImmediate);
+    expect(handlers["get-update-state"]()).toMatchObject({ status: "error", failure: "check", message: "no feed" });
+  });
+
+test("the app's own checks run through the same check: a rejection with no error event shows on the update card",
+  async function test_app_check_rejection_fails() {
+    const updater = new EventEmitter();
+    updater.checkForUpdates = () => Promise.reject(new Error("timeout"));
+    const told = [];
+    const served = serveUpdateState({ handle: () => {} }, () => null, updater, true, (state) => told.push(state));
+    await served.check();
+    expect(served.getUpdateState()).toMatchObject({ status: "error", failure: "check", message: "timeout" });
+    expect(told).toEqual([]);   // the app's own check fails on the update card only
+  });
+
+test("every update check in the app goes through the one check that handles a rejection",
+  function test_one_check_census() {
+    const fs = require("fs");
+    const path = require("path");
+    const sources = fs.readdirSync(path.join(__dirname, "..")).filter((f) => f.endsWith(".js"));
+    const calls = sources.flatMap((f) =>
+      (fs.readFileSync(path.join(__dirname, "..", f), "utf8").match(/\.checkForUpdates\(/g) || []).map(() => f));
+    expect(calls).toEqual(["update-state.js"]);
   });

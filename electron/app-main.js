@@ -1065,11 +1065,11 @@ function setupAutoUpdater() {
   // the renderer's ipcRenderer.on(...) calls have run, silently dropping them.
   if (mainWindow) {
     mainWindow.webContents.once("did-finish-load", () => {
-      autoUpdater.checkForUpdates().catch(() => {}); // errors handled by the "error" event above
+      updateState.check();
     });
   } else {
     // Fallback: mainWindow not yet created (shouldn't happen in normal flow)
-    autoUpdater.checkForUpdates().catch(() => {});
+    updateState.check();
   }
 
   startPeriodicChecks();
@@ -1091,7 +1091,7 @@ const updateLogger = Object.fromEntries(["info", "warn", "error"].map((level) =>
 // The timer never keeps the process alive by itself.
 function startPeriodicChecks() {
   setInterval(() => {
-    autoUpdater.checkForUpdates().catch(() => {});
+    updateState.check();
   }, 4 * 60 * 60 * 1000).unref();
 }
 
@@ -1429,9 +1429,10 @@ function createWindow() {
 // install-update: renderer triggers quit-and-install via window.celerp.installUpdate()
 // ShipIt (Squirrel.Mac) aborts if ANY instance of the app is running when it tries to
 // replace the bundle, so the servers and the database have exited before the
-// installer is handed over; its app.quit() then finds nothing left to stop.
+// installer is handed over; its app.quit() then finds nothing left to stop. Only a
+// downloaded update is handed over, once: a repeated click while installing is ignored.
 ipcMain.on("install-update", async () => {
-  updateState.installing();
+  if (!updateState.installing()) return;
   isQuitting = true;  // prevent the macOS hide-on-close handler from blocking quit
   await lifecycle.shutdown();
   installingUpdate = true;
