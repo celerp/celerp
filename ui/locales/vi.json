@@ -7177,6 +7177,7 @@
   "subscriptions.notice_back_periods_title": "Một số gói đăng ký có nhiều kỳ cần lập hóa đơn",
   "subscriptions.notice_back_periods_body": "Phiên bản trước chỉ lập hóa đơn cho một kỳ quá hạn mỗi lần chạy. Phiên bản này lập hóa đơn riêng cho từng kỳ bị bỏ lỡ, vì vậy các mẫu sau có nhiều hơn một kỳ đến hạn (số lượng trong ngoặc): {templates}. Hãy bỏ qua những kỳ bạn không muốn lập hóa đơn.",
   "subscriptions.skip_reason_paused_before_upgrade": "Bị bỏ lỡ trong thời gian tạm dừng trước khi nâng cấp",
+  "subscriptions.err_too_many_started": "Tiếp tục sẽ bỏ qua nhiều kỳ hơn số có thể bỏ qua cùng lúc. Số kỳ bị lỡ trong khi tạm dừng: {count}. Giới hạn: {limit}. Không có gì thay đổi. Để lập hóa đơn từ hôm nay, hãy hủy gói đăng ký này và tạo gói mới bắt đầu từ hôm nay.",
   "subscriptions.resume_restarts_note": "Thỏa thuận này đã tạm dừng trước khi nâng cấp. Khi tiếp tục, thỏa thuận sẽ bắt đầu lại từ hôm nay như phiên bản trước: các kỳ bị bỏ lỡ trong thời gian tạm dừng sẽ được bỏ qua và bạn có thể hoàn tác việc bỏ qua từng kỳ.",
   "email.err_no_transport": "Chưa thiết lập dịch vụ email. Hãy kết nối Web Access hoặc cấu hình SMTP trong phần cài đặt máy chủ rồi thử lại.",
   "email.err_relay_refused": "Web Access đã từ chối email này. Hãy kiểm tra kết nối trong Web Access rồi thử lại.",

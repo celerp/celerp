@@ -7177,6 +7177,7 @@
   "subscriptions.notice_back_periods_title": "Algumas assinaturas têm mais de um período a faturar",
   "subscriptions.notice_back_periods_body": "A versão anterior faturava apenas um período atrasado por execução. Esta versão fatura cada período perdido separadamente, por isso estes modelos têm mais de um período a faturar (quantidade entre parênteses): {templates}. Ignore os períodos que não deseja faturar.",
   "subscriptions.skip_reason_paused_before_upgrade": "Período perdido durante a pausa anterior à atualização",
+  "subscriptions.err_too_many_started": "Retomar pularia mais períodos do que podem ser pulados de uma vez. Períodos perdidos durante a pausa: {count}. Limite: {limit}. Nada foi alterado. Para faturar a partir de hoje, cancele esta assinatura e crie uma nova que comece hoje.",
   "subscriptions.resume_restarts_note": "Este contrato foi pausado antes da atualização. Ao retomá-lo, ele recomeçará a partir de hoje, como na versão anterior: os períodos perdidos durante a pausa serão ignorados, e você poderá desfazer cada omissão.",
   "email.err_no_transport": "Nenhum serviço de e-mail está configurado. Conecte o Web Access ou configure o SMTP nas configurações do servidor e tente novamente.",
   "email.err_relay_refused": "O Web Access recusou este e-mail. Verifique a conexão no Web Access e tente novamente.",

@@ -7177,6 +7177,7 @@
   "subscriptions.notice_back_periods_title": "Für einige Abonnements sind mehrere Zeiträume abzurechnen",
   "subscriptions.notice_back_periods_body": "Die frühere Version rechnete pro Durchlauf nur einen überfälligen Zeitraum ab. Diese Version rechnet jeden versäumten Zeitraum einzeln ab. Deshalb sind für diese Vorlagen mehrere Zeiträume fällig (Anzahl in Klammern): {templates}. Überspringen Sie Zeiträume, die Sie nicht abrechnen möchten.",
   "subscriptions.skip_reason_paused_before_upgrade": "Während der Pause vor dem Upgrade versäumt",
+  "subscriptions.err_too_many_started": "Beim Fortsetzen würden mehr Zeiträume übersprungen, als auf einmal übersprungen werden können. Während der Pause verpasste Zeiträume: {count}. Grenze: {limit}. Es wurde nichts geändert. Um ab heute abzurechnen, kündigen Sie dieses Abonnement und legen Sie ein neues an, das heute beginnt.",
   "subscriptions.resume_restarts_note": "Der Vertrag wurde vor dem Upgrade pausiert. Mit „Wiederaufnehmen“ beginnt er wie in der früheren Version wieder ab heute: Die während der Pause versäumten Zeiträume werden übersprungen und können einzeln wieder freigegeben werden.",
   "email.err_no_transport": "Es ist kein E-Mail-Dienst eingerichtet. Verbinden Sie Web Access oder richten Sie SMTP in den Servereinstellungen ein und versuchen Sie es erneut.",
   "email.err_relay_refused": "Web Access hat diese E-Mail abgelehnt. Prüfen Sie die Verbindung in Web Access und versuchen Sie es erneut.",

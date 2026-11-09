@@ -164,3 +164,26 @@ async def test_period_history_can_reach_oldest_open_without_unbounded_rows(sessi
     assert len(seen) == len(set(seen))
     assert min(seen) == 0
     assert max(seen) > 24
+
+
+def test_the_periods_a_restart_skips_stop_at_the_due_limit():
+    """The open periods that started by today are listed while there are at most DUE_LIMIT;
+    one more is refused, counting them. Claimed periods are not counted, and the term end and
+    an end-of-period cancel bound the run."""
+    from datetime import timedelta
+
+    from celerp_subscriptions.periods import DUE_LIMIT, SKIPPED, ScheduleError
+
+    anchor = date(2020, 1, 1)
+    at_limit = anchor + timedelta(days=DUE_LIMIT - 1)
+    assert _s(anchor, "custom", custom_days=1).started_open(at_limit) == list(range(DUE_LIMIT))
+    with pytest.raises(ScheduleError) as refused:
+        _s(anchor, "custom", custom_days=1).started_open(at_limit + timedelta(days=1))
+    assert (refused.value.key, refused.value.params) == (
+        "subscriptions.err_too_many_started", {"count": DUE_LIMIT + 1, "limit": DUE_LIMIT})
+    claimed = _s(anchor, "custom", custom_days=1, periods={3: {"state": SKIPPED}})
+    assert len(claimed.started_open(at_limit + timedelta(days=1))) == DUE_LIMIT
+    assert _s(anchor, "custom", custom_days=1, term_end=anchor + timedelta(days=5)).started_open(
+        at_limit + timedelta(days=9)) == list(range(5))
+    assert _s(anchor, "custom", custom_days=1, last=4).started_open(at_limit + timedelta(days=9)) == list(range(5))
+    assert _s(anchor, "custom", custom_days=1).started_open(anchor - timedelta(days=1)) == []

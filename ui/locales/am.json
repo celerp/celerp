@@ -7177,6 +7177,7 @@
   "subscriptions.notice_back_periods_title": "አንዳንድ ምዝገባዎች ከአንድ በላይ የሚከፈሉ ወቅቶች አሏቸው",
   "subscriptions.notice_back_periods_body": "የቀድሞው ስሪት በአንድ ሂደት አንድ የዘገየ ወቅት ብቻ ያስከፍል ነበር። ይህ ስሪት እያንዳንዱን ያለፈ ወቅት ለየብቻ ያስከፍላል። ስለዚህ እነዚህ አብነቶች ከአንድ በላይ የደረሱ ወቅቶች አሏቸው (ብዛቱ በቅንፍ ውስጥ)፦ {templates}። ማስከፈል የማይፈልጉትን ወቅት ይዝለሉ።",
   "subscriptions.skip_reason_paused_before_upgrade": "ከማሻሻያው በፊት በእገዳ ጊዜ ያለፈ",
+  "subscriptions.err_too_many_started": "መቀጠል በአንድ ጊዜ ሊዘለሉ ከሚችሉት በላይ ጊዜያትን ይዘላል። በቆመበት ጊዜ ያመለጡ ጊዜያት: {count}። ገደብ: {limit}። ምንም አልተቀየረም። ከዛሬ ጀምሮ ለማስከፈል ይህን ምዝገባ ይሰርዙ እና ዛሬ የሚጀምር አዲስ ይፍጠሩ።",
   "subscriptions.resume_restarts_note": "ይህ ስምምነት ከማሻሻያው በፊት ለጊዜው ቆሞ ነበር። እንደገና ሲቀጥል እንደ ቀድሞው ስሪት ከዛሬ ጀምሮ ይሰራል፤ በቆመበት ጊዜ ያለፉ ወቅቶች ይዘለላሉ፣ እያንዳንዱንም እንደገና መክፈት ይችላሉ።",
   "email.err_no_transport": "የኢሜይል አገልግሎት አልተዋቀረም። Web Accessን ያገናኙ ወይም በአገልጋይ ቅንብሮች ውስጥ SMTPን ያዋቅሩ፣ ከዚያም እንደገና ይሞክሩ።",
   "email.err_relay_refused": "Web Access ይህን ኢሜይል አልተቀበለም። በWeb Access ውስጥ ግንኙነቱን ያረጋግጡና እንደገና ይሞክሩ።",

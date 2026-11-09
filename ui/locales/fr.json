@@ -7177,6 +7177,7 @@
   "subscriptions.notice_back_periods_title": "Certains abonnements ont plusieurs périodes à facturer",
   "subscriptions.notice_back_periods_body": "L'ancienne version facturait une seule période en retard par exécution. Cette version facture chaque période manquée séparément. Ces modèles ont donc plusieurs périodes à facturer (nombre entre parenthèses) : {templates}. Ignorez les périodes que vous ne souhaitez pas facturer.",
   "subscriptions.skip_reason_paused_before_upgrade": "Manquée pendant la suspension avant la mise à niveau",
+  "subscriptions.err_too_many_started": "La reprise sauterait plus de périodes qu'il n'est possible d'en sauter en une fois. Périodes manquées pendant la pause : {count}. Limite : {limit}. Rien n'a été modifié. Pour facturer à partir d'aujourd'hui, annulez cet abonnement et créez-en un nouveau qui commence aujourd'hui.",
   "subscriptions.resume_restarts_note": "Ce contrat a été suspendu avant la mise à niveau. Sa reprise le redémarre à partir d'aujourd'hui, comme dans l'ancienne version : les périodes manquées pendant la suspension sont ignorées, mais vous pouvez rétablir chacune d'elles.",
   "email.err_no_transport": "Aucun service de messagerie n'est configuré. Connectez Web Access ou configurez SMTP dans les paramètres du serveur, puis réessayez.",
   "email.err_relay_refused": "Web Access a refusé cet e-mail. Vérifiez la connexion dans Web Access, puis réessayez.",

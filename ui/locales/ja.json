@@ -7177,6 +7177,7 @@
   "subscriptions.notice_back_periods_title": "複数の請求対象期間があるサブスクリプションがあります",
   "subscriptions.notice_back_periods_body": "以前のバージョンでは、1回の処理につき延滞期間を1つだけ請求していました。このバージョンでは未請求の各期間を個別に請求するため、次のテンプレートには期限到来期間が複数あります（括弧内は件数）：{templates}。請求しない期間はスキップしてください。",
   "subscriptions.skip_reason_paused_before_upgrade": "アップグレード前の一時停止中に経過",
+  "subscriptions.err_too_many_started": "再開すると、一度にスキップできる数を超える期間をスキップすることになります。一時停止中に逃した期間: {count}。上限: {limit}。何も変更されていません。今日から請求するには、このサブスクリプションをキャンセルし、今日開始する新しいサブスクリプションを作成してください。",
   "subscriptions.resume_restarts_note": "この契約はアップグレード前から一時停止されていました。再開すると、以前のバージョンと同様に本日から再始動します。一時停止中に経過した期間はスキップされますが、期間ごとにスキップを取り消せます。",
   "email.err_no_transport": "メールサービスが設定されていません。Web Accessを接続するか、サーバー設定でSMTPを設定してから再試行してください。",
   "email.err_relay_refused": "Web Accessがこのメールを拒否しました。Web Accessの接続を確認してから再試行してください。",

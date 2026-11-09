@@ -693,7 +693,8 @@ def _build_router() -> APIRouter:
         them, and the answer says what now runs. Periods missed while paused stay due: none is skipped, unless the
         template was paused on an earlier release, which restarted it from the resume day. Then
         every open period that started on or before today is skipped with that reason (each
-        can be un-skipped), once. An agreement whose next bill the bill path refuses stays paused
+        can be un-skipped), once; more of them than one request walks (DUE_LIMIT) is a 409
+        counting them, with nothing changed. An agreement whose next bill the bill path refuses stays paused
         (billing.bill_refusal)."""
         company = await locked_company(session, company_id)
         proj = await billing.locked_agreement(session, company_id, entity_id)
@@ -706,14 +707,15 @@ def _build_router() -> APIRouter:
             schedule = Schedule.from_state(state)
             today = await company_today(session, company_id)
             periods = _periods(state)
-            k = schedule.oldest_open(floor=billing.review_floor(state))
-            while k is not None and schedule.exists(k) and schedule.start(k) <= today:
-                if schedule.is_open(k):
-                    periods[str(k)] = {"state": SKIPPED, "reason": t("subscriptions.skip_reason_paused_before_upgrade"),
-                                       "by": str(user.id), "at": billing.now_stamp(),
-                                       "release_count": (periods.get(str(k)) or {}).get("release_count", 0)}
-                    skipped.append(billing.period_row(schedule, k))
-                k += 1
+            try:
+                started = schedule.started_open(today, floor=billing.review_floor(state))
+            except ScheduleError as exc:
+                raise billing.schedule_refusal(409, exc) from exc
+            for k in started:
+                periods[str(k)] = {"state": SKIPPED, "reason": t("subscriptions.skip_reason_paused_before_upgrade"),
+                                   "by": str(user.id), "at": billing.now_stamp(),
+                                   "release_count": (periods.get(str(k)) or {}).get("release_count", 0)}
+                skipped.append(billing.period_row(schedule, k))
             changes["periods"] = periods
         if (refused := await billing.bill_refusal(session, company, entity_id, state, changes, user)) is not None:
             raise refused

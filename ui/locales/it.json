@@ -7177,6 +7177,7 @@
   "subscriptions.notice_back_periods_title": "Alcuni abbonamenti hanno più periodi da fatturare",
   "subscriptions.notice_back_periods_body": "La versione precedente fatturava un solo periodo scaduto per esecuzione. Questa versione fattura separatamente ogni periodo non fatturato, quindi questi modelli hanno più periodi da fatturare (numero tra parentesi): {templates}. Salta i periodi che non vuoi fatturare.",
   "subscriptions.skip_reason_paused_before_upgrade": "Periodo non fatturato durante la sospensione precedente all'aggiornamento",
+  "subscriptions.err_too_many_started": "La ripresa salterebbe più periodi di quanti se ne possano saltare in una volta. Periodi persi durante la pausa: {count}. Limite: {limit}. Non è stato modificato nulla. Per fatturare da oggi, annulla questo abbonamento e creane uno nuovo che inizi oggi.",
   "subscriptions.resume_restarts_note": "Il contratto era sospeso prima dell'aggiornamento. Riattivandolo riparte da oggi, come nella versione precedente: i periodi trascorsi durante la sospensione vengono saltati e puoi annullare il salto per ciascuno.",
   "email.err_no_transport": "Non è configurato alcun servizio email. Collega Web Access oppure configura SMTP nelle impostazioni del server, quindi riprova.",
   "email.err_relay_refused": "Web Access ha rifiutato questa email. Controlla la connessione in Web Access e riprova.",

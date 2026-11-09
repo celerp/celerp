@@ -7177,6 +7177,7 @@
   "subscriptions.notice_back_periods_title": "Algunas suscripciones tienen varios períodos pendientes de facturar",
   "subscriptions.notice_back_periods_body": "La versión anterior facturaba un único período vencido por ejecución. Esta versión factura cada período omitido por separado, por lo que estas plantillas tienen más de un período pendiente (cantidad entre paréntesis): {templates}. Omita los períodos que no desee facturar.",
   "subscriptions.skip_reason_paused_before_upgrade": "Omitido durante la pausa anterior a la actualización",
+  "subscriptions.err_too_many_started": "Reanudar omitiría más periodos de los que se pueden omitir a la vez. Periodos perdidos durante la pausa: {count}. Límite: {limit}. No se cambió nada. Para facturar desde hoy, cancele esta suscripción y cree una nueva que empiece hoy.",
   "subscriptions.resume_restarts_note": "Este acuerdo se pausó antes de la actualización. Al reanudarlo, se reiniciará desde hoy, como en la versión anterior: se omitirán los períodos transcurridos durante la pausa y podrá deshacer cada omisión.",
   "email.err_no_transport": "No hay ningún servicio de correo configurado. Conecte Web Access o configure SMTP en los ajustes del servidor y vuelva a intentarlo.",
   "email.err_relay_refused": "Web Access ha rechazado este correo. Compruebe la conexión en Web Access y vuelva a intentarlo.",

@@ -20,6 +20,7 @@ AUTO_MODES = frozenset({"auto_invoice"})
 GENERATION_MODES = frozenset({"manual_due"}) | AUTO_MODES
 MAX_INTERVAL_DAYS = 36500
 CATCHUP_CAP = 12
+DUE_LIMIT = 500  # the most open periods one request walks through
 _MONTHS = {"monthly": 1, "quarterly": 3, "annually": 12}
 _DAYS = {"weekly": 7, "biweekly": 14}
 
@@ -251,7 +252,7 @@ class Schedule:
         k = self.oldest_open(floor=floor)
         return None if k is None else self.bill_date(k)
 
-    def due(self, today: date, *, floor: int | None = None, limit: int = 500) -> list[int]:
+    def due(self, today: date, *, floor: int | None = None, limit: int = DUE_LIMIT) -> list[int]:
         """Every open existing period whose bill date is on or before ``today``, oldest first."""
         k = self.first()
         if k is None:
@@ -264,18 +265,35 @@ class Schedule:
             k += 1
         return out
 
+    def started_open(self, today: date, *, floor: int | None = None) -> list[int]:
+        """Every open existing period at or above ``floor`` that started on or before ``today``,
+        oldest first; ScheduleError counting them when there are more than DUE_LIMIT, so no
+        request walks an unbounded run of periods."""
+        k = self.oldest_open(floor=floor)
+        if k is None:
+            return []
+        last = self._last_existing(self.current(today))
+        count = last - k + 1 - sum(1 for c in self.periods if k <= c <= last and not self.is_open(c))
+        if count > DUE_LIMIT:
+            raise ScheduleError("subscriptions.err_too_many_started", count=count, limit=DUE_LIMIT)
+        return [c for c in range(k, last + 1) if self.is_open(c)]
+
     def latest_due(self, today: date) -> int | None:
         """The newest existing period whose bill date has come."""
         first = self.first()
         if first is None:
             return None
-        k = self.current(today) - (1 if self.timing == "arrears" else 0)
+        k = self._last_existing(self.current(today) - (1 if self.timing == "arrears" else 0))
+        return k if k >= first and self.exists(k) else None
+
+    def _last_existing(self, k: int) -> int:
+        """``k`` lowered to the last period the term end and an end-of-period cancel leave."""
         if self.term_end is not None:
             end = self.current(self.term_end)
             k = min(k, end - (1 if self.start(end) == self.term_end else 0))
         if self.last is not None:
             k = min(k, self.last)
-        return k if k >= first and self.exists(k) else None
+        return k
 
     def current(self, today: date) -> int:
         """The period containing today, including dates before or after the term."""

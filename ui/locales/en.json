@@ -7177,6 +7177,7 @@
   "subscriptions.notice_back_periods_title": "Some subscriptions have more than one period to bill",
   "subscriptions.notice_back_periods_body": "The earlier release billed one overdue run at a time. This release bills each missed period separately, so these templates have more than one period due (count in brackets): {templates}. Skip any period you do not want to bill.",
   "subscriptions.skip_reason_paused_before_upgrade": "Missed while paused before the upgrade",
+  "subscriptions.err_too_many_started": "Resuming would skip more periods than can be skipped at once. Periods missed while paused: {count}. Limit: {limit}. Nothing was changed. To bill from today, cancel this subscription and create a new one that starts today.",
   "subscriptions.resume_restarts_note": "This was paused before the upgrade. Resume restarts it from today, as the earlier release did: the periods missed while paused are skipped, and each can be un-skipped.",
   "email.err_no_transport": "No email service is set up. Connect Web Access, or set up SMTP in the server settings, then retry.",
   "email.err_relay_refused": "Web Access refused this email. Check the connection in Web Access, then retry.",

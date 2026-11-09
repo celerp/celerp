@@ -387,3 +387,25 @@ async def test_a_moved_template_s_history_names_only_what_the_move_changed(clien
                 if line and line == describe({"old": c.get("new"), "new": c.get("new")}):
                     said_nothing.append((name, line))
     assert not said_nothing, said_nothing
+
+
+async def _daily(session, old) -> None:
+    # A template billed every day on 2.8.0 and paused there.
+    await _set(session, old, "paused_now", frequency="custom", custom_interval_days=1, next_run_date="2026-04-03")
+
+
+async def test_a_restart_past_the_due_limit_is_refused_with_nothing_changed(client, session, monkeypatch):
+    """Resume on a template paused on 2.8.0 that would skip more open periods than one request
+    walks is refused, counting them, and changes nothing; a retry is refused the same way."""
+    from celerp_subscriptions.periods import DUE_LIMIT
+    from ui.i18n import t
+
+    old = await _upgrade(session, monkeypatch, "2027-12-01", _daily)
+    before = await _state(session, old, "paused_now")
+    answers = [await client.post(_url(old, "paused_now", "/resume"), headers=old["headers"], json={})
+               for _ in range(2)]
+    # 2026-04-03 to 2027-11-30, less the period held for history review.
+    assert answers[0].status_code == 409, answers[0].text
+    assert answers[0].json()["detail"]["message"] == t("subscriptions.err_too_many_started", count=607, limit=DUE_LIMIT)
+    assert [(r.status_code, r.json()) for r in answers[1:]] == [(409, answers[0].json())]
+    assert await _state(session, old, "paused_now") == before

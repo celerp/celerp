@@ -7177,6 +7177,7 @@
   "subscriptions.notice_back_periods_title": "Beberapa langganan memiliki lebih dari satu periode untuk ditagih",
   "subscriptions.notice_back_periods_body": "Versi sebelumnya hanya menagih satu periode terlambat per proses. Versi ini menagih setiap periode yang terlewat secara terpisah, sehingga templat berikut memiliki lebih dari satu periode jatuh tempo (jumlah dalam tanda kurung): {templates}. Lewati periode yang tidak ingin Anda tagih.",
   "subscriptions.skip_reason_paused_before_upgrade": "Terlewat saat dijeda sebelum pembaruan",
+  "subscriptions.err_too_many_started": "Melanjutkan akan melewati lebih banyak periode daripada yang dapat dilewati sekaligus. Periode yang terlewat selama dijeda: {count}. Batas: {limit}. Tidak ada yang diubah. Untuk menagih mulai hari ini, batalkan langganan ini dan buat langganan baru yang dimulai hari ini.",
   "subscriptions.resume_restarts_note": "Perjanjian ini dijeda sebelum pembaruan. Saat dilanjutkan, perjanjian dimulai lagi dari hari ini seperti pada versi sebelumnya: periode yang terlewat selama jeda akan dilewati, dan Anda dapat membatalkan status dilewati untuk setiap periode.",
   "email.err_no_transport": "Belum ada layanan email yang disiapkan. Hubungkan Web Access atau atur SMTP di pengaturan server, lalu coba lagi.",
   "email.err_relay_refused": "Web Access menolak email ini. Periksa koneksi di Web Access, lalu coba lagi.",
