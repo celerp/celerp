@@ -26,22 +26,54 @@ function releasePageUrl(version) {
   return RELEASE_VERSION.test(version || "") ? `${RELEASES}/tag/v${version}` : `${RELEASES}/latest`;
 }
 
+// A PEP 440 version, as packaging.version reads it: epoch, release, pre (a, b, rc), post, dev,
+// local. Its spellings include the feed's (2.8.1-beta.2 is 2.8.1b2, 2.8.1-dev.1 is 2.8.1.dev1).
+const PEP440 = new RegExp(String.raw`^v?(?:(\d+)!)?(\d+(?:\.\d+)*)` +
+  String.raw`(?:[-_.]?(alpha|a|beta|b|preview|pre|c|rc)[-_.]?(\d+)?)?` +
+  String.raw`(?:-(\d+)|[-_.]?(post|rev|r)[-_.]?(\d+)?)?` +
+  String.raw`(?:[-_.]?(dev)[-_.]?(\d+)?)?` +
+  String.raw`(?:\+([a-z0-9]+(?:[-_.][a-z0-9]+)*))?$`, "i");
+const PRE_RANK = { a: 0, alpha: 0, b: 1, beta: 1, c: 2, rc: 2, pre: 2, preview: 2 };
+
+// The sort key packaging.version gives `v`, or null when it is not a version.
+function versionKey(v) {
+  const m = PEP440.exec(String(v ?? "").trim());
+  if (!m) return null;
+  const [, epoch, release, pre, preN, postImplicit, postWord, postN, dev, devN, local] = m;
+  const post = postImplicit ?? (postWord ? postN ?? "0" : undefined);
+  const segments = release.split(".").map(BigInt);
+  while (segments.length && segments.at(-1) === 0n) segments.pop();
+  return [
+    BigInt(epoch ?? 0),
+    segments,
+    // A dev release with no pre or post sorts before every pre release; no pre sorts after them.
+    pre ? [1, PRE_RANK[pre.toLowerCase()], BigInt(preN ?? 0)] : dev && post === undefined ? [0] : [2],
+    post === undefined ? [0] : [1, BigInt(post)],
+    dev ? [0, BigInt(devN ?? 0)] : [1],
+    // A local label sorts after none; its number parts after its word parts.
+    local ? [1, ...local.toLowerCase().split(/[-_.]/).map((p) => (/^\d+$/.test(p) ? [1, BigInt(p)] : [0, p]))] : [0],
+  ];
+}
+
+// Order two keys part by part; a key that runs out first is the smaller.
+function compareKeys(x, y) {
+  if (!Array.isArray(x)) return x < y ? -1 : x > y ? 1 : 0;
+  for (let i = 0; i < Math.min(x.length, y.length); i++) {
+    const c = compareKeys(x[i], y[i]);
+    if (c) return c;
+  }
+  return Math.sign(x.length - y.length);
+}
+
 /**
- * Compare release numbers such as 2.8.1, 2.8.1-beta.2 or 2.8.1b2: below 0, 0 or above 0
- * as `a` is older than, the same as or newer than `b`; NaN when either is not a release
- * number. A prerelease is older than its release.
+ * Compare release numbers as packaging.version does, the order that decides whether a release
+ * can open the data (tests/fixtures/version_order.json holds both to it): below 0, 0 or above 0
+ * as `a` is older than, the same as or newer than `b`; NaN when either is not a version.
  */
 function compareVersions(a, b) {
-  const parse = (v) => /^(\d+)\.(\d+)\.(\d+)(.*)$/.exec(String(v ?? ""));
-  const x = parse(a);
-  const y = parse(b);
-  if (!x || !y) return NaN;
-  for (let i = 1; i <= 3; i++) {
-    if (Number(x[i]) !== Number(y[i])) return Number(x[i]) - Number(y[i]);
-  }
-  if (x[4] === y[4]) return 0;
-  if (!x[4] || !y[4]) return x[4] ? -1 : 1;
-  return x[4].localeCompare(y[4], "en", { numeric: true });
+  const x = versionKey(a);
+  const y = versionKey(b);
+  return x && y ? compareKeys(x, y) : NaN;
 }
 
 // Whether release `version` can open data `recorded` opened: it is at least that version.
@@ -255,25 +287,31 @@ function trackUpdater(updater, send, onFailure = () => {}) {
     }
   }
 
-  // Run one updater check. electron-updater tells a failed check with an "error" event
-  // and a rejection; a rejection that came without its event fails the check the same
-  // way, so nothing is left checking. Resolves { result } when the check ran, else null.
-  function check() {
-    if (relaunch) return Promise.resolve(null);
-    used = true;
+  // Run one updater call (a check or a download). electron-updater tells a failure with an
+  // "error" event and a rejection; a rejection that came without its event fails the same
+  // way, so the failure is told once and nothing is left checking or downloading. Resolves
+  // { result } when the call ran, else null.
+  function run(call) {
     const seen = errors;
-    const autoDownload = updater.autoDownload;
-    if (recorded) updater.autoDownload = false;
     let running;
     try {
-      running = Promise.resolve(updater.checkForUpdates());
+      running = Promise.resolve(call());
     } catch (err) {
       running = Promise.reject(err);
     }
     return running.then((result) => ({ result }), (err) => {
       if (errors === seen) failed(err);
       return null;
-    }).finally(() => { updater.autoDownload = autoDownload; });
+    });
+  }
+
+  // Run one updater check (see run).
+  function check() {
+    if (relaunch) return Promise.resolve(null);
+    used = true;
+    const autoDownload = updater.autoDownload;
+    if (recorded) updater.autoDownload = false;
+    return run(() => updater.checkForUpdates()).finally(() => { updater.autoDownload = autoDownload; });
   }
 
   // Once downloaded the state is final, so a later check changes nothing, not
@@ -287,8 +325,8 @@ function trackUpdater(updater, send, onFailure = () => {}) {
         (judged().status === "too-old" ? ", which cannot open this data." : ", downloading..."));
     // A release that cannot open the data is the check's result: nothing downloads, nothing is told.
     if (judged().status === "too-old") userAsked = false;
-    // Under the rule the updater's own downloading is off. A failed download is told by its "error" event.
-    else if (recorded && judged().status === "downloading") updater.downloadUpdate().catch(() => {});
+    // Under the rule the updater's own downloading is off, so the release is downloaded here.
+    else if (recorded && judged().status === "downloading") run(() => updater.downloadUpdate());
   });
   updater.on("download-progress", (progress) =>
     apply("download-progress", { type: "progress", percent: progress && progress.percent }, (s) => {
