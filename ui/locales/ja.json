@@ -2024,6 +2024,8 @@
   "shell.data_no_update": "新しいバージョンはまだありません。",
   "shell.data_not_released": "データは変更されていません。バージョン {recorded} 以降が利用可能になると、Celerp で開けるようになります。",
   "shell.data_not_released_schema": "データは変更されていません。新しいバージョンが利用可能になると、Celerp で開けるようになります。",
+  "shell.data_release_too_old": "最新のリリースは Celerp {version} ですが、このデータはまだ開けません。",
+  "shell.data_restart_to_check": "データは変更されていません。Celerp を再起動して、このデータを開けるバージョンを確認してください。",
   "shell.data_invalid_record": "データを最後に開いたバージョンを読み取れないため、Celerp はデータを開いていません。データは変更されていません。",
   "shell.checking": "確認中...",
   "shell.restarting": "再起動中...",

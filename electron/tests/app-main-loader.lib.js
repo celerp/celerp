@@ -37,6 +37,7 @@ function loadAppMain({ app = {}, dialog = {}, shell = {}, extraFakes = {}, resou
   const handlers = {};
   const listeners = {};
   const updater = new EventEmitter();
+  updater.downloadUpdate = () => Promise.resolve([]);
   let menuTemplate = [];
   const fakes = {
     electron: {

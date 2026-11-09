@@ -552,9 +552,15 @@ const LOADING_PAGE = path.join(__dirname, "assets", "loading.html");
 let refusal = null;
 
 // The refusal screen (assets/refusal.js) in the window, with the updater ready for
-// the user's Update Celerp. Nothing checks by itself: the user decides.
+// the user's Update Celerp. On a cold start nothing has used the updater yet (the
+// compatibility check runs before setupAutoUpdater), so the version rule is set first and
+// only a release that opens the data is downloaded, offered or installed. When the running
+// app's updater was used before the refusal (a restart that refused), that process checks
+// nothing more and the screen offers Restart Now instead (update-state.js
+// downloadOnlyFrom).
 async function showRefusalScreen(view) {
   refusal = view;
+  updateState.downloadOnlyFrom(view.recorded);
   await mainWindow.loadFile(LOADING_PAGE); // its did-finish-load draws the screen
   mainWindow.show();
   configureAutoUpdater();
@@ -1065,11 +1071,11 @@ function setupAutoUpdater() {
   // the renderer's ipcRenderer.on(...) calls have run, silently dropping them.
   if (mainWindow) {
     mainWindow.webContents.once("did-finish-load", () => {
-      autoUpdater.checkForUpdates().catch(() => {}); // errors handled by the "error" event above
+      updateState.check();
     });
   } else {
     // Fallback: mainWindow not yet created (shouldn't happen in normal flow)
-    autoUpdater.checkForUpdates().catch(() => {});
+    updateState.check();
   }
 
   startPeriodicChecks();
@@ -1091,7 +1097,7 @@ const updateLogger = Object.fromEntries(["info", "warn", "error"].map((level) =>
 // The timer never keeps the process alive by itself.
 function startPeriodicChecks() {
   setInterval(() => {
-    autoUpdater.checkForUpdates().catch(() => {});
+    updateState.check();
   }, 4 * 60 * 60 * 1000).unref();
 }
 
@@ -1429,9 +1435,11 @@ function createWindow() {
 // install-update: renderer triggers quit-and-install via window.celerp.installUpdate()
 // ShipIt (Squirrel.Mac) aborts if ANY instance of the app is running when it tries to
 // replace the bundle, so the servers and the database have exited before the
-// installer is handed over; its app.quit() then finds nothing left to stop.
+// installer is handed over; its app.quit() then finds nothing left to stop. Only a
+// downloaded update that can open the data is handed over (update-state.js installing),
+// once: a repeated click while installing is ignored.
 ipcMain.on("install-update", async () => {
-  updateState.installing();
+  if (!updateState.installing()) return;
   isQuitting = true;  // prevent the macOS hide-on-close handler from blocking quit
   await lifecycle.shutdown();
   installingUpdate = true;
@@ -1440,7 +1448,8 @@ ipcMain.on("install-update", async () => {
 });
 
 // restart-app: renderer triggers a full relaunch via window.celerp.restartApp()
-// to apply a saved infrastructure change (DB/storage mode). A cold start re-runs
+// to apply a saved infrastructure change (DB/storage mode), or from the refusal
+// screen's Restart Now. A cold start re-runs
 // resolveDatabaseConfig(readConfig()) against the newly-saved celerp-config.json,
 // which is the only path that opens the new database - the sentinel-recycle path
 // reuses the boot-bound dbUrl and would not apply it.

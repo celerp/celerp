@@ -2196,6 +2196,8 @@
   "shell.data_no_update": "እስካሁን አዲስ ስሪት የለም።",
   "shell.data_not_released": "ውሂብዎ አልተለወጠም። ስሪት {recorded} ወይም ከዚያ በላይ ሲገኝ Celerp ሊከፍተው ይችላል።",
   "shell.data_not_released_schema": "ውሂብዎ አልተለወጠም። አዲስ ስሪት ሲገኝ Celerp ሊከፍተው ይችላል።",
+  "shell.data_release_too_old": "Celerp {version} አዲሱ ልቀት ነው፣ ነገር ግን ይህን ውሂብ ገና መክፈት አይችልም።",
+  "shell.data_restart_to_check": "ውሂብዎ አልተቀየረም። ሊከፍተው የሚችል ስሪት ለመፈለግ Celerpን እንደገና ያስጀምሩ።",
   "shell.data_invalid_record": "Celerp ውሂብዎን ለመጨረሻ ጊዜ የከፈተውን ስሪት ማንበብ ስላልቻለ አልከፈተውም። ውሂብዎ አልተለወጠም።",
   "shell.checking": "በማጣራት ላይ...",
   "shell.restarting": "እንደገና በመጀመር ላይ...",
