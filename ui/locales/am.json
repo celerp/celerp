@@ -2693,6 +2693,7 @@
   "documents.email_body": "እነሆ {type} #{number}።",
   "documents.email_subject": "{type} #{number} ከ{company}",
   "documents.enter_a_number": "ቁጥር አስገባ",
+  "documents.lines_unsaved": "የመስመር ለውጥ ገና አልተቀመጠም። ያስቀምጡት ወይም ይመልሱት፣ ከዚያ እንደገና ይሞክሩ።",
   "documents.duplicate_item_on_document": "ይህ ዕቃ አስቀድሞ በሰነዱ ላይ አለ። እንደገና ከመጨመር ይልቅ በነበረው መስመር ላይ ብዛቱን ይቀይሩ።",
   "documents.finalize_label_consignment_in": "ገቢ አደራ አረጋግጥ",
   "documents.finalize_label_credit_note": "እትም የክሬዲት ማስታወሻ",

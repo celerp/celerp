@@ -2465,6 +2465,7 @@
   "documents.email_body": "Hier ist {type} #{number}.",
   "documents.email_subject": "{type} #{number} von {company}",
   "documents.enter_a_number": "Geben Sie eine Zahl ein",
+  "documents.lines_unsaved": "Eine Zeilenänderung ist noch nicht gespeichert. Speichern Sie sie oder machen Sie sie rückgängig und versuchen Sie es dann erneut.",
   "documents.duplicate_item_on_document": "Dieser Artikel ist bereits im Dokument. Ändern Sie die Menge in der vorhandenen Zeile, statt ihn erneut hinzuzufügen.",
   "documents.finalize_label_consignment_in": "Sendung ausstellen",
   "documents.finalize_label_credit_note": "Gutschrift ausstellen",

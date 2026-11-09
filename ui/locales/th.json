@@ -2464,6 +2464,7 @@
   "documents.email_body": "นี่คือ{type} #{number}",
   "documents.email_subject": "{type} #{number} จาก {company}",
   "documents.enter_a_number": "กรอกตัวเลข",
+  "documents.lines_unsaved": "มีการแก้ไขรายการที่ยังไม่ได้บันทึก โปรดบันทึกหรือย้อนกลับ แล้วลองอีกครั้ง",
   "documents.duplicate_item_on_document": "สินค้านี้อยู่ในเอกสารแล้ว เปลี่ยนจำนวนในบรรทัดที่มีอยู่แทนการเพิ่มซ้ำ",
   "documents.finalize_label_consignment_in": "ออกใบรับฝากขาย",
   "documents.finalize_label_credit_note": "ออกใบลดหนี้",

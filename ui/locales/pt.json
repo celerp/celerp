@@ -2464,6 +2464,7 @@
   "documents.email_body": "Aqui está {type} nº {number}.",
   "documents.email_subject": "{type} #{number} de {company}",
   "documents.enter_a_number": "Digite um número",
+  "documents.lines_unsaved": "Uma alteração de linha ainda não foi salva. Salve-a ou desfaça-a e tente novamente.",
   "documents.duplicate_item_on_document": "Este item já está no documento. Altere a quantidade na linha existente em vez de adicioná-lo de novo.",
   "documents.finalize_label_consignment_in": "Emitir nota de consignação",
   "documents.finalize_label_credit_note": "Emitir nota de crédito",

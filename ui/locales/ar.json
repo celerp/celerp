@@ -2464,6 +2464,7 @@
   "documents.email_body": "ها هو {type} #{number}.",
   "documents.email_subject": "{type} #{number} من {company}",
   "documents.enter_a_number": "أدخل رقمًا",
+  "documents.lines_unsaved": "لم يُحفظ تغيير في أحد البنود بعد. احفظه أو تراجع عنه، ثم حاول مرة أخرى.",
   "documents.duplicate_item_on_document": "هذا الصنف موجود بالفعل في المستند. غيّر الكمية في السطر الموجود بدلًا من إضافته مرة أخرى.",
   "documents.finalize_label_consignment_in": "إصدار شحنة واردة",
   "documents.finalize_label_credit_note": "إصدار إشعار ائتمان",

@@ -2464,6 +2464,7 @@
   "documents.email_body": "Berikut ini adalah {type} #{number}.",
   "documents.email_subject": "{type} #{number} dari {company}",
   "documents.enter_a_number": "Masukkan angka",
+  "documents.lines_unsaved": "Ada perubahan baris yang belum disimpan. Simpan atau kembalikan, lalu coba lagi.",
   "documents.duplicate_item_on_document": "Barang ini sudah ada di dokumen. Ubah jumlah di baris yang ada, jangan menambahkannya lagi.",
   "documents.finalize_label_consignment_in": "Terbitkan Surat Pengiriman Masuk",
   "documents.finalize_label_credit_note": "Terbitkan Nota Kredit",

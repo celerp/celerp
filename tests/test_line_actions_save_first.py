@@ -62,7 +62,10 @@ def test_every_action_on_the_lines_saves_them_first():
             found.add(url.rsplit("/", 1)[-1])
             assert not set(node.attrs) & set(_DIRECT), node
             confirm = _WRITE_OFF.confirm if url.endswith(f"/action/{_WRITE_OFF.key}") else None
-            assert persist_then_post(url, confirm) in (node.attrs.get("onclick"), node.attrs.get("onsubmit")), node
+            if node.tag == "form":
+                assert node.attrs.get("onsubmit") == persist_then_post(url, confirm, form=True), node
+            else:
+                assert node.attrs.get("onclick") == persist_then_post(url, confirm), node
     assert found == {u.rsplit("/", 1)[-1] for u in _ON_LINES}
 
 

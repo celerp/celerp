@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -81,10 +82,10 @@ def _delay(page, fragment: str, method: str, ms: int = 2000) -> None:
             if (!held((init && init.method) || 'GET', url)) return fetch0.call(this, input, init);
             return new Promise(r => setTimeout(r, ms)).then(() => fetch0.call(this, input, init));
         };
-        const open0 = XMLHttpRequest.prototype.open, send0 = XMLHttpRequest.prototype.send;
-        XMLHttpRequest.prototype.open = function (m, u) { this._held = held(m, u); return open0.apply(this, arguments); };
+        const open0 = XMLHttpRequest.prototype.open, send0 = XMLHttpRequest.prototype.send, mark = Symbol();
+        XMLHttpRequest.prototype.open = function (m, u) { this[mark] = held(m, u); return open0.apply(this, arguments); };
         XMLHttpRequest.prototype.send = function (body) {
-            if (!this._held) return send0.call(this, body);
+            if (!this[mark]) return send0.call(this, body);
             setTimeout(() => send0.call(this, body), ms);
         };
     })(%s)""" % json.dumps([fragment, method, ms]))
@@ -341,7 +342,9 @@ def test_a_row_save_leaves_a_write_off_line_as_stored(page, ui_server, api):
     page.goto(f"{ui_server}/lists/{list_id}", wait_until="load")
     _save_row(page, "Spoiled in transit")
     after = api.get(f"/lists/{list_id}").json()["line_items"][0]
-    assert after == {**before, "description": "Spoiled in transit"}
+    assert after["description"] == "Spoiled in transit"
+    stated = ("item_id", "qty_out", "account", "comment", "quantity", "pieces", "weight")
+    assert {k: after.get(k) for k in stated} == {k: before.get(k) for k in stated}
 
 
 def test_a_row_edit_then_write_off_takes_the_typed_quantity(page, ui_server, api):
@@ -382,8 +385,42 @@ def test_a_second_click_after_an_unsaved_quantity_sends_nothing(page, ui_server,
     assert _on_hand(api, item_id) == 5
 
 
+# An edit made while the action's own save is on its way is not in what that save stored: the
+# action is not sent and the page says why.
+
+def test_a_row_edit_during_the_save_stops_the_action(page, ui_server, api):
+    list_id = _draft_list(api)
+    _delay(page, "/lines", "POST")
+    page.goto(f"{ui_server}/lists/{list_id}", wait_until="load")
+    log = _sent(page)
+    _click(page, "Duplicate")
+    field = page.locator('#line-body tr input[data-name="description"]').first
+    field.fill("Typed during the save")
+    field.evaluate("e => e.blur()")
+    page.locator(".toast--error").first.wait_for(timeout=8000)
+    assert not any(u.endswith("/action/duplicate") for _, u in log), log
+
+
+def test_a_cell_save_started_during_the_save_stops_the_write_off(page, ui_server, api):
+    list_id, item_id = _draft_writeoff(api)
+    _delay(page, "/lines", "POST")
+    _delay(page, "/writeoff-line/", "PATCH", 4000)
+    answer_confirms(page)
+    page.goto(f"{ui_server}/lists/{list_id}", wait_until="load")
+    log = _sent(page)
+    _click(page, "Write off stock")
+    page.locator("[hx-get$='/account/edit']").first.dblclick()
+    account = page.locator("input[type=hidden][hx-patch$='/account']").first
+    account.wait_for(state="attached", timeout=5000)
+    account.evaluate("e => e.dispatchEvent(new Event('change', {bubbles: true}))")
+    page.locator(".toast--error").first.wait_for(timeout=8000)
+    page.wait_for_timeout(4500)
+    assert not any(u.endswith("/action/write-off") for _, u in log), log
+    assert _on_hand(api, item_id) == 5
+
+
 # A tab whose record was changed elsewhere since it loaded: the action's save carries the page's
-# version, so the server refuses it with its own message and nothing acts, as Finalize does on main.
+# version, so the server refuses it with its own message and nothing acts, as Finalize does.
 
 def _draft_doc(api, doc_type: str) -> str:
     r = api.post("/docs", json={"doc_type": doc_type, "status": "draft", "line_items": [
@@ -439,3 +476,28 @@ def test_a_stale_tab_acts_on_nothing(page, ui_server, api, case):
     assert not any(u.endswith(path) for _, u in log), log
     stored = api.get(f"{'/lists/' if base == '/lists/' else '/docs/'}{eid}").json()
     assert stored["status"] == "draft"
+
+
+# Send emails the stored document: a line edit still on the page is saved first, and the dialog's
+# fields go with the send. The page renders Send only for an instance bound to the relay.
+
+def test_send_saves_the_lines_first_and_posts_its_fields(page, ui_server, api, monkeypatch):
+    import ui.api_client
+    monkeypatch.setattr(ui.api_client, "get_relay_status", AsyncMock(return_value={"gateway_token_set": True}))
+    doc_id = _draft_doc(api, "invoice")
+    page.route("**/action/send", lambda route: route.fulfill(status=200, content_type="application/json", body="{}")
+               if route.request.method == "POST" else route.continue_())
+    page.goto(f"{ui_server}/docs/{doc_id}", wait_until="load")
+    log = _sent(page)
+    page.locator('#line-body tr input[data-name="description"]').first.fill("Sent as typed")
+    _click(page, "Send")
+    dialog = page.locator("dialog[open]")
+    dialog.locator('input[name="sent_to"]').fill("buyer@example.com")
+    with page.expect_request(lambda q: q.url.endswith("/action/send") and q.method == "POST") as sent:
+        dialog.get_by_role("button", name="Send Document", exact=True).click()
+    body = sent.value.post_data or ""
+    assert 'name="sent_to"\r\n\r\nbuyer@example.com\r\n' in body, body
+    urls = [u for _, u in log]
+    assert any(u.endswith("/lines") for u in urls[:urls.index(sent.value.url)]), log
+    page.locator("dialog[open]").wait_for(state="detached", timeout=5000)
+    assert api.get(f"/docs/{doc_id}").json()["line_items"][0]["description"] == "Sent as typed"

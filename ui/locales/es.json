@@ -2464,6 +2464,7 @@
   "documents.email_body": "Aquí está {type} n.º {number}.",
   "documents.email_subject": "{type} #{number} de {company}",
   "documents.enter_a_number": "Introduzca un número",
+  "documents.lines_unsaved": "Hay un cambio de línea sin guardar. Guárdelo o deshágalo y vuelva a intentarlo.",
   "documents.duplicate_item_on_document": "Este artículo ya está en el documento. Cambie la cantidad de la línea existente en lugar de añadirlo otra vez.",
   "documents.finalize_label_consignment_in": "Emitir albarán de entrada",
   "documents.finalize_label_credit_note": "Emitir nota de crédito",

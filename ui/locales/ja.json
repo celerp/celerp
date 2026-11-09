@@ -2464,6 +2464,7 @@
   "documents.email_body": "こちらは {type} #{number} です。",
   "documents.email_subject": "{type} #{number} は {company} から",
   "documents.enter_a_number": "数値を入力してください",
+  "documents.lines_unsaved": "保存されていない明細の変更があります。保存するか元に戻してから、もう一度お試しください。",
   "documents.duplicate_item_on_document": "この品目はすでに書類にあります。もう一度追加せず、既存の行の数量を変更してください。",
   "documents.finalize_label_consignment_in": "委託出荷を発行",
   "documents.finalize_label_credit_note": "クレジットノートを発行",

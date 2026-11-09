@@ -7336,13 +7336,15 @@ def _doc_money(doc: dict) -> dict:
             "outstanding": fmt_money(float(doc_value(doc, "amount_outstanding") or 0), currency)}
 
 
-def persist_then_post(url: str, confirm: str | None = None) -> str:
+def persist_then_post(url: str, confirm: str | None = None, form: bool = False) -> str:
     """The onclick of an action that runs on the page's lines (Finalize, Issue, Write off stock,
-    Duplicate, Convert, a draft agreement's Activate): the page's pending line edits are saved
-    first, and the action is posted only once they are. With a confirmation the question is asked
-    before anything is saved, and Cancel sends nothing."""
-    question = f",{_json.dumps(confirm)}" if confirm else ""
-    return f"event.preventDefault();_celerpPostOnLines('{url}'{question});"
+    Duplicate, Convert, a draft agreement's Activate), or the onsubmit of a form that does (Send,
+    form=True, which posts the form's fields): the page's pending line edits are saved first, and
+    the action is posted only once they are. With a confirmation the question is asked before
+    anything is saved, and Cancel sends nothing."""
+    question = _json.dumps(confirm) if confirm else "null"
+    source = ",this" if form else ""
+    return f"event.preventDefault();_celerpPostOnLines('{url}',{question}{source});"
 
 
 def subscription_meta_cells(doc: dict) -> tuple:
@@ -7417,11 +7419,12 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     # controls (the API enforces it; the UI must not offer controls that would 403).
     can_edit_lines = is_draft and _can_edit
 
-    def _on_lines(url: str, confirm: str | None = None) -> dict:
-        """The posting attributes of an action whose server side reads the stored lines: while the
-        lines are editable it saves them first (persist_then_post), otherwise it posts directly."""
+    def _on_lines(url: str, confirm: str | None = None, form: bool = False) -> dict:
+        """The posting attributes of an action (a button, or a form with form=True) whose server
+        side reads the stored lines: while the lines are editable it saves them first
+        (persist_then_post), otherwise it posts directly."""
         if can_edit_lines:
-            return {"onclick": persist_then_post(url, confirm)}
+            return {"onsubmit" if form else "onclick": persist_then_post(url, confirm, form)}
         return {"hx_post": url, "hx_swap": "none", **({"hx_confirm": confirm} if confirm else {})}
 
     can_count_audit = pol["audit"] and status == _LF and _can_edit
@@ -7864,9 +7867,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                             Button(t("btn.send_document"), type="submit", cls="btn btn--primary"),
                             cls="modal-dialog__actions",
                         ),
-                        hx_post=f"{_base}/action/send",
-                        hx_swap="none",
-                        hx_on__htmx_after_request=f"if(event.detail.successful)document.getElementById('{modal_id}').close()",
+                        **_on_lines(f"{_base}/action/send", form=True),
+                        hx_on__after_request=f"if(event.detail.successful)document.getElementById('{modal_id}').close()",
                     ),
                     id=modal_id,
                     cls="modal-dialog",
@@ -10223,25 +10225,35 @@ if (!window._celerpLineCellsBound) {{
 async function _celerpLineCellsSaved() {{
     return (await Promise.all(window._celerpLineCellSaves.values())).every(Boolean);
 }}
-/* A line edit the page holds that is not stored: rows changed since their last save, a line cell
-   save still on its way, an open line cell editor whose value differs from the one it opened with,
-   or a line cell showing a save's error. */
-function _celerpLinesUnsaved() {{
+/* A line cell edit the page holds that is not stored: a line cell save still on its way, an open
+   line cell editor whose value differs from the one it opened with, or a line cell showing a
+   save's error. */
+function _celerpLineCellsUnsaved() {{
     const body = document.getElementById('{line_body_id}');
     const cells = body ? [...body.querySelectorAll('[hx-patch]')] : [];
-    return _celerpLinesDirty() || window._celerpLineCellSaves.size > 0
+    return window._celerpLineCellSaves.size > 0
         || cells.some((el) => el._v !== undefined && el.value !== el._v)
         || !!(body && body.querySelector('.cell-error'));
 }}
-/* An action that runs on the stored lines (persist_then_post), as Finalize does on main: ask its
+/* Any line edit the page holds that is not stored: rows changed since their last save, or a line
+   cell edit above. */
+function _celerpLinesUnsaved() {{
+    return _celerpLinesDirty() || _celerpLineCellsUnsaved();
+}}
+/* An action that runs on the stored lines (persist_then_post): ask its
    question first, wait for line cell saves on their way, then save the lines with the page's
    version, so a page changed elsewhere is refused with the server's own message. It is posted
    only when all of it is stored: a save that fails or is refused, one already on its way
-   included, shows its own message, and an edit still unsaved after it says so; nothing is sent. */
+   included, shows its own message, and an edit still unsaved says so; nothing is sent. A line
+   cell edit is checked before the rows save too, since that save may redraw the cells. */
 async function _celerpPostOnLines(url, question, form) {{
     const failures = window._celerpLineSaveFailures;
     if (question && !(await celerpConfirm(question))) return;
     if (!(await _celerpLineCellsSaved())) return;
+    if (_celerpLineCellsUnsaved()) {{
+        celerpToast(_L.lines_unsaved, 'error');
+        return;
+    }}
     clearTimeout(_celerpSaveTimer);
     _celerpSaveTimer = null;
     if (!(await _celerpPersist())) return;
