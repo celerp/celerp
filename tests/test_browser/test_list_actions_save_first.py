@@ -304,3 +304,27 @@ def test_a_row_save_after_a_quantity_save_keeps_it(page, ui_server, api):
     _save_row(page, "Spoiled in transit")  # neither refused as someone else's change nor dropping the 2
     li = api.get(f"/lists/{list_id}").json()["line_items"][0]
     assert li["qty_out"] == 2 and li["description"] == "Spoiled in transit"
+
+
+@pytest.mark.parametrize("action", sorted(_LIST_ACTIONS))
+def test_a_failed_save_on_its_way_stops_the_action_even_when_the_retry_saves(page, ui_server, api, action):
+    """The page already showed the save's failure, so the action is not sent on top of it, even
+    though the action's own save of the same edit then goes through."""
+    label, path, _ = _LIST_ACTIONS[action]
+    list_id = _draft_list(api)
+    _delay(page, "/lines", "POST")
+    failed: list = []
+    page.route("**/lists/*/lines", lambda route: (failed.append(1), route.fulfill(
+        status=500, content_type="application/json", body=json.dumps({"error": _BLOCKED})))
+        if route.request.method == "POST" and not failed else route.continue_())
+    page.goto(f"{ui_server}/lists/{list_id}", wait_until="load")
+    log = _sent(page)
+    _type_quantity(page, "3")
+    page.locator('#line-body tr input[data-name="quantity"]').first.evaluate("e => e.blur()")
+    page.wait_for_timeout(600)  # past the blur debounce: the save is on its way, and will fail
+    _click(page, label)
+    page.locator(".toast--error", has_text=_BLOCKED).first.wait_for(timeout=8000)
+    assert _wait(lambda: len([u for m, u in log if u.endswith("/lines")]) == 2, page=page), log
+    page.wait_for_timeout(800)
+    assert not any(u.endswith(path) for _, u, in log), log
+    assert api.get(f"/lists/{list_id}").json()["status"] == "draft"
