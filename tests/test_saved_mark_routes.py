@@ -236,18 +236,28 @@ def test_every_self_saving_route_has_a_request_here():
     assert set(_REQUESTS) == _self_saving()
 
 
-async def _answer(key, refused: bool):
+def _refusing():
     from ui.api_client import APIError
+    return AsyncMock(side_effect=APIError(409, "Refused"))
+
+
+async def _send(verb: str, url: str, form: dict, mocks: dict, signed_in: bool = True):
+    from contextlib import ExitStack
     from ui.app import app as ui_app
-    verb, url, form, decider = _REQUESTS[key]
     client = AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui")
-    client.cookies.update({"celerp_token": make_test_token(role="owner")})
-    outcome = AsyncMock(side_effect=APIError(409, "Refused")) if refused else AsyncMock(return_value={"version": 3})
-    with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_DOC)), \
-            patch("ui.api_client.get_list", new=AsyncMock(return_value=_LIST)), \
-            patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {}, "timezone": "UTC"})), \
-            patch(f"ui.api_client.{decider}", new=outcome):
+    if signed_in:
+        client.cookies.update({"celerp_token": make_test_token(role="owner")})
+    mocks = {"get_doc": AsyncMock(return_value=_DOC), "get_list": AsyncMock(return_value=_LIST),
+             "get_company": AsyncMock(return_value={"settings": {}, "timezone": "UTC"}), **mocks}
+    with ExitStack() as stack:
+        for name, mock in mocks.items():
+            stack.enter_context(patch(f"ui.api_client.{name}", new=mock))
         return await getattr(client, verb)(url, data=form)
+
+
+async def _answer(key, refused: bool):
+    verb, url, form, decider = _REQUESTS[key]
+    return await _send(verb, url, form, {decider: _refusing() if refused else AsyncMock(return_value={"version": 3})})
 
 
 @pytest.mark.asyncio
@@ -258,3 +268,46 @@ async def test_a_stored_change_carries_the_saved_mark_and_a_refusal_does_not(key
     assert saved.status_code < 300 and saved.headers.get(SAVED_MARK), (saved.status_code, saved.text[:200])
     refused = await _answer(key, refused=True)
     assert SAVED_MARK not in refused.headers, (refused.status_code, refused.text[:200])
+
+
+_MEMO = {**_DOC, "doc_type": "memo", "status": "paid", "tax_rate": 0, "memo_fixed_amounts": {"tax": 5}}
+
+# Every other answer a self-saving route gives that stores nothing: (verb, url, form, API mocks).
+_NOT_STORED = {
+    "a line field a final document keeps": ("patch", f"/docs/{DOC}/line/0/field/quantity", {"value": "2"}, {}),
+    "a line no longer there": ("patch", f"/docs/{DOC}/line/5/field/description", {"value": "x"}, {}),
+    "a new customer asked for on a document": ("patch", f"/docs/{DOC}/field/contact_id", {"value": "__new__"}, {}),
+    "a tax rate on a document that cannot be read": (
+        "patch", f"/docs/{DOC}/field/tax_rate", {"value": "7"}, {"get_doc": _refusing()}),
+    "a memo rate that is not a number": (
+        "patch", f"/docs/{DOC}/field/tax_rate", {"value": "seven"}, {"get_doc": AsyncMock(return_value=_MEMO)}),
+    "a memo rate sent before its preview": (
+        "patch", f"/docs/{DOC}/field/tax_rate", {"value": "7"}, {"get_doc": AsyncMock(return_value=_MEMO)}),
+    "a memo rate the API refuses": (
+        "patch", f"/docs/{DOC}/field/tax_rate", {"value": "7", "binding": "b", "idempotency_key": "k"},
+        {"get_doc": AsyncMock(return_value=_MEMO), "set_memo_tax_rate": _refusing()}),
+    "a list type the API refuses": (
+        "patch", f"/lists/{LST}/field/list_type", {"value": "invoice"}, {"change_list_type": _refusing()}),
+    "a new customer asked for on a list": ("patch", f"/lists/{LST}/field/contact_id", {"value": "__new__"}, {}),
+    "a list customer the API refuses": (
+        "patch", f"/lists/{LST}/field/contact_id", {"value": "contact:1"}, {"patch_list": _refusing()}),
+    "a write-off field there is not": ("patch", f"/lists/{LST}/writeoff-line/w1/bogus", {"value": "x"}, {}),
+    "a write-off quantity that is not a number": ("patch", f"/lists/{LST}/writeoff-line/w1/qty_out", {"value": "5x"}, {}),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", list(_REQUESTS), ids=lambda k: f"{k[0]} {k[1]}")
+async def test_a_save_from_a_signed_out_page_carries_no_saved_mark(key):
+    from ui.routes.documents import SAVED_MARK
+    verb, url, form, _ = _REQUESTS[key]
+    answer = await _send(verb, url, form, {}, signed_in=False)
+    assert SAVED_MARK not in answer.headers, (answer.status_code, answer.text[:200])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", list(_NOT_STORED))
+async def test_an_answer_that_stores_nothing_carries_no_saved_mark(case):
+    from ui.routes.documents import SAVED_MARK
+    answer = await _send(*_NOT_STORED[case])
+    assert SAVED_MARK not in answer.headers, (answer.status_code, answer.text[:200])
