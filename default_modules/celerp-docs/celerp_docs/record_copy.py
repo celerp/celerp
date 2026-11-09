@@ -5,11 +5,12 @@ or list out of an existing one (duplicate, convert, buy a consignment).
 
 A copy is the source's parties and its lines, as a new draft. Each line keeps only what a user
 enters on a line, which the line save steps own (line_bodies): a count, an adjustment, a write-off,
-a draw or a receipt stays with the source line. The record keeps its contact and the currency its
-line prices are in; everything else (terms, notes, commission, the From block, a List's location,
-custom fields) is for the user to fill on the copy. A conversion (conversion_of) also keeps the money
-the other side agreed to, a tax amount with no rate included, and its payment term (CONVERSION_KEYS),
-so it charges what was quoted. The door adds the new record's kind, number and where it came from.
+a draw or a receipt stays with the source line. The record keeps its contact, the currency its
+line prices are in, and its payment term, which sets the copy's due date; everything else (terms,
+notes, commission, the From block, a List's location, custom fields) is for the user to fill on the
+copy. A conversion (conversion_of) also keeps the money the other side agreed to and a tax amount
+with no rate included (CONVERSION_KEYS), so it charges what was quoted. The door adds the new
+record's kind, number and where it came from.
 """
 from __future__ import annotations
 
@@ -21,8 +22,9 @@ from celerp_docs.line_bodies import LineItem, WriteoffLineBody
 
 # The line editor sends an item as entity_id and the line keeps it as item_id (LineItem).
 LINE_KEYS: frozenset[str] = frozenset(LineItem.model_fields) | frozenset(WriteoffLineBody.model_fields)
-# The contact and its snapshot, and the currency and rate the line prices are given in.
-RECORD_KEYS: frozenset[str] = frozenset({"contact_id", *contact_snapshot({}), "currency", "conversion_rate"})
+# The contact and its snapshot, the currency and rate the line prices are given in, and the payment
+# term the copy's due date follows.
+RECORD_KEYS: frozenset[str] = frozenset({"contact_id", *contact_snapshot({}), "currency", "conversion_rate", "payment_terms"})
 
 
 def copied_line(line: dict) -> dict:
@@ -35,8 +37,8 @@ def copied_line(line: dict) -> dict:
 
 def copy_of(state: dict, settings: dict) -> dict:
     """A new draft made today from ``state``: its parties and its lines (copied_line), issued on the
-    company's business day and due by the source's payment term from that day. With no term to
-    follow there is no due date, never the source's own, set against its earlier issue date."""
+    company's business day and due by the source's payment term, which it keeps, from that day. With
+    no term to follow there is no due date, never the source's own, set against its earlier issue date."""
     issued = business_date_of(None, (settings or {}).get("timezone"))
     due = due_date_for_terms(issued, state.get("payment_terms"), company_payment_terms(settings or {}))
     return {**{k: state[k] for k in RECORD_KEYS if k in state},

@@ -8,6 +8,7 @@ from __future__ import annotations
 from sqlalchemy import select
 
 from celerp.models.projections import Projection
+from celerp.services.payment_terms import due_date_for_terms
 from celerp_docs.line_bodies import LineItem, WriteoffLineBody
 from celerp_docs.record_copy import copy_of
 from test_tax_acceptance_matrix import _demo_company
@@ -119,3 +120,18 @@ def test_a_line_naming_its_item_as_entity_id_is_copied_under_item_id():
     assert LineItem(entity_id="item:1").model_dump(exclude_unset=False)["entity_id"] is None
     (line,) = copy_of({"line_items": [{"entity_id": "item:1", "quantity": 2}]}, {})["line_items"]
     assert line == {"item_id": "item:1", "quantity": 2}
+
+
+def test_a_copy_keeps_the_payment_term_its_due_date_follows():
+    """A copy is due by the source's payment term from its own issue date, so it keeps that term:
+    a draft with a due date and no term to explain it would not move its due date with its issue date."""
+    settings = {"payment_terms": [{"name": "Net 30", "days": 30}]}
+    copied = copy_of({"payment_terms": "Net 30", "due_date": "2020-01-31", "issue_date": "2020-01-01"}, settings)
+    assert copied["payment_terms"] == "Net 30"
+    assert copied["due_date"] == due_date_for_terms(copied["issue_date"], "Net 30", settings["payment_terms"])
+    assert copied["due_date"] != "2020-01-31"
+
+
+def test_a_copy_of_a_record_with_no_term_has_neither_term_nor_due_date():
+    copied = copy_of({"due_date": "2020-01-31", "issue_date": "2020-01-01"}, {})
+    assert "payment_terms" not in copied and "due_date" not in copied

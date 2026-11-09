@@ -129,9 +129,9 @@ async def test_a_duplicate_of_a_converted_sent_list_is_a_fresh_draft_that_conver
                 "share_token"):
         assert not copy.get(key), (key, copy.get(key))
     assert copy["status"] == "draft" and copy["source_list_id"] == lid
-    for key in ("contact_id", "contact_name", "list_type"):
+    for key in ("contact_id", "contact_name", "list_type", "payment_terms"):
         assert copy.get(key) == src.get(key), key
-    for key in ("payment_terms", "notes", "customer_note", "discount", "tax"):  # for the user to fill on the copy
+    for key in ("notes", "customer_note", "discount", "tax"):  # for the user to fill on the copy
         assert src.get(key) and not copy.get(key), (key, copy.get(key))
     assert [li["name"] for li in copy["line_items"]] == ["A"]
     # The draft copy is refused for not being finalized, never as "already converted".
