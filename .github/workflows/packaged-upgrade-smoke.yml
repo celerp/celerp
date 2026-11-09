@@ -393,7 +393,6 @@ jobs:
             $log = InstallLog
             if ($log -notmatch "mode forced: current") { Fail "install.log has no mode forced line" }
             WaitFor "install.log success line" 180 { (InstallLog) -match "done: $([regex]::Escape($new)) is installed" }  # setup writes it after the swap
-            $log = InstallLog
             if ((Get-Content "$logs\update.log" -Raw -ErrorAction SilentlyContinue) -match "not signed") {
               Fail "update.log has a signature error"
             }
@@ -437,16 +436,22 @@ jobs:
           # PowerShell 7 has no client-side providers, so the box's buttons read as plain panes: find them by name.
           $button = { param($name) [Windows.Automation.PropertyCondition]::new($AE::NameProperty, $name) }
           # The prompt is owned by setup's window, so it can sit under it in the tree, beside setup's own Cancel.
-          $prompt = $null
-          for ($end = (Get-Date).AddSeconds(300); -not $prompt -and (Get-Date) -lt $end; Start-Sleep 2) {
-            foreach ($box in $AE::RootElement.FindAll($scope::Descendants, $boxes)) {
-              if ($box.FindFirst($scope::Children, (& $button "Retry"))) { $prompt = $box; break }
-            }
+          $script:prompt = $null
+          WaitFor "rename prompt" 300 {
+            # A window that closes while it is read throws; the next poll looks again.
+            try {
+              foreach ($box in $AE::RootElement.FindAll($scope::Descendants, $boxes)) {
+                if ($box.FindFirst($scope::Children, (& $button "Retry"))) { $script:prompt = $box; break }
+              }
+            } catch { }
+            $script:prompt
           }
-          if (-not $prompt) { Fail "no rename prompt in 300 s" }
           # Cancel through the box's own command (WM_COMMAND IDCANCEL), the message its Cancel button sends.
+          # A handle of 0 would post to this thread's own queue, so the box would never hear it.
+          $handle = $prompt.Current.NativeWindowHandle
+          if ($handle -eq 0) { Fail "the rename prompt has no window handle" }
           Add-Type -Namespace Win32 -Name Box -MemberDefinition '[DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr w, IntPtr l);'
-          if (-not [Win32.Box]::PostMessage([IntPtr]$prompt.Current.NativeWindowHandle, 0x0111, [IntPtr]2, [IntPtr]::Zero)) { Fail "could not send Cancel to the rename prompt" }
+          if (-not [Win32.Box]::PostMessage([IntPtr]$handle, 0x0111, [IntPtr]2, [IntPtr]::Zero)) { Fail "could not send Cancel to the rename prompt" }
           WaitFor "Celerp $old reopened with the failed update" 300 {
             (Running) | Where-Object { $_.CommandLine -match "--update-install-failed=$([regex]::Escape($new))" }
           }
@@ -472,6 +477,10 @@ jobs:
           # (the version Celerp records in the data), then starts with its own version on
           # that data, is refused, and updates from the refusal screen. A second build with
           # a lower version would double the Windows build and test a binary that never ships.
+          # So this check proves the handoff from the refusal screen to setup, and then what
+          # the user sees next: the reinstalled candidate still cannot open that data, so it
+          # shows the refusal screen again. That Celerp opens its data after an update is
+          # proven by check_update_from_running_app.
           if ($new -notmatch '^(\d+)\.(\d+)\.(\d+)') { Fail "candidate version $new is not major.minor.patch" }
           $newer = "$($Matches[1]).$($Matches[2]).$([int]$Matches[3] + 1)"
           InstallFresh $candidate
@@ -492,7 +501,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { Fail "the candidate on data $newer opened did not update from its refusal screen" }
           WaitFor "setup window" 180 { SetupWindow }
           ExpectNewRunning
-          Write-Host "check_update_from_newer_data: $new on data $newer opened offered Update Celerp, downloaded and ran setup"
+          # Setup reopened Celerp without a debugging port, so it is started again with one.
+          CloseCelerp
+          StartCelerp
+          $en = Get-Content (Join-Path (InstallDir) "resources\app\ui\locales\en.json") -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
+          $refusedText = $en["shell.data_newer"].Replace("{recorded}", $newer).Replace("{running}", $new)
+          python scripts/ci_update_drive.py refused $script:port 180 $refusedText
+          if ($LASTEXITCODE -ne 0) { Fail "the reinstalled $new on data $newer opened does not show the refusal screen again" }
+          Write-Host "check_update_from_newer_data: proves the handoff only. $new on data $newer opened offered Update Celerp, downloaded it and ran setup, and the reinstalled $new shows the refusal screen again. Opening data after an update is proven by check_update_from_running_app"
           Stop-Process $server -Force
 
       # A failed update check leaves Celerp's logs and the screen as it was, to read.

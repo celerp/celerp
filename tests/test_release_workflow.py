@@ -1007,9 +1007,29 @@ def test_an_older_copy_on_newer_data_updates_from_its_refusal_screen():
     checked = "\nif ($LASTEXITCODE -ne 0) { Fail "   # each drive step fails the check at once
     order = ["InstallFresh $candidate", '"Version: $newer"', "ci_update_drive.py sign-in $script:port 300" + checked,
              "CloseCelerp", "WriteAllText($meta.FullName, $metadata)", '"version: $newer"',
-             "ci_update_drive.py refusal $script:port 600" + checked, 'WaitFor "setup window"', "ExpectNewRunning"]
+             "ci_update_drive.py refusal $script:port 600" + checked, 'WaitFor "setup window"', "ExpectNewRunning",
+             "CloseCelerp\nStartCelerp", '$en["shell.data_newer"]',
+             "ci_update_drive.py refused $script:port 180 $refusedText" + checked, "proves the handoff only",
+             "Opening data after an update is proven by check_update_from_running_app"]
     positions = [check.index(marker) for marker in order]
     assert positions == sorted(positions)
+
+
+def test_the_rename_prompt_is_found_through_the_bounded_wait_and_needs_a_window_handle():
+    run = _windows_update_step("In-app update from a running Celerp (Windows)")["run"]
+    lines = [line.strip() for line in run.splitlines()]
+    wait = lines.index('WaitFor "rename prompt" 300 {')
+    assert lines[wait + 2] == "try {" and "catch" in "".join(lines[wait + 3:wait + 8])
+    assert not any(line.startswith("for (") for line in lines)   # no hand-rolled wait loop
+    handle = lines.index("$handle = $prompt.Current.NativeWindowHandle")
+    assert lines[handle + 1].startswith("if ($handle -eq 0) { Fail ")
+    assert "PostMessage([IntPtr]$handle," in run
+
+
+def test_install_log_is_read_once_where_its_mode_line_is_checked():
+    run = _windows_update_step("In-app update from a running Celerp (Windows)")["run"]
+    expect = run[run.index("function ExpectNewRunning"):run.index("# check_update_with_held_file_reopens_old_version")]
+    assert expect.count("$log = InstallLog") == 1
 
 
 def test_a_failed_windows_update_check_uploads_its_logs_and_screen():

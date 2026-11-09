@@ -173,3 +173,22 @@ def test_with_no_context_the_pause_sleeps(drive, monkeypatch):
     monkeypatch.setattr(drive.time, "sleep", slept.append)
     drive.pause(types.SimpleNamespace(contexts=[]))
     assert slept == [2]
+
+
+def test_refused_reads_the_refusal_screen_and_selects_nothing(drive, monkeypatch, capsys):
+    screen = _Screen([], hidden=2)
+    chromium = types.SimpleNamespace(connect_over_cdp=lambda _url: _browser(screen))
+    monkeypatch.setattr(drive, "sync_playwright", lambda: contextlib.nullcontext(types.SimpleNamespace(chromium=chromium)))
+    assert drive.main("refused", 9222, 60, "Your data was last opened with Celerp 2.8.2") == 0
+    assert screen.clicks == []
+    assert "the refusal screen says 'Your data was last opened with Celerp 2.8.2'" in capsys.readouterr().out
+
+
+def test_refused_fails_on_another_message_or_no_screen(drive, capsys):
+    screen = _Screen([])
+    assert drive.refused(_browser(screen), drive.time.monotonic() + 0.05, "Your data was last opened with Celerp 2.8.3") == 1
+    assert "says 'Your data was last opened with Celerp 2.8.2' (want 'Your data was last opened with Celerp 2.8.3')" \
+        in capsys.readouterr().out
+    ui = types.SimpleNamespace(url="http://127.0.0.1:5000/", wait_for_timeout=lambda _ms: None)
+    assert drive.refused(_browser(ui), drive.time.monotonic() + 0.05, "anything") == 1
+    assert "the refusal screen was not shown" in capsys.readouterr().out
