@@ -13,7 +13,7 @@ Covers:
 from __future__ import annotations
 
 import pathlib
-from datetime import date
+from datetime import date, datetime, timedelta
 
 import pytest
 
@@ -172,6 +172,59 @@ def test_activate_straight_after_typing_a_price_activates_at_that_price(page, ui
     page.get_by_role("button", name=t("btn.activate", "en"), exact=True).click()
     doc = _activated(page, api, eid)
     assert doc["status"] == "active" and float(doc["line_items"][0]["unit_price"]) == 12345.0, doc["line_items"]
+
+
+def test_activate_straight_after_changing_the_schedule_activates_on_the_new_schedule(page, ui_server, api):
+    """Change the first bill date and the frequency, then click Activate at once: the agreement
+    activates once, on the new date and frequency."""
+    from ui.i18n import t
+
+    eid = _draft(api, {"unit_price": 100.0, "line_total": 100.0, "taxes": []})
+    page.goto(f"{ui_server}/subscriptions/{eid}", wait_until="domcontentloaded")
+    activations = []
+    page.on("request", lambda q: q.method == "POST" and q.url.endswith("/activate") and activations.append(q.url))
+    page.locator("input[hx-patch$='/schedule/anchor_date']").fill("2027-04-15")
+    page.locator("select[hx-patch$='/schedule/frequency']").select_option("quarterly")
+    page.get_by_role("button", name=t("btn.activate", "en"), exact=True).click()
+    doc = _activated(page, api, eid)
+    assert (doc["status"], doc["anchor_date"], doc["frequency"]) == ("active", "2027-04-15", "quarterly"), doc
+    assert len(activations) == 1, activations
+
+
+def test_activate_waits_for_a_schedule_save_held_behind_another(page, ui_server, api):
+    """The frequency's save waits for the date's save before it. Activate clicked once the date's
+    answer is in, before the frequency's save has gone, waits for it too and activates on it. The
+    page's clock is held so the click lands in that moment every time; a clock is the browser
+    context's, so the tab gets a context of its own and the suite's shared one keeps real time."""
+    from ui.i18n import t
+
+    eid = _draft(api, {"unit_price": 100.0, "line_total": 100.0, "taxes": []})
+    ctx = page.context.browser.new_context(base_url=ui_server)
+    try:
+        ctx.add_cookies(page.context.cookies())
+        tab = ctx.new_page()
+        held, done = [], []
+        tab.route("**/schedule/anchor_date", lambda route: held.append(route))
+        tab.clock.install()
+        tab.goto(f"/subscriptions/{eid}", wait_until="load")
+        tab.clock.pause_at(datetime.now() + timedelta(seconds=1))
+        tab.on("requestfinished", lambda q: q.method != "GET" and done.append(q.url.rsplit("/", 1)[-1]))
+        tab.locator("input[hx-patch$='/schedule/anchor_date']").fill("2027-04-15")
+        tab.locator("select[hx-patch$='/schedule/frequency']").select_option("quarterly")
+        with tab.expect_response("**/schedule/anchor_date"):
+            held[0].continue_()
+        tab.clock.run_for(25)  # the date's answer settles: the redrawn Activate is live
+        tab.get_by_role("button", name=t("btn.activate", "en"), exact=True).click()
+        for _ in range(100):
+            if "activate" in done:
+                break
+            tab.clock.run_for(100)
+            tab.wait_for_timeout(50)
+    finally:
+        ctx.close()
+    doc = api.get(f"/docs/{eid}").json()
+    assert (doc["status"], doc["anchor_date"], doc["frequency"]) == ("active", "2027-04-15", "quarterly"), doc
+    assert [u for u in done if u != "anchor_date"] == ["frequency", "activate"], done
 
 
 def _scheduled_draft(api, skipped: bool = False) -> str:

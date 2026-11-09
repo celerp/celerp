@@ -7374,12 +7374,14 @@ def _save_first_gate() -> FT:
 if (!window._celerpSaveFirstBound) {{
     window._celerpSaveFirstBound = true;
     // failed: field -> {{reason, n}}, n counting the answers that were not saved.
-    const scheduled = new Map(), inFlight = new Set(), failed = new Map();
+    // held: field saves this gate holds until the saves before them are over; an action waits for them too.
+    const scheduled = new Map(), inFlight = new Set(), held = new Set(), failed = new Map();
     let notSaved = 0;
     const notSavedText = {_json.dumps(t("documents.field_not_saved"))};
     // A page whose lines cannot be edited has no line save to wait for.
     const linesDirty = () => typeof _celerpLinesDirty === 'function' && _celerpLinesDirty();
-    const fieldSaving = () => inFlight.size > 0 || Array.from(scheduled.values()).some(t => t > Date.now());
+    const fieldSaving = save => inFlight.size > 0 || (!save && held.size > 0)
+        || Array.from(scheduled.values()).some(t => t > Date.now());
     // What a field outside `own` (the cell of the request at hand) shows unsaved, as the reason to give.
     // A cell whose editor is leaving with a new value is saving, which the request waits for, and the
     // answer to that save is what counts.
@@ -7404,6 +7406,8 @@ if (!window._celerpSaveFirstBound) {{
         try {{ reason = JSON.parse(xhr.getResponseHeader('HX-Trigger')).celerpToast.message; }} catch (_) {{}}
         failed.set(el, {{reason: reason || notSavedText, n: ++notSaved}});
     }};
+    // A field's own save is any request not sent by a click or a submit, which are actions.
+    const fieldSave = cause => !cause || !['click', 'submit'].includes(cause.type);
     document.addEventListener('focusout', function(e) {{
         const el = e.target;
         const delay = /delay:(\\w+)/.exec((el.getAttribute && el.getAttribute('hx-trigger')) || '');
@@ -7414,19 +7418,18 @@ if (!window._celerpSaveFirstBound) {{
     }}, true);
     document.addEventListener('htmx:trigger', e => scheduled.delete(e.target));
     document.addEventListener('htmx:beforeSend', function(e) {{
-        const xhr = e.detail.xhr, el = e.detail.elt, cause = e.detail.requestConfig.triggeringEvent;
+        const xhr = e.detail.xhr, el = e.detail.elt;
         // A preview reads the figures an action would give and stores nothing: no save to wait for.
         if (e.detail.requestConfig.verb === 'get' || el.closest('[data-preview]')) return;
-        // A field's own save is any request not sent by a click or a submit, which are actions.
-        const save = !cause || !['click', 'submit'].includes(cause.type);
+        const save = fieldSave(e.detail.requestConfig.triggeringEvent);
         inFlight.add(xhr);
         xhr.addEventListener('loadend', function() {{
             if (save) outcome(el, xhr);
             inFlight.delete(xhr);
         }});
     }});
-    const fieldsSaved = () => new Promise(function wait(done) {{
-        if (fieldSaving()) setTimeout(() => wait(done), 50); else done();
+    const fieldsSaved = save => new Promise(function wait(done) {{
+        if (fieldSaving(save)) setTimeout(() => wait(done), 50); else done();
     }});
     document.addEventListener('htmx:confirm', function(e) {{
         const d = e.detail;
@@ -7434,13 +7437,15 @@ if (!window._celerpSaveFirstBound) {{
         scheduled.delete(d.elt);
         // Read at the click: leaving a refused editor puts its stored value back while the request waits.
         const own = d.elt.closest('td, .editable-cell'), since = notSaved, shown = fieldUnsaved(own, since);
-        if (!fieldSaving() && !linesDirty() && !shown) return;
+        const save = fieldSave(d.triggeringEvent);
+        if (!fieldSaving(save) && !linesDirty() && !shown) return;
         e.preventDefault();
         e.stopPropagation();
         clearTimeout(window._celerpSaveTimer);
         window._celerpSaveTimer = null;
         // A field's reason, or the line save's answer (its own words stay beside the lines too).
-        fieldsSaved().then(() => shown || fieldUnsaved(own, since) || (linesDirty() ? _celerpPersist() : true)).then(function(ok) {{
+        if (save) held.add(d);
+        fieldsSaved(save).then(() => shown || fieldUnsaved(own, since) || (linesDirty() ? _celerpPersist() : true)).then(function(ok) {{
             if (ok !== true) {{
                 const said = typeof ok === 'string' ? ok : document.getElementById('save-status')?.firstChild;
                 const text = typeof said === 'string' ? said
@@ -7452,8 +7457,10 @@ if (!window._celerpSaveFirstBound) {{
             }}
             if (!d.elt.isConnected) {{
                 // The save's answer redrew the control clicked: the one now in its place runs, from the top,
-                // once htmx has taken it up (it does so as the swap settles).
+                // once htmx has taken it up (it does so as the swap settles). A field's own save sends
+                // what the field held, not the stored value the redraw shows.
                 const again = document.querySelector('[hx-' + d.verb + '="' + CSS.escape(d.path) + '"]');
+                if (again && save) again.value = d.elt.value;
                 if (again) {{ htmx.process(again); htmx.trigger(again, d.triggeringEvent ? d.triggeringEvent.type : 'click'); }}
                 return;
             }}
@@ -7461,7 +7468,7 @@ if (!window._celerpSaveFirstBound) {{
             if (pinned && 'expected_version' in pinned) pinned.expected_version = window._celerpEntityVersion;
             d.celerpSaved = true;
             if (htmx.trigger(d.elt, 'htmx:confirm', d)) d.issueRequest(true);
-        }});
+        }}).finally(() => held.delete(d));
     }}, true);
 }}
 """)
