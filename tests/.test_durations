@@ -28105,5 +28105,6 @@
     "default_modules/celerp-subscriptions/tests/test_subscriptions_ui.py::test_a_refused_subscriptions_read_lands_on_the_no_access_notice[/subscriptions/sub-001-ui.api_client.get_subscription]": 0.41203725899686106,
     "default_modules/celerp-subscriptions/tests/test_subscriptions_ui.py::test_a_refused_subscriptions_read_lands_on_the_no_access_notice[/subscriptions/summary-ui.api_client.subscriptions_summary]": 0.030630573950475082,
     "default_modules/celerp-subscriptions/tests/test_subscriptions_ui.py::test_a_refused_subscriptions_read_lands_on_the_no_access_notice[/subscriptions?direction=purchase-ui.api_client.list_subscriptions]": 0.42864264000672847,
-    "tests/test_auto_stamp.py::test_an_upgraded_database_without_the_journal_ref_index_is_stamped_below_it[drop_indexes4-invalid_indexes4-None]": 0.38875994898262434
+    "tests/test_auto_stamp.py::test_an_upgraded_database_without_the_journal_ref_index_is_stamped_below_it[drop_indexes4-invalid_indexes4-None]": 0.38875994898262434,
+    "tests/test_browser/test_first_run.py::test_a_launch_that_fails_leaves_no_process_behind": 0.12559508404228836
 }

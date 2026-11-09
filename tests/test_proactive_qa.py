@@ -228,6 +228,7 @@ class TestCurrencyThreadingAllRoutes:
         with (
             patch("ui.api_client.get_subscription", new=AsyncMock(return_value=sub)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY_USD)),
+            patch("ui.api_client.get_subscription_periods", new=AsyncMock(return_value={"rows": [], "review": [], "set_aside": []})),
         ):
             r = await ui_client.get("/subscriptions/sub:1")
         assert r.status_code == 200
