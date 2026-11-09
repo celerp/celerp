@@ -27474,5 +27474,13 @@
     "tests/test_saved_mark_routes.py::test_every_self_saving_route_has_a_request_here": 0.29698081099195406,
     "tests/test_saved_mark_routes.py::test_the_enumeration_finds_a_new_self_saving_control": 0.004489066981477663,
     "default_modules/celerp-subscriptions/tests/test_periods.py::test_the_periods_a_restart_skips_stop_at_the_due_limit": 0.2476153399911709,
-    "tests/test_subscriptions_upgrade_v280.py::test_a_restart_past_the_due_limit_is_refused_with_nothing_changed": 5.832814681023592
+    "tests/test_subscriptions_upgrade_v280.py::test_a_restart_past_the_due_limit_is_refused_with_nothing_changed": 5.832814681023592,
+    "tests/test_browser/test_saved_mark_guard.py::test_a_refusal_that_takes_the_field_out_of_the_page_stops_the_action[chromium]": 7.826876460982021,
+    "tests/test_browser/test_saved_mark_guard.py::test_a_refused_field_save_stops_the_action_with_its_reason[chromium-PATCH /subscriptions/{entity_id}/schedule/{field}]": 2.596361158968648,
+    "tests/test_browser/test_saved_mark_guard.py::test_a_refused_save_from_a_control_that_is_not_a_form_field_stops_the_action[chromium]": 2.9330030740238726,
+    "tests/test_browser/test_saved_mark_guard.py::test_a_stored_field_save_sends_the_action_once_after_it[chromium-PATCH /subscriptions/{entity_id}/schedule/{field}]": 1.770001705008326,
+    "tests/test_browser/test_subscriptions_e2e.py::test_activate_straight_after_changing_the_schedule_activates_on_the_new_schedule[chromium]": 1.3814646880200598,
+    "tests/test_browser/test_subscriptions_e2e.py::test_activate_waits_for_a_schedule_save_held_behind_another[chromium]": 1.4905941110046115,
+    "tests/test_saved_mark_routes.py::test_a_stored_change_carries_the_saved_mark_and_a_refusal_does_not[PATCH /subscriptions/{entity_id}/schedule/{field}]": 0.18837402397184633,
+    "tests/test_saved_mark_routes.py::test_the_pages_with_the_gate_are_read_from_the_router": 1.1980259240081068
 }
