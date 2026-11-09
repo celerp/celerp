@@ -3540,12 +3540,15 @@ class TestWriteoffListDetail:
 
     @pytest.mark.asyncio
     async def test_only_an_entry_save_that_stored_nothing_carries_the_unsaved_mark(self, ui_client):
-        """Refused and invalid answers carry data-cell-unsaved (the mark the page's line actions read);
-        a stored entry and the editor opening do not."""
+        """Expired, refused and invalid answers carry data-cell-unsaved (the mark the page's line actions
+        read); a stored entry and the editor opening do not."""
         from ui.api_client import APIError
         url = "/lists/list:WO-1/writeoff-line/ln-abc/qty_out"
         mark = 'data-cell-unsaved="1"'
         ui_client.cookies.update(_authed())
+        with patch("ui.routes.documents._token", return_value=None):  # cookie gone past the auth guard
+            expired = await ui_client.patch(url, data={"value": "4"})
+        assert mark in expired.text and t("error.session_expired") in expired.text
         lst = {"id": "list:WO-1", "version": 3, "line_items": [{"line_id": "ln-abc", "qty_out": 4}]}
         with (
             patch("ui.api_client.set_writeoff_line", create=True,
