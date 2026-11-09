@@ -235,3 +235,19 @@ def test_a_void_quotation_is_converted_the_way_its_refusal_advises(page: Page, u
     doc_id = _click_to_next_page(page, t("btn.convert", "en"))
     doc = fresh_company.get(f"/docs/{doc_id}").json()
     assert (doc["source_list_id"], doc["doc_type"]) == (copy, "invoice")
+
+
+def test_new_document_at_a_counter_out_of_numbers_says_why(page: Page, ui_server, fresh_company):
+    """A New Document whose next number is too long to store shows the refusal and stays on the page."""
+    _seed_demo_items(fresh_company)
+    r = fresh_company.patch("/docs/sequences/quotation",
+                            json={"prefix": "Q" * 95, "pattern": "{PREFIX}-{####}", "next": 9999})
+    assert r.status_code == 200, r.text
+    assert fresh_company.post("/docs", json={"doc_type": "quotation", "status": "draft"}).status_code == 200
+    page.goto(f"{ui_server}/docs?type=quotation")
+    wait_for_topbar(page)
+    with page.expect_response(lambda r: "/docs/create-blank" in r.url) as reply:
+        page.locator('[hx-post="/docs/create-blank?type=quotation"]').click()
+    assert reply.value.status == 422
+    expect(page.locator("#global-ui-error")).to_contain_text("101")
+    assert page.url.split("?", 1)[0].endswith("/docs"), page.url

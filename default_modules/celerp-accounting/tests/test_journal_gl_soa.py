@@ -2650,11 +2650,11 @@ async def test_by_doc_for_a_draft_or_unposted_document_has_no_entries(client):
 
 def test_by_doc_lookup_uses_indexable_postgres_metadata_containment():
     from sqlalchemy.dialects import postgresql, sqlite
-    from celerp_accounting.routes import _linked_doc_events, _DOC_SOURCE_KEYS
+    from celerp.services.ledger_sources import SOURCE_KEYS, linked_events
 
-    pg = str(_linked_doc_events("doc:sample", "postgresql").compile(dialect=postgresql.dialect()))
-    fallback = str(_linked_doc_events("doc:sample", "sqlite").compile(dialect=sqlite.dialect()))
-    assert pg.count("@>") == len(_DOC_SOURCE_KEYS)
+    pg = str(linked_events("doc:sample", "postgresql").compile(dialect=postgresql.dialect()))
+    fallback = str(linked_events("doc:sample", "sqlite").compile(dialect=sqlite.dialect()))
+    assert pg.count("@>") == len(SOURCE_KEYS)
     assert "CAST" in pg and "JSONB" in pg
     assert "JSON_EXTRACT" in fallback and "@>" not in fallback
 

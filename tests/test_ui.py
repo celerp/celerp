@@ -4536,6 +4536,17 @@ class TestSprint4DocCreation:
         assert "/docs/doc:INV-2026-0001" in r.headers["HX-Redirect"]
 
     @pytest.mark.asyncio
+    async def test_create_blank_answers_a_refused_number_with_its_refusal(self, ui_client):
+        """A New Document the API refuses answers 422 with the refusal, which the page's banner shows."""
+        ui_client.cookies.update(_authed())
+        message = "A number can have at most 100 characters. This one has 101."
+        with patch("ui.api_client.create_doc", new=AsyncMock(side_effect=APIError(422, message))):
+            r = await ui_client.post("/docs/create-blank?type=quotation")
+        assert r.status_code == 422
+        assert r.text == message
+        assert "HX-Redirect" not in r.headers and "HX-Trigger" not in r.headers
+
+    @pytest.mark.asyncio
     async def test_create_blank_unauthorized_redirects(self, ui_client):
         """POST /docs/create-blank without cookie redirects to login."""
         r = await ui_client.post("/docs/create-blank?type=invoice")

@@ -1989,15 +1989,8 @@ def setup_routes(app):
             result = await api.create_doc(token, {"doc_type": doc_type, "status": "draft"})
             entity_id = result.get("entity_id") or result.get("id", "")
         except APIError as e:
-            if e.status == 401:
-                raise
-            from starlette.responses import Response as _R
-            detail = error_message(e)
-            return _R(
-                "",
-                status_code=200,
-                headers={"HX-Trigger": _json.dumps({"flashError": detail})},
-            )
+            logger.warning("API error on create_blank_doc: %s", e.detail)
+            return api.refusal_response(e)
         from starlette.responses import Response as _R
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 

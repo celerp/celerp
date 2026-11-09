@@ -52,6 +52,7 @@ from celerp.services.company_lock import lock_company, lock_projections, locked_
 from celerp.services.goods_cost import GOODS_COST_UNKNOWN, negative_cost_error
 from celerp.services.journal_accounts import require_destinations, require_line_destinations, require_settlement_account
 from celerp.services.lot_origin import in_stock, is_stock_type, rerun_after_placing
+from celerp.services.ledger_sources import record_entry_ids
 from celerp.services.physical_codes import lock_item_code_namespace
 from celerp.services.peer_import import SourceRevision, peer_batch, receive_file
 from celerp.services.payments import lock_recorded_unmatched, recorded_unmatched, return_unmatched
@@ -14990,17 +14991,12 @@ async def undo_write_off(
             l.pop("disposed_qty", None)
     # Corrections recorded after the disposal belong to this write-off cycle.
     # Undo them with the original entry in this same transaction, leaving the
-    # restored lots on the books at their current corrected costs.
-    adjustment_ids = (await session.execute(select(Projection.entity_id).where(
-        Projection.company_id == company_id,
-        Projection.entity_type == "journal_entry",
-        Projection.entity_id.startswith(f"je:auto:{entity_id}:cost:", autoescape=True),
-        Projection.entity_id.endswith(":writeoff_cost:0", autoescape=True),
-    ).order_by(Projection.entity_id))).scalars().all()
-    for adjustment_id in adjustment_ids:
+    # restored lots on the books at their current corrected costs. They are the
+    # corrections this List posted, by the one rule that says what a List posted.
+    for adjustment_id in await record_entry_ids(session, company_id, entity_id, trigger="writeoff_cost.adjusted"):
         await auto_je.void_for_list_adjustment(
             session, company_id=company_id, user_id=user.id, list_id=entity_id,
-            scope=adjustment_id.removeprefix("je:auto:").removesuffix(":writeoff_cost:0"), kind="writeoff_cost")
+            scope=auto_je.list_adjustment_scope(adjustment_id, "writeoff_cost"), kind="writeoff_cost")
     await auto_je.void_for_list_adjustment(session, company_id=company_id, user_id=user.id,
                                            list_id=entity_id, kind="writeoff", cycle=cycle)
     await _emit_list(session, company_id, entity_id, "list.reopened", {"line_items": lines}, user)

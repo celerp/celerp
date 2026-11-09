@@ -4823,6 +4823,11 @@ def _list_adjustment_je_id(list_id: str, kind: str, cycle: int) -> str:
     return f"je:auto:{list_id}:{kind}:{cycle}"
 
 
+def list_adjustment_scope(je_id: str, kind: str, cycle: int = 0) -> str:
+    """The scope a list-adjustment entry was posted under: the inverse of _list_adjustment_je_id."""
+    return je_id.removeprefix("je:auto:").removesuffix(f":{kind}:{cycle}")
+
+
 async def create_for_line_adjustment(
     session, *, company_id, user_id, list_id: str, kind: str, entries: list[dict], cycle: int = 0,
     recorded: object = None, scope: str | None = None,
