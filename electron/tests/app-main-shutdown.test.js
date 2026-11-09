@@ -106,6 +106,8 @@ test("installing an update hands over to the installer only after everything has
   async function test_install_update_waits_for_shutdown() {
     const { app, listeners, updater, api, ui, database, log } = await running();
     updater.quitAndInstall = jest.fn(() => { log.push("install"); app.quit(); });
+    // Restart to install hands over only a downloaded update.
+    updater.emit("update-downloaded", { version: "2.8.1" });
     listeners["install-update"]();
     await until(() => log.includes("exit"));
     expect([alive(api), alive(ui)]).toEqual([false, false]);
