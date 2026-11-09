@@ -217,11 +217,12 @@ async def test_a_write_off_shows_the_cost_correction_it_posted(client, session):
     assert await _unresolved_sources(session, auth["company_id"]) == []
 
 
-@pytest.mark.parametrize("prefix", [None, "WO:cost:ABC"])
+@pytest.mark.parametrize("prefix", [None, "WO:cost:ABC", "WO:cost:0123456789abcdef01234567:X"])
 async def test_a_cost_correction_recorded_by_2_8_0_shows_on_its_write_off(client, session, prefix):
     """2.8.0 named a write-off's cost correction by its scope (List id, ":cost:", restatement, lot)
     rather than the List id. The ledger keeps those rows as written, so an upgraded company's
-    write-off still lists them, read back to the List, even one whose own number holds ":cost:"."""
+    write-off still lists them, read back to the List, even one whose own number holds ":cost:"
+    (or ":cost:" and 24 hex: the List is all before the last marker)."""
     auth, wo, correction = await _written_off_then_corrected(client, session, prefix)
     h = auth["headers"]
     session.expire_all()

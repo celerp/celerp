@@ -17,12 +17,11 @@ SOURCE_KEYS = ("doc_id", "cn_id", "dn_id", "from_doc_id", "list_id")
 
 
 # A write-off's cost corrections recorded by 2.8.0 named their scope as the List: the List id,
-# ":cost:", the 24-hex restatement identity and the lot, under trigger writeoff_cost.adjusted and
-# entry id je:auto:{scope}:writeoff_cost:0. The ledger is append-only, so those entries are read
+# ":cost:", the 24-hex restatement identity and the lot, under entry id
+# je:auto:{scope}:writeoff_cost:0. The ledger is append-only, so those entries are read
 # back to the List their scope began with (source_meta) rather than rewritten; the List is all
 # before the last such marker, so a List whose own number holds ":cost:" keeps it. Nothing else
 # writes that shape: a correction now names its List exactly and keeps its scope in the entry id.
-_LEGACY_COST_TRIGGER = "writeoff_cost.adjusted"
 _LEGACY_COST_SCOPE = re.compile(r"(?P<list_id>.+):cost:[0-9a-f]{24}:.+")
 
 
@@ -30,8 +29,7 @@ def source_meta(entity_id: str, meta: dict) -> dict:
     """An entry's ledger metadata with each source key naming its record: the source keys as
     written, except a 2.8.0 write-off cost correction, whose list_id is read back to its List."""
     list_id = meta.get("list_id")
-    if (meta.get("trigger") == _LEGACY_COST_TRIGGER and isinstance(list_id, str)
-            and entity_id == f"je:auto:{list_id}:writeoff_cost:0"
+    if (isinstance(list_id, str) and entity_id == f"je:auto:{list_id}:writeoff_cost:0"
             and (legacy := _LEGACY_COST_SCOPE.fullmatch(list_id))):
         return {**meta, "list_id": legacy["list_id"]}
     return meta
