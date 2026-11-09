@@ -10213,9 +10213,9 @@ if (!window._celerpLineCellsBound) {{
                 const again = refused && el._v !== undefined && body
                     && body.querySelector('[hx-patch="' + CSS.escape(el.getAttribute('hx-patch')) + '"]');
                 if (again) again._v = el._v;
-                resolve(e.detail.successful && !refused);
+                resolve();
             }});
-            el.addEventListener('htmx:beforeCleanupElement', () => {{ if (!sent) resolve(true); }});
+            el.addEventListener('htmx:beforeCleanupElement', () => {{ if (!sent) resolve(); }});
         }});
         window._celerpLineCellSaves.set(el, saved);
         saved.then(() => window._celerpLineCellSaves.delete(el));
@@ -10230,8 +10230,8 @@ if (!window._celerpLineCellsBound) {{
         if (el) track(el, true);
     }}, true);
 }}
-async function _celerpLineCellsSaved() {{
-    return (await Promise.all(window._celerpLineCellSaves.values())).every(Boolean);
+function _celerpLineCellsSaved() {{
+    return Promise.all(window._celerpLineCellSaves.values());
 }}
 /* A line cell edit the page holds that is not stored: a line cell save still on its way, an open
    line cell editor whose value differs from the one it opened with, or a line cell showing a
@@ -10252,16 +10252,12 @@ function _celerpLinesUnsaved() {{
    line cell saves on their way, then save the lines with the page's version, so a page changed
    elsewhere is refused with the server's own message. It is posted only when all of it is
    stored: a rows save that fails or is refused, one already on its way included, shows its own
-   message, and a line cell save that fails or is refused, or an edit still unsaved, says the
-   lines are unsaved; nothing is sent. A line cell edit is checked before the rows save too,
-   since that save may redraw the cells. */
+   message, and a line edit still unsaved (a line cell save that failed or was refused leaves
+   its edit or its error showing) says the lines are unsaved; nothing is sent. */
 async function _celerpPostOnLines(url, question, form) {{
     const failures = window._celerpLineSaveFailures;
     if (question && !(await celerpConfirm(question))) return;
-    if (!(await _celerpLineCellsSaved()) || _celerpLineCellsUnsaved()) {{
-        celerpToast(_L.lines_unsaved, 'error');
-        return;
-    }}
+    await _celerpLineCellsSaved();
     clearTimeout(_celerpSaveTimer);
     _celerpSaveTimer = null;
     if (!(await _celerpPersist())) return;

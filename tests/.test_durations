@@ -27470,5 +27470,6 @@
     "tests/test_ui.py::TestWriteoffListDetail::test_entry_editor_opens_on_the_stored_value": 0.22980580499279313,
     "tests/test_ui.py::TestWriteoffListDetail::test_entry_saved_but_not_read_back_shows_the_typed_value": 0.22976145902066492,
     "tests/test_browser/test_list_actions_save_first.py::test_send_saves_the_lines_first_and_posts_its_fields[chromium]": 7.100710377009818,
-    "tests/test_browser/test_list_actions_save_first.py::test_leaving_a_refused_quantity_keeps_it_and_stops_the_write_off[chromium]": 9.08626247898792
+    "tests/test_browser/test_list_actions_save_first.py::test_leaving_a_refused_quantity_keeps_it_and_stops_the_write_off[chromium]": 9.08626247898792,
+    "tests/test_browser/test_list_actions_save_first.py::test_a_second_click_after_an_unsaved_quantity_sends_nothing[chromium-2-expired]": 10.135893591970671
 }

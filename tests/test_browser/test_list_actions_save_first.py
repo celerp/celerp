@@ -386,16 +386,22 @@ def test_a_row_edit_then_write_off_takes_the_typed_quantity(page, ui_server, api
     assert _on_hand(api, item_id) == 3
 
 
-# A quantity out whose save failed or was refused stays unsaved on the page: clicking Write off
-# stock again sends nothing and says why, rather than writing off the stored quantity.
+# A quantity out whose save failed, was refused, or came back as a reason in place of its editor
+# stays unsaved on the page: clicking Write off stock again sends nothing and says why, rather
+# than writing off the stored quantity.
 
-@pytest.mark.parametrize("typed,failure", [("2", "failed"), ("9", "refused")])
+@pytest.mark.parametrize("typed,failure", [("2", "failed"), ("9", "refused"), ("2", "expired")])
 def test_a_second_click_after_an_unsaved_quantity_sends_nothing(page, ui_server, api, typed, failure):
     list_id, item_id = _draft_writeoff(api)
     line_id = api.get(f"/lists/{list_id}").json()["line_items"][0]["line_id"]
     assert api.post(f"/lists/{list_id}/writeoff-line", json={"line_id": line_id, "qty_out": 4}).status_code == 200
     if failure == "failed":
         _fail(page, "**/writeoff-line/**", "PATCH", 500, {"detail": _BLOCKED})
+    elif failure == "expired":
+        # The cell save's answer to an expired session: its reason in place of the editor.
+        page.route("**/writeoff-line/**", lambda route: route.fulfill(
+            status=200, content_type="text/html", body='<p class="cell-error">Session expired</p>')
+            if route.request.method == "PATCH" else route.continue_())
     answer_confirms(page)
     page.goto(f"{ui_server}/lists/{list_id}", wait_until="load")
     log = _sent(page)
