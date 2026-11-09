@@ -14,25 +14,24 @@
   /**
    * What the screen shows for the updater's state (update-state.js): the detail line,
    * the status line, the main button's label and action ("update" checks, "restart"
-   * installs, "relaunch" restarts Celerp), whether that button waits, and whether it shows
-   * at all (offer). Every state says where it stands: a failure names what failed and
-   * offers Update Celerp again, once nothing newer is found the screen stops promising an
-   * update and offers Check again, and a release that cannot open the data (the judged
-   * state "too-old", update-state.js, the result of a check under the version rule) is never
-   * offered: the screen says no release opens it yet, leaving the installer page and Quit.
-   * When the updater was used before the rule ("relaunch"), the one offer is a restart,
-   * which checks again in a new process.
+   * installs, "relaunch" restarts Celerp), and whether that button waits. Every state says
+   * where it stands and has a way forward: a failure names what failed and offers Update
+   * Celerp again, and once nothing newer is found, or only a release that cannot open the
+   * data (the judged state "too-old", update-state.js, the result of a check under the
+   * version rule), the screen stops promising an update and offers Check again. A release
+   * that cannot open the data is never offered. When the updater was used before the rule
+   * ("relaunch"), the one offer is a restart, which checks again in a new process.
    */
   function screenFor(view, state) {
     if (state.status === "relaunch") {
       return { detail: view.relaunchDetail, status: "", label: state.relaunching ? view.restarting : view.relaunch,
-               action: "relaunch", busy: Boolean(state.relaunching), offer: true };
+               action: "relaunch", busy: Boolean(state.relaunching) };
     }
     if (state.status === "too-old") {
-      return { detail: view.notReleased, status: fill(view.tooOld, { version: state.version }), label: view.update,
-               action: "update", busy: true, offer: false };
+      return { detail: view.notReleased, status: state.checking ? view.checking : fill(view.tooOld, { version: state.version }),
+               label: view.checkAgain, action: "update", busy: Boolean(state.checking) };
     }
-    return { ...offered(view, state), offer: true };
+    return offered(view, state);
   }
 
   function offered(view, state) {
@@ -70,7 +69,6 @@
       el("status").textContent = screen.status;
       el("refusal-update").textContent = screen.label;
       el("refusal-update").disabled = screen.busy;
-      el("refusal-update").hidden = !screen.offer;
     }
     // A state older than the one shown (a replay that arrives after a live event) is dropped.
     const follow = (next) => {

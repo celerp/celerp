@@ -150,11 +150,30 @@ test("an update already downloaded is replayed; an older replay never overwrites
 
 test("screenFor maps every updater state", function test_screen_for() {
   expect(screenFor(VIEW, IDLE)).toEqual(
-    { detail: VIEW.detail, status: "", label: "Update Celerp", action: "update", busy: false, offer: true });
+    { detail: VIEW.detail, status: "", label: "Update Celerp", action: "update", busy: false });
   expect(screenFor(VIEW, { ...IDLE, upToDate: true, checking: true })).toEqual(
-    { detail: VIEW.notReleased, status: "Checking...", label: "Check again", action: "update", busy: true, offer: true });
+    { detail: VIEW.notReleased, status: "Checking...", label: "Check again", action: "update", busy: true });
   expect(screenFor(VIEW, { ...IDLE, status: "downloading", upToDate: false, percent: 41.6 }).status).toBe("Downloading... 42%");
+  expect(screenFor(VIEW, { ...IDLE, status: "too-old", version: "2.5.9" })).toEqual(
+    { detail: VIEW.notReleased, status: "Celerp 2.5.9 is the newest release, and it cannot open this data yet.",
+      label: "Check again", action: "update", busy: false });
+  expect(screenFor(VIEW, { ...IDLE, status: "too-old", version: "2.5.9", checking: true })).toMatchObject(
+    { status: "Checking...", label: "Check again", action: "update", busy: true });
 });
+
+test("every state of the screen that is not busy has a way forward: a check, an install or a restart",
+  function test_every_state_has_an_action() {
+    const states = [
+      IDLE, { ...IDLE, upToDate: true }, { ...IDLE, status: "too-old", version: "2.5.9" },
+      { ...IDLE, status: "relaunch" }, { ...IDLE, status: "downloaded", version: "2.6.0" },
+      ...Object.keys(VIEW.failed).map((failure) => ({ ...IDLE, status: "error", failure })),
+    ];
+    for (const state of states) {
+      const screen = screenFor(VIEW, state);
+      expect([state.status, screen.busy, Boolean(screen.label), ["update", "restart", "relaunch"].includes(screen.action)])
+        .toEqual([state.status, false, true, true]);
+    }
+  });
 
 test("loading.html carries the screen's elements and loads its script", function test_loading_page_elements() {
   const html = fs.readFileSync(path.join(__dirname, "..", "assets", "loading.html"), "utf8");
@@ -176,14 +195,16 @@ async function foundRelease(version, status) {
   return p;
 }
 
-test("a release that cannot open the data is not offered: the screen says no release opens it yet",
+test("a release that cannot open the data is not offered: the screen says no release opens it yet and offers Check again",
   async function test_older_release_is_not_offered() {
     const p = await foundRelease("2.5.9", "too-old");
     expect(p.el("refusal-detail").textContent).toBe(VIEW.notReleased);
     expect(p.el("status").textContent).toBe("Celerp 2.5.9 is the newest release, and it cannot open this data yet.");
-    expect(p.el("refusal-update").hidden).toBe(true);
+    expect(p.el("refusal-update")).toMatchObject({ textContent: "Check again", hidden: false, disabled: false });
     p.el("refusal-update").click();
-    expect(p.calls).toEqual(["check"]);
+    expect(p.calls).toEqual(["check", "check"]);
+    expect(p.el("refusal-update")).toMatchObject({ textContent: "Check again", disabled: true });
+    expect(p.el("status").textContent).toBe("Checking...");
     // Quit and the installer page stay.
     expect(p.el("refusal-quit").hidden).toBe(false);
     expect(p.el("refusal-download").href).toBe(VIEW.downloadUrl);
@@ -192,7 +213,7 @@ test("a release that cannot open the data is not offered: the screen says no rel
 test("a release being downloaded is offered as the way out, and ends at Restart to install",
   async function test_downloading_release_is_offered() {
     const p = await foundRelease("2.6.0", "downloading");
-    expect([p.el("refusal-detail").textContent, p.el("refusal-update").hidden]).toEqual([VIEW.detail, false]);
+    expect(p.el("refusal-detail").textContent).toBe(VIEW.detail);
     p.on.onUpdateDownloaded({ ...IDLE, status: "downloaded", version: "2.6.0", percent: 100, revision: 3 });
     expect(p.el("refusal-update")).toMatchObject({ textContent: "Restart to install", hidden: false, disabled: false });
     p.el("refusal-update").click();
