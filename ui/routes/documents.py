@@ -10240,12 +10240,12 @@ function _celerpLineCellsUnsaved() {{
 function _celerpLinesUnsaved() {{
     return _celerpLinesDirty() || _celerpLineCellsUnsaved();
 }}
-/* An action that runs on the stored lines (persist_then_post): ask its
-   question first, wait for line cell saves on their way, then save the lines with the page's
-   version, so a page changed elsewhere is refused with the server's own message. It is posted
-   only when all of it is stored: a save that fails or is refused, one already on its way
-   included, shows its own message, and an edit still unsaved says so; nothing is sent. A line
-   cell edit is checked before the rows save too, since that save may redraw the cells. */
+/* An action that runs on the stored lines (persist_then_post): ask its question first, wait for
+   line cell saves on their way, then save the lines with the page's version, so a page changed
+   elsewhere is refused with the server's own message. It is posted only when all of it is
+   stored: a save that fails or is refused, one already on its way included, shows its own
+   message, and an edit still unsaved says so; nothing is sent. A line cell edit is checked
+   before the rows save too, since that save may redraw the cells. */
 async function _celerpPostOnLines(url, question, form) {{
     const failures = window._celerpLineSaveFailures;
     if (question && !(await celerpConfirm(question))) return;
