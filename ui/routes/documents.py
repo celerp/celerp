@@ -7347,6 +7347,111 @@ def subscription_meta_cells(doc: dict) -> tuple:
     )
 
 
+def _save_first_gate() -> FT:
+    """The page's save-first gate, on every document and list page: one that only shows its lines
+    still has fields that save themselves."""
+    return Script(f"""
+/* Save first: every htmx request that changes something (any verb but GET), whichever control on
+   the page sends it, waits for the page's pending line edits to save, so it runs on the lines the
+   page shows and a reload it answers with drops nothing typed. A blur's save still waiting folds
+   into this one; a failed save is not followed by the request, and its reason beside the lines is
+   also said in a toast, since the control clicked may be far from them. It also waits for a
+   field that saves itself: one left a moment ago whose delayed save has not fired yet, and any
+   change already on its way, so a click straight from an edited cell runs on the saved value.
+   A field's save counts as saved only when its answer carries the server's saved mark; any other
+   answer (a refusal in whatever shape, a failure) is not saved, and its reason is the answer's
+   toast text, else "not saved". Nothing is sent while a field elsewhere on the page shows what
+   is not saved: its save was not saved and the field is still there, a refusal is showing, or an
+   open editor holds a value it has not sent; nor when a save the request waited for was not
+   saved, even once its cell has put the stored value back. The click is answered with the
+   reason in a toast. Once saved, the request meets its own
+   confirmation, as it would have. Capture phase, so it runs before any confirmation listener.
+   The line save itself is a fetch, not an htmx request. A request that pinned the version before
+   the save is pinned to the one the save produced: this tab's own save is the only write in
+   between (another tab's write makes the save fail). */
+if (!window._celerpSaveFirstBound) {{
+    window._celerpSaveFirstBound = true;
+    // failed: field -> {{reason, n}}, n counting the answers that were not saved.
+    const scheduled = new Map(), inFlight = new Set(), failed = new Map();
+    let notSaved = 0;
+    const notSavedText = {_json.dumps(t("documents.field_not_saved"))};
+    // A page whose lines cannot be edited has no line save to wait for.
+    const linesDirty = () => typeof _celerpLinesDirty === 'function' && _celerpLinesDirty();
+    const fieldSaving = () => inFlight.size > 0 || Array.from(scheduled.values()).some(t => t > Date.now());
+    // What a field outside `own` (the cell of the request at hand) shows unsaved, as the reason to give.
+    // A cell whose editor is leaving with a new value is saving, which the request waits for, and the
+    // answer to that save is what counts.
+    const saving = el => scheduled.get(el) > Date.now() && (el._v === undefined || el.value !== el._v);
+    // `since`: the count of not-saved answers at the click; a later one counts even once detached.
+    const fieldUnsaved = function(own, since) {{
+        const cell = n => n.closest('td, .editable-cell') || n;
+        const other = n => !(own && own.contains(n)) && !n.closest('[data-preview]')
+            && !Array.from(scheduled.keys()).some(el => saving(el) && cell(n).contains(el));
+        const said = Array.from(document.querySelectorAll('.cell-error')).find(other);
+        if (said) return said.textContent.trim() || notSavedText;
+        const lost = Array.from(failed).find(([el, f]) => (el.isConnected || f.n > since) && other(el));
+        if (lost) return lost[1].reason;
+        const open = Array.from(document.querySelectorAll('input, textarea')).some(el => el._v !== undefined && el.value !== el._v && other(el));
+        return open ? notSavedText : '';
+    }};
+    document.addEventListener('htmx:afterRequest', function(e) {{
+        const el = e.detail.elt, xhr = e.detail.xhr;
+        if (e.detail.requestConfig.verb === 'get' || !el.matches('input, select, textarea')) return;
+        if (xhr && xhr.getResponseHeader({_json.dumps(SAVED_MARK)})) {{ failed.delete(el); return; }}
+        let reason = '';
+        try {{ reason = JSON.parse(xhr.getResponseHeader('HX-Trigger')).celerpToast.message; }} catch (_) {{}}
+        failed.set(el, {{reason: reason || notSavedText, n: ++notSaved}});
+    }});
+    document.addEventListener('focusout', function(e) {{
+        const el = e.target;
+        const delay = /delay:(\\w+)/.exec((el.getAttribute && el.getAttribute('hx-trigger')) || '');
+        if (delay && el.matches('[hx-post], [hx-patch], [hx-put]'))
+            scheduled.set(el, Date.now() + htmx.parseInterval(delay[1]) + 50);
+        else if (el.dataset && el.dataset.saveDelay)
+            scheduled.set(el, Date.now() + Number(el.dataset.saveDelay) + 50);
+    }}, true);
+    document.addEventListener('htmx:trigger', e => scheduled.delete(e.target));
+    document.addEventListener('htmx:beforeSend', function(e) {{
+        const xhr = e.detail.xhr;
+        if (e.detail.requestConfig.verb === 'get') return;
+        inFlight.add(xhr);
+        xhr.addEventListener('loadend', () => inFlight.delete(xhr));
+    }});
+    const fieldsSaved = () => new Promise(function wait(done) {{
+        if (fieldSaving()) setTimeout(() => wait(done), 50); else done();
+    }});
+    document.addEventListener('htmx:confirm', function(e) {{
+        const d = e.detail;
+        if (d.verb === 'get' || d.celerpSaved) return;
+        scheduled.delete(d.elt);
+        // Read at the click: leaving a refused editor puts its stored value back while the request waits.
+        const own = d.elt.closest('td, .editable-cell'), since = notSaved, shown = fieldUnsaved(own, since);
+        if (!fieldSaving() && !linesDirty() && !shown) return;
+        e.preventDefault();
+        e.stopPropagation();
+        clearTimeout(window._celerpSaveTimer);
+        window._celerpSaveTimer = null;
+        // A field's reason, or the line save's answer (its own words stay beside the lines too).
+        fieldsSaved().then(() => shown || fieldUnsaved(own, since) || (linesDirty() ? _celerpPersist() : true)).then(function(ok) {{
+            if (ok !== true) {{
+                const said = typeof ok === 'string' ? ok : document.getElementById('save-status')?.firstChild;
+                const text = typeof said === 'string' ? said
+                    : said && said.nodeType === Node.TEXT_NODE && said.textContent.replace(/^\u2717 /, '');
+                // A refusal's own toast may be showing already: say it once.
+                const showing = Array.from(document.querySelectorAll('.toast__msg')).some(m => m.textContent.startsWith(text));
+                if (text && !showing && window.celerpToast) celerpToast(text, 'error');
+                return;
+            }}
+            const pinned = d.etc && d.etc.values;
+            if (pinned && 'expected_version' in pinned) pinned.expected_version = window._celerpEntityVersion;
+            d.celerpSaved = true;
+            if (htmx.trigger(d.elt, 'htmx:confirm', d)) d.issueRequest(true);
+        }});
+    }}, true);
+}}
+""")
+
+
 def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: dict | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, free_send_offer: bool = False, email_used: int = 0, email_quota: int = 0, email_resets_on: str | None = None, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_status_doc_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku", relay_error: bool = False, line_offset: int = 0, line_total: int | None = None, line_limit: int = 100,
                 connected_connectors: set[str] | None = None, note_targets: list | None = None, original: dict | None = None,
                 draw_targets: list | None = None) -> FT:
@@ -10165,101 +10270,6 @@ async function _celerpRefreshHeldBadges() {{
 function _celerpPersist() {{
     return _celerpMutate(_celerpPersistOnce);
 }}
-/* Save first: every htmx request that changes something (any verb but GET), whichever control on
-   the page sends it, waits for the page's pending line edits to save, so it runs on the lines the
-   page shows and a reload it answers with drops nothing typed. A blur's save still waiting folds
-   into this one; a failed save is not followed by the request, and its reason beside the lines is
-   also said in a toast, since the control clicked may be far from them. It also waits for a
-   field that saves itself: one left a moment ago whose delayed save has not fired yet, and any
-   change already on its way, so a click straight from an edited cell runs on the saved value.
-   A field's save counts as saved only when its answer carries the server's saved mark; any other
-   answer (a refusal in whatever shape, a failure) is not saved, and its reason is the answer's
-   toast text, else "not saved". Nothing is sent while a field elsewhere on the page shows what
-   is not saved: its save was not saved and the field is still there, a refusal is showing, or an
-   open editor holds a value it has not sent; nor when a save the request waited for was not
-   saved, even once its cell has put the stored value back. The click is answered with the
-   reason in a toast. Once saved, the request meets its own
-   confirmation, as it would have. Capture phase, so it runs before any confirmation listener.
-   The line save itself is a fetch, not an htmx request. A request that pinned the version before
-   the save is pinned to the one the save produced: this tab's own save is the only write in
-   between (another tab's write makes the save fail). */
-if (!window._celerpSaveFirstBound) {{
-    window._celerpSaveFirstBound = true;
-    // failed: field -> {{reason, n}}, n counting the answers that were not saved.
-    const scheduled = new Map(), inFlight = new Set(), failed = new Map();
-    let notSaved = 0;
-    const fieldSaving = () => inFlight.size > 0 || Array.from(scheduled.values()).some(t => t > Date.now());
-    // What a field outside `own` (the cell of the request at hand) shows unsaved, as the reason to give.
-    // A cell whose editor is leaving with a new value is saving, which the request waits for, and the
-    // answer to that save is what counts.
-    const saving = el => scheduled.get(el) > Date.now() && (el._v === undefined || el.value !== el._v);
-    // `since`: the count of not-saved answers at the click; a later one counts even once detached.
-    const fieldUnsaved = function(own, since) {{
-        const cell = n => n.closest('td, .editable-cell') || n;
-        const other = n => !(own && own.contains(n)) && !n.closest('[data-preview]')
-            && !Array.from(scheduled.keys()).some(el => saving(el) && cell(n).contains(el));
-        const said = Array.from(document.querySelectorAll('.cell-error')).find(other);
-        if (said) return said.textContent.trim() || _L.field_not_saved;
-        const lost = Array.from(failed).find(([el, f]) => (el.isConnected || f.n > since) && other(el));
-        if (lost) return lost[1].reason;
-        const open = Array.from(document.querySelectorAll('input, textarea')).some(el => el._v !== undefined && el.value !== el._v && other(el));
-        return open ? _L.field_not_saved : '';
-    }};
-    document.addEventListener('htmx:afterRequest', function(e) {{
-        const el = e.detail.elt, xhr = e.detail.xhr;
-        if (e.detail.requestConfig.verb === 'get' || !el.matches('input, select, textarea')) return;
-        if (xhr && xhr.getResponseHeader({_json.dumps(SAVED_MARK)})) {{ failed.delete(el); return; }}
-        let reason = '';
-        try {{ reason = JSON.parse(xhr.getResponseHeader('HX-Trigger')).celerpToast.message; }} catch (_) {{}}
-        failed.set(el, {{reason: reason || _L.field_not_saved, n: ++notSaved}});
-    }});
-    document.addEventListener('focusout', function(e) {{
-        const el = e.target;
-        const delay = /delay:(\\w+)/.exec((el.getAttribute && el.getAttribute('hx-trigger')) || '');
-        if (delay && el.matches('[hx-post], [hx-patch], [hx-put]'))
-            scheduled.set(el, Date.now() + htmx.parseInterval(delay[1]) + 50);
-        else if (el.dataset && el.dataset.saveDelay)
-            scheduled.set(el, Date.now() + Number(el.dataset.saveDelay) + 50);
-    }}, true);
-    document.addEventListener('htmx:trigger', e => scheduled.delete(e.target));
-    document.addEventListener('htmx:beforeSend', function(e) {{
-        const xhr = e.detail.xhr;
-        if (e.detail.requestConfig.verb === 'get') return;
-        inFlight.add(xhr);
-        xhr.addEventListener('loadend', () => inFlight.delete(xhr));
-    }});
-    const fieldsSaved = () => new Promise(function wait(done) {{
-        if (fieldSaving()) setTimeout(() => wait(done), 50); else done();
-    }});
-    document.addEventListener('htmx:confirm', function(e) {{
-        const d = e.detail;
-        if (d.verb === 'get' || d.celerpSaved) return;
-        scheduled.delete(d.elt);
-        // Read at the click: leaving a refused editor puts its stored value back while the request waits.
-        const own = d.elt.closest('td, .editable-cell'), since = notSaved, shown = fieldUnsaved(own, since);
-        if (!fieldSaving() && !_celerpLinesDirty() && !shown) return;
-        e.preventDefault();
-        e.stopPropagation();
-        clearTimeout(_celerpSaveTimer);
-        _celerpSaveTimer = null;
-        // A field's reason, or the line save's answer (its own words stay beside the lines too).
-        fieldsSaved().then(() => shown || fieldUnsaved(own, since) || (_celerpLinesDirty() ? _celerpPersist() : true)).then(function(ok) {{
-            if (ok !== true) {{
-                const said = typeof ok === 'string' ? ok : document.getElementById('save-status')?.firstChild;
-                const text = typeof said === 'string' ? said
-                    : said && said.nodeType === Node.TEXT_NODE && said.textContent.replace(/^\u2717 /, '');
-                // A refusal's own toast may be showing already: say it once.
-                const showing = Array.from(document.querySelectorAll('.toast__msg')).some(m => m.textContent.startsWith(text));
-                if (text && !showing && window.celerpToast) celerpToast(text, 'error');
-                return;
-            }}
-            const pinned = d.etc && d.etc.values;
-            if (pinned && 'expected_version' in pinned) pinned.expected_version = window._celerpEntityVersion;
-            d.celerpSaved = true;
-            if (htmx.trigger(d.elt, 'htmx:confirm', d)) d.issueRequest(true);
-        }});
-    }}, true);
-}}
 /* Swap to another page of the same draft list. Paging must never silently drop unsaved
    edits: a dirty page saves first, and a failed save (including a stale-version conflict)
    holds the current page in place with its message showing. A clean page saves nothing and
@@ -11290,6 +11300,7 @@ async function celerpCsvImport(input, entityId) {{
         # Line items + price list bar
         Div(
             lines_section,
+            _save_first_gate(),
             # _wpct_ key: widths stored as percentages. Namespaced PER list_type (+ a version bump):
             # the three list types have different column sets, so a single shared "list" key let one
             # type's saved widths corrupt another's layout. _v2 discards the old shared prefs once.
