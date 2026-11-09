@@ -622,7 +622,7 @@ async def _bill(session, company, company_id, tid: str, state: dict, schedule: S
     answer on the claim's own event, for replay_result to repeat."""
     from celerp.accounting_roles import KeyedRefusal
     from celerp_docs.routes import finalize_document
-    from celerp_docs.sequences import next_draft_ref
+    from celerp_docs.sequences import claim_number, draft_counter
 
     kind = doc_kind(state)
     entry = (state.get("periods") or {}).get(str(k)) or {}
@@ -634,7 +634,7 @@ async def _bill(session, company, company_id, tid: str, state: dict, schedule: S
         doc = await bill_document(session, company, tid, state, schedule, k)
         # The template may predate a precision change; its units are checked on the bill it makes.
         await require_moving_fits_units(session, company_id, tid, "doc", doc, template=template_label(state, tid))
-        ref = next_draft_ref(company, kind)
+        ref = await claim_number(session, company, draft_counter(kind))
         doc_id = f"doc:{ref}"
         doc = {**doc, "ref_id": ref, **resolve_document_terms(state, company.settings or {}, kind)}
         if "customer_note" in state:

@@ -101,6 +101,7 @@ _SEARCH_LABELS = [
     ("/docs", "documents.search_all", "Search documents"),
     ("/docs?type=invoice", "documents.search_invoice", "Search invoices"),
     ("/docs?type=list", "documents.search_lists", "Search lists"),
+    ("/lists", "documents.search_lists", "Search lists"),
     ("/contacts/customers", "contacts.search_customers", "Search customers"),
     ("/contacts/vendors", "contacts.search_vendors", "Search vendors"),
     ("/subscriptions?direction=sales", "subscriptions.search_sales", "Search sales subscriptions"),
@@ -109,7 +110,9 @@ _SEARCH_LABELS = [
 
 
 def _search_label(html: str) -> str:
-    m = re.search(r'<small class="search-scope-label">(.*?)</small>', html, re.S)
+    # The list pages on the list page kit (GEN-012) label the search box in their filters panel.
+    m = (re.search(r'<small class="search-scope-label">(.*?)</small>', html, re.S)
+         or re.search(r'<label for="search-input" class="filter-field-label">(.*?)</label>', html, re.S))
     assert m, "the page has a search label"
     return m.group(1).strip()
 

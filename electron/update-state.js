@@ -14,7 +14,9 @@
 // Log lines kept for the update card, oldest dropped first.
 const MAX_LOG_LINES = 200;
 
-const errorLine = (message) => (message ? "Update error: " + message : "Update error");
+// An error's log line, or none when it has no detail: a bare label would only
+// repeat what the card's own failure message already says.
+const errorLine = (message) => (message ? "Update error: " + message : "");
 
 const RELEASES = "https://github.com/celerp/celerp/releases";
 
@@ -26,10 +28,78 @@ function releasePageUrl(version) {
   return RELEASE_VERSION.test(version || "") ? `${RELEASES}/tag/v${version}` : `${RELEASES}/latest`;
 }
 
+// A PEP 440 version, as packaging.version reads it: epoch, release, pre (a, b, rc), post, dev,
+// local. Its spellings include the feed's (2.8.1-beta.2 is 2.8.1b2, 2.8.1-dev.1 is 2.8.1.dev1).
+const PEP440 = new RegExp(String.raw`^v?(?:(\d+)!)?(\d+(?:\.\d+)*)` +
+  String.raw`(?:[-_.]?(alpha|a|beta|b|preview|pre|c|rc)[-_.]?(\d+)?)?` +
+  String.raw`(?:-(\d+)|[-_.]?(post|rev|r)[-_.]?(\d+)?)?` +
+  String.raw`(?:[-_.]?(dev)[-_.]?(\d+)?)?` +
+  String.raw`(?:\+([a-z0-9]+(?:[-_.][a-z0-9]+)*))?$`, "i");
+const PRE_RANK = { a: 0, alpha: 0, b: 1, beta: 1, c: 2, rc: 2, pre: 2, preview: 2 };
+
+// The sort key packaging.version gives `v`, or null when it is not a version.
+function versionKey(v) {
+  const m = typeof v === "string" && PEP440.exec(v.trim());
+  if (!m) return null;
+  const [, epoch, release, pre, preN, postImplicit, postWord, postN, dev, devN, local] = m;
+  const post = postImplicit ?? (postWord ? postN ?? "0" : undefined);
+  const segments = release.split(".").map(BigInt);
+  while (segments.length && segments.at(-1) === 0n) segments.pop();
+  return [
+    BigInt(epoch ?? 0),
+    segments,
+    // A dev release with no pre or post sorts before every pre release; no pre sorts after them.
+    pre ? [1, PRE_RANK[pre.toLowerCase()], BigInt(preN ?? 0)] : dev && post === undefined ? [0] : [2],
+    post === undefined ? [0] : [1, BigInt(post)],
+    dev ? [0, BigInt(devN ?? 0)] : [1],
+    // A local label sorts after none; its number parts after its word parts.
+    local ? [1, ...local.toLowerCase().split(/[-_.]/).map((p) => (/^\d+$/.test(p) ? [1, BigInt(p)] : [0, p]))] : [0],
+  ];
+}
+
+// Order two keys part by part; a key that runs out first is the smaller.
+function compareKeys(x, y) {
+  if (!Array.isArray(x)) return x < y ? -1 : x > y ? 1 : 0;
+  for (let i = 0; i < Math.min(x.length, y.length); i++) {
+    const c = compareKeys(x[i], y[i]);
+    if (c) return c;
+  }
+  return Math.sign(x.length - y.length);
+}
+
+/**
+ * Compare release numbers as packaging.version does, the order that decides whether a release
+ * can open the data (tests/fixtures/version_order.json holds both to it): below 0, 0 or above 0
+ * as `a` is older than, the same as or newer than `b`; NaN when either is not a version.
+ */
+function compareVersions(a, b) {
+  const x = versionKey(a);
+  const y = versionKey(b);
+  return x && y ? compareKeys(x, y) : NaN;
+}
+
+// Whether release `version` can open data `recorded` opened: it is at least that version.
+const opensData = (recorded, version) => compareVersions(version, recorded) >= 0;
+
+/**
+ * The state as it is shown and acted on, judged against `recorded`, the version that opened
+ * the data (empty: no rule). A state that names a release (one found, or any other with a
+ * version) which cannot open the data is "too-old": nothing of that release is downloaded,
+ * offered, installed or told as failed. This is the only place a release is compared with the data.
+ */
+function judgeUpdateState(state, recorded) {
+  const namesRelease = state.status === "downloading" || Boolean(state.version);
+  if (!recorded || !namesRelease || opensData(recorded, state.version)) return state;
+  return Object.freeze({ ...initialUpdateState(), status: "too-old", version: state.version });
+}
+
 function initialUpdateState() {
   return Object.freeze({ status: "idle", version: "", percent: 0, message: "", checking: false,
                          downloadFailed: false, failure: "", releaseUrl: "", upToDate: false, installing: false });
 }
+
+// The one state of a process that must restart before it can update for the data (trackUpdater).
+const RELAUNCH = Object.freeze({ ...initialUpdateState(), status: "relaunch" });
 
 /**
  * What failed, from the updater's error: "install" (the installer did not
@@ -143,19 +213,33 @@ function nextUpdateState(state, event) {
  * failure after a check the user asked for (userChecks); the app's own checks
  * and downloads fail on the update card only.
  *
- * @param {{on: (event: string, fn: Function) => void}} updater
+ * Once downloadOnlyFrom(recorded) names a version (data a newer Celerp opened), every state
+ * read, sent or acted on is judged against it (judgeUpdateState). Every check then runs with
+ * the updater's own downloading off, a release found is downloaded only if it can open the
+ * data, and only a downloaded release that can is installed. The updater's autoDownload is
+ * put back when the check ends. That holds only for a process whose updater was first used
+ * under the rule: what electron-updater did before (a download in flight, its cached file)
+ * cannot be steered from here. So a rule set after the updater was used, or over a recorded
+ * release that cannot open the data, leaves this process with one state, "relaunch": it
+ * checks, downloads and installs nothing more, and the screen offers a restart, whose new
+ * process sets the rule before its first check.
+ *
+ * @param {{on: (event: string, fn: Function) => void, checkForUpdates: () => Promise,
+ *          downloadUpdate: () => Promise, autoDownload: boolean}} updater
  * @param {(channel: string, state: object) => void} send
  * @param {(state: object) => void} [onFailure]
  * @returns {{getUpdateState: () => object, dismissError: () => void, userChecks: () => void,
  *            installFailed: (version: string, message: string, failure: "install"|"stopped") => void,
- *            installing: () => void, checkedNothing: () => void}}
+ *            installing: () => boolean, checkedNothing: () => void, check: () => Promise,
+ *            downloadOnlyFrom: (recorded: string) => void}}
  *   getUpdateState returns a copy with its log and revision; dismissError clears a failed
  *   download, at the user's request; userChecks marks the next check as the user's;
  *   installFailed records an installer that did not start, or with "stopped" a setup
  *   that started and then stopped; with no message it adds no log line; installing marks
- *   the downloaded update as handed to its installer, kept for the next page that loads
- *   but not sent, since the page that asked for it shows it already; checkedNothing
- *   records a check the user asked for that ran nothing (failure "inactive").
+ *   the downloaded update as handed to its installer and returns whether it did, so the
+ *   hand-over happens once and only for a downloaded release the data allows; checkedNothing records a
+ *   check the user asked for that ran nothing (failure "inactive"); check runs one updater
+ *   check (see below).
  */
 function trackUpdater(updater, send, onFailure = () => {}) {
   let state = initialUpdateState();
@@ -166,19 +250,70 @@ function trackUpdater(updater, send, onFailure = () => {}) {
   let revision = 0;
   // Set while a check the user asked for has no result yet.
   let userAsked = false;
+  // Counts the updater's "error" events, so a check can tell whether its failure was told.
+  let errors = 0;
+  // The version that opened the data, once a release must open it to be downloaded (downloadOnlyFrom).
+  // Empty (no version on record, as for an unknown schema): any release downloads.
+  let recorded = "";
+  // Set by the first check, the updater's first use (a download only follows a check).
+  let used = false;
+  // Set when the rule came after updater state it cannot judge (see above): only a restart is offered.
+  let relaunch = false;
 
-  const snapshot = () => ({ ...state, log: [...log], revision });
+  const judged = () => (relaunch ? RELAUNCH : judgeUpdateState(state, recorded));
+  // Whether the judged state is a release the user is told about: neither too-old nor waiting on a restart.
+  const tells = () => judged().status !== "too-old" && judged().status !== "relaunch";
+  const snapshot = () => ({ ...judged(), log: [...log], revision });
 
   // Apply `event`; `lineFor(state)` gives the log line for it, if any.
   // `logIgnored` still logs the line when the state ignores the event.
+  // Returns whether anything changed.
   function apply(channel, event, lineFor, logIgnored) {
     const next = nextUpdateState(state, event);
-    if (!next && !logIgnored) return;
+    if (!next && !logIgnored) return false;
     if (next) state = next;
     const line = lineFor(state);
     if (line) log = log.concat(line).slice(-MAX_LOG_LINES);
     revision += 1;
     send(channel, snapshot());
+    return true;
+  }
+
+  function failed(err) {
+    errors += 1;
+    const message = typeof err === "string" ? err : (err && err.message) || "";
+    apply("update-error", { type: "error", message }, () => errorLine(message), true);
+    if (userAsked) {
+      userAsked = false;
+      if (tells()) onFailure(snapshot());
+    }
+  }
+
+  // Run one updater call (a check or a download). electron-updater tells a failure with an
+  // "error" event and a rejection; a rejection that came without its event fails the same
+  // way, so the failure is told once and nothing is left checking or downloading. Resolves
+  // { result } when the call ran, else null.
+  function run(call) {
+    const seen = errors;
+    let running;
+    try {
+      running = Promise.resolve(call());
+    } catch (err) {
+      running = Promise.reject(err);
+    }
+    return running.then((result) => ({ result }), (err) => {
+      if (errors === seen) failed(err);
+      return null;
+    });
+  }
+
+  // Run one updater check (see run).
+  function check() {
+    if (relaunch) return Promise.resolve(null);
+    used = true;
+    const autoDownload = updater.autoDownload;
+    if (recorded) updater.autoDownload = false;
+    return run(() => updater.checkForUpdates()).finally(() => { updater.autoDownload = autoDownload; });
   }
 
   // Once downloaded the state is final, so a later check changes nothing, not
@@ -188,7 +323,12 @@ function trackUpdater(updater, send, onFailure = () => {}) {
   updater.on("update-available", (info) => {
     loggedStep = -1;
     apply("update-available", { type: "found", version: info && info.version },
-      (s) => (s.version ? "Found v" + s.version : "Found an update") + ", downloading...");
+      (s) => (s.version ? "Found v" + s.version : "Found an update") +
+        (judged().status === "too-old" ? ", which cannot open this data." : ", downloading..."));
+    // A release that cannot open the data is the check's result: nothing downloads, nothing is told.
+    if (judged().status === "too-old") userAsked = false;
+    // Under the rule the updater's own downloading is off, so the release is downloaded here.
+    else if (recorded && judged().status === "downloading") run(() => updater.downloadUpdate());
   });
   updater.on("download-progress", (progress) =>
     apply("download-progress", { type: "progress", percent: progress && progress.percent }, (s) => {
@@ -207,25 +347,23 @@ function trackUpdater(updater, send, onFailure = () => {}) {
     userAsked = false;
     apply("update-not-available", { type: "not-available" }, () => "");
   });
-  updater.on("error", (err) => {
-    const message = typeof err === "string" ? err : (err && err.message) || "";
-    apply("update-error", { type: "error", message }, () => errorLine(message), true);
-    if (userAsked) {
-      userAsked = false;
-      onFailure(snapshot());
-    }
-  });
+  updater.on("error", failed);
 
   return {
     getUpdateState: snapshot,
     dismissError: () => apply("update-log", { type: "dismiss" }, () => ""),
     userChecks: () => { userAsked = true; },
     installFailed: (version, message, failure) =>
-      apply("update-error", { type: "install-failed", version, message, failure }, () => (message ? errorLine(message) : "")),
-    installing: () => { state = nextUpdateState(state, { type: "installing" }) ?? state; },
+      apply("update-error", { type: "install-failed", version, message, failure }, () => errorLine(message)),
+    installing: () => judged().status === "downloaded" && apply("update-log", { type: "installing" }, () => ""),
     checkedNothing: () => {
       userAsked = false;
       apply("update-error", { type: "inactive" }, () => "This copy of Celerp cannot update itself.");
+    },
+    check,
+    downloadOnlyFrom: (version) => {
+      recorded = version;
+      relaunch = Boolean(version) && (used || judgeUpdateState(state, version).status === "too-old");
     },
   };
 }
@@ -241,14 +379,16 @@ function trackUpdater(updater, send, onFailure = () => {}) {
  * @param {{on: (event: string, fn: Function) => void, checkForUpdates: () => Promise}} updater
  * @param {boolean} canCheck
  * @param {(state: object) => void} [onFailure] see trackUpdater
- * @returns {{getUpdateState: () => object, installFailed: Function, installing: Function, checkForUser: () => void}}
- *   installFailed and installing as in trackUpdater; checkForUser runs a check as the user's.
+ * @returns {{getUpdateState: () => object, installFailed: Function, installing: Function, check: () => Promise,
+ *            checkForUser: () => void, downloadOnlyFrom: (recorded: string) => void}}
+ *   installFailed, installing, downloadOnlyFrom and check (the app's own checks) as in trackUpdater;
+ *   checkForUser runs a check as the user's.
  *   A check that resolves with no result (electron-updater does that, with no event, when
  *   this copy cannot update itself: an AppImage run without APPIMAGE, a snap) is a failed
  *   check, so the user is never left waiting on it.
  */
 function serveUpdateState(ipcMain, getWindow, updater, canCheck, onFailure) {
-  const { getUpdateState, dismissError, userChecks, installFailed, installing, checkedNothing } = trackUpdater(updater, (channel, state) => {
+  const { getUpdateState, dismissError, userChecks, installFailed, installing, checkedNothing, check, downloadOnlyFrom } = trackUpdater(updater, (channel, state) => {
     const win = getWindow();
     if (win) win.webContents.send(channel, state);
   }, onFailure);
@@ -259,11 +399,10 @@ function serveUpdateState(ipcMain, getWindow, updater, canCheck, onFailure) {
     dismissError();
     if (!canCheck) return;
     userChecks();
-    updater.checkForUpdates().then((result) => { if (!result) checkedNothing(); })
-      .catch(() => {}); // errors handled by the "error" event
+    return check().then((ran) => { if (ran && !ran.result) checkedNothing(); });
   };
   ipcMain.handle("check-for-updates", checkForUser);
-  return { getUpdateState, installFailed, installing, checkForUser };
+  return { getUpdateState, installFailed, installing, check, checkForUser, downloadOnlyFrom };
 }
 
-module.exports = { initialUpdateState, nextUpdateState, trackUpdater, serveUpdateState };
+module.exports = { compareVersions, initialUpdateState, nextUpdateState, trackUpdater, serveUpdateState };

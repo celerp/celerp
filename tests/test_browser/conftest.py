@@ -408,6 +408,18 @@ def wait_for_topbar(page) -> None:
         page.wait_for_selector(placeholder, state="detached")
 
 
+def htmx_settled(locator) -> None:
+    """Waits until htmx has wired up the element *locator* names: neither it, nor what holds
+    it, nor what it holds is still settling from a swap. htmx attaches a swapped-in element's
+    triggers (an input's save on blur) only when the swap settles, when it drops htmx-added,
+    so a field typed into and left before then sends nothing."""
+    from playwright.sync_api import expect
+    locator.wait_for()
+    added = "contains(concat(' ', normalize-space(@class), ' '), ' htmx-added ')"
+    expect(locator.locator(f"xpath=ancestor-or-self::*[{added}]")).to_have_count(0)
+    expect(locator.locator(".htmx-added")).to_have_count(0)
+
+
 def settled_boxes(page, *selectors: str) -> list[dict]:
     """The box of the first element matching each selector, all read in one pass once the
     top bar has loaded (``wait_for_topbar``), web fonts have loaded and the layout has had two frames to settle. Boxes read one call at a

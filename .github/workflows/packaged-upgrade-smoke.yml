@@ -92,7 +92,8 @@ jobs:
             asset: Celerp-Setup.exe
             artifact: binaries-windows-latest
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    # Room for the Windows in-app update step (140 min) and the steps before it.
+    timeout-minutes: 180
     env:
       GH_TOKEN: ${{ github.token }}
       PREVIOUS: ${{ needs.candidate.outputs.previous }}
@@ -270,7 +271,8 @@ jobs:
       - name: In-app update from a running Celerp (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        timeout-minutes: 30
+        # Its bounded waits add up to 8175 s (137 min): the four checks wait at most 1680 + 1695 + 2100 + 2700 s.
+        timeout-minutes: 140
         run: |
           $ErrorActionPreference = "Stop"
           python -m pip install --quiet "playwright>=1.43,<1.62"
@@ -393,7 +395,6 @@ jobs:
             $log = InstallLog
             if ($log -notmatch "mode forced: current") { Fail "install.log has no mode forced line" }
             WaitFor "install.log success line" 180 { (InstallLog) -match "done: $([regex]::Escape($new)) is installed" }  # setup writes it after the swap
-            $log = InstallLog
             if ((Get-Content "$logs\update.log" -Raw -ErrorAction SilentlyContinue) -match "not signed") {
               Fail "update.log has a signature error"
             }
@@ -437,16 +438,22 @@ jobs:
           # PowerShell 7 has no client-side providers, so the box's buttons read as plain panes: find them by name.
           $button = { param($name) [Windows.Automation.PropertyCondition]::new($AE::NameProperty, $name) }
           # The prompt is owned by setup's window, so it can sit under it in the tree, beside setup's own Cancel.
-          $prompt = $null
-          for ($end = (Get-Date).AddSeconds(300); -not $prompt -and (Get-Date) -lt $end; Start-Sleep 2) {
-            foreach ($box in $AE::RootElement.FindAll($scope::Descendants, $boxes)) {
-              if ($box.FindFirst($scope::Children, (& $button "Retry"))) { $prompt = $box; break }
-            }
+          $script:prompt = $null
+          WaitFor "rename prompt" 300 {
+            # A window that closes while it is read throws; the next poll looks again.
+            try {
+              foreach ($box in $AE::RootElement.FindAll($scope::Descendants, $boxes)) {
+                if ($box.FindFirst($scope::Children, (& $button "Retry"))) { $script:prompt = $box; break }
+              }
+            } catch { }
+            $script:prompt
           }
-          if (-not $prompt) { Fail "no rename prompt in 300 s" }
           # Cancel through the box's own command (WM_COMMAND IDCANCEL), the message its Cancel button sends.
+          # A handle of 0 (or none) would post to this thread's own queue, so the box would never hear it.
+          $handle = $prompt.Current.NativeWindowHandle
+          if (-not $handle) { Fail "the rename prompt has no window handle" }
           Add-Type -Namespace Win32 -Name Box -MemberDefinition '[DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hWnd, uint msg, IntPtr w, IntPtr l);'
-          if (-not [Win32.Box]::PostMessage([IntPtr]$prompt.Current.NativeWindowHandle, 0x0111, [IntPtr]2, [IntPtr]::Zero)) { Fail "could not send Cancel to the rename prompt" }
+          if (-not [Win32.Box]::PostMessage([IntPtr]$handle, 0x0111, [IntPtr]2, [IntPtr]::Zero)) { Fail "could not send Cancel to the rename prompt" }
           WaitFor "Celerp $old reopened with the failed update" 300 {
             (Running) | Where-Object { $_.CommandLine -match "--update-install-failed=$([regex]::Escape($new))" }
           }
@@ -468,31 +475,54 @@ jobs:
           # check_update_from_newer_data
           # A released Celerp cannot have the refusal screen this build adds, and no newer
           # release exists yet. So the candidate itself plays both copies, with the same
-          # binaries that ship: it first opens fresh data with its package version raised
-          # (the version Celerp records in the data), then starts with its own version on
-          # that data, is refused, and updates from the refusal screen. A second build with
-          # a lower version would double the Windows build and test a binary that never ships.
+          # binaries that ship: it opens fresh data as itself (Celerp records its package
+          # version in the data), then its package version is lowered, so it plays an older
+          # copy that the data refuses. It updates from the refusal screen to the feed's
+          # release, the candidate's own installer under a version above the recorded one;
+          # setup reinstalls the candidate, which puts its package version back, and the
+          # reinstalled candidate opens the data. So this check proves the handoff from the
+          # refusal screen to setup and that the update gets the user back into their data.
+          # A second build with a lower version would double the Windows build and test a
+          # binary that never ships.
           if ($new -notmatch '^(\d+)\.(\d+)\.(\d+)') { Fail "candidate version $new is not major.minor.patch" }
           $newer = "$($Matches[1]).$($Matches[2]).$([int]$Matches[3] + 1)"
+          function PackageMetadata {
+            $found = Get-ChildItem (Join-Path (InstallDir) "resources") -Recurse -Filter METADATA |
+              Where-Object { $_.Directory.Name -like "celerp-*.dist-info" } | Select-Object -First 1
+            if (-not $found) { Fail "the candidate has no celerp package metadata" }
+            $found.FullName
+          }
           InstallFresh $candidate
-          $meta = Get-ChildItem (Join-Path (InstallDir) "resources") -Recurse -Filter METADATA |
-            Where-Object { $_.Directory.Name -like "celerp-*.dist-info" } | Select-Object -First 1
-          if (-not $meta) { Fail "the candidate has no celerp package metadata" }
-          $metadata = [IO.File]::ReadAllText($meta.FullName)
-          [IO.File]::WriteAllText($meta.FullName, ($metadata -replace "(?m)^Version: .*$", "Version: $newer"))
+          $meta = PackageMetadata
+          $metadata = [IO.File]::ReadAllText($meta)
+          if ($metadata -notmatch '(?m)^Version: ((\d+)\.(\d+)\.(\d+)\S*)') { Fail "the candidate's package version is not major.minor.patch" }
+          $real = $Matches[1]
+          if ([int]$Matches[4] -gt 0) { $older = "$($Matches[2]).$($Matches[3]).$([int]$Matches[4] - 1)" }
+          elseif ([int]$Matches[3] -gt 0) { $older = "$($Matches[2]).$([int]$Matches[3] - 1).0" }
+          else { Fail "the candidate's package version $real has no older minor or patch to play" }
           StartCelerp
           python scripts/ci_update_drive.py sign-in $script:port 300
-          if ($LASTEXITCODE -ne 0) { Fail "the candidate as $newer did not open fresh data" }
+          if ($LASTEXITCODE -ne 0) { Fail "the candidate $real did not open fresh data" }
           CloseCelerp
-          [IO.File]::WriteAllText($meta.FullName, $metadata)
+          [IO.File]::WriteAllText($meta, ($metadata -replace "(?m)^Version: .*$", "Version: $older"))
           (Get-Content "$feed\latest.yml") -replace "^version: .*$", "version: $newer" | Set-Content -Encoding Ascii "$feed\latest.yml"
           Remove-Item "$logs\install.log", "$logs\update.log" -ErrorAction SilentlyContinue
           StartCelerp
+          $en = Get-Content (Join-Path (InstallDir) "resources\app\ui\locales\en.json") -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
+          $refusedText = $en["shell.data_newer"].Replace("{recorded}", $real).Replace("{running}", $older)
+          python scripts/ci_update_drive.py refused $script:port 180 $refusedText
+          if ($LASTEXITCODE -ne 0) { Fail "the candidate as $older on data $real opened does not show the refusal screen" }
           python scripts/ci_update_drive.py refusal $script:port 600
-          if ($LASTEXITCODE -ne 0) { Fail "the candidate on data $newer opened did not update from its refusal screen" }
+          if ($LASTEXITCODE -ne 0) { Fail "the candidate as $older on data $real opened did not update from its refusal screen" }
           WaitFor "setup window" 180 { SetupWindow }
           ExpectNewRunning
-          Write-Host "check_update_from_newer_data: $new on data $newer opened offered Update Celerp, downloaded and ran setup"
+          if ([IO.File]::ReadAllText((PackageMetadata)) -ne $metadata) { Fail "setup did not put back the candidate's package metadata ($real)" }
+          # Setup reopened Celerp without a debugging port, so it is started again with one.
+          CloseCelerp
+          StartCelerp
+          python scripts/ci_update_drive.py sign-in $script:port 300
+          if ($LASTEXITCODE -ne 0) { Fail "the reinstalled $new did not open the data $real opened" }
+          Write-Host "check_update_from_newer_data: the candidate as $older was refused on data $real opened, updated from the refusal screen through setup, and the reinstalled $new ($real) opened the data"
           Stop-Process $server -Force
 
       # A failed update check leaves Celerp's logs and the screen as it was, to read.

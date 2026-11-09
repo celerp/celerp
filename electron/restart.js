@@ -180,12 +180,18 @@ function restartUrl(currentUrl, uiPort, formerUiPorts = new Set()) {
  *
  * The new instance gets this one's arguments less those of an update that failed or
  * stopped, which tell only the start they came with; `extraArgs` adds this restart's own.
+ * An app relaunches once: Electron would start one new instance per relaunch asked for.
  *
  * @param {{ relaunch: (opts: { args: string[] }) => void, quit: () => void }} appRef
  * @param {string[]} argv this instance's process.argv
  * @param {string[]} [extraArgs]
  */
+// The apps already relaunching (fullRelaunch).
+const relaunched = new WeakSet();
+
 function fullRelaunch(appRef, argv, extraArgs = []) {
+  if (relaunched.has(appRef)) return;
+  relaunched.add(appRef);
   const kept = argv.slice(1).filter((arg) => arg !== UPDATED_ARG && !arg.startsWith(INSTALL_FAILED_ARG));
   appRef.relaunch({ args: [...kept, ...extraArgs] });
   appRef.quit();

@@ -707,7 +707,7 @@ async def test_a_copy_keeps_its_own_line_ids_and_compares_the_source_by_content(
     and never a difference between them: every sender (with or without ids) x every key of the
     sent line, unchanged or changed, is judged by the line's content alone."""
     from celerp.models.projections import Projection
-    from celerp_docs.routes import LineItem
+    from celerp_docs.line_bodies import LineItem
     from pydantic import ValidationError
 
     grant, token, source_doc, copy = await _copy_of_issued_invoice(client, session, kind)

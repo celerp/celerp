@@ -2486,6 +2486,322 @@ async def test_an_imported_line_naming_an_unknown_contact_is_refused(client):
     assert (await _journal(client, tok))["entries"] == start["entries"]
 
 
+# ---------------------------------------------------------------------------
+# GL impact of one document: GET /accounting/journal/by-doc/{doc_id}
+# ---------------------------------------------------------------------------
+
+async def _by_doc(client, tok, doc_id):
+    r = await client.get(f"/accounting/journal/by-doc/{doc_id}", headers=_h(tok))
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+@pytest.mark.asyncio
+async def test_by_doc_returns_only_that_documents_entries_with_party_and_items(client):
+    tok = await _reg(client)
+    doc = await _doc_with_items(client, tok, "invoice", [("WIDGET", 2, 30.0), ("GIZMO", 1, 40.0)])
+    other = await _doc_with_items(client, tok, "invoice", [("BOLT", 1, 5.0)], issue_date="2026-02-03")
+    await _post_manual_je(client, tok, _bal(12.0), ts="2026-02-05")
+
+    impact = await _by_doc(client, tok, doc)
+    assert impact["doc_id"] == doc and impact["doc_type"] == "invoice"
+    assert {(e.get("source_doc") or {}).get("doc_id") for e in impact["entries"]} == {doc}
+    assert other not in str(impact["entries"])
+    # The same lines the extended journal shows for that entry, plus the party.
+    ext = _entry_for(await _extended(client, tok), doc)
+    got = next(e for e in impact["entries"] if e["je_id"] == ext["je_id"])
+    assert [(l["account"], l["debit"], l["credit"], l.get("item")) for l in got["lines"]] == \
+        [(l["account"], l["debit"], l["credit"], l.get("item")) for l in ext["lines"]]
+    assert got["items_status"] == "expanded"
+    assert all(l["party_id"] == "contact:1" for l in got["lines"])
+    assert impact["total_debit"] == impact["total_credit"] == 100.0
+
+
+@pytest.mark.asyncio
+async def test_by_doc_includes_the_cost_of_sales_and_inventory_legs(client, session):
+    from celerp.services.auto_je import create_for_doc_fulfilled
+
+    tok = await _reg(client)
+    doc = await _doc_with_items(client, tok, "invoice", [("WIDGET", 1, 60.0)])
+    company_id, user_id = _ids(tok)
+    r = await client.post("/items", headers=_h(tok), json={
+        "sku": "WIDGET-LOT", "name": "Widget", "quantity": 1, "sell_by": "piece", "cost_total": 42.0,
+        "status": "available"})
+    assert r.status_code == 200, r.text
+    await create_for_doc_fulfilled(session, company_id=company_id, user_id=user_id,
+                                   doc_id=doc, lot_costs={r.json()["id"]: 42.0}, ts="2026-02-02")
+    await session.commit()
+
+    impact = await _by_doc(client, tok, doc)
+    ids = {e["je_id"] for e in impact["entries"]}
+    assert f"je:auto:{doc}:fulfill" in ids and len(ids) == 2
+    cost = next(e for e in impact["entries"] if e["je_id"].endswith(":fulfill"))
+    assert sum(l["debit"] for l in cost["lines"]) == sum(l["credit"] for l in cost["lines"]) == 42.0
+    assert impact["total_debit"] == impact["total_credit"] == 102.0
+
+
+@pytest.mark.asyncio
+async def test_by_doc_includes_related_credit_and_return_postings(client, session):
+    from celerp.services.auto_je import _emit_auto_posted_je
+
+    tok = await _reg(client)
+    invoice = await _doc_with_items(client, tok, "invoice", [("WIDGET", 1, 10.0)])
+    note = await client.post("/docs", headers=_h(tok), json={
+        "doc_type": "credit_note", "contact_id": "contact:1",
+        "issue_date": "2026-02-02", "line_items": [],
+        "subtotal": 0, "tax": 0, "total": 0,
+    })
+    assert note.status_code == 200, note.text
+    note_id = note.json()["id"]
+    company_id, user_id = _ids(tok)
+    for suffix, metadata in (
+        ("applied", {"doc_id": invoice, "cn_id": note_id, "trigger": "cn.applied"}),
+        ("return", {"cn_id": note_id, "trigger": "doc.return_received"}),
+    ):
+        je_id = f"je:test:{suffix}:{note_id}"
+        await _emit_auto_posted_je(
+            session, company_id=company_id, user_id=user_id, je_id=je_id,
+            idem_create=f"{je_id}:c", idem_posted=f"{je_id}:p",
+            memo=suffix, ts="2026-02-02", entries=_bal(5.0), metadata_=metadata,
+        )
+    await session.commit()
+
+    invoice_ids = {e["je_id"] for e in (await _by_doc(client, tok, invoice))["entries"]}
+    note_ids = {e["je_id"] for e in (await _by_doc(client, tok, note_id))["entries"]}
+    assert f"je:test:applied:{note_id}" in invoice_ids
+    assert f"je:test:applied:{note_id}" in note_ids
+    assert f"je:test:return:{note_id}" in note_ids
+    assert f"je:test:return:{note_id}" not in invoice_ids
+    for entity_id in (invoice, note_id):
+        applied = next(e for e in (await _by_doc(client, tok, entity_id))["entries"]
+                       if e["je_id"] == f"je:test:applied:{note_id}")
+        assert applied["items_status"] == "no_items"
+        assert not any(line.get("item") for line in applied["lines"])
+
+
+@pytest.mark.asyncio
+async def test_unclassified_journal_cannot_inherit_invoice_items_by_amount(client, session):
+    from celerp.services.auto_je import _emit_auto_posted_je
+
+    tok = await _reg(client)
+    doc = await _doc_with_items(client, tok, "invoice", [("WIDGET", 1, 10.0)])
+    company_id, user_id = _ids(tok)
+    je_id = f"je:test:unclassified:{doc}"
+    await _emit_auto_posted_je(
+        session, company_id=company_id, user_id=user_id, je_id=je_id,
+        idem_create=f"{je_id}:c", idem_posted=f"{je_id}:p",
+        memo="Unclassified journal", ts="2026-02-02", entries=_bal(10.0),
+        metadata_={"doc_id": doc},
+    )
+    await session.commit()
+    entry = next(e for e in (await _by_doc(client, tok, doc))["entries"] if e["je_id"] == je_id)
+    assert entry["items_status"] == "no_items"
+    assert not any(line.get("item") for line in entry["lines"])
+
+
+@pytest.mark.asyncio
+async def test_by_doc_lines_carry_the_documents_contact_as_party(client):
+    tok = await _reg(client)
+    doc = await _doc_with_items(client, tok, "invoice", [("WIDGET", 1, 10.0)])
+    lines = [l for e in (await _by_doc(client, tok, doc))["entries"] for l in e["lines"]]
+    assert lines and all(l["party_id"] == "contact:1" and "party_name" in l for l in lines)
+
+
+@pytest.mark.asyncio
+async def test_by_doc_files_a_stale_line_contact_where_the_ledger_does_and_shows_no_id_for_its_name(
+        client, session):
+    """A line naming a contact that no longer exists sits in the same party bucket as on
+    the ledger (_line_party), and has no name rather than its raw id; a line naming no
+    contact still falls back to the document's party."""
+    from celerp.services.auto_je import _emit_auto_posted_je
+
+    tok = await _reg(client)
+    doc = await _doc_with_items(client, tok, "invoice", [("WIDGET", 1, 10.0)])
+    company_id, user_id = _ids(tok)
+    je_id = f"je:test:{doc}:stale"
+    await _emit_auto_posted_je(
+        session, company_id=company_id, user_id=user_id, je_id=je_id,
+        idem_create=f"{je_id}:c", idem_posted=f"{je_id}:p", memo="Stale party", ts="2026-02-04",
+        entries=[{"account": "1120", "debit": 7.0, "credit": 0, "contact": "contact:gone"},
+                 {"account": "4100", "debit": 0, "credit": 7.0}],
+        metadata_={"doc_id": doc})
+    await session.commit()
+
+    entry = next(e for e in (await _by_doc(client, tok, doc))["entries"] if e["je_id"] == je_id)
+    by_account = {l["account"]: l for l in entry["lines"]}
+    assert (by_account["1120"]["party_id"], by_account["1120"]["party_name"]) == ("contact:gone", "")
+    assert by_account["4100"]["party_id"] == "contact:1"
+    ledger = await _ledger(client, tok, "1120")
+    assert [l["contact_id"] for l in ledger["lines"] if l["je_id"] == je_id] == ["contact:gone"]
+
+
+@pytest.mark.asyncio
+async def test_by_doc_for_a_draft_or_unposted_document_has_no_entries(client):
+    tok = await _reg(client)
+    r = await client.post("/docs", headers=_h(tok), json={
+        "doc_type": "invoice", "contact_id": "contact:1", "issue_date": "2026-02-01",
+        "line_items": [{"name": "Widget", "quantity": 1, "unit_price": 9.0, "line_total": 9.0}],
+        "subtotal": 9.0, "tax": 0.0, "total": 9.0})
+    assert r.status_code == 200, r.text
+    impact = await _by_doc(client, tok, r.json()["id"])
+    assert impact["entries"] == [] and impact["status"] == "draft"
+    assert impact["total_debit"] == impact["total_credit"] == 0
+
+
+def test_by_doc_lookup_uses_indexable_postgres_metadata_containment():
+    from sqlalchemy.dialects import postgresql, sqlite
+    from celerp.services.ledger_sources import SOURCE_KEYS, linked_events
+
+    pg = str(linked_events("doc:sample", "postgresql").compile(dialect=postgresql.dialect()))
+    fallback = str(linked_events("doc:sample", "sqlite").compile(dialect=sqlite.dialect()))
+    assert pg.count("@>") == len(SOURCE_KEYS)
+    assert "CAST" in pg and "JSONB" in pg
+    assert "JSON_EXTRACT" in fallback and "@>" not in fallback
+
+
+@pytest.mark.asyncio
+async def test_by_doc_rejects_non_document_projection(client):
+    tok = await _reg(client)
+    r = await client.get("/accounting/journal/by-doc/contact:1", headers=_h(tok))
+    assert r.status_code == 404, r.text
+
+
+@pytest.mark.asyncio
+async def test_by_doc_includes_real_supplier_credit_note_application(client, session):
+    from celerp.services.auto_je import _emit_auto_posted_je
+
+    tok = await _reg(client)
+    bill = await _doc_with_items(client, tok, "bill", [("STOCK", 1, 10.0)])
+    note_resp = await client.post("/docs", headers=_h(tok), json={
+        "doc_type": "debit_note", "contact_id": "contact:1",
+        "issue_date": "2026-02-02", "line_items": [],
+        "subtotal": 0, "tax": 0, "total": 0,
+    })
+    assert note_resp.status_code == 200, note_resp.text
+    note_id = note_resp.json()["id"]
+    company_id, user_id = _ids(tok)
+    je_id = f"je:test:dnapply:{note_id}"
+    await _emit_auto_posted_je(
+        session, company_id=company_id, user_id=user_id, je_id=je_id,
+        idem_create=f"{je_id}:c", idem_posted=f"{je_id}:p",
+        memo="Supplier note", ts="2026-02-02", entries=_bal(10.0),
+        metadata_={"doc_id": bill, "dn_id": note_id, "trigger": "dn.applied"},
+    )
+    await session.commit()
+    for entity_id in (bill, note_id):
+        found = [e for e in (await _by_doc(client, tok, entity_id))["entries"]
+                 if e["je_id"] == je_id]
+        assert len(found) == 1
+        assert found[0]["items_status"] == "no_items"
+
+
+@pytest.mark.asyncio
+async def test_by_doc_unknown_document_is_not_found(client):
+    tok = await _reg(client)
+    r = await client.get("/accounting/journal/by-doc/doc:nope", headers=_h(tok))
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_by_doc_requires_view_financial_reports(client, session):
+    admin = await _reg(client)
+    doc = await _doc_with_items(client, admin, "invoice", [("WIDGET", 1, 10.0)])
+    operator = await _user_with_role(client, session, admin, "operator")
+    assert (await client.get(f"/accounting/journal/by-doc/{doc}",
+                             headers=_h(operator))).status_code == 403
+
+
+def _item_rows(entry: dict) -> list[tuple]:
+    return [(l["account"], l["item"], l["debit"], l["credit"]) for l in entry["lines"] if l.get("item")]
+
+
+@pytest.mark.asyncio
+async def test_by_doc_names_the_items_on_a_purchase_order_receipt(client):
+    """A receipt posts the goods a purchase order brought in, so its entry is an item posting."""
+    from test_helpers import default_location_id
+
+    tok = await _reg(client)
+    r = await client.post("/docs", headers=_h(tok), json={
+        "doc_type": "purchase_order", "contact_id": "contact:1", "issue_date": "2026-02-01",
+        "line_items": [{"sku": "WIDGET", "name": "WIDGET", "quantity": 2, "unit_price": 50.0,
+                        "line_total": 100.0}],
+        "subtotal": 100.0, "total": 100.0})
+    assert r.status_code == 200, r.text
+    po = r.json()["id"]
+    r = await client.post(f"/docs/{po}/receive", headers=_h(tok), json={
+        "location_id": await default_location_id(client, _h(tok)),
+        "received_items": [{"po_line_index": 0, "sku": "WIDGET", "name": "WIDGET",
+                            "quantity_received": 2, "receive_as": "stock"}]})
+    assert r.status_code == 200, r.text
+
+    impact = await _by_doc(client, tok, po)
+    receipt = next(e for e in impact["entries"] if ":rcv" in e["je_id"])
+    assert receipt["items_status"] == "expanded"
+    assert [(item, debit) for _, item, debit, _ in _item_rows(receipt)] == [("WIDGET", 100.0)]
+    assert impact["total_debit"] == impact["total_credit"] == 100.0
+
+
+@pytest.mark.asyncio
+async def test_by_doc_names_the_items_on_an_entry_an_unvoid_restores(client):
+    """An unvoid re-posts the entry the void took out; the copy is the same item posting."""
+    tok = await _reg(client)
+    doc = await _doc_with_items(client, tok, "invoice", [("WIDGET", 2, 30.0), ("GIZMO", 1, 40.0)])
+    original = next(e for e in (await _by_doc(client, tok, doc))["entries"])
+    assert (await client.post(f"/docs/{doc}/void", headers=_h(tok), json={"reason": "test"})).status_code == 200
+    assert (await client.post(f"/docs/{doc}/unvoid", headers=_h(tok), json={})).status_code == 200
+
+    impact = await _by_doc(client, tok, doc)
+    restored = next(e for e in impact["entries"] if ":unvoid:" in e["je_id"])
+    assert restored["items_status"] == "expanded"
+    assert _item_rows(restored) == _item_rows(original)
+    assert impact["total_debit"] == impact["total_credit"] == 100.0
+
+
+@pytest.mark.asyncio
+async def test_by_doc_a_locked_void_reversal_carries_no_item_rows(client):
+    """A void reaching back into a locked period posts a reversal on an open date. It undoes the
+    whole entry, so it names no items: the receivable line it credits is not a sale."""
+    tok = await _reg(client)
+    doc = await _doc_with_items(client, tok, "invoice", [("WIDGET", 2, 30.0), ("GIZMO", 1, 40.0)])
+    r = await client.post("/accounting/period-lock", headers=_h(tok), json={"lock_date": "2026-02-28"})
+    assert r.status_code == 200, r.text
+    assert (await client.post(f"/docs/{doc}/void", headers=_h(tok), json={"reason": "test"})).status_code == 200
+
+    impact = await _by_doc(client, tok, doc)
+    reversal = next(e for e in impact["entries"] if e["je_id"].endswith(":reversal"))
+    assert reversal["items_status"] == "no_items"
+    assert _item_rows(reversal) == []
+    assert impact["total_debit"] == impact["total_credit"] == 200.0
+
+
+@pytest.mark.asyncio
+async def test_by_doc_shows_the_postings_of_a_list(client):
+    """An audit List posts its stock adjustment under the List's id, so the List's GL Impact
+    holds it, named after the List."""
+    tok = await _reg(client)
+    r = await client.post("/companies/me/locations", headers=_h(tok), json={"name": "Counted", "type": "warehouse"})
+    assert r.status_code == 200, r.text
+    loc = r.json()["id"]
+    r = await client.post("/items", headers=_h(tok), json={
+        "sku": "AUD-1", "name": "Lot", "quantity": 10, "sell_by": "piece",
+        "status": "available", "cost_total": 100.0, "location_id": loc})
+    assert r.status_code == 200, r.text
+    item = r.json()["id"]
+    audit = (await client.post("/lists/audit", headers=_h(tok), json={"location_id": loc})).json()["id"]
+    assert (await client.post(f"/lists/{audit}/finalize", headers=_h(tok))).status_code == 200
+    r = await client.patch(f"/lists/{audit}/line/{item}", headers=_h(tok), json={"counted_qty": 8})
+    assert r.status_code == 200, r.text
+    r = await client.post(f"/lists/{audit}/adjust", headers=_h(tok))
+    assert r.status_code == 200, r.text
+
+    impact = await _by_doc(client, tok, audit)
+    assert [e["je_id"] for e in impact["entries"]] == [f"je:auto:{audit}:audit:0"]
+    entry = impact["entries"][0]
+    assert entry["source_doc"]["doc_id"] == audit
+    assert entry["items_status"] == "no_items"
+    assert impact["total_debit"] == impact["total_credit"] == 20.0
+
+
 async def _issued(client, tok, doc_type: str, total: float, contact_id: str | None, issue_date: str) -> str:
     payload = {
         "doc_type": doc_type, "issue_date": issue_date,

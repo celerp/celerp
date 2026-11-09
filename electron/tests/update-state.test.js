@@ -3,7 +3,7 @@
 "use strict";
 
 const { EventEmitter } = require("events");
-const { trackUpdater, serveUpdateState } = require("../update-state");
+const { compareVersions, trackUpdater, serveUpdateState } = require("../update-state");
 
 // A fake electron-updater: the tracker only subscribes to its events.
 function setup() {
@@ -146,13 +146,21 @@ test("an updater error is forwarded as update-error, never as not-available",
     expect(sent.map(([ch]) => ch)).toEqual(["update-error"]);
   });
 
-test("an error with no usable message is stored with an empty message",
+test("an error with no usable message is stored with an empty message and adds no log line",
   function test_error_without_message_is_stored_empty() {
-    for (const err of [undefined, null, {}, new Error("")]) {
+    for (const err of [undefined, null, {}, new Error(""), ""]) {
       const { updater, getUpdateState } = setup();
       updater.emit("error", err);
-      expect(getUpdateState()).toEqual({ ...IDLE, status: "error", failure: "check", releaseUrl: LATEST, log: ["Update error"], revision: 1 });
+      expect(getUpdateState()).toEqual({ ...IDLE, status: "error", failure: "check", releaseUrl: LATEST, log: [], revision: 1 });
     }
+  });
+
+test("an error with a message logs it after the label",
+  function test_error_with_message_logs_its_detail() {
+    const { updater, getUpdateState } = setup();
+    updater.emit("error", new Error("spawn UNKNOWN"));
+    updater.emit("error", new Error(""));
+    expect(getUpdateState().log).toEqual(["Update error: spawn UNKNOWN"]);
   });
 
 test("a check that finds nothing does not stop a download in progress",
@@ -450,17 +458,22 @@ test("nothing newer is kept as upToDate until the next result, which clears it",
     }
   });
 
-test("a downloaded update handed to its installer is kept for the next page, once, and not sent",
-  function test_installing_is_kept_not_sent() {
+test("a downloaded update handed to its installer is a change like any other: sent with a higher revision, once",
+  function test_installing_is_sent_with_a_higher_revision() {
     const { updater, sent } = downloadedSetup();
     const tracked = trackUpdater(updater, (channel, payload) => sent.push([channel, payload]));
     updater.emit("update-downloaded", { version: "2.0.1" });
     sent.length = 0;
     const before = tracked.getUpdateState();
-    tracked.installing();
-    expect(stateOf(tracked.getUpdateState())).toEqual({ ...DOWNLOADED, installing: true });
-    expect(tracked.getUpdateState().revision).toBe(before.revision);
-    expect(sent).toEqual([]);
+    expect(tracked.installing()).toBe(true);
+    const after = tracked.getUpdateState();
+    expect(stateOf(after)).toEqual({ ...DOWNLOADED, installing: true });
+    expect(after.revision).toBeGreaterThan(before.revision);
+    expect(sent).toEqual([["update-log", after]]);
+    // A second hand-over changes nothing and sends nothing.
+    expect(tracked.installing()).toBe(false);
+    expect(tracked.getUpdateState()).toEqual(after);
+    expect(sent.length).toBe(1);
     // An installer that did not start replaces it with the failed install.
     tracked.installFailed("2.0.1", "", "install");
     expect(tracked.getUpdateState()).toMatchObject({ status: "error", failure: "install", installing: false });
@@ -472,7 +485,7 @@ test("nothing but a downloaded update can be handed to its installer", function 
     const tracked = trackUpdater(updater, () => {});
     for (const [event, payload] of events) updater.emit(event, payload);
     const before = tracked.getUpdateState();
-    tracked.installing();
+    expect(tracked.installing()).toBe(false);
     expect(tracked.getUpdateState()).toEqual(before);
   }
 });
@@ -507,5 +520,402 @@ test("a check that ran nothing is not the user's any more: a later failure of th
     await ipcMain["check-for-updates"]();
     await new Promise(setImmediate);
     updater.emit("error", new Error("getaddrinfo ENOTFOUND github.com"));
+    expect(told).toEqual([]);
+  });
+
+test("a check that rejects with no error event ends as a failed check, never checking forever",
+  async function test_rejected_check_without_error_event_fails() {
+    const { handlers, updater, windowSent } = serveSetup(true);
+    updater.checkForUpdates = jest.fn(() => {
+      updater.emit("checking-for-update");
+      return Promise.reject(new Error("net::ERR_INTERNET_DISCONNECTED"));
+    });
+    await handlers["check-for-updates"]();
+    await new Promise(setImmediate);
+    const state = handlers["get-update-state"]();
+    expect(stateOf(state)).toEqual({ ...IDLE, status: "error", failure: "check", releaseUrl: LATEST,
+                                     message: "net::ERR_INTERNET_DISCONNECTED" });
+    expect(state.log).toEqual(["Checking for update...", "Update error: net::ERR_INTERNET_DISCONNECTED"]);
+    expect(windowSent.at(-1)).toEqual(["update-error", state]);
+  });
+
+test("a check that rejects after its error event is logged once, and told to the user once",
+  async function test_rejected_check_with_error_event_logs_once() {
+    const ipcMain = { handle: (channel, fn) => { ipcMain[channel] = fn; } };
+    const updater = new EventEmitter();
+    updater.checkForUpdates = () => {
+      const err = new Error("getaddrinfo ENOTFOUND github.com");
+      updater.emit("error", err);
+      return Promise.reject(err);
+    };
+    const told = [];
+    serveUpdateState(ipcMain, () => null, updater, true, (state) => told.push(state.failure));
+    await ipcMain["check-for-updates"]();
+    await new Promise(setImmediate);
+    expect(ipcMain["get-update-state"]().log).toEqual(["Update error: getaddrinfo ENOTFOUND github.com"]);
+    expect(told).toEqual(["check"]);
+  });
+
+test("a check that throws before it returns a promise fails the same way",
+  async function test_check_that_throws_fails() {
+    const { handlers, updater } = serveSetup(true);
+    updater.checkForUpdates = () => { throw new Error("no feed"); };
+    await handlers["check-for-updates"]();
+    await new Promise(setImmediate);
+    expect(handlers["get-update-state"]()).toMatchObject({ status: "error", failure: "check", message: "no feed" });
+  });
+
+test("the app's own checks run through the same check: a rejection with no error event shows on the update card",
+  async function test_app_check_rejection_fails() {
+    const updater = new EventEmitter();
+    updater.checkForUpdates = () => Promise.reject(new Error("timeout"));
+    const told = [];
+    const served = serveUpdateState({ handle: () => {} }, () => null, updater, true, (state) => told.push(state));
+    await served.check();
+    expect(served.getUpdateState()).toMatchObject({ status: "error", failure: "check", message: "timeout" });
+    expect(told).toEqual([]);   // the app's own check fails on the update card only
+  });
+
+test("every update check and download in the app goes through update-state.js, which records the updater's first use",
+  function test_one_check_census() {
+    const fs = require("fs");
+    const path = require("path");
+    const sources = fs.readdirSync(path.join(__dirname, "..")).filter((f) => f.endsWith(".js"));
+    const calls = (pattern) => sources.flatMap((f) =>
+      (fs.readFileSync(path.join(__dirname, "..", f), "utf8").match(pattern) || []).map(() => f));
+    expect(calls(/\.checkForUpdates\(/g)).toEqual(["update-state.js"]);
+    expect(calls(/\.downloadUpdate\(/g)).toEqual(["update-state.js"]);
+  });
+
+// A fake electron-updater that checks as the real one does: it tells the release it found, then
+// downloads it itself only while autoDownload is on. Its own download is a second downloadUpdate call.
+function releaseFeed(latest) {
+  const updater = new EventEmitter();
+  // The feed's newest release; a test may publish another one.
+  updater.latest = latest;
+  updater.autoDownload = true;
+  updater.downloadUpdate = jest.fn(() => Promise.resolve([]));
+  updater.checkForUpdates = jest.fn(async () => {
+    updater.emit("checking-for-update");
+    updater.emit("update-available", { version: updater.latest });
+    if (updater.autoDownload) updater.downloadUpdate();
+    return { updateInfo: { version: updater.latest } };
+  });
+  const told = [];
+  const served = serveUpdateState({ handle: () => {} }, () => null, updater, true, (state) => told.push(state));
+  return { updater, told, served };
+}
+
+test("for data a newer Celerp opened, a release that cannot open it is never downloaded, and nothing about it is told",
+  async function test_too_old_release_is_not_downloaded() {
+    const { updater, told, served } = releaseFeed("2.9.0");
+    served.downloadOnlyFrom("2.9.1");
+    await served.checkForUser();
+    expect(updater.downloadUpdate).not.toHaveBeenCalled();
+    expect(stateOf(served.getUpdateState())).toEqual({ ...IDLE, status: "too-old", version: "2.9.0" });
+    expect(served.getUpdateState().log.at(-1)).toBe("Found v2.9.0, which cannot open this data.");
+    // An updater error after it (nothing is downloading) is logged, and changes nothing.
+    updater.emit("error", new Error("EPERM: operation not permitted, rename 'x.exe'"));
+    expect(told).toEqual([]);
+    expect(stateOf(served.getUpdateState())).toEqual({ ...IDLE, status: "too-old", version: "2.9.0" });
+    expect(served.getUpdateState().log.at(-1)).toMatch(/^Update error: EPERM/);
+    // The app's own downloads are left as they were.
+    expect(updater.autoDownload).toBe(true);
+  });
+
+test("for data a newer Celerp opened, a release that opens it downloads once and installs as before",
+  async function test_release_that_opens_the_data_downloads() {
+    for (const latest of ["2.9.1", "2.10.0"]) {
+      const { updater, served } = releaseFeed(latest);
+      served.downloadOnlyFrom("2.9.1");
+      await served.checkForUser();
+      expect([latest, updater.downloadUpdate.mock.calls.length]).toEqual([latest, 1]);
+      expect(updater.autoDownload).toBe(true);
+      updater.emit("update-downloaded", { version: latest });
+      expect(served.getUpdateState()).toMatchObject({ status: "downloaded", version: latest });
+      expect(served.installing()).toBe(true);
+    }
+  });
+
+test("a download that fails after a release that opens the data was found is told, with that release's installer",
+  async function test_release_that_opens_the_data_failure_is_told() {
+    const { updater, told, served } = releaseFeed("2.9.1");
+    updater.downloadUpdate = jest.fn(() => {
+      const err = new Error("EPERM: operation not permitted, rename 'x.exe'");
+      updater.emit("error", err);
+      return Promise.reject(err);
+    });
+    served.downloadOnlyFrom("2.9.1");
+    await served.checkForUser();
+    await Promise.resolve();
+    expect(told.map((s) => [s.failure, s.releaseUrl]))
+      .toEqual([["save", "https://github.com/celerp/celerp/releases/tag/v2.9.1"]]);
+  });
+
+test("with no version on record (an unknown schema) any release found downloads",
+  async function test_unknown_schema_downloads_any_release() {
+    const { updater, served } = releaseFeed("2.5.4");
+    served.downloadOnlyFrom("");
+    await served.checkForUser();
+    expect(updater.downloadUpdate).toHaveBeenCalledTimes(1);
+    expect(served.getUpdateState()).toMatchObject({ status: "downloading", version: "2.5.4" });
+  });
+
+test("the running app's own checks and the user's checks still download by themselves",
+  async function test_running_app_checks_auto_download() {
+    const { updater, served } = releaseFeed("2.9.0");
+    await served.check();
+    await served.checkForUser();
+    expect(updater.autoDownload).toBe(true);
+    expect(updater.downloadUpdate).toHaveBeenCalledTimes(2);
+    expect(served.getUpdateState()).toMatchObject({ status: "downloading", version: "2.9.0" });
+  });
+
+test("release numbers order as packaging.version orders them, the order that decides whether a release opens the data",
+  function test_compare_versions_follows_packaging() {
+    // The same pairs tests/test_version_order.py checks against packaging.version itself.
+    const fixture = require("path").join(__dirname, "..", "..", "tests", "fixtures", "version_order.json");
+    const { pairs } = JSON.parse(require("fs").readFileSync(fixture, "utf8"));
+    for (const [a, b, sign] of pairs) {
+      const got = compareVersions(a, b);
+      expect([a, b, Number.isNaN(got) ? null : Math.sign(got)]).toEqual([a, b, sign]);
+      if (sign !== null) expect([b, a, Math.sign(compareVersions(b, a))]).toEqual([b, a, -sign || 0]);
+    }
+    // packaging.version reads only text: anything else is not a version.
+    for (const [a, b] of [["2.6.0", undefined], [null, "2.6.0"], [["2.6.0"], "2.6.0"], [2.6, "2.6"], [{}, "2.6.0"]]) {
+      expect(compareVersions(a, b)).toBeNaN();
+    }
+  });
+
+test("a release that is older than the data, or not a release number, cannot open it",
+  async function test_unreadable_or_older_release_is_too_old() {
+    for (const latest of ["2.9.0", "2.9.1-beta.1", "not-a-version"]) {
+      const { updater, served } = releaseFeed(latest);
+      served.downloadOnlyFrom("2.9.1");
+      await served.checkForUser();
+      expect([latest, updater.downloadUpdate.mock.calls.length, served.getUpdateState().status])
+        .toEqual([latest, 0, "too-old"]);
+    }
+  });
+
+test("for data a newer Celerp opened, a download that rejects with no error event ends as a failed download, told once",
+  async function test_download_rejection_without_event_fails_once() {
+    const { updater, told, served } = releaseFeed("2.9.2");
+    updater.downloadUpdate = jest.fn(() => Promise.reject(new Error("net::ERR_CONNECTION_RESET")));
+    served.downloadOnlyFrom("2.9.1");
+    await served.checkForUser();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(served.getUpdateState()).toMatchObject({ status: "error", failure: "download", downloadFailed: true,
+                                                    version: "2.9.2" });
+    expect(served.getUpdateState().log.filter((line) => line.startsWith("Update error"))).toEqual(
+      ["Update error: net::ERR_CONNECTION_RESET"]);
+    expect(told.map((s) => s.failure)).toEqual(["download"]);
+  });
+
+test("for data a newer Celerp opened, a download that fails with its error event and a rejection is told once",
+  async function test_download_event_and_rejection_fail_once() {
+    const { updater, told, served } = releaseFeed("2.9.2");
+    updater.downloadUpdate = jest.fn(() => {
+      const err = new Error("net::ERR_CONNECTION_RESET");
+      updater.emit("error", err);
+      return Promise.reject(err);
+    });
+    served.downloadOnlyFrom("2.9.1");
+    await served.checkForUser();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(served.getUpdateState()).toMatchObject({ status: "error", failure: "download", downloadFailed: true });
+    expect(served.getUpdateState().log.filter((line) => line.startsWith("Update error"))).toHaveLength(1);
+    expect(told.map((s) => s.failure)).toEqual(["download"]);
+  });
+
+test("updater calls fail through one path: no updater promise has its failure dropped",
+  function test_no_bare_catch_on_updater_calls() {
+    const fs = require("fs");
+    const path = require("path");
+    const root = path.join(__dirname, "..");
+    for (const file of ["update-state.js", "app-main.js"]) {
+      const source = fs.readFileSync(path.join(root, file), "utf8");
+      const dropped = source.split("\n").filter((line) =>
+        /\b(checkForUpdates|downloadUpdate|checkForUpdatesAndNotify)\s*\(/.test(line) && /\.catch\(/.test(line));
+      expect([file, dropped]).toEqual([file, []]);
+    }
+  });
+
+test("after a release that cannot open the data, a check that finds one that can downloads it",
+  async function test_too_old_then_eligible_downloads() {
+    const { updater, served } = releaseFeed("2.9.0");
+    served.downloadOnlyFrom("2.9.1");
+    await served.checkForUser();
+    expect(served.getUpdateState()).toMatchObject({ status: "too-old", version: "2.9.0" });
+    updater.latest = "2.9.2";
+    await served.checkForUser();
+    expect(updater.downloadUpdate).toHaveBeenCalledTimes(1);
+    expect(served.getUpdateState()).toMatchObject({ status: "downloading", version: "2.9.2" });
+  });
+
+test("after a release that cannot open the data, checking again and finding it again stays too-old",
+  async function test_too_old_then_same_stays_too_old() {
+    const { updater, told, served } = releaseFeed("2.9.0");
+    served.downloadOnlyFrom("2.9.1");
+    await served.checkForUser();
+    await served.checkForUser();
+    expect(updater.downloadUpdate).not.toHaveBeenCalled();
+    expect(stateOf(served.getUpdateState())).toEqual({ ...IDLE, status: "too-old", version: "2.9.0" });
+    expect(told).toEqual([]);
+  });
+
+// The running app's own check found `latest` (autoDownload on, no rule yet).
+async function runningAppFound(latest) {
+  const feed = releaseFeed(latest);
+  await feed.served.check();
+  return feed;
+}
+
+// What a refusal shows when the updater was used before the version rule was set: only a restart,
+// whose new process sets the rule before its first check.
+const RELAUNCH = { ...IDLE, status: "relaunch" };
+
+// For each state the running app's updater can leave behind (2.9.0, which cannot open data 2.9.1
+// opened, downloaded, still downloading, or failed to download), with 2.9.1 now in the feed.
+const BEFORE_THE_RULE = {
+  downloaded: (updater) => updater.emit("update-downloaded", { version: "2.9.0" }),
+  downloading: (updater) => updater.emit("download-progress", { percent: 40 }),
+  failed: (updater) => updater.emit("error", new Error("net::ERR_CONNECTION_RESET")),
+};
+
+test.each(Object.keys(BEFORE_THE_RULE))(
+  "updater state from before the refusal (%s) never stands for a release: the screen offers a restart, and nothing more runs",
+  async function test_used_before_rule_offers_relaunch(left) {
+    const { updater, told, served } = await runningAppFound("2.9.0");
+    BEFORE_THE_RULE[left](updater);
+    updater.checkForUpdates.mockClear();
+    updater.downloadUpdate.mockClear();
+    served.downloadOnlyFrom("2.9.1");
+    expect(stateOf(served.getUpdateState())).toEqual(RELAUNCH);
+    // No check runs in this process any more, the app's own or the user's, and nothing installs.
+    await served.check();
+    await served.checkForUser();
+    expect(updater.checkForUpdates).not.toHaveBeenCalled();
+    expect(updater.downloadUpdate).not.toHaveBeenCalled();
+    expect(served.installing()).toBe(false);
+    // A check or download already in flight that finds, ends or fails changes nothing on the screen,
+    // downloads nothing and tells nothing.
+    updater.emit("update-available", { version: "2.9.1" });
+    expect(updater.downloadUpdate).not.toHaveBeenCalled();
+    updater.emit("error", new Error("net::ERR_CONNECTION_RESET"));
+    updater.emit("update-downloaded", { version: "2.9.0" });
+    expect(stateOf(served.getUpdateState())).toEqual(RELAUNCH);
+    expect(served.installing()).toBe(false);
+    expect(told).toEqual([]);
+    // The relaunched process sets the rule before its first check: it finds 2.9.1 and installs it.
+    const relaunched = releaseFeed("2.9.1");
+    relaunched.served.downloadOnlyFrom("2.9.1");
+    await relaunched.served.checkForUser();
+    expect(relaunched.updater.downloadUpdate).toHaveBeenCalledTimes(1);
+    relaunched.updater.emit("update-downloaded", { version: "2.9.1" });
+    expect(relaunched.served.installing()).toBe(true);
+  });
+
+test("a release that opens the data, downloaded before the refusal, is not installed from that process either",
+  async function test_downloaded_before_rule_that_opens_the_data_relaunches() {
+    const { updater, served } = await runningAppFound("2.9.1");
+    updater.emit("update-downloaded", { version: "2.9.1" });
+    served.downloadOnlyFrom("2.9.1");
+    expect(stateOf(served.getUpdateState())).toEqual(RELAUNCH);
+    expect(served.installing()).toBe(false);
+  });
+
+test("a check that has not answered yet is use of the updater: the rule set after it offers a restart",
+  function test_check_in_flight_counts_as_use() {
+    const { updater, served } = releaseFeed("2.9.1");
+    updater.checkForUpdates = jest.fn(() => new Promise(() => {}));
+    served.check();
+    served.downloadOnlyFrom("2.9.1");
+    expect(stateOf(served.getUpdateState())).toEqual(RELAUNCH);
+  });
+
+test("the rule set before any check is a clean start: a release that opens the data is offered, one that cannot is too-old",
+  async function test_rule_first_is_clean() {
+    for (const [latest, status] of [["2.9.1", "downloading"], ["2.9.0", "too-old"]]) {
+      const { updater, served } = releaseFeed(latest);
+      served.downloadOnlyFrom("2.9.1");
+      await served.checkForUser();
+      expect([latest, served.getUpdateState().status, updater.checkForUpdates.mock.calls.length])
+        .toEqual([latest, status, 1]);
+    }
+  });
+
+test("a setup that stopped for a release that cannot open the data offers a restart, with no failure to tell",
+  function test_stopped_install_of_too_old_release() {
+    const { updater, served } = releaseFeed("2.9.0");
+    served.installFailed("2.9.0", "", "stopped");
+    served.downloadOnlyFrom("2.9.1");
+    expect(stateOf(served.getUpdateState())).toEqual(RELAUNCH);
+    served.checkForUser();
+    expect(updater.checkForUpdates).not.toHaveBeenCalled();
+  });
+
+test("a setup that stopped for a release that opens the data keeps its failure, and Update Celerp checks again",
+  async function test_stopped_install_of_release_that_opens_the_data() {
+    const { updater, served } = releaseFeed("2.9.1");
+    served.installFailed("2.9.1", "", "stopped");
+    served.downloadOnlyFrom("2.9.1");
+    expect(served.getUpdateState()).toMatchObject({ status: "error", failure: "stopped", version: "2.9.1" });
+    await served.checkForUser();
+    expect(updater.downloadUpdate).toHaveBeenCalledTimes(1);
+    expect(served.getUpdateState()).toMatchObject({ status: "downloading", version: "2.9.1" });
+  });
+
+test("with no version on record (an unknown schema), updater state from before the refusal stands as it was",
+  async function test_no_rule_after_use_is_unchanged() {
+    const { updater, served } = await runningAppFound("2.9.0");
+    updater.emit("update-downloaded", { version: "2.9.0" });
+    served.downloadOnlyFrom("");
+    expect(served.getUpdateState()).toMatchObject({ status: "downloaded", version: "2.9.0" });
+    expect(served.installing()).toBe(true);
+  });
+
+test("with no rule, a downloaded release is offered and installs whatever its version",
+  async function test_no_rule_downloaded_installs() {
+    const { updater, served } = await runningAppFound("2.0.1");
+    updater.emit("update-downloaded", { version: "2.0.1" });
+    expect(stateOf(served.getUpdateState())).toEqual(DOWNLOADED);
+    expect(served.installing()).toBe(true);
+  });
+
+test("release numbers are compared only in update-state.js: every other part of the app reads its judged state",
+  function test_one_version_judge_census() {
+    const fs = require("fs");
+    const path = require("path");
+    const root = path.join(__dirname, "..");
+    const sources = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) return ["node_modules", "tests", "dist"].includes(e.name) ? [] : sources(full);
+      return e.name.endsWith(".js") ? [full] : [];
+    });
+    const users = sources(root).filter((f) => /\b(compareVersions|opensData)\b/.test(fs.readFileSync(f, "utf8")))
+      .map((f) => path.relative(root, f));
+    expect(users).toEqual(["update-state.js"]);
+  });
+
+test("for data a newer Celerp opened, a release found with no version cannot open it and is not downloaded",
+  async function test_release_with_no_version_is_too_old() {
+    const { updater, served } = releaseFeed(undefined);
+    served.downloadOnlyFrom("2.9.1");
+    await served.checkForUser();
+    expect(updater.downloadUpdate).not.toHaveBeenCalled();
+    expect(served.getUpdateState()).toMatchObject({ status: "too-old", version: "" });
+  });
+
+test("after the user's check found a release that cannot open the data, a later download failure of the app's own check is not told",
+  async function test_too_old_result_ends_the_users_check() {
+    const { updater, told, served } = releaseFeed("2.9.0");
+    served.downloadOnlyFrom("2.9.1");
+    await served.checkForUser();
+    updater.checkForUpdates = async () => { updater.emit("update-available", { version: "2.9.2" }); return { updateInfo: {} }; };
+    updater.downloadUpdate = jest.fn(() => { updater.emit("error", new Error("net::ERR_CONNECTION_RESET")); return Promise.resolve([]); });
+    await served.check();
+    expect(updater.downloadUpdate).toHaveBeenCalledTimes(1);
+    expect(served.getUpdateState()).toMatchObject({ status: "error", failure: "download", version: "2.9.2" });
     expect(told).toEqual([]);
   });

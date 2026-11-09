@@ -17,7 +17,10 @@ const VIEW = {
   noUpdate: "No newer version is available yet.",
   notReleased: "Your data has not been changed. Celerp can open it once version 2.6.0 or newer is available.",
   checkAgain: "Check again", restarting: "Restarting...",
+  tooOld: "Celerp {version} is the newest release, and it cannot open this data yet.",
   installing: "Installing v{version}. Celerp will be back in about a minute.",
+  relaunch: "Restart Now",
+  relaunchDetail: "Your data has not been changed. Restart Celerp to check for a version that can open it.",
   failed: { check: "Celerp couldn't check for updates.", stopped: "The update stopped before it finished.",
             inactive: "This copy of Celerp cannot update itself." },
 };
@@ -41,6 +44,7 @@ function page() {
     checkForUpdates: () => calls.push("check"),
     installUpdate: () => calls.push("install"),
     quit: () => calls.push("quit"),
+    restartApp: () => calls.push("relaunch"),
   };
   for (const name of ["onUpdateLog", "onUpdateAvailable", "onDownloadProgress", "onUpdateDownloaded",
                       "onUpdateError", "onUpdateNotAvailable"]) {
@@ -150,7 +154,26 @@ test("screenFor maps every updater state", function test_screen_for() {
   expect(screenFor(VIEW, { ...IDLE, upToDate: true, checking: true })).toEqual(
     { detail: VIEW.notReleased, status: "Checking...", label: "Check again", action: "update", busy: true });
   expect(screenFor(VIEW, { ...IDLE, status: "downloading", upToDate: false, percent: 41.6 }).status).toBe("Downloading... 42%");
+  expect(screenFor(VIEW, { ...IDLE, status: "too-old", version: "2.5.9" })).toEqual(
+    { detail: VIEW.notReleased, status: "Celerp 2.5.9 is the newest release, and it cannot open this data yet.",
+      label: "Check again", action: "update", busy: false });
+  expect(screenFor(VIEW, { ...IDLE, status: "too-old", version: "2.5.9", checking: true })).toMatchObject(
+    { status: "Checking...", label: "Check again", action: "update", busy: true });
 });
+
+test("every state of the screen that is not busy has a way forward: a check, an install or a restart",
+  function test_every_state_has_an_action() {
+    const states = [
+      IDLE, { ...IDLE, upToDate: true }, { ...IDLE, status: "too-old", version: "2.5.9" },
+      { ...IDLE, status: "relaunch" }, { ...IDLE, status: "downloaded", version: "2.6.0" },
+      ...Object.keys(VIEW.failed).map((failure) => ({ ...IDLE, status: "error", failure })),
+    ];
+    for (const state of states) {
+      const screen = screenFor(VIEW, state);
+      expect([state.status, screen.busy, Boolean(screen.label), ["update", "restart", "relaunch"].includes(screen.action)])
+        .toEqual([state.status, false, true, true]);
+    }
+  });
 
 test("loading.html carries the screen's elements and loads its script", function test_loading_page_elements() {
   const html = fs.readFileSync(path.join(__dirname, "..", "assets", "loading.html"), "utf8");
@@ -161,3 +184,51 @@ test("loading.html carries the screen's elements and loads its script", function
   expect(html).toContain('<script src="refusal.js"></script>');
   expect(html).toMatch(/<div class="refusal" id="refusal" hidden>/);
 });
+
+// What the screen shows once the updater has found a release (update-state.js decides whether
+// it opens the data, which 2.6.0 opened): "downloading" for one it downloads, "too-old" otherwise.
+async function foundRelease(version, status) {
+  const p = page();
+  await showRefusal(p.doc, p.celerp, VIEW);
+  p.el("refusal-update").click();
+  p.on.onUpdateAvailable({ ...IDLE, status, version, percent: 0, revision: 2 });
+  return p;
+}
+
+test("a release that cannot open the data is not offered: the screen says no release opens it yet and offers Check again",
+  async function test_older_release_is_not_offered() {
+    const p = await foundRelease("2.5.9", "too-old");
+    expect(p.el("refusal-detail").textContent).toBe(VIEW.notReleased);
+    expect(p.el("status").textContent).toBe("Celerp 2.5.9 is the newest release, and it cannot open this data yet.");
+    expect(p.el("refusal-update")).toMatchObject({ textContent: "Check again", hidden: false, disabled: false });
+    p.el("refusal-update").click();
+    expect(p.calls).toEqual(["check", "check"]);
+    expect(p.el("refusal-update")).toMatchObject({ textContent: "Check again", disabled: true });
+    expect(p.el("status").textContent).toBe("Checking...");
+    // Quit and the installer page stay.
+    expect(p.el("refusal-quit").hidden).toBe(false);
+    expect(p.el("refusal-download").href).toBe(VIEW.downloadUrl);
+  });
+
+test("a release being downloaded is offered as the way out, and ends at Restart to install",
+  async function test_downloading_release_is_offered() {
+    const p = await foundRelease("2.6.0", "downloading");
+    expect(p.el("refusal-detail").textContent).toBe(VIEW.detail);
+    p.on.onUpdateDownloaded({ ...IDLE, status: "downloaded", version: "2.6.0", percent: 100, revision: 3 });
+    expect(p.el("refusal-update")).toMatchObject({ textContent: "Restart to install", hidden: false, disabled: false });
+    p.el("refusal-update").click();
+    expect(p.calls).toEqual(["check", "install"]);
+  });
+
+test("updater state from before the refusal offers one action: Celerp restarts and checks, once",
+  async function test_relaunch_is_offered() {
+    const p = page();
+    p.celerp.getUpdateState = async () => ({ ...IDLE, status: "relaunch", revision: 4 });
+    await showRefusal(p.doc, p.celerp, VIEW);
+    expect([p.el("refusal-detail").textContent, p.el("status").textContent]).toEqual([VIEW.relaunchDetail, ""]);
+    expect(p.el("refusal-update")).toMatchObject({ textContent: VIEW.relaunch, hidden: false, disabled: false });
+    p.el("refusal-update").click();
+    p.el("refusal-update").click();
+    expect(p.calls).toEqual(["relaunch"]);
+    expect(p.el("refusal-update")).toMatchObject({ textContent: "Restarting...", disabled: true });
+  });

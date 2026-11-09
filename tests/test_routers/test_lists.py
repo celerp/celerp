@@ -23,6 +23,12 @@ def _h(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
+async def _next_number(client, token, doc_type: str) -> str:
+    """The number the Numbering page says the next ``doc_type`` record takes."""
+    rows = (await client.get("/docs/sequences", headers=_h(token))).json()
+    return next(r["preview"] for r in rows if r["doc_type"] == doc_type)
+
+
 async def _create_list(client, token, **overrides) -> str:
     payload = {
         "list_type": "sale",
@@ -61,7 +67,7 @@ class TestListCRUD:
         assert r.status_code == 200
         body = r.json()
         assert "id" in body
-        assert body["id"].startswith("list:LST-")
+        assert body["id"].startswith("list:QUO-")
         assert "event_id" in body
 
     @pytest.mark.asyncio
@@ -615,6 +621,104 @@ class TestListSequence:
         assert n2 == n1 + 1
 
 
+class TestListPrefixes:
+    """Each list type is numbered from its own counter and prefix (SAL-007)."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("list_type,prefix", [
+        ("quotation", "QUO"), ("transfer", "TRF"), ("audit", "AUD"),
+        ("writeoff", "WO"), ("shipping_doc", "SHIP"),
+    ])
+    async def test_each_type_takes_its_own_prefix(self, client, list_type, prefix):
+        token = await _register(client)
+        eid = await _create_list(client, token, list_type=list_type)
+        assert eid.startswith(f"list:{prefix}-")
+
+    @pytest.mark.asyncio
+    async def test_counters_do_not_share_numbers(self, client):
+        token = await _register(client)
+        quote = await _create_list(client, token, list_type="quotation")
+        transfer = await _create_list(client, token, list_type="transfer")
+        quote2 = await _create_list(client, token, list_type="quotation")
+        assert quote.endswith("-0001") and transfer.endswith("-0001") and quote2.endswith("-0002")
+
+    @pytest.mark.asyncio
+    async def test_duplicate_keeps_the_types_prefix(self, client):
+        token = await _register(client)
+        eid = await _create_list(client, token, list_type="transfer")
+        r = await client.post(f"/lists/{eid}/duplicate", headers=_h(token))
+        assert r.status_code == 200, r.text
+        assert r.json()["id"].startswith("list:TRF-")
+
+    @pytest.mark.asyncio
+    async def test_a_types_prefix_setting_applies_and_the_old_list_setting_continues_until_then(self, client, session):
+        from test_routers.test_numbering_boundary import _legacy
+        token = await _register(client)
+        company_id = (await client.get("/companies/me", headers=_h(token))).json()["id"]
+        await _legacy(session, company_id, nxt=1)
+        for doc_type, body in (("list", {"prefix": "OLD"}), ("audit", {"prefix": "CNT"})):
+            r = await client.patch(f"/docs/sequences/{doc_type}", headers=_h(token), json=body)
+            assert r.status_code == 200, r.text
+        assert (await _create_list(client, token, list_type="audit")).startswith("list:CNT-")
+        # A 2.8.0 company's quotation, transfer and untyped Lists keep drawing from the shared
+        # counter, so their numbers do not restart; saving the transfer row splits transfers off
+        # under their own prefix. The quotation row is the documents' counter, so quotation Lists
+        # stay shared.
+        old = await _create_list(client, token, list_type="quotation")
+        assert old.startswith("list:OLD-") and old.endswith("-0001")
+        assert (await _create_list(client, token, list_type="transfer")).startswith("list:OLD-")
+        r = await client.patch("/docs/sequences/transfer", headers=_h(token), json={})
+        assert r.status_code == 200, r.text
+        split = await _create_list(client, token, list_type="transfer")
+        assert split.startswith("list:TRF-") and split.endswith("-0003")
+        r = await client.patch("/docs/sequences/quotation", headers=_h(token), json={})
+        assert r.status_code == 200, r.text
+        assert (await _create_list(client, token, list_type="quotation")).startswith("list:OLD-")
+
+    @pytest.mark.asyncio
+    async def test_a_list_prefix_setting_on_a_new_company_moves_no_list_type(self, client):
+        token = await _register(client)
+        r = await client.patch("/docs/sequences/list", headers=_h(token), json={"prefix": "OLD"})
+        assert r.status_code == 200, r.text
+        assert (await _create_list(client, token, list_type="quotation")).startswith("list:QUO-")
+        assert (await _create_list(client, token, list_type="transfer")).startswith("list:TRF-")
+
+    @pytest.mark.asyncio
+    async def test_a_number_another_list_type_took_is_skipped_not_refused(self, client):
+        """Every List type has its own counter but all share one number space. A counter
+        reaching a number another List was given draws the next free one."""
+        token = await _register(client)
+        taken = await _next_number(client, token, "quotation")
+        transfer = await _create_list(client, token, list_type="transfer", ref_id=taken)
+        quote = await _create_list(client, token, list_type="quotation")
+        assert transfer == f"list:{taken}" and quote != transfer and quote.endswith("-0002")
+        state = (await client.get(f"/lists/{transfer}", headers=_h(token))).json()
+        assert state["list_type"] == "transfer"
+
+    @pytest.mark.asyncio
+    async def test_a_duplicate_never_takes_another_lists_number(self, client):
+        token = await _register(client)
+        quote = await _create_list(client, token, list_type="quotation")
+        transfer = await _create_list(client, token, list_type="transfer",
+                                      ref_id=await _next_number(client, token, "quotation"))
+        r = await client.post(f"/lists/{quote}/duplicate", headers=_h(token))
+        assert r.status_code == 200, r.text
+        assert r.json()["id"] not in {quote, transfer}
+        state = (await client.get(f"/lists/{transfer}", headers=_h(token))).json()
+        assert state["list_type"] == "transfer"
+
+    @pytest.mark.asyncio
+    async def test_the_old_list_counter_is_still_in_the_api(self, client):
+        token = await _register(client)
+        rows = (await client.get("/docs/sequences", headers=_h(token))).json()
+        assert {"quotation", "transfer", "audit", "writeoff", "shipping_doc"} <= {r["doc_type"] for r in rows}
+        assert "list" not in {r["doc_type"] for r in rows}, "a new company draws nothing from it"
+        r = await client.patch("/docs/sequences/list", headers=_h(token), json={"prefix": "OLD"})
+        assert r.status_code == 200, r.text
+        rows = (await client.get("/docs/sequences", headers=_h(token))).json()
+        assert "list" in {r["doc_type"] for r in rows}
+
+
 # ---------------------------------------------------------------------------
 # Currency immutability
 # ---------------------------------------------------------------------------
@@ -884,3 +988,260 @@ async def test_list_lists_stable_order_on_issue_date_tie(client):
     mine = [i for i in paged if i in myids]
     assert sorted(mine) == sorted(ids)
     assert len(mine) == len(set(mine))
+
+
+# ---------------------------------------------------------------------------
+# The index names a list's status the way its page does
+# ---------------------------------------------------------------------------
+
+async def _index_row(client, token, eid) -> dict:
+    items = (await client.get("/lists?limit=100", headers=_h(token))).json()["items"]
+    return next(x for x in items if x["id"] == eid)
+
+
+class TestListIndexStatusLabel:
+
+    @pytest.mark.asyncio
+    async def test_quotation_reads_issued_then_sent_then_accepted(self, client, session):
+        from celerp.events.engine import emit_event
+        token = await _register(client)
+        eid = await _create_list(client, token, list_type="quotation")
+        assert (await _index_row(client, token, eid))["status_label"] == "draft"
+
+        await client.post(f"/lists/{eid}/finalize", headers=_h(token))
+        row = await _index_row(client, token, eid)
+        assert row["status"] == "finalized" and row["status_label"] == "issued"
+
+        await client.post(f"/lists/{eid}/send", headers=_h(token), json={"sent_via": "manual"})
+        row = await _index_row(client, token, eid)
+        assert row["status"] == "finalized" and row["status_label"] == "sent"
+
+        company_id = (await client.get("/companies/me", headers=_h(token))).json()["id"]
+        await emit_event(
+            session, company_id=company_id, entity_id=eid, entity_type="list", event_type="list.updated",
+            data={"fields_changed": {"accepted_at": {"new": "2026-10-24T00:00:00+00:00"}}},
+            actor_id=None, location_id=None, source="api", idempotency_key=uuid.uuid4().hex, metadata_={})
+        row = await _index_row(client, token, eid)
+        assert row["status"] == "finalized" and row["status_label"] == "accepted"
+
+    @pytest.mark.asyncio
+    async def test_finalized_transfer_is_in_transit_and_audit_is_counting(self, client):
+        token = await _register(client)
+        transfer = await _create_list(client, token, list_type="transfer", line_items=[], subtotal=0, total=0)
+        audit = await _create_list(client, token, list_type="audit", line_items=[], subtotal=0, total=0)
+        for eid in (transfer, audit):
+            assert (await client.post(f"/lists/{eid}/finalize", headers=_h(token))).status_code == 200
+        assert (await _index_row(client, token, transfer))["status_label"] == "in_transit"
+        assert (await _index_row(client, token, audit))["status_label"] == "counting"
+
+    @pytest.mark.asyncio
+    async def test_converted_quotation_reads_converted_and_filters_still_use_the_raw_status(self, client):
+        token = await _register(client)
+        eid = await _create_list(client, token, list_type="quotation")
+        await client.post(f"/lists/{eid}/finalize", headers=_h(token))
+        await client.post(f"/lists/{eid}/convert", headers=_h(token), json={"target_type": "memo"})
+        row = await _index_row(client, token, eid)
+        assert row["status"] == "closed" and row["status_label"] == "converted"
+        closed = (await client.get("/lists?status=closed&limit=100", headers=_h(token))).json()["items"]
+        assert eid in {x["id"] for x in closed}
+
+    @pytest.mark.asyncio
+    async def test_csv_export_keeps_its_columns(self, client):
+        token = await _register(client)
+        await _create_list(client, token, list_type="quotation")
+        r = await client.get("/lists/export/csv", headers=_h(token))
+        assert r.status_code == 200
+        assert r.text.splitlines()[0] == "id,ref_id,list_type,customer,date,total,status"
+
+
+# ---------------------------------------------------------------------------
+# Send / Mark as sent commits what it writes
+# ---------------------------------------------------------------------------
+
+def _count_commits(session, monkeypatch) -> list[int]:
+    """Count the session.commit() calls from now on. The test harness runs every request inside one
+    outer transaction, so a request that never commits still looks saved to a later read here;
+    counting the commits is how a test sees that production would have rolled the write back."""
+    calls: list[int] = []
+    real_commit = session.commit
+
+    async def spy():
+        calls.append(1)
+        await real_commit()
+
+    monkeypatch.setattr(session, "commit", spy)
+    return calls
+
+
+class TestListSendCommits:
+
+    @pytest.mark.asyncio
+    async def test_mark_as_sent_commits_once(self, client, session, monkeypatch):
+        token = await _register(client)
+        eid = await _create_list(client, token, list_type="quotation")
+        assert (await client.post(f"/lists/{eid}/finalize", headers=_h(token))).status_code == 200
+
+        calls = _count_commits(session, monkeypatch)
+        r = await client.post(f"/lists/{eid}/send", headers=_h(token), json={"sent_via": "manual"})
+        assert r.status_code == 200, r.text
+        assert len(calls) == 1, "Mark as Sent must commit its write exactly once"
+
+        detail = (await client.get(f"/lists/{eid}", headers=_h(token))).json()
+        assert detail["status"] == "finalized" and detail["sent_at"] and detail["sent_via"] == "manual"
+
+    @pytest.mark.asyncio
+    async def test_unmark_sent_commits_once(self, client, session, monkeypatch):
+        token = await _register(client)
+        eid = await _create_list(client, token, list_type="quotation")
+        await client.post(f"/lists/{eid}/finalize", headers=_h(token))
+        await client.post(f"/lists/{eid}/send", headers=_h(token), json={"sent_via": "manual"})
+
+        calls = _count_commits(session, monkeypatch)
+        assert (await client.post(f"/lists/{eid}/unmark-sent", headers=_h(token))).status_code == 200
+        assert len(calls) == 1
+        assert not (await client.get(f"/lists/{eid}", headers=_h(token))).json().get("sent_at")
+
+    @pytest.mark.asyncio
+    async def test_email_send_commits_once(self, client, session, monkeypatch):
+        """The email path commits before it hands the message to the relay, and only once."""
+        import celerp_docs.routes as docs_routes
+        import celerp_docs.routes_share as docs_share
+
+        sent: list[dict] = []
+
+        async def no_link(*_a, **_k):
+            return None
+
+        async def no_reply_to(*_a, **_k):
+            return None
+
+        monkeypatch.setattr(docs_share, "send_view_url", no_link)
+        monkeypatch.setattr(docs_routes, "_sender_reply_to", no_reply_to)
+        monkeypatch.setattr(docs_routes, "_email_with_receipt", lambda *a, **k: sent.append(k))
+
+        token = await _register(client)
+        eid = await _create_list(client, token, list_type="quotation")
+        await client.post(f"/lists/{eid}/finalize", headers=_h(token))
+
+        calls = _count_commits(session, monkeypatch)
+        r = await client.post(f"/lists/{eid}/send", headers=_h(token),
+                              json={"sent_to": "buyer@example.com", "sent_via": "email"})
+        assert r.status_code == 200, r.text
+        assert len(calls) == 1
+        assert len(sent) == 1
+        assert (await client.get(f"/lists/{eid}", headers=_h(token))).json()["sent_to"] == "buyer@example.com"
+
+    @pytest.mark.asyncio
+    async def test_send_before_issue_is_refused_with_a_keyed_message(self, client):
+        token = await _register(client)
+        eid = await _create_list(client, token, list_type="quotation")
+        r = await client.post(f"/lists/{eid}/send", headers=_h(token), json={"sent_via": "manual"})
+        assert r.status_code == 409
+        assert r.json()["detail"]["message_key"] == "docs.list_issue_before_send"
+
+
+# ---------------------------------------------------------------------------
+# Issue date: lists carry one, converted documents get one, the docs index windows by it
+# ---------------------------------------------------------------------------
+
+async def _company_today(client, token) -> str:
+    from celerp.services.business_time import business_date_of
+    settings = (await client.get("/companies/me", headers=_h(token))).json()["settings"]
+    return business_date_of(None, settings.get("timezone"))
+
+
+async def _clear_issue_date(client, token, eid) -> None:
+    """A list as it was stored before lists carried an issue date."""
+    r = await client.patch(f"/lists/{eid}", headers=_h(token), json={"fields_changed": {"issue_date": {"new": None}}})
+    assert r.status_code == 200, r.text
+
+
+class TestListIssueDate:
+
+    @pytest.mark.asyncio
+    async def test_new_list_is_dated_the_company_day(self, client):
+        token = await _register(client)
+        eid = await _create_list(client, token, list_type="quotation")
+        detail = (await client.get(f"/lists/{eid}", headers=_h(token))).json()
+        assert detail["issue_date"] == await _company_today(client, token)
+        assert (await client.get(f"/lists/{eid}/page", headers=_h(token))).json()["list"]["issue_date"] == detail["issue_date"]
+
+    @pytest.mark.asyncio
+    async def test_given_issue_date_is_kept(self, client):
+        token = await _register(client)
+        eid = await _create_list(client, token, issue_date="2026-05-07")
+        assert (await client.get(f"/lists/{eid}", headers=_h(token))).json()["issue_date"] == "2026-05-07"
+
+    @pytest.mark.asyncio
+    async def test_issue_date_is_editable_in_draft_only_like_a_document(self, client):
+        token = await _register(client)
+        eid = await _create_list(client, token, list_type="quotation")
+        r = await client.patch(f"/lists/{eid}", headers=_h(token),
+                               json={"fields_changed": {"issue_date": {"new": "2026-03-01"}}})
+        assert r.status_code == 200, r.text
+        assert (await client.get(f"/lists/{eid}", headers=_h(token))).json()["issue_date"] == "2026-03-01"
+
+        await client.post(f"/lists/{eid}/finalize", headers=_h(token))
+        r = await client.patch(f"/lists/{eid}", headers=_h(token),
+                               json={"fields_changed": {"issue_date": {"new": "2026-03-02"}}})
+        assert r.status_code == 409
+        # A document refuses the same edit once issued.
+        doc = (await client.post("/docs", headers=_h(token), json={
+            "doc_type": "invoice", "line_items": [{"name": "Ring", "quantity": 1, "unit_price": 10, "line_total": 10}],
+            "subtotal": 10, "total": 10})).json()["id"]
+        assert (await client.post(f"/docs/{doc}/finalize", headers=_h(token))).status_code == 200
+        r = await client.patch(f"/docs/{doc}", headers=_h(token),
+                               json={"fields_changed": {"issue_date": {"new": "2026-03-02"}}})
+        assert r.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_list_without_issue_date_reads_the_date_the_index_shows(self, client):
+        token = await _register(client)
+        eid = await _create_list(client, token, list_type="quotation")
+        await _clear_issue_date(client, token, eid)
+        detail = (await client.get(f"/lists/{eid}", headers=_h(token))).json()
+        page = (await client.get(f"/lists/{eid}/page", headers=_h(token))).json()["list"]
+        row = next(x for x in (await client.get("/lists?limit=100", headers=_h(token))).json()["items"] if x["id"] == eid)
+        assert detail["issue_date"] == page["issue_date"] == row["date"]
+        assert detail["issue_date"] == await _company_today(client, token)
+
+    @pytest.mark.asyncio
+    async def test_duplicate_is_dated_today_not_like_the_original(self, client):
+        token = await _register(client)
+        eid = await _create_list(client, token, list_type="quotation", issue_date="2026-01-02")
+        copy = (await client.post(f"/lists/{eid}/duplicate", headers=_h(token))).json()["id"]
+        assert (await client.get(f"/lists/{copy}", headers=_h(token))).json()["issue_date"] == await _company_today(client, token)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("target,doc_type", [("memo", "memo"), ("invoice", "invoice")])
+    async def test_converted_document_is_dated_the_conversion_day_and_found_in_its_window(self, client, target, doc_type):
+        token = await _register(client)
+        eid = await _create_list(client, token, list_type="quotation", issue_date="2026-01-02")
+        await client.post(f"/lists/{eid}/finalize", headers=_h(token))
+        r = await client.post(f"/lists/{eid}/convert", headers=_h(token), json={"target_type": target})
+        assert r.status_code == 200, r.text
+        doc_id = r.json()["target_doc_id"]
+        today = await _company_today(client, token)
+
+        doc = (await client.get(f"/docs/{doc_id}", headers=_h(token))).json()
+        assert doc["issue_date"] == today and doc["doc_type"] == doc_type and doc["status"] == "draft"
+        found = (await client.get(f"/docs?doc_type={doc_type}&status=draft&date_from={today}&date_to={today}",
+                                  headers=_h(token))).json()["items"]
+        assert doc_id in {x["id"] for x in found}
+        # The quotation names what it became.
+        closed = (await client.get(f"/lists/{eid}", headers=_h(token))).json()
+        assert closed["converted_to"] == doc_id and closed["converted_to_type"] == target
+
+    @pytest.mark.asyncio
+    async def test_document_without_issue_date_stays_inside_its_date_window(self, client):
+        token = await _register(client)
+        doc = (await client.post("/docs", headers=_h(token), json={"doc_type": "memo", "line_items": []})).json()["id"]
+        r = await client.patch(f"/docs/{doc}", headers=_h(token), json={"fields_changed": {"issue_date": {"new": None}}})
+        assert r.status_code == 200, r.text
+        today = await _company_today(client, token)
+
+        inside = (await client.get(f"/docs?doc_type=memo&date_from={today}&date_to={today}", headers=_h(token))).json()["items"]
+        row = next(x for x in inside if x["id"] == doc)
+        assert row["issue_date"] == today
+        outside = (await client.get("/docs?doc_type=memo&date_from=2020-01-01&date_to=2020-12-31", headers=_h(token))).json()["items"]
+        assert doc not in {x["id"] for x in outside}

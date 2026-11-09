@@ -1541,10 +1541,12 @@ async def job_steps(session, job_ids: list[uuid.UUID]) -> dict[uuid.UUID, list]:
 
 def file_view(step) -> dict:
     """One file of a reading job as the user sees it."""
+    from celerp.ai import batch
     result = step.result or {}
     return {"file_id": step.key, "filename": result.get("filename") or step.key,
             "status": FILE_STATUS[step.state], "charged": step.credits > 0, "credits": step.credits,
-            "error": result.get("error"), "answer": result.get("answer"), "extraction": result.get("extraction")}
+            "error": result.get("error"), "answer": result.get("answer"), "extraction": result.get("extraction"),
+            "bill_count": batch.bill_count(result.get("extraction"))}
 
 
 def retry_offer(steps: list) -> dict | None:

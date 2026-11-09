@@ -28,7 +28,7 @@ Trademarks are not licensed by any code license; see `legal/TRADEMARK.md`.
 
 | Variable | Default | Notes |
 |----------|---------|-------|
-| `DATABASE_URL` | _(required)_ | `postgresql+asyncpg://user:pass@localhost:5432/dbname` |
+| `DATABASE_URL` | _(required to run the app)_ | `postgresql+asyncpg://user:pass@localhost:5432/dbname`. The tests never read it (see [Running the tests](#running-the-tests)) |
 | `JWT_SECRET` | _(required)_ | Fatal on startup if unset or default in production |
 | `ALLOW_INSECURE_JWT` | `false` | Set `true` in dev/CI |
 | `CELERP_PUBLIC_URL` | _(optional)_ | Base URL for share links |
@@ -52,7 +52,7 @@ celerp upgrade    # pip install --upgrade celerp + migrate
 
 | Flag | Default | Notes |
 |------|---------|-------|
-| `--db-url` | `postgresql+asyncpg://celerp:celerp@localhost:5432/celerp` | PostgreSQL connection URL |
+| `--db-url` | _(none: see below)_ | PostgreSQL connection URL, e.g. `postgresql+asyncpg://celerp:devpass@localhost:5432/celerp` (the same as `.env.example`) |
 | `--api-port` | `8000` | API server port |
 | `--ui-port` | `8080` | UI server port |
 | `--cloud-token` | _(empty)_ | Celerp Connect token (optional) |
@@ -89,8 +89,8 @@ the bundled cluster and restore into the target, using the bundled tools so vers
 ```bash
 BIN=$(celerp status >/dev/null; python -c "from celerp import embedded_pg; print(embedded_pg.bin_dir())")
 "$BIN/pg_dump" "$(python -c "from celerp import embedded_pg,pathlib; from celerp.config import config_path; print(embedded_pg.ensure_cluster(config_path().parent).replace('+asyncpg',''))")" \
-  | psql "postgresql://celerp:celerp@newhost:5432/celerp"
-celerp init --force --db-url "postgresql+asyncpg://celerp:celerp@newhost:5432/celerp"
+  | psql "postgresql://celerp:<password>@newhost:5432/celerp"
+celerp init --force --db-url "postgresql+asyncpg://celerp:<password>@newhost:5432/celerp"
 ```
 
 ### Run as a service (systemd)
@@ -164,6 +164,31 @@ auto = false
 | `Directory 'static' does not exist` | Run uvicorn from the repo root, not a subdirectory |
 | `System already bootstrapped` | Drop and recreate the DB, or `DELETE FROM users;` via psql |
 
+## Running the tests
+
+The tests run on **real PostgreSQL**, the same database the app uses. There is no SQLite mode.
+
+```bash
+pytest tests/ -n auto     # -n sets the number of parallel workers
+```
+
+`conftest.py` starts a throwaway `postgres:16-alpine` container through
+[testcontainers](https://testcontainers.com/), so **Docker must be running**. Each pytest-xdist
+worker gets its own database, and the container is discarded at the end of the run.
+
+To use a server of your own instead, create a database with "test" in its name on this machine
+and point `CELERP_TEST_DATABASE_URL` at it. The tests refuse any other server, never read
+`DATABASE_URL` and never change the server's settings, so a `.env` loaded into your shell to run
+the app cannot send them to a real database.
+
+**Colima:** testcontainers' Ryuk helper can fail to start with
+`error while creating mount source path '.../docker.sock': operation not supported`. Set
+`TESTCONTAINERS_RYUK_DISABLED=true` for the run:
+
+```bash
+TESTCONTAINERS_RYUK_DISABLED=true pytest tests/ -n auto
+```
+
 ## Module system
 
 Each module is a self-contained Python package under `default_modules/`. A module registers:
@@ -179,7 +204,7 @@ To add a new module, follow the pattern in any existing module (e.g. `celerp-inv
 
 - DRY, SOLID, KISS
 - Small pure functions, explicit contracts, deterministic behavior
-- Tests use SQLite in-memory - no Postgres required
+- Tests run on real PostgreSQL, not SQLite (see [Running the tests](#running-the-tests))
 - Name test files after the module they test
 - Use `conftest.py` for shared fixtures
 

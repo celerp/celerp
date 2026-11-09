@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import pathlib
+import re
 
 import pytest
 
@@ -81,3 +82,63 @@ def test_no_button_navigates_away_after_its_request_whatever_the_reply():
              for p in _ui_sources() for n, line in enumerate(p.read_text().splitlines(), 1)
              if "hx_on__after_request" in line and "window.location" in line]
     assert not found, f"a request's refusal is wiped by a navigation after it: {found}"
+
+
+def _trigger_names(value) -> list[str]:
+    """The event names an HX-Trigger value written in place fires: a plain name list, or the keys
+    of a json.dumps({...}) literal."""
+    if isinstance(value, ast.Constant) and isinstance(value.value, str):
+        return [n.strip() for n in value.value.split(",") if n.strip()]
+    if isinstance(value, ast.Call) and _callee(value) == "dumps" and value.args and isinstance(value.args[0], ast.Dict):
+        return [k.value for k in value.args[0].keys if isinstance(k, ast.Constant)]
+    return []
+
+
+def _hx_triggers(tree) -> list[tuple[int, str]]:
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Dict):
+            pairs = zip(node.keys, node.values)
+        elif isinstance(node, ast.Call) and len(node.args) == 2:
+            pairs = [tuple(node.args)]
+        elif isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Subscript):
+            pairs = [(node.targets[0].slice, node.value)]
+        else:
+            continue
+        found += [(node.lineno, name) for k, v in pairs
+                  if isinstance(k, ast.Constant) and k.value == "HX-Trigger" for name in _trigger_names(v)]
+    return found
+
+
+def test_every_hx_trigger_event_has_a_listener():
+    """An event a reply fires through HX-Trigger with nobody listening is a reply the user never
+    sees: a refusal sent that way leaves the page unchanged and silent."""
+    sources = sorted({*_ROOT.glob("ui/**/*.py"), *_ROOT.glob("default_modules/*/*/**/*.py")} - {
+        p for p in _ROOT.glob("default_modules/*/tests/**/*.py")})
+    texts = [p.read_text() for p in sources] + [p.read_text() for p in _ROOT.glob("ui/static/**/*.js")]
+    emitted = [(f"{p.relative_to(_ROOT).as_posix()}:{line}", name)
+               for p in sources for line, name in _hx_triggers(ast.parse(p.read_text()))]
+    assert emitted, "the walk found no HX-Trigger replies; it is broken"
+    # A listener is an event listener, an hx-trigger "from:" clause, or a script reading the
+    # parsed header's member (obj.celerpToast).
+    unheard = [(where, name) for where, name in emitted if not any(re.search(
+        rf"addEventListener\(\s*['\"]{name}['\"]|\b{name}\s+from:|htmx\.on\(\s*['\"]{name}['\"]|\.{name}\b(?!\s*\()",
+        text) for text in texts)]
+    assert not unheard, f"HX-Trigger events nothing listens for: {unheard}"
+
+
+def test_every_create_blank_door_answers_a_refusal_through_refusal_response():
+    """A New button that cannot create shows why, the same way at every door."""
+    doors = {}
+    for path in _ui_sources():
+        for fn in ast.walk(ast.parse(path.read_text())):
+            if isinstance(fn, ast.AsyncFunctionDef) and any(
+                    isinstance(d, ast.Call) and d.args and isinstance(d.args[0], ast.Constant)
+                    and str(d.args[0].value).endswith("/create-blank") for d in fn.decorator_list):
+                handlers = [h for h in ast.walk(fn) if isinstance(h, ast.ExceptHandler)
+                            and any(n.endswith("APIError") for n in _names(h.type))]
+                doors[f"{path.relative_to(_ROOT).as_posix()}:{fn.name}"] = handlers and all(
+                    any(isinstance(r, ast.Return) and isinstance(r.value, ast.Call)
+                        and _callee(r.value) == "refusal_response" for r in ast.walk(h)) for h in handlers)
+    assert len(doors) >= 3, doors
+    assert all(doors.values()), doors

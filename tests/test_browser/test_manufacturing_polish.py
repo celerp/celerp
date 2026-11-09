@@ -69,16 +69,16 @@ def test_components_filter_tab_and_split_box_layout(page, ui_server, api):
     box.fill("NO-SUCH-ITEM-123")
     page.wait_for_selector("#mfg-table:has-text('Nothing to make')", timeout=8000)
 
-    # /lists: the same date-filter bar is present.
+    # /lists: the same date dropdown is present.
     page.goto(f"{ui_server}/lists", wait_until="domcontentloaded")
-    page.wait_for_selector(".preset-btn", timeout=10000)
+    page.wait_for_selector(".date-preset-select", timeout=10000)
 
-    # /docs?view=drafts&type=invoice: no redundant chip at all, and the date bar is present.
+    # /docs?view=drafts&type=invoice: no redundant chip at all, and the date dropdown is present.
     api.post("/docs", json={"doc_type": "invoice", "line_items": [], "total": 0})  # ensure a draft exists
     page.goto(f"{ui_server}/docs?view=drafts&type=invoice&preset=all", wait_until="domcontentloaded")
     page.wait_for_selector("#doc-table, .data-table", timeout=10000)
     assert page.locator(".drafts-tab").count() == 0
-    assert page.locator(".preset-btn").count() >= 7  # full date-filter bar on the drafts view too
+    assert page.locator(".date-preset-select option").count() >= 7  # full set of date presets on the drafts view too
 
     # Item 4: on a splittable item, the split card renders the shared split table
     # (mother row + child row + add-child button + Confirm), the same UI as bulk split.

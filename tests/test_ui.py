@@ -3335,6 +3335,76 @@ class TestDocumentPolish:
         assert b"ct:CUST-001" in r.content
 
 
+class TestListsTableStatus:
+
+    @pytest.mark.asyncio
+    async def test_table_shows_the_label_the_list_page_shows(self, ui_client):
+        rows = [
+            {"id": "list:1", "ref_id": "LST-1", "list_type": "quotation", "customer": "Acme", "date": "2026-10-24",
+             "total": 100, "status": "finalized", "status_label": "issued", "item_count": 1, "total_weight": None},
+            {"id": "list:2", "ref_id": "LST-2", "list_type": "transfer", "customer": None, "date": "2026-10-24",
+             "total": 0, "status": "finalized", "status_label": "in_transit", "item_count": 1, "total_weight": None},
+        ]
+        ui_client.cookies.update(_authed())
+        with (
+            patch("ui.api_client.list_lists", new=AsyncMock(return_value={"items": rows, "total": 2})),
+            patch("ui.api_client.get_list_summary", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.get("/lists")
+        assert r.status_code == 200
+        html = r.content.decode()
+        assert ">Issued<" in html and ">In transit<" in html
+        assert ">Finalized<" not in html
+
+    @pytest.mark.asyncio
+    async def test_table_falls_back_to_the_raw_status_without_a_label(self, ui_client):
+        rows = [{"id": "list:1", "ref_id": "LST-1", "list_type": "quotation", "customer": "Acme", "date": "2026-10-24",
+                 "total": 100, "status": "finalized", "item_count": 1, "total_weight": None}]
+        ui_client.cookies.update(_authed())
+        with (
+            patch("ui.api_client.list_lists", new=AsyncMock(return_value={"items": rows, "total": 1})),
+            patch("ui.api_client.get_list_summary", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.get("/lists")
+        assert ">Finalized<" in r.content.decode()
+
+
+class TestConvertedQuotationDetail:
+
+    @pytest.mark.asyncio
+    async def test_converted_quotation_links_to_the_document_it_became(self, ui_client):
+        quotation = {
+            "entity_id": "list:LST-1", "list_type": "quotation", "status": "closed", "result": "converted",
+            "converted_to": "doc:MEMO-1", "converted_to_type": "memo", "issue_date": "2026-10-24",
+            "currency": "USD", "discount": 0, "tax": 0, "subtotal": 0, "total": 0, "line_items": [],
+        }
+        from bs4 import BeautifulSoup
+        ui_client.cookies.update(_authed())
+        with (
+            patch("ui.api_client.get_list", new=AsyncMock(return_value=quotation)),
+            patch("ui.api_client.get_list_page", create=True, new=_list_page_stub(quotation)),
+        ):
+            r = await ui_client.get("/lists/list:LST-1")
+        assert r.status_code == 200
+        link = BeautifulSoup(r.content.decode(), "html.parser").find("a", href="/docs/doc:MEMO-1")
+        assert link is not None and link.get_text(strip=True) == "MEMO-1"
+        assert "Converted to:" in r.content.decode()
+
+    @pytest.mark.asyncio
+    async def test_unconverted_quotation_has_no_converted_link(self, ui_client):
+        quotation = {
+            "entity_id": "list:LST-2", "list_type": "quotation", "status": "finalized", "issue_date": "2026-10-24",
+            "currency": "USD", "discount": 0, "tax": 0, "subtotal": 0, "total": 0, "line_items": [],
+        }
+        ui_client.cookies.update(_authed())
+        with (
+            patch("ui.api_client.get_list", new=AsyncMock(return_value=quotation)),
+            patch("ui.api_client.get_list_page", create=True, new=_list_page_stub(quotation)),
+        ):
+            r = await ui_client.get("/lists/list:LST-2")
+        assert "Converted to:" not in r.content.decode()
+
+
 class TestWriteoffListDetail:
     """A draft write-off list renders qty_out / account / comment as on-page click-to-edit cells
     (GDR 2f), the account picker is filtered to expense and equity chart accounts (function-level
@@ -3792,8 +3862,9 @@ class TestModuleAwareSidebar:
         slots.clear()
 
     def _html(self, settings, modules=None) -> str:
+        from fasthtml.common import to_xml
         from ui.components.shell import _sidebar
-        return str(_sidebar("", request=self._request(modules), settings=settings))
+        return to_xml(_sidebar("", request=self._request(modules), settings=settings))
 
     def test_sidebar_hides_modules_the_company_does_not_use(self, nav):
         html = self._html({"enabled_modules": ["celerp-docs"]})
@@ -4486,6 +4557,17 @@ class TestSprint4DocCreation:
         assert r.status_code == 204
         assert "HX-Redirect" in r.headers
         assert "/docs/doc:INV-2026-0001" in r.headers["HX-Redirect"]
+
+    @pytest.mark.asyncio
+    async def test_create_blank_answers_a_refused_number_with_its_refusal(self, ui_client):
+        """A New Document the API refuses answers 422 with the refusal, which the page's banner shows."""
+        ui_client.cookies.update(_authed())
+        message = "A number can have at most 100 characters. This one has 101."
+        with patch("ui.api_client.create_doc", new=AsyncMock(side_effect=APIError(422, message))):
+            r = await ui_client.post("/docs/create-blank?type=quotation")
+        assert r.status_code == 422
+        assert r.text == message
+        assert "HX-Redirect" not in r.headers and "HX-Trigger" not in r.headers
 
     @pytest.mark.asyncio
     async def test_create_blank_unauthorized_redirects(self, ui_client):
@@ -11650,7 +11732,7 @@ class TestAuditHighlightScoping:
     async def test_non_audit_drops_scanned_highlight(self, ui_client):
         # Same audited_at in the data, but a quotation must not paint the highlight.
         ui_client.cookies.update(_authed())
-        with patch("ui.api_client.get_list", new=AsyncMock(return_value=self._list("quotation"))):
+        with patch("ui.api_client.get_list_page", new=_list_page_stub(self._list("quotation"))):
             r = await ui_client.get("/lists/list:1")
         assert r.status_code == 200
         assert "data-row--audited" not in r.text
@@ -11693,7 +11775,7 @@ class TestListScanInPlace:
         # The list scan branch refetches the page of lines being viewed and swaps #line-body instead
         # of reloading. In-place paging never changes the URL, so the refetch cannot use location.href.
         ui_client.cookies.update(_authed())
-        with patch("ui.api_client.get_list", new=AsyncMock(return_value=self._DRAFT)):
+        with patch("ui.api_client.get_list_page", new=_list_page_stub(self._DRAFT)):
             r = await ui_client.get("/lists/list:1")
         assert r.status_code == 200
         assert "DOMParser" in r.text
@@ -11705,7 +11787,7 @@ class TestListScanInPlace:
         # A list accumulates scans client-side and submits the whole run with one Add button; Enter
         # only appends a comma, so the submit button is the sole thing that hits the server.
         ui_client.cookies.update(_authed())
-        with patch("ui.api_client.get_list", new=AsyncMock(return_value=self._DRAFT)):
+        with patch("ui.api_client.get_list_page", new=_list_page_stub(self._DRAFT)):
             r = await ui_client.get("/lists/list:1")
         assert r.status_code == 200
         assert 'id="scan-bar-add"' in r.text
@@ -11754,7 +11836,7 @@ class TestAuditColumnAlignment:
     async def test_draft_audit_rows_align_with_header_and_drop_unit(self, ui_client):
         import re
         ui_client.cookies.update(_authed())
-        with patch("ui.api_client.get_list", new=AsyncMock(return_value=self._AUDIT)):
+        with patch("ui.api_client.get_list_page", new=_list_page_stub(self._AUDIT)):
             r = await ui_client.get("/lists/list:1")
         assert r.status_code == 200
         headers = re.findall(r'<th[^>]*class="[^"]*?(col-[\w-]+)', r.text)
@@ -12899,6 +12981,36 @@ class TestListFieldPatch:
                                       data={"value": "transfer"})
         assert r.status_code == 204, r.text
         assert r.headers.get("HX-Redirect") == "/lists/list:1"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("action,api_call,toast", [
+        ("mark_sent", "send_list", "Marked as sent."),
+        ("unmark_sent", "unmark_list_sent", "Sent marker cleared."),
+    ])
+    async def test_mark_and_unmark_sent_reload_with_a_toast(self, ui_client, action, api_call, toast):
+        ui_client.cookies.update(_authed())
+        with patch(f"ui.api_client.{api_call}", new=AsyncMock(return_value={"ok": True})):
+            r = await ui_client.post(f"/lists/list:1/action/{action}")
+        assert r.status_code == 204, r.text
+        assert r.headers.get("HX-Redirect") == "/lists/list:1"
+        assert json.loads(r.headers["HX-Trigger"])["celerpToast"] == {"message": toast, "type": "success"}
+
+    @pytest.mark.asyncio
+    async def test_issue_date_is_edited_inline_like_a_document(self, ui_client):
+        ui_client.cookies.update(_authed())
+        with patch("ui.api_client.get_list", new=AsyncMock(return_value={**self._LST, "issue_date": "2026-03-01"})):
+            r = await ui_client.get("/lists/list:1/field/issue_date/edit")
+        assert r.status_code == 200
+        assert 'type="date"' in r.text and 'value="2026-03-01"' in r.text
+        with (
+            patch("ui.api_client.patch_list", new=AsyncMock(return_value={"event_id": "e1"})) as patched,
+            patch("ui.api_client.get_list", new=AsyncMock(return_value={**self._LST, "issue_date": "2026-03-02"})),
+        ):
+            r = await ui_client.patch("/lists/list:1/field/issue_date", data={"value": "2026-03-02"})
+        assert r.status_code == 200, r.text
+        patched.assert_awaited_once()
+        assert patched.await_args.args[2] == {"issue_date": "2026-03-02"}
+        assert "2026-03-02" in r.text
 
     @pytest.mark.asyncio
     async def test_patch_receiver_type_returns_display_cell(self, ui_client):
@@ -15226,7 +15338,7 @@ class TestProformaNumbering:
         from unittest.mock import MagicMock
         company = MagicMock()
         company.settings = {}
-        ref = next_doc_ref(company, "proforma")
+        ref = next_doc_ref(company, "proforma", frozenset())
         assert ref.startswith("PF-")
 
     def test_invoice_sequence_still_works(self):
@@ -15235,7 +15347,7 @@ class TestProformaNumbering:
         from unittest.mock import MagicMock
         company = MagicMock()
         company.settings = {}
-        ref = next_doc_ref(company, "invoice")
+        ref = next_doc_ref(company, "invoice", frozenset())
         assert ref.startswith("INV-")
 
     def test_proforma_in_all_sequences(self):
@@ -15244,7 +15356,7 @@ class TestProformaNumbering:
         from unittest.mock import MagicMock
         company = MagicMock()
         company.settings = {}
-        seqs = get_all_sequences(company)
+        seqs = get_all_sequences(company, frozenset())
         doc_types = {s["doc_type"] for s in seqs}
         assert "proforma" in doc_types
 
@@ -15252,6 +15364,17 @@ class TestProformaNumbering:
         """Proforma appears in sales doc types for settings display."""
         from ui.routes.settings_sales import _SALES_DOC_TYPES
         assert "proforma" in _SALES_DOC_TYPES
+
+    def test_every_list_type_is_numbered_in_sales_settings_with_the_old_counter_while_it_is_kept(self):
+        """SAL-007: the five list types have a Numbering row, and so does the shared List counter,
+        which the API lists only while a company has it."""
+        from ui.routes.settings_sales import _SALES_DOC_TYPES
+        assert {"quotation", "transfer", "audit", "writeoff", "shipping_doc", "list"} <= _SALES_DOC_TYPES
+
+    def test_list_type_numbering_rows_are_labelled_in_the_users_language(self):
+        from ui.i18n import doc_type_label
+        for dt, label in (("transfer", "Transfer"), ("audit", "Audit"), ("writeoff", "Write-off")):
+            assert doc_type_label(dt) == label
 
     def test_finalize_projection_updates_ref(self):
         """doc.finalized event with ref_id updates the projection state."""
@@ -18409,11 +18532,10 @@ class TestDraftStatusColumn:
         item = {"entity_id": "item:q1", "sku": "Q-A", "name": "Widget", "status": "reserved",
                 "quantity": 1}
         ui_client.cookies.update(_authed())
-        with (
-            patch("ui.api_client.get_list", new=AsyncMock(return_value=lst)),
-            patch("ui.api_client.get_items_metadata",
-                  new=AsyncMock(return_value={"item:q1": item})),
-        ):
+        # The page read carries the catalog metadata for the page's items (item_meta).
+        page = {"list": {k: v for k, v in lst.items() if k != "line_items"},
+                "items": lst["line_items"], "total": 1, "version": 1, "item_meta": {"item:q1": item}}
+        with patch("ui.api_client.get_list_page", new=AsyncMock(return_value=page)):
             r = await ui_client.get("/lists/list:q1")
         assert r.status_code == 200
         assert "badge--reserved" in r.text, "finalized list must show the item's real status"

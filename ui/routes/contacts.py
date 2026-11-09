@@ -1483,10 +1483,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return P(t("error.session_expired"), cls="cell-error")
-        try:
-            notes = await api.list_contact_notes(token, contact_id)
-        except APIError:
-            notes = []
+        notes = await api.list_contact_notes(token, contact_id)
         tz = await _company_timezone(token)
         try:
             contact = await api.get_contact(token, contact_id)
@@ -1500,12 +1497,9 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return P(t("error.session_expired"), cls="cell-error")
-        try:
-            ledger_resp, company = await _asyncio.gather(
-                api.list_ledger(token, {"entity_id": contact_id, "limit": 10}), api.get_company(token))
-            ledger = ledger_resp.get("items", []) if isinstance(ledger_resp, dict) else []
-        except Exception:
-            ledger, company = [], {}
+        ledger_resp, company = await _asyncio.gather(
+            api.list_ledger(token, {"entity_id": contact_id, "limit": 10}), api.get_company(token))
+        ledger = ledger_resp.get("items", []) if isinstance(ledger_resp, dict) else []
         return _contact_ledger_table(ledger, can_open(company, "celerp-docs"))
 
     # ── Notes routes ─────────────────────────────────────────────────────
@@ -1522,10 +1516,7 @@ def setup_routes(app):
                 await api.add_contact_note(token, contact_id, {"note": text})
             except APIError as e:
                 return P(str(e.detail), cls="cell-error")
-        try:
-            notes = await api.list_contact_notes(token, contact_id)
-        except APIError:
-            notes = []
+        notes = await api.list_contact_notes(token, contact_id)
         tz = await _company_timezone(token)
         return _notes_tab(contact_id, notes, tz)
 
@@ -1534,10 +1525,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return P(t("error.session_expired"), cls="cell-error")
-        try:
-            notes = await api.list_contact_notes(token, contact_id)
-        except APIError:
-            notes = []
+        notes = await api.list_contact_notes(token, contact_id)
         note = next((n for n in notes if (n.get("note_id") or n.get("id")) == note_id), {})
         return _shared_note_edit_form(
             note_id=note_id,
@@ -1559,10 +1547,7 @@ def setup_routes(app):
                 await api.update_contact_note(token, contact_id, note_id, {"note": text})
             except APIError as e:
                 return P(str(e.detail), cls="cell-error")
-        try:
-            notes = await api.list_contact_notes(token, contact_id)
-        except APIError:
-            notes = []
+        notes = await api.list_contact_notes(token, contact_id)
         tz = await _company_timezone(token)
         return _notes_tab(contact_id, notes, tz)
 
@@ -1575,10 +1560,7 @@ def setup_routes(app):
             await api.delete_contact_note(token, contact_id, note_id)
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        try:
-            notes = await api.list_contact_notes(token, contact_id)
-        except APIError:
-            notes = []
+        notes = await api.list_contact_notes(token, contact_id)
         tz = await _company_timezone(token)
         return _notes_tab(contact_id, notes, tz)
 
@@ -1644,10 +1626,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return P(t("error.session_expired"), cls="cell-error")
-        try:
-            contact = await api.get_contact(token, contact_id)
-        except APIError:
-            contact = {}
+        contact = await api.get_contact(token, contact_id)
         addresses = list(contact.get("addresses") or [])
         addr = next((a for a in addresses if str(a.get("address_id", "")) == address_id), {})
         return Div(
@@ -1705,10 +1684,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return P(t("error.session_expired"), cls="cell-error")
-        try:
-            contact = await api.get_contact(token, contact_id)
-        except APIError:
-            contact = {}
+        contact = await api.get_contact(token, contact_id)
         # Never delete the primary address - the contact (incl. the company self-contact) must always keep
         # a primary billing address. The UI hides the delete button on it; this guards the route too.
         target = next((a for a in (contact.get("addresses") or []) if str(a.get("address_id", "")) == address_id), None)
@@ -1729,10 +1705,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return P(t("error.session_expired"), cls="cell-error")
-        try:
-            contact = await api.get_contact(token, contact_id)
-        except APIError:
-            contact = {}
+        contact = await api.get_contact(token, contact_id)
         return _addresses_section(contact)
 
     @app.post("/contacts/{contact_id}/addresses/{address_id}/make-primary")
@@ -1801,10 +1774,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return P(t("error.session_expired"), cls="cell-error")
-        try:
-            contact = await api.get_contact(token, contact_id)
-        except APIError:
-            contact = {}
+        contact = await api.get_contact(token, contact_id)
         people = list(contact.get("people") or [])
         person = next((p for p in people if str(p.get("person_id", "")) == person_id), {})
         return Div(
@@ -2032,11 +2002,7 @@ def setup_routes(app):
         form = await request.form()
         tag = str(form.get("tag", "")).strip()
         if not tag:
-            try:
-                contact = await api.get_contact(token, contact_id)
-            except APIError as e:
-                logger.warning("API error fetching contact %s for tags: %s", contact_id, e.detail)
-                contact = {}
+            contact = await api.get_contact(token, contact_id)
             try:
                 vocab = await api.get_contact_tags_vocabulary(token)
             except Exception:

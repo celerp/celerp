@@ -242,6 +242,23 @@ def _live_columns(inspector, table: str) -> set[str] | None:
         return None
 
 
+def _invalid_indexes(inspector, table: str) -> set[str]:
+    """The indexes on *table* Postgres keeps but marks invalid (``pg_index.indisvalid``), as a
+    cancelled CREATE INDEX CONCURRENTLY leaves them. Read from the catalog, not reflection:
+    SQLAlchemy 2.0 (the Python 3.10 pin) reflects an invalid index like a valid one."""
+    if inspector.dialect.name != "postgresql":
+        return set()
+    import sqlalchemy as sa
+    from contextlib import nullcontext
+
+    bind = inspector.bind
+    with (bind.connect() if isinstance(bind, sa.engine.Engine) else nullcontext(bind)) as conn:
+        return set(conn.execute(sa.text(
+            "SELECT c.relname FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+            "WHERE i.indrelid = to_regclass(:table) AND NOT i.indisvalid"
+        ), {"table": table}).scalars())
+
+
 def _index_exists(
     inspector, table: str, index_name: str | None, columns: tuple[str, ...] = (),
     *, unique_only: bool = False,
@@ -250,6 +267,10 @@ def _index_exists(
         indexes = inspector.get_indexes(table)
     except Exception:
         indexes = []
+    # A cancelled CREATE INDEX CONCURRENTLY leaves the index invalid: it is not there, and
+    # the revision that builds it must still run to drop and rebuild it.
+    invalid = _invalid_indexes(inspector, table) if indexes else set()
+    indexes = [item for item in indexes if item.get("name") not in invalid]
     try:
         uqs = inspector.get_unique_constraints(table)
     except Exception:

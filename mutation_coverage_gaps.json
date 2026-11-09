@@ -945,16 +945,6 @@
   "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api PATCH."
  },
  {
-  "route": "ui POST /settings/numbering/{doc_type}/reset",
-  "class": "never requested",
-  "reason": "No test requests this route; its source reaches api PATCH."
- },
- {
-  "route": "ui PATCH /settings/numbering/{doc_type}/{field}",
-  "class": "never requested",
-  "reason": "No test requests this route; its source reaches api PATCH."
- },
- {
   "route": "ui POST /settings/partner-claim/accept",
   "class": "requested, no durable write",
   "reason": "Tests request this route, and none of their requests made a durable write of company data; its source reaches api POST."

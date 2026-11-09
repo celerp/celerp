@@ -788,6 +788,17 @@ def test_stopped_setup_card_says_setup_stopped(page, ui_server):
     assert (seen["installer"], seen["help"]) == (f"{_RELEASES}/tag/v2.0.1", False)
 
 
+@pytest.mark.parametrize("message, log", [
+    ("", ""), ("spawn UNKNOWN", "Update error: spawn UNKNOWN"),
+], ids=["no-detail", "detail"])
+def test_failure_card_shows_a_log_only_with_detail(page, ui_server, message, log):
+    """A failure with no detail shows its message and no log box: a bare label would
+    only repeat the message. A failure with detail shows it in the log, for support."""
+    _fake_electron(page, [("error", {"message": message})])
+    seen = _open(page, f"{ui_server}/")
+    assert (seen["state"], seen["log"]) == (_CHECK_FAILED, log)
+
+
 _UNINSTALL_BUTTONS = {
     "uninstallKeepData": t("settings.uninstall_keep_data", "en"),
     "uninstallDeleteData": t("settings.uninstall_delete_data", "en"),

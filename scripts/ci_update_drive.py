@@ -17,6 +17,10 @@
         Restart to install, and selects it. Exits 1, printing the update state,
         if the screen does not show, or the download fails or does not finish in
         time.
+    python scripts/ci_update_drive.py refused <debugging port> <seconds> <text>
+        Waits until the refusal screen shows and its message is <text>, and selects
+        nothing. Exits 1, printing what the screen says, if it does not within the
+        time.
     python scripts/ci_update_drive.py card <debugging port> <seconds> <text>
         Waits until a signed-in page's update card says <text>. Exits 1, printing
         what the card says, if it does not within the time.
@@ -50,13 +54,23 @@ def pause(browser) -> None:
     """Wait 2 s through Playwright, so it takes in the window's navigations meanwhile.
 
     The sync API handles browser events only during its own calls: after a plain
-    time.sleep, every page still reports the URL it had when the driver connected.
+    time.sleep, every page still reports the URL it had when the driver connected,
+    and a page the window opens meanwhile is never seen. With no page it waits for
+    one to open. A page that closes during the wait, or no page opening, only ends
+    this poll.
     """
     pages = [p for c in browser.contexts for p in c.pages]
-    if pages:
-        pages[0].wait_for_timeout(2000)
-    else:
-        time.sleep(2)
+    try:
+        if pages:
+            pages[0].wait_for_timeout(2000)
+        elif browser.contexts:
+            browser.contexts[0].wait_for_event("page", timeout=2000)
+        else:
+            # The sync Browser has no wait of its own; a window connected over CDP
+            # always has its default context, so this is only a guard.
+            time.sleep(2)
+    except Error:
+        pass   # a page closed, or none opened: the next poll looks again
 
 
 def celerp_page(browser):
@@ -143,6 +157,24 @@ def refusal(browser, end: float) -> int:
     return 1
 
 
+def refused(browser, end: float, text: str) -> int:
+    said = None
+    while time.monotonic() < end:
+        page = refusal_page(browser)
+        try:
+            if page and page.evaluate("!document.getElementById('refusal').hidden"):
+                said = page.inner_text("#refusal-message")
+                if said == text:
+                    print(f"the refusal screen says '{said}' and offers '{page.inner_text('#refusal-update')}'")
+                    return 0
+        except Error:
+            pass   # the window is between pages
+        pause(browser)
+    print(f"the refusal screen says '{said}' (want '{text}')" if said is not None
+          else "the refusal screen was not shown")
+    return 1
+
+
 def card(browser, end: float, text: str) -> int:
     said = None
     while time.monotonic() < end:
@@ -172,7 +204,8 @@ def main(command: str, port: int, seconds: int, *args: str) -> int:
                     print(f"no Celerp window on port {port} in {seconds} s: {str(e)[:600]}")
                     return 1
                 time.sleep(2)
-        return {"sign-in": sign_in, "install": install, "refusal": refusal, "card": card}[command](browser, end, *args)
+        return {"sign-in": sign_in, "install": install, "refusal": refusal, "refused": refused,
+                "card": card}[command](browser, end, *args)
 
 
 if __name__ == "__main__":

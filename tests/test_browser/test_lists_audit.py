@@ -58,25 +58,22 @@ def test_lists_page_loads(page: Page, ui_server: str, api):
     _no_crash(page, "/lists")
 
 
-# ── LA-02: Type tab pills ─────────────────────────────────────────────────────
+# ── LA-02: Type select ────────────────────────────────────────────────────────
 
-def test_type_tab_pills_present(page: Page, ui_server: str, api):
-    """LA-02: All + one tab pill per registered list type are rendered."""
+def test_type_select_options_present(page: Page, ui_server: str, api):
+    """LA-02: The filters panel's Type select offers All plus one option per registered list type."""
     from celerp.services.list_behavior import LIST_BEHAVIOR
     page.goto(f"{ui_server}/lists", wait_until="domcontentloaded")
-    _no_crash(page, "type-tabs")
-    tab_container = page.locator("#type-tabs")
-    expect(tab_container).to_be_visible()
-    # "All" tab
-    all_tab = tab_container.locator("a", has_text="All")
-    expect(all_tab).to_be_visible()
+    _no_crash(page, "type-select")
+    select = page.locator("#list-filters select[name='type']")
+    expect(select).to_be_visible()
+    expect(page.locator("label[for='filter-type']")).to_be_visible()
+    labels = [o.strip() for o in select.locator("option").all_inner_texts()]
+    assert labels[0] == "All", labels
     for behavior in LIST_BEHAVIOR.values():
-        tab = tab_container.locator(f"a:has-text('{behavior.label}')")
-        expect(tab).to_be_visible()
+        assert behavior.label in labels, (behavior.label, labels)
     # Pinned to the registry: adding a list type cannot leave a stale count here.
-    tabs = tab_container.locator("a.category-tab")
-    assert tabs.count() == 1 + len(LIST_BEHAVIOR), (
-        f"Expected {1 + len(LIST_BEHAVIOR)} type tabs, got {tabs.count()}")
+    assert len(labels) == 1 + len(LIST_BEHAVIOR), labels
 
 
 # ── LA-03: Status cards ───────────────────────────────────────────────────────
@@ -230,19 +227,19 @@ def test_duplicate_action(page: Page, ui_server: str, api):
     assert new_eid and new_eid != eid, f"Duplicate entity same as original or missing: {result.json()}"
 
 
-# ── LA-12: Type tab filtering ─────────────────────────────────────────────────
+# ── LA-12: Type filtering ─────────────────────────────────────────────────────
 
-def test_type_tab_filters_table(page: Page, ui_server: str, api):
-    """LA-12: Clicking a type tab opens that type's lists."""
+def test_type_select_filters_table(page: Page, ui_server: str, api):
+    """LA-12: Choosing a type in the filters panel opens that type's lists."""
     _create_list(api, "quotation")
     _create_list(api, "transfer")
     page.goto(f"{ui_server}/lists", wait_until="domcontentloaded")
-    _no_crash(page, "pre-tab-filter")
-    tab = page.locator("#type-tabs a:has-text('Quotation')")
-    expect(tab).to_be_visible()
-    tab.click()
-    page.wait_for_url("**/lists?type=quotation")
-    _no_crash(page, "post-tab-filter")
+    _no_crash(page, "pre-type-filter")
+    select = page.locator("#list-filters select[name='type']")
+    expect(select).to_be_visible()
+    select.select_option("quotation")
+    page.wait_for_url("**/lists?*type=quotation*")
+    _no_crash(page, "post-type-filter")
     table = page.locator("#list-table")
     expect(table).to_be_visible()
 

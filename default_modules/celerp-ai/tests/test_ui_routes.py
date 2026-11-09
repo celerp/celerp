@@ -11,12 +11,14 @@ Malformed or missing conversation ids return to the canonical empty chat URL.
 
 from __future__ import annotations
 
+import html
 import os
 
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
 import pytest
 import pytest_asyncio
+from fasthtml.common import to_xml
 from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, patch
 
@@ -1037,3 +1039,112 @@ async def test_a_reading_job_has_stop_while_it_runs_and_continue_once_stopped(ui
     html = to_xml(_job_bubble({**running, "status": "cancelled"}, "conv-1"))
     assert "/ai/jobs-ui/j-1/resume" in html and "hx-get" not in html
     assert t("ai.job_stopped", "en", done=1, total=5) in html
+
+
+# ── One bill per file: the plan's tip before upload and after a multi-bill read ──
+
+def _tip_texts(tier: str) -> dict:
+    """The bills tip each plan should read, from the catalog."""
+    from celerp_ai.ui_routes import subscribe_url
+    return {
+        "rule": t("ai.bills_each_file_free" if tier == "free" else "ai.bills_each_file"),
+        "many": t("ai.bills_many_at_once"),
+        "upsell": t("ai.bills_upsell", plan="Connect + AI"),
+        "action": f'href="{html.escape(subscribe_url("ai"))}"',
+    }
+
+
+@pytest.mark.parametrize("tier,many,upsell", [
+    ("free", False, True), ("cloud", False, True), ("ai", True, False), ("team", True, False),
+])
+@pytest.mark.asyncio
+async def test_composer_tells_the_bills_rule_for_the_plan(ui_client, tier, many, upsell):
+    """Under the drop zone: each bill in its own file at 1 credit a file. A plan that
+    reads several files says so; a one-file plan is offered Connect + AI instead."""
+    patches = _patch_page(ai_quota_status=AsyncMock(return_value={**_CLOUD_STATUS, "tier": tier}))
+    _apply(patches)
+    ui_client.cookies.update(_authed())
+    try:
+        r = await ui_client.get("/ai")
+    finally:
+        _stop(patches)
+    text = _tip_texts(tier)
+    composer = r.text[r.text.index('id="ai-chat-form"'):]
+    assert text["rule"] in composer
+    assert (text["many"] in composer) is many
+    assert (text["upsell"] in composer) is upsell
+    assert (text["action"] in composer) is upsell
+    if upsell:
+        assert t("msg.get_the_ai_plan") in composer and 'target="_blank"' in composer
+
+
+@pytest.mark.parametrize("tier", [None, "", "enterprise"])
+def test_a_plan_not_known_gets_the_rule_alone(tier):
+    from celerp_ai.ui_routes import _bills_tip
+    page = to_xml(_bills_tip(tier, "en", "form-hint"))
+    assert t("ai.bills_each_file") in page
+    assert t("ai.bills_many_at_once") not in page
+    assert "ai-upgrade-cta" not in page
+
+
+def _multi_bill_job(count) -> dict:
+    return {"id": "job-1", "status": "completed", "total_files": 2, "completed_files": 2,
+            "failed_files": 0, "proposal_message_id": None,
+            "files": [{"file_id": "f1", "bill_count": count}, {"file_id": "f2", "bill_count": 1}]}
+
+
+_PROPOSALS = {"message_id": "m9", "answer": "stack.pdf seems to hold 3 bills.", "pending_actions": []}
+
+
+@pytest.mark.parametrize("status,many,upsell", [
+    ({"tier": "free"}, False, True), ({"tier": "cloud"}, False, True),
+    ({"tier": "ai"}, True, False), ({"unknown": True}, False, False), (APIError(502, "down"), False, False),
+])
+@pytest.mark.asyncio
+async def test_a_multi_bill_read_carries_the_plans_tip(ui_client, status, many, upsell):
+    """A finished job with a file of several bills shows the tip as a notice beneath the
+    reply: the rule, then what the plan allows; an unknown plan gets the rule alone."""
+    quota = AsyncMock(side_effect=status) if isinstance(status, Exception) else AsyncMock(return_value=status)
+    ui_client.cookies.update(_authed())
+    with patch("celerp_ai.ui_routes.api.ai_batch_status", AsyncMock(return_value=_multi_bill_job(3))), \
+         patch("celerp_ai.ui_routes.api.ai_job_proposals", AsyncMock(return_value=_PROPOSALS)), \
+         patch("celerp_ai.ui_routes.api.ai_quota_status", quota):
+        r = await ui_client.post("/ai/proposals-ui?conversation=conv-1&job=job-1")
+    assert r.status_code == 200
+    text = _tip_texts(status.get("tier", "") if isinstance(status, dict) else "")
+    reply = r.text.index(_PROPOSALS["answer"])
+    notice = r.text.index("flash--warning")
+    assert notice > reply
+    assert text["rule"] in r.text[notice:]
+    assert (text["many"] in r.text) is many
+    assert (text["upsell"] in r.text) is upsell
+    assert (text["action"] in r.text) is upsell
+
+
+@pytest.mark.parametrize("count", [1, None])
+@pytest.mark.asyncio
+async def test_no_multi_bill_notice_when_every_file_held_one_bill(ui_client, count):
+    quota = AsyncMock(return_value={"tier": "free"})
+    ui_client.cookies.update(_authed())
+    with patch("celerp_ai.ui_routes.api.ai_batch_status", AsyncMock(return_value=_multi_bill_job(count))), \
+         patch("celerp_ai.ui_routes.api.ai_job_proposals", AsyncMock(return_value=_PROPOSALS)), \
+         patch("celerp_ai.ui_routes.api.ai_quota_status", quota):
+        r = await ui_client.post("/ai/proposals-ui?conversation=conv-1&job=job-1")
+    assert "flash--warning" not in r.text
+    assert t("ai.bills_each_file_free") not in r.text
+    quota.assert_not_awaited()
+
+
+def test_a_reloaded_thread_keeps_the_multi_bill_notice_under_the_reply():
+    from celerp_ai.ui_routes import _thread
+    job = {**_multi_bill_job(2), "proposal_message_id": "m9", "created_at": "2026-11-08T10:00:00"}
+    reply = {"id": "m9", "role": "assistant", "content": "stack.pdf seems to hold 2 bills.",
+             "created_at": "2026-11-08T10:01:00",
+             "pending_actions": [{"id": "p1", "name": "create_doc_docs_post", "title": "Create bill",
+                                  "arguments": {"body": {}}, "warnings": []}]}
+    page = "".join(to_xml(ft) for ft in _thread([reply], [job], "conv-1", "en", "cloud"))
+    text = _tip_texts("cloud")
+    assert page.index(reply["content"]) < page.index("flash--warning") < page.index("ai-action-group")
+    assert text["upsell"] in page and text["action"] in page
+    other = {**reply, "id": "m10"}
+    assert "flash--warning" not in "".join(to_xml(ft) for ft in _thread([other], [job], "conv-1", "en", "cloud"))

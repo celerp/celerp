@@ -139,23 +139,20 @@ def test_css_has_progress_bar_styles():
 # ---------------------------------------------------------------------------
 
 def test_main_initial_check_deferred_until_did_finish_load():
-    """The initial autoUpdater.checkForUpdates() must fire after did-finish-load.
+    """The initial update check must fire after did-finish-load.
 
     Firing immediately at app-ready risks emitting IPC events before the renderer
-    has registered its ipcRenderer.on(...) handlers, silently dropping them.
+    has registered its ipcRenderer.on(...) handlers, silently dropping them. Every
+    check goes through updateState.check(), the only caller of checkForUpdates().
     """
     src = _main_src()
-    assert "did-finish-load" in src, (
-        "main.js does not wait for 'did-finish-load' before calling the initial "
-        "checkForUpdates(). Events emitted before the renderer loads are silently dropped."
-    )
-    # The initial checkForUpdates call must be inside a did-finish-load callback
-    finish_load_idx = src.find("did-finish-load")
-    check_idx = src.find("checkForUpdates", finish_load_idx)
-    assert check_idx != -1, (
-        "checkForUpdates() is not called inside the did-finish-load handler. "
+    assert re.search(r'once\("did-finish-load",\s*\(\)\s*=>\s*\{\s*updateState\.check\(\);', src), (
+        "The initial updateState.check() is not inside a did-finish-load handler. "
         "Initial update checks may fire before the renderer is ready."
     )
+    assert "checkForUpdates" not in src, "app-main.js must check through updateState.check() only."
+    update_state = (_MAIN.parent / "update-state.js").read_text()
+    assert "updater.checkForUpdates()" in update_state
 
 
 def test_build_yml_has_prepare_release_job():

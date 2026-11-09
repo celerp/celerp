@@ -20,6 +20,11 @@ class LedgerEntry(Base):
         Index("idx_ledger_company_ts", "company_id", "ts"),
         Index("idx_ledger_entity_type", "entity_type"),
         Index("idx_ledger_ts", "ts"),
+        # The journal entries that name a document (GL Impact's lookup). Declared here so a
+        # schema without it is never stamped past p9q0r1s2t3u4, which builds it concurrently.
+        Index("ix_ledger_je_doc_refs_gin", sa.text("(metadata::jsonb) jsonb_path_ops"),
+              postgresql_using="gin",
+              postgresql_where=sa.text("event_type = 'acc.journal_entry.created'")),
         # Idempotency is per-company: different companies legitimately reuse the
         # same key (e.g. doc numbers reset per company), so this must NOT be a
         # global unique — otherwise the second company to emit collides.

@@ -4,7 +4,7 @@
 """Store in-flight subscription email payloads outside document projections.
 
 Revision ID: o0c1d2e3f4a5
-Revises: n9b0c1d2e3f4
+Revises: q0r1s2t3u4v5
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from alembic import op
 from sqlalchemy import inspect
 
 revision = "o0c1d2e3f4a5"
-down_revision = "n9b0c1d2e3f4"
+down_revision = "q0r1s2t3u4v5"
 branch_labels = None
 depends_on = None
 

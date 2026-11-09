@@ -385,16 +385,18 @@ class TestSlotVisibilityFailsClosed:
 
     @pytest.mark.parametrize("perm", _MALFORMED_PERMISSIONS, ids=repr)
     def test_sidebar_nav_entry_hidden(self, perm):
+        from fasthtml.common import to_xml
         from ui.components.shell import _sidebar
         slots.register("nav", {"group": "Ops", "key": "slotx", "label": "SlotX",
                                "href": "/slotx", "permission": perm})
-        assert "/slotx" not in str(_sidebar("dashboard", settings={}, role="owner"))
+        assert "/slotx" not in to_xml(_sidebar("dashboard", settings={}, role="owner"))
 
     def test_sidebar_nav_entry_with_valid_permission_shown(self):
+        from fasthtml.common import to_xml
         from ui.components.shell import _sidebar
         slots.register("nav", {"group": "Ops", "key": "slotx", "label": "SlotX",
                                "href": "/slotx", "permission": "view_inventory"})
-        assert "/slotx" in str(_sidebar("dashboard", settings={}, role="owner"))
+        assert "/slotx" in to_xml(_sidebar("dashboard", settings={}, role="owner"))
 
 
 # ── S3: app-local destinations ────────────────────────────────────────────────

@@ -24,6 +24,7 @@ EXPECTED: dict[tuple[str, str], str | frozenset[str]] = {
     ("GET", "/chart"): READ,
     ("GET", "/journal"): READ,
     ("GET", "/extended-journal"): READ,
+    ("GET", "/journal/by-doc/{doc_id:path}"): READ,
     ("GET", "/ledger/{account_code}"): READ,
     ("GET", "/trial-balance"): READ,
     ("GET", "/general-ledger"): READ,

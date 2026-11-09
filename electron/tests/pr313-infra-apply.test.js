@@ -129,6 +129,14 @@ describe("fullRelaunch", () => {
     expect(calls).toEqual(["relaunch", "quit"]);
   });
 
+  test("a relaunch asked for twice relaunches once", () => {
+    const calls = [];
+    const appRef = { relaunch: () => calls.push("relaunch"), quit: () => calls.push("quit") };
+    restart.fullRelaunch(appRef, ["Celerp.exe"]);
+    restart.fullRelaunch(appRef, ["Celerp.exe"]);
+    expect(calls).toEqual(["relaunch", "quit"]);
+  });
+
   test("a relaunch drops the arguments of an update that stopped, so the new instance does not report it again", () => {
     const relaunched = [];
     const appRef = { relaunch: (opts) => relaunched.push(opts), quit: () => {} };
