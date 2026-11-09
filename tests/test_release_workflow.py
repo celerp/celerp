@@ -1001,18 +1001,25 @@ def test_each_previous_release_update_check_starts_on_fresh_data():
     assert "InstallFresh $previous" in run[run.index("function StartPrevious"):run.index("function RestartToInstall")]
 
 
-def test_an_older_copy_on_newer_data_updates_from_its_refusal_screen():
+def test_an_older_copy_on_newer_data_updates_from_its_refusal_screen_and_opens_the_data():
     run = _windows_update_step("In-app update from a running Celerp (Windows)")["run"]
     check = "\n".join(line.strip() for line in run[run.index("# check_update_from_newer_data"):].splitlines())
     checked = "\nif ($LASTEXITCODE -ne 0) { Fail "   # each drive step fails the check at once
-    order = ["InstallFresh $candidate", '"Version: $newer"', "ci_update_drive.py sign-in $script:port 300" + checked,
-             "CloseCelerp", "WriteAllText($meta.FullName, $metadata)", '"version: $newer"',
+    # The candidate opens fresh data as itself, plays an older copy with its package version
+    # lowered, is refused, updates from the refusal screen, and the reinstalled candidate (its
+    # package version put back by setup) opens the data.
+    order = ["InstallFresh $candidate", "$metadata = [IO.File]::ReadAllText($meta)",
+             "ci_update_drive.py sign-in $script:port 300" + checked, "CloseCelerp",
+             '"Version: $older"', '"version: $newer"', "StartCelerp", '$en["shell.data_newer"]',
+             "ci_update_drive.py refused $script:port 180 $refusedText" + checked,
              "ci_update_drive.py refusal $script:port 600" + checked, 'WaitFor "setup window"', "ExpectNewRunning",
-             "CloseCelerp\nStartCelerp", '$en["shell.data_newer"]',
-             "ci_update_drive.py refused $script:port 180 $refusedText" + checked, "proves the handoff only",
-             "Opening data after an update is proven by check_update_from_running_app"]
-    positions = [check.index(marker) for marker in order]
+             "if ([IO.File]::ReadAllText((PackageMetadata)) -ne $metadata) { Fail ", "CloseCelerp\nStartCelerp",
+             "ci_update_drive.py sign-in $script:port 300" + checked, "opened the data"]
+    positions = [check.index(marker, check.index(order[i - 1]) if i else 0) for i, marker in enumerate(order)]
     assert positions == sorted(positions)
+    # The older copy is older than the data it opened, and the feed's release is newer.
+    assert '.Replace("{recorded}", $real).Replace("{running}", $older)' in check
+    assert '"Version: $newer"' not in check
 
 
 def test_the_refused_text_fills_every_placeholder_of_its_message():

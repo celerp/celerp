@@ -19769,7 +19769,7 @@
     "tests/test_release_workflow.py::test_a_tag_already_released_or_unreadable_is_not_rebuilt[on GitHub]": 0.034,
     "tests/test_release_workflow.py::test_a_tag_already_released_or_unreadable_is_not_rebuilt[on PyPI]": 0.035,
     "tests/test_release_workflow.py::test_a_tag_build_upgrade_tests_its_own_linux_and_windows_binaries": 0.03,
-    "tests/test_release_workflow.py::test_an_older_copy_on_newer_data_updates_from_its_refusal_screen": 0.01,
+    "tests/test_release_workflow.py::test_an_older_copy_on_newer_data_updates_from_its_refusal_screen_and_opens_the_data": 0.01,
     "tests/test_release_workflow.py::test_each_event_builds_its_platforms[pull_request--main-built2]": 0.033,
     "tests/test_release_workflow.py::test_each_event_builds_its_platforms[push--bugfix-built3]": 0.032,
     "tests/test_release_workflow.py::test_each_event_builds_its_platforms[push--v9.9.9-built4]": 0.032,
