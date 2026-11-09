@@ -7414,7 +7414,8 @@ if (!window._celerpSaveFirstBound) {{
     document.addEventListener('htmx:trigger', e => scheduled.delete(e.target));
     document.addEventListener('htmx:beforeSend', function(e) {{
         const xhr = e.detail.xhr;
-        if (e.detail.requestConfig.verb === 'get') return;
+        // A preview reads the figures an action would give and stores nothing: no save to wait for.
+        if (e.detail.requestConfig.verb === 'get' || e.detail.elt.closest('[data-preview]')) return;
         inFlight.add(xhr);
         xhr.addEventListener('loadend', () => inFlight.delete(xhr));
     }});
