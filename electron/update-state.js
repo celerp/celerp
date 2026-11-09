@@ -14,7 +14,9 @@
 // Log lines kept for the update card, oldest dropped first.
 const MAX_LOG_LINES = 200;
 
-const errorLine = (message) => (message ? "Update error: " + message : "Update error");
+// An error's log line, or none when it has no detail: a bare label would only
+// repeat what the card's own failure message already says.
+const errorLine = (message) => (message ? "Update error: " + message : "");
 
 const RELEASES = "https://github.com/celerp/celerp/releases";
 
@@ -352,7 +354,7 @@ function trackUpdater(updater, send, onFailure = () => {}) {
     dismissError: () => apply("update-log", { type: "dismiss" }, () => ""),
     userChecks: () => { userAsked = true; },
     installFailed: (version, message, failure) =>
-      apply("update-error", { type: "install-failed", version, message, failure }, () => (message ? errorLine(message) : "")),
+      apply("update-error", { type: "install-failed", version, message, failure }, () => errorLine(message)),
     installing: () => judged().status === "downloaded" && apply("update-log", { type: "installing" }, () => ""),
     checkedNothing: () => {
       userAsked = false;

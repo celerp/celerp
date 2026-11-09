@@ -51,6 +51,7 @@ Output a JSON block:
 ```json
 {
   "document_kind": "receipt|invoice|statement|other",
+  "bill_count": 1,
   "vendor_name": "string or null",
   "date": "YYYY-MM-DD or null",
   "currency": "ISO 4217 code or null",
@@ -62,6 +63,10 @@ Output a JSON block:
   ]
 }
 ```
+
+bill_count is how many separate bills, receipts or invoices the file holds. A bill \
+that runs over several pages is 1, and a statement listing transactions is 1. When \
+the file holds more than one, extract only the first.
 
 If the document is unreadable, return a one-sentence explanation instead of JSON.
 """
@@ -99,6 +104,13 @@ def parse_extraction(answer: str) -> dict | None:
         if isinstance(parsed, dict):
             return parsed
     return None
+
+
+def bill_count(extraction: dict | None) -> int:
+    """How many bills the model counted in a read file: a whole number of at least 1.
+    A count that is missing or not a whole number above 0 is 1."""
+    count = extraction.get("bill_count") if isinstance(extraction, dict) else None
+    return count if type(count) is int and count > 1 else 1
 
 
 def _file_error(exc: BaseException) -> str:

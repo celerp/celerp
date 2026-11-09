@@ -309,6 +309,9 @@ _DOC_TYPE_LABEL_KEYS = {
     "bill": "settings.doc_type_bill",
     "memo": "th.memo",
     "shipping_doc": "settings_sales.doc_type_shipping_doc",
+    "transfer": "enum.list_type.transfer",
+    "audit": "enum.list_type.audit",
+    "writeoff": "enum.list_type.writeoff",
     "list": "enum.doc_type.list",
     "consignment_in": "settings.doc_type_consignment_in",
     "receipt": "settings.doc_type_receipt",
@@ -398,7 +401,8 @@ def _refusal_param(name: str, value):
     ``status`` as an item status, ``lot_status`` as one read mid-sentence and
     ``doc_status`` as a document status, each only when the value is an enum slug (a
     file type such as ".pdf" or a name reads as written); ``reason``
-    as why a production run waits for reconciling; any ISO day as a date (date_text)."""
+    as why a production run waits for reconciling; ``doc_type`` as its label; any ISO day
+    as a date (date_text)."""
     from ui.components.table import display_enum
 
     if isinstance(value, dict) and "message" in value:
@@ -415,6 +419,8 @@ def _refusal_param(name: str, value):
         return ", ".join(role_label(str(r), str(r).replace("_", " ")) for r in value)
     if name == "reason":
         return reconcile_reason(str(value))
+    if name == "doc_type":
+        return doc_type_label(str(value))
     if name == "types" and isinstance(value, list):
         return t("posting.type_or").join(_refusal_param("type", v) for v in value)
     if isinstance(value, str) and _ISO_DAY.fullmatch(value):

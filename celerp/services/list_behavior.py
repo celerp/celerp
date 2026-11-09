@@ -22,6 +22,19 @@ LIST_STATUSES = (DRAFT, FINALIZED, CLOSED, VOID)
 
 DEFAULT_LIST_TYPE = "quotation"
 
+# The status a List's conversion or sending fact is true under: what it converted to only while it
+# is closed as converted (reopening clears the result), when it was sent only once it was issued.
+_FACT_HOLDS = {
+    "converted_to": lambda state: state.get("status") == CLOSED and state.get("result") == "converted",
+    "sent_at": lambda state: state.get("status") in (FINALIZED, CLOSED),
+}
+
+
+def list_fact(state: dict, key: str):
+    """A List's ``converted_to`` or ``sent_at``, read only beside the status that makes it true
+    (_FACT_HOLDS). On any other List it is absent, whatever the state still holds."""
+    return state.get(key) if _FACT_HOLDS[key](state) else None
+
 
 @dataclass(frozen=True)
 class TerminalAction:
@@ -46,6 +59,7 @@ class ListBehavior:
     scan_sell_qty: bool = False             # a scan places the item's sell quantity (ScanBehavior.sell_qty)
     customs: bool = False                   # value-bearing but non-accounting: per-line customs
                                             # value/HS/origin columns, declared total, no disc/tax
+    posts: bool = False                     # its terminal posts a journal entry (GL Impact)
 
 
 # THE table. One row per type — the only place a type's behaviour is declared.
@@ -74,7 +88,7 @@ LIST_BEHAVIOR: dict[str, ListBehavior] = {
             "adjust", "Adjust stock", "stock_adjusted",
             confirm="Apply the counted quantities to stock? This posts a journal entry.",
             manager=True),),
-        scan_finalized="count", scan_unstocked="snapshot",
+        scan_finalized="count", scan_unstocked="snapshot", posts=True,
     ),
     "writeoff": ListBehavior(
         # Event-based (enter the known quantity leaving stock per line), vs audit's count-based
@@ -86,7 +100,7 @@ LIST_BEHAVIOR: dict[str, ListBehavior] = {
             "write-off", "Write off stock", "written_off",
             confirm="Remove the listed quantities from stock? This posts a journal entry.",
             manager=True),),
-        scan_finalized="noop",
+        scan_finalized="noop", posts=True,
     ),
     "shipping_doc": ListBehavior(
         # One shipment record, two printouts: the Delivery Note (no prices, for the receiver)

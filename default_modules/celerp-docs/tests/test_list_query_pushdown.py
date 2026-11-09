@@ -220,21 +220,21 @@ async def test_list_summary_sql_aggregates(client):
 
 @pytest.mark.asyncio
 async def test_list_index_counts_and_weights_utf8(client):
-    """The index carries item_count (a json_array_length) and total_weight (a json_array_elements
-    sum) computed in SQL, equal to the Python-side truth even when line descriptions carry
-    multibyte UTF-8 - the encoding-sensitive weight path reads the same JSON the app round-trips,
-    and never loads the whole array to do it."""
+    """The index carries item_count (a json_array_length) and total_weight with its weight_unit
+    (from a json_array_elements fold) computed in SQL, equal to the Python-side truth even when
+    line descriptions carry multibyte UTF-8 - the encoding-sensitive weight path reads the same
+    JSON the app round-trips, and never loads the whole array to do it."""
     t = await _register(client)
     q = await _quotation(client, t, ref_id="WT-001")
     # Id-less free-text lines: this test pins item_count and total_weight over UTF-8
     # descriptions and never inspects line identity, so the realistic free-text shape (no
     # item_id) is correct - a synthetic item_id would be rejected as an unknown reference.
     lines = [
-        {"sku": "S1", "description": "Rubĩes \U0001F48E ê",
-         "quantity": 1, "unit_price": 1.0, "weight_ct": "2.5"},
-        {"sku": "S2", "description": "钻石 gems",
-         "quantity": 1, "unit_price": 1.0, "weight_ct": "3.5"},
-        {"description": "Free 문자열", "quantity": 1, "unit_price": 1.0, "weight": "4"},
+        {"sku": "S1", "description": "Rub\u0129es \U0001F48E \u00ea",
+         "quantity": 1, "unit_price": 1.0, "weight": "2.5", "weight_unit": "ct"},
+        {"sku": "S2", "description": "\u94bb\u77f3 gems",
+         "quantity": 1, "unit_price": 1.0, "weight": "2.5", "weight_unit": "ct"},
+        {"description": "Free \ubb38\uc790\uc5f4", "quantity": 1, "unit_price": 1.0, "weight": "5", "weight_unit": "ct"},
     ]
     await _set_lines(client, t, q, lines)
 
@@ -243,27 +243,33 @@ async def test_list_index_counts_and_weights_utf8(client):
     assert r.status_code == 200, r.text
     row = next(it for it in r.json()["items"] if it["id"] == q)
     assert row["item_count"] == 3, "item_count is json_array_length of the stored array"
-    assert row["total_weight"] == pytest.approx(10.0), (
-        "total_weight sums weight_ct (falling back to weight) across the UTF-8 rows")
+    assert row["total_weight"] == pytest.approx(10.0), "equal lines fold into one pair and still sum"
+    assert row["weight_unit"] == "ct" and row["has_weight"] is True
     assert _full_state_reads(sql) == [], (
         "count and weight must come from SQL, never a full-array load")
 
 
 @pytest.mark.asyncio
-async def test_list_index_weight_is_unknown_when_a_line_is_unweighed(client):
-    """A line with no weight makes the list's total weight unknown, never a smaller number."""
+@pytest.mark.parametrize("lines", [
+    pytest.param([{"weight": "2.5", "weight_unit": "ct"}, {}], id="a line unweighed"),
+    pytest.param([{"weight": "2.5", "weight_unit": "ct"}, {"weight": "1", "weight_unit": "kg"}], id="mixed units"),
+    pytest.param([{"weight": "2.5", "weight_unit": "ct"}, {"weight": "1"}], id="a line without a unit"),
+])
+async def test_list_index_weight_is_unknown_unless_every_line_shares_one_unit(client, lines):
+    """A total over lines that do not all carry a weight in one unit is unknown, never a smaller
+    or meaningless number (2.5 ct plus 1 kg is not 3.5 of anything)."""
     t = await _register(client)
     q = await _quotation(client, t, ref_id="WT-002")
     await _set_lines(client, t, q, [
-        {"sku": "S1", "description": "Weighed", "quantity": 1, "unit_price": 1.0, "weight_ct": "2.5"},
-        {"sku": "S2", "description": "Unweighed", "quantity": 1, "unit_price": 1.0},
-    ])
+        {"sku": f"S{i}", "description": "Line", "quantity": 1, "unit_price": 1.0, **ln}
+        for i, ln in enumerate(lines)])
     empty = await _quotation(client, t, ref_id="WT-003")
     r = await client.get("/lists?q=WT-00", headers=_h(t))
     assert r.status_code == 200, r.text
     rows = {it["id"]: it for it in r.json()["items"]}
-    assert rows[q]["total_weight"] is None
-    assert rows[empty]["total_weight"] == 0
+    assert rows[q]["total_weight"] is None and rows[q]["weight_unit"] is None
+    assert rows[q]["has_weight"] is True, "a weighed line still earns the column"
+    assert rows[empty]["total_weight"] is None and rows[empty]["has_weight"] is False
 
 
 @pytest.mark.asyncio

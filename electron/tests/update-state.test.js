@@ -146,13 +146,21 @@ test("an updater error is forwarded as update-error, never as not-available",
     expect(sent.map(([ch]) => ch)).toEqual(["update-error"]);
   });
 
-test("an error with no usable message is stored with an empty message",
+test("an error with no usable message is stored with an empty message and adds no log line",
   function test_error_without_message_is_stored_empty() {
-    for (const err of [undefined, null, {}, new Error("")]) {
+    for (const err of [undefined, null, {}, new Error(""), ""]) {
       const { updater, getUpdateState } = setup();
       updater.emit("error", err);
-      expect(getUpdateState()).toEqual({ ...IDLE, status: "error", failure: "check", releaseUrl: LATEST, log: ["Update error"], revision: 1 });
+      expect(getUpdateState()).toEqual({ ...IDLE, status: "error", failure: "check", releaseUrl: LATEST, log: [], revision: 1 });
     }
+  });
+
+test("an error with a message logs it after the label",
+  function test_error_with_message_logs_its_detail() {
+    const { updater, getUpdateState } = setup();
+    updater.emit("error", new Error("spawn UNKNOWN"));
+    updater.emit("error", new Error(""));
+    expect(getUpdateState().log).toEqual(["Update error: spawn UNKNOWN"]);
   });
 
 test("a check that finds nothing does not stop a download in progress",

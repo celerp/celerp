@@ -349,9 +349,6 @@ _PRE_EXISTING_RAW_HTTPEXCEPTION = {
         " needs this module. Turn that off first.",
         "Unknown business type: ",
     },
-    "celerp/services/lot_origin.py": {
-        "Company not found.",
-    },
     "default_modules/celerp-docs/celerp_docs/routes.py": {
         "Cannot send a closed memo; reopen it first.",
         "Add at least one line item before sending this document.",
@@ -366,13 +363,10 @@ _PRE_EXISTING_RAW_HTTPEXCEPTION = {
         "Select at least one document to ship",
         "offset must be zero or greater",
         "limit must be greater than zero",
-        "target_type must be 'invoice' or 'memo'",
-        "Finalize the quotation before converting it",
         "Finalize the count before adjusting stock",
         "Select at least one item to write off",
         "Enter a quantity and a destination account for each item you want to write off",
         "Unknown list type: ",
-        "Issue the list before sending it",
         "Issue the transfer before moving its items",
         "This credit note cannot be undone: goods it released from invoice  have left "
         "stock since, so the invoice cannot hold them again. Bring the goods back into "
@@ -397,14 +391,7 @@ _PRE_EXISTING_RAW_HTTPEXCEPTION = {
         "This import key was already used for a different record",
     },
     "default_modules/celerp-inventory/celerp_inventory/routes.py": {
-        "This item is held by document ; resolve the document first (release or return "
-        "the goods, or convert the document), then the item can be .",
-        "Unknown status ''; allowed: ",
-        "Use the item's 'Revert to Draft' action, not a direct status edit.",
-        "A draft item can only become available through the 'Make Available' action, "
-        "not a direct status edit.",
         "Field '' not available for suggestions",
-        "An item is created as draft or available, not .",
         "Nothing was deleted. Only a draft that never became stock can be deleted, and "
         "these cannot: . Use Revert to Draft for stock made available by mistake, "
         "Archive to retire a product, or Write Off Stock for goods that left the company.",
@@ -472,3 +459,12 @@ def test_no_new_raw_english_httpexception_detail_in_touched_files():
         if bad:
             new_raw[rel] = bad
     assert not new_raw, f"new raw-English HTTPException detail(s), not yet keyed: {new_raw}"
+
+
+def test_the_raw_detail_allowlist_only_shrinks():
+    """A pre-existing raw detail that is keyed or gone leaves the allowlist with it, so the list
+    names only the debt still raised and a keyed refusal cannot slide back to raw English."""
+    stale = {rel: sorted(texts - {text for _line, text in _httpexception_raw_details(rel)})
+             for rel, texts in _PRE_EXISTING_RAW_HTTPEXCEPTION.items()}
+    stale = {rel: texts for rel, texts in stale.items() if texts}
+    assert not stale, f"allowlisted raw details no longer raised; remove them: {stale}"

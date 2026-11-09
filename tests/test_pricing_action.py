@@ -352,7 +352,7 @@ async def test_hidden_action_route_still_refuses_the_role(client, session):
 async def test_item_page_offers_pricing_actions_only_for_an_item(is_item):
     """The item page links a module's pricing action for an item. An id that is not an
     item (a document, a List or a contact share the id space) is refused by the item
-    API, and the page then shows no price row, so no module link names that id."""
+    API, and the page is then the not-found page, so no module link names that id."""
     from unittest.mock import AsyncMock, patch
     from httpx import ASGITransport, AsyncClient
     from test_helpers import make_test_token
@@ -382,6 +382,6 @@ async def test_item_page_offers_pricing_actions_only_for_an_item(is_item):
         async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as c:
             c.cookies.update({"celerp_token": make_test_token(role="owner")})
             r = await c.get("/inventory/doc:1?tab=pricing")
-    assert r.status_code == 200, r.headers.get("location")
+    assert r.status_code == (200 if is_item else 404), r.headers.get("location")
     assert (_links(r.text) == ["doc%3A1?list=Retail&amp;f=retail_price"]) is is_item
     assert ("/quoter/" in r.text) is is_item

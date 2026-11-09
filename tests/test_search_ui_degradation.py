@@ -13,6 +13,7 @@ overlapping requests onto the pool.
 from __future__ import annotations
 
 import os
+import re
 
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
@@ -355,3 +356,49 @@ async def test_over_long_query_shows_error_not_no_results(ui_client, monkeypatch
     body = r.text
     assert "No results" not in body
     assert "unavailable" in body.lower()
+
+
+@pytest.mark.asyncio
+async def test_documents_and_lists_show_their_type_and_link_to_their_own_page(ui_client, monkeypatch):
+    answer = {
+        "results": {"celerp-docs": {"items": [
+            {"id": "doc:1", "kind": "doc", "doc_type": "invoice", "doc_number": "INV-2610-0001", "status": "draft"},
+            {"id": "list:1", "kind": "list", "list_type": "quotation", "ref_id": "LST-2610-0001", "status": "draft"},
+        ]}},
+        "degraded_modules": [],
+    }
+
+    r, _ = await _search(ui_client, monkeypatch, answer, q="2610")
+
+    body = r.text
+    assert 'href="/docs/doc:1"' in body and "INV-2610-0001" in body and "(Invoice)" in body
+    assert 'href="/lists/list:1"' in body and "LST-2610-0001" in body and "(Quotation)" in body
+
+
+@pytest.mark.asyncio
+async def test_a_document_or_list_reads_the_same_status_in_search_as_on_its_page_and_table(ui_client, monkeypatch):
+    """One state, one label: the chip after a result is the label the record's page and its
+    table show (an issued quotation reads Issued, a sent one Sent, an unpaid invoice Awaiting
+    Payment), never the stored lifecycle word."""
+    from ui.components.table import display_enum
+
+    rows = [
+        ({"kind": "list", "id": "list:a", "ref_id": "QUO-A", "list_type": "quotation", "status": "finalized"}, "issued"),
+        ({"kind": "list", "id": "list:b", "ref_id": "QUO-B", "list_type": "quotation", "status": "finalized",
+          "sent_at": "2026-11-01T00:00:00Z"}, "sent"),
+        ({"kind": "list", "id": "list:c", "ref_id": "QUO-C", "list_type": "quotation", "status": "finalized",
+          "sent_at": "2026-11-01T00:00:00Z", "accepted_at": "2026-11-02T00:00:00Z"}, "accepted"),
+        ({"kind": "list", "id": "list:d", "ref_id": "TRF-D", "list_type": "transfer", "status": "finalized"}, "in_transit"),
+        ({"kind": "list", "id": "list:e", "ref_id": "AUD-E", "list_type": "audit", "status": "finalized"}, "counting"),
+        ({"kind": "doc", "id": "doc:f", "doc_number": "INV-F", "doc_type": "invoice", "status": "final"}, "awaiting_payment"),
+        ({"kind": "doc", "id": "doc:g", "doc_number": "PF-G", "doc_type": "invoice", "status": "draft"}, "pro_forma"),
+        ({"kind": "doc", "id": "doc:h", "doc_number": "PO-H", "doc_type": "purchase_order", "status": "draft"}, "draft"),
+    ]
+    for batch in (rows[:5], rows[5:]):  # search shows five rows per module
+        answer = {"results": {"celerp-docs": {"items": [r for r, _ in batch]}}, "degraded_modules": []}
+        r, _ = await _search(ui_client, monkeypatch, answer, q="xx")
+        for record, shown in batch:
+            number = record.get("doc_number") or record["ref_id"]
+            chip = re.search(rf'{re.escape(number)}</?.*?class="search-result-status"> - ([^<]+)<', r.text, re.S)
+            assert chip and chip.group(1) == display_enum(shown, "doc_status"), (number, chip and chip.group(1))
+        assert display_enum("finalized", "doc_status") not in r.text

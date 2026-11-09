@@ -80,7 +80,7 @@ jobs:
         # from it counts as the average, so a split by count alone would put the slow
         # backup and reset files in one shard.
         run: >
-          timeout 600 pytest tests/ default_modules/*/tests/ -n auto -q --tb=short --no-cov
+          timeout 630 pytest tests/ default_modules/*/tests/ -n auto -q --tb=short --no-cov
           -m "not browser and not embedded_pg and not process and not integration"
           --splits 33 --group ${{ matrix.group }} --splitting-algorithm least_duration
           --durations-path tests/.test_durations

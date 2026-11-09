@@ -226,9 +226,10 @@ async def test_the_chips_over_a_filtered_contact_list_total_only_the_rows_it_sho
 
 
 def _summary_chips(html: str) -> dict[str, str]:
-    """Each summary chip above a document list, label to the figure it states."""
+    """Each summary figure of a document list (the /docs header line, or a chip), label to the
+    figure it states."""
     return {label.strip(): value.strip() for label, value in re.findall(
-        r'class="val-chip(?: val-chip--alert)?">([^:<]+): ([^<]*)<', html)}
+        r'class="(?:val-chip(?: val-chip--alert)?|doc-summary-item(?: doc-summary-alert)?)">([^:<]+): ([^<]*)<', html)}
 
 
 def _sublabel(html: str, label: str) -> str | None:
@@ -315,11 +316,11 @@ async def test_the_paid_summary_chip_has_its_own_wording(monkeypatch):
     can word the short chip apart from the Paid label on a document."""
     from fasthtml.common import to_xml
     import ui.i18n as i18n
-    from ui.routes.documents import _summary_bar
+    from ui.routes.documents import _doc_summary_line
 
     load = i18n._cached_load
     monkeypatch.setattr(i18n, "_cached_load", lambda lang: {**load(lang), "chip.paid": "Settled"})
-    chips = _summary_chips(to_xml(_summary_bar({"ar_paid": 75, "ar_total": 100}, currency="USD")))
+    chips = _summary_chips(to_xml(_doc_summary_line({}, {"ar_paid": 75, "ar_total": 100}, {}, currency="USD")))
     assert chips["Settled"] == fmt_money(75.0, "USD"), chips
     assert "Paid" not in chips, chips
 
@@ -358,7 +359,7 @@ async def test_a_view_of_unissued_documents_states_their_count_and_total(owner_u
     assert _summary_chips(page.text) == {"Documents": "56"}, _summary_chips(page.text)
     card = "Draft" if status == "draft" else "Void"
     # The card for the rows shown is the one marked.
-    assert re.search(rf'status-card--active">\s*<span class="status-card-label">{card}<', page.text), card
+    assert re.search(rf'status-card--active"[^>]*>\s*<span class="status-card-label">{card}<', page.text), card
     assert re.search(rf'status-card-label">{card}</span>\s*<span class="status-card-count">56</span>\s*</', page.text), card
     typed = await owner_ui.get(view + "&type=invoice")
     assert _summary_chips(typed.text) == {"Invoices": "55", "Total": fmt_money(550.0, None)}, _summary_chips(typed.text)
@@ -369,9 +370,10 @@ async def test_a_view_of_unissued_documents_states_their_count_and_total(owner_u
 
 async def test_a_view_with_issued_invoices_keeps_its_money_chips():
     from fasthtml.common import to_xml
-    from ui.routes.documents import _summary_bar
+    from ui.routes.documents import _doc_summary_line
 
-    issued = _summary_chips(to_xml(_summary_bar({"total_count": 1, "invoice_count": 1, "ar_total": 40.0}, "invoice", currency="USD")))
+    issued = _summary_chips(to_xml(_doc_summary_line({"type": "invoice"}, {"total_count": 1, "invoice_count": 1, "ar_total": 40.0}, {},
+                                                     currency="USD")))
     assert issued["Billed"] == fmt_money(40.0, "USD"), issued
 
 

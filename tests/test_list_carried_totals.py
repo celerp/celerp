@@ -215,7 +215,8 @@ async def test_a_copy_of_a_recalculated_list_takes_no_restore_point(client, sess
     assert "totals_before_recalc" not in await _state(session, cid, dup)
     r = await client.post(f"/lists/{dup}/restore-total", headers=h)
     assert r.status_code == 200 and r.json() == {"event_id": None}, r.text
-    assert (await _state(session, cid, dup))["total"] == 99.0
+    # The copy totals its own line (100 + 10% tax); the 10.00 header discount stays on the source.
+    assert (await _state(session, cid, dup))["total"] == 110.0
 
     r = await client.post(f"/lists/{lid}/convert", headers=h, json={"target_type": "invoice"})
     assert r.status_code == 200, r.text

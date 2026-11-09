@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """The inventory, documents and lists page headers read cleanly on a phone and a desktop window, in English
 and German (900 is a window narrow enough to wrap the header beside the sidebar):
-no control overlaps another, the search caption sits directly above its
+no control overlaps another, the search caption (in the header on inventory, in the filters panel
+on the list page kit's documents and lists) sits directly above its
 box, the box keeps room to type (and on a phone shows its placeholder whole), and every type tab
 can be brought fully into view."""
 from __future__ import annotations
@@ -44,16 +45,17 @@ def _overlap(a: dict, b: dict) -> bool:
             and a["y"] < b["y"] + b["height"] - 0.5 and b["y"] < a["y"] + a["height"] - 0.5)
 
 
-def _open(page: Page, ui_server: str, lang: str, width: int, path: str = "/inventory") -> None:
+def _open(page: Page, ui_server: str, lang: str, width: int, path: str = "/inventory",
+          search: str = ".page-header #search-input") -> None:
     page.context.add_cookies([{"name": "celerp_lang", "value": lang, "url": ui_server}])
     page.set_viewport_size({"width": width, "height": 800})
     page.goto(path)
-    page.wait_for_selector(".page-header #search-input", state="visible")
+    page.wait_for_selector(search, state="visible")
     page.wait_for_load_state("load")
     wait_for_topbar(page)
 
 
-@pytest.mark.parametrize("path", ["/inventory", "/docs", "/lists"])
+@pytest.mark.parametrize("path", ["/inventory"])
 @pytest.mark.parametrize("lang", ["en", "de"])
 @pytest.mark.parametrize("width", [390, 900, 1280])
 def test_list_page_header_stacks_without_overlap(page: Page, fresh_company, ui_server, lang, width, path):
@@ -89,6 +91,52 @@ def test_list_page_header_stacks_without_overlap(page: Page, fresh_company, ui_s
         for name, b in boxes.items():
             if name.startswith("button"):
                 assert b["y"] >= search["y"] + search["height"], f"{name} not below the search: {b}"
+
+
+# The documents and lists pages are on the list page kit: the header holds the title, its summary
+# and the buttons, and the search is the first field of the filters panel under it.
+_KIT_BOXES_JS = """async (main) => {
+  await document.fonts.ready;
+  await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+  const box = el => { const r = el.getBoundingClientRect();
+    return {x: r.x, y: r.y, width: r.width, height: r.height}; };
+  const header = main.querySelector('.page-header');
+  const boxes = {title: box(header.querySelector('.page-title'))};
+  const summary = header.querySelector('.page-subtitle');
+  if (summary && summary.getBoundingClientRect().height) boxes.summary = box(summary);
+  for (const b of header.querySelectorAll('.page-actions > .btn')) boxes['button ' + b.innerText] = box(b);
+  return {header: boxes, whole: box(header), filters: box(main.querySelector('.list-filters')),
+          caption: box(main.querySelector('label[for="search-input"]')),
+          search: box(main.querySelector('.list-filters #search-input'))};
+}"""
+
+
+@pytest.mark.parametrize("path", ["/docs", "/lists"])
+@pytest.mark.parametrize("lang", ["en", "de"])
+@pytest.mark.parametrize("width", [390, 900, 1280])
+def test_list_page_kit_header_and_search_without_overlap(page: Page, fresh_company, ui_server, lang, width, path):
+    _open(page, ui_server, lang, width, path, search=".list-filters #search-input")
+    got = page.locator(".main-content").evaluate(_KIT_BOXES_JS)
+    boxes = got["header"]
+    assert any(name.startswith("button") for name in boxes), boxes.keys()
+
+    for name, b in {**boxes, "caption": got["caption"], "search": got["search"]}.items():
+        assert b["x"] >= 0 and b["x"] + b["width"] <= width + 0.5, f"{name} off screen: {b}"
+    names = sorted(boxes)
+    for i, a in enumerate(names):
+        for other in names[i + 1:]:
+            assert not _overlap(boxes[a], boxes[other]), f"{a} overlaps {other}: {boxes[a]} {boxes[other]}"
+    whole, filters = got["whole"], got["filters"]
+    assert whole["y"] + whole["height"] <= filters["y"] + 0.5, f"header runs into the filters: {whole} {filters}"
+
+    cap, search = got["caption"], got["search"]
+    assert search["width"] >= 200, f"search box too narrow to type in: {search}"
+    assert 0 <= search["y"] - (cap["y"] + cap["height"]) <= 6, f"caption not directly above the box: {cap} {search}"
+    assert cap["x"] < search["x"] + search["width"] and search["x"] < cap["x"] + cap["width"]
+    # The panel's field is narrower than the header's full-width phone box, so a long placeholder
+    # (German on a phone) ends in a visible ellipsis rather than being cut.
+    fit = page.locator(".list-filters #search-input").evaluate(_PLACEHOLDER_FIT_JS)
+    assert fit["need"] <= fit["have"] + 1 or fit["overflow"] == "ellipsis", fit
 
 
 @pytest.mark.parametrize("lang", ["en", "de"])

@@ -16,7 +16,7 @@ import pytest
 from fasthtml.common import to_xml
 
 from ui import i18n
-from ui.routes.search import _status_tag
+from ui.routes.search import _enum_status, _status_tag
 
 # Sentinel catalog: one unmistakable value for a status the search bar renders.
 _XX = {
@@ -40,7 +40,7 @@ def _xx_lang():
 
 def test_status_tag_translates_enum_label():
     """A status with a catalog entry renders its translated label in the chip."""
-    html = to_xml(_status_tag("sold", "item_status"))
+    html = to_xml(_status_tag(_enum_status("item_status")({}, "sold")))
     assert "XX_SOLD_STATUS" in html
     assert "search-result-status" in html
 
@@ -48,11 +48,11 @@ def test_status_tag_translates_enum_label():
 def test_status_tag_unknown_value_falls_back():
     """A raw status with no catalog entry still renders readable text (display-only
     fallback), never a raw slug or the bare key."""
-    html = to_xml(_status_tag("merged", "item_status"))
+    html = to_xml(_status_tag(_enum_status("item_status")({}, "merged")))
     assert "Merged" in html
     assert "enum.item_status" not in html
 
 
 def test_status_tag_empty_status_renders_no_chip():
     """An empty status produces no chip at all."""
-    assert _status_tag("", "item_status") == ""
+    assert _status_tag(_enum_status("item_status")({}, "")) == ""

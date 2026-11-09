@@ -24,7 +24,7 @@ from celerp.models.company import Company, User
 from celerp.models.ai import AIBatchJob
 from celerp.config import settings
 from celerp.ai import jobs
-from celerp.ai.batch import MAX_BATCH_FILES, create_batch_job, parse_extraction
+from celerp.ai.batch import _BATCH_SYSTEM_PROMPT, MAX_BATCH_FILES, bill_count, create_batch_job, parse_extraction
 from celerp.ai.jobs import owned_job
 from celerp.ai.llm import ModelResult, RelayError
 from celerp.models.accounting import UserCompany
@@ -391,6 +391,34 @@ async def test_batch_result_carries_extraction(session, db_factory, company, use
     (step,) = await _files_of(db_factory, job.id)
     assert step.result["extraction"] == {"vendor_name": "Shop", "total": 12.5, "line_items": []}
     assert step.result["answer"] == answer
+
+
+@pytest.mark.asyncio
+async def test_file_view_carries_the_bill_count(session, db_factory, company, user):
+    """The prompt asks how many bills the file holds, and the file's view carries the count."""
+    assert '"bill_count": 1' in _BATCH_SYSTEM_PROMPT
+    file_ids = _create_test_files(company.id, user.id, 1)
+    job = await create_batch_job(session, company.id, user.id, "", file_ids)
+    await session.commit()
+
+    await _run(job.id, _model_result('{"document_kind": "invoice", "bill_count": 3, "line_items": []}'))
+
+    (step,) = await _files_of(db_factory, job.id)
+    assert jobs.file_view(step)["bill_count"] == 3
+
+
+@pytest.mark.parametrize("extraction", [
+    None, "text", [], {}, {"bill_count": None}, {"bill_count": 0}, {"bill_count": -2},
+    {"bill_count": "3"}, {"bill_count": 2.0}, {"bill_count": 2.5}, {"bill_count": True},
+    {"bill_count": [2]}, {"bill_count": {"n": 2}}, {"bill_count": 1},
+])
+def test_bill_count_is_one_unless_a_whole_number_above_one(extraction):
+    assert bill_count(extraction) == 1
+
+
+def test_bill_count_reads_a_whole_number():
+    assert bill_count({"bill_count": 2}) == 2
+    assert bill_count({"bill_count": 40}) == 40
 
 
 def test_parse_extraction_forms():

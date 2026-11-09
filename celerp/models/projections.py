@@ -15,6 +15,11 @@ from celerp.models.base import Base
 # The asset a projection belongs to (an asset's movements carry it), as the index on it
 # reads it: a query that filters on this expression uses ix_projections_asset.
 ASSET_ID = sa.literal_column("(projections.state ->> 'asset_id')")
+# The numbers a Document or List shows, keeps (an imported one's own number) and is stored
+# under, ignoring case, as the ix_projections_number_* indexes read them.
+NUMBER_SHOWN = sa.literal_column("lower(projections.state ->> 'ref_id')", sa.Text)
+NUMBER_KEPT = sa.literal_column("lower(projections.state ->> 'doc_number')", sa.Text)
+STORAGE_KEY = sa.literal_column("lower(projections.entity_id)", sa.Text)
 
 
 class Projection(Base):
@@ -22,6 +27,9 @@ class Projection(Base):
     __table_args__ = (
         PrimaryKeyConstraint("company_id", "entity_id"),
         sa.Index("ix_projections_asset", "company_id", "entity_type", sa.text("(state ->> 'asset_id')")),
+        sa.Index("ix_projections_number_shown", "company_id", sa.text("lower(state ->> 'ref_id')")),
+        sa.Index("ix_projections_number_kept", "company_id", sa.text("lower(state ->> 'doc_number')")),
+        sa.Index("ix_projections_number_key", "company_id", sa.text("lower(entity_id)")),
     )
 
     entity_id: Mapped[str] = mapped_column(Text, nullable=False)

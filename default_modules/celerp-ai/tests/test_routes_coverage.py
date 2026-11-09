@@ -645,6 +645,35 @@ async def test_proposals_idempotent_and_vendor_resolved(auth_client, session):
 
 
 @pytest.mark.asyncio
+async def test_a_file_holding_several_bills_says_so_beside_its_proposal(auth_client, session):
+    """A file the reader counted several bills in gets a line saying only one was read,
+    right after its own summary; a file of one bill, or with no count, gets none."""
+    c, h = auth_client
+    conv_id = (await c.post("/ai/conversations", headers=h, json={"title": None})).json()["id"]
+    job_id = await _finished_job(session, c, h, conv_id, [
+        {"file_id": "ai_up_1", "filename": "stack.pdf", "status": "success", "answer": "",
+         "extraction": {**_RECEIPT, "bill_count": 3}, "credits": 1},
+        {"file_id": "ai_up_2", "filename": "one.jpg", "status": "success", "answer": "",
+         "extraction": {**_RECEIPT, "bill_count": 1}, "credits": 1},
+        {"file_id": "ai_up_3", "filename": "old.jpg", "status": "success", "answer": "",
+         "extraction": _RECEIPT, "credits": 1},
+    ])
+    caps = _capabilities("create_doc_docs_post", "list_contacts_crm_contacts_get",
+                         "create_contact_crm_contacts_post")
+    with patch("celerp.ai.tools.compile_agent_capabilities", return_value=caps), \
+         patch("celerp.ai.tools.execute_agent_capability", _executor()):
+        r = await c.post(f"/ai/conversations/{conv_id}/jobs/{job_id}/proposals", headers=h)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    lines = body["answer"].split("\n")
+    notice = t("ai.receipt_file_many_bills", filename="stack.pdf", count=3)
+    assert lines[0].startswith("stack.pdf:") and lines[1] == notice
+    assert sum("only one was read" in line for line in lines) == 1
+    # Only the one bill that was read is proposed; nothing is made up for the rest.
+    assert sum(a["name"] == "create_doc_docs_post" for a in body["pending_actions"]) == 3
+
+
+@pytest.mark.asyncio
 async def test_proposal_flags_total_mismatch(auth_client, session):
     """An unknown vendor becomes a vendor proposal followed by a bound draft bill;
     total mismatch, missing date and a non-receipt file are all still surfaced."""

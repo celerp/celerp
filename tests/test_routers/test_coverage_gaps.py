@@ -320,7 +320,7 @@ async def test_export_docs_csv_columns_follow_cols_param(client):
 
 @pytest.mark.asyncio
 async def test_reports_ar_aging_all_buckets(client):
-    """Covers AR aging: zero-outstanding skip (line 79), invalid date ValueError (87-88), d90plus bucket (101)."""
+    """Covers AR aging buckets; a due_date that is not a calendar day is refused at the writer."""
     tok = await _reg(client)
 
     # Invoice with future due_date → current bucket (days_overdue <= 0)
@@ -332,14 +332,13 @@ async def test_reports_ar_aging_all_buckets(client):
     assert r.status_code == 200
     await client.post(f"/docs/{r.json()['id']}/finalize", headers=_h(tok))
 
-    # Invoice with invalid due_date → ValueError path, falls back to today
+    # A due_date that is not a calendar day is refused at the writer
     r = await client.post("/docs", headers=_h(tok), json={
         "doc_type": "invoice", "contact_id": "c:2",
         "line_items": [{"description": "Item", "quantity": 1, "unit_price": 50, "line_total": 50}],
         "subtotal": 50, "tax": 0, "total": 50, "due_date": "not-a-date",
     })
-    assert r.status_code == 200
-    await client.post(f"/docs/{r.json()['id']}/finalize", headers=_h(tok))
+    assert r.status_code == 422
 
     # Invoice with very old due_date → d90plus bucket
     r = await client.post("/docs", headers=_h(tok), json={
@@ -372,7 +371,7 @@ async def test_reports_ar_aging_zero_outstanding_skipped(client):
 
 @pytest.mark.asyncio
 async def test_reports_ap_aging_all_buckets(client):
-    """Covers AP aging: zero-outstanding skip (line 166), invalid date (174-175), d90plus (188)."""
+    """Covers AP aging buckets; a due_date that is not a calendar day is refused at the writer."""
     tok = await _reg(client)
 
     # PO with very old due_date → d90plus bucket
@@ -384,14 +383,13 @@ async def test_reports_ap_aging_all_buckets(client):
     assert r.status_code == 200
     await client.post(f"/docs/{r.json()['id']}/finalize", headers=_h(tok))
 
-    # PO with invalid due_date → ValueError path
+    # A due_date that is not a calendar day is refused at the writer
     r = await client.post("/docs", headers=_h(tok), json={
         "doc_type": "purchase_order", "contact_id": "s:2",
         "line_items": [{"description": "Item", "quantity": 1, "unit_price": 100, "line_total": 100}],
         "subtotal": 100, "tax": 0, "total": 100, "due_date": "bad-date",
     })
-    assert r.status_code == 200
-    await client.post(f"/docs/{r.json()['id']}/finalize", headers=_h(tok))
+    assert r.status_code == 422
 
     # PO with future date → current bucket
     r = await client.post("/docs", headers=_h(tok), json={

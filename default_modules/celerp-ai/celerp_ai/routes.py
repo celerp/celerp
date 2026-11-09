@@ -1614,6 +1614,8 @@ async def propose_from_job(
             new_records, summary = await _bill_proposals(lookups, entry, entry["extraction"], now)
             records.extend(new_records)
             lines.append(summary)
+        if entry["bill_count"] > 1:
+            lines.append(t("ai.receipt_file_many_bills", filename=entry["filename"], count=entry["bill_count"]))
 
     if (other := await _proposals_locked(session, job, existing_id)) is not None:
         return _proposals_out(other)

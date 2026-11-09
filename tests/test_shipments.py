@@ -100,12 +100,12 @@ def test_shipment_fields_are_declared_on_the_payload():
 # ── numbering ────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_shipping_doc_numbered_ship_and_lists_stay_lst(client: AsyncClient):
+async def test_shipping_doc_numbered_ship_and_quotations_quo(client: AsyncClient):
     tok = await _token(client)
     ship = await _make_list(client, tok, "shipping_doc")
     quote = await _make_list(client, tok, "quotation")
     assert ship["id"].startswith("list:SHIP-")
-    assert quote["id"].startswith("list:LST-")
+    assert quote["id"].startswith("list:QUO-")
 
 
 @pytest.mark.asyncio
@@ -429,3 +429,21 @@ def test_country_picker_list_is_usable():
     assert COUNTRIES == tuple(sorted(COUNTRIES))  # datalist stays alphabetical
     for c in ("Thailand", "Germany", "United States", "Vietnam"):
         assert c in COUNTRIES
+
+
+@pytest.mark.asyncio
+async def test_a_shipment_never_takes_another_lists_number(client):
+    """The shipment's counter reaching a number a transfer was given draws the next free one
+    rather than writing the shipment over that transfer."""
+    tok = await _token(client)
+    rows = (await client.get("/docs/sequences", headers=_h(tok))).json()
+    taken = next(r["preview"] for r in rows if r["doc_type"] == "shipping_doc")
+    r = await client.post("/lists", headers=_h(tok), json={"list_type": "transfer", "ref_id": taken})
+    assert r.status_code == 200, r.text
+    transfer = r.json()["id"]
+    invoice = await _issued_doc(client, tok, "invoice")
+    r = await _ship_docs(client, tok, [invoice])
+    assert r.status_code == 200, r.text
+    assert r.json()["id"] != transfer
+    state = (await client.get(f"/lists/{transfer}", headers=_h(tok))).json()
+    assert state["list_type"] == "transfer"
