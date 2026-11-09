@@ -5728,7 +5728,7 @@ celerpUpdateBulkAlloc();
         from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return P(t("error.session_expired"), cls="cell-error")
+            return _cell_save_refusal(t("error.session_expired"))
         if field not in _WRITEOFF_FIELDS:
             return _R("Unknown field", status_code=404)
         form = await request.form()
@@ -5743,7 +5743,7 @@ celerpUpdateBulkAlloc();
                     kwargs["qty_out"] = float(raw)
                 except ValueError:
                     return _writeoff_editable_cell(entity_id, line_id, field, raw, opts, labels)(
-                        P(t("documents.enter_a_number"), cls="cell-error"))
+                        _cell_save_refusal(t("documents.enter_a_number")))
         elif field == "account":
             if raw != "":
                 kwargs["account"] = raw
@@ -5754,7 +5754,7 @@ celerpUpdateBulkAlloc();
                 await api.set_writeoff_line(token, entity_id, line_id=line_id, **kwargs)
             except APIError as e:
                 return _writeoff_editable_cell(entity_id, line_id, field, kwargs.get(field, raw), opts, labels)(
-                    P(error_message(e), cls="cell-error"))
+                    _cell_save_refusal(error_message(e)))
         try:
             lst = await api.get_list(token, entity_id)
         except APIError:
@@ -6190,6 +6190,13 @@ def _writeoff_editable_cell(entity_id: str, line_id: str, field: str, value,
         patch_url=f"/lists/{entity_id}/writeoff-line/{line_id}/{field}",
         cls_extra=_WRITEOFF_COL_CLASS[field], **kw,
     )
+
+
+def _cell_save_refusal(text: str) -> FT:
+    """A line cell save's reason it stored nothing (refused, invalid or the session expired). It carries
+    data-cell-unsaved, the only mark the page's line actions read as a line edit not stored, so a styling
+    class (a picker's hint shares cell-error) never stops them."""
+    return P(text, cls="cell-error", data_cell_unsaved="1")
 
 
 def _writeoff_static_cell(field: str, value, acct_labels: dict | None = None) -> FT:
@@ -9057,9 +9064,13 @@ async function _celerpPickerError(resp) {{
     try {{ const body = await resp.json(); if (body && body.error) return body.error; }} catch (e) {{}}
     return _L.lookup_error;
 }}
-function _celerpPickerStatus(text) {{
+/* The one way the page shows that a save or lookup stored nothing (stale, failed, refused, lines
+   unsaved): on its save status and in a toast, so it reaches the user wherever it started, a dialog
+   over the page included. */
+function _celerpSaveRefused(text) {{
     const statusEl = document.getElementById('save-status');
     if (statusEl) {{ statusEl.textContent = '\u2717 ' + text; statusEl.style.color = 'red'; celerpTryAgain(statusEl); }}
+    if (window.celerpToast) celerpToast(text, 'error');
 }}
 /* ── Barcode scan bar ── */
 (function() {{
@@ -9458,7 +9469,7 @@ async function celerpAcSearch(input, field) {{
     _celerpAcTimer = setTimeout(async () => {{
         const pl = _celerpPriceListParam();
         const resp = await celerpFetch('/docs/catalog-search?q=' + encodeURIComponent(q) + pl + _celerpDocTypeParam() + _celerpHolderParam(input.closest('tr')));
-        if (!resp.ok) {{ list.style.display = 'none'; _celerpPickerStatus(await _celerpPickerError(resp)); return; }}
+        if (!resp.ok) {{ list.style.display = 'none'; _celerpSaveRefused(await _celerpPickerError(resp)); return; }}
         const items = await resp.json();
         // Typing moved on while this answered (the starting list, or an earlier word).
         if (input.value.trim() !== q) return;
@@ -9487,7 +9498,7 @@ async function celerpAcSearch(input, field) {{
                 // Reject a non-splittable item already on another line: leave this
                 // row as the operator left it and show the message, no autosave.
                 if (row && !celerpFillRow(row, {{...item, description: item.description}})) {{
-                    _celerpPickerStatus(_L.dup_on_doc);
+                    _celerpSaveRefused(_L.dup_on_doc);
                     return;
                 }}
                 celerpUpdateTotals();
@@ -9554,7 +9565,7 @@ function celerpAcBlur(input) {{
             const pl = _celerpPriceListParam();
             celerpFetch('/docs/catalog-search?q=' + encodeURIComponent(sku) + pl + _celerpDocTypeParam() + _celerpHolderParam(row))
               .then(async r => {{
-                if (!r.ok) {{ _celerpPickerStatus(await _celerpPickerError(r)); return []; }}
+                if (!r.ok) {{ _celerpSaveRefused(await _celerpPickerError(r)); return []; }}
                 return r.json();
               }})
               .then(items => {{
@@ -9564,11 +9575,11 @@ function celerpAcBlur(input) {{
                     if (celerpFillRow(row, exact)) {{
                         celerpAutoSave();
                     }} else {{
-                        _celerpPickerStatus(_L.dup_on_doc);
+                        _celerpSaveRefused(_L.dup_on_doc);
                     }}
                 }}
               }})
-              .catch(() => _celerpPickerStatus(_L.lookup_error));
+              .catch(() => _celerpSaveRefused(_L.lookup_error));
         }}
     }}
     celerpAutoSave();
@@ -10137,11 +10148,7 @@ function _celerpCollectLines() {{
             // surface the error on the save-status element and send nothing, rather
             // than coerce a blank/NaN quantity to 1 and persist corrupt data.
             if (qty === null) {{
-                const statusEl = document.getElementById('save-status');
-                if (statusEl) {{
-                    statusEl.textContent = '\\u2717 ' + _L.invalid_qty;
-                    statusEl.style.color = 'red';
-                }}
+                _celerpSaveRefused(_L.invalid_qty);
                 return null;
             }}
             const lineTotalEl = row.querySelector('.line-total');
@@ -10357,17 +10364,14 @@ async function _celerpRefreshHeldBadges() {{
             statusEl.textContent = '';
             _celerpShowReservedConflicts(conflicts);
         }} else if (stale) {{
-            // Another save landed first, so this tab's rows are stale. Offer the only safe
-            // way back to a consistent state - open the latest before editing again - rather
-            // than a dead-end error. Nothing was written.
-            statusEl.style.color = 'red';
-            statusEl.textContent = '\\u2717 ' + msg;
-            statusEl.append(' ', celerpTryAgainButton());
+            // Another save landed first, so this tab's rows are stale. The message offers the
+            // only safe way back to a consistent state - Try again opens the latest before
+            // editing again - rather than a dead-end error. Nothing was written.
+            _celerpSaveRefused(msg);
         }} else {{
             // Nothing was written: put the stored lines back in place so the table matches
             // what is saved, and say why.
-            statusEl.textContent = '';
-            if (window.celerpToast) celerpToast(msg, 'error');
+            _celerpSaveRefused(msg);
             window._celerpSavedLineRevision = window._celerpLineRevision;
             await _celerpInstallLineBody('', null);
         }}
@@ -10391,17 +10395,21 @@ if (!window._celerpLineCellsBound) {{
         if (window._celerpLineCellSaves.has(el)) return;
         const saved = new Promise((resolve) => {{
             el.addEventListener('htmx:beforeRequest', () => {{ sent = true; }});
-            // A refusal answers 200 with the editor and its reason (cell-error) in place. The
-            // redrawn editor keeps this one's opening value, so leaving it as refused saves it
-            // again rather than restoring the stored value over the reason.
+            // A refusal answers 200 with the editor and its reason (marked data-cell-unsaved) in
+            // place, and says so as every save refusal does. The redrawn editor keeps this one's
+            // opening value, so leaving it as refused saves it again rather than restoring the
+            // stored value over the reason.
             el.addEventListener('htmx:afterRequest', (e) => {{
                 const body = document.getElementById('{line_body_id}');
-                const refused = !!(e.detail.xhr && e.detail.xhr.responseText.includes('cell-error'));
-                const again = refused && el._v !== undefined && body
+                const answer = document.createElement('template');
+                answer.innerHTML = (e.detail.xhr && e.detail.xhr.responseText) || '';
+                const reason = answer.content.querySelector('[data-cell-unsaved]');
+                if (reason) _celerpSaveRefused(reason.textContent);
+                const again = reason && el._v !== undefined && body
                     && body.querySelector('[hx-patch="' + CSS.escape(el.getAttribute('hx-patch')) + '"]');
                 if (again) again._v = el._v;
                 resolve();
-            }});
+            }}, {{once: true}});
             el.addEventListener('htmx:beforeCleanupElement', () => {{ if (!sent) resolve(); }});
         }});
         window._celerpLineCellSaves.set(el, saved);
@@ -10421,14 +10429,14 @@ function _celerpLineCellsSaved() {{
     return Promise.all(window._celerpLineCellSaves.values());
 }}
 /* A line cell edit the page holds that is not stored: a line cell save still on its way, an open
-   line cell editor whose value differs from the one it opened with, or a line cell showing a
-   save's error. */
+   line cell editor whose value differs from the one it opened with, or the reason a line cell save
+   stored nothing (data-cell-unsaved, which only that save's answer carries). */
 function _celerpLineCellsUnsaved() {{
     const body = document.getElementById('{line_body_id}');
     const cells = body ? [...body.querySelectorAll('[hx-patch]')] : [];
     return window._celerpLineCellSaves.size > 0
         || cells.some((el) => el._v !== undefined && el.value !== el._v)
-        || !!(body && body.querySelector('.cell-error'));
+        || !!(body && body.querySelector('[data-cell-unsaved]'));
 }}
 /* Any line edit the page holds that is not stored: rows changed since their last save, or a line
    cell edit above. */
@@ -10450,7 +10458,7 @@ async function _celerpPostOnLines(url, question, form) {{
     if (!(await _celerpPersist())) return;
     if (window._celerpLineSaveFailures !== failures) return;
     if (_celerpLinesUnsaved()) {{
-        celerpToast(_L.lines_unsaved, 'error');
+        _celerpSaveRefused(_L.lines_unsaved);
         return;
     }}
     htmx.ajax('POST', url, form ? {{source: form, swap: 'none'}} : {{swap: 'none'}});

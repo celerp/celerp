@@ -3538,6 +3538,33 @@ class TestWriteoffListDetail:
         assert r.status_code == 200 and '<span class="cell-number">4</span>' in r.text
         assert "wo-carry-" not in r.text and "HX-Trigger" not in r.headers
 
+    @pytest.mark.asyncio
+    async def test_only_an_entry_save_that_stored_nothing_carries_the_unsaved_mark(self, ui_client):
+        """Refused and invalid answers carry data-cell-unsaved (the mark the page's line actions read);
+        a stored entry and the editor opening do not."""
+        from ui.api_client import APIError
+        url = "/lists/list:WO-1/writeoff-line/ln-abc/qty_out"
+        mark = 'data-cell-unsaved="1"'
+        ui_client.cookies.update(_authed())
+        lst = {"id": "list:WO-1", "version": 3, "line_items": [{"line_id": "ln-abc", "qty_out": 4}]}
+        with (
+            patch("ui.api_client.set_writeoff_line", create=True,
+                  new=AsyncMock(side_effect=APIError(422, "Only 5 on hand"))),
+            patch("ui.api_client.get_list", new=AsyncMock(return_value=lst)),
+        ):
+            refused = await ui_client.patch(url, data={"value": "9"})
+            invalid = await ui_client.patch(url, data={"value": "x"})
+            opened = await ui_client.get(url + "/edit")
+        assert mark in refused.text and "Only 5 on hand" in refused.text
+        assert mark in invalid.text and t("documents.enter_a_number") in invalid.text
+        assert mark not in opened.text
+        with (
+            patch("ui.api_client.set_writeoff_line", create=True, new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_list", new=AsyncMock(return_value=lst)),
+        ):
+            stored = await ui_client.patch(url, data={"value": "4"})
+        assert stored.status_code == 200 and mark not in stored.text
+
 
 class TestSettingsPolish:
     """Settings click-to-edit affordance — visual cue must be present."""

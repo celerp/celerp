@@ -8,6 +8,9 @@ Pages render with every optional feature on (sharing, email, online payment), so
 a setting is decided too."""
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 from celerp.services.list_behavior import LIST_BEHAVIOR
 from ui.routes.documents import _DOC_TYPES, _doc_detail, persist_then_post
 
@@ -79,3 +82,67 @@ def test_without_editable_lines_the_actions_post_directly():
     button = posts["/lists/list:L-1/action/write-off"]
     assert button.attrs.get("hx_confirm", button.attrs.get("hx-confirm")) == _WRITE_OFF.confirm
     assert "onclick" not in button.attrs
+
+
+# The page's line actions stop on a line edit not stored. A line cell save that stored nothing marks
+# its answer data-cell-unsaved, and that mark is the only thing the page reads for it: nothing else
+# sets it and no styling class stands in for it, so a hint can never stop an action.
+_ROOT = Path(__file__).resolve().parents[1]
+_SOURCES = [p for d in ("ui", "default_modules") for p in (_ROOT / d).rglob("*") if p.suffix in (".py", ".js")]
+_DOCS = _ROOT / "ui" / "routes" / "documents.py"
+
+
+def _function(source: str, head: str) -> str:
+    """The text of the function opening with *head*: a page script function up to its closing brace,
+    a module-level def up to the next line at module level."""
+    start = source.index(head)
+    end = re.compile(r"\n\}\}\n" if "function" in head else r"\n\S").search(source, start + len(head))
+    return source[start:end.end()]
+
+
+def _enclosing_def(source: str, at: int) -> str:
+    return re.findall(r"^\s*(?:async )?def (\w+)", source[:at], re.M)[-1]
+
+
+def test_only_a_line_cell_save_sets_the_unsaved_mark():
+    docs = _DOCS.read_text()
+    for path in _SOURCES:
+        text = path.read_text(errors="ignore")
+        if path != _DOCS:
+            assert not re.search(r"data[-_]cell[-_]unsaved|cellUnsaved", text), path
+    assert docs.count("data_cell_unsaved") == 1 and "cellUnsaved" not in docs
+    assert "data_cell_unsaved" in _function(docs, "def _cell_save_refusal(")
+    calls = [m.start() for m in re.finditer(r"(?<!def )_cell_save_refusal\(", docs)]
+    assert {_enclosing_def(docs, at) for at in calls} == {"list_writeoff_line_save"}
+    # The page only reads the mark (the unsaved check, and the cell save telling a refusal apart);
+    # no script sets it.
+    assert docs.count("querySelector('[data-cell-unsaved]')") == 2
+    assert not re.search(r"(set|toggle)Attribute\(\s*'data-cell-unsaved", docs)
+
+
+def test_the_unsaved_check_reads_the_mark_not_a_styling_class():
+    check = _function(_DOCS.read_text(), "function _celerpLineCellsUnsaved()")
+    assert "[data-cell-unsaved]" in check
+    assert not re.search(r"\.cell-error|cell-error'|classList", check), check
+
+
+# Every refusal of a save on the page shows through one function, on the save status and in a toast,
+# so it reaches the user wherever the save started (a dialog over the page included).
+def test_one_function_writes_every_save_refusal():
+    docs = _DOCS.read_text()
+    writer = _function(docs, "function _celerpSaveRefused(text)")
+    assert "getElementById('save-status')" in writer and "celerpToast(text, 'error')" in writer
+    persist = _function(docs, "async function _celerpPersistOnce()")
+    for path in _SOURCES:
+        text = path.read_text(errors="ignore")
+        for m in re.finditer(r"getElementById\(['\"]save-status|#save-status|id=['\"]save-status", text):
+            line = text[text.rfind("\n", 0, m.start()) + 1:text.find("\n", m.start())]
+            if path == _DOCS and (writer.find(line) >= 0 or persist.find(line) >= 0
+                                  or 'id="save-status"' in line):
+                continue
+            if path.name == "shell.py" and line.startswith("var _CELERP_NOTICE"):
+                continue
+            raise AssertionError(f"{path}: {line.strip()}")
+    # The rows save writes only its success mark itself; every refusal goes through the writer.
+    assert "_celerpSaveRefused(msg)" in persist
+    assert not re.search(r"2717|'red'|celerpToast\(", persist), persist
