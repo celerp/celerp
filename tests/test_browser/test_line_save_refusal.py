@@ -34,15 +34,7 @@ def _open(page, ui_server, doc_id):
     page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
     rows = page.locator("#line-body tr")
     rows.first.locator('[data-name="quantity"]').wait_for(timeout=8000)
-    # Count every refusal toast shown: a toast leaves after 6s, which a slow restore can outlast.
-    page.evaluate("""(refusal) => {
-        window.__sameLoad = true;
-        window.__refusalsShown = 0;
-        new MutationObserver((ms) => ms.forEach((m) => m.addedNodes.forEach((n) => {
-            if (n.querySelector && Array.from(n.querySelectorAll('.toast__msg')).some((e) => e.textContent === refusal))
-                window.__refusalsShown++;
-        }))).observe(document.getElementById('toast-container'), {childList: true});
-    }""", _REFUSAL)
+    page.evaluate("window.__sameLoad = true")
     return rows
 
 
@@ -65,7 +57,7 @@ def _settle(page) -> None:
 
 
 def _toasts(page) -> int:
-    return page.evaluate("window.__refusalsShown")
+    return page.locator(".toast__msg", has_text=_REFUSAL).count()
 
 
 def _type_quantity(rows, value: str):

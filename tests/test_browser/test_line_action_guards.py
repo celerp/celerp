@@ -141,8 +141,7 @@ def test_finalize_does_not_run_after_a_failed_save(page, ui_server, api):
     _fail_line_saves(page)
     finalizes = _posts(page, "/action/finalize")
     page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
-    page.locator("#line-body input[data-name=unit_price]").first.fill("12")
-    page.locator("button[hx-post*='action/finalize']").first.click()
+    page.locator("button[onclick*='action/finalize']").first.click()
     assert _BLOCKED in _error_toast(page)
     page.wait_for_timeout(500)
     assert finalizes == []

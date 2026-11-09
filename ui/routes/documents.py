@@ -1212,22 +1212,6 @@ def _reopened_toast(answer) -> dict:
                         action={"href": doc_href(memos[0].get("id")), "label": memos[0].get("doc_number") or ""})
 
 
-# The response header a self-saving control's route sets when the change is stored. The page's
-# save-first gate counts a field save as saved only when its answer carries it, so a refusal in
-# any shape, a failure, or a route that never sets it counts as not saved.
-SAVED_MARK = "X-Celerp-Saved"
-
-
-def _saved(answer) -> Response:
-    """``answer`` (a component or a response) as the success answer of a self-saving route: with
-    the saved mark."""
-    from starlette.responses import HTMLResponse as _HR
-    if not isinstance(answer, Response):
-        answer = _HR(to_xml(answer))
-    answer.headers[SAVED_MARK] = "1"
-    return answer
-
-
 def _action_error(msg: str | dict | APIError, *, persist: bool = False, action: dict | list[dict] | None = None,
                   **triggers):
     """Fire a toast popup for action errors and restore any open editable cell to display mode.
@@ -2856,10 +2840,10 @@ celerpUpdateBulkAlloc();
         notice = t("documents.memo_tax_rate_set", memo=memo.get("ref_id") or memo.get("doc_number") or "",
                    rate=f"{rate:g}", old=fmt_money(float(result.get("previous_tax") or 0), currency),
                    new=fmt_money(float(result.get("tax") or 0), currency))
-        return _saved(_R("", status_code=200, headers={
+        return _R("", status_code=200, headers={
             "HX-Reswap": "none",
             **toast_header(notice, "success", persist=True, celerpListVersion={"version": result.get("version")},
-                           **doc_money_redraw())}))
+                           **doc_money_redraw())})
 
     @app.post("/docs/{entity_id}/tax-rate/preview")
     async def memo_tax_rate_preview(request: Request, entity_id: str):
@@ -3164,21 +3148,21 @@ celerpUpdateBulkAlloc();
         # Contact, price_list, terms_template, or currency changes affect multiple sections - full page refresh
         if field in ("contact_id", "price_list", "terms_template"):
             from starlette.responses import Response as _R
-            return _saved(_R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"}))
+            return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
         # Resolve contact fields to display names
         if field in ("contact_id", "commission_contact_id"):
             display_value = _resolve_contact_display(doc, field)
         else:
             display_value = doc.get(field)
         from starlette.responses import Response as _R
-        return _saved(_R(
+        return _R(
             to_xml(_doc_display_cell(entity_id, field, display_value)),
             media_type="text/html",
             headers={"HX-Trigger": _json.dumps({
                 "celerpListVersion": {"version": doc.get("version")},
                 **(doc_money_redraw() if field in DOC_MONEY_FIELDS else {}),
             })},
-        ))
+        )
 
     # Line-item fields editable on finalized docs (description, account_code)
     _LI_FINALIZED_EDITABLE = {"description", "account_code"}
@@ -3282,11 +3266,11 @@ celerpUpdateBulkAlloc();
                 display_value = acct_map.get(value) or value
             except Exception:
                 pass
-        return _saved(_li_field_display_cell(entity_id, li_index, field, display_value))
+        return _li_field_display_cell(entity_id, li_index, field, display_value)
 
     async def doc_field_post(request: Request, entity_id: str, field: str):
         """Handle autosave of a document's or a list's text fields (terms_text, customer_note) via
-        hx_post. A refused save answers without the saved mark."""
+        hx_post."""
         from starlette.responses import Response as _R
         token = _token(request)
         if not token:
@@ -3294,20 +3278,21 @@ celerpUpdateBulkAlloc();
         form = await request.form()
         # Field name may come as the field name itself or as 'value'
         value = str(form.get(field, form.get("value", "")))
+        version = None
         try:
             if request.url.path.startswith("/lists/"):
                 version = (await api.patch_list(token, entity_id, {field: value})).get("version")
             else:
                 version = (await api.patch_doc(token, entity_id, {field: value})).get("event_id")
         except APIError:
-            return _R("", status_code=204)
+            pass  # silent autosave failure
         headers = (
             {"HX-Trigger": _json.dumps({
                 "celerpListVersion": {"version": version},
             })}
             if version is not None else {}
         )
-        return _saved(_R("", status_code=204, headers=headers))
+        return _R("", status_code=204, headers=headers)
 
     # One handler for both: a stacked route decorator would register its wrapper, not the handler.
     app.post("/docs/{entity_id}/field/{field}")(doc_field_post)
@@ -4341,8 +4326,7 @@ celerpUpdateBulkAlloc();
         form = await request.form()
         expires_at = (form.get("expires_at") or "").strip() or None
         try:
-            return _saved(_share_panel(entity_id, await api.create_share_link(token, entity_id, expires_at),
-                                       await _company_today(token)))
+            return _share_panel(entity_id, await api.create_share_link(token, entity_id, expires_at), await _company_today(token))
         except APIError as e:
             return _action_error(e)
 
@@ -4577,7 +4561,7 @@ celerpUpdateBulkAlloc();
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
             return files_error(error_message(e), e.status)
-        return _saved(_doc_files_section("doc", entity_id, _enrich_doc_files(doc)))
+        return _doc_files_section("doc", entity_id, _enrich_doc_files(doc))
 
     @app.post("/docs/{entity_id}/files/{file_id}/description")
     async def doc_patch_file_description(request: Request, entity_id: str, file_id: str):
@@ -5090,23 +5074,20 @@ celerpUpdateBulkAlloc();
             f"event.preventDefault();}}"
         )
         enter_js = "if(event.key==='Enter'){event.preventDefault();this.blur();}"
-        # Saved a moment after leaving, so Escape can put the stored value back first; the page's
-        # save-first gate reads data-save-delay to wait for that save.
-        blur_save = {"data_save_delay": "200",
-                     "onblur": f"setTimeout(()=>_celerpPatchListField(this, {_json.dumps(patch_url)}), this.dataset.saveDelay)"}
         if field == "list_type":
             input_el = Select(
                 *[Option(_list_type_label(lt), value=lt, selected=(lt == value)) for lt in _LIST_TYPES],
                 name="value",
                 cls="cell-input cell-input--select", autofocus=True,
-                onchange=f"_celerpPatchListField(this, {_json.dumps(patch_url)})",
+                onchange=f"_celerpPatchListField(this, {_json.dumps(patch_url)}, {_json.dumps(lst.get('status') == 'draft')})",
                 onkeydown=esc_js,
             )
         elif field in _LIST_DATE_FIELDS or field in ("issue_date",):
             input_el = Input(
                 type="date", name="value", value=value[:10] if value else "",
                 cls="cell-input", autofocus=True,
-                onkeydown=esc_js + enter_js, **blur_save,
+                onblur=f"setTimeout(()=>_celerpPatchListField(this, {_json.dumps(patch_url)}), 200)",
+                onkeydown=esc_js + enter_js,
             )
         elif field in ("contact_id", "contact_company_name"):
             # A List's party is a customer, chosen exactly as on a sales document.
@@ -5128,7 +5109,8 @@ celerpUpdateBulkAlloc();
             input_el = Input(
                 type="text", name="value", value=value,
                 cls="cell-input", autofocus=True,
-                onkeydown=esc_js + enter_js, **blur_save,
+                onblur=f"setTimeout(()=>_celerpPatchListField(this, {_json.dumps(patch_url)}), 200)",
+                onkeydown=esc_js + enter_js,
             )
         return Div(input_el, cls="editable-cell editable-cell--editing")
 
@@ -5160,7 +5142,7 @@ celerpUpdateBulkAlloc();
                 await api.change_list_type(token, entity_id, value)
             except APIError as e:
                 return _action_error(e)
-            return _saved(_R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"}))
+            return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"})
         if field == "contact_id":
             if value == "__new__":
                 return _R("", status_code=204, headers={"HX-Redirect": "/contacts/customers"})
@@ -5170,20 +5152,20 @@ celerpUpdateBulkAlloc();
             except APIError as e:
                 return _action_error(e)
             # Customer details and repriced lines change together - re-render the page.
-            return _saved(_R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"}))
+            return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"})
         try:
             result = await api.patch_list(token, entity_id, {field: value})
             lst = await api.get_list(token, entity_id)
         except APIError as e:
             return _action_error(e)
         cell = _doc_display_cell(entity_id, field, lst.get(field), "list")
-        return _saved(_R(
+        return _R(
             to_xml(cell),
             media_type="text/html",
             headers={"HX-Trigger": _json.dumps({
                 "celerpListVersion": {"version": result.get("version")},
             })},
-        ))
+        )
 
     @app.post("/lists/{entity_id}/lines")
     async def save_list_lines(request: Request, entity_id: str):
@@ -5484,7 +5466,7 @@ celerpUpdateBulkAlloc();
             return _action_error(e)
         display_val = f"{float(cq):g}" if cq is not None else _EMPTY
         edit_url = f"/lists/{entity_id}/line/{item_id}/counted/edit"
-        return _saved(Div(
+        return Div(
             Span(display_val,
                  hx_get=edit_url,
                  hx_target="closest .editable-cell",
@@ -5492,7 +5474,7 @@ celerpUpdateBulkAlloc();
                  cls="editable-cell",
                  title=t("documents.click_to_edit_count")),
             cls="editable-cell",
-        ))
+        )
 
     @app.get("/lists/{entity_id}/line/{item_id}/counted/edit")
     async def list_audit_counted_edit(request: Request, entity_id: str, item_id: str):
@@ -5620,7 +5602,7 @@ celerpUpdateBulkAlloc();
             value = await _writeoff_line_value(token, entity_id, line_id, field)
         except APIError:
             value = kwargs.get(field)
-        return _saved(_writeoff_display_cell(entity_id, line_id, field, value, opts, labels))
+        return _writeoff_display_cell(entity_id, line_id, field, value, opts, labels)
 
     @app.get("/lists/{entity_id}/writeoff-line/{line_id}/{field}/display")
     async def list_writeoff_line_display(request: Request, entity_id: str, line_id: str, field: str):
@@ -5931,7 +5913,7 @@ async def _contact_picker(token: str, *, resource: str, entity_id: str, field: s
 
     field is contact_id (options by name, with Add new) or contact_company_name (options by
     company, still saving contact_id). A document saves through htmx; a List saves through
-    its mutation queue; the page's save-first gate saves pending line edits before either.
+    its mutation queue, persisting pending line edits first because the save reloads the page.
     """
     try:
         contacts = (await api.list_contacts(token, {"limit": 500, "contact_type": contact_type})).get("items", [])
@@ -5950,7 +5932,7 @@ async def _contact_picker(token: str, *, resource: str, entity_id: str, field: s
     prefix = "/lists" if resource == "list" else "/docs"
     patch_url = f"{prefix}/{entity_id}/field/{save_field}"
     if resource == "list":
-        save_attrs = {"onchange": f"_celerpPatchListField(this, {_json.dumps(patch_url)})"}
+        save_attrs = {"onchange": f"_celerpPatchListField(this, {_json.dumps(patch_url)}, true)"}
     else:
         save_attrs = {"hx_patch": patch_url, "hx_target": "closest .editable-cell",
                       "hx_swap": "outerHTML", "hx_trigger": "change",
@@ -7334,6 +7316,13 @@ def _doc_money(doc: dict) -> dict:
             "outstanding": fmt_money(float(doc_value(doc, "amount_outstanding") or 0), currency)}
 
 
+def persist_then_post(url: str) -> str:
+    """The onclick of an action that runs on the page's lines (Finalize, a draft agreement's
+    Activate): the page's pending line edits are saved first, and the action is posted only once
+    they are."""
+    return f"event.preventDefault();(async()=>{{if(!(await _celerpPersist()))return;htmx.ajax('POST','{url}',{{swap:'none'}});}})();"
+
+
 def subscription_meta_cells(doc: dict) -> tuple:
     """An agreement's frequency and next bill date in the document header. Its schedule changes
     only through its own controls, which check it against the periods already billed, so here
@@ -7345,133 +7334,6 @@ def subscription_meta_cells(doc: dict) -> tuple:
         Div(Div(t("doc.next_issue_date"), cls="meta-label"), Div(doc.get("next_bill_date") or "--"),
             id="sub-next-bill", cls="meta-cell"),
     )
-
-
-def _save_first_gate() -> FT:
-    """The page's save-first gate, on every document and list page: one that only shows its lines
-    still has fields that save themselves."""
-    return Script(f"""
-/* Save first: every htmx request that changes something (any verb but GET), whichever control on
-   the page sends it, waits for the page's pending line edits to save, so it runs on the lines the
-   page shows and a reload it answers with drops nothing typed. A blur's save still waiting folds
-   into this one; a failed save is not followed by the request, and its reason beside the lines is
-   also said in a toast, since the control clicked may be far from them. It also waits for a
-   field that saves itself: one left a moment ago whose delayed save has not fired yet, and any
-   change already on its way, so a click straight from an edited cell runs on the saved value.
-   A field's save counts as saved only when its answer carries the server's saved mark, read from
-   the save's own request; any other answer (a refusal in whatever shape, a failure, an answer that
-   takes the field off the page) is not saved, and its reason is the answer's toast text, else
-   "not saved". Nothing is sent while a field elsewhere on the page shows what
-   is not saved: its save was not saved and the field is still there, a refusal is showing, or an
-   open editor holds a value it has not sent; nor when a save the request waited for was not
-   saved, even once its cell has put the stored value back. The click is answered with the
-   reason in a toast. Once saved, the request meets its own
-   confirmation, as it would have; when the save's answer redrew the control clicked, the control
-   now in its place is clicked instead. Capture phase, so it runs before any confirmation listener.
-   The line save itself is a fetch, not an htmx request. A request that pinned the version before
-   the save is pinned to the one the save produced: this tab's own save is the only write in
-   between (another tab's write makes the save fail). */
-if (!window._celerpSaveFirstBound) {{
-    window._celerpSaveFirstBound = true;
-    // failed: field -> {{reason, n}}, n counting the answers that were not saved.
-    // held: field saves this gate holds until the saves before them are over; an action waits for them too.
-    const scheduled = new Map(), inFlight = new Set(), held = new Set(), failed = new Map();
-    let notSaved = 0;
-    const notSavedText = {_json.dumps(t("documents.field_not_saved"))};
-    // A page whose lines cannot be edited has no line save to wait for.
-    const linesDirty = () => typeof _celerpLinesDirty === 'function' && _celerpLinesDirty();
-    const fieldSaving = save => inFlight.size > 0 || (!save && held.size > 0)
-        || Array.from(scheduled.values()).some(t => t > Date.now());
-    // What a field outside `own` (the cell of the request at hand) shows unsaved, as the reason to give.
-    // A cell whose editor is leaving with a new value is saving, which the request waits for, and the
-    // answer to that save is what counts.
-    const saving = el => scheduled.get(el) > Date.now() && (el._v === undefined || el.value !== el._v);
-    // `since`: the count of not-saved answers at the click; a later one counts even once detached.
-    const fieldUnsaved = function(own, since) {{
-        const cell = n => n.closest('td, .editable-cell') || n;
-        const other = n => !(own && own.contains(n)) && !n.closest('[data-preview]')
-            && !Array.from(scheduled.keys()).some(el => saving(el) && cell(n).contains(el));
-        const said = Array.from(document.querySelectorAll('.cell-error')).find(other);
-        if (said) return said.textContent.trim() || notSavedText;
-        const lost = Array.from(failed).find(([el, f]) => (el.isConnected || f.n > since) && other(el));
-        if (lost) return lost[1].reason;
-        const open = Array.from(document.querySelectorAll('input, textarea')).some(el => el._v !== undefined && el.value !== el._v && other(el));
-        return open ? notSavedText : '';
-    }};
-    // How a field's save ended, read from its own request once it is over: saved only when the answer
-    // carries the saved mark. `el` is the field that sent it, taken when the request started.
-    const outcome = function(el, xhr) {{
-        if (xhr.getResponseHeader({_json.dumps(SAVED_MARK)})) {{ failed.delete(el); return; }}
-        let reason = '';
-        try {{ reason = JSON.parse(xhr.getResponseHeader('HX-Trigger')).celerpToast.message; }} catch (_) {{}}
-        failed.set(el, {{reason: reason || notSavedText, n: ++notSaved}});
-    }};
-    // A field's own save is any request not sent by a click or a submit, which are actions.
-    const fieldSave = cause => !cause || !['click', 'submit'].includes(cause.type);
-    document.addEventListener('focusout', function(e) {{
-        const el = e.target;
-        const delay = /delay:(\\w+)/.exec((el.getAttribute && el.getAttribute('hx-trigger')) || '');
-        if (delay && el.matches('[hx-post], [hx-patch], [hx-put]'))
-            scheduled.set(el, Date.now() + htmx.parseInterval(delay[1]) + 50);
-        else if (el.dataset && el.dataset.saveDelay)
-            scheduled.set(el, Date.now() + Number(el.dataset.saveDelay) + 50);
-    }}, true);
-    document.addEventListener('htmx:trigger', e => scheduled.delete(e.target));
-    document.addEventListener('htmx:beforeSend', function(e) {{
-        const xhr = e.detail.xhr, el = e.detail.elt;
-        // A preview reads the figures an action would give and stores nothing: no save to wait for.
-        if (e.detail.requestConfig.verb === 'get' || el.closest('[data-preview]')) return;
-        const save = fieldSave(e.detail.requestConfig.triggeringEvent);
-        inFlight.add(xhr);
-        xhr.addEventListener('loadend', function() {{
-            if (save) outcome(el, xhr);
-            inFlight.delete(xhr);
-        }});
-    }});
-    const fieldsSaved = save => new Promise(function wait(done) {{
-        if (fieldSaving(save)) setTimeout(() => wait(done), 50); else done();
-    }});
-    document.addEventListener('htmx:confirm', function(e) {{
-        const d = e.detail;
-        if (d.verb === 'get' || d.celerpSaved) return;
-        scheduled.delete(d.elt);
-        // Read at the click: leaving a refused editor puts its stored value back while the request waits.
-        const own = d.elt.closest('td, .editable-cell'), since = notSaved, shown = fieldUnsaved(own, since);
-        const save = fieldSave(d.triggeringEvent);
-        if (!fieldSaving(save) && !linesDirty() && !shown) return;
-        e.preventDefault();
-        e.stopPropagation();
-        clearTimeout(window._celerpSaveTimer);
-        window._celerpSaveTimer = null;
-        // A field's reason, or the line save's answer (its own words stay beside the lines too).
-        if (save) held.add(d);
-        fieldsSaved(save).then(() => shown || fieldUnsaved(own, since) || (linesDirty() ? _celerpPersist() : true)).then(function(ok) {{
-            if (ok !== true) {{
-                const said = typeof ok === 'string' ? ok : document.getElementById('save-status')?.firstChild;
-                const text = typeof said === 'string' ? said
-                    : said && said.nodeType === Node.TEXT_NODE && said.textContent.replace(/^\u2717 /, '');
-                // A refusal's own toast may be showing already: say it once.
-                const showing = Array.from(document.querySelectorAll('.toast__msg')).some(m => m.textContent.startsWith(text));
-                if (text && !showing && window.celerpToast) celerpToast(text, 'error');
-                return;
-            }}
-            if (!d.elt.isConnected) {{
-                // The save's answer redrew the control clicked: the one now in its place runs, from the top,
-                // once htmx has taken it up (it does so as the swap settles). A field's own save sends
-                // what the field held, not the stored value the redraw shows.
-                const again = document.querySelector('[hx-' + d.verb + '="' + CSS.escape(d.path) + '"]');
-                if (again && save) again.value = d.elt.value;
-                if (again) {{ htmx.process(again); htmx.trigger(again, d.triggeringEvent ? d.triggeringEvent.type : 'click'); }}
-                return;
-            }}
-            const pinned = d.etc && d.etc.values;
-            if (pinned && 'expected_version' in pinned) pinned.expected_version = window._celerpEntityVersion;
-            d.celerpSaved = true;
-            if (htmx.trigger(d.elt, 'htmx:confirm', d)) d.issueRequest(true);
-        }}).finally(() => held.delete(d));
-    }}, true);
-}}
-""")
 
 
 def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", settings: dict | None = None, item_categories: dict | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, free_send_offer: bool = False, email_used: int = 0, email_quota: int = 0, email_resets_on: str | None = None, share_enabled: bool = False, share_active: bool = False, payments_on: bool = False, item_status_map: dict | None = None, item_status_doc_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None, line_suggestions: dict | None = None, line_identifier_mode: str = "sku", relay_error: bool = False, line_offset: int = 0, line_total: int | None = None, line_limit: int = 100,
@@ -7582,7 +7444,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Select(
                     *[Option(_list_type_label(lt), value=lt, selected=(lt == _current_lt)) for lt in _LIST_TYPES],
                     name="value",
-                    onchange=f"_celerpPatchListField(this, '/lists/{entity_id}/field/list_type')",
+                    onchange=(
+                        f"_celerpPatchListField(this, '/lists/{entity_id}/field/list_type', "
+                        f"{_json.dumps(is_draft)})"
+                    ),
                     cls="form-select",
                 ),
                 cls="list-type-bar",
@@ -7788,7 +7653,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         if _can_finalize and not suppress_doc_actions:
             action_btns_left.append(
                 Button(finalize_label,
-                       hx_post=f"/docs/{entity_id}/action/finalize", hx_swap="none",
+                       onclick=persist_then_post(f"/docs/{entity_id}/action/finalize"),
                        title=finalize_tip, cls="btn btn--primary")
             )
     if status not in ("void", "draft", "closed") and _can_finalize and not suppress_doc_actions:
@@ -8846,38 +8711,20 @@ if (!window._celerpEntityVersionListener) {{
 // The server remains the concurrency authority across tabs; this queue only prevents this
 // page from racing its own line saves, header patches, and repricing requests.
 window._celerpMutationTail = window._celerpMutationTail || Promise.resolve(true);
-// The page's line edits are unsaved exactly while the line fields, as typed, differ from the
-// stored ones: the values the stored rows rendered or were installed with, or the values the
-// last successful save sent (an edit made while it was in flight stays unsaved). The raw values,
-// not what a save would send: a stored line no save would accept as it stands (a reorder line's
-// blank quantity) is as stored as any other until someone changes it, while a quantity the user
-// blanks is a difference the save refuses with its reason. A field put back with Escape leaves
-// nothing unsaved, and a cell that saves itself (it carries its own request) is not a line
-// field. Line ids and line totals follow from the fields.
-function _celerpLineFrame() {{
-    const hd = _celerpHeaderDiscount(0);
-    const taxes = document.getElementById('doc-taxes-state');
-    return JSON.stringify([hd.value, hd.type, taxes ? taxes.value : null]);
-}}
-function _celerpLineState(frame) {{
-    const rows = Array.from(document.querySelectorAll('#{line_body_id} tr'), row =>
-        Array.from(row.querySelectorAll(':is(input, select, textarea)[data-name]:not([hx-post], [hx-patch], [hx-put])'))
-            .filter(el => el.dataset.name !== 'line_id' && el.dataset.name !== 'line_total')
-            .map(el => [el.dataset.name, el.value]));
-    return JSON.stringify([rows, frame || _celerpLineFrame()]);
-}}
+// Local line revisions distinguish unsaved DOM edits from a merely stale server
+// version (for example after a scan response is lost). A save only acknowledges
+// the revision it actually serialized; edits made while it is in flight stay dirty.
+window._celerpLineRevision = 0;
+window._celerpSavedLineRevision = 0;
 function _celerpLinesDirty() {{
-    return !!window._CELERP_CAN_EDIT_LINES && _celerpLineState() !== window._celerpSavedLines;
-}}
-function _celerpMarkLinesStored(frame) {{
-    if (window._CELERP_CAN_EDIT_LINES) window._celerpSavedLines = _celerpLineState(frame);
+    return window._celerpLineRevision !== window._celerpSavedLineRevision;
 }}
 function _celerpMutate(run) {{
     const next = window._celerpMutationTail.then(run, run);
     window._celerpMutationTail = next.then(() => true, () => false);
     return next;
 }}
-function _celerpPatchListField(input, url) {{
+function _celerpPatchListField(input, url, persistFirst=false) {{
     const value = input.value;
     const cell = input.closest('.editable-cell');
     const target = cell || input;
@@ -8885,8 +8732,13 @@ function _celerpPatchListField(input, url) {{
     return _celerpMutate(async () => {{
         // ESC may replace an inline editor before a delayed blur runs. Never save a detached control.
         if (!input.isConnected || !target.isConnected) return false;
-        // From the control itself, so the save-first gate reads how its save ended.
-        await htmx.ajax('PATCH', url, {{source: input, target: target, swap: swap,
+        if (persistFirst) {{
+            clearTimeout(_celerpSaveTimer);
+            _celerpSaveTimer = null;
+            const ok = await _celerpPersistOnce();
+            if (!ok) return false;
+        }}
+        await htmx.ajax('PATCH', url, {{target: target, swap: swap,
             values: {{value: value, expected_version: window._celerpEntityVersion}}}});
         return true;
     }}).catch(() => false);
@@ -8950,7 +8802,6 @@ window._L = {_json.dumps({
     "net_subtotal": t("documents.net_subtotal"),
     "double_click_rename": t("documents.double_click_rename"),
     "save_failed": t("documents.save_failed"),
-    "field_not_saved": t("documents.field_not_saved"),
     "invalid_qty": t("documents.enter_a_number"),
     "dup_on_doc": t("documents.duplicate_item_on_document"),
     "reprice_failed": t("documents.reprice_failed"),
@@ -9138,9 +8989,9 @@ function _celerpPickerStatus(text) {{
         try {{
             if (lockDraftLines) {{
                 const completed = await _celerpMutate(async () => {{
-                    // Queue ordering handles saves already in flight. Only rows that differ
-                    // from the stored ones save first: a clean stale DOM forced through /lines
-                    // would break scan retry after a lost response.
+                    // Queue ordering handles saves already in flight. Revision tracking
+                    // handles a pending/newer DOM edit without forcing a clean stale DOM
+                    // through /lines, which would break scan retry after a lost response.
                     if (_celerpLinesDirty()) {{
                         const ok = await _celerpPersistOnce();
                         if (!ok) {{
@@ -10153,7 +10004,7 @@ function _celerpShowStoredMoney(money) {{
 }}
 async function _celerpInstallLineBody(html, version) {{
     let page = null;
-    const frame = _celerpLineFrame();
+    const revision = window._celerpLineRevision;
     if (!html) {{
         const fresh = await _celerpFetchLineBody();
         html = fresh ? fresh.outerHTML : '';
@@ -10171,10 +10022,9 @@ async function _celerpInstallLineBody(html, version) {{
     // The installed rows are the stored window now, so the next save replaces exactly them.
     if (swapped.dataset.lineCount != null) _CELERP_ORIGINAL_COUNT = Number(swapped.dataset.lineCount);
     celerpUpdateTotals();
-    // The installed rows are stored. An edit made while the page was fetched (a document tax
-    // removed) stays unsaved: its own save brings the server's figures.
-    _celerpMarkLinesStored(frame);
-    if (page && !_celerpLinesDirty()) _celerpShowStoredMoney(_celerpMoneyOn(page));
+    // An edit made while the page was fetched (a document tax removed) stays: its own save
+    // brings the server's figures.
+    if (page && revision === window._celerpLineRevision) _celerpShowStoredMoney(_celerpMoneyOn(page));
     _celerpMarkScanned(false);
     _celerpHadLines = true;
     if (version != null) _celerpEntityVersion = version;
@@ -10206,6 +10056,7 @@ async function _celerpRefreshHeldBadges() {{
 }}
 """ if _draft_show_item_status else "") + f"""async function _celerpPersistOnce() {{
     if (!window._CELERP_CAN_EDIT_LINES) return true;
+    const revision = window._celerpLineRevision;
     const lines = _celerpCollectLines();
     // The rows the collector sent, in its order, so the saved line ids land on them.
     const savedRows = Array.from(document.querySelectorAll('#{line_body_id} tr')).filter(_celerpRowHasContent);
@@ -10218,8 +10069,10 @@ async function _celerpRefreshHeldBadges() {{
     // Return value: true when nothing needed saving or the save succeeded, false when a
     // save was attempted and failed, so callers that gate on a clean save (page navigation)
     // can hold position instead of discarding unsaved rows.
-    if (!lines.length && !_celerpHadLines) return true;
-    const sent = _celerpLineState();
+    if (!lines.length && !_celerpHadLines) {{
+        window._celerpSavedLineRevision = Math.max(window._celerpSavedLineRevision, revision);
+        return true;
+    }}
     const hd = _celerpHeaderDiscount(lines.reduce((s, l) => s + l.line_total, 0));
     const statusEl = document.getElementById('save-status');
     const _docTaxesState = document.getElementById('doc-taxes-state');
@@ -10236,8 +10089,9 @@ async function _celerpRefreshHeldBadges() {{
             _docTaxesState ? {{doc_taxes: JSON.parse(_docTaxesState.value || '[]').filter(x => x !== null)}} : {{}}))
     }});
     if (resp.ok) {{
-        // What this request sent is stored; an edit made while it was in flight stays unsaved.
-        window._celerpSavedLines = sent;
+        // A newer edit may have happened while this request was in flight. Only
+        // acknowledge the revision serialized by this request; the newer one stays dirty.
+        window._celerpSavedLineRevision = Math.max(window._celerpSavedLineRevision, revision);
         // Advance the cached version to the one this save produced, so the tab's next
         // autosave/reprice pins the state it just wrote.
         try {{
@@ -10247,7 +10101,7 @@ async function _celerpRefreshHeldBadges() {{
                 savedRows.forEach((row, i) => _celerpSetRowLineId(row, data.line_ids[i]));
             // The server's money for what was just saved, unless a newer edit is already pending
             // (its own save brings fresher figures).
-            if (data && data.money && !_celerpLinesDirty()) _celerpShowStoredMoney(data.money);
+            if (data && data.money && revision === window._celerpLineRevision) _celerpShowStoredMoney(data.money);
         }} catch (_e) {{}}
         // The rows just written become this page's stored window, so a follow-up save
         // in the same view replaces the new window length, not the original one.
@@ -10284,12 +10138,16 @@ async function _celerpRefreshHeldBadges() {{
             // what is saved, and say why.
             statusEl.textContent = '';
             if (window.celerpToast) celerpToast(msg, 'error');
+            window._celerpSavedLineRevision = window._celerpLineRevision;
             await _celerpInstallLineBody('', null);
         }}
         return false;
     }}
 }}
 function _celerpPersist() {{
+    // Direct persistence callers mutate the rendered line state before saving.
+    // Incrementing here is intentionally harmless when autosave already marked it.
+    window._celerpLineRevision += 1;
     return _celerpMutate(_celerpPersistOnce);
 }}
 /* Swap to another page of the same draft list. Paging must never silently drop unsaved
@@ -10392,6 +10250,7 @@ function _celerpShowReservedConflicts(conflicts) {{
 window._celerpSaveTimer = null;
 function celerpAutoSave() {{
     if (window._celerpBlurQuietly) return;
+    window._celerpLineRevision += 1;
     clearTimeout(_celerpSaveTimer);
     _celerpSaveTimer = setTimeout(() => {{
         _celerpSaveTimer = null;
@@ -10484,10 +10343,6 @@ function _celerpApplyRepriceWarnings() {{
     }}
 }}
 _celerpApplyRepriceWarnings();
-// The rows this section renders with are the stored ones (the script runs again with every
-// section swapped in). The totals panel below the lines is read once the page is parsed.
-if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => _celerpMarkLinesStored(), {{once: true}});
-else _celerpMarkLinesStored();
 if (!window._celerpRepriceWarningAfterSwap) {{
     window._celerpRepriceWarningAfterSwap = _celerpApplyRepriceWarnings;
     document.body.addEventListener('htmx:afterSwap', window._celerpRepriceWarningAfterSwap);
@@ -11322,7 +11177,6 @@ async function celerpCsvImport(input, entityId) {{
         # Line items + price list bar
         Div(
             lines_section,
-            _save_first_gate(),
             # _wpct_ key: widths stored as percentages. Namespaced PER list_type (+ a version bump):
             # the three list types have different column sets, so a single shared "list" key let one
             # type's saved widths corrupt another's layout. _v2 discards the old shared prefs once.

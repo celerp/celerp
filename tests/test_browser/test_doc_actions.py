@@ -50,11 +50,11 @@ def test_doc_finalize_button(page, ui_server, api, draft_invoice_id):
 
     # The finalize button's label is doc-type-specific ("Issue Invoice", "Issue Memo",
     # …), so match it by its finalize action rather than by visible text.
-    finalize_btn = page.locator("button[hx-post*='action/finalize']")
+    finalize_btn = page.locator("button[onclick*='action/finalize']")
     assert finalize_btn.count() > 0, "No finalize button on the draft invoice doc detail page"
 
     finalize_btn.first.click()
-    # the page saves its lines, then POSTs /action/finalize, which HX-Redirects back to the doc
+    # finalize persists then POSTs /action/finalize, which HX-Redirects back to the doc
     page.wait_for_load_state("load", timeout=20000)
     assert "Internal Server Error" not in page.locator("body").inner_text()
     # The doc must leave draft once issued. CI runners are slow and contended, so poll the API

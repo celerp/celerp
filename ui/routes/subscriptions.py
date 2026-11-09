@@ -33,7 +33,7 @@ from ui.api_client import APIError, error_message
 from ui.components.shell import base_shell, page_header, toast_header
 from ui.components.table import breadcrumbs, display_enum, select_all_th, empty_state_cta, fmt_money, pagination, per_page_value, search_bar, status_cards
 from ui.config import get_token as _token, get_role as _get_role
-from ui.routes.documents import _action_error, _saved
+from ui.routes.documents import _action_error, persist_then_post
 from ui.routes.reports import _get_company
 from ui.routes.settings import _check_permission
 from ui.i18n import refusal_text, sentence, t
@@ -457,7 +457,7 @@ def _sub_action_controls(entity_id: str, sub: dict, next_bill: str | None = None
     Not on a schedule yet: left=[badge, why]                              right=[Pause, Cancel]
 
     The schedule itself is set in the Schedule section below the document. A draft's lines are
-    still editable; the page saves pending line edits before any action is sent.
+    still editable, so Activate saves them first, as Finalize does (persist_then_post).
     """
     status = sub.get("status", "draft")
     note = _bill_date_note(entity_id, sub, next_bill)
@@ -478,8 +478,7 @@ def _sub_action_controls(entity_id: str, sub: dict, next_bill: str | None = None
     if status == "draft":
         return [
             A(t("subscriptions.set_schedule"), href="#sub-schedule", cls="btn btn--secondary"),
-            Button(t("btn.activate"), cls="btn btn--primary", hx_post=f"/subscriptions/{entity_id}/activate",
-                   hx_swap="none",
+            Button(t("btn.activate"), cls="btn btn--primary", onclick=persist_then_post(f"/subscriptions/{entity_id}/activate"),
                    title=t("subscriptions.activate_title")),
             note,
         ], []
@@ -1444,4 +1443,4 @@ def setup_routes(app) -> None:
             if saved.get("sending_off"):
                 return HTMLResponse(to_xml(views), headers=toast_header(t("subscriptions.sending_off_manual"), "success"))
             return views
-        return _saved(await _redrawn(draw, said=t("subscriptions.sending_off_manual") if saved.get("sending_off") else ""))
+        return await _redrawn(draw, said=t("subscriptions.sending_off_manual") if saved.get("sending_off") else "")

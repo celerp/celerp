@@ -2465,7 +2465,6 @@
   "documents.email_subject": "{type} #{number} จาก {company}",
   "documents.enter_a_number": "กรอกตัวเลข",
   "documents.duplicate_item_on_document": "สินค้านี้อยู่ในเอกสารแล้ว เปลี่ยนจำนวนในบรรทัดที่มีอยู่แทนการเพิ่มซ้ำ",
-  "documents.field_not_saved": "การเปลี่ยนแปลงที่คุณทำยังไม่ได้บันทึก บันทึกอีกครั้ง หรือกด Esc เพื่อคืนค่าเดิม",
   "documents.finalize_label_consignment_in": "ออกใบรับฝากขาย",
   "documents.finalize_label_credit_note": "ออกใบลดหนี้",
   "documents.finalize_label_invoice": "ออกใบแจ้งหนี้",

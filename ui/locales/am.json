@@ -2694,7 +2694,6 @@
   "documents.email_subject": "{type} #{number} ከ{company}",
   "documents.enter_a_number": "ቁጥር አስገባ",
   "documents.duplicate_item_on_document": "ይህ ዕቃ አስቀድሞ በሰነዱ ላይ አለ። እንደገና ከመጨመር ይልቅ በነበረው መስመር ላይ ብዛቱን ይቀይሩ።",
-  "documents.field_not_saved": "ያደረጉት ለውጥ አልተቀመጠም። እንደገና ያስቀምጡት፣ ወይም ወደነበረበት ለመመለስ Esc ይጫኑ።",
   "documents.finalize_label_consignment_in": "ገቢ አደራ አረጋግጥ",
   "documents.finalize_label_credit_note": "እትም የክሬዲት ማስታወሻ",
   "documents.finalize_label_invoice": "እትም የሽያጭ ደረሰኝ",

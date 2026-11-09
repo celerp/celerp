@@ -172,13 +172,9 @@ def test_writeoff_journey_terminal_and_undo(page, ui_server, api):
     page.get_by_role("button", name="Write off stock").wait_for(state="visible", timeout=10000)
     assert api.get(f"/items/{iid}").json()["status"] == "available"  # nothing disposed yet
 
-    # The cells saved themselves, so the terminal posts with no line save in front of it.
-    line_saves = []
-    page.on("request", lambda q: q.method == "POST" and q.url.endswith("/lines") and line_saves.append(q.url))
     page.get_by_role("button", name="Write off stock").click()
     page.get_by_role("button", name="Undo write-off").wait_for(state="visible", timeout=10000)
     assert api.get(f"/items/{iid}").json()["status"] == "disposed"
-    assert line_saves == []
 
     # The write-off reloads the page; a click before htmx has loaded sends nothing.
     page.wait_for_load_state("load")

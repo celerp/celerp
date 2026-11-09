@@ -14,6 +14,7 @@ The doors are read from the code: every route that writes an agreement's status 
 from __future__ import annotations
 
 import ast
+import html
 import inspect
 import json
 import sys
@@ -33,6 +34,7 @@ from celerp.services.email import EmailResult  # noqa: E402
 from celerp_subscriptions import billing, routes  # noqa: E402
 from celerp_subscriptions.billing import write_agreement  # noqa: E402
 from ui.i18n import t  # noqa: E402
+from ui.routes.documents import persist_then_post  # noqa: E402
 
 DAY = "2026-03-01"
 UNTAXED = [{**LINE, "taxes": None}]
@@ -259,7 +261,7 @@ async def test_new_subscription_then_activate_with_no_line_is_refused_where_the_
     assert toast["message"] == t(REFUSED_DRAFT, "en", ref=ref, reason=t("documents.err_finalize_no_lines", "en")), toast
     assert (await owner_ui.api.get(f"/docs/{eid}")).json()["status"] == "draft"
     page = await _page(owner_ui, eid)
-    assert t("btn._add_item", "en") in page and f'hx-post="/subscriptions/{eid}/activate"' in page
+    assert t("btn._add_item", "en") in page and persist_then_post(f"/subscriptions/{eid}/activate") in html.unescape(page)
 
 
 # --- Recording the send of a bill already made is never refused for the next bill ---

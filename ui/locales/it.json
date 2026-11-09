@@ -2466,7 +2466,6 @@
   "documents.email_subject": "{type} #{number} da {company}",
   "documents.enter_a_number": "Inserire un numero",
   "documents.duplicate_item_on_document": "Questo articolo è già nel documento. Modifica la quantità della riga esistente invece di aggiungerlo di nuovo.",
-  "documents.field_not_saved": "Una modifica che hai fatto non è stata salvata. Salvala di nuovo oppure premi Esc per annullarla.",
   "documents.finalize_label_consignment_in": "Emissione bolla di consegna",
   "documents.finalize_label_credit_note": "Emissione nota di credito",
   "documents.finalize_label_invoice": "Emetti fattura",

@@ -77,8 +77,8 @@ async def test_list_contact_edit_renders_document_customer_selector(ui_client, f
     # Customer-filtered options and server-side search, exactly like a sales document.
     assert lists_contacts.await_args.args[1]["contact_type"] == "customer"
     assert f"/contacts/search-options?contact_type=customer&amp;field={field}" in html
-    # Saving goes through the List mutation queue; the page's save-first gate saves line edits first.
-    assert """onchange='_celerpPatchListField(this, "/lists/list:Q-1/field/contact_id")'""" in html
+    # Saving goes through the List mutation queue, persisting pending line edits first.
+    assert """onchange='_celerpPatchListField(this, "/lists/list:Q-1/field/contact_id", true)'""" in html
     assert "/docs/list:Q-1" not in html
 
 
