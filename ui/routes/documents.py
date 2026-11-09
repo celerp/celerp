@@ -3284,8 +3284,6 @@ celerpUpdateBulkAlloc();
                 pass
         return _saved(_li_field_display_cell(entity_id, li_index, field, display_value))
 
-    @app.post("/docs/{entity_id}/field/{field}")
-    @app.post("/lists/{entity_id}/field/{field}")
     async def doc_field_post(request: Request, entity_id: str, field: str):
         """Handle autosave of a document's or a list's text fields (terms_text, customer_note) via
         hx_post. A refused save answers without the saved mark."""
@@ -3310,6 +3308,10 @@ celerpUpdateBulkAlloc();
             if version is not None else {}
         )
         return _saved(_R("", status_code=204, headers=headers))
+
+    # One handler for both: a stacked route decorator would register its wrapper, not the handler.
+    app.post("/docs/{entity_id}/field/{field}")(doc_field_post)
+    app.post("/lists/{entity_id}/field/{field}")(doc_field_post)
 
     @app.post("/docs/{entity_id}/notes")
     async def doc_add_note(request: Request, entity_id: str):
@@ -4339,7 +4341,8 @@ celerpUpdateBulkAlloc();
         form = await request.form()
         expires_at = (form.get("expires_at") or "").strip() or None
         try:
-            return _share_panel(entity_id, await api.create_share_link(token, entity_id, expires_at), await _company_today(token))
+            return _saved(_share_panel(entity_id, await api.create_share_link(token, entity_id, expires_at),
+                                       await _company_today(token)))
         except APIError as e:
             return _action_error(e)
 
