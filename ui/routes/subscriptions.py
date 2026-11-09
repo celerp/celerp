@@ -1439,8 +1439,10 @@ def setup_routes(app) -> None:
         async def draw():
             sub = await api.get_subscription(token, entity_id)
             schedule = await api.get_subscription_periods(token, entity_id)
-            views = tuple(v(hx_swap_oob="true") for v in _schedule_views(entity_id, sub, schedule) if v != "")
+            views = to_xml(tuple(v(hx_swap_oob="true") for v in _schedule_views(entity_id, sub, schedule) if v != ""))
+            # The version the save stored, for the page's next lines save, as a document's field saves hand it.
+            version = {"celerpListVersion": {"version": sub.get("version")}}
             if saved.get("sending_off"):
-                return HTMLResponse(to_xml(views), headers=toast_header(t("subscriptions.sending_off_manual"), "success"))
-            return views
+                return HTMLResponse(views, headers=toast_header(t("subscriptions.sending_off_manual"), "success", **version))
+            return HTMLResponse(views, headers={"HX-Trigger": json.dumps(version)})
         return await _redrawn(draw, said=t("subscriptions.sending_off_manual") if saved.get("sending_off") else "")

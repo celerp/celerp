@@ -27425,5 +27425,10 @@
     "tests/test_no_page_save_gate.py::test_no_piece_of_the_page_save_gate_remains[field_not_saved]": 0.3,
     "tests/test_doc_text_field_save.py::test_a_text_field_is_saved_to_its_own_record[/docs/doc:inv-1/field/terms_text-patch_doc-answer0-7]": 0.3,
     "tests/test_doc_text_field_save.py::test_a_text_field_is_saved_to_its_own_record[/lists/list:l-1/field/terms_text-patch_list-answer1-4]": 0.01,
-    "tests/test_subscription_draft_actions.py::test_every_draft_header_action_saves_the_lines_first": 0.01
+    "tests/test_subscription_draft_actions.py::test_every_draft_header_action_saves_the_lines_first": 0.01,
+    "tests/test_browser/test_actions_after_field_saves.py::test_a_line_edit_after_a_schedule_change_is_stored[chromium-date]": 3.5,
+    "tests/test_browser/test_actions_after_field_saves.py::test_a_line_edit_after_a_schedule_change_is_stored[chromium-number]": 3.5,
+    "tests/test_browser/test_actions_after_field_saves.py::test_a_line_edit_after_a_schedule_change_is_stored[chromium-select]": 3.5,
+    "tests/test_agreement_page_version.py::test_every_save_on_a_draft_agreement_page_hands_the_page_the_stored_version[drafted]": 3.0,
+    "tests/test_agreement_page_version.py::test_every_save_on_a_draft_agreement_page_hands_the_page_the_stored_version[sending]": 3.0
 }

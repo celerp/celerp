@@ -70,3 +70,33 @@ def test_activate_is_sent_after_a_refused_schedule_change(page, ui_server, api):
     page.locator(".toast--error .toast__msg").first.wait_for(timeout=8000)
     page.get_by_role("button", name="Activate", exact=True).click()
     assert _wait_sent(page, log, "POST", f"/subscriptions/{eid}/activate"), log
+
+
+# One schedule control of each kind the agreement page draws, and a value it does not hold.
+_SCHEDULE_KINDS = {"date": ("input[hx-patch$='/schedule/anchor_date']", "2027-04-01"),
+                   "select": ("select[hx-patch$='/schedule/billing_timing']", None),
+                   "number": ("input[hx-patch$='/schedule/catchup_periods']", "3")}
+
+
+@pytest.mark.parametrize("kind", sorted(_SCHEDULE_KINDS))
+def test_a_line_edit_after_a_schedule_change_is_stored(page, ui_server, api, kind):
+    eid = _draft(api, {"unit_price": 9800.0, "line_total": 9800.0, "taxes": []})
+    page.goto(f"{ui_server}/subscriptions/{eid}", wait_until="load")
+    selector, value = _SCHEDULE_KINDS[kind]
+    control = page.locator(selector)
+    before = api.get(f"/docs/{eid}").json()["version"]
+    with page.expect_response(lambda r: "/schedule/" in r.url) as schedule:
+        if value is None:
+            control.select_option([o for o in control.locator("option").evaluate_all("os => os.map(o => o.value)")
+                                   if o != control.input_value()][0])
+        else:
+            control.fill(value)
+            control.dispatch_event("change")
+    assert schedule.value.status == 200
+    assert api.get(f"/docs/{eid}").json()["version"] != before
+    price = page.locator('table.doc-lines tbody tr input[data-name="unit_price"]').first
+    price.fill("12345")
+    with page.expect_response(lambda r: r.request.method == "POST" and r.url.endswith(f"/docs/{eid}/lines")) as lines:
+        price.press("Tab")
+    assert lines.value.status == 200, lines.value.text()
+    assert api.get(f"/docs/{eid}").json()["line_items"][0]["unit_price"] == 12345
