@@ -500,29 +500,66 @@ async def test_ui_posts_the_original_period_with_a_request_key(ui_client):
         {"request_key": "user-click", "period_index": 0})
 
 
+@pytest_asyncio.fixture
+async def answer_client():
+    """The answer the browser gets: the 500 page is served by the app's error middleware, which
+    re-raises to the transport after answering."""
+    from ui.app import app as ui_app
+    async with AsyncClient(transport=ASGITransport(app=ui_app, raise_app_exceptions=False),
+                           base_url="http://ui", follow_redirects=False) as c:
+        c.cookies.update(_authed())
+        yield c
+
+
+# Every page that reads agreements, with the read it needs.
+_PAGE_READS = [
+    ("/subscriptions", "ui.api_client.list_subscriptions"),
+    ("/subscriptions?direction=purchase", "ui.api_client.list_subscriptions"),
+    ("/subscriptions/catch-up", "ui.api_client.subscriptions_catch_up"),
+    ("/subscriptions/summary", "ui.api_client.subscriptions_summary"),
+    ("/subscriptions/sub-001", "ui.api_client.get_subscription"),
+]
+
+
 @pytest.mark.asyncio
-async def test_subscription_read_errors_are_not_shown_as_empty(ui_client):
+@pytest.mark.parametrize("path,read", _PAGE_READS)
+async def test_a_refused_subscriptions_read_lands_on_the_no_access_notice(answer_client, path, read):
+    from ui.api_client import APIError
+
+    with patch(read, new=AsyncMock(side_effect=APIError(403, "Requires view_subscriptions"))):
+        response = await answer_client.get(path)
+    assert response.status_code == 302, response.text[:300]
+    assert response.headers["location"] == "/dashboard"
+    assert "celerp_notice=not_permitted" in response.headers.get("set-cookie", "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path,read", _PAGE_READS)
+async def test_a_failed_subscriptions_read_is_the_error_page_not_an_empty_list(answer_client, path, read):
+    from ui.api_client import APIError
+
+    with patch(read, new=AsyncMock(side_effect=APIError(503, "Service unavailable"))):
+        response = await answer_client.get(path)
+    assert response.status_code == 500, path
+    assert t("error.unexpected_error_body") in response.text, path
+    assert t("page.new_subscription") not in response.text and "Generate due" not in response.text, path
+
+
+@pytest.mark.asyncio
+async def test_a_failed_search_says_why_in_the_table(ui_client):
     from ui.api_client import APIError
 
     ui_client.cookies.update(_authed())
-    cases = [
-        ("/subscriptions", "ui.api_client.list_subscriptions"),
-        ("/subscriptions/search", "ui.api_client.list_subscriptions"),
-        ("/subscriptions/catch-up", "ui.api_client.subscriptions_catch_up"),
-        ("/subscriptions/summary", "ui.api_client.subscriptions_summary"),
-    ]
-    for path, method in cases:
-        with patch(method, new=AsyncMock(side_effect=APIError(503, "Service unavailable"))):
-            response = await ui_client.get(path)
-        assert response.status_code == 200, path
-        assert "Service unavailable" in response.text, path
+    with patch("ui.api_client.list_subscriptions", new=AsyncMock(side_effect=APIError(503, "Service unavailable"))):
+        response = await ui_client.get("/subscriptions/search")
+    assert response.status_code == 200
+    assert "Service unavailable" in response.text
 
 
 @pytest.mark.asyncio
-async def test_subscription_detail_requires_its_periods(ui_client):
+async def test_subscription_detail_requires_its_periods(answer_client):
     from ui.api_client import APIError
 
-    ui_client.cookies.update(_authed())
     with (
         patch("ui.api_client.get_subscription", new=AsyncMock(return_value=_SUB_DOC)),
         patch("ui.api_client.get_subscription_periods",
@@ -533,9 +570,8 @@ async def test_subscription_detail_requires_its_periods(ui_client):
         patch("ui.api_client.get_taxes", new=AsyncMock(return_value=[])),
         patch("ui.api_client.list_doc_notes", new=AsyncMock(return_value=[])),
     ):
-        response = await ui_client.get("/subscriptions/sub-001")
-    assert response.status_code == 200
-    assert "Period service unavailable" in response.text
+        response = await answer_client.get("/subscriptions/sub-001")
+    assert response.status_code == 500
     assert "Generate due" not in response.text
 
 

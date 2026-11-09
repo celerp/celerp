@@ -973,16 +973,6 @@ def _catch_up_items(form) -> list[dict]:
     return items
 
 
-async def _load_error_page(request: Request, title: str, exc: APIError, nav: str):
-    """Show a failed read as an error page, never as an empty business record."""
-    _signed_out(exc)
-    return await base_shell(
-        page_header(title),
-        Div(P(error_message(exc), cls="text-danger"), cls="settings-card"),
-        title=title, request=request, nav_active=nav,
-    )
-
-
 def setup_routes(app) -> None:
 
     # --- Generate all due, catch-up and summary (before the detail route, which takes any id) ---
@@ -1062,11 +1052,8 @@ def setup_routes(app) -> None:
             return RedirectResponse("/login", status_code=302)
         if (r := await _check_permission(request, "view_subscriptions", page_view=True)):
             return r
-        try:
-            items = (await api.subscriptions_catch_up(token)).get("items") or []
-            subs = await _agreements(token)
-        except APIError as e:
-            return await _load_error_page(request, t("subscriptions.catchup_title"), e, "subscriptions_sales")
+        items = (await api.subscriptions_catch_up(token)).get("items") or []
+        subs = await _agreements(token)
         title = t("subscriptions.catchup_title")
         return await base_shell(page_header(title), _catch_up_card(items, subs), title=title, request=request,
                                 nav_active="subscriptions_sales")
@@ -1125,11 +1112,8 @@ def setup_routes(app) -> None:
             return RedirectResponse("/login", status_code=302)
         if (r := await _check_permission(request, "view_subscriptions", page_view=True)):
             return r
-        try:
-            summary = await api.subscriptions_summary(token, everything=all)
-            subs = await _agreements(token)
-        except APIError as e:
-            return await _load_error_page(request, t("subscriptions.summary_title"), e, "subscriptions_sales")
+        summary = await api.subscriptions_summary(token, everything=all)
+        subs = await _agreements(token)
         rows = summary.get("rows") or []
         counts = summary.get("counts") or {}
         title = t("subscriptions.summary_title")
@@ -1172,11 +1156,7 @@ def setup_routes(app) -> None:
             return r
         state = _list_state(request.query_params)
         q, page, per_page = state["q"], state["page"], state["per_page"]
-        try:
-            all_items = await _all_agreements(token, direction, review=review)
-        except APIError as exc:
-            return await _load_error_page(request, t(f"nav.subscriptions_{'sales' if direction == 'sales' else 'purchasing'}"),
-                                          exc, "subscriptions_sales" if direction == "sales" else "subscriptions_purchasing")
+        all_items = await _all_agreements(token, direction, review=review)
         cards, table, total = _list_views(all_items, state)
         side = "sales" if direction == "sales" else "purchasing"
         title = t(f"nav.subscriptions_{side}")
@@ -1255,7 +1235,7 @@ def setup_routes(app) -> None:
         except APIError as exc:
             if exc.status == 404:
                 return RedirectResponse("/subscriptions", status_code=302)
-            return await _load_error_page(request, t("nav.subscriptions_sales"), exc, "subscriptions_sales")
+            raise
 
         doc_type = doc.get("doc_type", "subscription_invoice")
         direction = "sales" if doc_type == "subscription_invoice" else "purchasing"
@@ -1304,10 +1284,7 @@ def setup_routes(app) -> None:
         except Exception:
             pass
 
-        try:
-            schedule = await api.get_subscription_periods(token, entity_id, before=period_before)
-        except APIError as exc:
-            return await _load_error_page(request, t("nav.subscriptions_sales"), exc, "subscriptions_sales")
+        schedule = await api.get_subscription_periods(token, entity_id, before=period_before)
 
         status = doc.get("status", "draft")
         ref = doc.get("ref_id") or doc.get("doc_number") or entity_id.split(":")[-1]

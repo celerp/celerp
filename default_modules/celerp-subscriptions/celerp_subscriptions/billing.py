@@ -19,6 +19,7 @@ import logging
 import uuid
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -653,9 +654,9 @@ async def _bill(session, company, company_id, tid: str, state: dict, schedule: S
         record_send(periods, k, None, state="pending", n=0)
     metadata = None
     if key:
-        after = {**state, "periods": periods}
+        claimed = replace(schedule, periods={int(i): p for i, p in periods.items()})
         metadata = {"request": request, "result": await _result(
-            session, company_id, doc_id, k, Schedule.from_state(after), after, already_billed=False)}
+            session, company_id, doc_id, k, claimed, state, already_billed=False)}
     await write_agreement(session, company_id, tid, {"periods": periods}, actor.id, key=key, metadata=metadata)
     return doc_id
 

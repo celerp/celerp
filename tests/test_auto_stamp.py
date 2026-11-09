@@ -824,7 +824,7 @@ def test_numbering_lookup_indexes_are_recognized_as_schema_ddl_not_data_backfill
     ((), ("ix_ledger_je_doc_refs_gin",), "m8a9b0c1d2e3"),
     (("ix_projections_number_kept",), (), "p9q0r1s2t3u4"),
     ((), ("ix_projections_number_key",), "p9q0r1s2t3u4"),
-    ((), (), "q0r1s2t3u4v5"),
+    ((), (), None),
 ])
 def test_an_upgraded_database_without_the_journal_ref_index_is_stamped_below_it(
         drop_indexes, invalid_indexes, expected):
@@ -832,10 +832,12 @@ def test_an_upgraded_database_without_the_journal_ref_index_is_stamped_below_it(
     before an upgrade must leave p9q0r1s2t3u4 to run, never claim it from the rest of the
     schema. An invalid index, left by a cancelled concurrent build, is not there either: the
     revision drops and rebuilds it. Once a valid index is there, the revision is proven. The
-    numbering lookup indexes of q0r1s2t3u4v5 are proven the same way."""
+    numbering lookup indexes of q0r1s2t3u4v5 are proven the same way, and with every index valid
+    the whole schema is: the stamp is the head (``None``), whatever revisions sit above them."""
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(build_alembic_config())
+    expected = expected or script.get_current_head()
     with _pg_inspector_for_models(drop_indexes=drop_indexes, invalid_indexes=invalid_indexes) as inspector:
         stamp = find_safe_stamp(list(script.walk_revisions()), _real_sigs_by_rev(), inspector,
                                 expected_metadata=load_kernel_metadata())
