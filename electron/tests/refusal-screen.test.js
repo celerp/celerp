@@ -19,6 +19,8 @@ const VIEW = {
   checkAgain: "Check again", restarting: "Restarting...",
   tooOld: "Celerp {version} is the newest release, and it cannot open this data yet.",
   installing: "Installing v{version}. Celerp will be back in about a minute.",
+  relaunch: "Restart and check for an update",
+  relaunchDetail: "Your data has not been changed. Restart Celerp to check for a version that can open it.",
   failed: { check: "Celerp couldn't check for updates.", stopped: "The update stopped before it finished.",
             inactive: "This copy of Celerp cannot update itself." },
 };
@@ -42,6 +44,7 @@ function page() {
     checkForUpdates: () => calls.push("check"),
     installUpdate: () => calls.push("install"),
     quit: () => calls.push("quit"),
+    restartApp: () => calls.push("relaunch"),
   };
   for (const name of ["onUpdateLog", "onUpdateAvailable", "onDownloadProgress", "onUpdateDownloaded",
                       "onUpdateError", "onUpdateNotAvailable"]) {
@@ -194,4 +197,17 @@ test("a release being downloaded is offered as the way out, and ends at Restart 
     expect(p.el("refusal-update")).toMatchObject({ textContent: "Restart to install", hidden: false, disabled: false });
     p.el("refusal-update").click();
     expect(p.calls).toEqual(["check", "install"]);
+  });
+
+test("updater state from before the refusal offers one action: Celerp restarts and checks, once",
+  async function test_relaunch_is_offered() {
+    const p = page();
+    p.celerp.getUpdateState = async () => ({ ...IDLE, status: "relaunch", revision: 4 });
+    await showRefusal(p.doc, p.celerp, VIEW);
+    expect([p.el("refusal-detail").textContent, p.el("status").textContent]).toEqual([VIEW.relaunchDetail, ""]);
+    expect(p.el("refusal-update")).toMatchObject({ textContent: VIEW.relaunch, hidden: false, disabled: false });
+    p.el("refusal-update").click();
+    p.el("refusal-update").click();
+    expect(p.calls).toEqual(["relaunch"]);
+    expect(p.el("refusal-update")).toMatchObject({ textContent: "Restarting...", disabled: true });
   });

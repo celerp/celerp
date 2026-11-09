@@ -49,13 +49,12 @@ const opensData = (recorded, version) => compareVersions(version, recorded) >= 0
 
 /**
  * The state as it is shown and acted on, judged against `recorded`, the version that opened
- * the data (empty: no rule). A state that names a release (downloading, downloaded, or any
- * other with a version) which cannot open the data is "too-old", whatever it was: nothing of
- * that release is downloaded, offered, installed or told as failed. This is the only place a
- * release is compared with the data.
+ * the data (empty: no rule). A state that names a release (one found, or any other with a
+ * version) which cannot open the data is "too-old": nothing of that release is downloaded,
+ * offered, installed or told as failed. This is the only place a release is compared with the data.
  */
 function judgeUpdateState(state, recorded) {
-  const namesRelease = state.status === "downloading" || state.status === "downloaded" || Boolean(state.version);
+  const namesRelease = state.status === "downloading" || Boolean(state.version);
   if (!recorded || !namesRelease || opensData(recorded, state.version)) return state;
   return Object.freeze({ ...initialUpdateState(), status: "too-old", version: state.version });
 }
@@ -64,6 +63,9 @@ function initialUpdateState() {
   return Object.freeze({ status: "idle", version: "", percent: 0, message: "", checking: false,
                          downloadFailed: false, failure: "", releaseUrl: "", upToDate: false, installing: false });
 }
+
+// The one state of a process that must restart before it can update for the data (trackUpdater).
+const RELAUNCH = Object.freeze({ ...initialUpdateState(), status: "relaunch" });
 
 /**
  * What failed, from the updater's error: "install" (the installer did not
@@ -178,10 +180,15 @@ function nextUpdateState(state, event) {
  * and downloads fail on the update card only.
  *
  * Once downloadOnlyFrom(recorded) names a version (data a newer Celerp opened), every state
- * read, sent or acted on is judged against it (judgeUpdateState), including one reached
- * before the rule was set. Every check then runs with the updater's own downloading off,
- * and a release found is downloaded only if the judged state is not "too-old"; installing
- * refuses a "too-old" state. The updater's autoDownload is put back when the check ends.
+ * read, sent or acted on is judged against it (judgeUpdateState). Every check then runs with
+ * the updater's own downloading off, a release found is downloaded only if it can open the
+ * data, and only a downloaded release that can is installed. The updater's autoDownload is
+ * put back when the check ends. That holds only for a process whose updater was first used
+ * under the rule: what electron-updater did before (a download in flight, its cached file)
+ * cannot be steered from here. So a rule set after the updater was used, or over a recorded
+ * release that cannot open the data, leaves this process with one state, "relaunch": it
+ * checks, downloads and installs nothing more, and the screen offers a restart, whose new
+ * process sets the rule before its first check.
  *
  * @param {{on: (event: string, fn: Function) => void, checkForUpdates: () => Promise,
  *          downloadUpdate: () => Promise, autoDownload: boolean}} updater
@@ -196,7 +203,7 @@ function nextUpdateState(state, event) {
  *   installFailed records an installer that did not start, or with "stopped" a setup
  *   that started and then stopped; with no message it adds no log line; installing marks
  *   the downloaded update as handed to its installer and returns whether it did, so the
- *   hand-over happens once and never for a "too-old" release; checkedNothing records a
+ *   hand-over happens once and only for a downloaded release the data allows; checkedNothing records a
  *   check the user asked for that ran nothing (failure "inactive"); check runs one updater
  *   check (see below).
  */
@@ -214,8 +221,14 @@ function trackUpdater(updater, send, onFailure = () => {}) {
   // The version that opened the data, once a release must open it to be downloaded (downloadOnlyFrom).
   // Empty (no version on record, as for an unknown schema): any release downloads.
   let recorded = "";
+  // Set by the first check, the updater's first use (a download only follows a check).
+  let used = false;
+  // Set when the rule came after updater state it cannot judge (see above): only a restart is offered.
+  let relaunch = false;
 
-  const judged = () => judgeUpdateState(state, recorded);
+  const judged = () => (relaunch ? RELAUNCH : judgeUpdateState(state, recorded));
+  // Whether the judged state is a release the user is told about: neither too-old nor waiting on a restart.
+  const tells = () => judged().status !== "too-old" && judged().status !== "relaunch";
   const snapshot = () => ({ ...judged(), log: [...log], revision });
 
   // Apply `event`; `lineFor(state)` gives the log line for it, if any.
@@ -238,7 +251,7 @@ function trackUpdater(updater, send, onFailure = () => {}) {
     apply("update-error", { type: "error", message }, () => errorLine(message), true);
     if (userAsked) {
       userAsked = false;
-      if (judged().status !== "too-old") onFailure(snapshot());
+      if (tells()) onFailure(snapshot());
     }
   }
 
@@ -246,6 +259,8 @@ function trackUpdater(updater, send, onFailure = () => {}) {
   // and a rejection; a rejection that came without its event fails the check the same
   // way, so nothing is left checking. Resolves { result } when the check ran, else null.
   function check() {
+    if (relaunch) return Promise.resolve(null);
+    used = true;
     const seen = errors;
     const autoDownload = updater.autoDownload;
     if (recorded) updater.autoDownload = false;
@@ -272,8 +287,8 @@ function trackUpdater(updater, send, onFailure = () => {}) {
         (judged().status === "too-old" ? ", which cannot open this data." : ", downloading..."));
     // A release that cannot open the data is the check's result: nothing downloads, nothing is told.
     if (judged().status === "too-old") userAsked = false;
-    // A failed download is told by the updater's "error" event.
-    else if (recorded) updater.downloadUpdate().catch(() => {});
+    // Under the rule the updater's own downloading is off. A failed download is told by its "error" event.
+    else if (recorded && judged().status === "downloading") updater.downloadUpdate().catch(() => {});
   });
   updater.on("download-progress", (progress) =>
     apply("download-progress", { type: "progress", percent: progress && progress.percent }, (s) => {
@@ -300,13 +315,16 @@ function trackUpdater(updater, send, onFailure = () => {}) {
     userChecks: () => { userAsked = true; },
     installFailed: (version, message, failure) =>
       apply("update-error", { type: "install-failed", version, message, failure }, () => (message ? errorLine(message) : "")),
-    installing: () => judged().status !== "too-old" && apply("update-log", { type: "installing" }, () => ""),
+    installing: () => judged().status === "downloaded" && apply("update-log", { type: "installing" }, () => ""),
     checkedNothing: () => {
       userAsked = false;
       apply("update-error", { type: "inactive" }, () => "This copy of Celerp cannot update itself.");
     },
     check,
-    downloadOnlyFrom: (version) => { recorded = version; },
+    downloadOnlyFrom: (version) => {
+      recorded = version;
+      relaunch = Boolean(version) && (used || judgeUpdateState(state, version).status === "too-old");
+    },
   };
 }
 

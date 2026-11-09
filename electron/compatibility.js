@@ -81,6 +81,8 @@ function refusalView(decision, t, windows) {
     checkAgain: t("btn.check_again"),
     restarting: t("shell.restarting"),
     installing: t(windows ? "shell.update_installing_windows" : "shell.update_installing"),
+    relaunch: t("btn.restart_and_check"),
+    relaunchDetail: t("shell.data_restart_to_check"),
     failed: Object.fromEntries(UPDATE_FAILURES.map((failure) => [failure, t(`shell.update_${failure}_failed`)])),
   };
 }

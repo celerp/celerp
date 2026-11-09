@@ -14,14 +14,20 @@
   /**
    * What the screen shows for the updater's state (update-state.js): the detail line,
    * the status line, the main button's label and action ("update" checks, "restart"
-   * installs), whether that button waits, and whether it shows at all (offer). Every
-   * state says where it stands: a failure names what failed and offers Update Celerp
-   * again, once nothing newer is found the screen stops promising an update and offers
-   * Check again, and a release that cannot open the data, found, downloading or downloaded
-   * (the judged state "too-old", update-state.js), is never offered: the screen says no
-   * release opens it yet, leaving the installer page and Quit.
+   * installs, "relaunch" restarts Celerp), whether that button waits, and whether it shows
+   * at all (offer). Every state says where it stands: a failure names what failed and
+   * offers Update Celerp again, once nothing newer is found the screen stops promising an
+   * update and offers Check again, and a release that cannot open the data (the judged
+   * state "too-old", update-state.js, the result of a check under the version rule) is never
+   * offered: the screen says no release opens it yet, leaving the installer page and Quit.
+   * When the updater was used before the rule ("relaunch"), the one offer is a restart,
+   * which checks again in a new process.
    */
   function screenFor(view, state) {
+    if (state.status === "relaunch") {
+      return { detail: view.relaunchDetail, status: "", label: state.relaunching ? view.restarting : view.relaunch,
+               action: "relaunch", busy: Boolean(state.relaunching), offer: true };
+    }
     if (state.status === "too-old") {
       return { detail: view.notReleased, status: fill(view.tooOld, { version: state.version }), label: view.update,
                action: "update", busy: true, offer: false };
@@ -78,6 +84,11 @@
     el("refusal-download").href = view.downloadUrl;
     el("refusal-quit").textContent = view.quit;
     el("refusal-update").addEventListener("click", () => {
+      if (action === "relaunch") {
+        follow({ ...state, relaunching: true });
+        celerp.restartApp();
+        return;
+      }
       if (action === "restart") {
         follow({ ...state, installing: true });
         celerp.installUpdate();

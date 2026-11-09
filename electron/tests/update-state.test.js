@@ -568,14 +568,15 @@ test("the app's own checks run through the same check: a rejection with no error
     expect(told).toEqual([]);   // the app's own check fails on the update card only
   });
 
-test("every update check in the app goes through the one check that handles a rejection",
+test("every update check and download in the app goes through update-state.js, which records the updater's first use",
   function test_one_check_census() {
     const fs = require("fs");
     const path = require("path");
     const sources = fs.readdirSync(path.join(__dirname, "..")).filter((f) => f.endsWith(".js"));
-    const calls = sources.flatMap((f) =>
-      (fs.readFileSync(path.join(__dirname, "..", f), "utf8").match(/\.checkForUpdates\(/g) || []).map(() => f));
-    expect(calls).toEqual(["update-state.js"]);
+    const calls = (pattern) => sources.flatMap((f) =>
+      (fs.readFileSync(path.join(__dirname, "..", f), "utf8").match(pattern) || []).map(() => f));
+    expect(calls(/\.checkForUpdates\(/g)).toEqual(["update-state.js"]);
+    expect(calls(/\.downloadUpdate\(/g)).toEqual(["update-state.js"]);
   });
 
 // A fake electron-updater that checks as the real one does: it tells the release it found, then
@@ -692,51 +693,108 @@ async function runningAppFound(latest) {
   return feed;
 }
 
-test("a release downloaded before the data was refused, which cannot open it, is too-old and is never installed",
-  async function test_downloaded_before_refusal_is_too_old() {
+// What a refusal shows when the updater was used before the version rule was set: only a restart,
+// whose new process sets the rule before its first check.
+const RELAUNCH = { ...IDLE, status: "relaunch" };
+
+// For each state the running app's updater can leave behind (2.9.0, which cannot open data 2.9.1
+// opened, downloaded, still downloading, or failed to download), with 2.9.1 now in the feed.
+const BEFORE_THE_RULE = {
+  downloaded: (updater) => updater.emit("update-downloaded", { version: "2.9.0" }),
+  downloading: (updater) => updater.emit("download-progress", { percent: 40 }),
+  failed: (updater) => updater.emit("error", new Error("net::ERR_CONNECTION_RESET")),
+};
+
+test.each(Object.keys(BEFORE_THE_RULE))(
+  "updater state from before the refusal (%s) never stands for a release: the screen offers a restart, and nothing more runs",
+  async function test_used_before_rule_offers_relaunch(left) {
     const { updater, told, served } = await runningAppFound("2.9.0");
-    updater.emit("update-downloaded", { version: "2.9.0" });
+    BEFORE_THE_RULE[left](updater);
+    updater.checkForUpdates.mockClear();
+    updater.downloadUpdate.mockClear();
     served.downloadOnlyFrom("2.9.1");
-    expect(stateOf(served.getUpdateState())).toEqual({ ...IDLE, status: "too-old", version: "2.9.0" });
-    expect(served.installing()).toBe(false);
-    expect(stateOf(served.getUpdateState())).toEqual({ ...IDLE, status: "too-old", version: "2.9.0" });
-    expect(told).toEqual([]);
-  });
-
-test("a release still downloading when the data was refused, which cannot open it, stays too-old when it finishes",
-  async function test_downloading_before_refusal_is_too_old() {
-    const sent = [];
-    const updater = releaseFeed("2.9.0").updater;
-    const served = serveUpdateState({ handle: () => {} }, () => ({ webContents: { send: (c, s) => sent.push(s) } }),
-      updater, true);
+    expect(stateOf(served.getUpdateState())).toEqual(RELAUNCH);
+    // No check runs in this process any more, the app's own or the user's, and nothing installs.
     await served.check();
-    updater.emit("download-progress", { percent: 40 });
-    served.downloadOnlyFrom("2.9.1");
-    expect(served.getUpdateState()).toMatchObject({ status: "too-old", version: "2.9.0", percent: 0 });
-    sent.length = 0;
-    updater.emit("download-progress", { percent: 80 });
-    updater.emit("update-downloaded", { version: "2.9.0" });
-    expect(sent.map((s) => s.status)).toEqual(["too-old", "too-old"]);
-    expect(served.getUpdateState()).toMatchObject({ status: "too-old", version: "2.9.0" });
+    await served.checkForUser();
+    expect(updater.checkForUpdates).not.toHaveBeenCalled();
+    expect(updater.downloadUpdate).not.toHaveBeenCalled();
     expect(served.installing()).toBe(false);
+    // A check or download already in flight that finds, ends or fails changes nothing on the screen,
+    // downloads nothing and tells nothing.
+    updater.emit("update-available", { version: "2.9.1" });
+    expect(updater.downloadUpdate).not.toHaveBeenCalled();
+    updater.emit("error", new Error("net::ERR_CONNECTION_RESET"));
+    updater.emit("update-downloaded", { version: "2.9.0" });
+    expect(stateOf(served.getUpdateState())).toEqual(RELAUNCH);
+    expect(served.installing()).toBe(false);
+    expect(told).toEqual([]);
+    // The relaunched process sets the rule before its first check: it finds 2.9.1 and installs it.
+    const relaunched = releaseFeed("2.9.1");
+    relaunched.served.downloadOnlyFrom("2.9.1");
+    await relaunched.served.checkForUser();
+    expect(relaunched.updater.downloadUpdate).toHaveBeenCalledTimes(1);
+    relaunched.updater.emit("update-downloaded", { version: "2.9.1" });
+    expect(relaunched.served.installing()).toBe(true);
   });
 
-test("a release downloaded before the data was refused, which opens it, is still offered and installs",
-  async function test_downloaded_before_refusal_that_opens_the_data_installs() {
+test("a release that opens the data, downloaded before the refusal, is not installed from that process either",
+  async function test_downloaded_before_rule_that_opens_the_data_relaunches() {
     const { updater, served } = await runningAppFound("2.9.1");
     updater.emit("update-downloaded", { version: "2.9.1" });
     served.downloadOnlyFrom("2.9.1");
-    expect(stateOf(served.getUpdateState())).toEqual({ ...DOWNLOADED, version: "2.9.1" });
-    expect(served.installing()).toBe(true);
-    expect(served.getUpdateState()).toMatchObject({ status: "downloaded", installing: true });
+    expect(stateOf(served.getUpdateState())).toEqual(RELAUNCH);
+    expect(served.installing()).toBe(false);
   });
 
-test("a setup that stopped for a release that cannot open the data is too-old, with no failure to tell",
+test("a check that has not answered yet is use of the updater: the rule set after it offers a restart",
+  function test_check_in_flight_counts_as_use() {
+    const { updater, served } = releaseFeed("2.9.1");
+    updater.checkForUpdates = jest.fn(() => new Promise(() => {}));
+    served.check();
+    served.downloadOnlyFrom("2.9.1");
+    expect(stateOf(served.getUpdateState())).toEqual(RELAUNCH);
+  });
+
+test("the rule set before any check is a clean start: a release that opens the data is offered, one that cannot is too-old",
+  async function test_rule_first_is_clean() {
+    for (const [latest, status] of [["2.9.1", "downloading"], ["2.9.0", "too-old"]]) {
+      const { updater, served } = releaseFeed(latest);
+      served.downloadOnlyFrom("2.9.1");
+      await served.checkForUser();
+      expect([latest, served.getUpdateState().status, updater.checkForUpdates.mock.calls.length])
+        .toEqual([latest, status, 1]);
+    }
+  });
+
+test("a setup that stopped for a release that cannot open the data offers a restart, with no failure to tell",
   function test_stopped_install_of_too_old_release() {
-    const { served } = releaseFeed("2.9.0");
+    const { updater, served } = releaseFeed("2.9.0");
     served.installFailed("2.9.0", "", "stopped");
     served.downloadOnlyFrom("2.9.1");
-    expect(stateOf(served.getUpdateState())).toEqual({ ...IDLE, status: "too-old", version: "2.9.0" });
+    expect(stateOf(served.getUpdateState())).toEqual(RELAUNCH);
+    served.checkForUser();
+    expect(updater.checkForUpdates).not.toHaveBeenCalled();
+  });
+
+test("a setup that stopped for a release that opens the data keeps its failure, and Update Celerp checks again",
+  async function test_stopped_install_of_release_that_opens_the_data() {
+    const { updater, served } = releaseFeed("2.9.1");
+    served.installFailed("2.9.1", "", "stopped");
+    served.downloadOnlyFrom("2.9.1");
+    expect(served.getUpdateState()).toMatchObject({ status: "error", failure: "stopped", version: "2.9.1" });
+    await served.checkForUser();
+    expect(updater.downloadUpdate).toHaveBeenCalledTimes(1);
+    expect(served.getUpdateState()).toMatchObject({ status: "downloading", version: "2.9.1" });
+  });
+
+test("with no version on record (an unknown schema), updater state from before the refusal stands as it was",
+  async function test_no_rule_after_use_is_unchanged() {
+    const { updater, served } = await runningAppFound("2.9.0");
+    updater.emit("update-downloaded", { version: "2.9.0" });
+    served.downloadOnlyFrom("");
+    expect(served.getUpdateState()).toMatchObject({ status: "downloaded", version: "2.9.0" });
+    expect(served.installing()).toBe(true);
   });
 
 test("with no rule, a downloaded release is offered and installs whatever its version",
@@ -782,19 +840,4 @@ test("after the user's check found a release that cannot open the data, a later 
     expect(updater.downloadUpdate).toHaveBeenCalledTimes(1);
     expect(served.getUpdateState()).toMatchObject({ status: "error", failure: "download", version: "2.9.2" });
     expect(told).toEqual([]);
-  });
-
-test("a check the user asks for that fails while a release that cannot open the data is downloading tells nothing",
-  async function test_user_check_failure_during_too_old_download_is_not_told() {
-    const { updater, told, served } = await runningAppFound("2.9.0");
-    updater.emit("download-progress", { percent: 40 });
-    served.downloadOnlyFrom("2.9.1");
-    updater.checkForUpdates = async () => {
-      const err = new Error("net::ERR_INTERNET_DISCONNECTED");
-      updater.emit("error", err);
-      throw err;
-    };
-    await served.checkForUser();
-    expect(told).toEqual([]);
-    expect(served.getUpdateState()).toMatchObject({ status: "too-old", version: "2.9.0" });
   });

@@ -79,6 +79,8 @@ describe("refusal screen", () => {
       checkAgain: "Check again",
       restarting: "Restarting...",
       installing: "Installing v{version}. Celerp will be back in about a minute.",
+      relaunch: "Restart and check for an update",
+      relaunchDetail: "Your data has not been changed. Restart Celerp to check for a version that can open it.",
       failed: {
         check: "Celerp couldn't check for updates. Check your internet connection and try again later.",
         download: "Update download failed",
@@ -429,12 +431,31 @@ describe("app-main startup", () => {
     expect(handlers["get-update-state"]()).toMatchObject({ status: "downloaded", installing: true });
   });
 
-  test("a downloaded release that cannot open the data shows as too-old, and Restart to install runs nothing",
+  test("a refusal at startup sets the version rule before the updater is used: Update Celerp finds a release that opens the data",
+    async function test_app_main_refusal_rule_before_first_use() {
+      const { events, handlers, updater } = await startPackaged(NEWER);
+      expect(events).not.toContain("checkForUpdates");
+      expect(handlers["get-update-state"]().status).toBe("idle");
+      updater.downloadUpdate = jest.fn(() => Promise.resolve([]));
+      updater.checkForUpdates = async () => {
+        updater.emit("update-available", { version: "2.6.0" });
+        return { updateInfo: { version: "2.6.0" } };
+      };
+      await handlers["check-for-updates"]();
+      expect(updater.downloadUpdate).toHaveBeenCalledTimes(1);
+      expect(handlers["get-update-state"]()).toMatchObject({ status: "downloading", version: "2.6.0" });
+    });
+
+  test("a release that cannot open the data, found on the refusal screen, is too-old, and Restart to install runs nothing",
     async function test_app_main_refusal_never_installs_a_release_that_cannot_open_the_data() {
       const { events, listeners, handlers, updater } = await startPackaged(NEWER);
       const installs = [];
       updater.quitAndInstall = (...args) => { installs.push(args); };
-      updater.emit("update-downloaded", { version: "2.5.9" });
+      updater.checkForUpdates = async () => {
+        updater.emit("update-available", { version: "2.5.9" });
+        return { updateInfo: { version: "2.5.9" } };
+      };
+      await handlers["check-for-updates"]();
       events.length = 0;
       await listeners["install-update"]();
       expect(handlers["get-update-state"]()).toMatchObject({ status: "too-old", version: "2.5.9", installing: false });
@@ -442,13 +463,17 @@ describe("app-main startup", () => {
       expect(events).toEqual([]);
     });
 
-  test("a setup that stopped for a release that cannot open the data tells nothing on the refusal screen",
+  test("a setup that stopped for a release that cannot open the data offers Restart and check, which relaunches without it",
     async function test_app_main_refusal_stopped_too_old_release() {
-      const { events, handlers } = await startPackaged(NEWER, "2.6.0", {
+      const { events, handlers, listeners } = await startPackaged(NEWER, "2.6.0", {
         argv: [process.execPath, "--updated", "--update-install-failed=2.5.9"] });
       await new Promise(setImmediate);
       expect(events.slice(2)).toEqual(REFUSAL_SCREEN);
-      expect(handlers["get-update-state"]()).toMatchObject({ status: "too-old", version: "2.5.9", failure: "" });
+      expect(handlers["get-update-state"]()).toMatchObject({ status: "relaunch", failure: "" });
+      events.length = 0;
+      listeners["restart-app"]();
+      listeners["restart-app"]();
+      expect(events).toEqual(["relaunch", "quit"]);
     });
 
   test("an unreadable version record gets its own dialog, then quits", async function test_app_main_invalid_record() {
