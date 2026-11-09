@@ -22,8 +22,8 @@ def _page(line: dict) -> str:
 def test_draft_line_carries_its_asset_and_source_line():
     html = _page({"line_id": "l1", "description": "FA-0001 Car", "quantity": 1, "unit_price": 900,
                   "asset_id": "fa:asset:1", "source_line_id": "s1", "asset_returned": True})
-    assert 'value="fa:asset:1" data-carry="asset_id"' in html
-    assert 'value="s1" data-carry="source_line_id"' in html
+    assert "value='\"fa:asset:1\"' data-carry=\"asset_id\"" in html
+    assert "value='\"s1\"' data-carry=\"source_line_id\"" in html
     assert 'value="true" data-carry="asset_returned"' in html
     assert "...carried," in html
 

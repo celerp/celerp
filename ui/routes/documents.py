@@ -271,13 +271,21 @@ def _receive_kind_select(li: dict | None) -> FT:
 
 
 # Line links the page never edits: the credited invoice line, and the asset a line sells or
-# credits. Every save sends them back as stored, so editing a draft keeps its links.
+# credits. Every save sends them back as stored, so editing a draft keeps its links. A carried
+# value travels as JSON, so a number or a flag comes back as one.
 _CARRIED_LINE_KEYS = ("source_line_id", "asset_id", "asset_returned")
 
 
 def _carried_inputs(li: dict) -> list:
-    return [Input(type="hidden", value="true" if li[k] is True else str(li[k]), data_carry=k)
+    return [Input(type="hidden", value=_json.dumps(li[k]), data_carry=k)
             for k in _CARRIED_LINE_KEYS if li.get(k) not in (None, "", False)]
+
+
+def _writeoff_carry_input(line_id: str, field: str, value, oob: bool = False) -> FT:
+    """A draft write-off line's entry (qty_out, account, comment) carried in its row, so a save of
+    the row editor sends it back as stored. Its cell's save refreshes it out of band."""
+    return Input(type="hidden", value=_json.dumps(value), data_carry=field, id=f"wo-carry-{line_id}-{field}",
+                 **({"hx_swap_oob": "true"} if oob else {}))
 
 
 def _status_doc(item: dict) -> tuple[str, str] | None:
@@ -5534,11 +5542,14 @@ celerpUpdateBulkAlloc();
             cls="editable-cell",
         )
 
-    async def _writeoff_line_value(token: str, entity_id: str, line_id: str, field: str):
-        """The stored value of one write-off line field, or None if the line is gone."""
-        lst = await api.get_list(token, entity_id)
+    def _writeoff_line_field(lst: dict, line_id: str, field: str):
+        """The stored value of one write-off line field in *lst*, or None if the line is gone."""
         li = next((l for l in (lst.get("line_items") or []) if l.get("line_id") == line_id), None)
         return li.get(field) if li else None
+
+    async def _writeoff_line_value(token: str, entity_id: str, line_id: str, field: str):
+        """The stored value of one write-off line field, or None if the line is gone."""
+        return _writeoff_line_field(await api.get_list(token, entity_id), line_id, field)
 
     async def _writeoff_account_opts(token: str) -> tuple[list, dict]:
         """(codes, labels) for the write-off account picker, from the chart of accounts."""
@@ -5599,10 +5610,19 @@ celerpUpdateBulkAlloc();
                 return _writeoff_editable_cell(entity_id, line_id, field, kwargs.get(field, raw), opts, labels)(
                     P(error_message(e), cls="cell-error"))
         try:
-            value = await _writeoff_line_value(token, entity_id, line_id, field)
+            lst = await api.get_list(token, entity_id)
         except APIError:
-            value = kwargs.get(field)
-        return _writeoff_display_cell(entity_id, line_id, field, value, opts, labels)
+            return _writeoff_display_cell(entity_id, line_id, field, kwargs.get(field), opts, labels)
+        # The page takes the stored entry into its row (the row editor's save carries it) and the
+        # list's new version, so its next line save neither drops the entry nor is refused as
+        # someone else's change.
+        value = _writeoff_line_field(lst, line_id, field)
+        return _R(
+            to_xml(_writeoff_display_cell(entity_id, line_id, field, value, opts, labels))
+            + to_xml(_writeoff_carry_input(line_id, field, value, oob=True)),
+            media_type="text/html",
+            headers={"HX-Trigger": _json.dumps({"celerpListVersion": {"version": lst.get("version")}})},
+        )
 
     @app.get("/lists/{entity_id}/writeoff-line/{line_id}/{field}/display")
     async def list_writeoff_line_display(request: Request, entity_id: str, line_id: str, field: str):
@@ -7316,11 +7336,13 @@ def _doc_money(doc: dict) -> dict:
             "outstanding": fmt_money(float(doc_value(doc, "amount_outstanding") or 0), currency)}
 
 
-def persist_then_post(url: str) -> str:
-    """The onclick of an action that runs on the page's lines (Finalize, a draft agreement's
-    Activate): the page's pending line edits are saved first, and the action is posted only once
-    they are."""
-    return f"event.preventDefault();(async()=>{{if(!(await _celerpPersist()))return;htmx.ajax('POST','{url}',{{swap:'none'}});}})();"
+def persist_then_post(url: str, confirm: str | None = None) -> str:
+    """The onclick of an action that runs on the page's lines (Finalize, Issue, Write off stock,
+    Duplicate, Convert, a draft agreement's Activate): the page's pending line edits are saved
+    first, and the action is posted only once they are. With a confirmation the question is asked
+    before anything is saved, and Cancel sends nothing."""
+    question = f",{_json.dumps(confirm)}" if confirm else ""
+    return f"event.preventDefault();_celerpPostOnLines('{url}'{question});"
 
 
 def subscription_meta_cells(doc: dict) -> tuple:
@@ -7394,6 +7416,14 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     # Counted cells open (pol["counted_editable"]). Without the edit permission there are no line
     # controls (the API enforces it; the UI must not offer controls that would 403).
     can_edit_lines = is_draft and _can_edit
+
+    def _on_lines(url: str, confirm: str | None = None) -> dict:
+        """The posting attributes of an action whose server side reads the stored lines: while the
+        lines are editable it saves them first (persist_then_post), otherwise it posts directly."""
+        if can_edit_lines:
+            return {"onclick": persist_then_post(url, confirm)}
+        return {"hx_post": url, "hx_swap": "none", **({"hx_confirm": confirm} if confirm else {})}
+
     can_count_audit = pol["audit"] and status == _LF and _can_edit
     is_editable = can_edit_lines or can_count_audit
 
@@ -7490,8 +7520,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         pass  # Payment section is now a separate component rendered below
     if doc_type == "quotation" and status not in ("void", "converted"):
         action_btns_left.append(
-            Button(t("btn.convert"), hx_post=f"/docs/{entity_id}/convert",
-                   hx_swap="none", cls="btn btn--primary",
+            Button(t("btn.convert"), **_on_lines(f"/docs/{entity_id}/convert"), cls="btn btn--primary",
                    title=t("documents.tip_convert_quote"))
         )
     # Invoice all: every product still out on a live memo goes onto one draft invoice.
@@ -7559,15 +7588,14 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             # A draft write-off finalizes and removes stock in one step (validation runs server-side),
             # so its draft primary is the Write off stock terminal, not the generic Issue. GDR 2b.
             _wo_term = _list_behavior("writeoff").terminal[0]
-            action_btns_left.append(Button(_wo_term.label, hx_post=f"/lists/{entity_id}/action/{_wo_term.key}",
-                                           hx_swap="none", cls="btn btn--primary",
-                                           hx_confirm=_wo_term.confirm,
-                                           title=t("documents.tip_writeoff")))
+            action_btns_left.append(Button(_wo_term.label,
+                                           **_on_lines(f"/lists/{entity_id}/action/{_wo_term.key}", _wo_term.confirm),
+                                           cls="btn btn--primary", title=t("documents.tip_writeoff")))
         elif status == _LD:
             # The single "what's next" cue for every type (mirrors the invoice's finalize). GDR 2b.
             _list_word = _list_behavior(list_type).label.lower() if list_type else t("documents.word_list")
-            action_btns_left.append(Button(t("documents.issue"), hx_post=f"/lists/{entity_id}/action/finalize",
-                                           hx_swap="none", cls="btn btn--primary",
+            action_btns_left.append(Button(t("documents.issue"), **_on_lines(f"/lists/{entity_id}/action/finalize"),
+                                           cls="btn btn--primary",
                                            title=t("documents.tip_finalize_list", word=_list_word)))
         elif status == _LF:
             if pol["audit"]:
@@ -7612,8 +7640,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                                            hx_swap="none", cls="btn btn--secondary",
                                            title=t("documents.tip_undo_adjust"),
                                            hx_confirm=t("documents.confirm_undo_adjust")))
-        action_btns_left.append(Button(t("btn.duplicate"), hx_post=f"/lists/{entity_id}/action/duplicate",
-                                       hx_swap="none", cls="btn btn--secondary",
+        action_btns_left.append(Button(t("btn.duplicate"), **_on_lines(f"/lists/{entity_id}/action/duplicate"),
+                                       cls="btn btn--secondary",
                                        title=t("documents.tip_duplicate_list")))
     # The Issue button shows only for an un-issued document. "sent" is
     # ambiguous: a draft can be marked-sent (still un-issued) OR a finalized doc
@@ -8391,6 +8419,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                    Input(type="hidden", value=li_entity_id, data_name="entity_id"),
                    Input(type="hidden", value=li.get("line_id") or "", data_name="line_id"),
                    *_carried_inputs(li),
+                   *([_writeoff_carry_input(li.get("line_id") or "", _f, li.get(_f)) for _f in sorted(_WRITEOFF_FIELDS)]
+                     if pol["writeoff_editable"] else []),
                    Input(type="hidden", value=li_allow_splitting, data_name="allow_splitting"),
                    Input(type="hidden", value=str(li.get("item_quantity") or _meta.get("quantity") or qty), data_name="item_quantity"),
                    cls="cell--number col-total"),
@@ -8716,6 +8746,7 @@ window._celerpMutationTail = window._celerpMutationTail || Promise.resolve(true)
 // the revision it actually serialized; edits made while it is in flight stay dirty.
 window._celerpLineRevision = 0;
 window._celerpSavedLineRevision = 0;
+window._celerpLineSaveFailures = 0;
 function _celerpLinesDirty() {{
     return window._celerpLineRevision !== window._celerpSavedLineRevision;
 }}
@@ -9900,7 +9931,10 @@ function _celerpCollectLines() {{
         const piecesEl = drawn ? null : row.querySelector('[data-name="pieces"]');
         const pieces = piecesEl && piecesEl.value !== '' ? parseFloat(piecesEl.value) : null;
         const carried = {{}};
-        for (const el of row.querySelectorAll('input[data-carry]')) carried[el.dataset.carry] = el.value === 'true' ? true : el.value;
+        for (const el of row.querySelectorAll('input[data-carry]')) {{
+            const value = JSON.parse(el.value);
+            if (value !== null) carried[el.dataset.carry] = value;
+        }}
         const weightEl = drawn ? null : row.querySelector('[data-name="weight"]');
         const weight = weightEl && weightEl.value !== '' ? parseFloat(weightEl.value) : null;
         if (_celerpRowHasContent(row)) {{
@@ -10111,6 +10145,7 @@ async function _celerpRefreshHeldBadges() {{
         setTimeout(() => {{ statusEl.textContent = ''; }}, 1500);
         return true;
     }} else {{
+        window._celerpLineSaveFailures += 1;
         // A stale-version 409 carries {{code: 'stale_version', error: <reload prompt>}}; every
         // other failure carries {{error}}. Both surface the server's message (no client-side
         // English matching), so the same display path handles them.
@@ -10149,6 +10184,53 @@ function _celerpPersist() {{
     // Incrementing here is intentionally harmless when autosave already marked it.
     window._celerpLineRevision += 1;
     return _celerpMutate(_celerpPersistOnce);
+}}
+/* Click-to-edit line cells (a write-off's quantity out, account and comment) save on their own
+   PATCH, outside the line rows' save. Each such save, from the blur that starts it until its
+   answer, is held here, so an action on the lines can wait for it. */
+window._celerpLineCellSaves = window._celerpLineCellSaves || new Map();
+if (!window._celerpLineCellsBound) {{
+    window._celerpLineCellsBound = true;
+    const lineCell = (el) => (el instanceof Element && el.matches('[hx-patch]') && el.closest('#{line_body_id}')) ? el : null;
+    const track = (el, sent) => {{
+        if (window._celerpLineCellSaves.has(el)) return;
+        const saved = new Promise((resolve) => {{
+            el.addEventListener('htmx:beforeRequest', () => {{ sent = true; }});
+            // A refusal answers 200 with the editor and its reason (cell-error) in place.
+            el.addEventListener('htmx:afterRequest', (e) => resolve(e.detail.successful
+                && !(e.detail.xhr && e.detail.xhr.responseText.includes('cell-error'))));
+            el.addEventListener('htmx:beforeCleanupElement', () => {{ if (!sent) resolve(true); }});
+        }});
+        window._celerpLineCellSaves.set(el, saved);
+        saved.then(() => window._celerpLineCellSaves.delete(el));
+    }};
+    // The blur save fires after a short delay: hold it from the blur, mirroring its trigger.
+    document.addEventListener('focusout', (e) => {{
+        const el = lineCell(e.target);
+        if (el && !el._escaping && el._v !== undefined && el.value !== el._v) track(el, false);
+    }}, true);
+    document.addEventListener('htmx:beforeRequest', (e) => {{
+        const el = lineCell(e.target);
+        if (el) track(el, true);
+    }}, true);
+}}
+async function _celerpLineCellsSaved() {{
+    return (await Promise.all(window._celerpLineCellSaves.values())).every(Boolean);
+}}
+/* An action that runs on the stored lines (persist_then_post): ask its question first, then wait
+   for every line edit still being saved, save rows with unsaved edits, and post only when all of
+   it is stored. A clean page saves nothing, as paging does: a rows save rewrites every line
+   through the editor. A save that fails or is refused meanwhile, one already on its way included,
+   shows its own message and sends nothing. */
+async function _celerpPostOnLines(url, question) {{
+    const failures = window._celerpLineSaveFailures;
+    if (question && !(await celerpConfirm(question))) return;
+    if (!(await _celerpLineCellsSaved())) return;
+    clearTimeout(_celerpSaveTimer);
+    _celerpSaveTimer = null;
+    if (_celerpLinesDirty() && !(await _celerpPersist())) return;
+    if (window._celerpLineSaveFailures !== failures) return;
+    htmx.ajax('POST', url, {{swap: 'none'}});
 }}
 /* Swap to another page of the same draft list. Paging must never silently drop unsaved
    edits: a dirty page saves first, and a failed save (including a stale-version conflict)

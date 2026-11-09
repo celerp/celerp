@@ -192,13 +192,28 @@ def test_write_off_waits_for_a_slow_quantity_save(page, ui_server, api):
 
 def test_a_failed_quantity_save_stops_the_write_off(page, ui_server, api):
     list_id, item_id = _draft_writeoff(api)
-    _fail(page, "**/writeoff-line/**", "PATCH", 500, {"error": _BLOCKED})
+    _fail(page, "**/writeoff-line/**", "PATCH", 500, {"detail": _BLOCKED})
     answer_confirms(page)
     page.goto(f"{ui_server}/lists/{list_id}", wait_until="load")
     log = _sent(page)
     _type_qty_out(page, "2")
     _click(page, "Write off stock")
-    page.locator(".toast--error", has_text=_BLOCKED).first.wait_for(timeout=8000)
+    # A cell's failed save shows in the page's error box, as every cell save does.
+    page.locator("#global-ui-error", has_text=_BLOCKED).wait_for(timeout=8000)
+    page.wait_for_timeout(800)
+    assert not any(u.endswith("/action/write-off") for _, u in log), log
+    assert api.get(f"/lists/{list_id}").json()["status"] == "draft"
+    assert _on_hand(api, item_id) == 5
+
+
+def test_a_refused_quantity_stops_the_write_off(page, ui_server, api):
+    list_id, item_id = _draft_writeoff(api)
+    answer_confirms(page)
+    page.goto(f"{ui_server}/lists/{list_id}", wait_until="load")
+    log = _sent(page)
+    _type_qty_out(page, "9")  # more than the 5 on hand: the save answers with its reason in the cell
+    _click(page, "Write off stock")
+    page.locator("#line-body .cell-error").wait_for(timeout=8000)
     page.wait_for_timeout(800)
     assert not any(u.endswith("/action/write-off") for _, u in log), log
     assert api.get(f"/lists/{list_id}").json()["status"] == "draft"
@@ -213,6 +228,7 @@ def test_a_failed_line_save_stops_the_write_off(page, ui_server, api):
     answer_confirms(page)
     page.goto(f"{ui_server}/lists/{list_id}", wait_until="load")
     log = _sent(page)
+    page.locator('#line-body tr input[data-name="description"]').first.fill("Spoiled in transit")
     _click(page, "Write off stock")
     page.locator(".toast--error", has_text=_BLOCKED).first.wait_for(timeout=8000)
     page.wait_for_timeout(800)
