@@ -50,13 +50,23 @@ def pause(browser) -> None:
     """Wait 2 s through Playwright, so it takes in the window's navigations meanwhile.
 
     The sync API handles browser events only during its own calls: after a plain
-    time.sleep, every page still reports the URL it had when the driver connected.
+    time.sleep, every page still reports the URL it had when the driver connected,
+    and a page the window opens meanwhile is never seen. With no page it waits for
+    one to open. A page that closes during the wait, or no page opening, only ends
+    this poll.
     """
     pages = [p for c in browser.contexts for p in c.pages]
-    if pages:
-        pages[0].wait_for_timeout(2000)
-    else:
-        time.sleep(2)
+    try:
+        if pages:
+            pages[0].wait_for_timeout(2000)
+        elif browser.contexts:
+            browser.contexts[0].wait_for_event("page", timeout=2000)
+        else:
+            # The sync Browser has no wait of its own; a window connected over CDP
+            # always has its default context, so this is only a guard.
+            time.sleep(2)
+    except Error:
+        pass   # a page closed, or none opened: the next poll looks again
 
 
 def celerp_page(browser):
