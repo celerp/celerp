@@ -2271,6 +2271,7 @@
   "shell.data_no_update": "No newer version is available yet.",
   "shell.data_not_released": "Your data has not been changed. Celerp can open it once version {recorded} or newer is available.",
   "shell.data_not_released_schema": "Your data has not been changed. Celerp can open it once a newer version is available.",
+  "shell.data_release_too_old": "Celerp {version} is the newest release, and it cannot open this data yet.",
   "shell.data_invalid_record": "Celerp cannot read which version last opened your data, so it has not opened it. Your data has not been changed.",
   "shell.checking": "Checking...",
   "shell.restarting": "Restarting...",

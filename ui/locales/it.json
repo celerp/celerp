@@ -2025,6 +2025,7 @@
   "shell.data_no_update": "Non è ancora disponibile una versione più recente.",
   "shell.data_not_released": "I tuoi dati non sono stati modificati. Celerp potrà aprirli quando sarà disponibile la versione {recorded} o successiva.",
   "shell.data_not_released_schema": "I tuoi dati non sono stati modificati. Celerp potrà aprirli quando sarà disponibile una versione più recente.",
+  "shell.data_release_too_old": "Celerp {version} è la versione più recente e non può ancora aprire questi dati.",
   "shell.data_invalid_record": "Celerp non riesce a leggere quale versione ha aperto per ultima i tuoi dati, quindi non li ha aperti. I tuoi dati non sono stati modificati.",
   "shell.checking": "Verifica in corso...",
   "shell.restarting": "Riavvio in corso...",

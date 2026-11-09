@@ -74,6 +74,8 @@ describe("refusal screen", () => {
       ready: "v{version} ready to install",
       noUpdate: "No newer version is available yet.",
       notReleased: "Your data has not been changed. Celerp can open it once version 2.6.0 or newer is available.",
+      recorded: "2.6.0",
+      tooOld: "Celerp {version} is the newest release, and it cannot open this data yet.",
       checkAgain: "Check again",
       restarting: "Restarting...",
       installing: "Installing v{version}. Celerp will be back in about a minute.",
@@ -98,6 +100,8 @@ describe("refusal screen", () => {
     const view = refusalView(readDecision(UNKNOWN), t);
     expect(view.message).toBe("Your data was last opened with a newer version of Celerp than this copy (2.5.3).");
     expect(view.notReleased).toBe("Your data has not been changed. Celerp can open it once a newer version is available.");
+    // No version on record to wait for: any release found is offered.
+    expect(view.recorded).toBe("");
   });
 
   test("every string is translated in every locale", function test_view_translated() {
