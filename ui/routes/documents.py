@@ -10204,9 +10204,17 @@ if (!window._celerpLineCellsBound) {{
         if (window._celerpLineCellSaves.has(el)) return;
         const saved = new Promise((resolve) => {{
             el.addEventListener('htmx:beforeRequest', () => {{ sent = true; }});
-            // A refusal answers 200 with the editor and its reason (cell-error) in place.
-            el.addEventListener('htmx:afterRequest', (e) => resolve(e.detail.successful
-                && !(e.detail.xhr && e.detail.xhr.responseText.includes('cell-error'))));
+            // A refusal answers 200 with the editor and its reason (cell-error) in place. The
+            // redrawn editor keeps this one's opening value, so leaving it as refused saves it
+            // again rather than restoring the stored value over the reason.
+            el.addEventListener('htmx:afterRequest', (e) => {{
+                const body = document.getElementById('{line_body_id}');
+                const refused = !!(e.detail.xhr && e.detail.xhr.responseText.includes('cell-error'));
+                const again = refused && el._v !== undefined && body
+                    && body.querySelector('[hx-patch="' + CSS.escape(el.getAttribute('hx-patch')) + '"]');
+                if (again) again._v = el._v;
+                resolve(e.detail.successful && !refused);
+            }});
             el.addEventListener('htmx:beforeCleanupElement', () => {{ if (!sent) resolve(true); }});
         }});
         window._celerpLineCellSaves.set(el, saved);
@@ -10243,14 +10251,14 @@ function _celerpLinesUnsaved() {{
 /* An action that runs on the stored lines (persist_then_post): ask its question first, wait for
    line cell saves on their way, then save the lines with the page's version, so a page changed
    elsewhere is refused with the server's own message. It is posted only when all of it is
-   stored: a save that fails or is refused, one already on its way included, shows its own
-   message, and an edit still unsaved says so; nothing is sent. A line cell edit is checked
-   before the rows save too, since that save may redraw the cells. */
+   stored: a rows save that fails or is refused, one already on its way included, shows its own
+   message, and a line cell save that fails or is refused, or an edit still unsaved, says the
+   lines are unsaved; nothing is sent. A line cell edit is checked before the rows save too,
+   since that save may redraw the cells. */
 async function _celerpPostOnLines(url, question, form) {{
     const failures = window._celerpLineSaveFailures;
     if (question && !(await celerpConfirm(question))) return;
-    if (!(await _celerpLineCellsSaved())) return;
-    if (_celerpLineCellsUnsaved()) {{
+    if (!(await _celerpLineCellsSaved()) || _celerpLineCellsUnsaved()) {{
         celerpToast(_L.lines_unsaved, 'error');
         return;
     }}

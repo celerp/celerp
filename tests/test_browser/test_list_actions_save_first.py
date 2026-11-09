@@ -221,6 +221,32 @@ def test_a_refused_quantity_stops_the_write_off(page, ui_server, api):
     assert _on_hand(api, item_id) == 5
 
 
+# Leaving the refused editor as it is keeps the refused entry and its reason: the stored value is
+# not restored over it, so the next Write off stock is not sent on the stored quantity.
+def test_leaving_a_refused_quantity_keeps_it_and_stops_the_write_off(page, ui_server, api):
+    list_id, item_id = _draft_writeoff(api)
+    line_id = api.get(f"/lists/{list_id}").json()["line_items"][0]["line_id"]
+    assert api.post(f"/lists/{list_id}/writeoff-line", json={"line_id": line_id, "qty_out": 4}).status_code == 200
+    answer_confirms(page)
+    page.goto(f"{ui_server}/lists/{list_id}", wait_until="load")
+    log = _sent(page)
+    _type_qty_out(page, "9")
+    page.locator("input[hx-patch$='/qty_out']").first.evaluate("e => e.blur()")
+    page.locator("#line-body .cell-error").wait_for(timeout=8000)
+    editor = page.locator("input[hx-patch$='/qty_out']").first
+    editor.focus()
+    with page.expect_response(lambda r: "/qty_out" in r.url):  # the restore, or the save again
+        editor.evaluate("e => e.blur()")
+    page.wait_for_timeout(300)
+    assert page.locator("#line-body .cell-error").count() == 1
+    assert editor.input_value() == "9"
+    _click(page, "Write off stock")
+    page.locator(".toast--error").first.wait_for(timeout=8000)
+    page.wait_for_timeout(800)
+    assert not any(u.endswith("/action/write-off") for _, u in log), log
+    assert _on_hand(api, item_id) == 5
+
+
 def test_a_failed_line_save_stops_the_write_off(page, ui_server, api):
     list_id, item_id = _draft_writeoff(api)
     line_id = api.get(f"/lists/{list_id}").json()["line_items"][0]["line_id"]
