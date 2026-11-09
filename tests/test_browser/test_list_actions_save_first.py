@@ -239,12 +239,16 @@ def test_a_failed_line_save_stops_the_write_off(page, ui_server, api):
 def test_cancel_on_the_write_off_question_sends_nothing(page, ui_server, api):
     list_id, item_id = _draft_writeoff(api)
     asked: list = []
-    answer_confirms(page, lambda q: asked.append(q) and False)
     page.goto(f"{ui_server}/lists/{list_id}", wait_until="load")
     log = _sent(page)
+    # What the page had sent when the question showed: the action saves nothing before asking.
+    answer_confirms(page, lambda q: asked.append(list(log)) and False)
+    page.locator('#line-body tr input[data-name="description"]').first.fill("Spoiled in transit")
     _click(page, "Write off stock")
     assert _wait(lambda: asked, page=page)
     page.wait_for_timeout(1000)
-    assert log == []
+    assert asked == [[]]
+    # The edit still saves on its own, as any edit left on the page does; the action is never sent.
+    assert not any(u.endswith("/action/write-off") for _, u in log), log
     assert api.get(f"/lists/{list_id}").json()["status"] == "draft"
     assert _on_hand(api, item_id) == 5
