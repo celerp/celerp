@@ -3445,6 +3445,29 @@ class TestWriteoffListDetail:
         assert "1130" not in html
         assert "4000" not in html
 
+    @pytest.mark.asyncio
+    async def test_entry_editor_opens_on_the_stored_value(self, ui_client):
+        lst = self._wo_list()
+        lst["line_items"][0]["qty_out"] = 3.5
+        ui_client.cookies.update(_authed())
+        with patch("ui.api_client.get_list", new=AsyncMock(return_value=lst)):
+            r = await ui_client.get("/lists/list:WO-1/writeoff-line/ln-abc/qty_out/edit")
+        assert r.status_code == 200 and 'value="3.5"' in r.text
+
+    @pytest.mark.asyncio
+    async def test_entry_saved_but_not_read_back_shows_the_typed_value(self, ui_client):
+        """The save went through but the list could not be read back: the cell shows what was saved,
+        and the row's carried entry and the page's version are left for the next read to refresh."""
+        from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
+        with (
+            patch("ui.api_client.set_writeoff_line", create=True, new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_list", new=AsyncMock(side_effect=APIError(503, "unavailable"))),
+        ):
+            r = await ui_client.patch("/lists/list:WO-1/writeoff-line/ln-abc/qty_out", data={"value": "4"})
+        assert r.status_code == 200 and '<span class="cell-number">4</span>' in r.text
+        assert "wo-carry-" not in r.text and "HX-Trigger" not in r.headers
+
 
 class TestSettingsPolish:
     """Settings click-to-edit affordance — visual cue must be present."""

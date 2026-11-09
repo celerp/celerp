@@ -252,3 +252,55 @@ def test_cancel_on_the_write_off_question_sends_nothing(page, ui_server, api):
     assert not any(u.endswith("/action/write-off") for _, u in log), log
     assert api.get(f"/lists/{list_id}").json()["status"] == "draft"
     assert _on_hand(api, item_id) == 5
+
+
+@pytest.mark.parametrize("action", sorted(_LIST_ACTIONS))
+def test_a_line_save_on_its_way_that_fails_stops_the_action(page, ui_server, api, action):
+    label, path, _ = _LIST_ACTIONS[action]
+    list_id = _draft_list(api)
+    _delay(page, "/lines", "POST")
+    _fail(page, "**/lines", "POST", 500, {"error": _BLOCKED})
+    page.goto(f"{ui_server}/lists/{list_id}", wait_until="load")
+    log = _sent(page)
+    _type_quantity(page, "3")
+    page.locator('#line-body tr input[data-name="quantity"]').first.evaluate("e => e.blur()")
+    page.wait_for_timeout(600)  # past the blur debounce: the save is on its way, and will fail
+    _click(page, label)
+    page.locator(".toast--error", has_text=_BLOCKED).first.wait_for(timeout=8000)
+    page.wait_for_timeout(800)
+    assert not any(u.endswith(path) for _, u, in log), log
+    stored = api.get(f"/lists/{list_id}").json()
+    assert stored["status"] == "draft" and stored["line_items"][0]["quantity"] == 1
+
+
+# A row save rewrites every line through the editor: a write-off line's entry rides along as stored.
+
+def _save_row(page, text: str) -> None:
+    with page.expect_response(lambda r: r.url.split("?")[0].endswith("/lines") and r.request.method == "POST") as r:
+        field = page.locator('#line-body tr input[data-name="description"]').first
+        field.fill(text)
+        field.evaluate("e => e.blur()")
+    assert r.value.status == 200, r.value.text()
+
+
+def test_a_row_save_keeps_the_stored_write_off_entry(page, ui_server, api):
+    list_id, _ = _draft_writeoff(api)
+    line_id = api.get(f"/lists/{list_id}").json()["line_items"][0]["line_id"]
+    assert api.post(f"/lists/{list_id}/writeoff-line",
+                    json={"line_id": line_id, "qty_out": 2, "comment": "Water damage"}).status_code == 200
+    before = api.get(f"/lists/{list_id}").json()["line_items"][0]
+    page.goto(f"{ui_server}/lists/{list_id}", wait_until="load")
+    _save_row(page, "Spoiled in transit")
+    li = api.get(f"/lists/{list_id}").json()["line_items"][0]
+    assert (li["qty_out"], li["account"], li["comment"]) == (2, before["account"], "Water damage")
+
+
+def test_a_row_save_after_a_quantity_save_keeps_it(page, ui_server, api):
+    list_id, _ = _draft_writeoff(api)
+    page.goto(f"{ui_server}/lists/{list_id}", wait_until="load")
+    with page.expect_response(lambda r: "/writeoff-line/" in r.url and r.request.method == "PATCH"):
+        _type_qty_out(page, "2")
+        page.keyboard.press("Enter")
+    _save_row(page, "Spoiled in transit")  # neither refused as someone else's change nor dropping the 2
+    li = api.get(f"/lists/{list_id}").json()["line_items"][0]
+    assert li["qty_out"] == 2 and li["description"] == "Spoiled in transit"
