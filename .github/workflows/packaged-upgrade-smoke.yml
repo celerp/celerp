@@ -507,7 +507,9 @@ jobs:
           CloseCelerp
           StartCelerp
           $en = Get-Content (Join-Path (InstallDir) "resources\app\ui\locales\en.json") -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
-          $refusedText = $en["shell.data_newer"].Replace("{recorded}", $newer).Replace("{running}", $new)
+          # The screen names the package version Celerp runs (a dev build's differs from its installer version).
+          if ($metadata -notmatch '(?m)^Version: (\S+)') { Fail "the candidate's package metadata has no version" }
+          $refusedText = $en["shell.data_newer"].Replace("{recorded}", $newer).Replace("{running}", $Matches[1])
           python scripts/ci_update_drive.py refused $script:port 180 $refusedText
           if ($LASTEXITCODE -ne 0) { Fail "the reinstalled $new on data $newer opened does not show the refusal screen again" }
           Write-Host "check_update_from_newer_data: proves the handoff only. $new on data $newer opened offered Update Celerp, downloaded it and ran setup, and the reinstalled $new shows the refusal screen again. Opening data after an update is proven by check_update_from_running_app"
