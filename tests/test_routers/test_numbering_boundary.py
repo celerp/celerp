@@ -552,7 +552,9 @@ async def _give(client, h, contacts, door: str, number: str | None, *, target: s
         r = await client.post(f"/{kind}s/import", headers=h, json=record)
     if r.status_code == 200:
         return eid, None
-    return eid, r.json()["detail"]["message_key"].split(".")[-1]
+    detail = r.json()["detail"]
+    # A body the route's schema refuses is refused before any number is read.
+    return eid, detail["message_key"].split(".")[-1] if isinstance(detail, dict) else f"schema {r.status_code}"
 
 
 # Every /docs and /lists route that writes a number, as the app's router lists it: (method, path)
@@ -664,7 +666,28 @@ async def test_a_number_in_a_hostile_spelling_is_one_number_through_every_door(c
             assert state[field] == sent.strip(NUMBER_SPACE), state[field]
     r = await _quote_doc(client, h, contacts, ref_id=twin.format(n=n))
     assert r.status_code == 409 and r.json()["detail"]["message_key"] == f"documents.err_{kind}_number_taken", r.text
+    shown = r.json()["detail"]["params"]["number"]
+    assert shown and shown == shown.strip(NUMBER_SPACE), shown
     assert (await _rows(client, h))["quotation"]["preview"] != n
+
+
+@pytest.mark.parametrize("door", _DOORS)
+async def test_a_number_that_is_not_text_is_refused_and_a_blank_one_is_stored_empty(client, session, door):
+    """A number that is not text is refused through every door. A number of nothing but spaces
+    is stored as empty by an import or a patch, held by no record, and refused by name where a
+    record is created or renumbered to it."""
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    kind = "list" if "list" in door else "doc"
+    _, refused = await _give(client, h, contacts, door, 12345, target=await _target(client, h, contacts, door))
+    assert refused in ("err_number_required", "schema 422") or refused.endswith(": Enter a document number."), refused
+    for _ in range(2):
+        eid, refused = await _give(client, h, contacts, door, "\u3000\t ", target=await _target(client, h, contacts, door))
+        if door.startswith(("create", "renumber")):
+            assert refused == "err_number_required", refused
+        else:
+            assert refused is None, refused
+            assert (await client.get(f"/{kind}s/{eid}", headers=h)).json()["ref_id"] == "", door
 
 
 @pytest.mark.parametrize("door", [d for d in _DOORS if d.startswith("import")])
