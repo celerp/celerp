@@ -528,7 +528,8 @@ async def _give(client, h, contacts, door: str, number: str, *, target: str | No
         r = await _quote_doc(client, h, contacts, ref_id=number)
         eid = r.json().get("id")
     elif door == "create list":
-        r = await client.post("/lists", headers=h, json={"list_type": "quotation", **_payload(contacts), "ref_id": number})
+        r = await client.post("/lists", headers=h,
+                              json={"list_type": "quotation", **_payload(contacts), "ref_id": number})
         eid = r.json().get("id")
     else:
         eid = key or f"{kind}:imp-{uuid.uuid4().hex[:8]}"
@@ -537,8 +538,10 @@ async def _give(client, h, contacts, door: str, number: str, *, target: str | No
             r = await client.post(f"/{kind}s/import/batch", headers=h, json={"records": [record]})
             assert r.status_code == 200, r.text
             errors = r.json()["errors"]
-            return eid, (next(k for k in ("err_doc_number_taken", "err_list_number_taken") if k in errors[0])
-                         if errors else None)
+            # A batch row gives its refusal as English text: the key whose message it begins with.
+            return eid, (next((k for k in ("err_doc_number_taken", "err_list_number_taken")
+                               if t(f"documents.{k}", "en", number="\0").split("\0")[0] in errors[0]),
+                              errors[0]) if errors else None)
         r = await client.post(f"/{kind}s/import", headers=h, json=record)
     if r.status_code == 200:
         return eid, None
@@ -677,9 +680,16 @@ async def test_every_numbered_writer_goes_through_the_boundary():
     assert set(_CLAIMED_BY_CALLER.values()) <= callers
 
 
+def _checks_the_key(call: ast.Call) -> bool:
+    """Whether ``call`` is require_number_free on the number inside a storage key."""
+    return (_name(call.func) == "require_number_free" and len(call.args) > 2
+            and ast.unparse(call.args[2]) == "entity_id.partition(':')[2]")
+
+
 def _discarded_numbers() -> list[tuple[str, str]]:
     """(file, function) of every call of require_number_free or free_import_numbers whose
-    returned number is thrown away, so the writer would store the number as sent."""
+    returned number is thrown away, so the writer would store the number as sent. The number
+    inside an import's storage key is only checked: the record is addressed by its key as sent."""
     found = []
     for path in sorted(_REPO.rglob("*.py")):
         rel = path.relative_to(_REPO)
@@ -690,7 +700,8 @@ def _discarded_numbers() -> list[tuple[str, str]]:
             if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 found += [(str(rel), fn.name) for n in _own_nodes(fn) if isinstance(n, ast.Expr)
                           and isinstance(n.value, ast.Await) and isinstance(n.value.value, ast.Call)
-                          and _name(n.value.value.func) in _BOUNDARY - {"claim_number"}]
+                          and _name(n.value.value.func) in _BOUNDARY - {"claim_number"}
+                          and not _checks_the_key(n.value.value)]
     return found
 
 
