@@ -167,6 +167,7 @@ async def test_a_company_backup_with_thai_text_restores_on_a_sql_ascii_database(
         engine = create_async_engine(async_url, json_serializer=dump_json, poolclass=NullPool)
         monkeypatch.setattr(celerp.db, "engine", engine)
         try:
+            await celerp.db.create_tables(engine)  # module tables, as boot creates them
             user = await owner(engine)
             cid = await company(engine, user, THAI, "thai-backup")
             async with engine.begin() as conn:
@@ -180,7 +181,11 @@ async def test_a_company_backup_with_thai_text_restores_on_a_sql_ascii_database(
             await settle(engine, cid)
             backup = tmp_path / "thai.celerp-company"
             await company_backup.export_company_snapshot(cid, backup)
-            await company_backup.restore_company(backup, mode="new_company", user_id=user)
+            async with AsyncSession(engine) as session:
+                plan = await company_backup.plan_existing_restore(
+                    session, company_backup.read_backup(backup), "new_company", user, None)
+            await company_backup.restore_company(backup, mode="new_company", user_id=user,
+                                                 plan_fingerprint=plan.fingerprint)
         finally:
             await engine.dispose()
         assert _sql(sync_url, "SELECT state ->> 'contact_name' FROM projections WHERE entity_id = 'doc:thai'") == [
@@ -208,3 +213,91 @@ def test_every_engine_writes_json_as_utf8_text():
                     k.arg == "json_serializer" for k in node.keywords):
                 missing.append(f"{path.relative_to(ROOT)}:{node.lineno}")
     assert not missing, missing
+
+
+_DIGEST = "hashed or compared, never stored as JSON in the database"
+_FILE = "written to a file and read back with json.loads"
+_WIRE = "sent over HTTP, a stream or a log line, never stored in the database"
+# Every json.dumps in celerp/ that may write \u escapes, by (file, function), and why that is
+# safe: none of them puts JSON into the database, where dump_json is the one writer.
+_ASCII_DUMPS = {
+    ("celerp/ai/files.py", "save_upload"): _FILE,
+    ("celerp/ai/jobs.py", "digest"): _DIGEST,
+    ("celerp/ai/llm.py", "_relay_request"): _WIRE,
+    ("celerp/ai/llm.py", "operations_status"): _WIRE,
+    ("celerp/ai/llm.py", "complete"): _WIRE,
+    ("celerp/config_store.py", "merge_packaged_config"): _FILE,
+    ("celerp/connectors/first_sync.py", "_version"): _DIGEST,
+    ("celerp/events/engine.py", "connector_upsert"): _DIGEST,
+    ("celerp/gateway/client.py", "_send"): _WIRE,
+    ("celerp/gateway/state.py", "_persist_commercial_context"): _FILE,
+    ("celerp/help/checks.py", "<module>"): _WIRE,
+    ("celerp/middleware.py", "log_unhandled_exception"): _WIRE,
+    ("celerp/migrations/compatibility.py", "to_json"): _WIRE,
+    ("celerp/migrations/versions/k5e6f7a8b9c0_connector_entity_directions.py", "upgrade"):
+        "a released revision; it writes connector names and directions, which are ASCII",
+    ("celerp/modules/license.py", "_write_verdict"): _FILE,
+    ("celerp/modules/license.py", "exchange_api_key_for_jwt"): _WIRE,
+    ("celerp/modules/license.py", "_verify_remote"): _WIRE,
+    ("celerp/modules/license.py", "_write_cache"): _FILE,
+    ("celerp/modules/marketplace_stage.py", "write_stage"): _FILE,
+    ("celerp/modules/meta.py", "write_meta"): _FILE,
+    ("celerp/modules/outcome.py", "publish"): _FILE,
+    ("celerp/modules/outcome.py", "report_stopped"): _FILE,
+    ("celerp/modules/outcome.py", "apply_reported_stops"): _FILE,
+    ("celerp/routers/events.py", "_stream"): _WIRE,
+    ("celerp/services/backup_export.py", "_build_archive"): _FILE,
+    ("celerp/services/backup_import.py", "_prepare_sync"): _FILE,
+    ("celerp/services/backup_import.py", "_write_restore_notice"): _FILE,
+    ("celerp/services/backup_import.py", "run_recovery"): _FILE,
+    ("celerp/services/backup_repo.py", "run_snapshot"): _FILE,
+    ("celerp/services/backup_repo.py", "reassemble_snapshot"): _FILE,
+    ("celerp/services/company_backup.py", "_row_digest"): _DIGEST,
+    ("celerp/services/company_backup.py", "_export_company"): _FILE,
+    ("celerp/services/company_backup.py", "digest"): _DIGEST,
+    ("celerp/services/company_backup.py", "_check_replacing"): _DIGEST,
+    ("celerp/services/company_backup_files.py", "_write_json"): _FILE,
+    ("celerp/services/company_lock.py", "lock_projections"): _DIGEST,
+    ("celerp/services/field_fingerprints.py", "fingerprint"): _DIGEST,
+    ("celerp/services/import_stage.py", "write_stage"): _FILE,
+    ("celerp/services/import_stage.py", "update_draft"): _FILE,
+    ("celerp/services/module_journals.py", "_intent_hash"): _DIGEST,
+    ("celerp/services/nav_overrides.py", "revision"): _DIGEST,
+    ("celerp/services/peer_documents.py", "receive_document"): "measures the size of a request",
+    ("celerp/services/peer_payments.py", "apply_source_payments"): _DIGEST,
+    ("celerp/services/staged_downloads.py", "stage"): _FILE,
+    ("celerp/services/update.py", "write_state"): _FILE,
+}
+
+
+def _ascii_dumps() -> set[tuple[str, str]]:
+    """(file, innermost function) of every json.dumps in celerp/ outside json_text.py that does
+    not pass ensure_ascii."""
+    found = set()
+    for path in ROOT.glob("celerp/**/*.py"):
+        rel = path.relative_to(ROOT).as_posix()
+        if rel == "celerp/json_text.py" or "tests" in path.relative_to(ROOT).parts:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        aliases = {a.asname or a.name for n in ast.walk(tree) if isinstance(n, ast.Import)
+                   for a in n.names if a.name == "json"}
+        stack = [(tree, "<module>")]
+        while stack:
+            node, fn = stack.pop()
+            for child in ast.iter_child_nodes(node):
+                if (isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute)
+                        and child.func.attr == "dumps" and getattr(child.func.value, "id", None) in aliases
+                        and not any(k.arg == "ensure_ascii" for k in child.keywords)):
+                    found.add((rel, fn))
+                inner = child.name if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) else fn
+                stack.append((child, inner))
+    return found
+
+
+def test_every_json_dumps_writes_utf8_or_says_why_it_need_not():
+    """A json.dumps that keeps its \\u escapes is listed with the reason they never reach the
+    database; a new one fails here until it passes ensure_ascii=False, goes through dump_json,
+    or is listed."""
+    found = _ascii_dumps()
+    assert not found - _ASCII_DUMPS.keys(), sorted(found - _ASCII_DUMPS.keys())
+    assert not _ASCII_DUMPS.keys() - found, sorted(_ASCII_DUMPS.keys() - found)
