@@ -26,6 +26,8 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL
 
+from celerp.json_text import SYNC_TEXT
+
 
 def _url_on_db(src: URL, dbname: str) -> URL:
     return URL.create(
@@ -58,7 +60,7 @@ def sql_ascii_db(mig_db):
     finally:
         admin.dispose()
 
-    eng = create_engine(_url_on_db(src, name))
+    eng = create_engine(_url_on_db(src, name), **SYNC_TEXT)
     with eng.begin() as conn:
         assert conn.execute(text("SHOW server_encoding")).scalar() == "SQL_ASCII"
         conn.execute(text("""

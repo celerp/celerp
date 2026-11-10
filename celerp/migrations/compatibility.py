@@ -66,7 +66,7 @@ import sqlalchemy as sa
 from packaging.version import InvalidVersion, Version
 
 from celerp.db_url import same_database
-from celerp.json_text import dump_json
+from celerp.json_text import SYNC_TEXT
 # instance_meta is owned by _data_reconcile; read here without its get_meta helper,
 # which creates the table.
 from celerp.migrations._data_reconcile import _META_TABLE, PROJECTION_VERSION_KEY, set_meta
@@ -256,7 +256,7 @@ def admit(conn: sa.Connection, accept: str | None = None) -> Compatibility:
 
 def check_url(sync_url: str) -> Compatibility:
     """Open *sync_url*, classify it, and roll back. Reads only."""
-    engine = sa.create_engine(sync_url, poolclass=sa.pool.NullPool, json_serializer=dump_json)
+    engine = sa.create_engine(sync_url, poolclass=sa.pool.NullPool, **SYNC_TEXT)
     try:
         with engine.connect() as conn:
             try:
@@ -294,7 +294,7 @@ class Fence:
 
     def __init__(self, sync_url: str, accept: str | None = None):
         self._url = sa.engine.make_url(sync_url)
-        self._engine = sa.create_engine(self._url, poolclass=sa.pool.NullPool, json_serializer=dump_json)
+        self._engine = sa.create_engine(self._url, poolclass=sa.pool.NullPool, **SYNC_TEXT)
         self._conn: sa.Connection | None = None
         self._accept = accept
         self._key = _cohort_key(running_version())
@@ -362,7 +362,7 @@ class Fence:
     @contextlib.contextmanager
     def engine(self, **kwargs):
         """A new engine on the fenced database, guarded for as long as it is open."""
-        engine = sa.create_engine(self._url, json_serializer=dump_json, **kwargs)
+        engine = sa.create_engine(self._url, **SYNC_TEXT, **kwargs)
         self.guard(engine)
         try:
             yield engine

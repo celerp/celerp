@@ -19,7 +19,7 @@ import click
 from celerp.config import config_path as _config_path, read_config as _read_config, write_config as _write_config
 from celerp.db_url import sync_url as _sync_url
 from celerp.services.auth import MIN_PASSWORD_LENGTH, validate_password
-from celerp.json_text import dump_json
+from celerp.json_text import SYNC_TEXT, dump_json
 
 # ── Config helpers ────────────────────────────────────────────────────────────
 
@@ -337,7 +337,7 @@ def _test_db(db_url: str) -> str | None:
     try:
         from sqlalchemy import create_engine, text
         engine = create_engine(sync_url, pool_pre_ping=True, connect_args={"connect_timeout": 5},
-                               json_serializer=dump_json)
+                               **SYNC_TEXT)
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         return None
@@ -675,7 +675,7 @@ def _stamped_revision(db_url: str) -> str | None:
     from alembic.runtime.migration import MigrationContext
     from sqlalchemy import create_engine
 
-    engine = create_engine(_sync_url(db_url), pool_pre_ping=True, json_serializer=dump_json)
+    engine = create_engine(_sync_url(db_url), pool_pre_ping=True, **SYNC_TEXT)
     try:
         with engine.connect() as conn:
             return MigrationContext.configure(conn).get_current_revision()

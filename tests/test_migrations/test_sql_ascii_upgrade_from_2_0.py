@@ -12,6 +12,7 @@ import uuid
 from sqlalchemy import create_engine, text
 
 from celerp.cli import _migrate_to_head
+from celerp.json_text import SYNC_TEXT
 from celerp.inventory_codes import (
     BARCODE_UNIQUE_INDEX,
     LEGACY_BARCODE_UNIQUE_INDEX,
@@ -45,7 +46,7 @@ def test_sql_ascii_2_0_database_migrates_to_head_without_json_expression_indexes
     try:
         alembic_run(async_url, "upgrade", BASE_2_0_REVISION)
 
-        engine = create_engine(sync_url)
+        engine = create_engine(sync_url, **SYNC_TEXT)
         cid = str(uuid.uuid4())
         try:
             with engine.begin() as conn:
@@ -116,7 +117,7 @@ def test_sql_ascii_2_0_database_migrates_to_head_without_json_expression_indexes
 
         _migrate_to_head(async_url)
 
-        engine = create_engine(sync_url)
+        engine = create_engine(sync_url, **SYNC_TEXT)
         try:
             with engine.connect() as conn:
                 assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == head_rev()
@@ -192,7 +193,7 @@ def test_sql_ascii_2_0_database_migrates_to_head_without_json_expression_indexes
 
         _migrate_to_head(async_url)
 
-        engine = create_engine(sync_url)
+        engine = create_engine(sync_url, **SYNC_TEXT)
         try:
             with engine.connect() as conn:
                 settings2 = conn.execute(

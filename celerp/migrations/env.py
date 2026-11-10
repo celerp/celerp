@@ -15,7 +15,7 @@ from sqlalchemy import engine_from_config, pool
 
 from celerp.db_url import sync_url as sync_db_url
 from celerp.models.base import Base
-from celerp.json_text import dump_json
+from celerp.json_text import SYNC_TEXT
 
 # Register all models with Base.metadata by importing them.
 import celerp.models.company       # noqa: F401
@@ -101,15 +101,12 @@ def run_migrations_online() -> None:
     # (celerp.migrations.compatibility.mutating_scope), so it migrates through a
     # guarded engine of the fence it holds.
     from celerp.migrations.compatibility import held_fence
-    # Text goes both ways as UTF-8, as the app sends it: a SQL_ASCII database keeps the bytes it
-    # was sent, which a client in its own encoding could not read.
     held = held_fence(_sync_url)
     if held is not None:
-        engines = held.engine(poolclass=pool.NullPool, client_encoding="utf8")
+        engines = held.engine(poolclass=pool.NullPool)
     else:
         engines = contextlib.nullcontext(
-            engine_from_config(cfg, prefix="sqlalchemy.", poolclass=pool.NullPool, client_encoding="utf8",
-                               json_serializer=dump_json))
+            engine_from_config(cfg, prefix="sqlalchemy.", poolclass=pool.NullPool, **SYNC_TEXT))
     with engines as connectable, connectable.connect() as connection:
         options = dict(
             connection=connection,

@@ -22,6 +22,8 @@ import sqlalchemy as sa
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
+from celerp.json_text import SYNC_TEXT
+
 from .conftest import throwaway_db, upgrade_to
 from .test_q0r1s2t3u4v5_projections_number_lookup import INDEXES as UNTRIMMED, _query, _valid
 
@@ -65,7 +67,7 @@ ENCODINGS = ("UTF8", "SQL_ASCII")
 
 
 def _query_all(sync_url: str, sql: str) -> list[tuple]:
-    engine = create_engine(sync_url, client_encoding="utf8")
+    engine = create_engine(sync_url, **SYNC_TEXT)
     try:
         with engine.connect() as conn:
             return [tuple(r) for r in conn.execute(text(sql))]
@@ -77,7 +79,7 @@ def _seed_padded(sync_url: str, encoding: str) -> str:
     """A company with one Document per padding, saved as an earlier
     version saved it: the number as sent, in both number fields, with a letter past ASCII in it.
     Enough other Documents that the planner reads a lookup through the indexes."""
-    eng = create_engine(sync_url, client_encoding="utf8")
+    eng = create_engine(sync_url, **SYNC_TEXT)
     try:
         with eng.begin() as conn:
             assert conn.execute(text("SHOW server_encoding")).scalar() == encoding

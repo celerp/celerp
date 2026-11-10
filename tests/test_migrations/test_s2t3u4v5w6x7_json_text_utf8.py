@@ -19,7 +19,7 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
-from celerp.json_text import dump_json
+from celerp.json_text import SYNC_TEXT, dump_json
 from .conftest import throwaway_db, upgrade_to
 from .test_r1s2t3u4v5w6_projections_canonical_number_lookup import ENCODINGS
 
@@ -30,7 +30,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 def _sql(sync_url: str, sql: str, params: dict | None = None) -> list[tuple]:
-    engine = create_engine(sync_url, client_encoding="utf8", json_serializer=dump_json)
+    engine = create_engine(sync_url, **SYNC_TEXT)
     try:
         with engine.begin() as conn:
             result = conn.execute(text(sql), params or {})
@@ -121,7 +121,7 @@ def test_the_escape_rewrite_runs_again_without_changing_anything():
     with throwaway_db("jsonidem", "SQL_ASCII") as (_, sync_url):
         upgrade_to(sync_url, BEFORE_STATE_INDEX)
         _seed_both_forms(sync_url)
-        engine = create_engine(sync_url, client_encoding="utf8")
+        engine = create_engine(sync_url, **SYNC_TEXT)
         try:
             with engine.begin() as conn:
                 assert unescape_json_text(conn) == 2  # the escaped Document and the company
@@ -131,18 +131,24 @@ def test_the_escape_rewrite_runs_again_without_changing_anything():
             engine.dispose()
 
 
-_ENGINE_FACTORIES = {"create_engine", "create_async_engine", "engine_from_config"}
+_SYNC_FACTORIES = {"create_engine", "engine_from_config"}
+
+
+def _passes_sync_text(call: ast.Call) -> bool:
+    return any(k.arg is None and getattr(k.value, "id", None) == "SYNC_TEXT" for k in call.keywords)
 
 
 def test_every_engine_writes_json_as_utf8_text():
     """Every engine the app or a migration opens serializes JSON with dump_json, so no writer
-    stores a \\u escape past ASCII."""
+    stores a \\u escape past ASCII; a psycopg2 engine also talks UTF-8 (SYNC_TEXT), else it could
+    neither send that text to a SQL_ASCII database nor read its bytes back."""
     missing = []
     for path in [*ROOT.glob("celerp/**/*.py"), *ROOT.glob("default_modules/*/*/**/*.py")]:
         if "tests" in path.relative_to(ROOT).parts:
             continue
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            if isinstance(node, ast.Call) and getattr(node.func, "attr", getattr(node.func, "id", None)) in _ENGINE_FACTORIES:
-                if not any(k.arg == "json_serializer" for k in node.keywords):
-                    missing.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+            name = getattr(node.func, "attr", getattr(node.func, "id", None)) if isinstance(node, ast.Call) else None
+            if name in _SYNC_FACTORIES and not _passes_sync_text(node) or name == "create_async_engine" and not any(
+                    k.arg == "json_serializer" for k in node.keywords):
+                missing.append(f"{path.relative_to(ROOT)}:{node.lineno}")
     assert not missing, missing

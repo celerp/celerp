@@ -12,3 +12,9 @@ def dump_json(value) -> str:
     an engine or migration that wrote one would leave rows the app cannot query. Control
     characters stay escaped, as JSON requires."""
     return json.dumps(value, ensure_ascii=False)
+
+
+# How every psycopg2 engine sends and reads text: JSON as dump_json writes it, over a UTF-8
+# connection whatever the server encoding. A SQL_ASCII database keeps the bytes it is sent, and a
+# client in the server's own encoding could neither send that JSON nor read those bytes back.
+SYNC_TEXT = {"json_serializer": dump_json, "client_encoding": "utf8"}
