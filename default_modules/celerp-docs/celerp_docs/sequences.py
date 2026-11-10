@@ -9,7 +9,7 @@ from datetime import date
 
 from fastapi import HTTPException
 import sqlalchemy as sa
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import Refused, catalog_refusal
@@ -223,12 +223,6 @@ def draft_counter(doc_type: str) -> str:
 _NUMBERS = (NUMBER_SHOWN, NUMBER_KEPT, NUMBER_KEYED)
 
 
-def _number_match(candidate: sa.ColumnElement):
-    """A Document or List shows, keeps or is stored under ``candidate`` (canonical_number),
-    read through the indexed expressions (ix_projections_canonical_number_*)."""
-    return or_(*(number == candidate for number in _NUMBERS))
-
-
 async def number_holder(session: AsyncSession, company_id, number: str, *,
                         exclude_entity_id: str | None = None,
                         doc_type: str | None = None) -> tuple[str, str] | None:
@@ -237,21 +231,25 @@ async def number_holder(session: AsyncSession, company_id, number: str, *,
     their canonical form; None when the number is free. A number a record is stored under stays
     its own for good, so no other record takes it even after that record is renumbered. Documents
     and Lists share one number space, so every number is checked against this one rule.
-    ``doc_type`` narrows the Documents that count to that type, for imported books, where another
-    system's bill and invoice may carry the same number; every List still counts. The holder is
-    named by the first number it has, without the spaces it may be stored with."""
+    ``doc_type`` narrows only the Documents whose shown or kept number counts to that type, for
+    imported books, where another system's bill and invoice may carry the same number; every List
+    still counts, and a number any record is stored under counts whatever its type, since its
+    storage key can hold one record only. The holder is named by the first number it has, without
+    the spaces it may be stored with."""
+    candidate = canonical_number(sa.literal(strip_number(number), sa.Text))
+    shown_or_kept = or_(NUMBER_SHOWN == candidate, NUMBER_KEPT == candidate)
+    if doc_type:
+        shown_or_kept = and_(shown_or_kept, or_(Projection.entity_type == "list",
+                                                Projection.state["doc_type"].as_string() == doc_type))
     query = select(Projection.entity_type, Projection.state["ref_id"].as_string(),
                    Projection.state["doc_number"].as_string(), KEY_NUMBER).where(
         Projection.company_id == company_id,
         Projection.entity_type.in_(("doc", "list")),
-        _number_match(canonical_number(sa.literal(strip_number(number), sa.Text))),
+        or_(NUMBER_KEYED == candidate, shown_or_kept),
     )
     if exclude_entity_id:
         # A record may take back its own number, shown or stored under.
         query = query.where(Projection.entity_id != exclude_entity_id)
-    if doc_type:
-        query = query.where(or_(Projection.entity_type == "list",
-                                Projection.state["doc_type"].as_string() == doc_type))
     row = (await session.execute(query.limit(1))).first()
     if row is None:
         return None

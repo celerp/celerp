@@ -702,6 +702,34 @@ async def test_a_record_an_earlier_version_stored_under_its_number_as_sent_holds
     assert refused == "err_doc_number_taken", refused
 
 
+# How a record holds a number: shows it, keeps it, or is stored under it (clean, or padded as an
+# earlier version stored it) after being renumbered away from it.
+_HOLDS = {"shown": "ref_id", "kept": "doc_number", "key": "", "NBSP key": "\xa0", "U+3000 key": "\u3000"}
+
+
+@pytest.mark.parametrize("same_type", [True, False], ids=["same type", "other type"])
+@pytest.mark.parametrize("door", ["create doc", "patch doc", "renumber doc", "import doc"])
+@pytest.mark.parametrize("holds", _HOLDS)
+async def test_who_holds_a_number_against_each_door_and_document_type(client, session, holds, door, same_type):
+    """A Document holding a number, in any way, refuses it to every other Document. Only an import
+    of another type may share a number another Document shows or keeps, as another system's bill
+    and invoice may; a number a record is stored under is its own whatever the type."""
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    n = f"MX-{uuid.uuid4().hex[:6]}"
+    pad = _HOLDS[holds]
+    key = f"doc:{pad}{n}{pad}" if holds.endswith("key") else f"doc:held-{uuid.uuid4().hex[:6]}"
+    data = {**_imported("doc", key, None)["data"], "doc_type": "quotation" if same_type else "invoice",
+            **({_HOLDS[holds]: n} if holds in ("shown", "kept") else {"ref_id": f"MOVED-{uuid.uuid4().hex[:6]}"})}
+    await emit_event(session, company_id=auth["company_id"], entity_id=key, entity_type="doc",
+                     event_type="doc.created", data=data, actor_id=None, location_id=None,
+                     source="csv", idempotency_key=f"k-{uuid.uuid4().hex}")
+    await session.commit()
+    _, refused = await _give(client, h, contacts, door, n, target=await _target(client, h, contacts, door))
+    shares = door == "import doc" and not same_type and holds in ("shown", "kept")
+    assert refused == (None if shares else "err_doc_number_taken"), refused
+
+
 async def test_no_writer_sets_or_clears_the_number_a_padded_key_holds(client, session):
     """The number a padded storage key holds (KEY_FIELD) is the record's own: a patch or an
     import naming it neither sets it on a record whose key is clean nor clears or moves it on
