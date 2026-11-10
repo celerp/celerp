@@ -21,7 +21,7 @@ import pytest
 from fastapi import HTTPException
 from packaging.version import Version
 from sqlalchemy import __version__ as sqlalchemy_version
-from sqlalchemy import delete, func, inspect, insert, select, text, update
+from sqlalchemy import delete, func, inspect as sa_inspect, insert, select, text, update
 
 import mutation_observer
 import mutation_read_notes
@@ -85,7 +85,7 @@ async def test_a_locked_write_made_for_a_read_request_is_reported(session, auth,
         session.add(row)
         await session.execute(text("SELECT 1"))
         if _CORE_STATEMENT_AUTOFLUSH:
-            assert inspect(row).persistent
+            assert sa_inspect(row).persistent
         await session.commit()
     assert _kinds() == ([] if method == "POST" else ["read-route-write"])
 
@@ -182,9 +182,9 @@ async def test_autoflush_write_without_the_lock_is_reported(session, auth):
         session.add(row)
         await session.execute(text("SELECT 1"))
         if _CORE_STATEMENT_AUTOFLUSH:
-            assert inspect(row).persistent
+            assert sa_inspect(row).persistent
         else:
-            assert inspect(row).pending
+            assert sa_inspect(row).pending
             await session.execute(select(Location.id).where(Location.company_id == cid))
         await session.commit()
     assert _kinds() == ["unprotected"]
