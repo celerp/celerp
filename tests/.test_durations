@@ -20926,6 +20926,7 @@
     "tests/test_services/test_sync_runner_lifecycle.py::test_run_sync_dispatches_the_outbound_entity_and_its_direction_gates_it": 0.285,
     "tests/test_services/test_sync_runner_lifecycle.py::test_run_sync_feeds_the_watermark_as_since": 0.234,
     "tests/test_services/test_sync_runner_lifecycle.py::test_run_sync_reads_the_store_context_from_its_execution": 0.161,
+    "tests/test_services/test_sync_runner_lifecycle.py::test_remove_attention_entry_takes_one_entry_off_the_current_list": 0.56,
     "tests/test_services/test_sync_runner_lifecycle.py::test_update_attention_entry_edits_the_current_list": 0.253,
     "tests/test_services/test_xero_outbound.py::test_after_key_window_confirmed_absence_resends_with_new_key": 0.845,
     "tests/test_services/test_xero_outbound.py::test_after_key_window_confirmed_absence_sends_the_current_invoice": 0.946,

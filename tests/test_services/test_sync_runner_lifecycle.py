@@ -289,6 +289,27 @@ async def test_update_attention_entry_edits_the_current_list(_db_engine):
     assert await attention_entries(cid, stub.name, "orders") == [entry, waiting[1]]
 
 
+async def test_remove_attention_entry_takes_one_entry_off_the_current_list(_db_engine):
+    """One entry leaves the current list in the caller's transaction and the rest
+    stays as it was, Thai text included; an unknown id changes nothing."""
+    from celerp.connectors.sync_runner import attention_entries, remove_attention_entry
+
+    cid = _cid()
+    waiting = [
+        {"id": "7", "label": "คำสั่งซื้อ 7", "reason": "refund"},
+        {"id": "8", "label": "Order 8", "reason": "no stock"},
+    ]
+    stub = _AttentionStub([waiting])
+    await _run(stub, cid)
+
+    async with get_session_ctx() as s:
+        assert await remove_attention_entry(s, cid, stub.name, "orders", "9") is None
+        entry = await remove_attention_entry(s, cid, stub.name, "orders", "8")
+        await s.commit()
+    assert entry == waiting[1]
+    assert await attention_entries(cid, stub.name, "orders") == [waiting[0]]
+
+
 class _ProductsStub:
     """Products both ways; records the context and ``since`` each call receives."""
     name = "stub_products"
