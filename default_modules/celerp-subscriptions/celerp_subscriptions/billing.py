@@ -69,6 +69,12 @@ EMAIL_ATTEMPT_RETENTION = timedelta(days=2)
 RECOVERY_RETRY_AGE = timedelta(hours=12)
 
 
+def _payload_json(message: dict) -> str:
+    """The stored form of an email a send gives the relay, and the text its digest is taken
+    of: every character past ASCII written as itself, so the size limit counts it once."""
+    return json.dumps(message, sort_keys=True, ensure_ascii=False)
+
+
 def now() -> datetime:
     """Wall-clock time (not the business day): what a record is stamped with and read at."""
     return datetime.now(timezone.utc)
@@ -1234,7 +1240,7 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
                     or not retryable_attempt_time(attempt.created_at)):
                 raise HTTPException(status_code=409, detail=t("subscriptions.err_send_unverified"))
             message = json.loads(attempt.payload_json)
-            digest = hashlib.sha256(json.dumps(message, sort_keys=True).encode()).hexdigest()
+            digest = hashlib.sha256(_payload_json(message).encode()).hexdigest()
             if digest != send.get("payload_digest"):
                 raise HTTPException(status_code=409, detail=t("subscriptions.err_send_unverified"))
         else:
@@ -1256,7 +1262,7 @@ async def deliver(factory, company_id, template_id: str, k: int, *, retry_by=Non
                     message = await doc_email(session, company_id, doc_id, doc.state, to, actor)
                     html, body = email._with_footer(message["body_html"], message["body_text"])
                     message = {**message, "body_html": html, "body_text": body, "branded": False}
-                    payload_json = json.dumps(message, sort_keys=True)
+                    payload_json = _payload_json(message)
                     if len(payload_json.encode()) > MAX_EMAIL_PAYLOAD_BYTES:
                         raise ValueError("email too large")
             except Exception as exc:

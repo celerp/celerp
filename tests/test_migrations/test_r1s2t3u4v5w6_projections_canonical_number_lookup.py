@@ -76,9 +76,10 @@ def _query_all(sync_url: str, sql: str) -> list[tuple]:
 
 
 def _seed_padded(sync_url: str, encoding: str) -> str:
-    """A company with one Document per padding, saved as an earlier
-    version saved it: the number as sent, in both number fields, with a letter past ASCII in it.
-    Enough other Documents that the planner reads a lookup through the indexes."""
+    """A company with two Documents per padding, saved as an earlier version saved them: one
+    with the number as sent, in both number fields, with a letter past ASCII in it; one stored
+    under its number as sent (its key) and since renumbered. Enough other Documents that the
+    planner reads a lookup through the indexes."""
     eng = create_engine(sync_url, **SYNC_TEXT)
     try:
         with eng.begin() as conn:
@@ -92,6 +93,11 @@ def _seed_padded(sync_url: str, encoding: str) -> str:
                     "VALUES (:c, :e, 'doc', CAST(:s AS json), 1, now())"),
                     {"c": cid, "e": f"doc:{name}", "s": json.dumps({"ref_id": number, "doc_number": number,
                                                                    "doc_type": "quotation"}, ensure_ascii=False)})
+                conn.execute(text(
+                    "INSERT INTO projections (company_id, entity_id, entity_type, state, version, updated_at) "
+                    "VALUES (:c, :e, 'doc', CAST(:s AS json), 2, now())"),
+                    {"c": cid, "e": f"doc:{_PADS[name]}KEY-{name}-\u00c9{_PADS[name]}",
+                     "s": json.dumps({"ref_id": f"MOVED-{name}", "doc_type": "quotation"})})
             conn.execute(text(
                 "INSERT INTO projections (company_id, entity_id, entity_type, state, version, updated_at) "
                 "SELECT :c, 'doc:f' || n, 'doc', json_build_object('ref_id', 'F-' || n), 1, now() "
@@ -138,9 +144,10 @@ def test_every_server_encoding_upgrades_stores_padded_numbers_stripped_and_holds
 
         stored = _query_all(sync_url, "SELECT state ->> 'ref_id', state ->> 'doc_number' FROM projections")
         assert sorted(r for r in stored if r[1]) == sorted((f"LEG-{n}-\u00c9",) * 2 for n in _PADS)
-        numbers = [f"leg-{n.lower()}-\u00c9" for n in sorted(_PADS)]
+        numbers = [f"{p}-{n.lower()}-\u00c9" for p in ("leg", "key") for n in sorted(_PADS)]
         holders, statements, plan = asyncio.run(_lookups(async_url, cid, numbers))
-        assert holders == [("doc", f"LEG-{n}-\u00c9") for n in sorted(_PADS)]
+        assert holders == [("doc", f"LEG-{n}-\u00c9") for n in sorted(_PADS)] + [
+            ("doc", f"MOVED-{n}") for n in sorted(_PADS)], holders
         _assert_ascii(statements)
         assert {f"ix_projections_canonical_number_{i}" for i in ("shown", "kept", "key")} <= {
             w for line in plan for w in line.split()}, plan

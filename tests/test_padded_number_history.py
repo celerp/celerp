@@ -34,21 +34,28 @@ _SPEC.loader.exec_module(r1s2)
 PADS = {"space": " ", "tab": "\t", "nbsp": "\xa0", "ideographic": "　"}
 PADDED = {f"LEG-{i}-0001": f"{pad}LEG-{i}-0001{pad}" for i, pad in enumerate(PADS.values())}
 LISTED = ("LEG-L-0001", "\xa0LEG-L-0001　")
+# A Document an earlier version stored under its number as sent, then renumbered: the number its
+# key holds -> that key.
+KEYED = {f"KEY-{i}-0001": f"doc:{pad}KEY-{i}-0001{pad}" for i, pad in enumerate(PADS.values())}
 
 
 async def _legacy_history(engine, cid) -> None:
     """Documents and a List as an earlier version saved them: the padded number in the event and
-    in the record."""
+    in the record, and Documents stored under their padded number then renumbered (KEYED)."""
     events = [("doc", "doc.created", {"doc_type": "quotation", "ref_id": padded, "status": "draft",
                                       "line_items": [], "total": 0}) for padded in PADDED.values()]
     events.append(("list", "list.created", {"ref_id": LISTED[1], "status": "draft", "line_items": []}))
+    events = [(f"{kind}:{uuid.uuid4()}", kind, event_type, data) for kind, event_type, data in events]
+    for number, key in KEYED.items():
+        events += [(key, "doc", "doc.created", {"doc_type": "quotation", "ref_id": key[4:], "status": "draft",
+                                                "line_items": [], "total": 0}),
+                   (key, "doc", "doc.updated", {"fields_changed": {"ref_id": {"old": key[4:], "new": f"MOVED-{number}"}}})]
     async with engine.begin() as conn:
-        for kind, event_type, data in events:
-            eid = f"{kind}:{uuid.uuid4()}"
+        for n, (eid, kind, event_type, data) in enumerate(events):
             await conn.execute(text(
                 "INSERT INTO ledger (company_id, entity_id, entity_type, event_type, data, source, idempotency_key) "
                 "VALUES (:c, :e, :t, :y, CAST(:d AS json), 'api', :k)"),
-                {"c": cid, "e": eid, "t": kind, "y": event_type, "d": json.dumps(data), "k": f"k-{eid}"})
+                {"c": cid, "e": eid, "t": kind, "y": event_type, "d": json.dumps(data), "k": f"k-{n}-{eid}"})
     await settle(engine, cid)
     async with engine.begin() as conn:
         rows = (await conn.execute(text("SELECT entity_id, state::text FROM projections "
@@ -56,7 +63,8 @@ async def _legacy_history(engine, cid) -> None:
         padded = {strip_number(n): n for n in (*PADDED.values(), LISTED[1])}
         for eid, state in rows:
             state = json.loads(state)
-            state["ref_id"] = padded[strip_number(state["ref_id"])]
+            state["ref_id"] = padded.get(strip_number(state["ref_id"]), state["ref_id"])
+            state.pop("key_number", None)
             await conn.execute(text("UPDATE projections SET state = CAST(:s AS json) WHERE company_id = :c "
                                     "AND entity_id = :e"), {"s": dump_json(state), "c": cid, "e": eid})
 
@@ -66,7 +74,8 @@ def _upgrade_backfill(engine) -> None:
     sync = create_engine(engine.url.set(drivername="postgresql+psycopg2"), **SYNC_TEXT)
     try:
         with sync.begin() as conn:
-            update_projection_state(conn, r1s2._strip_numbers, where="entity_type IN ('doc', 'list')")
+            update_projection_state(conn, r1s2._strip_numbers, where="entity_type IN ('doc', 'list')",
+                                    extra_cols=("entity_id",))
     finally:
         sync.dispose()
 
@@ -84,7 +93,7 @@ async def _numbers(engine, cid) -> list[str]:
 async def _holders(engine, cid) -> dict:
     from celerp_docs.sequences import number_holder
     async with AsyncSession(engine) as s:
-        return {n: await number_holder(s, str(cid), n) for n in (*PADDED, LISTED[0])}
+        return {n: await number_holder(s, str(cid), n) for n in (*PADDED, LISTED[0], *KEYED)}
 
 
 async def _restored(engine, source) -> uuid.UUID:
@@ -100,7 +109,7 @@ async def test_upgraded_history_equals_its_replay_rebuilds_and_restores_with_eve
     await _legacy_history(real_engine, cid)
     _upgrade_backfill(real_engine)
     upgraded = await _states(real_engine, cid)
-    expected = sorted((*PADDED, LISTED[0]))
+    expected = sorted((*PADDED, LISTED[0], *(f"MOVED-{n}" for n in KEYED)))
     assert await _numbers(real_engine, cid) == expected
 
     r = await real_client.post("/ledger/rebuild", headers=auth(tok))
@@ -124,5 +133,5 @@ async def test_a_backup_made_before_the_upgrade_restores_with_every_number_strip
     r = await restore(real_client, tok, await download(real_client, tok), mode="new_company")
     assert r.status_code == 201, r.text
     copy = await _restored(real_engine, cid)
-    assert await _numbers(real_engine, copy) == sorted((*PADDED, LISTED[0]))
+    assert await _numbers(real_engine, copy) == sorted((*PADDED, LISTED[0], *(f"MOVED-{n}" for n in KEYED)))
     assert all((await _holders(real_engine, copy)).values())

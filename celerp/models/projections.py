@@ -36,32 +36,49 @@ def strip_number(number: str) -> str:
 NUMBER_FIELDS = ("ref_id", "doc_number")
 
 
-def strip_numbers(state: dict) -> bool:
-    """Give each number ``state`` holds (NUMBER_FIELDS) as a record stores it (strip_number);
-    True when one changed. The Document and List projection applies it to every record an event
-    writes, so a number an earlier version saved padded in its history is stored stripped by
-    every replay, and the upgrade's backfill stores what a replay does."""
-    padded = {f: strip_number(v) for f in NUMBER_FIELDS
-              if isinstance(v := state.get(f), str) and v != strip_number(v)}
-    state.update(padded)
-    return bool(padded)
+# The state field that holds the number a Document or List storage key holds, stripped, when
+# the key carries spaces around it (an earlier version stored a record under its number as
+# sent). Only strip_numbers writes it; no user surface shows it.
+KEY_FIELD = "key_number"
+
+
+def _key_text(key: str) -> str:
+    """The number the storage key ``key`` holds as written: the text after its first colon, or
+    the whole key when it has none (key_number reads it so in SQL)."""
+    head, colon, number = key.partition(":")
+    return number if colon else key
+
+
+def strip_numbers(state: dict, entity_id: str) -> bool:
+    """Give each number ``state`` holds (NUMBER_FIELDS) as a record stores it (strip_number),
+    and KEY_FIELD the number its storage key ``entity_id`` holds, stripped, when the key carries
+    spaces around it (no KEY_FIELD otherwise); True when the state changed. Every replay of a
+    Document or List event applies it, so whatever the event or an earlier version stored, the
+    record holds its numbers stripped, and the upgrade's backfill and a restored backup store
+    what a replay does. A key is never rewritten, so KEY_FIELD is how numbering reads its number."""
+    wanted = {f: strip_number(v) for f in NUMBER_FIELDS if isinstance(v := state.get(f), str)}
+    if (number := _key_text(entity_id)) != strip_number(number):
+        wanted[KEY_FIELD] = strip_number(number)
+    changed = {f: v for f, v in wanted.items() if state.get(f) != v}
+    dropped = KEY_FIELD in state and KEY_FIELD not in wanted
+    if dropped:
+        del state[KEY_FIELD]
+    state.update(changed)
+    return bool(changed) or dropped
 
 
 def strip_key(key: str) -> str:
-    """``key`` as a record is stored under it: the number it holds (key_number, the text after
-    its first colon or the whole key) stripped (strip_number), so a key written now never
-    carries spaces the database's trim does not reach."""
-    head, colon, number = key.partition(":")
-    return head + colon + strip_number(number) if colon else strip_number(key)
+    """``key`` as a record is stored under it: the number it holds (key_number) stripped
+    (strip_number), so a key written now never carries spaces around its number."""
+    number = _key_text(key)
+    return key[:len(key) - len(number)] + strip_number(number)
 
 
 def canonical_number(number: sa.ColumnElement) -> sa.ColumnElement:
     """The canonical form of ``number``, a stored number or a bound candidate: lowercase as the
     database lowers it, without ASCII spaces around it. Numbering compares numbers only in this
     form, so one engine decides both sides of every comparison. Stored numbers and candidates
-    are already stripped (strip_number), so the trim matters only for a storage key, which is
-    never rewritten: one an earlier version saved padded with a space past ASCII is matched only
-    once that space is gone. On a SQL_ASCII database lower() folds ASCII letters only, on both
+    are already stripped (strip_number). On a SQL_ASCII database lower() folds ASCII letters only, on both
     sides alike, so there an accented capital and its small letter are two numbers."""
     return sa.func.lower(sa.func.btrim(number, _ASCII_SPACE))
 
@@ -77,7 +94,9 @@ KEY_NUMBER = key_number(sa.literal_column("projections.entity_id", sa.Text))
 # under, in their canonical form, as the ix_projections_canonical_number_* indexes read them.
 NUMBER_SHOWN = canonical_number(sa.literal_column("projections.state ->> 'ref_id'", sa.Text))
 NUMBER_KEPT = canonical_number(sa.literal_column("projections.state ->> 'doc_number'", sa.Text))
-NUMBER_KEYED = canonical_number(KEY_NUMBER)
+# A padded key is read through the number strip_numbers keeps for it (KEY_FIELD).
+NUMBER_KEYED = canonical_number(sa.func.coalesce(
+    sa.literal_column(f"projections.state ->> '{KEY_FIELD}'", sa.Text), KEY_NUMBER))
 
 
 class Projection(Base):

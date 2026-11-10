@@ -1645,7 +1645,7 @@ async def _as_replayed(session: AsyncSession, company_id) -> None:
     for proj in (await session.scalars(select(Projection).where(
             Projection.company_id == company_id, Projection.entity_type.in_(("doc", "list"))))).all():
         state = dict(proj.state or {})
-        if fill_line_ids(state, proj.entity_id) | strip_numbers(state):
+        if fill_line_ids(state, proj.entity_id) | strip_numbers(state, proj.entity_id):
             proj.state = state
     await session.flush()
 

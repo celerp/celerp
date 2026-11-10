@@ -11,7 +11,6 @@ from __future__ import annotations
 import ast
 import asyncio
 import json
-import pathlib
 import uuid
 
 import pytest
@@ -22,6 +21,7 @@ from sqlalchemy.pool import NullPool
 
 from celerp.json_text import SYNC_TEXT, dump_json
 from company_backup_support import company, owner, settle
+from shipped_sources import shipped_sources
 from test_company_backup import _bk_modules_running  # noqa: F401
 from .conftest import throwaway_db, upgrade_to
 from .test_r1s2t3u4v5w6_projections_canonical_number_lookup import ENCODINGS
@@ -31,7 +31,6 @@ BEFORE_STATE_INDEX = "c2d3e4f5a6b7"
 # The head of the latest release: the escape rewrite is the first revision after it.
 RELEASED_HEAD = "n9b0c1d2e3f4"
 THAI = "ใบแจ้งหนี้"
-ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 def _sql(sync_url: str, sql: str, params: dict | None = None) -> list[tuple]:
@@ -204,21 +203,20 @@ def test_every_engine_writes_json_as_utf8_text():
     stores a \\u escape past ASCII; a psycopg2 engine also talks UTF-8 (SYNC_TEXT), else it could
     neither send that text to a SQL_ASCII database nor read its bytes back."""
     missing = []
-    for path in [*ROOT.glob("celerp/**/*.py"), *ROOT.glob("default_modules/*/*/**/*.py")]:
-        if "tests" in path.relative_to(ROOT).parts:
-            continue
+    for rel, path in shipped_sources():
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             name = getattr(node.func, "attr", getattr(node.func, "id", None)) if isinstance(node, ast.Call) else None
             if name in _SYNC_FACTORIES and not _passes_sync_text(node) or name == "create_async_engine" and not any(
                     k.arg == "json_serializer" for k in node.keywords):
-                missing.append(f"{path.relative_to(ROOT)}:{node.lineno}")
+                missing.append(f"{rel}:{node.lineno}")
     assert not missing, missing
 
 
 _DIGEST = "hashed or compared, never stored as JSON in the database"
 _FILE = "written to a file and read back with json.loads"
 _WIRE = "sent over HTTP, a stream or a log line, never stored in the database"
-# Every json.dumps in celerp/ that may write \u escapes, by (file, function), and why that is
+_PAGE = "written into a page the browser reads, never stored in the database"
+# Every json.dumps in the app's sources (shipped_sources) that may write \u escapes, by (file, function), and why that is
 # safe: none of them puts JSON into the database, where dump_json is the one writer.
 _ASCII_DUMPS = {
     ("celerp/ai/files.py", "save_upload"): _FILE,
@@ -267,16 +265,49 @@ _ASCII_DUMPS = {
     ("celerp/services/peer_payments.py", "apply_source_payments"): _DIGEST,
     ("celerp/services/staged_downloads.py", "stage"): _FILE,
     ("celerp/services/update.py", "write_state"): _FILE,
+    ("default_modules/celerp-ai/celerp_ai/ui_routes.py", "_chat_script"): _PAGE,
+    ("default_modules/celerp-ai/celerp_ai/ui_routes.py", "_empty_state"): _PAGE,
+    ("default_modules/celerp-ai/celerp_ai/ui_routes.py", "_job_button"): _PAGE,
+    ("default_modules/celerp-ai/celerp_ai/ui_routes.py", "_resend"): _PAGE,
+    ("default_modules/celerp-ai/celerp_ai/ui_routes.py", "_showcase_view"): _PAGE,
+    ("default_modules/celerp-backup/celerp_backup/routes.py", "_confirm_without_safety"): _PAGE,
+    ("default_modules/celerp-docs/celerp_docs/doc_service.py", "_woocommerce_commercial_fingerprint"): _DIGEST,
+    ("default_modules/celerp-docs/celerp_docs/doc_service.py", "woocommerce_reconciliation_signature"): _DIGEST,
+    ("default_modules/celerp-docs/celerp_docs/import_service.py", "_upsert_doc"): _DIGEST,
+    ("default_modules/celerp-docs/celerp_docs/received.py", "document_digest"): _DIGEST,
+    ("default_modules/celerp-docs/celerp_docs/routes.py", "_scan_run_fingerprint"): _DIGEST,
+    ("default_modules/celerp-docs/celerp_docs/routes.py", "batch_import_lists"): _DIGEST,
+    ("default_modules/celerp-docs/celerp_docs/routes.py", "outcome_binding"): _DIGEST,
+    ("default_modules/celerp-docs/celerp_docs/routes.py", "preview_binding"): _DIGEST,
+    ("default_modules/celerp-docs/celerp_docs/routes_share.py", "download_share_bundle"): _WIRE,
+    ("default_modules/celerp-fixed-assets/celerp_fixed_assets/operations.py", "_hash"): _DIGEST,
+    ("default_modules/celerp-fixed-assets/celerp_fixed_assets/ui_imports.py", "_operation_key"): _DIGEST,
+    ("default_modules/celerp-fixed-assets/celerp_fixed_assets/ui_routes.py", "_fill_button"): _PAGE,
+    ("default_modules/celerp-fixed-assets/celerp_fixed_assets/ui_routes.py", "_page"): _PAGE,
+    ("default_modules/celerp-fixed-assets/celerp_fixed_assets/ui_routes.py", "_revalue_files_card"): _PAGE,
+    ("default_modules/celerp-fixed-assets/celerp_fixed_assets/ui_routes.py", "_settings_fields"): _PAGE,
+    ("default_modules/celerp-fixed-assets/celerp_fixed_assets/ui_routes.py", "button"): _PAGE,
+    ("default_modules/celerp-fixed-assets/celerp_fixed_assets/ui_upkeep.py", "_reminder_actions"): _PAGE,
+    ("default_modules/celerp-inventory/celerp_inventory/routes.py", "_merge_fingerprint"): _DIGEST,
+    ("default_modules/celerp-inventory/celerp_inventory/routes.py", "_merge_request_digest"): _DIGEST,
+    ("default_modules/celerp-inventory/celerp_inventory/routes.py", "_split_request_digest"): _DIGEST,
+    ("default_modules/celerp-inventory/celerp_inventory/services.py", "_connector_event_idem"): _DIGEST,
+    ("default_modules/celerp-inventory/celerp_inventory/services.py", "build_import_records"): _DIGEST,
+    ("default_modules/celerp-inventory/celerp_inventory/services.py", "import_operation_key"): _DIGEST,
+    ("default_modules/celerp-inventory/celerp_inventory/services.py", "import_preview_hash"): _DIGEST,
+    ("default_modules/celerp-inventory/celerp_inventory/services.py", "write_import_batch"): _DIGEST,
+    ("default_modules/celerp-labels/celerp_labels/ui_routes.py", "_build_field_options_js"): _PAGE,
+    ("default_modules/celerp-labels/celerp_labels/ui_routes.py", "_editor_panel"): _PAGE,
+    ("default_modules/celerp-manufacturing/celerp_manufacturing/movements.py", "_fingerprint"): _DIGEST,
 }
 
 
 def _ascii_dumps() -> set[tuple[str, str]]:
-    """(file, innermost function) of every json.dumps in celerp/ outside json_text.py that does
-    not pass ensure_ascii."""
+    """(file, innermost function) of every json.dumps in the app's sources (shipped_sources)
+    outside json_text.py that does not pass ensure_ascii."""
     found = set()
-    for path in ROOT.glob("celerp/**/*.py"):
-        rel = path.relative_to(ROOT).as_posix()
-        if rel == "celerp/json_text.py" or "tests" in path.relative_to(ROOT).parts:
+    for rel, path in shipped_sources():
+        if rel == "celerp/json_text.py":
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         aliases = {a.asname or a.name for n in ast.walk(tree) if isinstance(n, ast.Import)

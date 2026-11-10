@@ -4,7 +4,8 @@
 """Numbering compares numbers in their canonical form (lowercase, without ASCII spaces around
 them, and a storage key by the number after its colon), so a record stored with a padded number
 still holds it: every Document and List number an earlier version saved with spaces of any kind
-around it is first stored stripped, then the number lookup indexes are rebuilt on the canonical
+around it is first stored stripped, a key it saved so with the number it holds kept stripped in
+the record (strip_numbers), then the number lookup indexes are rebuilt on the canonical
 expressions.
 
 A start of this version before the upgrade ran has already created the new indexes from the
@@ -42,13 +43,14 @@ def _missing(name: str) -> bool:
     return valid is not True
 
 
-def _strip_numbers(state: dict, _row) -> bool:
+def _strip_numbers(state: dict, row) -> bool:
     """Store each number of ``state`` as a replay of its history stores it (strip_numbers)."""
-    return strip_numbers(state)
+    return strip_numbers(state, row["entity_id"])
 
 
 def upgrade() -> None:
-    update_projection_state(op.get_bind(), _strip_numbers, where="entity_type IN ('doc', 'list')")
+    update_projection_state(op.get_bind(), _strip_numbers, where="entity_type IN ('doc', 'list')",
+                            extra_cols=("entity_id",))
     # Each index is written out so the restamp walker proves the revision by its indexes.
     with op.get_context().autocommit_block():
         if _missing("ix_projections_canonical_number_shown"):

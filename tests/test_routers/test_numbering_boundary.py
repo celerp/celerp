@@ -9,9 +9,11 @@ numbers, and no other counter, whoever writes it, changes which counter a List d
 from __future__ import annotations
 
 import ast
+import json
 import pathlib
 import time
 import uuid
+from urllib.parse import quote
 
 import pytest
 
@@ -20,11 +22,12 @@ from sqlalchemy import event, select, text
 
 from celerp.events.engine import emit_event
 from celerp.main import app
-from celerp.models.projections import NUMBER_FIELDS, Projection, canonical_number, strip_key, strip_number
+from celerp.models.projections import KEY_FIELD, NUMBER_FIELDS, Projection, canonical_number, strip_key, strip_number
 from celerp.services.company_lock import locked_company
 from test_tax_acceptance_matrix import _demo_company
 from fasthtml.common import to_xml
 from ui.i18n import refusal_text, t
+from ui.routes.documents import _doc_detail
 
 pytestmark = pytest.mark.asyncio
 
@@ -637,13 +640,10 @@ async def _seed_earlier(session, company_id, kind: str, field: str, sent: str) -
     return key
 
 
-# A storage key is never rewritten, so one an earlier version saved padded with a space past
-# ASCII is matched only once that space is gone (canonical_number): those cases are left out.
 @pytest.mark.parametrize("door, field, hostile", [
     (d, f, h) for (m, p), fields in _NUMBER_ROUTES.items()
     for d in [_ROUTE_DOORS.get((m, p), f"{m} {p}")] for f in fields for h in HOSTILE
-] + [(_EARLIER, f, h) for f in (*NUMBER_FIELDS, *_KEY_FIELDS) for h in HOSTILE
-     if f in NUMBER_FIELDS or HOSTILE[h][1].isascii()])
+] + [(_EARLIER, f, h) for f in (*NUMBER_FIELDS, *_KEY_FIELDS) for h in HOSTILE])
 async def test_a_number_in_a_hostile_spelling_is_one_number_through_every_door(client, session, door, field, hostile):
     """A number sent through any door in any field, spelled with spaces of any kind around it or
     with letters whose lower case differs between Python and the database, is saved as the number
@@ -675,6 +675,72 @@ async def test_a_number_in_a_hostile_spelling_is_one_number_through_every_door(c
     shown = r.json()["detail"]["params"]["number"]
     assert shown and shown == strip_number(shown), shown
     assert (await _rows(client, h))["quotation"]["preview"] != n
+
+
+@pytest.mark.parametrize("hostile", HOSTILE)
+@pytest.mark.parametrize("door", _DOORS)
+async def test_a_record_an_earlier_version_stored_under_its_number_as_sent_holds_it_once_renumbered(
+        client, session, door, hostile):
+    """An earlier version stored a Document under its number as sent (``doc:<NBSP>QUO-0001<NBSP>``,
+    the key its import's event carries). Renumbered, it still holds the number its key holds: no
+    other record takes it through any door."""
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    prefix, sent, twin = HOSTILE[hostile]
+    if prefix:
+        assert (await client.patch("/docs/sequences/quotation", headers=h, json={"prefix": prefix})).status_code == 200
+    n = (await _rows(client, h))["quotation"]["preview"]
+    key = f"doc:{sent.format(n=n)}"
+    await emit_event(session, company_id=auth["company_id"], entity_id=key, entity_type="doc",
+                     event_type="doc.created", data=_imported("doc", key, sent.format(n=n))["data"],
+                     actor_id=None, location_id=None, source="csv", idempotency_key=f"k-{uuid.uuid4().hex}")
+    await session.commit()
+    r = await client.post(f"/docs/{quote(key)}/renumber", headers=h, json={"ref_id": f"MOVED-{uuid.uuid4().hex[:6]}"})
+    assert r.status_code == 200, r.text
+    _, refused = await _give(client, h, contacts, door, twin.format(n=n),
+                             target=await _target(client, h, contacts, door))
+    assert refused == "err_doc_number_taken", refused
+
+
+async def test_no_writer_sets_or_clears_the_number_a_padded_key_holds(client, session):
+    """The number a padded storage key holds (KEY_FIELD) is the record's own: a patch or an
+    import naming it neither sets it on a record whose key is clean nor clears or moves it on
+    one whose key is padded."""
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    padded = "doc:\xa0PAD-0001\xa0"
+    await emit_event(session, company_id=auth["company_id"], entity_id=padded, entity_type="doc",
+                     event_type="doc.created", data=_imported("doc", padded, "PAD-0001")["data"],
+                     actor_id=None, location_id=None, source="csv", idempotency_key=f"k-{uuid.uuid4().hex}")
+    await session.commit()
+    clean = (await _quote_doc(client, h, contacts)).json()["id"]
+    for eid, sent in ((padded, "TAKEN-0001"), (padded, None), (clean, "TAKEN-0002")):
+        r = await client.patch(f"/docs/{quote(eid)}", headers=h,
+                               json={"fields_changed": {KEY_FIELD: {"old": None, "new": sent}}})
+        assert r.status_code in (200, 422), r.text
+    record = _imported("doc", "doc:imp-key", "IMP-0001")
+    record["data"][KEY_FIELD] = "TAKEN-0003"
+    assert (await client.post("/docs/import", headers=h, json=record)).status_code == 200
+    states = {eid: (await session.get(Projection, (auth["company_id"], eid), populate_existing=True)).state
+              for eid in (padded, clean, "doc:imp-key")}
+    assert [s.get(KEY_FIELD) for s in states.values()] == ["PAD-0001", None, None], states
+    for n in ("TAKEN-0001", "TAKEN-0002", "TAKEN-0003"):
+        assert (await _quote_doc(client, h, contacts, ref_id=n)).status_code == 200, n
+
+
+async def test_the_number_a_padded_key_holds_is_shown_nowhere(client, session):
+    """KEY_FIELD is numbering's alone: no detail page, export column or API schema shows it."""
+    auth, _ = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    for kind in ("doc", "list"):
+        html = to_xml(_doc_detail({"entity_id": f"{kind}:\xa0K\xa0", "id": f"{kind}:\xa0K\xa0",
+                                   "doc_type": "quotation", "list_type": "quotation", "line_items": [],
+                                   "ref_id": "SHOWN-1", KEY_FIELD: "HIDDEN-KEY-1"}))
+        assert "HIDDEN-KEY-1" not in html and KEY_FIELD not in html, kind
+        r = await client.get(f"/{kind}s/export/csv", headers=h, params={"cols": KEY_FIELD})
+        # Refused as an unknown column, which the refusal does not offer either.
+        assert r.status_code >= 400 and KEY_FIELD not in r.json()["detail"].split("Choose from")[1], r.text[:200]
+    assert KEY_FIELD not in json.dumps(app.openapi())
 
 
 @pytest.mark.parametrize("door", _DOORS)
