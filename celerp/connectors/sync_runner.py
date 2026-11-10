@@ -10,6 +10,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
+from celerp.json_text import dump_json
 from celerp.connectors.base import (
     INBOUND_ENTITIES,
     OUTBOUND_ENTITIES,
@@ -487,7 +488,7 @@ async def update_attention_entry(
     if entry is None:
         return None
     update(entry)
-    run.attention_json = json.dumps(entries)
+    run.attention_json = dump_json(entries)
     return entry
 
 
@@ -503,7 +504,7 @@ async def remove_attention_entry(
     entry = next((e for e in entries if str(e.get("id")) == str(record_id)), None)
     if entry is None:
         return None
-    run.attention_json = json.dumps([e for e in entries if e is not entry])
+    run.attention_json = dump_json([e for e in entries if e is not entry])
     return entry
 
 
@@ -533,8 +534,8 @@ async def _finish_run(run_id, company_id, connector, entity, result, started_at,
     from celerp.db import get_session_ctx
 
     direction_str = result.direction.value if hasattr(result.direction, "value") else str(result.direction)
-    errors_json = json.dumps(result.errors) if result.errors else None
-    attention_json = json.dumps(result.attention) if result.attention is not None else None
+    errors_json = dump_json(result.errors) if result.errors else None
+    attention_json = dump_json(result.attention) if result.attention is not None else None
     try:
         async with get_session_ctx() as session:
             await lock_company(session, uuid.UUID(str(company_id)))

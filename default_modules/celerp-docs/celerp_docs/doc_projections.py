@@ -6,6 +6,7 @@ from __future__ import annotations
 from copy import deepcopy
 from decimal import Decimal
 
+from celerp.models.projections import strip_numbers
 from celerp.services.document_lines import received_line_index
 from celerp.services.money import discount_from_inputs, document_line_amount, round_money, to_decimal, to_stored_float
 from celerp_docs.doc_constants import LEGACY_CONTACT_FIELDS
@@ -722,6 +723,9 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
     else:
         raise ValueError(f"Unsupported event: {event_type}")
 
+    # The one place a Document or List number is stored: whatever spaces its event carries
+    # around it, which history an earlier version wrote keeps, the record holds it stripped.
+    strip_numbers(current)
     return current
 
 

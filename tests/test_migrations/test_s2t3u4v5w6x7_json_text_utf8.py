@@ -18,13 +18,18 @@ import pytest
 from fastapi import HTTPException
 from sqlalchemy import create_engine, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from celerp.json_text import SYNC_TEXT, dump_json
+from company_backup_support import company, owner, settle
+from test_company_backup import _bk_modules_running  # noqa: F401
 from .conftest import throwaway_db, upgrade_to
 from .test_r1s2t3u4v5w6_projections_canonical_number_lookup import ENCODINGS
 
 # The revision before the first expression index on projection state (ix_projections_connector_key).
 BEFORE_STATE_INDEX = "c2d3e4f5a6b7"
+# The head of the latest release: the escape rewrite is the first revision after it.
+RELEASED_HEAD = "n9b0c1d2e3f4"
 THAI = "ใบแจ้งหนี้"
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
@@ -129,6 +134,57 @@ def test_the_escape_rewrite_runs_again_without_changing_anything():
                 assert unescape_json_text(conn) == 0
         finally:
             engine.dispose()
+
+
+def test_escaped_journal_entry_metadata_is_rewritten_before_any_index_reads_it():
+    """A journal entry an earlier version saved with a \\u escape past ASCII in its metadata, which
+    the first index after the release reads as jsonb, upgrades a SQL_ASCII database to head."""
+    with throwaway_db("jsonje", "SQL_ASCII") as (_, sync_url):
+        upgrade_to(sync_url, RELEASED_HEAD)
+        cid = _sql(sync_url, "INSERT INTO companies (id, name, slug, settings, created_at) VALUES "
+                             "(gen_random_uuid(), 'Demo', 'demo', '{}', now()) RETURNING id")[0][0]
+        _sql(sync_url, "INSERT INTO ledger (company_id, entity_id, entity_type, event_type, data, metadata, "
+                       "source, idempotency_key) VALUES (:c, 'je:1', 'journal_entry', 'acc.journal_entry.created', "
+                       "'{}', CAST(:m AS json), 'api', 'k-je-1')", {"c": cid, "m": json.dumps({"memo": THAI})})
+
+        upgrade_to(sync_url, "head")
+
+        assert _sql(sync_url, "SELECT metadata ->> 'memo', CAST(metadata AS jsonb) ->> 'memo' FROM ledger") == [
+            (THAI, THAI)]
+
+
+async def test_a_company_backup_with_thai_text_restores_on_a_sql_ascii_database(tmp_path, monkeypatch,
+                                                                             _bk_modules_running):
+    """A company and a Document holding Thai text, backed up and restored as a new company,
+    on a SQL_ASCII database: every row the restore writes is sent as UTF-8 text."""
+    import celerp.db
+    from celerp.config import settings
+    from celerp.services import company_backup
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    with throwaway_db("jsoncb", "SQL_ASCII") as (async_url, sync_url):
+        await asyncio.to_thread(upgrade_to, sync_url, "head")
+        engine = create_async_engine(async_url, json_serializer=dump_json, poolclass=NullPool)
+        monkeypatch.setattr(celerp.db, "engine", engine)
+        try:
+            user = await owner(engine)
+            cid = await company(engine, user, THAI, "thai-backup")
+            async with engine.begin() as conn:
+                await conn.execute(text("UPDATE companies SET settings = CAST(:s AS json) WHERE id = :c"),
+                                   {"s": dump_json({"company_address": THAI}), "c": cid})
+                await conn.execute(text(
+                    "INSERT INTO ledger (company_id, entity_id, entity_type, event_type, data, source, idempotency_key) "
+                    "VALUES (:c, 'doc:thai', 'doc', 'doc.created', CAST(:d AS json), 'api', 'k-thai')"),
+                    {"c": cid, "d": dump_json({"doc_type": "quotation", "ref_id": f"{THAI}-1", "contact_name": THAI,
+                                               "line_items": [], "total": 0})})
+            await settle(engine, cid)
+            backup = tmp_path / "thai.celerp-company"
+            await company_backup.export_company_snapshot(cid, backup)
+            await company_backup.restore_company(backup, mode="new_company", user_id=user)
+        finally:
+            await engine.dispose()
+        assert _sql(sync_url, "SELECT state ->> 'contact_name' FROM projections WHERE entity_id = 'doc:thai'") == [
+            (THAI,), (THAI,)]
 
 
 _SYNC_FACTORIES = {"create_engine", "engine_from_config"}

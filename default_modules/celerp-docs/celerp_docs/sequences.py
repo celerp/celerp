@@ -219,11 +219,6 @@ def draft_counter(doc_type: str) -> str:
     return "proforma" if doc_type == "invoice" else doc_type
 
 
-# The fields a Document or List holds a number in. Every write of one goes through
-# require_number_free and stores the number it returns.
-NUMBER_FIELDS = ("ref_id", "doc_number")
-
-
 # The numbers a Document or List shows, keeps and is stored under.
 _NUMBERS = (NUMBER_SHOWN, NUMBER_KEPT, NUMBER_KEYED)
 

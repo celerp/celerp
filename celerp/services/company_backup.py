@@ -59,6 +59,7 @@ from packaging.version import InvalidVersion
 
 import celerp.db
 from celerp import db_catalog
+from celerp.json_text import dump_json
 from celerp.importers.tabular import ZIP_ERRORS, open_zip_member, zip_directory_fits
 from celerp.migrations.compatibility import is_newer_than_running, running_version
 from celerp.models.accounting import UserCompany
@@ -521,7 +522,7 @@ def _parse_row(line: bytes | str):
 
 
 def _dump_rows(rows: list[dict]) -> str:
-    return _NUMBER.sub(r"\1", json.dumps(rows))
+    return _NUMBER.sub(r"\1", dump_json(rows))
 
 
 def _number(spelled: str) -> str:
@@ -1635,15 +1636,16 @@ async def _projection_states(session: AsyncSession, company_id) -> dict[str, tup
     return {eid: (etype, _canonical(_parse_row(state))) for eid, etype, state in rows.all()}
 
 
-async def _fill_line_ids(session: AsyncSession, company_id) -> None:
-    """Give each restored document and List line stored without a line id the id a replay
-    derives, so a backup made before line ids existed agrees with its ledger."""
-    from celerp.models.projections import Projection
+async def _as_replayed(session: AsyncSession, company_id) -> None:
+    """Give each restored Document and List what a replay derives and an earlier version did
+    not store: the id of each line stored without one, and its numbers stripped
+    (strip_numbers), so a backup made before either agrees with its ledger."""
+    from celerp.models.projections import Projection, strip_numbers
     from celerp.services.document_lines import fill_line_ids
     for proj in (await session.scalars(select(Projection).where(
             Projection.company_id == company_id, Projection.entity_type.in_(("doc", "list"))))).all():
         state = dict(proj.state or {})
-        if fill_line_ids(state, proj.entity_id):
+        if fill_line_ids(state, proj.entity_id) | strip_numbers(state):
             proj.state = state
     await session.flush()
 
@@ -1891,7 +1893,7 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 except DBAPIError:
                     raise BackupError(422, t(UNSAVABLE)) from None
             await _verify(session, checked, m, new_id, {new: old for old, new in id_map.items()})
-            await _fill_line_ids(session, new_id)
+            await _as_replayed(session, new_id)
             await _check_replay(session, new_id)
             if retain_peer_identities:
                 from celerp.services.peer_identity import seed_restored_identities

@@ -33,7 +33,7 @@ from celerp.importers.results import failure_reason
 from celerp.models.company import Company, Location
 from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import (
-    NUMBER_KEPT, NUMBER_SHOWN, Projection, canonical_number, key_number, strip_key, strip_number,
+    NUMBER_FIELDS, NUMBER_KEPT, NUMBER_SHOWN, Projection, canonical_number, key_number, strip_key, strip_number,
 )
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
 from celerp_docs.consignment_buy import bought_parcels, bought_receipt_lots, buy_consignment
@@ -75,7 +75,7 @@ from celerp.services.currencies import CURRENCY_CODES, require_currency_code
 from celerp.services.auth import AuthContext, get_auth_context, get_current_company_id, get_current_role, get_current_user
 from celerp.services.permissions import assert_role_permission, get_current_company_settings, locked_authority, reject_price_change, require_permission, role_has_permission
 from celerp_docs.sequences import (
-    NUMBER_FIELDS, claim_number, draft_counter, free_number, list_sequence_key, number_holder, numbering_rows,
+    claim_number, draft_counter, free_number, list_sequence_key, number_holder, numbering_rows,
     peek_draft_ref, require_doc_type, require_number_free, require_storable_number, update_sequence,
 )
 from celerp_docs.search import doc_q_clause

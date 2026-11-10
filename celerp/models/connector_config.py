@@ -9,6 +9,7 @@ from datetime import date, datetime
 import sqlalchemy as sa
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from celerp.json_text import dump_json
 from celerp.models.base import Base
 
 
@@ -88,7 +89,7 @@ class ConnectorConfig(Base):
 
     @webhook_hooks.setter
     def webhook_hooks(self, hooks: dict[str, str | None]) -> None:
-        self.webhook_ids_json = json.dumps(hooks) if hooks else None
+        self.webhook_ids_json = dump_json(hooks) if hooks else None
 
     @property
     def webhook_ids(self) -> list[str]:

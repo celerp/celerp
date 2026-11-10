@@ -31,6 +31,22 @@ def strip_number(number: str) -> str:
     return number.strip(NUMBER_SPACE)
 
 
+# The fields a Document or List holds a number in. Every write of one goes through
+# require_number_free and stores the number it returns.
+NUMBER_FIELDS = ("ref_id", "doc_number")
+
+
+def strip_numbers(state: dict) -> bool:
+    """Give each number ``state`` holds (NUMBER_FIELDS) as a record stores it (strip_number);
+    True when one changed. The Document and List projection applies it to every record an event
+    writes, so a number an earlier version saved padded in its history is stored stripped by
+    every replay, and the upgrade's backfill stores what a replay does."""
+    padded = {f: strip_number(v) for f in NUMBER_FIELDS
+              if isinstance(v := state.get(f), str) and v != strip_number(v)}
+    state.update(padded)
+    return bool(padded)
+
+
 def strip_key(key: str) -> str:
     """``key`` as a record is stored under it: the number it holds (key_number, the text after
     its first colon or the whole key) stripped (strip_number), so a key written now never

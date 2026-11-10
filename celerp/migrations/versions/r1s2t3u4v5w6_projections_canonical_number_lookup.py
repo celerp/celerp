@@ -21,7 +21,7 @@ from alembic import op
 import sqlalchemy as sa
 
 from celerp.migrations._json_compat import update_projection_state
-from celerp.models.projections import NUMBER_KEPT, NUMBER_KEYED, NUMBER_SHOWN, strip_number
+from celerp.models.projections import NUMBER_KEPT, NUMBER_KEYED, NUMBER_SHOWN, strip_numbers
 
 revision = "r1s2t3u4v5w6"
 down_revision = "o0c1d2e3f4a5"
@@ -43,11 +43,8 @@ def _missing(name: str) -> bool:
 
 
 def _strip_numbers(state: dict, _row) -> bool:
-    """Store each number of ``state`` stripped (strip_number); True when one changed."""
-    padded = {f: strip_number(v) for f in ("ref_id", "doc_number")
-              if isinstance(v := state.get(f), str) and v != strip_number(v)}
-    state.update(padded)
-    return bool(padded)
+    """Store each number of ``state`` as a replay of its history stores it (strip_numbers)."""
+    return strip_numbers(state)
 
 
 def upgrade() -> None:

@@ -55,16 +55,16 @@ RELEASE_CHAIN = ["p3e4f5a6b7c8", "q4f5a6b7c8d9", "r5g6b7c8d9e0", "s6h7c8d9e0f1",
 # pending AI charge may be read back, then the label a bank account's currency correction
 # replaced, then per-record connector directions, then connector execution leases and
 # first-sync records, then the links a store fetches product images from, then the
-# language an AI job is written in, then the line id of every line stored without one, then the
-# index the GL Impact lookup reads, then the indexes a document number is looked up by, then
-# private subscription email attempts, then the canonical number indexes, then json stored as
-# UTF-8 text on a SQL_ASCII database.
+# language an AI job is written in, then the line id of every line stored without one, then json
+# stored as UTF-8 text on a SQL_ASCII database, then the index the GL Impact lookup reads, then
+# the indexes a document number is looked up by, then private subscription email attempts, then
+# the canonical number indexes.
 SHIPPED_HEAD = "y3p4q5r6s7t8"
 AFTER_SHIPPED = ["x2p3q4r5s6t7", "y3q4r5s6t7u8", "z4r5s6t7u8v9", "a5t6u7v8w9x0", "b6u7v8w9x0y1",
                  "c7v8w9x0y1z2", "d8w9x0y1z2a3", "e9x0y1z2a3b4", "f0y1z2a3b4c5", "g1z2a3b4c5d6",
                  "h2a3b4c5d6e7", "h4c5d6e7f8a9", "i3b4c5d6e7f8", "j5d6e7f8a9b0", "k5e6f7a8b9c0",
-                 "k6e7f8a9b0c1", "l7f8a9b0c1d2", "m8a9b0c1d2e3", "n9b0c1d2e3f4", "p9q0r1s2t3u4",
-                 "q0r1s2t3u4v5", "o0c1d2e3f4a5", "r1s2t3u4v5w6", "s2t3u4v5w6x7"]
+                 "k6e7f8a9b0c1", "l7f8a9b0c1d2", "m8a9b0c1d2e3", "n9b0c1d2e3f4", "s2t3u4v5w6x7",
+                 "p9q0r1s2t3u4", "q0r1s2t3u4v5", "o0c1d2e3f4a5", "r1s2t3u4v5w6"]
 
 # The newest revision a database can already carry from the module and payment work
 # that reaches main before this release.

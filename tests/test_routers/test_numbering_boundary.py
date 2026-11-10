@@ -20,9 +20,8 @@ from sqlalchemy import event, select, text
 
 from celerp.events.engine import emit_event
 from celerp.main import app
-from celerp.models.projections import Projection, canonical_number, strip_key, strip_number
+from celerp.models.projections import NUMBER_FIELDS, Projection, canonical_number, strip_key, strip_number
 from celerp.services.company_lock import locked_company
-from celerp_docs.sequences import NUMBER_FIELDS
 from test_tax_acceptance_matrix import _demo_company
 from fasthtml.common import to_xml
 from ui.i18n import refusal_text, t
