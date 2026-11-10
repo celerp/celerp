@@ -11,10 +11,14 @@ and restore into a database of the other encoding."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import importlib
 import json
+from types import SimpleNamespace
 
 import pytest
 from alembic_support import alembic_run
+import sqlalchemy as sa
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
@@ -159,15 +163,86 @@ def test_a_head_database_restored_into_another_encoding_keeps_its_number_indexes
             w for line in plan for w in line.split()}, plan
 
 
-def test_every_numbering_index_definition_is_ascii_without_chr():
-    """The number lookup indexes the models build and the revision creates, from the same
-    expressions, are plain ASCII: no character set an encoding might not hold, no chr()."""
+class _Unread:
+    """A result with no rows, for statements compiled without a database."""
+
+    def first(self):
+        return None
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return []
+
+    def __iter__(self):
+        return iter(())
+
+
+class _Compiler:
+    """A session and a migration op that compile what they are given for PostgreSQL instead of
+    sending it: every numbering statement, and every index the revision creates."""
+
+    def __init__(self):
+        self.sql: list[str] = []
+        self.built: set[str] = set()
+
+    def _compile(self, clause) -> str:
+        from sqlalchemy.dialects import postgresql
+
+        return str(clause.compile(dialect=postgresql.dialect()))
+
+    async def execute(self, statement, *_):
+        self.sql.append(self._compile(statement))
+        return _Unread()
+
+    # The op the revision's upgrade() calls.
+    def get_bind(self):
+        return self
+
+    def get_context(self):
+        return SimpleNamespace(autocommit_block=contextlib.nullcontext)
+
+    def run(self, statement, params):
+        return SimpleNamespace(scalar=lambda: params["name"] in self.built or None)
+
+    def create_index(self, name, table, columns, **_):
+        from sqlalchemy.schema import CreateIndex
+
+        self.built.add(name)
+        detached = sa.Table(table, sa.MetaData(), sa.Column("company_id", sa.Uuid))
+        self.sql.append(self._compile(CreateIndex(sa.Index(
+            name, *(detached.c[c] if isinstance(c, str) else c for c in columns)))))
+
+    def drop_index(self, *_, **__):
+        pass
+
+
+def test_every_numbering_statement_and_index_definition_is_ascii_without_chr(monkeypatch):
+    """Every statement numbering sends for a candidate padded with spaces past ASCII, and the
+    number lookup indexes the revision creates, compiled for PostgreSQL, are plain ASCII: no
+    character set an encoding might not hold, no chr(). The revision builds the indexes the
+    models declare, text for text."""
     from sqlalchemy.dialects import postgresql
     from sqlalchemy.schema import CreateIndex
 
     from celerp.models.projections import Projection
+    from celerp_docs.routes import _ids_numbered
+    from celerp_docs.sequences import held_numbers, number_holder
 
-    ddl = [str(CreateIndex(i).compile(dialect=postgresql.dialect()))
-           for i in Projection.__table__.indexes if i.name in INDEXES]
-    assert len(ddl) == len(INDEXES)
-    _assert_ascii(ddl)
+    revision = importlib.import_module(f"celerp.migrations.versions.{REVISION}_projections_canonical_number_lookup")
+    candidate, session, op = "\u1680\u3000INV-\u00c9\u00a0", _Compiler(), _Compiler()
+    op.execute = op.run
+    asyncio.run(number_holder(session, "c", candidate, exclude_entity_id="doc:x", doc_type="invoice"))
+    asyncio.run(held_numbers(session, "c", {}, ["quotation"]))
+    for kind in ("doc", "list"):
+        asyncio.run(_ids_numbered(session, "c", kind, candidate, doc_type="invoice"))
+    monkeypatch.setattr(revision, "op", op)
+    monkeypatch.setattr(revision, "update_projection_state", lambda *_, **__: None)
+    revision.upgrade()
+
+    models = sorted(str(CreateIndex(i).compile(dialect=postgresql.dialect()))
+                    for i in Projection.__table__.indexes if i.name in INDEXES)
+    assert len(session.sql) == 4
+    assert sorted(op.sql) == models and len(models) == len(INDEXES)
+    _assert_ascii(session.sql + op.sql)
