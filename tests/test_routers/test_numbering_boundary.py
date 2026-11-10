@@ -205,6 +205,59 @@ async def test_a_document_cannot_be_renumbered_to_a_number_a_list_holds(client, 
         assert refusal_text(r.json()["detail"]) == t("documents.err_list_number_taken", "en", number=held)
 
 
+async def _renumber(client, h, entity_id, number):
+    """Renumber a Document through the renumber endpoint, or a draft List through its patch."""
+    if entity_id.startswith("list:"):
+        return await client.patch(f"/lists/{entity_id}", headers=h,
+                                  json={"fields_changed": {"ref_id": {"old": None, "new": number}}})
+    return await client.post(f"/docs/{entity_id}/renumber", headers=h, json={"ref_id": number})
+
+
+async def _moved_away(client, h, entity_id):
+    """Renumber a record away from the number it is stored under; returns that number."""
+    stored = entity_id.split(":", 1)[1]
+    r = await _renumber(client, h, entity_id, stored[:-4] + "0050")
+    assert r.status_code == 200, r.text
+    return stored
+
+
+@pytest.mark.parametrize("holder_kind,taker_kind", [("doc", "doc"), ("list", "doc"), ("doc", "list")])
+async def test_a_record_cannot_be_renumbered_to_the_number_another_record_is_stored_under(
+        client, session, holder_kind, taker_kind):
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+
+    async def record(kind):
+        return (await _quote_doc(client, h, contacts)).json()["id"] if kind == "doc" \
+            else await _list(client, h, contacts, "quotation")
+
+    holder = await record(holder_kind)
+    stored = await _moved_away(client, h, holder)
+    shown = await _ref(client, h, holder)
+    key = "documents.err_doc_number_taken" if holder_kind == "doc" else "documents.err_list_number_taken"
+    taker = await record(taker_kind)
+    refused = [await _renumber(client, h, taker, stored)]
+    if taker_kind == "doc":
+        refused.append(await client.patch(f"/docs/{taker}", headers=h,
+                                          json={"fields_changed": {"ref_id": {"old": None, "new": stored}}}))
+    for r in refused:
+        assert r.status_code == 409, r.text
+        assert refusal_text(r.json()["detail"]) == t(key, "en", number=shown)
+
+
+@pytest.mark.parametrize("kind", ["doc", "list"])
+async def test_a_record_can_be_renumbered_back_to_its_own_number_or_to_a_free_one(client, session, kind):
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    entity_id = (await _quote_doc(client, h, contacts)).json()["id"] if kind == "doc" \
+        else await _list(client, h, contacts, "quotation")
+    stored = await _moved_away(client, h, entity_id)
+    assert (await _renumber(client, h, entity_id, stored)).status_code == 200
+    assert await _ref(client, h, entity_id) == stored
+    assert (await _renumber(client, h, entity_id, stored[:-4] + "0077")).status_code == 200
+    assert await _ref(client, h, entity_id) == stored[:-4] + "0077"
+
+
 async def test_a_number_given_on_create_is_refused_while_the_other_kind_shows_it(client, session):
     auth, contacts = await _demo_company(client, session, "USD")
     h = auth["headers"]
@@ -364,7 +417,7 @@ async def test_a_long_run_of_held_numbers_costs_a_few_reads_under_the_lock(clien
     from celerp_docs.sequences import _number_match
     query = select(Projection.entity_id).where(
         Projection.company_id == auth["company_id"], Projection.entity_type.in_(("doc", "list")),
-        _number_match([ref.lower()], keyed=True))
+        _number_match([ref.lower()]))
     sql = str(query.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
     await session.execute(text("ANALYZE projections"))
     await session.execute(text("SET LOCAL enable_seqscan = off"))

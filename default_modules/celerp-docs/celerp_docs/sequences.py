@@ -213,34 +213,32 @@ def draft_counter(doc_type: str) -> str:
     return "proforma" if doc_type == "invoice" else doc_type
 
 
-def _number_match(wanted: list[str], *, keyed: bool):
-    """A Document or List shows or keeps one of ``wanted`` (lowercase), or with ``keyed`` is
-    stored under one, read through the indexed expressions (ix_projections_number_*)."""
-    matches = [NUMBER_SHOWN.in_(wanted), NUMBER_KEPT.in_(wanted)]
-    if keyed:
-        matches.append(STORAGE_KEY.in_([f"{kind}:{w}" for w in wanted for kind in ("doc", "list")]))
-    return or_(*matches)
+def _number_match(wanted: list[str]):
+    """A Document or List shows, keeps or is stored under one of ``wanted`` (lowercase), read
+    through the indexed expressions (ix_projections_number_*)."""
+    return or_(NUMBER_SHOWN.in_(wanted), NUMBER_KEPT.in_(wanted),
+               STORAGE_KEY.in_([f"{kind}:{w}" for w in wanted for kind in ("doc", "list")]))
 
 
 async def number_holder(session: AsyncSession, company_id, number: str, *,
                         exclude_entity_id: str | None = None,
                         doc_type: str | None = None) -> tuple[str, str] | None:
-    """(kind, number shown) for the Document or List ("doc" or "list") that shows ``number``, or
-    for a new record (no ``exclude_entity_id``) is stored under it, ignoring case as imports do;
-    None when the number is free. Documents and Lists share one number space, so every number
-    is checked against this one rule. ``doc_type`` narrows the Documents that count to that
+    """(kind, number shown) for the Document or List ("doc" or "list") other than
+    ``exclude_entity_id`` that shows, keeps or is stored under ``number``, ignoring case as
+    imports do; None when the number is free. A number a record is stored under stays its own
+    for good, so no other record takes it even after that record is renumbered. Documents and
+    Lists share one number space, so every number is checked against this one rule. ``doc_type`` narrows the Documents that count to that
     type, for imported books, where another system's bill and invoice may carry the same
     number; every List still counts."""
     shown = Projection.state["ref_id"].as_string()
     doc_number = Projection.state["doc_number"].as_string()
-    # A new record is stored under its number, so a key another record is stored under counts too.
     query = select(Projection.entity_type, Projection.entity_id, shown, doc_number).where(
         Projection.company_id == company_id,
         Projection.entity_type.in_(("doc", "list")),
-        _number_match([number.strip().lower()], keyed=not exclude_entity_id),
+        _number_match([number.strip().lower()]),
     )
     if exclude_entity_id:
-        # The record taking the number keeps its own storage key, so only shown numbers count.
+        # A record may take back its own number, shown or stored under.
         query = query.where(Projection.entity_id != exclude_entity_id)
     if doc_type:
         query = query.where(or_(Projection.entity_type == "list",
@@ -254,7 +252,7 @@ async def number_holder(session: AsyncSession, company_id, number: str, *,
 
 async def require_number_free(session: AsyncSession, company_id, number: str, *,
                               exclude_entity_id: str | None = None, doc_type: str | None = None) -> None:
-    """Refuse ``number`` while another Document or List shows it (number_holder), naming which
+    """Refuse ``number`` while another Document or List holds it (number_holder), naming which
     kind holds it and the number as that record shows it. The company lock serializes the
     check with every other numbering write. A number too long to store is refused first."""
     require_number_length(number.strip())
@@ -274,7 +272,7 @@ _WINDOW = 16
 async def held_numbers(session: AsyncSession, company_id, settings: dict,
                        counters: Iterable[str]) -> frozenset[str]:
     """The numbers (lowercase) a Document or List holds among those ``counters`` give next, as
-    number_holder decides for a new record, read until each counter reaches a free one. The
+    number_holder decides, read until each counter reaches a free one. The
     window doubles, so a long run of taken numbers costs a few indexed reads, never one per
     number."""
     held: set[str] = set()
@@ -284,7 +282,7 @@ async def held_numbers(session: AsyncSession, company_id, settings: dict,
         wanted = sorted({ref for refs in windows.values() for ref in refs})
         rows = await session.execute(select(NUMBER_SHOWN, NUMBER_KEPT, STORAGE_KEY).where(
             Projection.company_id == company_id, Projection.entity_type.in_(("doc", "list")),
-            _number_match(wanted, keyed=True)))
+            _number_match(wanted)))
         for shown, kept, key in rows:
             held.update({shown, kept, key.split(":", 1)[1]} & set(wanted))
         todo = {counter for counter, refs in windows.items() if held.issuperset(refs)}

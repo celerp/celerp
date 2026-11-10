@@ -19200,7 +19200,7 @@
     "tests/test_routers/test_doc_renumber.py::test_patch_doc_ref_id_uniqueness_uses_state_scan": 0.268,
     "tests/test_routers/test_doc_renumber.py::test_renumber_back_to_a_number_the_doc_had_before": 0.284,
     "tests/test_routers/test_doc_renumber.py::test_renumber_bill": 0.248,
-    "tests/test_routers/test_doc_renumber.py::test_renumber_chain_frees_old_number": 0.301,
+    "tests/test_routers/test_doc_renumber.py::test_renumber_chain_frees_a_shown_number_but_never_a_stored_one": 0.301,
     "tests/test_routers/test_doc_renumber.py::test_renumber_conflict_with_existing_doc": 0.252,
     "tests/test_routers/test_doc_renumber.py::test_renumber_does_not_change_entity_id": 0.253,
     "tests/test_routers/test_doc_renumber.py::test_renumber_draft_doc": 0.243,
