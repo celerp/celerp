@@ -4,8 +4,9 @@
 """The trimmed numbering lookup revision keeps a valid index a start of this version already
 built from the models, rebuilds an INVALID index of its name, builds a missing one, and drops the
 indexes on the untrimmed expressions no query reads any more. A downgrade puts them back. On
-every server encoding it stores each padded number stripped and numbering reads it through the
-indexes, whose definitions restore into a database of any other encoding."""
+every server encoding Celerp creates (UTF8, and SQL_ASCII from earlier installs) it stores each
+padded number stripped and numbering reads it through the indexes, whose definitions are ASCII
+and restore into a database of the other encoding."""
 
 from __future__ import annotations
 
@@ -53,11 +54,10 @@ def test_upgrade_rebuilds_an_invalid_index_keeps_a_valid_one_drops_the_untrimmed
         assert [_valid(sync_url, name) for name in INDEXES] == [None, None, None]
 
 
-# Padding an earlier version saved around a number: name -> the space. A LATIN1 or WIN1252
-# database holds no ideographic space, so a number padded with one was never stored there.
+# Padding an earlier version saved around a number: name -> the space.
 _PADS = {"space": " ", "tab": "\t", "NBSP": "\u00a0", "U+3000": "\u3000"}
-_HOLDS = {"UTF8": set(_PADS), "SQL_ASCII": set(_PADS), "LATIN1": set(_PADS) - {"U+3000"},
-          "WIN1252": set(_PADS) - {"U+3000"}}
+# The server encodings Celerp creates a database in: UTF8, and SQL_ASCII before 2.5.1.
+ENCODINGS = ("UTF8", "SQL_ASCII")
 
 
 def _query_all(sync_url: str, sql: str) -> list[tuple]:
@@ -70,7 +70,7 @@ def _query_all(sync_url: str, sql: str) -> list[tuple]:
 
 
 def _seed_padded(sync_url: str, encoding: str) -> str:
-    """A company with one Document per padding its database can hold, saved as an earlier
+    """A company with one Document per padding, saved as an earlier
     version saved it: the number as sent, in both number fields, with a letter past ASCII in it.
     Enough other Documents that the planner reads a lookup through the indexes."""
     eng = create_engine(sync_url, client_encoding="utf8")
@@ -79,7 +79,7 @@ def _seed_padded(sync_url: str, encoding: str) -> str:
             assert conn.execute(text("SHOW server_encoding")).scalar() == encoding
             cid = conn.execute(text("INSERT INTO companies (id, name, slug, settings, created_at) VALUES "
                                     "(gen_random_uuid(), 'Demo', 'demo', '{}', now()) RETURNING id")).scalar()
-            for name in sorted(_HOLDS[encoding]):
+            for name in sorted(_PADS):
                 number = f"{_PADS[name]}LEG-{name}-\u00c9{_PADS[name]}"
                 conn.execute(text(
                     "INSERT INTO projections (company_id, entity_id, entity_type, state, version, updated_at) "
@@ -122,7 +122,7 @@ def _assert_ascii(statements) -> None:
     assert not bad, bad[:1]
 
 
-@pytest.mark.parametrize("encoding", ["UTF8", "SQL_ASCII", "LATIN1", "WIN1252"])
+@pytest.mark.parametrize("encoding", ENCODINGS)
 def test_every_server_encoding_upgrades_stores_padded_numbers_stripped_and_holds_them_by_index(encoding):
     with throwaway_db("numenc", encoding) as (async_url, sync_url):
         upgrade_to(sync_url, DOWN_REVISION)
@@ -131,16 +131,16 @@ def test_every_server_encoding_upgrades_stores_padded_numbers_stripped_and_holds
         upgrade_to(sync_url, "head")
 
         stored = _query_all(sync_url, "SELECT state ->> 'ref_id', state ->> 'doc_number' FROM projections")
-        assert sorted(r for r in stored if r[1]) == sorted((f"LEG-{n}-\u00c9",) * 2 for n in _HOLDS[encoding])
-        numbers = [f"leg-{n.lower()}-\u00c9" for n in sorted(_HOLDS[encoding])]
+        assert sorted(r for r in stored if r[1]) == sorted((f"LEG-{n}-\u00c9",) * 2 for n in _PADS)
+        numbers = [f"leg-{n.lower()}-\u00c9" for n in sorted(_PADS)]
         holders, statements, plan = asyncio.run(_lookups(async_url, cid, numbers))
-        assert holders == [("doc", f"LEG-{n}-\u00c9") for n in sorted(_HOLDS[encoding])]
+        assert holders == [("doc", f"LEG-{n}-\u00c9") for n in sorted(_PADS)]
         _assert_ascii(statements)
         assert {f"ix_projections_canonical_number_{i}" for i in ("shown", "kept", "key")} <= {
             w for line in plan for w in line.split()}, plan
 
 
-@pytest.mark.parametrize("source, target", [("UTF8", "LATIN1"), ("UTF8", "SQL_ASCII"), ("SQL_ASCII", "UTF8")])
+@pytest.mark.parametrize("source, target", [("UTF8", "SQL_ASCII"), ("SQL_ASCII", "UTF8")])
 def test_a_head_database_restored_into_another_encoding_keeps_its_number_indexes(source, target, tmp_path):
     from celerp.services import backup
 
@@ -157,3 +157,17 @@ def test_a_head_database_restored_into_another_encoding_keeps_its_number_indexes
         _assert_ascii(statements)
         assert {f"ix_projections_canonical_number_{i}" for i in ("shown", "kept", "key")} <= {
             w for line in plan for w in line.split()}, plan
+
+
+def test_every_numbering_index_definition_is_ascii_without_chr():
+    """The number lookup indexes the models build and the revision creates, from the same
+    expressions, are plain ASCII: no character set an encoding might not hold, no chr()."""
+    from sqlalchemy.dialects import postgresql
+    from sqlalchemy.schema import CreateIndex
+
+    from celerp.models.projections import Projection
+
+    ddl = [str(CreateIndex(i).compile(dialect=postgresql.dialect()))
+           for i in Projection.__table__.indexes if i.name in INDEXES]
+    assert len(ddl) == len(INDEXES)
+    _assert_ascii(ddl)

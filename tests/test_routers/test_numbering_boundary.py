@@ -20,7 +20,7 @@ from sqlalchemy import event, select, text
 
 from celerp.events.engine import emit_event
 from celerp.main import app
-from celerp.models.projections import NUMBER_SPACE, Projection, canonical_number
+from celerp.models.projections import Projection, canonical_number, strip_number
 from celerp.services.company_lock import locked_company
 from celerp_docs.sequences import NUMBER_FIELDS
 from test_tax_acceptance_matrix import _demo_company
@@ -615,12 +615,13 @@ async def test_every_route_that_writes_a_number_is_a_door_the_hostile_set_goes_t
 
 @pytest.mark.parametrize("sent, twin", [v[1:] for v in HOSTILE.values()], ids=list(HOSTILE))
 async def test_a_hostile_spelling_and_its_twin_are_one_number(session, sent, twin):
-    """The database reads both spellings of a number as one: no NUMBER_SPACE around it, one case."""
+    """Both spellings of a number are one number: stored stripped (strip_number), the database
+    reads them in one case."""
     n = "Qİ-ΟΣ-1"
-    one = canonical_number(sa.literal(sent.format(n=n), sa.Text))
+    one = canonical_number(sa.literal(strip_number(sent.format(n=n)), sa.Text))
     other = canonical_number(sa.literal(twin.format(n=n), sa.Text))
     same, kept = (await session.execute(select(one == other, one))).one()
-    assert same and kept == kept.strip(NUMBER_SPACE) and sent.format(n=n).strip(NUMBER_SPACE) == twin.format(n=n)
+    assert same and kept == strip_number(kept) and strip_number(sent.format(n=n)) == twin.format(n=n)
 
 
 async def _seed_earlier(session, company_id, kind: str, field: str, sent: str) -> str:
@@ -663,11 +664,11 @@ async def test_a_number_in_a_hostile_spelling_is_one_number_through_every_door(c
         assert eid == (key or eid)
         if not key:
             state = (await client.get(f"/{kind}s/{eid}", headers=h)).json()
-            assert state[field] == sent.strip(NUMBER_SPACE), state[field]
+            assert state[field] == strip_number(sent), state[field]
     r = await _quote_doc(client, h, contacts, ref_id=twin.format(n=n))
     assert r.status_code == 409 and r.json()["detail"]["message_key"] == f"documents.err_{kind}_number_taken", r.text
     shown = r.json()["detail"]["params"]["number"]
-    assert shown and shown == shown.strip(NUMBER_SPACE), shown
+    assert shown and shown == strip_number(shown), shown
     assert (await _rows(client, h))["quotation"]["preview"] != n
 
 
@@ -1045,3 +1046,27 @@ async def test_the_refusal_census_tells_a_keyed_raise_from_a_bare_one(source, ke
     parent = {c: n for n in ast.walk(tree) for c in ast.iter_child_nodes(n)}
     raise_ = next(n for n in ast.walk(tree) if isinstance(n, ast.Raise))
     assert _keyed_raise(raise_.exc, parent.get(raise_)) is keyed
+
+
+async def test_an_imported_bill_whose_order_is_another_record_reverts_to_a_draft_bill(client, session):
+    """An imported bill names its imported purchase order, a separate record holding the order's
+    number, so the bill was never that order: it goes back to a draft bill under its own number,
+    with no refusal the user could not resolve."""
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    po, number, bill = f"PO-{uuid.uuid4().hex[:6]}", f"BILL-{uuid.uuid4().hex[:6]}", f"doc:{uuid.uuid4()}"
+    vendor = next(c for c in contacts if c.get("contact_type") in ("vendor", "both"))
+    base = {"contact_id": vendor["id"], "line_items": [{"name": "Svc", "quantity": 1, "unit_price": 100}],
+            "currency": "USD", "issue_date": "2026-11-01", "import_treatment": "opening_balances",
+            "subtotal": 100, "total": 100}
+    for key, data in ((f"doc:{uuid.uuid4()}", {"doc_type": "purchase_order", "ref_id": po, "status": "converted"}),
+                      (bill, {"doc_type": "bill", "ref_id": number, "status": "awaiting_payment",
+                              "source_po_ref": po, "amount_outstanding": 100})):
+        r = await client.post("/docs/import", headers=h, json={
+            "entity_id": key, "event_type": "doc.created", "idempotency_key": f"k-{uuid.uuid4().hex}",
+            "source": "csv", "data": {**base, **data}})
+        assert r.status_code == 200, r.text
+    r = await client.post(f"/docs/{bill}/revert-to-draft", headers=h, json={"reason": "wrong supplier"})
+    assert r.status_code == 200, r.text
+    after = (await client.get(f"/docs/{bill}", headers=h)).json()
+    assert (after["doc_type"], after["ref_id"], after["status"]) == ("bill", number, "draft")

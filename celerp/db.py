@@ -15,6 +15,7 @@ from sqlalchemy.pool import NullPool
 from celerp.capacity import REQUEST_DB_MAX_OVERFLOW, REQUEST_DB_POOL_SIZE
 from celerp.config import settings
 from celerp.db_url import same_database
+from celerp.json_text import dump_json
 
 # The advisory-lock key every supported change to Celerp's PostgreSQL schema holds
 # exclusively (core and module migrations, the startup create_all, a module's data
@@ -146,11 +147,12 @@ if os.environ.get("CELERP_TEST_NULLPOOL"):
     # connection and block the next test's TRUNCATE. Only ever set by the test
     # harness; no effect in production.
     engine = create_async_engine(settings.database_url, future=True, poolclass=NullPool,
-                                 connect_args=REQUEST_CONNECT_ARGS)
+                                 connect_args=REQUEST_CONNECT_ARGS, json_serializer=dump_json)
 else:
     engine = create_async_engine(
         settings.database_url,
         future=True,
+        json_serializer=dump_json,
         pool_pre_ping=True,
         pool_size=REQUEST_DB_POOL_SIZE,
         max_overflow=REQUEST_DB_MAX_OVERFLOW,
@@ -176,7 +178,8 @@ SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=
 # operations are rare and brief, so no pooled slot is reserved and the request pool
 # budget above is unaffected (at most one transient connection per concurrent
 # lifecycle op).
-lifecycle_engine = create_async_engine(settings.database_url, future=True, poolclass=NullPool)
+lifecycle_engine = create_async_engine(settings.database_url, future=True, poolclass=NullPool,
+                                       json_serializer=dump_json)
 LifecycleSessionLocal = async_sessionmaker(
     lifecycle_engine, class_=AsyncSession, expire_on_commit=False
 )

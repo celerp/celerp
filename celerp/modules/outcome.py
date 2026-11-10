@@ -34,6 +34,8 @@ import time
 import urllib.request
 import uuid
 
+from celerp.json_text import dump_json
+
 log = logging.getLogger(__name__)
 
 # Identifies this process to the other one; served on the API's /health.
@@ -197,7 +199,7 @@ def reported_by_api(api_url: str, database_url: str) -> dict | None:
     from celerp.db_url import sync_url
 
     token = wait_for_api_token(api_url)
-    engine = sa.create_engine(sync_url(database_url))
+    engine = sa.create_engine(sync_url(database_url), json_serializer=dump_json)
     try:
         with engine.connect() as conn:
             record = read(conn)

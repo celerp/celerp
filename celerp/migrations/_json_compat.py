@@ -14,6 +14,7 @@ from typing import Callable
 
 import sqlalchemy as sa
 
+from celerp.json_text import dump_json
 from celerp.migrations._locks import lock_tables
 
 
@@ -44,8 +45,7 @@ def _update_json_column(conn, table, col, mutate, where, params, extra_cols) -> 
         if data is None:
             continue
         if mutate(data, row):
-            # As text, not escapes: SQL_ASCII refuses a \\u escape past ASCII.
-            conn.execute(upd, {"__v": json.dumps(data, ensure_ascii=False), "__ctid": str(row["ctid"])})
+            conn.execute(upd, {"__v": dump_json(data), "__ctid": str(row["ctid"])})
             n += 1
     return n
 
@@ -54,6 +54,38 @@ def is_sql_ascii(conn) -> bool:
     """Whether the connected PostgreSQL database uses the legacy SQL_ASCII encoding."""
     value = conn.execute(sa.text("SHOW server_encoding")).scalar()
     return str(value or "").upper() == "SQL_ASCII"
+
+
+def _non_ascii(text: str) -> int:
+    return sum(not c.isascii() for c in text)
+
+
+def unescape_json_text(conn) -> int:
+    """On a SQL_ASCII database, rewrite every json value an earlier version stored with
+    characters past ASCII as \\u escapes so it holds those characters as UTF-8 text
+    (dump_json), the only form such a database can read back with ->>. Every json column of
+    the schema is covered, each locked for the pass; a value already free of such escapes is
+    left as it is, so a second run changes nothing. Returns the number of values rewritten.
+    A no-op on any other encoding or database, where an escape reads back as its character."""
+    if conn.dialect.name != "postgresql" or not is_sql_ascii(conn):
+        return 0
+    columns = conn.execute(sa.text(
+        "SELECT table_name, column_name FROM information_schema.columns "
+        "WHERE table_schema = current_schema() AND data_type = 'json' ORDER BY table_name, column_name")).all()
+    if columns:
+        lock_tables(conn, *{table for table, _ in columns})
+    quote = conn.dialect.identifier_preparer.quote
+    n = 0
+    for table, column in columns:
+        t, c = quote(table), quote(column)
+        upd = sa.text(f"UPDATE {t} SET {c} = CAST(:v AS json) WHERE ctid = CAST(:ctid AS tid)")
+        for ctid, text in conn.execute(sa.text(
+                f"SELECT ctid, CAST({c} AS text) FROM {t} WHERE CAST({c} AS text) LIKE '%\\\\u%'")).all():
+            # An escape past ASCII turned into its character adds one; nothing else does.
+            if _non_ascii(new := dump_json(json.loads(text))) > _non_ascii(text):
+                conn.execute(upd, {"v": new, "ctid": str(ctid)})
+                n += 1
+    return n
 
 
 def update_company_settings(

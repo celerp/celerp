@@ -73,8 +73,8 @@ from celerp.services.currencies import CURRENCY_CODES, require_currency_code
 from celerp.services.auth import AuthContext, get_auth_context, get_current_company_id, get_current_role, get_current_user
 from celerp.services.permissions import assert_role_permission, get_current_company_settings, locked_authority, reject_price_change, require_permission, role_has_permission
 from celerp_docs.sequences import (
-    NUMBER_FIELDS, claim_number, draft_counter, free_number, list_sequence_key, numbering_rows, peek_draft_ref,
-    require_doc_type, require_number_free, update_sequence,
+    NUMBER_FIELDS, claim_number, draft_counter, free_number, list_sequence_key, number_holder, numbering_rows,
+    peek_draft_ref, require_doc_type, require_number_free, require_storable_number, update_sequence,
 )
 from celerp_docs.search import doc_q_clause
 from celerp.services.units import build_unit_map, default_receive_as, get_company_units, is_non_stock_line, is_pieces_unit, is_weight_unit, line_receive_kind, read_company_units, require_moving_fits, require_moving_fits_units, sum_quantities, unit_decimals, validate_line_quantity
@@ -2325,7 +2325,10 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     digest, idem_key = _patch_identity("doc", entity_id, payload)
     if (done := await _find_patch_replay(session, company_id, idem_key, "doc.updated", entity_id, digest)) is not None:
         return done
-    # The selected contact is locked before the document, the order merge and delete use.
+    # The company comes before any record when a number changes, as numbering locks it; the
+    # selected contact before the document, the order merge and delete use.
+    if NUMBER_FIELDS & fields_changed.keys():
+        await lock_company(session, company_id)
     contact = await _lock_selected_contact(session, company_id, settings, role, new_contact_id) if selecting else None
     # Locked load so the version check and the emit are one compare-and-set, as for lists.
     row = await _get_doc(session, company_id, entity_id, for_update=True)
@@ -3886,14 +3889,16 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
     if _doc_date:
         event_data["ts"] = str(_doc_date)[:10]
 
-    # PO->bill revert: restore doc_type and ref_id
+    # A bill made from a purchase order goes back to that order under the order's number. When
+    # another record holds that number, the order is that record (an imported bill names its
+    # imported order), so this bill was never it: it goes back to a draft bill under its own number.
     extra_data: dict = {}
-    doc_type = state.get("doc_type")
-    if doc_type == "bill" and (state.get("source_po_ref") or to_order):
+    po_ref = strip_number(str(state.get("source_po_ref") or ""))
+    if state.get("doc_type") == "bill" and (po_ref or to_order) and not (
+            po_ref and await number_holder(session, company_id, po_ref, exclude_entity_id=entity_id)):
         extra_data["doc_type"] = "purchase_order"
-        if state.get("source_po_ref"):
-            extra_data["ref_id"] = await require_number_free(
-                session, company_id, state["source_po_ref"], exclude_entity_id=entity_id)
+        if po_ref:
+            extra_data["ref_id"] = require_storable_number(po_ref)
 
     # Void the finalize JE first: it raises when the entry's date sits in a
     # locked period, and nothing may mutate before that check passes.
@@ -3958,6 +3963,8 @@ async def renumber_doc(
 
     Voided documents are immutable records and cannot be renumbered.
     """
+    # The company comes before the document, as numbering locks it.
+    await lock_company(session, company_id)
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     state = row.state
     if state.get("status") == "void":
@@ -9347,7 +9354,10 @@ async def write_list_patch(session: AsyncSession, company_id, role: str, setting
     digest, idem_key = _patch_identity("list", entity_id, payload)
     if (done := await _find_patch_replay(session, company_id, idem_key, "list.updated", entity_id, digest)) is not None:
         return done
-    # The selected contact is locked before the List, the order merge and delete use.
+    # The company comes before any record when a number changes, as numbering locks it; the
+    # selected contact before the List, the order merge and delete use.
+    if NUMBER_FIELDS & fields_changed.keys():
+        await lock_company(session, company_id)
     contact = await _lock_selected_contact(session, company_id, settings, role, new_contact_id) if selecting else None
     # Locked load so the version check and the emit are one atomic compare-and-set: two concurrent
     # patches cannot both read version N, both pass the check, and both write (the second clobbering
