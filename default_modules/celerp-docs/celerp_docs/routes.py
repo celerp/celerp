@@ -32,7 +32,9 @@ from celerp.events.engine import (emit_event, find_event_by_idempotency, is_stri
 from celerp.importers.results import failure_reason
 from celerp.models.company import Company, Location
 from celerp.modules.slots import fire_lifecycle
-from celerp.models.projections import NUMBER_KEPT, NUMBER_SHOWN, Projection, canonical_number, key_number, strip_number
+from celerp.models.projections import (
+    NUMBER_KEPT, NUMBER_SHOWN, Projection, canonical_number, key_number, strip_key, strip_number,
+)
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
 from celerp_docs.consignment_buy import bought_parcels, bought_receipt_lots, buy_consignment
 from celerp_docs.doc_money import (DOC_MONEY_INPUTS, LIST_TOTAL_FIELDS, document_money, document_terms, drawn_line_money, fixed_discount,
@@ -663,6 +665,7 @@ class DocImportRecord(BaseModel):
     source_revision: SourceRevision = None  # a connected company's records only
 
     _state_fields = field_validator("data", mode="before")(_doc_state_payload)
+    _stored_key = field_validator("entity_id")(strip_key)
 
 
 class BatchImportResult(BaseModel):
@@ -1445,9 +1448,9 @@ async def free_import_numbers(session: AsyncSession, company_id, entity_id: str,
                               doc_type: str | None = None) -> dict:
     """``data`` of an imported Document or List with each number it holds (NUMBER_FIELDS) as
     require_number_free returns it, once each one, and the number its storage key ``entity_id``
-    holds (key_number), is free; a blank number is stored as empty. The key is kept as sent, as
-    the record is addressed by it, and is one identity across the company, so its number is
-    checked against every record, whatever its type."""
+    holds (key_number), is free; a blank number is stored as empty. The key comes with its number
+    stripped (DocImportRecord, strip_key) and is one identity across the company, so its number
+    is checked against every record, whatever its type."""
     data = dict(data)
     for field in set(NUMBER_FIELDS) & data.keys():
         data[field] = await free_number(session, company_id, data[field], doc_type=doc_type)

@@ -24,6 +24,10 @@ originating ledger event (so a projection rebuild stays consistent), matching ex
 the key format the connectors emit. Then add the functional index the lookup uses.
 Without this, the first post-upgrade re-import of a pre-existing Shopify order/customer
 would duplicate it.
+
+This is the first index on an expression over projection state. On a SQL_ASCII database,
+json values an earlier version stored with \\u escapes past ASCII are first rewritten as
+UTF-8 text, which the expression can read (unescape_json_text).
 """
 
 from __future__ import annotations
@@ -31,7 +35,7 @@ from __future__ import annotations
 from alembic import op
 
 # In-Python edits avoid json->jsonb casts that fail on SQL_ASCII clusters (issue #189).
-from celerp.migrations._json_compat import update_ledger_data, update_projection_state
+from celerp.migrations._json_compat import unescape_json_text, update_ledger_data, update_projection_state
 from celerp.migrations._locks import lock_tables
 
 revision = "e4f5a6b7c8d9"
@@ -82,6 +86,7 @@ def _contact_key(data: dict, _row) -> bool:
 def upgrade() -> None:
     conn = op.get_bind()
     lock_tables(conn, "ledger", "projections")
+    unescape_json_text(conn)
 
     # Backfill the stable key on the projection AND its ledger event (rebuild-safe).
     update_projection_state(conn, _doc_key, where="entity_type = 'doc'")

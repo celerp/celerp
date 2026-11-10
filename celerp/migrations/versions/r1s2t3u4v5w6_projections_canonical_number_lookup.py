@@ -50,8 +50,13 @@ def _strip_numbers(state: dict, _row) -> bool:
     return bool(padded)
 
 
+def strip_stored_numbers(conn) -> None:
+    """Store every Document and List number stripped (_strip_numbers)."""
+    update_projection_state(conn, _strip_numbers, where="entity_type IN ('doc', 'list')")
+
+
 def upgrade() -> None:
-    update_projection_state(op.get_bind(), _strip_numbers, where="entity_type IN ('doc', 'list')")
+    strip_stored_numbers(op.get_bind())
     # Each index is written out so the restamp walker proves the revision by its indexes.
     with op.get_context().autocommit_block():
         if _missing("ix_projections_canonical_number_shown"):

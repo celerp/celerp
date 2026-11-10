@@ -23,8 +23,8 @@ from celerp.json_text import dump_json
 from .conftest import throwaway_db, upgrade_to
 from .test_r1s2t3u4v5w6_projections_canonical_number_lookup import ENCODINGS
 
-# The revision before the first expression index on projection state (ix_projections_asset).
-BEFORE_STATE_INDEX = "w1n2o3p4q5r6"
+# The revision before the first expression index on projection state (ix_projections_connector_key).
+BEFORE_STATE_INDEX = "c2d3e4f5a6b7"
 THAI = "ใบแจ้งหนี้"
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 

@@ -31,6 +31,14 @@ def strip_number(number: str) -> str:
     return number.strip(NUMBER_SPACE)
 
 
+def strip_key(key: str) -> str:
+    """``key`` as a record is stored under it: the number it holds (key_number, the text after
+    its first colon or the whole key) stripped (strip_number), so a key written now never
+    carries spaces the database's trim does not reach."""
+    head, colon, number = key.partition(":")
+    return head + colon + strip_number(number) if colon else strip_number(key)
+
+
 def canonical_number(number: sa.ColumnElement) -> sa.ColumnElement:
     """The canonical form of ``number``, a stored number or a bound candidate: lowercase as the
     database lowers it, without ASCII spaces around it. Numbering compares numbers only in this

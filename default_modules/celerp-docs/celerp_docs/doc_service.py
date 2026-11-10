@@ -552,7 +552,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict, operation:
 
     from celerp.services.payments import WOOCOMMERCE_DEPOSIT_ACCOUNT_KEY
     from celerp_docs.routes_payments import deposit_account, require_online_deposit_account
-    from celerp_docs.sequences import require_number_free
+    from celerp.models.projections import strip_number
     from celerp_docs.routes import (
         finalize_document,
         _fulfill_lines_impl,
@@ -942,7 +942,7 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict, operation:
 
             data = {
                 "doc_type": "invoice",
-                "ref_id": f"WOO-{order.get('number') or order_id}",
+                "ref_id": strip_number(f"WOO-{order.get('number') or order_id}"),
                 "status": "draft",
                 "line_items": line_items,
                 "subtotal": subtotal,
@@ -967,7 +967,6 @@ async def upsert_order_from_woocommerce(company_id: str, order: dict, operation:
                 "woocommerce_source_fingerprint": source_fingerprint,
                 "woocommerce_transaction_id": order.get("transaction_id"),
             }
-            data["ref_id"] = await require_number_free(session, cid, data["ref_id"], exclude_entity_id=entity_id)
             outcome = await connector_upsert(
                 session, company_id=cid, entity_type="doc",
                 event_type="doc.created", idem_key=idem_key, data=data,
