@@ -47,9 +47,9 @@ class Projection(Base):
     __table_args__ = (
         PrimaryKeyConstraint("company_id", "entity_id"),
         sa.Index("ix_projections_asset", "company_id", "entity_type", sa.text("(state ->> 'asset_id')")),
-        sa.Index("ix_projections_canonical_number_shown", "company_id", NUMBER_SHOWN),
-        sa.Index("ix_projections_canonical_number_kept", "company_id", NUMBER_KEPT),
-        sa.Index("ix_projections_canonical_number_key", "company_id", NUMBER_KEYED),
+        # Built on PostgreSQL only, the database numbering runs on: btrim and strpos are its own.
+        *(sa.Index(f"ix_projections_canonical_number_{name}", "company_id", number).ddl_if(dialect="postgresql")
+          for name, number in (("shown", NUMBER_SHOWN), ("kept", NUMBER_KEPT), ("key", NUMBER_KEYED))),
     )
 
     entity_id: Mapped[str] = mapped_column(Text, nullable=False)

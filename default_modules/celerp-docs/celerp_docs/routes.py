@@ -73,7 +73,7 @@ from celerp.services.currencies import CURRENCY_CODES, require_currency_code
 from celerp.services.auth import AuthContext, get_auth_context, get_current_company_id, get_current_role, get_current_user
 from celerp.services.permissions import assert_role_permission, get_current_company_settings, locked_authority, reject_price_change, require_permission, role_has_permission
 from celerp_docs.sequences import (
-    NUMBER_FIELDS, NUMBER_SPACE, claim_number, draft_counter, list_sequence_key, numbering_rows, peek_draft_ref,
+    NUMBER_FIELDS, claim_number, draft_counter, free_number, list_sequence_key, numbering_rows, peek_draft_ref,
     require_doc_type, require_number_free, update_sequence,
 )
 from celerp_docs.search import doc_q_clause
@@ -1450,25 +1450,18 @@ async def free_import_numbers(session: AsyncSession, company_id, entity_id: str,
     checked against every record, whatever its type."""
     data = dict(data)
     for field in set(NUMBER_FIELDS) & data.keys():
-        number = data[field]
-        if isinstance(number, str) and not number.strip(NUMBER_SPACE):
-            data[field] = ""
-        elif number is not None:
-            data[field] = await require_number_free(session, company_id, number, doc_type=doc_type)
-    keyed = (await session.execute(select(key_number(_sa.literal(entity_id, _sa.Text))))).scalar_one()
-    if keyed.strip(NUMBER_SPACE):
-        await require_number_free(session, company_id, keyed)
+        data[field] = await free_number(session, company_id, data[field], doc_type=doc_type)
+    await free_number(session, company_id,
+                      (await session.execute(select(key_number(_sa.literal(entity_id, _sa.Text))))).scalar_one())
     return data
 
 
 async def free_patched_numbers(session: AsyncSession, company_id, entity_id: str, fields_changed: dict) -> None:
     """Give each number ``fields_changed`` sets on the record ``entity_id`` (NUMBER_FIELDS) as
-    require_number_free returns it, refused while another record holds it. Clearing a number
-    needs no check."""
-    for field in NUMBER_FIELDS:
-        if (new := (fields_changed.get(field) or {}).get("new")) not in (None, ""):
-            fields_changed[field] = {**fields_changed[field], "new": await require_number_free(
-                session, company_id, new, exclude_entity_id=entity_id)}
+    free_number returns it, refused while another record holds it."""
+    for field in set(NUMBER_FIELDS) & fields_changed.keys():
+        fields_changed[field] = {**fields_changed[field], "new": await free_number(
+            session, company_id, fields_changed[field].get("new"), exclude_entity_id=entity_id)}
 
 
 @router.get("/numbered", dependencies=[require_permission("view_documents")])

@@ -224,10 +224,14 @@ def draft_counter(doc_type: str) -> str:
 NUMBER_FIELDS = ("ref_id", "doc_number")
 
 
+# The numbers a Document or List shows, keeps and is stored under.
+_NUMBERS = (NUMBER_SHOWN, NUMBER_KEPT, NUMBER_KEYED)
+
+
 def _number_match(candidate: sa.ColumnElement):
     """A Document or List shows, keeps or is stored under ``candidate`` (canonical_number),
     read through the indexed expressions (ix_projections_canonical_number_*)."""
-    return or_(NUMBER_SHOWN == candidate, NUMBER_KEPT == candidate, NUMBER_KEYED == candidate)
+    return or_(*(number == candidate for number in _NUMBERS))
 
 
 async def number_holder(session: AsyncSession, company_id, number: str, *,
@@ -280,6 +284,14 @@ async def require_number_free(session: AsyncSession, company_id, number: object,
     return number
 
 
+async def free_number(session: AsyncSession, company_id, number: object, **check) -> object:
+    """``number`` as a record stores it: none stays none, a text blank without NUMBER_SPACE is
+    stored as empty and needs no check, and any other goes through require_number_free."""
+    if number is None or isinstance(number, str) and not number.strip(NUMBER_SPACE):
+        return number and ""
+    return await require_number_free(session, company_id, number, **check)
+
+
 # The first numbers of a counter held_numbers reads; each further read doubles.
 _WINDOW = 16
 
@@ -296,9 +308,10 @@ async def held_numbers(session: AsyncSession, company_id, settings: dict,
         windows = {counter: _candidates(settings, counter, size) for counter in todo}
         wanted = sa.values(sa.column("number", sa.Text), name="wanted").data(
             [(ref,) for ref in sorted({ref for refs in windows.values() for ref in refs})])
-        held.update((await session.execute(select(wanted.c.number).where(select(Projection.entity_id).where(
+        # One join per number, so each candidate is read through that number's index.
+        held.update((await session.execute(sa.union(*(select(wanted.c.number).join(Projection, sa.and_(
             Projection.company_id == company_id, Projection.entity_type.in_(("doc", "list")),
-            _number_match(canonical_number(wanted.c.number))).exists()))).scalars())
+            number == canonical_number(wanted.c.number))) for number in _NUMBERS)))).scalars())
         todo = {counter for counter, refs in windows.items() if held.issuperset(refs)}
         size *= 2
     return frozenset(held)

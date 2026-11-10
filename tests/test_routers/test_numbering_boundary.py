@@ -428,9 +428,9 @@ async def test_a_long_run_of_held_numbers_costs_a_few_reads_under_the_lock(clien
     reads = []
     engine = session.bind.sync_engine
 
-    def count(conn, cursor, statement, *_):
+    def count(conn, cursor, statement, parameters, *_):
         if "projections" in statement:
-            reads.append(statement)
+            reads.append((statement, parameters))
     event.listen(engine, "before_cursor_execute", count)
     try:
         ref = await claim_number(session, company, "quotation")
@@ -439,17 +439,19 @@ async def test_a_long_run_of_held_numbers_costs_a_few_reads_under_the_lock(clien
     await session.rollback()
     assert ref.endswith("-0041")
     assert len(reads) <= 3, f"{len(reads)} reads for 40 held numbers"
-    # Each read is an indexed lookup of the numbers, never a scan of the company's records.
-    from sqlalchemy.dialects import postgresql
-    from celerp_docs.sequences import _number_match
-    query = select(Projection.entity_id).where(
-        Projection.company_id == auth["company_id"], Projection.entity_type.in_(("doc", "list")),
-        _number_match([ref.lower()]))
-    sql = str(query.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+    # Each read, as claim_number sent it, looks the numbers up through their indexes on a company
+    # with many records, never by scanning its records. The records are added and taken away
+    # again in one transaction.
+    await session.execute(text(
+        "INSERT INTO projections (company_id, entity_id, entity_type, state, version, updated_at) "
+        "SELECT :company, 'doc:OLD-' || n, 'doc', json_build_object('ref_id', 'OLD-' || n, "
+        "'doc_number', 'KEPT-' || n), 1, now() FROM generate_series(1, 5000) AS n"),
+        {"company": auth["company_id"]})
     await session.execute(text("ANALYZE projections"))
-    await session.execute(text("SET LOCAL enable_seqscan = off"))
-    plan = "\n".join(r[0] for r in await session.execute(text("EXPLAIN " + sql)))
+    conn = await session.connection()
+    plans = ["\n".join(r[0] for r in await conn.exec_driver_sql("EXPLAIN " + sql, params)) for sql, params in reads]
     await session.rollback()
+    plan = "\n".join(plans)
     for index in ("ix_projections_canonical_number_shown", "ix_projections_canonical_number_kept",
                   "ix_projections_canonical_number_key"):
         assert index in plan, plan
