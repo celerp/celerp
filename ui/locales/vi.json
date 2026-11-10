@@ -7438,6 +7438,7 @@
   "documents.err_numbering_unknown_type": "'{value}' không phải là loại chứng từ. Hãy dùng một trong các loại sau: {types}.",
   "documents.err_numbering_prefix_braces": "Tiền tố không được chứa dấu ngoặc nhọn.",
   "documents.err_number_too_long": "Số chỉ được có tối đa {max} ký tự. Số này có {length} ký tự.",
+  "documents.err_number_nul": "Số không được chứa ký tự NUL.",
   "documents.err_list_convert_status": "Chỉ danh sách đã hoàn tất mới chuyển đổi được. Hãy hoàn tất danh sách này trước, hoặc nếu nó đã bị hủy hay đã xong, hãy nhân bản rồi chuyển đổi bản sao.",
   "documents.err_list_already_converted": "Danh sách này đã được chuyển đổi thành {number}.",
   "company.nav_override_bad_id": "Tên một mục menu để trống, quá dài hoặc có ký tự điều khiển.",

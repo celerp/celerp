@@ -7438,6 +7438,7 @@
   "documents.err_numbering_unknown_type": "'{value}' ist keine Dokumentart. Verwenden Sie eine der folgenden: {types}.",
   "documents.err_numbering_prefix_braces": "Ein Präfix darf keine geschweiften Klammern enthalten.",
   "documents.err_number_too_long": "Eine Nummer darf höchstens {max} Zeichen haben. Diese hat {length}.",
+  "documents.err_number_nul": "Eine Nummer darf kein NUL-Zeichen enthalten.",
   "documents.err_list_convert_status": "Nur eine abgeschlossene Liste kann umgewandelt werden. Schließen Sie diese zuerst ab, oder duplizieren Sie sie, wenn sie storniert oder erledigt ist, und wandeln Sie die Kopie um.",
   "documents.err_list_already_converted": "Diese Liste wurde bereits in {number} umgewandelt.",
   "company.nav_override_bad_id": "Ein Menüeintragsname ist leer, zu lang oder enthält Steuerzeichen.",

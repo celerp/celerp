@@ -7438,6 +7438,7 @@
   "documents.err_numbering_unknown_type": "'{value}' bukan jenis dokumen. Gunakan salah satu dari: {types}.",
   "documents.err_numbering_prefix_braces": "Awalan tidak boleh berisi kurung kurawal.",
   "documents.err_number_too_long": "Nomor maksimal {max} karakter. Nomor ini memiliki {length}.",
+  "documents.err_number_nul": "Nomor tidak boleh berisi karakter NUL.",
   "documents.err_list_convert_status": "Hanya daftar yang sudah difinalisasi yang bisa dikonversi. Finalisasi daftar ini dulu, atau jika sudah dibatalkan atau selesai, duplikat lalu konversi salinannya.",
   "documents.err_list_already_converted": "Daftar ini sudah dikonversi menjadi {number}.",
   "company.nav_override_bad_id": "Nama entri menu kosong, terlalu panjang, atau berisi karakter kontrol.",

@@ -7438,6 +7438,7 @@
   "documents.err_numbering_unknown_type": "'{value}' n'est pas un type de document. Utilisez l'un des suivants : {types}.",
   "documents.err_numbering_prefix_braces": "Un préfixe ne peut pas contenir d'accolades.",
   "documents.err_number_too_long": "Un numéro peut contenir au plus {max} caractères. Celui-ci en contient {length}.",
+  "documents.err_number_nul": "Un numéro ne peut pas contenir de caractère NUL.",
   "documents.err_list_convert_status": "Seule une liste finalisée peut être convertie. Finalisez celle-ci d'abord ou, si elle est annulée ou terminée, dupliquez-la et convertissez la copie.",
   "documents.err_list_already_converted": "Cette liste a déjà été convertie en {number}.",
   "company.nav_override_bad_id": "Le nom d'une entrée de menu est vide, trop long ou contient des caractères de contrôle.",

@@ -128,6 +128,32 @@ async def test_a_number_too_long_to_store_is_refused_by_name(client, session, ki
     assert refusal_text(detail) == t("documents.err_number_too_long", "en", max=100, length=len(number))
 
 
+@pytest.mark.parametrize("door", ["create doc", "create list", "renumber doc", "patch doc", "patch list"])
+async def test_a_number_with_a_nul_character_is_refused_by_name(client, session, door):
+    """A record cannot be stored under a number holding a NUL character, so every door that takes
+    a number refuses it as invalid, never a failed write, and keeps the number the record had."""
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    number = "QUO\x00-1"
+    if door == "create doc":
+        r = await _quote_doc(client, h, contacts, ref_id=number)
+    elif door == "create list":
+        r = await client.post("/lists", headers=h, json={"list_type": "quotation", "ref_id": number, **_payload(contacts)})
+    else:
+        entity_id = (await _quote_doc(client, h, contacts)).json()["id"] if door.endswith("doc") \
+            else await _list(client, h, contacts, "quotation")
+        before = await _ref(client, h, entity_id)
+        r = await (client.patch(f"/docs/{entity_id}", headers=h,
+                                json={"fields_changed": {"ref_id": {"old": None, "new": number}}})
+                   if door == "patch doc" else _renumber(client, h, entity_id, number))
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "documents.err_number_nul"
+    assert refusal_text(detail) == t("documents.err_number_nul", "en")
+    if not door.startswith("create"):
+        assert await _ref(client, h, entity_id) == before
+
+
 @pytest.mark.parametrize("kind", ["docs", "lists"])
 async def test_a_number_at_the_limit_is_stored_and_one_past_it_is_refused(client, session, kind):
     auth, contacts = await _demo_company(client, session, "USD")
