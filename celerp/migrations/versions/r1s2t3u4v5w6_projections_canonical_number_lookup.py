@@ -41,15 +41,15 @@ def upgrade() -> None:
     with op.get_context().autocommit_block():
         if _missing("ix_projections_canonical_number_shown"):
             op.create_index("ix_projections_canonical_number_shown", "projections",
-                            ["company_id", sa.text("btrim(lower(state ->> 'ref_id'))")],
+                            ["company_id", sa.text("trim(lower(state ->> 'ref_id'))")],
                             postgresql_concurrently=True)
         if _missing("ix_projections_canonical_number_kept"):
             op.create_index("ix_projections_canonical_number_kept", "projections",
-                            ["company_id", sa.text("btrim(lower(state ->> 'doc_number'))")],
+                            ["company_id", sa.text("trim(lower(state ->> 'doc_number'))")],
                             postgresql_concurrently=True)
         if _missing("ix_projections_canonical_number_key"):
             op.create_index("ix_projections_canonical_number_key", "projections",
-                            ["company_id", sa.text("btrim(lower(entity_id))")], postgresql_concurrently=True)
+                            ["company_id", sa.text("trim(lower(entity_id))")], postgresql_concurrently=True)
         unbuilt = [name for name in _NAMES if op.get_bind().execute(_VALID, {"name": name}).scalar() is not True]
         if unbuilt:
             raise RuntimeError(f"Indexes {unbuilt} were not created successfully")

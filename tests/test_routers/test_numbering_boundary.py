@@ -586,6 +586,19 @@ async def test_an_import_stored_under_a_key_another_record_holds_is_refused(clie
         assert (await client.get(f"/{kind}s/{eid}", headers=h)).status_code == 404
 
 
+@pytest.mark.parametrize("door", [d for d in _DOORS if d.startswith("import")])
+async def test_an_import_whose_key_holds_no_number_is_saved(client, session, door):
+    """Only a ``doc:`` or ``list:`` key is stored under a number: an import under any other key
+    is saved, and its key is no number to check."""
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    kind = "list" if "list" in door else "doc"
+    for key in (f"{kind}-imp-{uuid.uuid4().hex[:6]}", f"{kind}:", f"other:{uuid.uuid4().hex[:6]}"):
+        eid, refused = await _give(client, h, contacts, door, f"IMP-{uuid.uuid4().hex[:6]}", key=key)
+        assert refused is None, (key, refused)
+        assert (await client.get(f"/{kind}s/{eid}", headers=h)).status_code == 200, key
+
+
 @pytest.mark.parametrize("field", ["ref_id", "doc_number", "entity_id"])
 async def test_a_number_stored_with_spaces_before_numbers_were_trimmed_is_still_held(client, session, field):
     """A record saved with a padded number by an earlier version holds the number it meant,
@@ -683,7 +696,7 @@ async def test_every_numbered_writer_goes_through_the_boundary():
 def _checks_the_key(call: ast.Call) -> bool:
     """Whether ``call`` is require_number_free on the number inside a storage key."""
     return (_name(call.func) == "require_number_free" and len(call.args) > 2
-            and ast.unparse(call.args[2]) == "entity_id.partition(':')[2]")
+            and ast.unparse(call.args[2]) == "keyed")
 
 
 def _discarded_numbers() -> list[tuple[str, str]]:

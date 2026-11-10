@@ -25,10 +25,10 @@ def test_upgrade_rebuilds_an_invalid_index_keeps_a_valid_one_drops_the_untrimmed
         # A start before the upgrade built the first index from the models; a cancelled
         # concurrent build left the second one invalid; the third is missing.
         _query(sync_url, "CREATE INDEX ix_projections_canonical_number_shown ON projections "
-                         "(company_id, (btrim(lower(state ->> 'ref_id'))))")
+                         "(company_id, (trim(lower(state ->> 'ref_id'))))")
         kept = _query(sync_url, "SELECT to_regclass('ix_projections_canonical_number_shown')::oid")
         _query(sync_url, "CREATE INDEX ix_projections_canonical_number_kept ON projections "
-                         "(company_id, (btrim(lower(state ->> 'doc_number'))))")
+                         "(company_id, (trim(lower(state ->> 'doc_number'))))")
         _query(sync_url, "UPDATE pg_index SET indisvalid = false WHERE indexrelid = to_regclass(:name)",
                "ix_projections_canonical_number_kept")
 

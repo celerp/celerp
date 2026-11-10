@@ -1444,12 +1444,15 @@ async def _ids_numbered(session: AsyncSession, company_id, kind: Literal["doc", 
 async def free_import_numbers(session: AsyncSession, company_id, entity_id: str, data: dict, *,
                               doc_type: str | None = None) -> dict:
     """``data`` of an imported Document or List with the numbers it shows as require_number_free
-    returns them, once each one, and the number its key ``entity_id`` stores it under, is free."""
+    returns them, once each one, and the number its key ``entity_id`` stores it under, is free.
+    Only a ``doc:`` or ``list:`` key stores a number (number_holder); any other key holds none."""
     data = dict(data)
     for field in ("doc_number", "ref_id"):
         if str(data.get(field) or "").strip():
             data[field] = await require_number_free(session, company_id, str(data[field]), doc_type=doc_type)
-    await require_number_free(session, company_id, entity_id.partition(":")[2], doc_type=doc_type)
+    kind, colon, keyed = entity_id.strip().partition(":")
+    if colon and kind.lower() in ("doc", "list") and keyed.strip():
+        await require_number_free(session, company_id, keyed, doc_type=doc_type)
     return data
 
 
