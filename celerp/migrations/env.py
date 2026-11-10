@@ -100,12 +100,14 @@ def run_migrations_online() -> None:
     # (celerp.migrations.compatibility.mutating_scope), so it migrates through a
     # guarded engine of the fence it holds.
     from celerp.migrations.compatibility import held_fence
+    # Text goes both ways as UTF-8, as the app sends it: a SQL_ASCII database keeps the bytes it
+    # was sent, which a client in its own encoding could not read.
     held = held_fence(_sync_url)
     if held is not None:
-        engines = held.engine(poolclass=pool.NullPool)
+        engines = held.engine(poolclass=pool.NullPool, client_encoding="utf8")
     else:
         engines = contextlib.nullcontext(
-            engine_from_config(cfg, prefix="sqlalchemy.", poolclass=pool.NullPool))
+            engine_from_config(cfg, prefix="sqlalchemy.", poolclass=pool.NullPool, client_encoding="utf8"))
     with engines as connectable, connectable.connect() as connection:
         options = dict(
             connection=connection,

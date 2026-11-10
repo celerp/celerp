@@ -32,7 +32,7 @@ from celerp.events.engine import (emit_event, find_event_by_idempotency, is_stri
 from celerp.importers.results import failure_reason
 from celerp.models.company import Company, Location
 from celerp.modules.slots import fire_lifecycle
-from celerp.models.projections import NUMBER_KEPT, NUMBER_SHOWN, Projection, canonical_number, key_number
+from celerp.models.projections import NUMBER_KEPT, NUMBER_SHOWN, Projection, canonical_number, key_number, strip_number
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
 from celerp_docs.consignment_buy import bought_parcels, bought_receipt_lots, buy_consignment
 from celerp_docs.doc_money import (DOC_MONEY_INPUTS, LIST_TOTAL_FIELDS, document_money, document_terms, drawn_line_money, fixed_discount,
@@ -1429,7 +1429,7 @@ async def _ids_numbered(session: AsyncSession, company_id, kind: Literal["doc", 
                         doc_type: str | None = None) -> list[str]:
     """Every Document (of doc_type, when given) or List whose number is ``number``, both compared
     in their canonical form as numbering compares them."""
-    wanted = canonical_number(_sa.literal(number, _sa.Text))
+    wanted = canonical_number(_sa.literal(strip_number(number), _sa.Text))
     numbers = (NUMBER_KEPT, NUMBER_SHOWN) if kind == "doc" else (NUMBER_SHOWN,)
     query = select(Projection.entity_id).where(
         Projection.company_id == company_id,

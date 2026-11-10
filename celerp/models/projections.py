@@ -7,9 +7,7 @@ import sys
 import uuid
 
 import sqlalchemy as sa
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, PrimaryKeyConstraint, String, Text, event
-from sqlalchemy.engine import Engine
-from sqlalchemy.ext.compiler import compiles
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, PrimaryKeyConstraint, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from celerp.models.base import Base
@@ -18,40 +16,30 @@ from celerp.models.base import Base
 # The asset a projection belongs to (an asset's movements carry it), as the index on it
 # reads it: a query that filters on this expression uses ix_projections_asset.
 ASSET_ID = sa.literal_column("(projections.state ->> 'asset_id')")
-# Every character Python reads as a space (str.isspace()). A writer stores a number without
-# them around it and numbering compares numbers without them, so both trim this one set.
+# Every character Python reads as a space (str.isspace()). A number is stored without them
+# around it (strip_number), the only place this set is used: SQL never names it.
 NUMBER_SPACE = "".join(c for c in map(chr, range(sys.maxunicode + 1)) if c.isspace())
+# The ASCII spaces SQL trims, written as escapes so every statement and index definition is the
+# same ASCII text in every server encoding and after a dump restored into any other.
+_ASCII_SPACE = sa.literal_column(r"E' \t\n\r\f\x0b'", sa.Text)
 
 
-class _NumberSpace(sa.sql.expression.ColumnElement):
-    """NUMBER_SPACE in SQL, spelled with chr() so the statement and an index definition stay
-    ASCII: a SQL_ASCII database takes no other query text and pg_dump prints an index in any
-    client encoding. A SQL_ASCII database can hold no character past ASCII, so it trims the
-    ASCII part of the set."""
-    type = sa.Text()
-    inherit_cache = True
-
-
-@compiles(_NumberSpace)
-def _compile_number_space(element, compiler, **kw) -> str:
-    ascii_only = getattr(compiler.dialect, "celerp_sql_ascii", False)
-    return "(" + " || ".join(f"chr({ord(c)})" for c in NUMBER_SPACE if ord(c) < 128 or not ascii_only) + ")"
-
-
-@event.listens_for(Engine, "engine_connect")
-def _read_sql_ascii(connection) -> None:
-    """Note once per engine whether its database is SQL_ASCII, before it compiles a statement."""
-    dialect = connection.dialect
-    if dialect.name == "postgresql" and not hasattr(dialect, "celerp_sql_ascii"):
-        dialect.celerp_sql_ascii = connection.exec_driver_sql("SHOW server_encoding").scalar() == "SQL_ASCII"
-        connection.rollback()  # leave the connection unbegun, as the caller receives it
+def strip_number(number: str) -> str:
+    """``number`` as a record stores it: without NUMBER_SPACE around it. Every writer of a
+    number field stores it so, and the candidate a check reads is stripped the same, since it is
+    the value that would be stored."""
+    return number.strip(NUMBER_SPACE)
 
 
 def canonical_number(number: sa.ColumnElement) -> sa.ColumnElement:
     """The canonical form of ``number``, a stored number or a bound candidate: lowercase as the
-    database lowers it, without NUMBER_SPACE around it. Numbering compares numbers only in this
-    form, so one engine decides both sides of every comparison."""
-    return sa.func.lower(sa.func.btrim(number, _NumberSpace()))
+    database lowers it, without ASCII spaces around it. Numbering compares numbers only in this
+    form, so one engine decides both sides of every comparison. Stored numbers and candidates
+    are already stripped (strip_number), so the trim matters only for a storage key, which is
+    never rewritten: one an earlier version saved padded with a space past ASCII is matched only
+    once that space is gone. On a SQL_ASCII database lower() folds ASCII letters only, on both
+    sides alike, so there an accented capital and its small letter are two numbers."""
+    return sa.func.lower(sa.func.btrim(number, _ASCII_SPACE))
 
 
 def key_number(key: sa.ColumnElement) -> sa.ColumnElement:

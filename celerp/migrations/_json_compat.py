@@ -44,7 +44,8 @@ def _update_json_column(conn, table, col, mutate, where, params, extra_cols) -> 
         if data is None:
             continue
         if mutate(data, row):
-            conn.execute(upd, {"__v": json.dumps(data), "__ctid": str(row["ctid"])})
+            # As text, not escapes: SQL_ASCII refuses a \\u escape past ASCII.
+            conn.execute(upd, {"__v": json.dumps(data, ensure_ascii=False), "__ctid": str(row["ctid"])})
             n += 1
     return n
 

@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.accounting_roles import Refused, catalog_refusal
 from celerp.models.company import Company
 from celerp.models.projections import (
-    KEY_NUMBER, NUMBER_KEPT, NUMBER_KEYED, NUMBER_SHOWN, NUMBER_SPACE, Projection, canonical_number,
+    KEY_NUMBER, NUMBER_KEPT, NUMBER_KEYED, NUMBER_SHOWN, Projection, canonical_number, strip_number,
 )
 from celerp.services.business_time import business_today
 from celerp.services.company_lock import lock_company
@@ -249,7 +249,7 @@ async def number_holder(session: AsyncSession, company_id, number: str, *,
                    Projection.state["doc_number"].as_string(), KEY_NUMBER).where(
         Projection.company_id == company_id,
         Projection.entity_type.in_(("doc", "list")),
-        _number_match(canonical_number(sa.literal(number, sa.Text))),
+        _number_match(canonical_number(sa.literal(strip_number(number), sa.Text))),
     )
     if exclude_entity_id:
         # A record may take back its own number, shown or stored under.
@@ -261,17 +261,17 @@ async def number_holder(session: AsyncSession, company_id, number: str, *,
     if row is None:
         return None
     kind, *numbers = row
-    return kind, next(n for n in (str(n or "").strip(NUMBER_SPACE) for n in numbers) if n)
+    return kind, next(n for n in (strip_number(str(n or "")) for n in numbers) if n)
 
 
 async def require_number_free(session: AsyncSession, company_id, number: object, *,
                               exclude_entity_id: str | None = None, doc_type: str | None = None) -> str:
-    """Return ``number`` as a record stores it, without NUMBER_SPACE around it, once no other
+    """Return ``number`` as a record stores it (strip_number) once no other
     Document or List holds it (number_holder); refuse it while one does, naming which kind holds
     it and the number as that record shows it. Every writer stores the returned number. The
     company lock serializes the check with every other numbering write. A number that is not
     text or is blank, or one no record can be stored under, is refused first."""
-    if not isinstance(number, str) or not (number := number.strip(NUMBER_SPACE)):
+    if not isinstance(number, str) or not (number := strip_number(number)):
         raise HTTPException(status_code=422, detail=catalog_refusal("documents.err_number_required"))
     require_storable_number(number)
     await lock_company(session, company_id)
@@ -285,9 +285,9 @@ async def require_number_free(session: AsyncSession, company_id, number: object,
 
 
 async def free_number(session: AsyncSession, company_id, number: object, **check) -> object:
-    """``number`` as a record stores it: none stays none, a text blank without NUMBER_SPACE is
+    """``number`` as a record stores it: none stays none, a text blank once stripped is
     stored as empty and needs no check, and any other goes through require_number_free."""
-    if number is None or isinstance(number, str) and not number.strip(NUMBER_SPACE):
+    if number is None or isinstance(number, str) and not strip_number(number):
         return number and ""
     return await require_number_free(session, company_id, number, **check)
 

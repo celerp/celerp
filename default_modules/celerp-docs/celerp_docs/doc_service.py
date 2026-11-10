@@ -62,11 +62,12 @@ async def upsert_order_from_shopify(company_id: str, order: dict, operation: str
       order.id                → idempotency_key
     """
     from celerp.db import SessionLocal
+    from celerp.models.projections import strip_number
 
     idem_key = f"shopify:order:{order['id']}"
 
     async with SessionLocal() as session:
-        ref_id = order.get("name", f"shopify-{order['id']}")
+        ref_id = strip_number(order.get("name") or f"shopify-{order['id']}")
         financial_status = order.get("financial_status", "pending")
         status = "closed" if financial_status == "paid" else "open"
         currency = order.get("currency")
@@ -1200,11 +1201,12 @@ async def upsert_invoice_from_quickbooks(company_id: str, invoice: dict, operati
       Invoice.Balance                 -> amount_outstanding
     """
     from celerp.db import SessionLocal
+    from celerp.models.projections import strip_number
 
     idem_key = f"quickbooks:invoice:{invoice['Id']}"
 
     async with SessionLocal() as session:
-        ref_id = str(invoice.get("DocNumber") or f"quickbooks-{invoice['Id']}")
+        ref_id = strip_number(str(invoice.get("DocNumber") or f"quickbooks-{invoice['Id']}"))
         currency = (invoice.get("CurrencyRef") or {}).get("value")
         balance = _amt(invoice.get("Balance"), currency)
         status = "closed" if balance == 0 else "open"
@@ -1258,11 +1260,12 @@ async def upsert_invoice_from_xero(company_id: str, invoice: dict, operation: st
       Invoice.AmountDue       -> amount_outstanding
     """
     from celerp.db import SessionLocal
+    from celerp.models.projections import strip_number
 
     idem_key = f"xero:invoice:{invoice['InvoiceID']}"
 
     async with SessionLocal() as session:
-        ref_id = str(invoice.get("InvoiceNumber") or f"xero-{invoice['InvoiceID']}")
+        ref_id = strip_number(str(invoice.get("InvoiceNumber") or f"xero-{invoice['InvoiceID']}"))
         currency = invoice.get("CurrencyCode")
         status = "closed" if invoice.get("Status") == "PAID" else "open"
 
