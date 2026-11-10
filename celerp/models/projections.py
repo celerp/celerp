@@ -7,7 +7,9 @@ import sys
 import uuid
 
 import sqlalchemy as sa
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, PrimaryKeyConstraint, String, Text
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, PrimaryKeyConstraint, String, Text, event
+from sqlalchemy.engine import Engine
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Mapped, mapped_column
 
 from celerp.models.base import Base
@@ -21,11 +23,35 @@ ASSET_ID = sa.literal_column("(projections.state ->> 'asset_id')")
 NUMBER_SPACE = "".join(c for c in map(chr, range(sys.maxunicode + 1)) if c.isspace())
 
 
+class _NumberSpace(sa.sql.expression.ColumnElement):
+    """NUMBER_SPACE in SQL, spelled with chr() so the statement and an index definition stay
+    ASCII: a SQL_ASCII database takes no other query text and pg_dump prints an index in any
+    client encoding. A SQL_ASCII database can hold no character past ASCII, so it trims the
+    ASCII part of the set."""
+    type = sa.Text()
+    inherit_cache = True
+
+
+@compiles(_NumberSpace)
+def _compile_number_space(element, compiler, **kw) -> str:
+    ascii_only = getattr(compiler.dialect, "celerp_sql_ascii", False)
+    return "(" + " || ".join(f"chr({ord(c)})" for c in NUMBER_SPACE if ord(c) < 128 or not ascii_only) + ")"
+
+
+@event.listens_for(Engine, "engine_connect")
+def _read_sql_ascii(connection) -> None:
+    """Note once per engine whether its database is SQL_ASCII, before it compiles a statement."""
+    dialect = connection.dialect
+    if dialect.name == "postgresql" and not hasattr(dialect, "celerp_sql_ascii"):
+        dialect.celerp_sql_ascii = connection.exec_driver_sql("SHOW server_encoding").scalar() == "SQL_ASCII"
+        connection.rollback()  # leave the connection unbegun, as the caller receives it
+
+
 def canonical_number(number: sa.ColumnElement) -> sa.ColumnElement:
     """The canonical form of ``number``, a stored number or a bound candidate: lowercase as the
     database lowers it, without NUMBER_SPACE around it. Numbering compares numbers only in this
     form, so one engine decides both sides of every comparison."""
-    return sa.func.lower(sa.func.btrim(number, sa.literal_column(f"'{NUMBER_SPACE}'", sa.Text)))
+    return sa.func.lower(sa.func.btrim(number, _NumberSpace()))
 
 
 def key_number(key: sa.ColumnElement) -> sa.ColumnElement:

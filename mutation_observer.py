@@ -66,7 +66,7 @@ from mutation_read_notes import READ_ROUTE_WRITES
 # its name suggests: PostgreSQL volatility is a catalog property, and a volatile function
 # need not write.
 _PURE = frozenset({
-    "abs", "array_agg", "avg", "bool_and", "bool_or", "btrim", "cast", "char_length", "coalesce",
+    "abs", "array_agg", "avg", "bool_and", "bool_or", "btrim", "cast", "char_length", "chr", "coalesce",
     "concat", "count", "date", "date_trunc", "extract", "greatest", "json_agg", "json_build_object",
     "jsonb_agg", "jsonb_build_object", "jsonb_extract_path_text", "jsonb_array_elements",
     "jsonb_array_length", "jsonb_typeof", "least", "length", "lower", "max", "min", "now",
