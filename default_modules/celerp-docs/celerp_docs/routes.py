@@ -32,7 +32,7 @@ from celerp.events.engine import (emit_event, find_event_by_idempotency, is_stri
 from celerp.importers.results import failure_reason
 from celerp.models.company import Company, Location
 from celerp.modules.slots import fire_lifecycle
-from celerp.models.projections import Projection
+from celerp.models.projections import NUMBER_KEPT, NUMBER_SHOWN, Projection, canonical_number, key_number
 from celerp.inventory_codes import MAX_SCAN_CODE_LEN, PHYSICAL_CODE_RESOLVE_EXCLUDED_STATUSES
 from celerp_docs.consignment_buy import bought_parcels, bought_receipt_lots, buy_consignment
 from celerp_docs.doc_money import (DOC_MONEY_INPUTS, LIST_TOTAL_FIELDS, document_money, document_terms, drawn_line_money, fixed_discount,
@@ -73,8 +73,8 @@ from celerp.services.currencies import CURRENCY_CODES, require_currency_code
 from celerp.services.auth import AuthContext, get_auth_context, get_current_company_id, get_current_role, get_current_user
 from celerp.services.permissions import assert_role_permission, get_current_company_settings, locked_authority, reject_price_change, require_permission, role_has_permission
 from celerp_docs.sequences import (
-    claim_number, draft_counter, list_sequence_key, numbering_rows, peek_draft_ref, require_doc_type,
-    require_number_free, update_sequence,
+    NUMBER_FIELDS, NUMBER_SPACE, claim_number, draft_counter, list_sequence_key, numbering_rows, peek_draft_ref,
+    require_doc_type, require_number_free, update_sequence,
 )
 from celerp_docs.search import doc_q_clause
 from celerp.services.units import build_unit_map, default_receive_as, get_company_units, is_non_stock_line, is_pieces_unit, is_weight_unit, line_receive_kind, read_company_units, require_moving_fits, require_moving_fits_units, sum_quantities, unit_decimals, validate_line_quantity
@@ -1427,14 +1427,14 @@ async def list_docs(
 
 async def _ids_numbered(session: AsyncSession, company_id, kind: Literal["doc", "list"], number: str,
                         doc_type: str | None = None) -> list[str]:
-    """Every Document (of doc_type, when given) or List whose number is exactly ``number``,
-    ignoring case as the import key does."""
-    fields = ("doc_number", "ref_id") if kind == "doc" else ("ref_id",)
-    wanted = number.strip().lower()
+    """Every Document (of doc_type, when given) or List whose number is ``number``, both compared
+    in their canonical form as numbering compares them."""
+    wanted = canonical_number(_sa.literal(number, _sa.Text))
+    numbers = (NUMBER_KEPT, NUMBER_SHOWN) if kind == "doc" else (NUMBER_SHOWN,)
     query = select(Projection.entity_id).where(
         Projection.company_id == company_id,
         Projection.entity_type == kind,
-        _sa.or_(*(_func.lower(Projection.state[f].as_string()) == wanted for f in fields)),
+        _sa.or_(*(n == wanted for n in numbers)),
     )
     if doc_type:
         query = query.where(Projection.state["doc_type"].as_string() == doc_type)
@@ -1443,17 +1443,32 @@ async def _ids_numbered(session: AsyncSession, company_id, kind: Literal["doc", 
 
 async def free_import_numbers(session: AsyncSession, company_id, entity_id: str, data: dict, *,
                               doc_type: str | None = None) -> dict:
-    """``data`` of an imported Document or List with the numbers it shows as require_number_free
-    returns them, once each one, and the number its key ``entity_id`` stores it under, is free.
-    Only a ``doc:`` or ``list:`` key stores a number (number_holder); any other key holds none."""
+    """``data`` of an imported Document or List with each number it holds (NUMBER_FIELDS) as
+    require_number_free returns it, once each one, and the number its storage key ``entity_id``
+    holds (key_number), is free; a blank number is stored as empty. The key is kept as sent, as
+    the record is addressed by it, and is one identity across the company, so its number is
+    checked against every record, whatever its type."""
     data = dict(data)
-    for field in ("doc_number", "ref_id"):
-        if str(data.get(field) or "").strip():
-            data[field] = await require_number_free(session, company_id, str(data[field]), doc_type=doc_type)
-    kind, colon, keyed = entity_id.strip().partition(":")
-    if colon and kind.lower() in ("doc", "list") and keyed.strip():
-        await require_number_free(session, company_id, keyed, doc_type=doc_type)
+    for field in set(NUMBER_FIELDS) & data.keys():
+        number = data[field]
+        if isinstance(number, str) and not number.strip(NUMBER_SPACE):
+            data[field] = ""
+        elif number is not None:
+            data[field] = await require_number_free(session, company_id, number, doc_type=doc_type)
+    keyed = (await session.execute(select(key_number(_sa.literal(entity_id, _sa.Text))))).scalar_one()
+    if keyed.strip(NUMBER_SPACE):
+        await require_number_free(session, company_id, keyed)
     return data
+
+
+async def free_patched_numbers(session: AsyncSession, company_id, entity_id: str, fields_changed: dict) -> None:
+    """Give each number ``fields_changed`` sets on the record ``entity_id`` (NUMBER_FIELDS) as
+    require_number_free returns it, refused while another record holds it. Clearing a number
+    needs no check."""
+    for field in NUMBER_FIELDS:
+        if (new := (fields_changed.get(field) or {}).get("new")) not in (None, ""):
+            fields_changed[field] = {**fields_changed[field], "new": await require_number_free(
+                session, company_id, new, exclude_entity_id=entity_id)}
 
 
 @router.get("/numbered", dependencies=[require_permission("view_documents")])
@@ -2387,11 +2402,7 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     if is_draft and {"doc_type", "doc_taxes", "line_items", "tax_rate"} & fields_changed.keys():
         _taxed = {**row.state, **{k: (v or {}).get("new") for k, v in fields_changed.items()}}
         auto_je.refuse_misplaced_tax(settings, _taxed.get("doc_type"), _taxed, _taxed.get("line_items") or [])
-    # Uniqueness check when ref_id is being changed
-    new_ref = (fields_changed.get("ref_id") or {}).get("new")
-    if new_ref:
-        fields_changed["ref_id"] = {**fields_changed["ref_id"], "new": await require_number_free(
-            session, company_id, new_ref, exclude_entity_id=entity_id)}
+    await free_patched_numbers(session, company_id, entity_id, fields_changed)
     # Validate issue/due date ordering against the merged resulting state
     patch_flat = {k: v.get("new") for k, v in fields_changed.items() if v.get("new") is not None}
     _assert_date_order(patch_flat, row.state)
@@ -3859,6 +3870,8 @@ async def revert_check(session, company_id, entity_id: str, state: dict, units: 
 async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id: str = Depends(get_current_company_id), _: None = require_permission("finalize_documents"), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     from celerp.services import auto_je
 
+    # The company lock comes before the document's: restoring a purchase order's number checks it.
+    await lock_company(session, company_id)
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     key, digest = _operation("revert-to-draft", entity_id, payload)
     if (done := await _earlier_run(session, company_id, key, event_type="doc.reverted_to_draft",
@@ -3886,7 +3899,8 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
     if doc_type == "bill" and (state.get("source_po_ref") or to_order):
         extra_data["doc_type"] = "purchase_order"
         if state.get("source_po_ref"):
-            extra_data["ref_id"] = state["source_po_ref"]
+            extra_data["ref_id"] = await require_number_free(
+                session, company_id, state["source_po_ref"], exclude_entity_id=entity_id)
 
     # Void the finalize JE first: it raises when the entry's date sits in a
     # locked period, and nothing may mutate before that check passes.
@@ -9359,10 +9373,7 @@ async def write_list_patch(session: AsyncSession, company_id, role: str, setting
         raise _stale_doc("documents.err_list_stale")
     if payload.expected_version is not None and row.version != payload.expected_version:
         raise _stale_doc("documents.err_list_changed")
-    new_ref = (fields_changed.get("ref_id") or {}).get("new")
-    if new_ref:
-        fields_changed["ref_id"] = {**fields_changed["ref_id"], "new": await require_number_free(
-            session, company_id, new_ref, exclude_entity_id=entity_id)}
+    await free_patched_numbers(session, company_id, entity_id, fields_changed)
     _new_values = {f: (c or {}).get("new") for f, c in fields_changed.items()}
     if selecting:
         # Lines a selection reprices are computed from the locked List, so they cannot

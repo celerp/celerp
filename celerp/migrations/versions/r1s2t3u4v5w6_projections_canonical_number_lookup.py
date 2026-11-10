@@ -1,13 +1,14 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BUSL-1.1
 
-"""Numbering compares numbers without surrounding spaces, so a record stored with a padded
-number still holds it: the number lookup indexes are rebuilt on the trimmed expressions.
+"""Numbering compares numbers in their canonical form (lowercase, without any space character
+around them, and a storage key by the number after its colon), so a record stored with a padded
+number still holds it: the number lookup indexes are rebuilt on the canonical expressions.
 
 A start of this version before the upgrade ran has already created the new indexes from the
 models, so a valid one is kept. Each is built without blocking writes to projections, and an
 INVALID index of the same name, what a cancelled concurrent build leaves, is rebuilt. The
-indexes on the untrimmed expressions are dropped: no query reads them any more.
+indexes on the plain lowercase expressions are dropped: no query reads them any more.
 
 Revision ID: r1s2t3u4v5w6
 Revises: o0c1d2e3f4a5
@@ -16,6 +17,8 @@ Create Date: 2026-11-10
 
 from alembic import op
 import sqlalchemy as sa
+
+from celerp.models.projections import NUMBER_KEPT, NUMBER_KEYED, NUMBER_SHOWN
 
 revision = "r1s2t3u4v5w6"
 down_revision = "o0c1d2e3f4a5"
@@ -41,15 +44,15 @@ def upgrade() -> None:
     with op.get_context().autocommit_block():
         if _missing("ix_projections_canonical_number_shown"):
             op.create_index("ix_projections_canonical_number_shown", "projections",
-                            ["company_id", sa.text("trim(lower(state ->> 'ref_id'))")],
+                            ["company_id", NUMBER_SHOWN],
                             postgresql_concurrently=True)
         if _missing("ix_projections_canonical_number_kept"):
             op.create_index("ix_projections_canonical_number_kept", "projections",
-                            ["company_id", sa.text("trim(lower(state ->> 'doc_number'))")],
+                            ["company_id", NUMBER_KEPT],
                             postgresql_concurrently=True)
         if _missing("ix_projections_canonical_number_key"):
             op.create_index("ix_projections_canonical_number_key", "projections",
-                            ["company_id", sa.text("trim(lower(entity_id))")], postgresql_concurrently=True)
+                            ["company_id", NUMBER_KEYED], postgresql_concurrently=True)
         unbuilt = [name for name in _NAMES if op.get_bind().execute(_VALID, {"name": name}).scalar() is not True]
         if unbuilt:
             raise RuntimeError(f"Indexes {unbuilt} were not created successfully")

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import sys
 import uuid
 
 import sqlalchemy as sa
@@ -15,12 +16,30 @@ from celerp.models.base import Base
 # The asset a projection belongs to (an asset's movements carry it), as the index on it
 # reads it: a query that filters on this expression uses ix_projections_asset.
 ASSET_ID = sa.literal_column("(projections.state ->> 'asset_id')")
+# Every character Python reads as a space (str.isspace()). A writer stores a number without
+# them around it and numbering compares numbers without them, so both trim this one set.
+NUMBER_SPACE = "".join(c for c in map(chr, range(sys.maxunicode + 1)) if c.isspace())
+
+
+def canonical_number(number: sa.ColumnElement) -> sa.ColumnElement:
+    """The canonical form of ``number``, a stored number or a bound candidate: lowercase as the
+    database lowers it, without NUMBER_SPACE around it. Numbering compares numbers only in this
+    form, so one engine decides both sides of every comparison."""
+    return sa.func.lower(sa.func.btrim(number, sa.literal_column(f"'{NUMBER_SPACE}'", sa.Text)))
+
+
+def key_number(key: sa.ColumnElement) -> sa.ColumnElement:
+    """The number the storage key ``key`` holds: the text after its first colon, or the whole key
+    when it has none. The writer that checks a key and every reader parse it here."""
+    return sa.func.substr(key, sa.func.strpos(key, sa.literal_column("':'")) + sa.literal_column("1"))
+
+
+KEY_NUMBER = key_number(sa.literal_column("projections.entity_id", sa.Text))
 # The numbers a Document or List shows, keeps (an imported one's own number) and is stored
-# under, ignoring case and surrounding spaces, as the ix_projections_canonical_number_* indexes
-# read them.
-NUMBER_SHOWN = sa.literal_column("trim(lower(projections.state ->> 'ref_id'))", sa.Text)
-NUMBER_KEPT = sa.literal_column("trim(lower(projections.state ->> 'doc_number'))", sa.Text)
-STORAGE_KEY = sa.literal_column("trim(lower(projections.entity_id))", sa.Text)
+# under, in their canonical form, as the ix_projections_canonical_number_* indexes read them.
+NUMBER_SHOWN = canonical_number(sa.literal_column("projections.state ->> 'ref_id'", sa.Text))
+NUMBER_KEPT = canonical_number(sa.literal_column("projections.state ->> 'doc_number'", sa.Text))
+NUMBER_KEYED = canonical_number(KEY_NUMBER)
 
 
 class Projection(Base):
@@ -28,10 +47,9 @@ class Projection(Base):
     __table_args__ = (
         PrimaryKeyConstraint("company_id", "entity_id"),
         sa.Index("ix_projections_asset", "company_id", "entity_type", sa.text("(state ->> 'asset_id')")),
-        sa.Index("ix_projections_canonical_number_shown", "company_id", sa.text("trim(lower(state ->> 'ref_id'))")),
-        sa.Index("ix_projections_canonical_number_kept", "company_id",
-                 sa.text("trim(lower(state ->> 'doc_number'))")),
-        sa.Index("ix_projections_canonical_number_key", "company_id", sa.text("trim(lower(entity_id))")),
+        sa.Index("ix_projections_canonical_number_shown", "company_id", NUMBER_SHOWN),
+        sa.Index("ix_projections_canonical_number_kept", "company_id", NUMBER_KEPT),
+        sa.Index("ix_projections_canonical_number_key", "company_id", NUMBER_KEYED),
     )
 
     entity_id: Mapped[str] = mapped_column(Text, nullable=False)
