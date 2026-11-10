@@ -412,7 +412,8 @@ def htmx_settled(locator) -> None:
     """Waits until htmx has wired up the element *locator* names: neither it, nor what holds
     it, nor what it holds is still settling from a swap. htmx attaches a swapped-in element's
     triggers (an input's save on blur) only when the swap settles, when it drops htmx-added,
-    so a field typed into and left before then sends nothing."""
+    so a field typed into and left before then sends nothing. Name the element the swap
+    brings in: a container that is already on the page passes before the swap arrives."""
     from playwright.sync_api import expect
     locator.wait_for()
     added = "contains(concat(' ', normalize-space(@class), ' '), ' htmx-added ')"
