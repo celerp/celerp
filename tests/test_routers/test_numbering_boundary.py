@@ -9,7 +9,6 @@ numbers, and no other counter, whoever writes it, changes which counter a List d
 from __future__ import annotations
 
 import ast
-import importlib.util
 import pathlib
 import time
 import uuid
@@ -592,7 +591,7 @@ def _number_routes() -> dict[tuple[str, str], tuple[str, ...]]:
 
 
 _NUMBER_ROUTES = _number_routes()
-# A record an earlier version saved with its number as sent, through the event the import wrote.
+# A record an earlier version saved under its key as sent, through the event the import wrote.
 _EARLIER = "written before numbers were trimmed"
 
 # One number in hostile spellings: name -> (counter prefix or None, the number as sent, its
@@ -625,25 +624,16 @@ async def test_a_hostile_spelling_and_its_twin_are_one_number(session, sent, twi
     assert same and kept == strip_number(kept) and strip_number(sent.format(n=n)) == twin.format(n=n)
 
 
-def _upgrade_stores_numbers_stripped(sync_session) -> None:
-    """The upgrade's rewrite of every number an earlier version stored padded (r1s2t3u4v5w6)."""
-    path = _REPO / "celerp/migrations/versions/r1s2t3u4v5w6_projections_canonical_number_lookup.py"
-    spec = importlib.util.spec_from_file_location("r1s2t3u4v5w6", path)
-    revision = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(revision)
-    revision.strip_stored_numbers(sync_session.connection())
-
-
 async def _seed_earlier(session, company_id, kind: str, field: str, sent: str) -> str:
-    """A record saved the way an earlier version saved it, the import's event with the number as
-    sent, then upgraded."""
+    """A record an earlier version saved, as the upgrade leaves it: the import's event under the
+    key as sent (a key is never rewritten) with its numbers stripped (r1s2t3u4v5w6, whose
+    rewrite of padded numbers test_r1s2t3u4v5w6_projections_canonical_number_lookup covers)."""
     key = (sent if field == "key without colon" else f"{kind}:{sent}" if field == "key"
            else f"{kind}:old-{uuid.uuid4().hex[:6]}")
-    data = {**_imported(kind, key, None)["data"], **({field: sent} if field in NUMBER_FIELDS else {})}
+    data = {**_imported(kind, key, None)["data"], **({field: strip_number(sent)} if field in NUMBER_FIELDS else {})}
     await emit_event(session, company_id=company_id, entity_id=key, entity_type=kind,
                      event_type=f"{kind}.created", data=data, actor_id=None, location_id=None,
                      source="csv", idempotency_key=f"k-{uuid.uuid4().hex}")
-    await session.run_sync(_upgrade_stores_numbers_stripped)
     await session.commit()
     return key
 
@@ -676,7 +666,8 @@ async def test_a_number_in_a_hostile_spelling_is_one_number_through_every_door(c
         eid, refused = await _give(client, h, contacts, door, None if key else sent, target=target, key=key,
                                    field="ref_id" if key else field)
         assert refused is None, refused
-        assert eid == (strip_key(key) if key else eid)
+        if key:  # stored under the key with its number stripped
+            assert (await client.get(f"/{kind}s/{strip_key(key)}", headers=h)).status_code == 200
         if not key:
             state = (await client.get(f"/{kind}s/{eid}", headers=h)).json()
             assert state[field] == strip_number(sent), state[field]
