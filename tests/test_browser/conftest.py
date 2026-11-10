@@ -22,8 +22,8 @@ import httpx
 import pytest
 
 # Must set env vars BEFORE importing any celerp modules (they read on import).
-# DATABASE_URL is provided by the root conftest (Postgres via testcontainers or a
-# preset URL); the browser servers run against that same database.
+# DATABASE_URL is provided by the root conftest (a throwaway container, or the local
+# test database CELERP_TEST_DATABASE_URL names); the browser servers run against it.
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 # The browser servers run every first-party module. Set in api_server, not here: pytest
 # imports this file for any run over tests/, and a unit test must not run as a server
@@ -412,7 +412,8 @@ def htmx_settled(locator) -> None:
     """Waits until htmx has wired up the element *locator* names: neither it, nor what holds
     it, nor what it holds is still settling from a swap. htmx attaches a swapped-in element's
     triggers (an input's save on blur) only when the swap settles, when it drops htmx-added,
-    so a field typed into and left before then sends nothing."""
+    so a field typed into and left before then sends nothing. Name the element the swap
+    brings in: a container that is already on the page passes before the swap arrives."""
     from playwright.sync_api import expect
     locator.wait_for()
     added = "contains(concat(' ', normalize-space(@class), ' '), ' htmx-added ')"

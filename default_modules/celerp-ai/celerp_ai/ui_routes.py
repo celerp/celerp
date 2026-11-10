@@ -1481,12 +1481,12 @@ def _action_row(message_id: str, action: dict, lang: str = "en") -> tuple[FT, FT
 def _action_table(conversation_id: str, message_id: str, actions: list[dict], lang: str = "en") -> FT:
     """The review table for a large proposal set: tick rows, then Confirm selected
     from the shared bulk toolbar; each row expands to the card's detail."""
-    from ui.components.table import bulk_toolbar
+    from ui.components.table import bulk_toolbar, select_all_th
     table_id = f"ai-actions-{message_id}"
     rows = [part for a in actions for part in _action_row(message_id, a, lang)]
     table = Table(
         Thead(Tr(
-            Th(Input(type="checkbox", cls="bulk-select-all")),
+            select_all_th(lang),
             Th(t("ai.col_change", lang)),
             Th(t("label.name", lang)),
             Th(t("th.date", lang)),

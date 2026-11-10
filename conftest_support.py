@@ -117,6 +117,59 @@ def provision_worker_db(url: str, worker: str) -> str:
         "postgresql://", "postgresql+asyncpg://")
 
 
+TEST_DATABASE_VAR = "CELERP_TEST_DATABASE_URL"
+# The container the run started, set only by provision_test_database for the xdist workers.
+_PROVISIONED_VAR = "CELERP_TEST_PROVISIONED_DATABASE_URL"
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+class RefusedTestDatabase(Exception):
+    """CELERP_TEST_DATABASE_URL names a server the tests may not use."""
+
+
+def opted_in_test_database(environ: MutableMapping[str, str]) -> str | None:
+    """The existing Postgres the run may use, or None when the run starts its own container.
+
+    Only CELERP_TEST_DATABASE_URL opts in, never the application's DATABASE_URL: an .env can
+    carry a staging or production one, and the run drops and creates databases on its server.
+    The opt-in must name a database with "test" in its name on this machine.
+    """
+    from urllib.parse import parse_qs, urlsplit
+
+    url = environ.get(TEST_DATABASE_VAR, "")
+    if not url:
+        return None
+    parts = urlsplit(url)
+    host = parts.hostname or (parse_qs(parts.query).get("host") or [""])[0]
+    name = parts.path.lstrip("/")
+    if (parts.scheme.split("+")[0] in ("postgresql", "postgres") and "test" in name
+            and (host in _LOCAL_HOSTS or host == "" or host.startswith("/"))):
+        return url
+    raise RefusedTestDatabase(
+        f'{TEST_DATABASE_VAR} must name a Postgres database with "test" in its name on this machine '
+        f"(localhost, 127.0.0.1, ::1 or a unix socket); got database {name!r} on {host or 'a socket'!r}. "
+        "Unset it to run the tests on a throwaway container.")
+
+
+def provision_test_database(environ: MutableMapping[str, str], start_container) -> str:
+    """Point DATABASE_URL at this process's test database and return it.
+
+    *start_container* starts a throwaway Postgres and returns its URL; it runs only without an
+    opt-in, and the xdist workers use that container as is, at whatever host Docker gives it
+    (only an opt-in is held to this machine). A worker gets its own database on the server.
+    The server's settings are never changed: a server the harness starts gets its durability
+    settings at start, any other keeps its own.
+    """
+    url = opted_in_test_database(environ) or environ.get(_PROVISIONED_VAR)
+    if url is None:
+        url = environ[_PROVISIONED_VAR] = start_container()
+    worker = environ.get("PYTEST_XDIST_WORKER")
+    if worker:
+        url = provision_worker_db(url, worker)
+    environ["DATABASE_URL"] = url
+    return url
+
+
 def skip_relay_check_in(set_attr=setattr) -> None:
     """Boot the API without checking in with the relay, with or without a relay token: both
     boot-time check-ins do nothing. *set_attr* is ``monkeypatch.setattr`` in a test (undone

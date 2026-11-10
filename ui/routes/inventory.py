@@ -2164,7 +2164,7 @@ function celerpPrintLabel(entityId, templateId) {
                 return P(t("error.session_expired"), cls="cell-error")
             # Whether it happened is not known (the answer may have been lost): the run's
             # action list keeps its key, so sending it again is the same action.
-            return await _production_block_response(token, entity_id, flash_msg=refusal_text(e.data or e.detail),
+            return await _production_block_response(token, entity_id, flash_msg=error_message(e),
                                                     flash_kind="error", kept_keys={run_id: kept_operation_key(form, e)})
 
     @app.post("/api/items/{entity_id}/recipe-section")

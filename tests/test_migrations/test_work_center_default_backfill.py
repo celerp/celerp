@@ -173,8 +173,10 @@ def test_sql_ascii_preserves_unrelated_company_settings(sql_ascii_fresh_db):
     import json
     from sqlalchemy import create_engine, text
 
+    from celerp.json_text import SYNC_TEXT
+
     _, sync_url = sql_ascii_fresh_db
-    engine = create_engine(sync_url)
+    engine = create_engine(sync_url, **SYNC_TEXT)
     try:
         with engine.begin() as conn:
             conn.execute(text(

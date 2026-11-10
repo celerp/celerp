@@ -75,13 +75,14 @@ def _when(value: str | None):
     return datetime.fromisoformat(value) if value else None
 
 
-async def load(session, company: str = "main") -> dict:
-    """Store the older release's ``company`` under a fresh company and user id, and return
-    the test's view of it: auth headers, ids, and the item and run ids by name."""
+async def load(session, company: str = "main", fixture: Path = FIXTURE) -> dict:
+    """Store the older release's ``company`` (from ``fixture``, a capture of the same shape)
+    under a fresh company and user id, and return the test's view of it: auth headers, ids,
+    and the item and run ids by name."""
     from celerp_accounting.models import Account
     from test_helpers import make_authed_token
 
-    old = json.loads(FIXTURE.read_text())["companies"][company]
+    old = json.loads(fixture.read_text())["companies"][company]
     cid, uid = uuid.uuid4(), uuid.uuid4()
     raw = json.dumps(old).replace(old["company_id"], str(cid)).replace(old["user_id"], str(uid))
     data = json.loads(raw)
@@ -110,18 +111,22 @@ async def load(session, company: str = "main") -> dict:
             "items": data["items"], "runs": data["runs"]}
 
 
-async def last_started_on_older_release(session) -> None:
-    """Record that the database last started on an older release, before projection
-    semantics were versioned."""
+async def last_started_on_older_release(session, release: str = OLDER_RELEASE,
+                                        semantics: int | None = None) -> None:
+    """Record that the database last started on an older ``release``, with its projection
+    ``semantics`` (None: before they were versioned)."""
     from sqlalchemy import text
 
     from celerp.migrations._data_reconcile import _META_TABLE, PROJECTION_VERSION_KEY, set_meta
     from celerp.services.dev_release_guard import PROJECTION_SEMANTICS_KEY
 
     conn = await session.connection()
-    await conn.run_sync(lambda c: set_meta(c, PROJECTION_VERSION_KEY, OLDER_RELEASE))
-    await conn.run_sync(lambda c: c.execute(text(f"DELETE FROM {_META_TABLE} WHERE key = :k"),
-                                            {"k": PROJECTION_SEMANTICS_KEY}))
+    await conn.run_sync(lambda c: set_meta(c, PROJECTION_VERSION_KEY, release))
+    if semantics is None:
+        await conn.run_sync(lambda c: c.execute(text(f"DELETE FROM {_META_TABLE} WHERE key = :k"),
+                                                {"k": PROJECTION_SEMANTICS_KEY}))
+    else:
+        await conn.run_sync(lambda c: set_meta(c, PROJECTION_SEMANTICS_KEY, str(semantics)))
     await session.commit()
 
 

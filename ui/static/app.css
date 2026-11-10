@@ -357,6 +357,8 @@ a:hover { text-decoration: underline; }
 .flash--error { background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.3); color: var(--c-red); }
 .flash--warning { background: rgba(234,179,8,0.15); border: 1px solid rgba(234,179,8,0.3); color: #92710a; }
 .flash--success { background: rgba(34,197,94,0.12); border: 1px solid rgba(34,197,94,0.3); color: var(--c-green); }
+.flash--muted { background: var(--c-bg3); border: 1px solid var(--c-border); color: var(--c-text2); }
+.flash--info {background: var(--c-blue-light); border: 1px solid var(--c-blue-border); color: var(--c-text); }
 .error-banner { background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.25); color: var(--c-red); padding: 10px 14px; border-radius: var(--radius); margin-bottom: 12px; font-size: 12px; }
 
 /* ─── Data table ──────────────────────────────────────────────────────── */
@@ -453,7 +455,9 @@ a:hover { text-decoration: underline; }
 /* Free text that can run long (an asset's name) wraps at a readable measure instead of
    pushing every column after it out of view. */
 .data-table td.cell--text { white-space: normal; overflow-wrap: break-word; max-width: 32ch; }
-.data-table td.cell--note { white-space: normal; }
+/* A sentence (what happened, why, what to do) wraps at a readable measure, breaking a long
+   reference or an unspaced script anywhere, so the columns after it stay in view. */
+.data-table td.cell--note { white-space: normal; overflow-wrap: anywhere; max-width: 60ch; }
 th.cell--number { font-family: inherit; }
 .data-table td { padding: 0 10px; height: var(--c-row-h); border-bottom: 1px solid var(--c-border); vertical-align: middle; }
 .data-row:last-child td { border-bottom: none; }
@@ -1991,6 +1995,9 @@ form:has(> #fa-preview:not(:empty)) ~ .empty-state-cta { display: none; }
 .doc-actions-right { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .doc-actions-print { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .doc-actions-sep { color: var(--color-border, #ccc); font-size: 1.2rem; line-height: 1; padding: 0 2px; user-select: none; }
+/* An agreement with no actions on its right side (a draft, a cancelled one) shows no separator. */
+.doc-actions-right:has(> #sub-actions-right:empty:only-child),
+.doc-actions-right:has(> #sub-actions-right:empty:only-child) + .doc-actions-sep { display: none; }
 .doc-actions-right details { display: inline-flex; align-items: center; }
 /* Header actions behind a confirm (Close, Revert to Draft, Void) line up with plain buttons. */
 .doc-actions .void-section { margin-top: 0; }

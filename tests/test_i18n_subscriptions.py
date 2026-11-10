@@ -20,7 +20,7 @@ from ui.routes.subscriptions import (
     _status_badge,
     _sub_table,
     _sub_status_cards,
-    _schedule_inputs,
+    _schedule_section,
     _sub_action_controls,
 )
 
@@ -34,7 +34,7 @@ _XX = {
     "status.all_issued": "XX_ALLISSUED",
     # interpolated label
     "subscriptions.docs_generated": "XX_GENERATED {n}",
-    # attribute (title/placeholder) labels
+    # control labels
     "th.frequency": "XX_FREQTITLE",
     "subscriptions.custom_interval_title": "XX_CUSTOMTITLE",
 }
@@ -74,9 +74,9 @@ def test_status_cards_translate_labels():
     assert "XX_ACTIVE" in html
 
 
-def test_schedule_inputs_translate_options_and_tooltips():
-    # Mechanisms: enum option label + attribute (title) labels.
-    html = to_xml(Div(*_schedule_inputs("doc:1", {"frequency": "monthly"})))
+def test_schedule_section_translates_options_and_labels():
+    # Mechanisms: enum option label + control labels.
+    html = to_xml(_schedule_section("doc:1", {"frequency": "monthly"}))
     assert "XX_MONTHLY" in html
     assert "XX_FREQTITLE" in html
     assert "XX_CUSTOMTITLE" in html
@@ -85,7 +85,7 @@ def test_schedule_inputs_translate_options_and_tooltips():
 def test_generated_count_translates_with_interpolation():
     # Mechanism: interpolated label ("Generated: {n}").
     left, _right = _sub_action_controls(
-        "doc:1", {"status": "active", "generated_doc_ids": ["a", "b", "c"]}
+        "doc:1", {"status": "active", "periods": {str(k): {"state": "billed", "doc_id": f"doc:{k}"} for k in range(3)}}
     )
     html = to_xml(Div(*left))
     assert "XX_GENERATED 3" in html

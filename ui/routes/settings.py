@@ -2368,10 +2368,11 @@ def setup_routes(app):
         if not vertical:
             return P(t("settings.no_vertical_specified"), cls="error-banner")
         try:
-            await api.apply_vertical_preset(token, vertical)
+            result = await api.apply_vertical_preset(token, vertical)
         except APIError as e:
             return _refusal(e)
-        return _R("", status_code=204, headers={"HX-Redirect": "/settings/inventory?tab=categories"})
+        destination = "/modules" if result.get("restart_required") else "/settings/inventory?tab=categories"
+        return _R("", status_code=204, headers={"HX-Redirect": destination})
 
     @app.post("/settings/verticals/apply-category")
     async def verticals_apply_category(request: Request):

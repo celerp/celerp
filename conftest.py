@@ -14,6 +14,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pytest
+
 # Bytecode goes to a cache outside the source tree. Every xdist worker shares the module
 # folders, and loading a module removes the bytecode in its folder and then checks none is
 # left: a worker that imported module code and wrote bytecode there at that moment made
@@ -33,8 +35,8 @@ assert os.path.dirname(os.path.dirname(os.path.abspath(celerp.__file__))) == _CH
     f"the tests import celerp from {celerp.__file__}, not from this checkout ({_CHECKOUT})")
 
 from conftest_support import (
-    is_own_test_config, provision_worker_db, resolve_worker_config, resolve_worker_data_dir, skip_relay_check_in,
-    worker_label)
+    RefusedTestDatabase, is_own_test_config, provision_test_database, resolve_worker_config, resolve_worker_data_dir,
+    skip_relay_check_in, worker_label)
 
 # No event loop is current until a test makes one. Otherwise the first async test's
 # runner asks for the current loop and asyncio makes one on the spot; the runner puts
@@ -85,47 +87,41 @@ def _remove_own_temp_files() -> None:
 
 # ── Postgres for the whole test suite ──────────────────────────────────────────
 # Both production targets (the server and the Electron embedded-postgres build)
-# run Postgres, so the tests run on Postgres too. A pre-set DATABASE_URL (e.g. a
-# CI services container, which the CI job tunes itself) is used as it is; otherwise we
-# start a throwaway Postgres via testcontainers (Docker), tuned for throwaway speed
-# (fsync/synchronous_commit/full_page_writes off, safe because the data is discarded). Each pytest-xdist
-# worker gets its own database. MUST run before celerp.db / test_helpers import.
+# run Postgres, so the tests run on Postgres too. The run starts a throwaway Postgres
+# via testcontainers (Docker), with durability guards off at start (fsync/
+# synchronous_commit/full_page_writes; the data is discarded). CELERP_TEST_DATABASE_URL
+# points it at an existing local test database instead (conftest_support.
+# opted_in_test_database). Each pytest-xdist worker gets its own database. MUST run
+# before celerp.db / test_helpers import.
 _PG_CONTAINER = None
 
 
-def _provision_test_database() -> None:
-    url = os.environ.get("DATABASE_URL", "")
-    if url.startswith("postgresql"):
-        worker = os.environ.get("PYTEST_XDIST_WORKER")
-        if worker:
-            url = provision_worker_db(url, worker)
-    else:
-        from testcontainers.community.postgres import PostgresContainer
-        global _PG_CONTAINER
-        # Throwaway DB → turn off durability guards for speed (data is discarded).
-        _PG_CONTAINER = PostgresContainer("postgres:16-alpine").with_command(
-            "-c fsync=off -c synchronous_commit=off -c full_page_writes=off")
-        _PG_CONTAINER.start()
-        host = _PG_CONTAINER.get_container_host_ip()
-        port = _PG_CONTAINER.get_exposed_port(5432)
-        url = (f"postgresql+asyncpg://{_PG_CONTAINER.username}:{_PG_CONTAINER.password}"
-               f"@{host}:{port}/{_PG_CONTAINER.dbname}")
-    os.environ["DATABASE_URL"] = url
-    if url.startswith("postgresql"):
-        # Make the app's own engine (celerp.db.engine) use NullPool too: a pooled
-        # asyncpg connection is bound to the event loop that created it, but
-        # pytest-asyncio gives each test a fresh loop — so a pooled connection
-        # reused/closed in a later test's loop raises "attached to a different
-        # loop" / "Event loop is closed". NullPool opens+closes a connection per
-        # use within the current loop, sidestepping it entirely.
-        os.environ["CELERP_TEST_NULLPOOL"] = "1"
+def _start_pg_container() -> str:
+    from testcontainers.community.postgres import PostgresContainer
+    global _PG_CONTAINER
+    _PG_CONTAINER = PostgresContainer("postgres:16-alpine").with_command(
+        "-c fsync=off -c synchronous_commit=off -c full_page_writes=off")
+    _PG_CONTAINER.start()
+    host = _PG_CONTAINER.get_container_host_ip()
+    port = _PG_CONTAINER.get_exposed_port(5432)
+    return (f"postgresql+asyncpg://{_PG_CONTAINER.username}:{_PG_CONTAINER.password}"
+            f"@{host}:{port}/{_PG_CONTAINER.dbname}")
 
 
-_provision_test_database()
+try:
+    provision_test_database(os.environ, _start_pg_container)
+except RefusedTestDatabase as refused:
+    pytest.exit(str(refused), returncode=4)
+# Make the app's own engine (celerp.db.engine) use NullPool too: a pooled
+# asyncpg connection is bound to the event loop that created it, but
+# pytest-asyncio gives each test a fresh loop — so a pooled connection
+# reused/closed in a later test's loop raises "attached to a different
+# loop" / "Event loop is closed". NullPool opens+closes a connection per
+# use within the current loop, sidestepping it entirely.
+os.environ["CELERP_TEST_NULLPOOL"] = "1"
 
 import uuid
 
-import pytest
 import pytest_asyncio
 from sqlalchemy import event as sa_event, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -302,8 +298,14 @@ if _wh_available:
     from celerp_warehousing.routes import router as _wh_router
     app.include_router(_wh_router, prefix="/warehousing", tags=["warehousing"])
 
-def _nav_slot_contributions() -> list[dict]:
-    """Nav entries read from the modules' own manifests, as the loader reads them.
+# Slots the harness reads from the modules' own manifests rather than listing below.
+_MANIFEST_SLOTS = ("nav", "periodic_operation", "on_company_restored", "on_company_module_enabled",
+                   "doc_status_guard", "doc_detail_badges")
+
+
+def _manifest_slot_contributions() -> list[dict]:
+    """Nav entries and periodic operations read from the modules' own manifests, as the
+    loader reads them.
 
     They used to be hand-copied into this file, which put a second copy of every
     manifest in the test harness and left it free to drift: a nav entry added to a
@@ -311,20 +313,24 @@ def _nav_slot_contributions() -> list[dict]:
     A nav test written against the copy proves only that the copy is intact.
     """
     from celerp.modules.loader import read_manifest
+    from celerp.modules.slots import FIRST_PARTY_SLOTS
 
     out: list[dict] = []
     for pkg in sorted((Path(__file__).parent / "default_modules").iterdir()):
         manifest = read_manifest(pkg)
         name = manifest.get("name")
-        nav = (manifest.get("slots") or {}).get("nav")
-        if not name or not nav:
-            continue
-        for item in (nav if isinstance(nav, list) else [nav]):
-            out.append({"slot": "nav", "contrib": {**item, "_module": name}})
+        for slot in _MANIFEST_SLOTS:
+            found = (manifest.get("slots") or {}).get(slot)
+            if not name or not found:
+                continue
+            for item in (found if isinstance(found, list) else [found]):
+                # Every module here is bundled, so it is first party as the loader would mark it.
+                mark = {"_first_party": True} if slot in FIRST_PARTY_SLOTS else {}
+                out.append({"slot": slot, "contrib": {**item, "_module": name, **mark}})
     return out
 
 
-_SLOT_CONTRIBUTIONS = _nav_slot_contributions() + [
+_SLOT_CONTRIBUTIONS = _manifest_slot_contributions() + [
     # --- projection_handler slots ---
     {
         "slot": "projection_handler",
@@ -842,6 +848,14 @@ async def _db_engine():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(pacing_guard.install)
+        # Maintenance holds a table SHARE UPDATE EXCLUSIVE, which the locks a company reset
+        # takes without waiting refuse as busy. Its timing is the server's, never the
+        # test's, so it does not run on this run's tables.
+        await conn.execute(text(
+            "DO $$ DECLARE r record; BEGIN FOR r IN SELECT oid::regclass AS t FROM pg_class "
+            "WHERE relkind = 'r' AND relnamespace = 'public'::regnamespace LOOP "
+            "EXECUTE format('ALTER TABLE %s SET (autovacuum_enabled = false, "
+            "toast.autovacuum_enabled = false)', r.t); END LOOP; END $$"))
     yield engine
     await engine.dispose()
 

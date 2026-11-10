@@ -33,11 +33,11 @@ from celerp_docs.routes import (
     _doc_import_fields_changed,
     _get_doc,
     _import_auto_je,
-    _import_numbers,
     _import_metadata,
     _lock_imported_contact,
     _require_doc_rate_http,
     check_imported_snapshot,
+    free_import_numbers,
     import_treatment,
     imported_booked_now,
     imported_opening_snapshot,
@@ -45,10 +45,10 @@ from celerp_docs.routes import (
     import_digest,
     refuse_malformed_input,
     refuse_reused_import_key,
+    schedule_fields_refusal,
     settle_imported_credit,
     write_doc_patch,
 )
-from celerp_docs.sequences import require_number_free
 
 DOC_CREATED = "doc.created"
 
@@ -179,21 +179,23 @@ async def create_imported_doc(
     batch imports; returns the doc.created entry."""
     from celerp.services import auto_je
 
+    if (refused := schedule_fields_refusal(rec.data)) is not None:
+        raise HTTPException(status_code=422, detail=refused)
     await _lock_imported_contact(session, company_id, "doc", rec.data)
-    for number in _import_numbers(rec.data):
-        await require_number_free(session, company_id, number, doc_type=rec.data.get("doc_type"))
+    numbered = await free_import_numbers(session, company_id, rec.entity_id, rec.data,
+                                         doc_type=rec.data.get("doc_type"))
     if auto_je.imported_issue_kind(rec.data) is not None:
         _require_doc_rate_http(rec.data, base_currency)
     refuse_malformed_input(rec.data)
     await check_imported_snapshot(session, company_id, rec.entity_id, rec.data, base_currency)
     await require_ship_from(session, company_id, rec.data.get("from_location_id"))
-    priced = rec.data
+    priced = numbered
     if str(rec.data.get("status") or "draft") not in UNISSUED_STATUSES:
         refuse_unset_line_tax(rec.data.get("line_items"))
         auto_je.refuse_unissuable_taxes(settings, rec.data.get("doc_type"), rec.data)
     elif rec.data.get("total") in (None, "") and rec.data.get("line_items"):
         # A draft the file gives no totals for is worth what its lines are, as in the app.
-        priced = money_from_lines(rec.data, rec.data.get("currency") or base_currency)
+        priced = money_from_lines(numbered, numbered.get("currency") or base_currency)
     treatment = import_treatment(rec.entity_id, priced, post_ledger=post_ledger)
     data = imported_settlement_free(priced)
     received: list[dict] = []

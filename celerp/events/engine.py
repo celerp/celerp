@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import date
 
@@ -615,6 +616,36 @@ async def _check_asset_lines(session, kwargs: dict) -> None:
                                       doc_id=kwargs.get("entity_id"), doc={**before, **written}, before=before)
 
 
+async def _doc_applied(session, entry: LedgerEntry, transition) -> None:
+    """Every live document event that changes the document, whichever writer sends it
+    (finalize, void, unvoid, revert to draft, send, payment, import, an edit, a module), goes
+    through the modules' doc_status_guard handlers under the row lock that applied it; raising
+    refuses the event. Each handler reads the change it guards (a status, a module's own
+    fields) from the transition. A handler that cannot be resolved fails the event, never
+    skips it. Replay applies events through ProjectionEngine directly and is not affected."""
+    if (transition.before or {}) == transition.after:
+        return
+    from celerp.modules.slots import get as get_slot, resolve_handler
+
+    for handler in sorted({c["handler"] for c in get_slot("doc_status_guard")}):
+        await resolve_handler(handler)(session=session, entry=entry, transition=transition)
+
+
+# Set while work nobody started by hand runs (unattended): every event it writes is marked so.
+_UNATTENDED: ContextVar[bool] = ContextVar("unattended", default=False)
+
+
+async def unattended(work):
+    """Await ``work`` as work nobody started by hand: each event it writes carries
+    ``metadata.automatic``, so it reads as done automatically whichever member's authority it
+    ran under. The app starts every module background loop through this."""
+    token = _UNATTENDED.set(True)
+    try:
+        return await work
+    finally:
+        _UNATTENDED.reset(token)
+
+
 async def emit_event(
     session, *, preserve_external_code_conflicts: bool = False,
     memo_draw: MemoDraw | MemoReturn | None = None, held_lot_carve: HeldLotCarve | None = None, **kwargs
@@ -860,6 +891,8 @@ async def emit_event(
         await _record_lot_account(session, kwargs, previous_item_state)
         _record_consignor_payable(kwargs, previous_item_state)
 
+    if _UNATTENDED.get():
+        kwargs["metadata_"] = {**(kwargs.get("metadata_") or {}), "automatic": True}
     entry = LedgerEntry(**kwargs)
 
     # The event and its effect on the projection are one SAVEPOINT: a refused projection
@@ -896,6 +929,8 @@ async def emit_event(
         transition = await ProjectionEngine.apply_event(session, entry)
         if item:
             await _item_applied(session, entry, transition, held_lot_carve)
+        elif entry.entity_type == "doc":
+            await _doc_applied(session, entry, transition)
     except BaseException:
         await savepoint.rollback()
         raise

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import sys
 import uuid
 
 import sqlalchemy as sa
@@ -15,11 +16,87 @@ from celerp.models.base import Base
 # The asset a projection belongs to (an asset's movements carry it), as the index on it
 # reads it: a query that filters on this expression uses ix_projections_asset.
 ASSET_ID = sa.literal_column("(projections.state ->> 'asset_id')")
+# Every character Python reads as a space (str.isspace()). A number is stored without them
+# around it (strip_number), the only place this set is used: SQL never names it.
+NUMBER_SPACE = "".join(c for c in map(chr, range(sys.maxunicode + 1)) if c.isspace())
+# The ASCII spaces SQL trims, written as escapes so every statement and index definition is the
+# same ASCII text in every server encoding and after a dump restored into any other.
+_ASCII_SPACE = sa.literal_column(r"E' \t\n\r\f\x0b'", sa.Text)
+
+
+def strip_number(number: str) -> str:
+    """``number`` as a record stores it: without NUMBER_SPACE around it. Every writer of a
+    number field stores it so, and the candidate a check reads is stripped the same, since it is
+    the value that would be stored."""
+    return number.strip(NUMBER_SPACE)
+
+
+# The fields a Document or List holds a number in. Every write of one goes through
+# require_number_free and stores the number it returns.
+NUMBER_FIELDS = ("ref_id", "doc_number")
+
+
+# The state field that holds the number a Document or List storage key holds, stripped, when
+# the key carries spaces around it (an earlier version stored a record under its number as
+# sent). Only strip_numbers writes it; no user surface shows it.
+KEY_FIELD = "key_number"
+
+
+def _key_text(key: str) -> str:
+    """The number the storage key ``key`` holds as written: the text after its first colon, or
+    the whole key when it has none (key_number reads it so in SQL)."""
+    head, colon, number = key.partition(":")
+    return number if colon else key
+
+
+def strip_numbers(state: dict, entity_id: str) -> bool:
+    """Give each number ``state`` holds (NUMBER_FIELDS) as a record stores it (strip_number),
+    and KEY_FIELD the number its storage key ``entity_id`` holds, stripped, when the key carries
+    spaces around it (no KEY_FIELD otherwise); True when the state changed. Every replay of a
+    Document or List event applies it, so whatever the event or an earlier version stored, the
+    record holds its numbers stripped, and the upgrade's backfill and a restored backup store
+    what a replay does. A key is never rewritten, so KEY_FIELD is how numbering reads its number."""
+    wanted = {f: strip_number(v) for f in NUMBER_FIELDS if isinstance(v := state.get(f), str)}
+    if (number := _key_text(entity_id)) != strip_number(number):
+        wanted[KEY_FIELD] = strip_number(number)
+    changed = {f: v for f, v in wanted.items() if state.get(f) != v}
+    dropped = KEY_FIELD in state and KEY_FIELD not in wanted
+    if dropped:
+        del state[KEY_FIELD]
+    state.update(changed)
+    return bool(changed) or dropped
+
+
+def strip_key(key: str) -> str:
+    """``key`` as a record is stored under it: the number it holds (key_number) stripped
+    (strip_number), so a key written now never carries spaces around its number."""
+    number = _key_text(key)
+    return key[:len(key) - len(number)] + strip_number(number)
+
+
+def canonical_number(number: sa.ColumnElement) -> sa.ColumnElement:
+    """The canonical form of ``number``, a stored number or a bound candidate: lowercase as the
+    database lowers it, without ASCII spaces around it. Numbering compares numbers only in this
+    form, so one engine decides both sides of every comparison. Stored numbers and candidates
+    are already stripped (strip_number). On a SQL_ASCII database lower() folds ASCII letters only, on both
+    sides alike, so there an accented capital and its small letter are two numbers."""
+    return sa.func.lower(sa.func.btrim(number, _ASCII_SPACE))
+
+
+def key_number(key: sa.ColumnElement) -> sa.ColumnElement:
+    """The number the storage key ``key`` holds: the text after its first colon, or the whole key
+    when it has none. The writer that checks a key and every reader parse it here."""
+    return sa.func.substr(key, sa.func.strpos(key, sa.literal_column("':'")) + sa.literal_column("1"))
+
+
+KEY_NUMBER = key_number(sa.literal_column("projections.entity_id", sa.Text))
 # The numbers a Document or List shows, keeps (an imported one's own number) and is stored
-# under, ignoring case, as the ix_projections_number_* indexes read them.
-NUMBER_SHOWN = sa.literal_column("lower(projections.state ->> 'ref_id')", sa.Text)
-NUMBER_KEPT = sa.literal_column("lower(projections.state ->> 'doc_number')", sa.Text)
-STORAGE_KEY = sa.literal_column("lower(projections.entity_id)", sa.Text)
+# under, in their canonical form, as the ix_projections_canonical_number_* indexes read them.
+NUMBER_SHOWN = canonical_number(sa.literal_column("projections.state ->> 'ref_id'", sa.Text))
+NUMBER_KEPT = canonical_number(sa.literal_column("projections.state ->> 'doc_number'", sa.Text))
+# A padded key is read through the number strip_numbers keeps for it (KEY_FIELD).
+NUMBER_KEYED = canonical_number(sa.func.coalesce(
+    sa.literal_column(f"projections.state ->> '{KEY_FIELD}'", sa.Text), KEY_NUMBER))
 
 
 class Projection(Base):
@@ -27,9 +104,9 @@ class Projection(Base):
     __table_args__ = (
         PrimaryKeyConstraint("company_id", "entity_id"),
         sa.Index("ix_projections_asset", "company_id", "entity_type", sa.text("(state ->> 'asset_id')")),
-        sa.Index("ix_projections_number_shown", "company_id", sa.text("lower(state ->> 'ref_id')")),
-        sa.Index("ix_projections_number_kept", "company_id", sa.text("lower(state ->> 'doc_number')")),
-        sa.Index("ix_projections_number_key", "company_id", sa.text("lower(entity_id)")),
+        # Built on PostgreSQL only, the database numbering runs on: btrim and strpos are its own.
+        *(sa.Index(f"ix_projections_canonical_number_{name}", "company_id", number).ddl_if(dialect="postgresql")
+          for name, number in (("shown", NUMBER_SHOWN), ("kept", NUMBER_KEPT), ("key", NUMBER_KEYED))),
     )
 
     entity_id: Mapped[str] = mapped_column(Text, nullable=False)

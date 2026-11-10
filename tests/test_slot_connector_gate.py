@@ -152,6 +152,7 @@ async def test_subscription_detail_follows_the_company_connection(ui_client, con
         _owned(connected),
         patch("ui.api_client.get_subscription", new=AsyncMock(return_value=sub)),
         patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+        patch("ui.api_client.get_subscription_periods", new=AsyncMock(return_value={"rows": [], "review": [], "set_aside": []})),
     ):
         r = await ui_client.get("/subscriptions/sub:1")
     assert r.status_code == 200
@@ -168,6 +169,7 @@ async def test_subscription_detail_follows_the_company_modules(ui_client, enable
         _owned({"shopify"}),
         patch("ui.api_client.get_subscription", new=AsyncMock(return_value=sub)),
         patch("ui.api_client.get_company", new=AsyncMock(return_value=company)),
+        patch("ui.api_client.get_subscription_periods", new=AsyncMock(return_value={"rows": [], "review": [], "set_aside": []})),
     ):
         r = await ui_client.get("/subscriptions/sub:1")
     assert r.status_code == 200

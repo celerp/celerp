@@ -11,6 +11,7 @@ import pytest
 from httpx import AsyncClient
 
 from celerp_docs.doc_constants import SHAREABLE_DOC_TYPES
+from celerp.services.email import EmailResult
 from ui.i18n import refusal_text, t
 
 
@@ -1054,7 +1055,7 @@ async def _capture_send(monkeypatch):
     async def _fake(to, subject, body_html, body_text="", **kw):
         captured.update(to=to, subject=subject, html=body_html, text=body_text, **kw)
         done.set()
-        return True, "test transport"
+        return EmailResult(True, "test transport")
 
     monkeypatch.setattr("celerp.services.email.send_email", _fake)
     return captured, done
@@ -1173,7 +1174,7 @@ async def _capture_receipt(monkeypatch, ok: bool, detail: str):
     done = asyncio.Event()
 
     async def _fake_send(*a, **kw):
-        return ok, detail
+        return EmailResult(ok, detail)
 
     async def _fake_create(session, company_id, category, title, body, **kw):
         calls.update(company_id=company_id, category=category, title=title, body=body, **kw)
@@ -1232,7 +1233,7 @@ async def test_a_send_still_in_flight_is_held_until_it_ends(client: AsyncClient,
 
     async def _slow_send(*a, **kw):
         await release.wait()
-        return True, "delivered"
+        return EmailResult(True, "delivered")
 
     monkeypatch.setattr("celerp.services.email.send_email", _slow_send)
     before = set(background._BG_TASKS)

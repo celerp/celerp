@@ -9,18 +9,25 @@ numbers, and no other counter, whoever writes it, changes which counter a List d
 from __future__ import annotations
 
 import ast
+import json
 import pathlib
 import time
+import uuid
+from urllib.parse import quote
 
 import pytest
 
+import sqlalchemy as sa
 from sqlalchemy import event, select, text
 
-from celerp.models.projections import Projection
+from celerp.events.engine import emit_event
+from celerp.main import app
+from celerp.models.projections import KEY_FIELD, NUMBER_FIELDS, Projection, canonical_number, strip_key, strip_number
 from celerp.services.company_lock import locked_company
 from test_tax_acceptance_matrix import _demo_company
 from fasthtml.common import to_xml
 from ui.i18n import refusal_text, t
+from ui.routes.documents import _doc_detail
 
 pytestmark = pytest.mark.asyncio
 
@@ -128,6 +135,32 @@ async def test_a_number_too_long_to_store_is_refused_by_name(client, session, ki
     assert refusal_text(detail) == t("documents.err_number_too_long", "en", max=100, length=len(number))
 
 
+@pytest.mark.parametrize("door", ["create doc", "create list", "renumber doc", "patch doc", "patch list"])
+async def test_a_number_with_a_nul_character_is_refused_by_name(client, session, door):
+    """A record cannot be stored under a number holding a NUL character, so every door that takes
+    a number refuses it as invalid, never a failed write, and keeps the number the record had."""
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    number = "QUO\x00-1"
+    if door == "create doc":
+        r = await _quote_doc(client, h, contacts, ref_id=number)
+    elif door == "create list":
+        r = await client.post("/lists", headers=h, json={"list_type": "quotation", "ref_id": number, **_payload(contacts)})
+    else:
+        entity_id = (await _quote_doc(client, h, contacts)).json()["id"] if door.endswith("doc") \
+            else await _list(client, h, contacts, "quotation")
+        before = await _ref(client, h, entity_id)
+        r = await (client.patch(f"/docs/{entity_id}", headers=h,
+                                json={"fields_changed": {"ref_id": {"old": None, "new": number}}})
+                   if door == "patch doc" else _renumber(client, h, entity_id, number))
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "documents.err_number_nul"
+    assert refusal_text(detail) == t("documents.err_number_nul", "en")
+    if not door.startswith("create"):
+        assert await _ref(client, h, entity_id) == before
+
+
 @pytest.mark.parametrize("kind", ["docs", "lists"])
 async def test_a_number_at_the_limit_is_stored_and_one_past_it_is_refused(client, session, kind):
     auth, contacts = await _demo_company(client, session, "USD")
@@ -203,6 +236,59 @@ async def test_a_document_cannot_be_renumbered_to_a_number_a_list_holds(client, 
                                  json={"fields_changed": {"ref_id": {"old": None, "new": held}}})):
         assert r.status_code == 409, r.text
         assert refusal_text(r.json()["detail"]) == t("documents.err_list_number_taken", "en", number=held)
+
+
+async def _renumber(client, h, entity_id, number):
+    """Renumber a Document through the renumber endpoint, or a draft List through its patch."""
+    if entity_id.startswith("list:"):
+        return await client.patch(f"/lists/{entity_id}", headers=h,
+                                  json={"fields_changed": {"ref_id": {"old": None, "new": number}}})
+    return await client.post(f"/docs/{entity_id}/renumber", headers=h, json={"ref_id": number})
+
+
+async def _moved_away(client, h, entity_id):
+    """Renumber a record away from the number it is stored under; returns that number."""
+    stored = entity_id.split(":", 1)[1]
+    r = await _renumber(client, h, entity_id, stored[:-4] + "0050")
+    assert r.status_code == 200, r.text
+    return stored
+
+
+@pytest.mark.parametrize("holder_kind,taker_kind", [("doc", "doc"), ("list", "doc"), ("doc", "list")])
+async def test_a_record_cannot_be_renumbered_to_the_number_another_record_is_stored_under(
+        client, session, holder_kind, taker_kind):
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+
+    async def record(kind):
+        return (await _quote_doc(client, h, contacts)).json()["id"] if kind == "doc" \
+            else await _list(client, h, contacts, "quotation")
+
+    holder = await record(holder_kind)
+    stored = await _moved_away(client, h, holder)
+    shown = await _ref(client, h, holder)
+    key = "documents.err_doc_number_taken" if holder_kind == "doc" else "documents.err_list_number_taken"
+    taker = await record(taker_kind)
+    refused = [await _renumber(client, h, taker, stored)]
+    if taker_kind == "doc":
+        refused.append(await client.patch(f"/docs/{taker}", headers=h,
+                                          json={"fields_changed": {"ref_id": {"old": None, "new": stored}}}))
+    for r in refused:
+        assert r.status_code == 409, r.text
+        assert refusal_text(r.json()["detail"]) == t(key, "en", number=shown)
+
+
+@pytest.mark.parametrize("kind", ["doc", "list"])
+async def test_a_record_can_be_renumbered_back_to_its_own_number_or_to_a_free_one(client, session, kind):
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    entity_id = (await _quote_doc(client, h, contacts)).json()["id"] if kind == "doc" \
+        else await _list(client, h, contacts, "quotation")
+    stored = await _moved_away(client, h, entity_id)
+    assert (await _renumber(client, h, entity_id, stored)).status_code == 200
+    assert await _ref(client, h, entity_id) == stored
+    assert (await _renumber(client, h, entity_id, stored[:-4] + "0077")).status_code == 200
+    assert await _ref(client, h, entity_id) == stored[:-4] + "0077"
 
 
 async def test_a_number_given_on_create_is_refused_while_the_other_kind_shows_it(client, session):
@@ -348,9 +434,9 @@ async def test_a_long_run_of_held_numbers_costs_a_few_reads_under_the_lock(clien
     reads = []
     engine = session.bind.sync_engine
 
-    def count(conn, cursor, statement, *_):
+    def count(conn, cursor, statement, parameters, *_):
         if "projections" in statement:
-            reads.append(statement)
+            reads.append((statement, parameters))
     event.listen(engine, "before_cursor_execute", count)
     try:
         ref = await claim_number(session, company, "quotation")
@@ -359,18 +445,21 @@ async def test_a_long_run_of_held_numbers_costs_a_few_reads_under_the_lock(clien
     await session.rollback()
     assert ref.endswith("-0041")
     assert len(reads) <= 3, f"{len(reads)} reads for 40 held numbers"
-    # Each read is an indexed lookup of the numbers, never a scan of the company's records.
-    from sqlalchemy.dialects import postgresql
-    from celerp_docs.sequences import _number_match
-    query = select(Projection.entity_id).where(
-        Projection.company_id == auth["company_id"], Projection.entity_type.in_(("doc", "list")),
-        _number_match([ref.lower()], keyed=True))
-    sql = str(query.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+    # Each read, as claim_number sent it, looks the numbers up through their indexes on a company
+    # with many records, never by scanning its records. The records are added and taken away
+    # again in one transaction.
+    await session.execute(text(
+        "INSERT INTO projections (company_id, entity_id, entity_type, state, version, updated_at) "
+        "SELECT :company, 'doc:OLD-' || n, 'doc', json_build_object('ref_id', 'OLD-' || n, "
+        "'doc_number', 'KEPT-' || n), 1, now() FROM generate_series(1, 5000) AS n"),
+        {"company": auth["company_id"]})
     await session.execute(text("ANALYZE projections"))
-    await session.execute(text("SET LOCAL enable_seqscan = off"))
-    plan = "\n".join(r[0] for r in await session.execute(text("EXPLAIN " + sql)))
+    conn = await session.connection()
+    plans = ["\n".join(r[0] for r in await conn.exec_driver_sql("EXPLAIN " + sql, params)) for sql, params in reads]
     await session.rollback()
-    for index in ("ix_projections_number_shown", "ix_projections_number_kept", "ix_projections_number_key"):
+    plan = "\n".join(plans)
+    for index in ("ix_projections_canonical_number_shown", "ix_projections_canonical_number_kept",
+                  "ix_projections_canonical_number_key"):
         assert index in plan, plan
 
 
@@ -415,14 +504,392 @@ async def test_a_draft_list_changed_to_another_type_takes_that_types_number(clie
     assert (await _rows(client, h))["writeoff"]["preview"] != preview
 
 
+# ── One number: padded on the way in, held however it was stored ───────────
+
+def _imported(kind: str, key: str, number: str | None, field: str = "ref_id") -> dict:
+    data = {"list_type": "quotation"} if kind == "list" else {"doc_type": "quotation"}
+    return {"entity_id": key, "event_type": f"{kind}.created", "idempotency_key": f"k-{uuid.uuid4().hex}",
+            "source": "csv", "data": {**data, "status": "draft", **({field: number} if number else {})}}
+
+
+async def _target(client, h, contacts, door: str) -> str | None:
+    """The record a patch or renumber door gives a new number to."""
+    if door in ("patch doc", "renumber doc"):
+        return (await _quote_doc(client, h, contacts)).json()["id"]
+    return await _list(client, h, contacts, "quotation") if door == "patch list" else None
+
+
+async def _give(client, h, contacts, door: str, number: str | None, *, target: str | None = None,
+                key: str | None = None, field: str = "ref_id") -> tuple[str, str | None]:
+    """Give a record ``number`` in ``field`` through ``door`` (a patch or renumber door: to
+    ``target``): (the record's id, the refusal's message key or None). An import is stored under
+    ``key`` when given."""
+    kind = "list" if "list" in door else "doc"
+    body = {"fields_changed": {field: {"old": None, "new": number}}}
+    if door in ("patch doc", "renumber doc"):
+        eid = target
+        r = await (client.patch(f"/docs/{eid}", headers=h, json=body) if door == "patch doc" else
+                   client.post(f"/docs/{eid}/renumber", headers=h, json={field: number}))
+    elif door == "patch list":
+        eid = target
+        r = await client.patch(f"/lists/{eid}", headers=h, json=body)
+    elif door == "create doc":
+        r = await _quote_doc(client, h, contacts, **{field: number})
+        eid = r.json().get("id")
+    elif door == "create list":
+        r = await client.post("/lists", headers=h,
+                              json={"list_type": "quotation", **_payload(contacts), field: number})
+        eid = r.json().get("id")
+    else:
+        eid = key or f"{kind}:imp-{uuid.uuid4().hex[:8]}"
+        record = _imported(kind, eid, number, field)
+        if door.endswith("batch"):
+            r = await client.post(f"/{kind}s/import/batch", headers=h, json={"records": [record]})
+            assert r.status_code == 200, r.text
+            errors = r.json()["errors"]
+            # A batch row gives its refusal as English text: the key whose message it begins with.
+            return eid, (next((k for k in ("err_doc_number_taken", "err_list_number_taken")
+                               if t(f"documents.{k}", "en", number="\0").split("\0")[0] in errors[0]),
+                              errors[0]) if errors else None)
+        r = await client.post(f"/{kind}s/import", headers=h, json=record)
+    if r.status_code == 200:
+        return eid, None
+    detail = r.json()["detail"]
+    # A body the route's schema refuses is refused before any number is read.
+    return eid, detail["message_key"].split(".")[-1] if isinstance(detail, dict) else f"schema {r.status_code}"
+
+
+# Every /docs and /lists route that writes a number, as the app's router lists it: (method, path)
+# -> the door _give sends it through.
+_ROUTE_DOORS = {
+    ("post", "/docs"): "create doc", ("post", "/lists"): "create list",
+    ("patch", "/docs/{entity_id}"): "patch doc", ("patch", "/lists/{entity_id}"): "patch list",
+    ("post", "/docs/{entity_id}/renumber"): "renumber doc",
+    ("post", "/docs/import"): "import doc", ("post", "/docs/import/batch"): "import doc batch",
+    ("post", "/lists/import"): "import list", ("post", "/lists/import/batch"): "import list batch",
+}
+_DOORS = tuple(_ROUTE_DOORS.values())
+# The body fields through which a route reaches a record's numbers: a patch reaches every number
+# field, an import every number field and the key the record is stored under.
+_KEY_FIELDS = ("key", "key without colon")
+_REACHES = {"fields_changed": NUMBER_FIELDS, "data": (*NUMBER_FIELDS, *_KEY_FIELDS),
+            "records": (*NUMBER_FIELDS, *_KEY_FIELDS), **{f: (f,) for f in NUMBER_FIELDS}}
+
+
+def _number_routes() -> dict[tuple[str, str], tuple[str, ...]]:
+    """(method, path) -> the numbers it reaches, for every /docs or /lists write route whose
+    body reaches one, read from the app's OpenAPI schema (FastAPI's own route walk)."""
+    spec = app.openapi()
+    schemas = spec["components"]["schemas"]
+    routes = {}
+    for path, ops in spec["paths"].items():
+        for method, op in ops.items():
+            body = op.get("requestBody", {}).get("content", {}).get("application/json", {}).get("schema", {})
+            fields = schemas[body["$ref"].split("/")[-1]] if "$ref" in body else body
+            reached = [f for p in fields.get("properties", {}) for f in _REACHES.get(p, ())]
+            if path.startswith(("/docs", "/lists")) and method in ("post", "put", "patch") and reached:
+                routes[method, path] = tuple(dict.fromkeys(reached))
+    return routes
+
+
+_NUMBER_ROUTES = _number_routes()
+# A record an earlier version saved under its key as sent, through the event the import wrote.
+_EARLIER = "written before numbers were trimmed"
+
+# One number in hostile spellings: name -> (counter prefix or None, the number as sent, its
+# canonical twin). Each is saved as the number it means, held against its twin, and skipped by
+# the counter.
+HOSTILE = {
+    "space": (None, " {n} ", "{n}"),
+    "tab": (None, "\t{n}\t", "{n}"),
+    "LF": (None, "\n{n}\n", "{n}"),
+    "NBSP": (None, " {n} ", "{n}"),
+    "U+2007": (None, " {n} ", "{n}"),
+    "U+3000": (None, "　{n}　", "{n}"),
+    "dotted capital I": ("İRS", "{n}", "{n}"),
+    "final sigma": ("ΟΔΟΣ", "{n}", "{n}"),
+}
+
+
+async def test_every_route_that_writes_a_number_is_a_door_the_hostile_set_goes_through():
+    assert set(_NUMBER_ROUTES) == set(_ROUTE_DOORS), set(_NUMBER_ROUTES) ^ set(_ROUTE_DOORS)
+
+
+@pytest.mark.parametrize("sent, twin", [v[1:] for v in HOSTILE.values()], ids=list(HOSTILE))
+async def test_a_hostile_spelling_and_its_twin_are_one_number(session, sent, twin):
+    """Both spellings of a number are one number: stored stripped (strip_number), the database
+    reads them in one case."""
+    n = "Qİ-ΟΣ-1"
+    one = canonical_number(sa.literal(strip_number(sent.format(n=n)), sa.Text))
+    other = canonical_number(sa.literal(twin.format(n=n), sa.Text))
+    same, kept = (await session.execute(select(one == other, one))).one()
+    assert same and kept == strip_number(kept) and strip_number(sent.format(n=n)) == twin.format(n=n)
+
+
+async def _seed_earlier(session, company_id, kind: str, field: str, sent: str) -> str:
+    """A record an earlier version saved, as the upgrade leaves it: the import's event under the
+    key as sent (a key is never rewritten) with its numbers stripped (r1s2t3u4v5w6, whose
+    rewrite of padded numbers test_r1s2t3u4v5w6_projections_canonical_number_lookup covers)."""
+    key = (sent if field == "key without colon" else f"{kind}:{sent}" if field == "key"
+           else f"{kind}:old-{uuid.uuid4().hex[:6]}")
+    data = {**_imported(kind, key, None)["data"], **({field: strip_number(sent)} if field in NUMBER_FIELDS else {})}
+    await emit_event(session, company_id=company_id, entity_id=key, entity_type=kind,
+                     event_type=f"{kind}.created", data=data, actor_id=None, location_id=None,
+                     source="csv", idempotency_key=f"k-{uuid.uuid4().hex}")
+    await session.commit()
+    return key
+
+
+@pytest.mark.parametrize("door, field, hostile", [
+    (d, f, h) for (m, p), fields in _NUMBER_ROUTES.items()
+    for d in [_ROUTE_DOORS.get((m, p), f"{m} {p}")] for f in fields for h in HOSTILE
+] + [(_EARLIER, f, h) for f in (*NUMBER_FIELDS, *_KEY_FIELDS) for h in HOSTILE])
+async def test_a_number_in_a_hostile_spelling_is_one_number_through_every_door(client, session, door, field, hostile):
+    """A number sent through any door in any field, spelled with spaces of any kind around it or
+    with letters whose lower case differs between Python and the database, is saved as the number
+    it means, the next record given its twin is refused, and the counter skips it. A record an
+    earlier version saved with its spaces is held the same."""
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    prefix, sent, twin = HOSTILE[hostile]
+    if prefix:
+        assert (await client.patch("/docs/sequences/quotation", headers=h, json={"prefix": prefix})).status_code == 200
+    target = await _target(client, h, contacts, door)
+    n = (await _rows(client, h))["quotation"]["preview"]
+    kind = "list" if "list" in door else "doc"
+    sent = sent.format(n=n)
+    if door == _EARLIER:
+        eid = await _seed_earlier(session, auth["company_id"], kind, field, sent)
+    else:
+        key = sent if field == "key without colon" else f"{kind}:{sent}" if field == "key" else None
+        eid, refused = await _give(client, h, contacts, door, None if key else sent, target=target, key=key,
+                                   field="ref_id" if key else field)
+        assert refused is None, refused
+        if key:  # stored under the key with its number stripped
+            assert (await client.get(f"/{kind}s/{strip_key(key)}", headers=h)).status_code == 200
+        if not key:
+            state = (await client.get(f"/{kind}s/{eid}", headers=h)).json()
+            assert state[field] == strip_number(sent), state[field]
+    r = await _quote_doc(client, h, contacts, ref_id=twin.format(n=n))
+    assert r.status_code == 409 and r.json()["detail"]["message_key"] == f"documents.err_{kind}_number_taken", r.text
+    shown = r.json()["detail"]["params"]["number"]
+    assert shown and shown == strip_number(shown), shown
+    assert (await _rows(client, h))["quotation"]["preview"] != n
+
+
+@pytest.mark.parametrize("hostile", HOSTILE)
+@pytest.mark.parametrize("door", _DOORS)
+async def test_a_record_an_earlier_version_stored_under_its_number_as_sent_holds_it_once_renumbered(
+        client, session, door, hostile):
+    """An earlier version stored a Document under its number as sent (``doc:<NBSP>QUO-0001<NBSP>``,
+    the key its import's event carries). Renumbered, it still holds the number its key holds: no
+    other record takes it through any door."""
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    prefix, sent, twin = HOSTILE[hostile]
+    if prefix:
+        assert (await client.patch("/docs/sequences/quotation", headers=h, json={"prefix": prefix})).status_code == 200
+    n = (await _rows(client, h))["quotation"]["preview"]
+    key = f"doc:{sent.format(n=n)}"
+    await emit_event(session, company_id=auth["company_id"], entity_id=key, entity_type="doc",
+                     event_type="doc.created", data=_imported("doc", key, sent.format(n=n))["data"],
+                     actor_id=None, location_id=None, source="csv", idempotency_key=f"k-{uuid.uuid4().hex}")
+    await session.commit()
+    r = await client.post(f"/docs/{quote(key)}/renumber", headers=h, json={"ref_id": f"MOVED-{uuid.uuid4().hex[:6]}"})
+    assert r.status_code == 200, r.text
+    _, refused = await _give(client, h, contacts, door, twin.format(n=n),
+                             target=await _target(client, h, contacts, door))
+    assert refused == "err_doc_number_taken", refused
+
+
+# How a record holds a number: shows it, keeps it, or is stored under it (clean, or padded as an
+# earlier version stored it) after being renumbered away from it.
+_HOLDS = {"shown": "ref_id", "kept": "doc_number", "key": "", "NBSP key": "\xa0", "U+3000 key": "\u3000"}
+
+
+@pytest.mark.parametrize("same_type", [True, False], ids=["same type", "other type"])
+@pytest.mark.parametrize("door", ["create doc", "patch doc", "renumber doc", "import doc"])
+@pytest.mark.parametrize("holds", _HOLDS)
+async def test_who_holds_a_number_against_each_door_and_document_type(client, session, holds, door, same_type):
+    """A Document holding a number, in any way, refuses it to every other Document. Only an import
+    of another type may share a number another Document shows or keeps, as another system's bill
+    and invoice may; a number a record is stored under is its own whatever the type."""
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    n = f"MX-{uuid.uuid4().hex[:6]}"
+    pad = _HOLDS[holds]
+    key = f"doc:{pad}{n}{pad}" if holds.endswith("key") else f"doc:held-{uuid.uuid4().hex[:6]}"
+    data = {**_imported("doc", key, None)["data"], "doc_type": "quotation" if same_type else "invoice",
+            **({_HOLDS[holds]: n} if holds in ("shown", "kept") else {"ref_id": f"MOVED-{uuid.uuid4().hex[:6]}"})}
+    await emit_event(session, company_id=auth["company_id"], entity_id=key, entity_type="doc",
+                     event_type="doc.created", data=data, actor_id=None, location_id=None,
+                     source="csv", idempotency_key=f"k-{uuid.uuid4().hex}")
+    await session.commit()
+    _, refused = await _give(client, h, contacts, door, n, target=await _target(client, h, contacts, door))
+    shares = door == "import doc" and not same_type and holds in ("shown", "kept")
+    assert refused == (None if shares else "err_doc_number_taken"), refused
+
+
+async def test_no_writer_sets_or_clears_the_number_a_padded_key_holds(client, session):
+    """The number a padded storage key holds (KEY_FIELD) is the record's own: a patch or an
+    import naming it neither sets it on a record whose key is clean nor clears or moves it on
+    one whose key is padded."""
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    padded = "doc:\xa0PAD-0001\xa0"
+    await emit_event(session, company_id=auth["company_id"], entity_id=padded, entity_type="doc",
+                     event_type="doc.created", data=_imported("doc", padded, "PAD-0001")["data"],
+                     actor_id=None, location_id=None, source="csv", idempotency_key=f"k-{uuid.uuid4().hex}")
+    await session.commit()
+    clean = (await _quote_doc(client, h, contacts)).json()["id"]
+    for eid, sent in ((padded, "TAKEN-0001"), (padded, None), (clean, "TAKEN-0002")):
+        r = await client.patch(f"/docs/{quote(eid)}", headers=h,
+                               json={"fields_changed": {KEY_FIELD: {"old": None, "new": sent}}})
+        assert r.status_code in (200, 422), r.text
+    record = _imported("doc", "doc:imp-key", "IMP-0001")
+    record["data"][KEY_FIELD] = "TAKEN-0003"
+    assert (await client.post("/docs/import", headers=h, json=record)).status_code == 200
+    states = {eid: (await session.get(Projection, (auth["company_id"], eid), populate_existing=True)).state
+              for eid in (padded, clean, "doc:imp-key")}
+    assert [s.get(KEY_FIELD) for s in states.values()] == ["PAD-0001", None, None], states
+    for n in ("TAKEN-0001", "TAKEN-0002", "TAKEN-0003"):
+        assert (await _quote_doc(client, h, contacts, ref_id=n)).status_code == 200, n
+
+
+async def test_the_number_a_padded_key_holds_is_shown_nowhere(client, session):
+    """KEY_FIELD is numbering's alone: no detail page, export column or API schema shows it."""
+    auth, _ = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    for kind in ("doc", "list"):
+        html = to_xml(_doc_detail({"entity_id": f"{kind}:\xa0K\xa0", "id": f"{kind}:\xa0K\xa0",
+                                   "doc_type": "quotation", "list_type": "quotation", "line_items": [],
+                                   "ref_id": "SHOWN-1", KEY_FIELD: "HIDDEN-KEY-1"}))
+        assert "HIDDEN-KEY-1" not in html and KEY_FIELD not in html, kind
+        r = await client.get(f"/{kind}s/export/csv", headers=h, params={"cols": KEY_FIELD})
+        # Refused as an unknown column, which the refusal does not offer either.
+        assert r.status_code >= 400 and KEY_FIELD not in r.json()["detail"].split("Choose from")[1], r.text[:200]
+    assert KEY_FIELD not in json.dumps(app.openapi())
+
+
+@pytest.mark.parametrize("door", _DOORS)
+async def test_a_number_that_is_not_text_is_refused_and_a_blank_one_is_stored_empty(client, session, door):
+    """A number that is not text is refused through every door. A number of nothing but spaces
+    is stored as empty by an import or a patch, held by no record, and refused by name where a
+    record is created or renumbered to it."""
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    kind = "list" if "list" in door else "doc"
+    _, refused = await _give(client, h, contacts, door, 12345, target=await _target(client, h, contacts, door))
+    assert refused in ("err_number_required", "schema 422") or refused.endswith(": Enter a document number."), refused
+    for _ in range(2):
+        eid, refused = await _give(client, h, contacts, door, "\u3000\t ", target=await _target(client, h, contacts, door))
+        if door.startswith(("create", "renumber")):
+            assert refused == "err_number_required", refused
+        else:
+            assert refused is None, refused
+            assert (await client.get(f"/{kind}s/{eid}", headers=h)).json()["ref_id"] == "", door
+
+
+@pytest.mark.parametrize("door", [d for d in _DOORS if d.startswith("import")])
+async def test_an_import_stored_under_a_key_another_record_holds_is_refused(client, session, door):
+    """The number inside an import's storage key counts as the numbers it shows do: a key equal,
+    in another case, to the key another record is stored under, or to the number another record
+    shows, is refused with the message every other door gives."""
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    kind = "list" if "list" in door else "doc"
+    stored = (await _quote_doc(client, h, contacts)).json()["id"].split(":", 1)[1]
+    shown_by = (await _quote_doc(client, h, contacts)).json()["id"]
+    shown = f"SHOWN-{uuid.uuid4().hex[:6]}"
+    assert (await client.post(f"/docs/{shown_by}/renumber", headers=h, json={"ref_id": shown})).status_code == 200
+    for key in (f"{kind}:{stored.lower()}", f"{kind}:{shown.lower()} "):
+        eid, refused = await _give(client, h, contacts, door, f"IMP-{uuid.uuid4().hex[:6]}", key=key)
+        assert refused == "err_doc_number_taken", (key, refused)
+        assert (await client.get(f"/{kind}s/{eid}", headers=h)).status_code == 404
+
+
+@pytest.mark.parametrize("door", [d for d in _DOORS if d.startswith("import")])
+async def test_an_import_under_a_key_whose_number_is_free_is_saved(client, session, door):
+    """A storage key holds the number after its first colon, or the whole key when it has none:
+    an import under any key whose number no other record holds is saved."""
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    kind = "list" if "list" in door else "doc"
+    for key in (f"{kind}-imp-{uuid.uuid4().hex[:6]}", f"{kind}:", f"other:{uuid.uuid4().hex[:6]}"):
+        eid, refused = await _give(client, h, contacts, door, f"IMP-{uuid.uuid4().hex[:6]}", key=key)
+        assert refused is None, (key, refused)
+        assert (await client.get(f"/{kind}s/{eid}", headers=h)).status_code == 200, key
+
+
 # ── Census: every door into numbering goes through the boundary ────────────
 
 _DRAWS = {"next_doc_ref", "next_draft_ref", "_next_free_list_ref", "claim_number"}
 _NUMBERED = {"doc.created", "list.created", "doc.renumbered", "DOC_CREATED", "LIST_CREATED", "DOC_RENUMBERED"}
-_BOUNDARY = {"claim_number", "require_number_free"}
+_BOUNDARY = {"claim_number", "require_number_free", "free_number", "free_import_numbers", "free_patched_numbers"}
+_FIELD_ROOTS = ("default_modules", "celerp/importers")
 # A writer handed a number its caller claimed: (file, function) -> the caller that claims it.
 _CLAIMED_BY_CALLER = {
     ("default_modules/celerp-docs/celerp_docs/consignment_buy.py", "buy_consignment"): "convert_doc",
+}
+# A writer that builds a record and hands it to a writer that checks its numbers:
+# (file, function) -> (file, function) of that writer.
+_HANDED = {
+    ("default_modules/celerp-docs/celerp_docs/migration_sink.py", "_doc_record"): (
+        "default_modules/celerp-docs/celerp_docs/import_service.py", "create_imported_doc"),
+}
+# A write of a number field that gives no Document or List a number, by reason.
+_NOT_A_RECORD_NUMBER = {
+    "an item event or journal entry naming the document it came from": {
+        ("celerp-docs/celerp_docs/routes.py", "record_historical_delivery"),
+        ("celerp-docs/celerp_docs/routes.py", "_set_lot_status"),
+        ("celerp-docs/celerp_docs/routes.py", "_return_to_source_memo"),
+        ("celerp-docs/celerp_docs/routes.py", "_fulfill_lines_impl"),
+        ("celerp-docs/celerp_docs/routes.py", "_reverse_whole_lines"),
+        ("celerp-docs/celerp_docs/routes.py", "write_off_stock"),
+        ("celerp-inventory/celerp_inventory/routes.py", "undo_merge"),
+        ("celerp-inventory/celerp_inventory/services.py", "restate_item_cost"),
+        ("celerp-inventory/celerp_inventory/services.py", "cost_correction_notice"),
+        ("celerp-inventory/celerp_inventory/services.py", "_sale_of_lot"),
+        ("celerp-inventory/celerp_inventory/projections.py", "_apply_item_event"),
+    },
+    "a projection storing the number its event carries": {
+        ("celerp-docs/celerp_docs/doc_projections.py", "apply_documents_event"),
+        ("celerp-docs/celerp_docs/received.py", "apply_received_event"),
+    },
+    "a row, page, email or platform payload built to show or send a record": {
+        ("celerp-admin/celerp_admin/routes.py", "_check_missing_jes"),
+        ("celerp-admin/celerp_admin/routes.py", "_check_inverted_doc_dates"),
+        ("celerp-admin/celerp_admin/routes.py", "_check_fractional_piece_quantities"),
+        ("celerp-docs/celerp_docs/doc_money.py", "memo_draws"),
+        ("celerp-docs/celerp_docs/doc_money.py", "memo_fixed_amounts"),
+        ("celerp-docs/celerp_docs/doc_service.py", "_invoice_for_push"),
+        ("celerp-docs/celerp_docs/routes.py", "_attach_memo_takes"),
+        ("celerp-docs/celerp_docs/routes.py", "doc_email"),
+        ("celerp-docs/celerp_docs/routes.py", "_list_columns"),
+        ("celerp-docs/celerp_docs/routes.py", "_draw_bill"),
+        ("celerp-docs/celerp_docs/routes.py", "_draw_preview"),
+        ("celerp-docs/celerp_docs/routes.py", "send_list"),
+        ("celerp-fixed-assets/celerp_fixed_assets/ui_physical.py", "_files_card"),
+        ("celerp-manufacturing/celerp_manufacturing/routes.py", "_compute_to_make"),
+        ("celerp-manufacturing/celerp_manufacturing/routes.py", "item_manufacturing_hub"),
+        ("celerp-subscriptions/celerp_subscriptions/billing.py", "_result"),
+        ("celerp-subscriptions/celerp_subscriptions/billing.py", "_listed_row"),
+        ("celerp-subscriptions/celerp_subscriptions/billing.py", "period_list"),
+        ("celerp-subscriptions/celerp_subscriptions/summary.py", "_rows"),
+    },
+    "a number a connected platform gave its record, kept as given: such a platform may give two records one number": {
+        ("celerp-docs/celerp_docs/doc_service.py", "upsert_order_from_shopify"),
+        ("celerp-docs/celerp_docs/doc_service.py", "upsert_invoice_from_quickbooks"),
+        ("celerp-docs/celerp_docs/doc_service.py", "upsert_invoice_from_xero"),
+        ("celerp-docs/celerp_docs/doc_service.py", "upsert_order_from_woocommerce"),
+    },
+    "a bill taking back the number of the order it was, which no other record holds (number_holder)": {
+        ("celerp-docs/celerp_docs/routes.py", "revert_doc_to_draft"),
+    },
+    "a record keeping the number it already has": {
+        ("celerp-docs/celerp_docs/routes.py", "finalize_document"),
+        ("celerp-docs/celerp_docs/routes.py", "change_list_type"),
+    },
 }
 
 
@@ -441,33 +908,91 @@ def _own_nodes(fn):
             todo.extend(ast.iter_child_nodes(node))
 
 
-def _census() -> list[tuple[str, str, str, str, set[str]]]:
-    """(kind, file, function, what, boundary calls) for every counter draw, every event that gives
-    a Document or List its number and every writer of a patch that may change a number."""
-    rows = []
+def _app_functions(roots=("celerp", "default_modules", "ui")):
+    """(file, function node) for every function of the app under ``roots``, tests left out."""
     for path in sorted(_REPO.rglob("*.py")):
         rel = path.relative_to(_REPO)
-        if rel.parts[0] not in {"celerp", "default_modules", "ui"} or any(
+        if not any(str(rel).startswith(f"{r}/") for r in roots) or any(
                 p in {"tests", "__pycache__"} or p.startswith("test_") for p in rel.parts):
             continue
         for fn in ast.walk(ast.parse(path.read_text())):
-            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            calls = [n for n in _own_nodes(fn) if isinstance(n, ast.Call)]
-            via = {_name(c.func) for c in calls} & _BOUNDARY
-            for call in calls:
-                what = _name(call.func)
-                tags = [a.value if isinstance(a, ast.Constant) else _name(a)
-                        for a in [*call.args, *(k.value for k in call.keywords)]]
-                if what in _DRAWS:
-                    rows.append(("DRAW", str(rel), fn.name, what, via))
-                if what in {"emit_event", "_emit_list"} and set(tags) & _NUMBERED:
-                    rows.append(("NUMBER", str(rel), fn.name, what, via))
-                if (what == "get" and isinstance(call.func, ast.Attribute)
-                        and "fields_changed" in ast.unparse(call.func.value) and tags[:1] == ["ref_id"]):
-                    rows.append(("REF_EDIT", str(rel), fn.name, what, via))
-                if what == "_refuse_protected_fields":  # a writer of a user's field patch, ref_id included
-                    rows.append(("PATCH", str(rel), fn.name, what, via))
+            if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                yield str(rel), fn
+
+
+def _field_writes(fn) -> list[tuple[str, int, ast.expr]]:
+    """(field, line, value) for every number field (NUMBER_FIELDS) ``fn`` writes: as a dict
+    key, a subscript store or a keyword argument."""
+    found = []
+    for n in _own_nodes(fn):
+        if isinstance(n, ast.Dict):
+            found += [(k.value, n.lineno, v) for k, v in zip(n.keys, n.values)
+                      if isinstance(k, ast.Constant) and k.value in NUMBER_FIELDS]
+        elif isinstance(n, ast.Assign):
+            found += [(t_.slice.value, n.lineno, n.value) for t_ in n.targets if isinstance(t_, ast.Subscript)
+                      and isinstance(t_.slice, ast.Constant) and t_.slice.value in NUMBER_FIELDS]
+        elif isinstance(n, ast.Call):
+            found += [(k.arg, n.lineno, k.value) for k in n.keywords if k.arg in NUMBER_FIELDS]
+    return found
+
+
+def _checked(fn) -> set[str]:
+    """The names and subscripts in ``fn`` that hold a number the boundary returned, followed
+    through plain assignments."""
+    assigns = [n for n in _own_nodes(fn) if isinstance(n, ast.Assign)]
+    held: set[str] = set()
+    while True:
+        grown = held | {ast.unparse(t_) for n in assigns if _from_boundary(n.value, held) for t_ in n.targets}
+        if grown == held:
+            return held
+        held = grown
+
+
+def _from_boundary(value: ast.expr, held: set[str]) -> bool:
+    return any((isinstance(n, ast.Call) and _name(n.func) in _BOUNDARY)
+               or (isinstance(n, (ast.Name, ast.Subscript)) and ast.unparse(n) in held) for n in ast.walk(value))
+
+
+def _disposition(rel: str, fn) -> str | None:
+    """Why ``fn`` may write a number field it did not take from the boundary; None when nothing says."""
+    if (rel, fn.name) in _CLAIMED_BY_CALLER:
+        return f"claimed by its caller {_CLAIMED_BY_CALLER[rel, fn.name]}"
+    if (rel, fn.name) in _HANDED:
+        return f"handed to {_HANDED[rel, fn.name][1]}"
+    short = rel.removeprefix("default_modules/")
+    return next((why for why, where in _NOT_A_RECORD_NUMBER.items() if (short, fn.name) in where), None)
+
+
+def _field_census() -> list[tuple[str, str, str, int, str | None]]:
+    """(field, file, function, line, disposition) for every write of a number field under
+    default_modules and celerp/importers: "boundary" when the value written is one the boundary
+    returned, otherwise the stated reason, or None."""
+    rows = []
+    for rel, fn in _app_functions(_FIELD_ROOTS):
+        held = _checked(fn)
+        for field, line, value in _field_writes(fn):
+            how = "boundary" if _from_boundary(value, held) else _disposition(rel, fn)
+            rows.append((field, rel, fn.name, line, how))
+    return rows
+
+
+def _census() -> list[tuple[str, str, str, str, set[str]]]:
+    """(kind, file, function, what, boundary calls) for every counter draw, every event that gives
+    a Document or List its number and every writer of a user's field patch."""
+    rows = []
+    for rel, fn in _app_functions():
+        calls = [n for n in _own_nodes(fn) if isinstance(n, ast.Call)]
+        via = {_name(c.func) for c in calls} & _BOUNDARY
+        for call in calls:
+            what = _name(call.func)
+            tags = [a.value if isinstance(a, ast.Constant) else _name(a)
+                    for a in [*call.args, *(k.value for k in call.keywords)]]
+            if what in _DRAWS:
+                rows.append(("DRAW", rel, fn.name, what, via))
+            if what in {"emit_event", "_emit_list"} and set(tags) & _NUMBERED:
+                rows.append(("NUMBER", rel, fn.name, what, via))
+            if what == "_refuse_protected_fields":  # a writer of a user's field patch, any number field included
+                rows.append(("PATCH", rel, fn.name, what, via))
     return rows
 
 
@@ -480,12 +1005,143 @@ async def test_every_counter_draw_goes_through_claim_number():
 
 
 async def test_every_numbered_writer_goes_through_the_boundary():
-    rows = [r for r in _census() if r[0] in {"NUMBER", "REF_EDIT", "PATCH"}]
+    rows = [r for r in _census() if r[0] in {"NUMBER", "PATCH"}]
     assert len(rows) >= 15 and {r[2] for r in rows if r[0] == "PATCH"} >= {"write_doc_patch", "write_list_patch"}, rows
     stray = [r[:4] for r in rows if not r[4] and (r[1], r[2]) not in _CLAIMED_BY_CALLER]
     assert not stray, f"a writer gives a number without claim_number or require_number_free: {stray}"
+    unpatched = [r[:4] for r in rows if r[0] == "PATCH" and "free_patched_numbers" not in r[4]]
+    assert not unpatched, f"a patch writer leaves a number field unchecked: {unpatched}"
     callers = {r[2] for r in _census() if r[4]}
     assert set(_CLAIMED_BY_CALLER.values()) <= callers
+
+
+async def test_every_write_of_a_number_field_takes_the_number_the_boundary_returns():
+    rows = _field_census()
+    assert {r[0] for r in rows} == set(NUMBER_FIELDS) and sum(r[4] == "boundary" for r in rows) >= 20, rows
+    stray = [r[:4] for r in rows if r[4] is None]
+    assert not stray, f"a number field is written without the boundary or a stated reason: {stray}"
+    named = {(r[1], r[2]) for r in rows if r[4] not in (None, "boundary")}
+    mapped = {*_CLAIMED_BY_CALLER, *_HANDED, *(("default_modules/" + f, fn) for where in
+                                                _NOT_A_RECORD_NUMBER.values() for f, fn in where)}
+    assert mapped <= named, f"a census reason names a writer that writes no number field: {mapped - named}"
+    checkers = {(rel, fn.name) for rel, fn in _app_functions(_FIELD_ROOTS)
+                if {_name(c.func) for c in _own_nodes(fn) if isinstance(c, ast.Call)} & _BOUNDARY}
+    unchecked = {k: w for k, w in _HANDED.items() if w not in checkers}
+    assert not unchecked, f"a record is handed to a writer that does not check its numbers: {unchecked}"
+
+
+def _checks_the_key(call: ast.Call) -> bool:
+    """Whether ``call`` is free_number on the number inside a storage key (key_number)."""
+    return (_name(call.func) == "free_number" and len(call.args) > 2
+            and "key_number" in ast.unparse(call.args[2]))
+
+
+def _discarded_numbers() -> list[tuple[str, str]]:
+    """(file, function) of every boundary call whose returned number is thrown away, so the
+    writer would store the number as sent. The number inside an import's storage key is only
+    checked: the import record strips it (strip_key). free_patched_numbers gives the numbers
+    back in the patch it is handed."""
+    return [(rel, fn.name) for rel, fn in _app_functions() for n in _own_nodes(fn)
+            if isinstance(n, ast.Expr) and isinstance(n.value, ast.Await) and isinstance(n.value.value, ast.Call)
+            and _name(n.value.value.func) in _BOUNDARY - {"claim_number", "free_patched_numbers"}
+            and not _checks_the_key(n.value.value)]
+
+
+async def test_every_writer_stores_the_number_the_boundary_returns():
+    assert sum(1 for r in _census() if r[4] & (_BOUNDARY - {"claim_number"})) >= 8
+    assert not _discarded_numbers(), f"a writer checks a number but stores it as sent: {_discarded_numbers()}"
+
+
+# A refusal is fair only where the user holds the number that resolves it. Every caller of the
+# numbering check, by who gives the number: "user" (typed or imported: refused with the choose-
+# another message) or "system" (derived by the app: never refused, the writer takes the path that
+# keeps the record's meaning and only asks number_holder who holds the number).
+_REFUSES = {"require_number_free", "free_number", "free_import_numbers", "free_patched_numbers"}
+_DOCS = "default_modules/celerp-docs/celerp_docs"
+_REFUSAL_WAY_OUT = {
+    (f"{_DOCS}/routes.py", "create_doc_record"): ("user", "the number given on create"),
+    (f"{_DOCS}/routes.py", "create_list_record"): ("user", "the number given on create"),
+    (f"{_DOCS}/routes.py", "write_doc_patch"): ("user", "the number a patch sets"),
+    (f"{_DOCS}/routes.py", "write_list_patch"): ("user", "the number a patch sets"),
+    (f"{_DOCS}/routes.py", "renumber_doc"): ("user", "the number a renumber asks for"),
+    (f"{_DOCS}/routes.py", "import_list"): ("user", "the number and key in the imported file"),
+    (f"{_DOCS}/routes.py", "batch_import_lists"): ("user", "the number and key in the imported file"),
+    (f"{_DOCS}/import_service.py", "create_imported_doc"): ("user", "the number and key in the imported file"),
+    (f"{_DOCS}/routes.py", "revert_doc_to_draft"): (
+        "system", "the order number a bill was converted from: held elsewhere, the bill stays a bill"),
+}
+
+
+def _number_checks() -> dict[tuple[str, str], set[str]]:
+    """(file, function) -> the numbering checks it calls, for every caller outside the checks."""
+    calls = {}
+    for rel, fn in _app_functions():
+        if fn.name in _REFUSES | {"number_holder"}:
+            continue
+        names = {_name(n.func) for n in _own_nodes(fn) if isinstance(n, ast.Call)} & (_REFUSES | {"number_holder"})
+        if names:
+            calls[rel, fn.name] = names
+    return calls
+
+
+async def test_every_caller_of_the_numbering_check_says_who_holds_the_way_out():
+    calls = _number_checks()
+    assert calls.keys() == _REFUSAL_WAY_OUT.keys(), (
+        f"unclassified: {calls.keys() - _REFUSAL_WAY_OUT.keys()}, gone: {_REFUSAL_WAY_OUT.keys() - calls.keys()}")
+    refused = {k: calls[k] & _REFUSES for k, (who, _) in _REFUSAL_WAY_OUT.items() if who == "system"}
+    assert not any(refused.values()), f"a number the app derived is refused: {refused}"
+
+
+async def _imported_bill(client, h, contacts) -> tuple[str, str]:
+    """An imported bill naming an imported purchase order, a separate record holding the order's
+    number: (the bill's key, its number)."""
+    po, number, bill = f"PO-{uuid.uuid4().hex[:6]}", f"BILL-{uuid.uuid4().hex[:6]}", f"doc:{uuid.uuid4()}"
+    vendor = next(c for c in contacts if c.get("contact_type") in ("vendor", "both"))
+    base = {"contact_id": vendor["id"], "line_items": [{"name": "Svc", "quantity": 1, "unit_price": 100}],
+            "currency": "USD", "issue_date": "2026-11-01", "import_treatment": "opening_balances",
+            "subtotal": 100, "total": 100}
+    for key, data in ((f"doc:{uuid.uuid4()}", {"doc_type": "purchase_order", "ref_id": po, "status": "converted"}),
+                      (bill, {"doc_type": "bill", "ref_id": number, "status": "awaiting_payment",
+                              "source_po_ref": po, "amount_outstanding": 100})):
+        r = await client.post("/docs/import", headers=h, json={
+            "entity_id": key, "event_type": "doc.created", "idempotency_key": f"k-{uuid.uuid4().hex}",
+            "source": "csv", "data": {**base, **data}})
+        assert r.status_code == 200, r.text
+    return bill, number
+
+
+@pytest.mark.parametrize("door", (*_DOORS, "revert"))
+async def test_every_door_that_writes_a_number_locks_the_company_before_any_record(client, session, door):
+    """Numbering locks the company (lock_company, FOR NO KEY UPDATE), so a door that locked a
+    record first could deadlock with one that numbers: each takes that lock before any record
+    FOR UPDATE, as lock_projections and emit_event do. A share lock (hold_company) does not count."""
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    target = (await _imported_bill(client, h, contacts))[0] if door == "revert" else await _target(client, h, contacts, door)
+    seen = []
+    engine = session.bind.sync_engine
+
+    def record(conn, cursor, statement, parameters, *_):
+        if "FROM companies" in statement and "FOR NO KEY UPDATE" in statement:
+            seen.append("companies")
+        elif "FROM projections" in statement and " FOR " in statement and "SHARE" not in statement:
+            seen.append("projections")
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        if door == "revert":
+            r = await client.post(f"/docs/{target}/revert-to-draft", headers=h, json={"reason": "wrong supplier"})
+            assert r.status_code == 200, r.text
+        else:
+            assert (await _give(client, h, contacts, door, f"LK-{uuid.uuid4().hex[:6]}", target=target))[1] is None
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+    assert "companies" in seen and seen.index("companies") <= (seen + ["projections"]).index("projections"), seen
+
+
+def census_report() -> str:
+    """The census by number field as text: one line per write with its disposition."""
+    return "\n".join(f"{f}\t{rel}:{line}\t{fn}\t{how}" for f, rel, fn, line, how in
+                     sorted(_field_census(), key=lambda r: (r[0], r[1], r[3])))
 
 
 # ── Census: the numbering map has one writer and the legacy rule one reader ──
@@ -578,3 +1234,16 @@ async def test_the_refusal_census_tells_a_keyed_raise_from_a_bare_one(source, ke
     parent = {c: n for n in ast.walk(tree) for c in ast.iter_child_nodes(n)}
     raise_ = next(n for n in ast.walk(tree) if isinstance(n, ast.Raise))
     assert _keyed_raise(raise_.exc, parent.get(raise_)) is keyed
+
+
+async def test_an_imported_bill_whose_order_is_another_record_reverts_to_a_draft_bill(client, session):
+    """An imported bill names its imported purchase order, a separate record holding the order's
+    number, so the bill was never that order: it goes back to a draft bill under its own number,
+    with no refusal the user could not resolve."""
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    bill, number = await _imported_bill(client, h, contacts)
+    r = await client.post(f"/docs/{bill}/revert-to-draft", headers=h, json={"reason": "wrong supplier"})
+    assert r.status_code == 200, r.text
+    after = (await client.get(f"/docs/{bill}", headers=h)).json()
+    assert (after["doc_type"], after["ref_id"], after["status"]) == ("bill", number, "draft")

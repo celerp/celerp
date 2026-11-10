@@ -30,6 +30,9 @@ import pytest
 import yaml
 from packaging.requirements import Requirement
 
+# The first test collects every job's tests, two jobs of up to 600 s each.
+pytestmark = pytest.mark.timeout(1200)
+
 ROOT = Path(__file__).resolve().parent.parent
 SLOW_RUNNER = 1.6
 COLLECTION_S = 80

@@ -15,6 +15,7 @@ from sqlalchemy.pool import NullPool
 from celerp.capacity import REQUEST_DB_MAX_OVERFLOW, REQUEST_DB_POOL_SIZE
 from celerp.config import settings
 from celerp.db_url import same_database
+from celerp.json_text import dump_json
 
 # The advisory-lock key every supported change to Celerp's PostgreSQL schema holds
 # exclusively (core and module migrations, the startup create_all, a module's data
@@ -58,30 +59,48 @@ async def migration_key_async(conn):
         _MIGRATION_KEY_HELD.reset(token)
         await conn.execute(_sql_text("SELECT pg_advisory_unlock(:k)"), {"k": _MIGRATION_LOCK_KEY})
 
-# Set on the session while a change that must commit whole runs (one_unit).
+# Set on the session while a change that must commit whole runs (one_unit), and when
+# a full rollback inside it threw away the work done before.
 _ONE_UNIT = "one_unit_open"
+_UNIT_BROKEN = "one_unit_broken"
 
 
 @contextmanager
 def one_unit(session):
     """Run a change that commits whole or not at all: while it runs, a commit of the
     outer transaction (a step committing part of the change, and releasing the locks
-    the rest relies on) is refused. Savepoints still release. The caller commits after."""
+    the rest relies on) is refused, and a full rollback (a step discarding the work
+    before it and carrying on) makes leaving the unit raise, so the caller rolls back
+    the rest. Savepoints still release and roll back. The caller commits after."""
     open_units = session.info.get(_ONE_UNIT, 0)
     session.info[_ONE_UNIT] = open_units + 1
+    failed = False
     try:
         yield
+    except BaseException:
+        failed = True
+        raise
     finally:
         if open_units:
             session.info[_ONE_UNIT] = open_units
+            broken = session.info.get(_UNIT_BROKEN)
         else:
             session.info.pop(_ONE_UNIT, None)
+            broken = session.info.pop(_UNIT_BROKEN, None)
+        if broken and not failed:
+            raise RuntimeError("A step rolled back part of a change that commits whole or not at all")
 
 
 @event.listens_for(Session, "before_commit")
 def _a_unit_commits_whole(session: Session) -> None:
     if session.info.get(_ONE_UNIT) and not session.in_nested_transaction():
         raise RuntimeError("A step committed part of a change that commits whole or not at all")
+
+
+@event.listens_for(Session, "after_soft_rollback")
+def _a_unit_rolls_back_whole(session: Session, previous_transaction) -> None:
+    if session.info.get(_ONE_UNIT) and previous_transaction.parent is None:
+        session.info[_UNIT_BROKEN] = True
 
 
 # Redacts the password in any Postgres URL: "://user:secret@host" -> "://user:***@host".
@@ -128,11 +147,12 @@ if os.environ.get("CELERP_TEST_NULLPOOL"):
     # connection and block the next test's TRUNCATE. Only ever set by the test
     # harness; no effect in production.
     engine = create_async_engine(settings.database_url, future=True, poolclass=NullPool,
-                                 connect_args=REQUEST_CONNECT_ARGS)
+                                 connect_args=REQUEST_CONNECT_ARGS, json_serializer=dump_json)
 else:
     engine = create_async_engine(
         settings.database_url,
         future=True,
+        json_serializer=dump_json,
         pool_pre_ping=True,
         pool_size=REQUEST_DB_POOL_SIZE,
         max_overflow=REQUEST_DB_MAX_OVERFLOW,
@@ -158,7 +178,8 @@ SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=
 # operations are rare and brief, so no pooled slot is reserved and the request pool
 # budget above is unaffected (at most one transient connection per concurrent
 # lifecycle op).
-lifecycle_engine = create_async_engine(settings.database_url, future=True, poolclass=NullPool)
+lifecycle_engine = create_async_engine(settings.database_url, future=True, poolclass=NullPool,
+                                       json_serializer=dump_json)
 LifecycleSessionLocal = async_sessionmaker(
     lifecycle_engine, class_=AsyncSession, expire_on_commit=False
 )

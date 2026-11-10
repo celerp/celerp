@@ -69,6 +69,7 @@ def _default_modules() -> set[str]:
             if (p / "__init__.py").is_file() and p.name.startswith("celerp-")}
 
 
+@pytest.mark.timeout(180)
 def test_each_module_page_is_served_as_part_of_its_module():
     got = _routes(_default_modules())
     wrong = {p: got[p] for p, owner in _OWNED.items()
@@ -76,6 +77,7 @@ def test_each_module_page_is_served_as_part_of_its_module():
     assert not wrong, wrong
 
 
+@pytest.mark.timeout(180)
 @pytest.mark.parametrize("off", sorted(set(_OWNED.values())))
 def test_a_module_the_installation_does_not_run_serves_none_of_its_pages(off):
     got = _routes(_default_modules() - {off})

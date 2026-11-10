@@ -16,6 +16,7 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, patch, MagicMock
+from urllib.parse import unquote
 
 from test_helpers import make_test_token, authed_cookies
 
@@ -820,12 +821,15 @@ class TestWorkflows:
         assert r.status_code in (200, 204, 302, 303)
 
     @pytest.mark.asyncio
-    async def test_subscription_generate(self, ui):
+    async def test_subscription_generate_due(self, ui):
         ui.cookies.update(_c())
-        with _Patches({"ui.api_client.subscription_action": AsyncMock(return_value={"ok": True}),
+        billed = {"doc_id": "doc:1", "ref_id": "INV-0001", "period_index": 0, "already_billed": False,
+                  "service_start": "2026-01-01", "service_end": "2026-01-31", "bill_date": "2026-01-01"}
+        with _Patches({"ui.api_client.subscription_action": AsyncMock(return_value=billed),
                        "ui.api_client.get_subscription": AsyncMock(return_value=_SUB)}):
-            r = await ui.post("/subscriptions/sub:1/generate")
-        assert r.status_code in (200, 204, 302, 303)
+            r = await ui.post("/subscriptions/sub:1/generate-due")
+        assert r.status_code == 204
+        assert "INV-0001" in unquote(str(r.headers))
 
 
 # ══════════════════════════════════════════════════════════════════════════════

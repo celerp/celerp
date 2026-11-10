@@ -28,10 +28,11 @@ Trademarks are not licensed by any code license; see `legal/TRADEMARK.md`.
 
 | Variable | Default | Notes |
 |----------|---------|-------|
-| `DATABASE_URL` | _(required to run the app)_ | `postgresql+asyncpg://user:pass@localhost:5432/dbname`. **Leave it unset when running the tests** (see [Running the tests](#running-the-tests)) |
+| `DATABASE_URL` | _(required to run the app)_ | `postgresql+asyncpg://user:pass@localhost:5432/dbname`. The tests never read it (see [Running the tests](#running-the-tests)) |
 | `JWT_SECRET` | _(required)_ | Fatal on startup if unset or default in production |
 | `ALLOW_INSECURE_JWT` | `false` | Set `true` in dev/CI |
 | `CELERP_PUBLIC_URL` | _(optional)_ | Base URL for share links |
+| `CELERP_TEST_DATABASE_URL` | _(optional, tests only)_ | A local Postgres database with "test" in its name for the test suite; unset, the tests start a throwaway container. The tests never read `DATABASE_URL` |
 | `MODULE_DIR` | `default_modules` | Module package directory |
 | `ENABLED_MODULES` | _(all)_ | Comma-separated list to load |
 
@@ -168,23 +169,17 @@ auto = false
 The tests run on **real PostgreSQL**, the same database the app uses. There is no SQLite mode.
 
 ```bash
-unset DATABASE_URL        # important, see the warning below
 pytest tests/ -n auto     # -n sets the number of parallel workers
 ```
 
-With `DATABASE_URL` unset, `conftest.py` starts a throwaway `postgres:16-alpine` container
-through [testcontainers](https://testcontainers.com/), so **Docker must be running**. Each
-pytest-xdist worker gets its own database, and the container is discarded at the end of the run.
+`conftest.py` starts a throwaway `postgres:16-alpine` container through
+[testcontainers](https://testcontainers.com/), so **Docker must be running**. Each pytest-xdist
+worker gets its own database, and the container is discarded at the end of the run.
 
-> **Warning: never point `DATABASE_URL` at a real database when running the tests.**
-> If `DATABASE_URL` is set to a PostgreSQL server, `conftest.py` uses that server as the test
-> database. It runs `ALTER SYSTEM SET fsync = off` (and `synchronous_commit = off`,
-> `full_page_writes = off`) on it to speed the tests up, then creates one database per worker.
-> These are server-wide settings written to `postgresql.auto.conf`, so they stay in force after
-> the tests finish and remove the server's crash-safety guarantees. Only point `DATABASE_URL` at a
-> throwaway PostgreSQL (for example a CI service container) that you are happy to lose.
-> If you load `.env` into your shell to run the app (`source .env`), run `unset DATABASE_URL`
-> before `pytest`.
+To use a server of your own instead, create a database with "test" in its name on this machine
+and point `CELERP_TEST_DATABASE_URL` at it. The tests refuse any other server, never read
+`DATABASE_URL` and never change the server's settings, so a `.env` loaded into your shell to run
+the app cannot send them to a real database.
 
 **Colima:** testcontainers' Ryuk helper can fail to start with
 `error while creating mount source path '.../docker.sock': operation not supported`. Set

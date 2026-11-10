@@ -59,6 +59,7 @@ from packaging.version import InvalidVersion
 
 import celerp.db
 from celerp import db_catalog
+from celerp.json_text import dump_json
 from celerp.importers.tabular import ZIP_ERRORS, open_zip_member, zip_directory_fits
 from celerp.migrations.compatibility import is_newer_than_running, running_version
 from celerp.models.accounting import UserCompany
@@ -113,6 +114,7 @@ EXCLUDED_TABLES = {
     "connector_execution_heartbeats": "connector sync runs in progress",
     "outbound_queue": "messages waiting to leave this installation",
     "doc_share_tokens": "share links issued by this installation",
+    "subscription_email_attempts": "in-flight email messages belong to this installation",
     "connector_media_tokens": "image links issued by this installation",
     "notifications": "per-user notices",
     "ai_conversations": "per-user assistant history",
@@ -128,6 +130,7 @@ EXCLUDED_TABLES = {
 DROPPED_SETTINGS = frozenset({
     "ai_memory", "reorder_alert_email", "column_prefs",
     "pay_tip_shown", "reorder_last_scan_at", "restored_backup", "lineage_id", "firm_locks",
+    "subscription_summary_ack",
 }) | SET_BY_KEYS
 
 # The company a restored company descends from, carried in the manifest, never remapped.
@@ -519,7 +522,7 @@ def _parse_row(line: bytes | str):
 
 
 def _dump_rows(rows: list[dict]) -> str:
-    return _NUMBER.sub(r"\1", json.dumps(rows))
+    return _NUMBER.sub(r"\1", dump_json(rows))
 
 
 def _number(spelled: str) -> str:
@@ -1633,15 +1636,16 @@ async def _projection_states(session: AsyncSession, company_id) -> dict[str, tup
     return {eid: (etype, _canonical(_parse_row(state))) for eid, etype, state in rows.all()}
 
 
-async def _fill_line_ids(session: AsyncSession, company_id) -> None:
-    """Give each restored document and List line stored without a line id the id a replay
-    derives, so a backup made before line ids existed agrees with its ledger."""
-    from celerp.models.projections import Projection
+async def _as_replayed(session: AsyncSession, company_id) -> None:
+    """Give each restored Document and List what a replay derives and an earlier version did
+    not store: the id of each line stored without one, and its numbers stripped
+    (strip_numbers), so a backup made before either agrees with its ledger."""
+    from celerp.models.projections import Projection, strip_numbers
     from celerp.services.document_lines import fill_line_ids
     for proj in (await session.scalars(select(Projection).where(
             Projection.company_id == company_id, Projection.entity_type.in_(("doc", "list"))))).all():
         state = dict(proj.state or {})
-        if fill_line_ids(state, proj.entity_id):
+        if fill_line_ids(state, proj.entity_id) | strip_numbers(state, proj.entity_id):
             proj.state = state
     await session.flush()
 
@@ -1889,7 +1893,7 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 except DBAPIError:
                     raise BackupError(422, t(UNSAVABLE)) from None
             await _verify(session, checked, m, new_id, {new: old for old, new in id_map.items()})
-            await _fill_line_ids(session, new_id)
+            await _as_replayed(session, new_id)
             await _check_replay(session, new_id)
             if retain_peer_identities:
                 from celerp.services.peer_identity import seed_restored_identities
@@ -1901,6 +1905,12 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
                 await _rebind_actors(session, new_id)
             await _turn_off_shop_sync(session, new_id, user.id)
             await place_company_stock(session, new_id)
+            # Restored data must satisfy each enabled first-party module's current schema
+            # before this new company is committed or can replace an existing one.
+            from celerp.modules.slots import fire_lifecycle
+            failures = await fire_lifecycle("on_company_restored", session=session, company_id=new_id)
+            if failures:
+                raise BackupError(422, t(UNSAVABLE))
             team = await _add_team(session, new_id, team_to_add) if team_to_add else 0
             if replacing is not None:
                 # Last, once its team has the new company, so no one is signed out by it.
@@ -1922,7 +1932,7 @@ async def restore_company(path: Path, *, mode: str, user_id=None, current_compan
         try:
             await _settle_replaced(session, closure, task_id)
             # The restore has committed: rewriting the load set's mirror never undoes it.
-            await commit_with_load_set(session)
+            await commit_with_load_set(session, activated=[])
             if stored:
                 await asyncio.to_thread(attachments.clear_landing, str(new_id))
         except Exception:
@@ -1942,7 +1952,7 @@ async def finish_restore() -> None:
     settled by their own retries."""
     await reconcile_landings()
     async with AsyncSession(bind=celerp.db.engine) as session:
-        await commit_with_load_set(session)
+        await commit_with_load_set(session, activated=[])
 
 
 async def reopen_restored(company_id, *, user_id=None, owner_account: dict | None = None,

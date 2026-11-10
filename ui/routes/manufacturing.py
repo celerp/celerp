@@ -11,7 +11,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse
 
 import ui.api_client as api
-from ui.api_client import APIError
+from ui.api_client import APIError, error_message
 import uuid
 
 from ui.components.operation_key import (
@@ -20,7 +20,7 @@ from ui.components.operation_key import (
 from ui.components.deleted_items import deleted_items, deleted_label
 from ui.components.posting_accounts import account_picker, distinct_name
 from ui.components.shell import base_shell, page_header, page_title, toast_header
-from ui.components.table import (EMPTY, empty_mark, status_cards, empty_state_cta, format_value, search_bar,
+from ui.components.table import (EMPTY, select_all_th, empty_mark, status_cards, empty_state_cta, format_value, search_bar,
                                  bulk_toolbar, filter_th, display_enum, breadcrumbs, COLUMN_FILTER_JS, doc_href)
 from ui.config import get_token as _token
 from ui.i18n import reconcile_reason, refusal_text, t
@@ -240,8 +240,7 @@ def _demand_table(lines: list[dict], kept_key: str = "") -> FT:
         )
     return Table(
         Thead(Tr(
-            Th(Input(type="checkbox", cls="bulk-select-all", title=t("label.select_all")),
-                cls="col-checkbox"),
+            select_all_th(),
             Th(t("manufacturing.th_product")), Th(t("th.document")), Th(t("th.type")),
             filter_th(t("manufacturing.th_for"), 4), Th(t("manufacturing.th_due"), cls="cell--center"),
             Th(t("th.ordered"), cls="cell--number"), Th(t("manufacturing.th_short"), cls="cell--number"),
@@ -288,8 +287,7 @@ def _order_table(orders: list[dict], deleted: dict[str, dict], today: str = "", 
         )
     return Table(
         Thead(Tr(
-            Th(Input(type="checkbox", cls="bulk-select-all", title=t("label.select_all")),
-                cls="col-checkbox"),
+            select_all_th(),
             filter_th(t("manufacturing.th_product"), 1), Th(t("th.status")),
             filter_th(t("manufacturing.th_priority"), 3, center=True),
             Th(t("manufacturing.th_due"), cls="cell--center"), Th(t("msg.created")),
@@ -869,7 +867,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return P(t("error.session_expired"), cls="cell-error")
-            refusal, key = refusal_text(e.data or e.detail), kept_operation_key(form, e) or uuid.uuid4().hex
+            refusal, key = error_message(e), kept_operation_key(form, e) or uuid.uuid4().hex
         try:
             needs, accounts = await _reconcile_context(token, run_id)
         except APIError:
@@ -891,7 +889,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return P(t("error.session_expired"), cls="cell-error")
-            refusal, kind = refusal_text(e.data or e.detail), "error"
+            refusal, kind = error_message(e), "error"
             key = kept_operation_key(form, e) or uuid.uuid4().hex
         try:
             needs, accounts = await _reconcile_context(token, run_id)
@@ -952,7 +950,7 @@ def setup_routes(app):
             except APIError as e:
                 if e.status == 401:
                     return P(t("error.session_expired"), cls="cell-error")
-                refused = refusal_text(e.data or e.detail)  # e.g. the run closed meanwhile: say so
+                refused = error_message(e)  # e.g. the run closed meanwhile: say so
         table = await _incomplete_runs_table(token)
         return HTMLResponse(to_xml(table), headers=toast_header(refused, "error")) if refused else table
 

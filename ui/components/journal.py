@@ -24,7 +24,7 @@ from ui.components.report_kit import (
     fname_date, fx_line_amounts, href, je_source_label, period_subtitle,
 )
 from ui.components.shell import refusal_fix, toast_header
-from ui.components.table import EMPTY, bulk_toolbar, fmt_money, period_empty_note
+from ui.components.table import EMPTY, bulk_toolbar, select_all_th, fmt_money, period_empty_note
 from ui.i18n import refusal_text, t
 
 # What the journal can be narrowed by: one search box. The API takes this name and
@@ -451,8 +451,7 @@ def _headers(*, items: bool, has_fx: bool, select: bool) -> list:
             # every split of one posting reads as several rates.
             headers.append(Th(t("th.rate"), cls="cell--number"))
     if select:
-        headers.insert(0, Th(Input(type="checkbox", cls="bulk-select-all",
-                                   title=t("label.select_all")), cls="col-checkbox"))
+        headers.insert(0, select_all_th())
     return headers
 
 

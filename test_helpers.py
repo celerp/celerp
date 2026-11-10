@@ -37,9 +37,9 @@ UPLOAD_DELETE_RACE_WARNINGS = pytest.mark.filterwarnings(
     "ignore:Identity map already had an identity for .*Projection:sqlalchemy.exc.SAWarning",
 )
 
-# The root conftest always sets DATABASE_URL to the test Postgres before this is
-# imported; the default is just a sane placeholder for the Postgres-only app.
-DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql+asyncpg://celerp:celerp@localhost:5432/celerp")
+# The root conftest sets DATABASE_URL to this process's test database before this is
+# imported (conftest_support.provision_test_database); there is no other source.
+DATABASE_URL = os.environ["DATABASE_URL"]
 
 # The Windows account names the release build runs the packaged app under (build.yml
 # win-names), one per way a name can break: scripts outside the ANSI code page, a

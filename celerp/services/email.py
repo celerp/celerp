@@ -9,12 +9,30 @@ import logging
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr
+from typing import NamedTuple
 
 from celerp.output.branding import EMAIL_BRAND_LINE as _BRAND_LINE, brand_url as _brand_url
 
 log = logging.getLogger(__name__)
 
 _BRAND_URL = _brand_url("email")
+
+
+class EmailResult(NamedTuple):
+    """How a send ended. ``ok``: a transport accepted the message. ``detail``: the
+    transport's own words, for logs and receipts. ``unconfirmed``: the message may have
+    gone out, so it must not be sent again as a new email. ``reason``: the catalog key
+    that words a failure for the reader (None when sent or unconfirmed)."""
+    ok: bool
+    detail: str
+    unconfirmed: bool = False
+    reason: str | None = None
+
+
+def relay_send_is_idempotent() -> bool:
+    """The configured relay supports deduplicated retry with a stable operation id."""
+    from celerp.config import settings
+    return bool(settings.gateway_token)
 
 
 def _with_footer(body_html: str, body_text: str) -> tuple[str, str]:
@@ -42,13 +60,19 @@ async def send_email(
     bcc: str = "",
     from_name: str = "",
     branded: bool = True,
-) -> tuple[bool, str]:
-    """Send a transactional email via the relay or SMTP fallback.
+    operation_id: str | None = None,
+    fail_closed_on_uncertain: bool = False,
+) -> EmailResult:
+    """Send a transactional email via the relay or SMTP fallback. Never raises.
 
-    Returns (ok, detail). ok is True only when a transport actually accepted
-    the message - the relay path is a synchronous HTTP call to the relay's
-    /email/send (which submits to the provider before answering 200), so
-    callers can surface real delivery feedback. Never raises.
+    ok is True only when a transport actually accepted the message - the relay path
+    is a synchronous HTTP call to the relay's /email/send (which submits to the
+    provider before answering 200), so callers can surface real delivery feedback.
+    An SMTP send is unconfirmed only when it was cut off after the message was handed
+    over with no answer from the server; a failure before that (connect, TLS, sign-in,
+    sender or recipients refused) or an answer refusing the message is a plain failure.
+    ``fail_closed_on_uncertain``: a relay send whose outcome is unknown ends there as
+    unconfirmed instead of falling back to SMTP, which could send it twice.
     """
     from celerp.config import settings
 
@@ -80,54 +104,77 @@ async def send_email(
                         "cc": cc,
                         "bcc": bcc,
                         "from_name": from_name,
+                        **({"operation_id": operation_id} if operation_id else {}),
                     },
                 )
             if resp.status_code == 200:
-                return True, "delivered via Celerp relay"
+                return EmailResult(True, "delivered via Celerp relay")
             try:
                 detail = str(resp.json().get("detail") or f"relay error {resp.status_code}")
             except Exception:
                 detail = f"relay error {resp.status_code}"
             log.warning("Relay email to %s failed: %s", to, detail)
+            if fail_closed_on_uncertain:
+                uncertain = resp.status_code >= 500 or resp.status_code == 409
+                return EmailResult(False, detail, uncertain, None if uncertain else "email.err_relay_refused")
         except Exception as exc:
             detail = f"relay send failed: {exc}"
             log.warning("Relay email to %s failed: %s", to, detail)
+            if fail_closed_on_uncertain:
+                return EmailResult(False, detail, unconfirmed=True)
 
     # 2. SMTP fallback
     if settings.smtp_host:
+        import aiosmtplib
+
+        class _Transfer(aiosmtplib.SMTP):
+            """Notes when the message itself starts going to the server."""
+            handed_over = False
+
+            async def data(self, message, /, **kwargs):
+                self.handed_over = True
+                return await super().data(message, **kwargs)
+
+        from_addr = settings.smtp_from or settings.smtp_user
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = formataddr((settings.smtp_from_name, from_addr))
+        msg["To"] = to
+        if reply_to:
+            msg["Reply-To"] = reply_to
+        if cc:
+            msg["Cc"] = cc
+        if bcc:
+            msg["Bcc"] = bcc
+        if body_text:
+            msg.attach(MIMEText(body_text, "plain"))
+        msg.attach(MIMEText(body_html, "html"))
+
+        smtp = None
         try:
-            import aiosmtplib
-
-            from_addr = settings.smtp_from or settings.smtp_user
-            from_header = formataddr((settings.smtp_from_name, from_addr))
-
-            msg = MIMEMultipart("alternative")
-            msg["Subject"] = subject
-            msg["From"] = from_header
-            msg["To"] = to
-            if reply_to:
-                msg["Reply-To"] = reply_to
-            if cc:
-                msg["Cc"] = cc
-            if bcc:
-                msg["Bcc"] = bcc
-            if body_text:
-                msg.attach(MIMEText(body_text, "plain"))
-            msg.attach(MIMEText(body_html, "html"))
-
-            await aiosmtplib.send(
-                msg,
-                hostname=settings.smtp_host,
-                port=settings.smtp_port,
-                username=settings.smtp_user or None,
-                password=settings.smtp_password or None,
-                use_tls=settings.smtp_tls,
-            )
-            return True, "delivered via SMTP"
+            smtp = _Transfer(hostname=settings.smtp_host, port=settings.smtp_port,
+                             username=settings.smtp_user or None, password=settings.smtp_password or None,
+                             use_tls=settings.smtp_tls)
+            async with smtp:
+                await smtp.send_message(msg)
+            return EmailResult(True, "delivered via SMTP")
         except Exception as exc:
             log.debug("SMTP email failed: %s", exc)
-            return False, detail or f"SMTP send failed: {exc}"
+            failure = f"SMTP send failed: {exc}"
+            if smtp is not None and smtp.handed_over and not isinstance(exc, aiosmtplib.SMTPResponseException):
+                return EmailResult(False, failure, unconfirmed=True)
+            if isinstance(exc, aiosmtplib.SMTPAuthenticationError):
+                reason = "email.err_smtp_login"
+            elif isinstance(exc, (aiosmtplib.SMTPSenderRefused, aiosmtplib.SMTPRecipientRefused,
+                                  aiosmtplib.SMTPRecipientsRefused, aiosmtplib.SMTPDataError)):
+                reason = "email.err_smtp_refused"
+            else:
+                reason = "email.err_smtp_unreachable"
+            return EmailResult(False, failure, reason=reason)
 
     # 3. Neither configured (or the relay refused and no SMTP fallback exists)
     log.debug("Email not sent: to=%s subject=%s detail=%s", to, subject, detail)
-    return False, detail or "no email transport configured (connect the Celerp relay or set up SMTP)"
+    if detail:
+        return EmailResult(False, detail, reason="email.err_relay_refused")
+    return EmailResult(False, "no email transport configured (connect the Celerp relay or set up SMTP)",
+                       reason="email.err_no_transport")

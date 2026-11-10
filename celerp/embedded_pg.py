@@ -26,6 +26,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from celerp.json_text import SYNC_TEXT
+
 # Name of the application database created inside the embedded cluster. The
 # cluster's bootstrap superuser is `postgres`; the app connects as that user
 # locally, so no role/password provisioning (and no sudo) is needed.
@@ -246,6 +248,7 @@ def _ensure_app_database(host: str, port: int | None) -> None:
     engine = create_engine(
         sync_db_url(_uri(host, port, "postgres")),
         isolation_level="AUTOCOMMIT",
+        **SYNC_TEXT,
     )
     try:
         with engine.connect() as conn:

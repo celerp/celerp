@@ -944,6 +944,7 @@ _REVIEWED: dict[tuple[str, str], str] = {
         "Documents cannot be imported",
     ("ui/routes/inventory.py", "<module>"): _OWN_UI,
     ("ui/routes/inventory.py", "_item_files_section"): _OWN_UI,
+    ("ui/routes/subscriptions.py", "<module>"): _OWN_UI,
 }
 
 

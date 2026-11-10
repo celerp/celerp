@@ -128,7 +128,7 @@ def test_inline_doc_writes_advance_cached_reprice_version():
     autosave_start = source.index('async def doc_field_post(')
     autosave_end = source.index('@app.post("/docs/{entity_id}/notes")', autosave_start)
     autosave_snippet = source[autosave_start:autosave_end]
-    assert 'version = result.get("event_id")' in autosave_snippet
+    assert '(await api.patch_doc(token, entity_id, {field: value})).get("event_id")' in autosave_snippet
     assert '"celerpListVersion": {"version": version}' in autosave_snippet
 
 

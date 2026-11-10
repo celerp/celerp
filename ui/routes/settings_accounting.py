@@ -12,13 +12,14 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
 import ui.api_client as api
+from ui.components.activity import actor_label
 from ui.components.currency import currency_options
 from ui.components.icons import import_icon
 from ui.api_client import APIError
 from ui.components.shell import base_shell, bug_report_url, flash, page_header, page_title
 from celerp.accounting_roles import account_label
 from celerp.services.lot_origin import OLDER_STOCK_PATH
-from ui.components.table import (EMPTY, add_new_option, bulk_toolbar, searchable_select, display_enum, fmt_money,
+from ui.components.table import (EMPTY, select_all_th, add_new_option, bulk_toolbar, searchable_select, display_enum, fmt_money,
                                  server_pager)
 
 from ui.components.posting_accounts import account_picker
@@ -536,7 +537,7 @@ def _correction_row(c: dict, currency: str) -> FT:
         Td(c.get("account") or EMPTY),
         Td(fmt_money(c["amount"], currency), cls="cell--number"),
         Td(c["journal"], cls="cell--mono"),
-        Td(c.get("actor_name") or EMPTY),
+        Td(actor_label(c)),
     )
 
 
@@ -626,7 +627,7 @@ def _older_stock_card(view: dict, filters: dict, message: str = "", kind: str = 
         return Div(Table(Thead(Tr(*head)), Tbody(*rows), cls="data-table", id=table_id, **attrs),
                    cls="table-scroll-wrap")
 
-    select_all = Th(Input(type="checkbox", cls="bulk-select-all", title=t("label.select_all")), cls="col-checkbox")
+    select_all = select_all_th()
     number = {"cls": "cell--number"}
     if lots:
         lot_table = table("older-stock-table", [

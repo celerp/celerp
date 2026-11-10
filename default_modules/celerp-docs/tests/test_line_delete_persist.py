@@ -50,7 +50,7 @@ async def test_finalize_blocked_when_empty(client):
         "doc_type": "invoice", "line_items": []})).json()["id"]
     r = await client.post(f"/docs/{doc}/finalize", headers=_h(t))
     assert r.status_code == 422
-    assert "at least one line" in r.json()["detail"].lower()
+    assert r.json()["detail"]["message_key"] == "documents.err_finalize_no_lines"
 
 
 @pytest.mark.asyncio

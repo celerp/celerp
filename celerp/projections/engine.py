@@ -20,7 +20,7 @@ from celerp.inventory_codes import (
     is_rfid_epc_unique_violation,
 )
 from celerp.models.ledger import LedgerEntry
-from celerp.models.projections import Projection
+from celerp.models.projections import Projection, strip_numbers
 
 from celerp.projections.handlers.system import apply_system_event
 from celerp.projections.retired import RETIRED
@@ -155,12 +155,14 @@ class ProjectionEngine:
     @staticmethod
     def replay(state: dict, entry: LedgerEntry) -> dict:
         """The state after ``entry``: a document or List line stored without a line id gets
-        the id derived from its record id and position, so every build of the state agrees."""
+        the id derived from its record id and position, and the record's numbers are stored
+        stripped (strip_numbers), so every build of the state agrees."""
         next_state = ProjectionEngine._apply(state, entry.event_type, entry.data)
         if entry.entity_type in ("doc", "list"):
             # Imported here: document_lines imports lot_origin, which imports this module.
             from celerp.services.document_lines import fill_line_ids
             fill_line_ids(next_state, entry.entity_id)
+            strip_numbers(next_state, entry.entity_id)
         return next_state
 
     @staticmethod

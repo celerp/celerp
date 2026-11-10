@@ -83,7 +83,107 @@ def test_sub_create_and_detail(page, ui_server, api):
     assert "/new" not in page.url, f"Expected a subscription detail page, got {page.url}"
 
     # Draft detail must expose the inline-editable subscription controls.
-    assert page.locator("select[hx-patch$='/field/frequency']").count() > 0, \
+    assert page.locator("select[hx-patch$='/schedule/frequency']").count() > 0, \
         "Frequency control missing on subscription detail"
-    assert page.locator("input[hx-patch$='/field/start_date']").count() > 0, \
-        "Start-date control missing on subscription detail"
+    assert page.locator("input[hx-patch$='/schedule/anchor_date']").count() > 0, \
+        "First-bill-date control missing on subscription detail"
+
+
+def test_documents_page_shows_the_next_bill_date_its_own_page_shows(page, ui_server, api):
+    """An agreement opened from Documents shows the next bill date its periods hold, the one its
+    own page shows, not "--"."""
+    r = api.post("/docs", json={
+        "doc_type": "subscription_invoice", "frequency": "monthly", "start_date": "2027-03-01",
+        "line_items": [{"description": "Service", "quantity": 1, "unit_price": 100.0, "line_total": 100.0}],
+    })
+    assert r.status_code in {200, 201}, r.text
+    eid = r.json()["id"]
+    assert api.post(f"/subscriptions/{eid}/activate").status_code == 200
+    next_bill = api.get(f"/subscriptions/{eid}/periods").json()["next_bill_date"]
+    assert next_bill == "2027-03-01"
+    for url in (f"{ui_server}/subscriptions/{eid}", f"{ui_server}/docs/{eid}"):
+        page.goto(url, wait_until="domcontentloaded")
+        _no_crash(page, url)
+        assert page.locator("#sub-next-bill").inner_text().split()[-1] == next_bill, url
+
+
+def test_activate_on_an_empty_draft_names_the_way_out_its_page_offers(page, ui_server):
+    """New subscription, then Activate before adding a line: the toast says to change that on this
+    page and Activate, not to cancel, and the draft's page offers + Add item."""
+    from ui.i18n import t
+
+    page.goto(f"{ui_server}/subscriptions?direction=sales", wait_until="domcontentloaded")
+    page.locator("[hx-post*='/subscriptions/new']").first.click()
+    page.wait_for_url(lambda url: "/subscriptions/" in url and "/new" not in url, timeout=10000)
+    page.wait_for_load_state("load")
+    page.get_by_role("button", name=t("btn.activate", "en"), exact=True).click()
+    refusal = page.locator(".toast-container .toast", has_text="can't bill")
+    refusal.wait_for(timeout=10000)
+    toast = refusal.first.inner_text()
+    way_out = t("subscriptions.err_bill_refused_draft", "en", ref="", reason="").split("can't bill.")[1].strip()
+    assert way_out == "Change that on this page, then Activate it." and way_out in toast, toast
+    _no_crash(page, "draft-activate")
+    assert page.locator("button", has_text=t("btn._add_item", "en")).count() > 0
+    assert "Cancel this subscription" not in toast, toast
+
+
+def _draft(api, line: dict) -> str:
+    r = api.post("/docs", json={
+        "doc_type": "subscription_invoice", "frequency": "monthly", "start_date": "2027-03-01",
+        "line_items": [{"description": "Service", "quantity": 1, **line}],
+    })
+    assert r.status_code in {200, 201}, r.text
+    return r.json()["id"]
+
+
+def _activated(page, api, eid: str) -> dict:
+    """Wait for the agreement to leave draft and return it as the API holds it."""
+    for _ in range(50):
+        doc = api.get(f"/docs/{eid}").json()
+        if doc["status"] != "draft":
+            return doc
+        page.wait_for_timeout(200)
+    raise AssertionError(f"{eid} is still a draft: {doc['line_items']}")
+
+
+def test_activate_after_choosing_only_a_line_tax_activates_on_that_tax(page, ui_server, api):
+    """A draft refused for a line with no tax chosen: pick No Tax in the line and click Activate,
+    nothing else. Activate saves the choice first and the agreement activates on it."""
+    from ui.i18n import t
+
+    eid = _draft(api, {"unit_price": 100.0, "line_total": 100.0, "taxes": None})
+    page.goto(f"{ui_server}/subscriptions/{eid}", wait_until="domcontentloaded")
+    page.locator("#line-body select[data-name=tax_select]").first.select_option(label=t("doc.no_tax", "en"))
+    page.get_by_role("button", name=t("btn.activate", "en"), exact=True).click()
+    doc = _activated(page, api, eid)
+    assert doc["status"] == "active" and doc["line_items"][0]["taxes"] == [], doc["line_items"]
+
+
+def test_activate_straight_after_typing_a_price_activates_at_that_price(page, ui_server, api):
+    """Type a new unit price and click Activate at once: the agreement activates at the typed price,
+    not the stored one."""
+    from ui.i18n import t
+
+    eid = _draft(api, {"unit_price": 9800.0, "line_total": 9800.0, "taxes": []})
+    page.goto(f"{ui_server}/subscriptions/{eid}", wait_until="domcontentloaded")
+    page.locator("#line-body input[data-name=unit_price]").first.fill("12345")
+    page.get_by_role("button", name=t("btn.activate", "en"), exact=True).click()
+    doc = _activated(page, api, eid)
+    assert doc["status"] == "active" and float(doc["line_items"][0]["unit_price"]) == 12345.0, doc["line_items"]
+
+
+def test_activate_is_not_sent_when_the_typed_price_fails_to_save(page, ui_server, api):
+    """The lines save fails: Activate stays unsent and the agreement stays a draft at its stored price."""
+    from ui.i18n import t
+
+    eid = _draft(api, {"unit_price": 9800.0, "line_total": 9800.0, "taxes": []})
+    page.goto(f"{ui_server}/subscriptions/{eid}", wait_until="domcontentloaded")
+    page.route("**/lines", lambda r: r.fulfill(status=500, body="boom") if r.request.method == "POST" else r.continue_())
+    posted: list = []
+    page.on("request", lambda q: q.method == "POST" and q.url.endswith("/activate") and posted.append(q.url))
+    page.locator("#line-body input[data-name=unit_price]").first.fill("12345")
+    with page.expect_response(lambda r: r.url.endswith("/lines") and r.request.method == "POST"):
+        page.get_by_role("button", name=t("btn.activate", "en"), exact=True).click()
+    page.wait_for_timeout(1000)
+    doc = api.get(f"/docs/{eid}").json()
+    assert not posted and doc["status"] == "draft" and float(doc["line_items"][0]["unit_price"]) == 9800.0, (posted, doc)

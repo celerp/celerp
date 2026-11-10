@@ -4,14 +4,14 @@
 """Index per-document journal references without blocking ledger writes.
 
 Revision ID: p9q0r1s2t3u4
-Revises: n9b0c1d2e3f4
+Revises: s2t3u4v5w6x7
 Create Date: 2026-11-03
 """
 from alembic import op
 import sqlalchemy as sa
 
 revision = "p9q0r1s2t3u4"
-down_revision = "n9b0c1d2e3f4"
+down_revision = "s2t3u4v5w6x7"
 branch_labels = None
 depends_on = None
 

@@ -156,6 +156,23 @@ def date_text(day: date, lang: str | None = None) -> str:
     return t("date.text", lang, day=day.day, month=month, year=day.year)
 
 
+def _day_param(value):
+    """An ISO day param as running text reads it (date_text); anything else as written,
+    a value shaped like a day but not one (2026-13-40) included."""
+    if not (isinstance(value, str) and _ISO_DAY.fullmatch(value)):
+        return value
+    try:
+        return date_text(date.fromisoformat(value))
+    except ValueError:
+        return value
+
+
+def sentence(key: str, lang: str | None = None, **params) -> str:
+    """t() for a sentence that names days: each ISO day param reads as a date, as it does in
+    a refusal, so every message on a page reads its days one way."""
+    return t(key, lang, **{k: _day_param(v) for k, v in params.items()})
+
+
 def list_text(items, lang: str | None = None) -> str:
     """Names listed in running text with the locale's own separator and conjunction
     ("A, B and C"), never a hardcoded English word."""
@@ -424,10 +441,7 @@ def _refusal_param(name: str, value):
     if name == "types" and isinstance(value, list):
         return t("posting.type_or").join(_refusal_param("type", v) for v in value)
     if isinstance(value, str) and _ISO_DAY.fullmatch(value):
-        try:
-            return date_text(date.fromisoformat(value))
-        except ValueError:
-            return value  # shaped like a day but not one (2026-13-40) reads as written
+        return _day_param(value)
     if not (isinstance(value, str) and _ENUM_SLUG.fullmatch(value)):
         return value  # text such as a file type (".pdf") or a name reads as written
     if name == "status":

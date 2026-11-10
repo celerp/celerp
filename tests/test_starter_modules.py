@@ -362,9 +362,11 @@ async def test_a_module_turned_on_while_the_starter_modules_go_on_is_kept(
         async with made() as s:
             await real_hold(s)
             ids = (await s.scalars(select(Company.id).order_by(Company.id))).all()
-            for c in await take_company_locks(s, *(functools.partial(locked_company, s, i) for i in ids)):
+            companies = await take_company_locks(s, *(functools.partial(locked_company, s, i) for i in ids))
+            before = [(c, dict(c.settings or {})) for c in companies]
+            for c in companies:
                 c.settings, _ = registry.enable_for_company(c.settings, "celerp-labels")
-            await registry.commit_with_load_set(s)
+            await registry.commit_with_load_set(s, activated=before)
 
     async def _hold(s, **kw):
         held = await real_hold(s, **kw)

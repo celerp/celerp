@@ -128,7 +128,7 @@ Every feature above is a module on one loader API, and you can build against the
 - **Event-sourced** - every change is an immutable ledger entry, projections materialize queryable state
 - **Modular** - each domain is a plugin with its own models, routes, and projections
 - **Python/FastAPI** backend, **FastHTML** UI, embedded **PostgreSQL**
-- Tests run on real PostgreSQL through testcontainers (Docker required), not SQLite
+- PostgreSQL for tests too, not SQLite: the suite starts a throwaway Postgres in Docker through testcontainers
 
 ---
 
@@ -146,7 +146,12 @@ celerp init   # creates DB, runs migrations, starts servers
 system Postgres are required. To develop against your own server instead, pass
 `--db-url postgresql+asyncpg://…`.
 
-Open **http://localhost:8080**. Run tests with `pytest tests/ -n auto` (Docker must be running, and `DATABASE_URL` must be unset; see "Running the tests" in CONTRIBUTING.md).
+Open **http://localhost:8080**. Run tests with `pytest tests/ -n auto`. The tests start a throwaway
+Postgres in Docker. To use a server of your own instead, create a database with "test" in its
+name on this machine and point `CELERP_TEST_DATABASE_URL` at it, for example
+`CELERP_TEST_DATABASE_URL=postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test`. The
+tests never read `DATABASE_URL` and never change the server's settings. See "Running the tests"
+in CONTRIBUTING.md.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for environment variables, troubleshooting, and coding guidelines.
 

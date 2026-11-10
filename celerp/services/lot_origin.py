@@ -2149,7 +2149,7 @@ async def _corrections_page(session: AsyncSession, company_id, offset: int, limi
     shown = await display_fields([e for e, _ in page], company_id, session)
     return [{"placement": e.data["placement"], "day": e.data["day"], "kind": e.data["kind"],
              "amount": e.data["amount"], "journal": e.data["journal"], "account": code,
-             "actor_name": s["actor_name"]}
+             **{k: v for k, v in s.items() if k.startswith("actor_")}}
             for (e, code), s in zip(page, shown)], await _count(session, query)
 
 

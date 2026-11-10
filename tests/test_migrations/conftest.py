@@ -263,8 +263,9 @@ def swap_db(url: str, dbname: str) -> str:
 
 
 @contextlib.contextmanager
-def throwaway_db(prefix: str = "advtest"):
-    """Provision a throwaway database, yield (async_url, sync_url), then drop it.
+def throwaway_db(prefix: str = "advtest", encoding: str | None = None):
+    """Provision a throwaway database, in the server ``encoding`` when given (C locale, as an
+    install created under another locale has it), yield (async_url, sync_url), then drop it.
 
     Restores os.environ['DATABASE_URL'] on exit - `_apply_migrations` mutates it,
     which would otherwise leak the throwaway DB into later tests.
@@ -276,7 +277,8 @@ def throwaway_db(prefix: str = "advtest"):
 
     admin = create_engine(base_sync, isolation_level="AUTOCOMMIT")
     with admin.connect() as c:
-        c.execute(text(f'CREATE DATABASE "{dbname}"'))
+        c.execute(text(f'CREATE DATABASE "{dbname}"' + (
+            f" ENCODING '{encoding}' TEMPLATE template0 LC_COLLATE 'C' LC_CTYPE 'C'" if encoding else "")))
     admin.dispose()
 
     try:

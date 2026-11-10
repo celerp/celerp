@@ -2063,13 +2063,14 @@ async def enable_module(
     [company] = await take_company_locks(session, lambda: locked_company(session, company_id))
     if not company:
         raise HTTPException(status_code=404, detail=t("error.company_unavailable"))
+    previous_settings = dict(company.settings or {})
     company.settings, also_enabled = enable_for_company(company.settings, module_name)
     if "celerp-accounting" in (module_name, *also_enabled):
         from celerp.services.lot_origin import place_company_stock
 
         await session.flush()
         await place_company_stock(session, company_id)  # its books are kept from now on
-    await commit_with_load_set(session)
+    await commit_with_load_set(session, activated=[(company, previous_settings)])
     return {
         "ok": True, "name": module_name, "enabled": True,
         "also_enabled": also_enabled,
@@ -2126,7 +2127,7 @@ async def disable_module(
         raise HTTPException(status_code=409, detail=(
             f"{', '.join(module_label(n) for n in exc.needed_by)} needs this module. "
             "Turn that off first."))
-    await commit_with_load_set(session)
+    await commit_with_load_set(session, activated=[])
     return {
         "ok": True, "name": module_name, "enabled": False, "restart_required": False,
         "enabled_modules": sorted(get_enabled(company.settings)),

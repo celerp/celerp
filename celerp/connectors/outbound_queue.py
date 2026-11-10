@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 import sqlalchemy as sa
 
+from celerp.json_text import dump_json
 from celerp.connectors.base import SyncResult, entity_allowed
 from celerp.db import get_session_ctx
 from celerp.models.company import Company
@@ -240,7 +241,7 @@ class OutboundOperation:
             saved = await session.execute(
                 sa.update(OutboundQueue)
                 .where(OutboundQueue.company_id == str(self.company_id), OutboundQueue.id == self.row_id)
-                .values(payload_json=json.dumps(state))
+                .values(payload_json=dump_json(state))
             )
             await session.commit()
         if saved.rowcount != 1:

@@ -15,6 +15,7 @@ from sqlalchemy import engine_from_config, pool
 
 from celerp.db_url import sync_url as sync_db_url
 from celerp.models.base import Base
+from celerp.json_text import SYNC_TEXT
 
 # Register all models with Base.metadata by importing them.
 import celerp.models.company       # noqa: F401
@@ -105,7 +106,7 @@ def run_migrations_online() -> None:
         engines = held.engine(poolclass=pool.NullPool)
     else:
         engines = contextlib.nullcontext(
-            engine_from_config(cfg, prefix="sqlalchemy.", poolclass=pool.NullPool))
+            engine_from_config(cfg, prefix="sqlalchemy.", poolclass=pool.NullPool, **SYNC_TEXT))
     with engines as connectable, connectable.connect() as connection:
         options = dict(
             connection=connection,

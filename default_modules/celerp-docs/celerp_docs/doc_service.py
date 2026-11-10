@@ -66,7 +66,7 @@ async def upsert_order_from_shopify(company_id: str, order: dict, operation: str
     idem_key = f"shopify:order:{order['id']}"
 
     async with SessionLocal() as session:
-        ref_id = order.get("name", f"shopify-{order['id']}")
+        ref_id = order.get("name") or f"shopify-{order['id']}"
         financial_status = order.get("financial_status", "pending")
         status = "closed" if financial_status == "paid" else "open"
         currency = order.get("currency")

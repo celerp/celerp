@@ -118,6 +118,7 @@ class FreshInstall:
         except Exception:
             for proc in procs:
                 proc.kill()
+                proc.wait()
             raise
         return procs[0], procs[1]
 

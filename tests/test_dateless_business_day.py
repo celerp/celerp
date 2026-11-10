@@ -33,12 +33,12 @@ async def _dateless_records(client, session) -> dict:
                  "line_items": [{"description": "S", "quantity": 1, "unit_price": 5}]}})
     assert r.status_code == 200, r.text
     r = await client.post("/lists/import", headers=h, json={
-        "entity_id": "list:IMP-TZ", "event_type": "list.created", "source": "csv", "idempotency_key": "list:IMP-TZ",
+        "entity_id": "list:IMP-TZ-L", "event_type": "list.created", "source": "csv", "idempotency_key": "list:IMP-TZ-L",
         "data": {"ref_id": "IMP-TZ-L", "list_type": "quotation", "status": "draft",
                  "line_items": [{"name": "S", "quantity": 1, "unit_price": 5, "line_total": 5}],
                  "subtotal": 5, "total": 5}})
     assert r.status_code == 200, r.text
-    await session.execute(update(Projection).where(Projection.entity_id.in_(("doc:IMP-TZ", "list:IMP-TZ")))
+    await session.execute(update(Projection).where(Projection.entity_id.in_(("doc:IMP-TZ", "list:IMP-TZ-L")))
                           .values(created_at=CREATED))
     await session.flush()
     return h
@@ -72,16 +72,16 @@ async def test_dateless_document_uses_the_company_business_day(client, session):
 async def test_dateless_list_uses_the_company_business_day(client, session):
     h = await _dateless_records(client, session)
 
-    assert (await client.get("/lists/list:IMP-TZ", headers=h)).json()["issue_date"] == BUSINESS_DAY
-    page = await client.get("/lists/list:IMP-TZ/page?offset=0&limit=10", headers=h)
+    assert (await client.get("/lists/list:IMP-TZ-L", headers=h)).json()["issue_date"] == BUSINESS_DAY
+    page = await client.get("/lists/list:IMP-TZ-L/page?offset=0&limit=10", headers=h)
     assert page.status_code == 200, page.text
     assert page.json()["list"]["issue_date"] == BUSINESS_DAY
 
     rows = _items((await client.get(f"/lists?date_from={BUSINESS_DAY}&date_to={BUSINESS_DAY}", headers=h)).json())
-    assert [(x["id"], x["date"]) for x in rows] == [("list:IMP-TZ", BUSINESS_DAY)]
+    assert [(x["id"], x["date"]) for x in rows] == [("list:IMP-TZ-L", BUSINESS_DAY)]
     assert _items((await client.get("/lists?date_from=2026-03-10&date_to=2026-03-10", headers=h)).json()) == []
 
     r = await client.get("/lists/export/csv?cols=id,date", headers=h)
     assert r.status_code == 200, r.text
     exported = {row["id"]: row["date"] for row in csv.DictReader(io.StringIO(r.text))}
-    assert exported["list:IMP-TZ"] == BUSINESS_DAY
+    assert exported["list:IMP-TZ-L"] == BUSINESS_DAY

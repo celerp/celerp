@@ -103,7 +103,7 @@ def test_a_refused_numbering_pattern_reads_in_the_users_language(page: Page, ui_
             if cell.count():
                 cell.click()
             field = row.locator('input[name="value"]')
-            htmx_settled(row)
+            htmx_settled(field)
             field.fill(pattern)
             field.press("Tab")
             # Each refusal replaces the one before it, so wait for this pattern's own text.

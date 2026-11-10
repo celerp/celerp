@@ -183,12 +183,19 @@ def test_scan_waits_for_draft_line_state(page, ui_server, api, save_state):
     qty.fill("2")
 
     if save_state == "inflight":
-        # Move focus first so the real blur/autosave has marked this DOM edit,
-        # then replace that pending debounce with a deliberately held save.
-        scan.fill(scanned_barcode)
+        # Blur the edited line, cancel its debounce, and start the held save
+        # in one browser task. Otherwise the debounce can fire between Playwright
+        # calls and queue a second save before this test's explicit persist.
         page.evaluate(
-            "() => { clearTimeout(_celerpSaveTimer); _celerpSaveTimer = null; "
-            "window.__heldSave = _celerpPersist(); }"
+            """(barcode) => {
+                const input = document.getElementById('scan-bar-input');
+                input.value = barcode;
+                input.focus();
+                clearTimeout(_celerpSaveTimer);
+                _celerpSaveTimer = null;
+                window.__heldSave = _celerpPersist();
+            }""",
+            scanned_barcode,
         )
         page.wait_for_function("() => window.__lineSaveStarted === 1", timeout=5000)
         page.locator("#scan-bar-add").click()

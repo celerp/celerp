@@ -67,6 +67,36 @@ def test_a_new_install_inherits_nothing_the_other_tests_set(monkeypatch):
     assert env["PATH"] == os.environ["PATH"]
 
 
+def test_a_launch_that_fails_leaves_no_process_behind(monkeypatch):
+    """When the UI never answers, the API already started is stopped and reaped, so no
+    running process is left for a later test to trip over."""
+    import subprocess
+    import sys
+
+    from . import fresh_install
+
+    started: list[subprocess.Popen] = []
+
+    def spawn(app, port, env):
+        started.append(subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"]))
+        return started[-1]
+
+    def wait_http(url, proc, timeout=60.0):
+        if url.endswith(f":{fresh_install.UI_PORT}/health"):
+            raise RuntimeError("UI did not start")
+
+    monkeypatch.setattr(fresh_install, "_wait_http", wait_http)
+    fresh = fresh_install.FreshInstall.__new__(fresh_install.FreshInstall)
+    fresh.api, fresh.ui, fresh.env = "http://127.0.0.1:1", f"http://127.0.0.1:{fresh_install.UI_PORT}", {}
+    monkeypatch.setattr(fresh, "_spawn", spawn)
+
+    with pytest.raises(RuntimeError, match="UI did not start"):
+        fresh._launch()
+
+    assert len(started) == 2
+    assert all(proc.returncode is not None for proc in started)
+
+
 def test_a_new_test_waits_for_the_restart_the_last_one_started(install):
     """Setup with a business type restarts the install and the test can end on the activating
     page while the API is down: the next test waits for it to start again, never finding it gone."""

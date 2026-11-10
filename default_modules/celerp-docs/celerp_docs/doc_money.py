@@ -22,6 +22,12 @@ from celerp_docs.doc_constants import (DRAFT_REVERT_RETURNED, DRAFT_REVERT_STATU
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.accounting_roles import catalog_refusal
 
+# The header fields a document's money comes from besides its lines: the inputs
+# document_money reads, the currency, and the rate that values it in the base currency.
+# A document made from another (an agreement's bill) carries every one of them.
+HEADER_MONEY_FIELDS = ("currency", "conversion_rate", "discount", "discount_type", "shipping", "tax", "tax_rate",
+                       "doc_taxes")
+
 
 class UnratedTaxError(ValueError):
     """The document holds a tax amount with no rate to recompute it from."""

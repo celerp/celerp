@@ -19,6 +19,7 @@ import click
 from celerp.config import config_path as _config_path, read_config as _read_config, write_config as _write_config
 from celerp.db_url import sync_url as _sync_url
 from celerp.services.auth import MIN_PASSWORD_LENGTH, validate_password
+from celerp.json_text import SYNC_TEXT, dump_json
 
 # ── Config helpers ────────────────────────────────────────────────────────────
 
@@ -335,7 +336,8 @@ def _test_db(db_url: str) -> str | None:
     sync_url = _sync_url(db_url)
     try:
         from sqlalchemy import create_engine, text
-        engine = create_engine(sync_url, pool_pre_ping=True, connect_args={"connect_timeout": 5})
+        engine = create_engine(sync_url, pool_pre_ping=True, connect_args={"connect_timeout": 5},
+                               **SYNC_TEXT)
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         return None
@@ -673,7 +675,7 @@ def _stamped_revision(db_url: str) -> str | None:
     from alembic.runtime.migration import MigrationContext
     from sqlalchemy import create_engine
 
-    engine = create_engine(_sync_url(db_url), pool_pre_ping=True)
+    engine = create_engine(_sync_url(db_url), pool_pre_ping=True, **SYNC_TEXT)
     try:
         with engine.connect() as conn:
             return MigrationContext.configure(conn).get_current_revision()
@@ -1432,7 +1434,7 @@ def _reset_password_in(db_url: str, email: str, password: str) -> bool:
             await engine.dispose()
 
     with mutating_scope(_sync_url(db_url)) as held:
-        engine = create_async_engine(db_url, poolclass=NullPool)
+        engine = create_async_engine(db_url, poolclass=NullPool, json_serializer=dump_json)
         held.guard(engine)
         try:
             return asyncio.run(_run(engine))
@@ -1635,7 +1637,7 @@ async def _enable_for_every_company(db_url: str, names: list[str]) -> int:
     from celerp.modules.registry import commit_with_load_set, enable_for_company, hold_module_state, is_installed
     from celerp.services.company_lock import locked_company
 
-    engine = create_async_engine(db_url)
+    engine = create_async_engine(db_url, json_serializer=dump_json)
     try:
         async with AsyncSession(engine, expire_on_commit=False) as session:
             await hold_module_state(session)
@@ -1645,10 +1647,11 @@ async def _enable_for_every_company(db_url: str, names: list[str]) -> int:
             company_ids = (await session.scalars(select(Company.id).order_by(Company.id))).all()
             companies = await take_company_locks(
                 session, *(functools.partial(locked_company, session, company_id) for company_id in company_ids))
+            activated = [(company, dict(company.settings or {})) for company in companies]
             for company in companies:
                 for name in names:
                     company.settings, _deps = enable_for_company(company.settings, name)
-            await commit_with_load_set(session)
+            await commit_with_load_set(session, activated=activated)
             return len(company_ids)
     finally:
         await engine.dispose()

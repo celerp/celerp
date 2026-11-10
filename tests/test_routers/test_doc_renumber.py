@@ -141,23 +141,30 @@ async def test_renumber_conflict_with_existing_doc(client, session):
 
 
 @pytest.mark.asyncio
-async def test_renumber_chain_frees_old_number(client, session):
-    """After A is renamed away, its old number can be taken by B."""
+async def test_renumber_chain_frees_a_shown_number_but_never_a_stored_one(client, session):
+    """After A is renamed on, a number A only showed can be taken by B; the number A is stored
+    under stays A's."""
     token = await _register(client)
     ref_a = f"ORIG-{uuid.uuid4().hex[:6].upper()}"
     ref_b = f"TEMP-{uuid.uuid4().hex[:6].upper()}"
     doc_a = await _create_doc(client, token, ref_id=ref_a)
     doc_b = await _create_doc(client, token, ref_id=ref_b)
 
-    # Rename A away from ref_a
-    new_a = f"NEW-A-{uuid.uuid4().hex[:6].upper()}"
-    r = await client.post(f"/docs/{doc_a['id']}/renumber", headers=_h(token), json={"ref_id": new_a})
-    assert r.status_code == 200, r.text
+    # Rename A away from ref_a, then on again
+    new_a, last_a = (f"NEW-A-{uuid.uuid4().hex[:6].upper()}" for _ in range(2))
+    for ref in (new_a, last_a):
+        r = await client.post(f"/docs/{doc_a['id']}/renumber", headers=_h(token), json={"ref_id": ref})
+        assert r.status_code == 200, r.text
 
-    # Now B can take ref_a
+    # B cannot take the number A is stored under
     r = await client.post(f"/docs/{doc_b['id']}/renumber", headers=_h(token), json={"ref_id": ref_a})
+    assert r.status_code == 409, r.text
+    assert refusal_text(r.json()["detail"]) == t("documents.err_doc_number_taken", "en", number=last_a)
+
+    # B can take the number A only showed
+    r = await client.post(f"/docs/{doc_b['id']}/renumber", headers=_h(token), json={"ref_id": new_a})
     assert r.status_code == 200, r.text
-    assert r.json()["ref_id"] == ref_a
+    assert r.json()["ref_id"] == new_a
 
 
 @pytest.mark.asyncio

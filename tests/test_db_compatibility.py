@@ -666,6 +666,7 @@ def _older_copy_refuses(url: str, tmp_path, monkeypatch) -> None:
     assert snapshot(url) == before
 
 
+@pytest.mark.timeout(120)
 @pytest.mark.parametrize("mode", ["unknown_event", "guard_raises", "update_verify"])
 def test_older_copy_refuses_after_a_newer_one_with_the_same_schema_began(scratch, tmp_path, monkeypatch, mode):
     """(a) the newer copy's projection reconcile met an event it does not know and left
@@ -685,6 +686,7 @@ def test_older_copy_refuses_after_a_newer_one_with_the_same_schema_began(scratch
     _older_copy_refuses(url, tmp_path, monkeypatch)
 
 
+@pytest.mark.timeout(120)
 def test_newer_copy_records_itself_before_its_first_change(scratch, tmp_path, monkeypatch):
     """The newer copy's first database change fails, so its startup stops: the record is
     already raised, and the older copy refuses the half-opened database."""
@@ -716,6 +718,7 @@ def test_migrate_records_this_copy_before_its_first_change(scratch, tmp_path, mo
     _older_copy_refuses(url, tmp_path, monkeypatch)
 
 
+@pytest.mark.timeout(120)
 @pytest.mark.parametrize("path", ["apply_migrations", "api_startup"])
 def test_the_record_is_never_lowered(scratch, tmp_path, monkeypatch, path):
     """Opening a database an older copy recorded raises the record; an equal record is

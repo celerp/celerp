@@ -3515,6 +3515,59 @@ class TestWriteoffListDetail:
         assert "1130" not in html
         assert "4000" not in html
 
+    @pytest.mark.asyncio
+    async def test_entry_editor_opens_on_the_stored_value(self, ui_client):
+        lst = self._wo_list()
+        lst["line_items"][0]["qty_out"] = 3.5
+        ui_client.cookies.update(_authed())
+        with patch("ui.api_client.get_list", new=AsyncMock(return_value=lst)):
+            r = await ui_client.get("/lists/list:WO-1/writeoff-line/ln-abc/qty_out/edit")
+        assert r.status_code == 200 and 'value="3.5"' in r.text
+
+    @pytest.mark.asyncio
+    async def test_entry_saved_but_not_read_back_shows_the_typed_value(self, ui_client):
+        """The save went through but the list could not be read back: the cell shows what was saved,
+        and the row's carried entry and the page's version are left for the next read to refresh."""
+        from ui.api_client import APIError
+        ui_client.cookies.update(_authed())
+        with (
+            patch("ui.api_client.set_writeoff_line", create=True, new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_list", new=AsyncMock(side_effect=APIError(503, "unavailable"))),
+        ):
+            r = await ui_client.patch("/lists/list:WO-1/writeoff-line/ln-abc/qty_out", data={"value": "4"})
+        assert r.status_code == 200 and '<span class="cell-number">4</span>' in r.text
+        assert "wo-carry-" not in r.text and "HX-Trigger" not in r.headers
+
+    @pytest.mark.asyncio
+    async def test_only_an_entry_save_that_stored_nothing_carries_the_unsaved_mark(self, ui_client):
+        """Expired, refused and invalid answers carry data-cell-unsaved (the mark the page's line actions
+        read); a stored entry and the editor opening do not."""
+        from ui.api_client import APIError
+        url = "/lists/list:WO-1/writeoff-line/ln-abc/qty_out"
+        mark = 'data-cell-unsaved="1"'
+        ui_client.cookies.update(_authed())
+        with patch("ui.routes.documents._token", return_value=None):  # cookie gone past the auth guard
+            expired = await ui_client.patch(url, data={"value": "4"})
+        assert mark in expired.text and t("error.session_expired") in expired.text
+        lst = {"id": "list:WO-1", "version": 3, "line_items": [{"line_id": "ln-abc", "qty_out": 4}]}
+        with (
+            patch("ui.api_client.set_writeoff_line", create=True,
+                  new=AsyncMock(side_effect=APIError(422, "Only 5 on hand"))),
+            patch("ui.api_client.get_list", new=AsyncMock(return_value=lst)),
+        ):
+            refused = await ui_client.patch(url, data={"value": "9"})
+            invalid = await ui_client.patch(url, data={"value": "x"})
+            opened = await ui_client.get(url + "/edit")
+        assert mark in refused.text and "Only 5 on hand" in refused.text
+        assert mark in invalid.text and t("documents.enter_a_number") in invalid.text
+        assert mark not in opened.text
+        with (
+            patch("ui.api_client.set_writeoff_line", create=True, new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_list", new=AsyncMock(return_value=lst)),
+        ):
+            stored = await ui_client.patch(url, data={"value": "4"})
+        assert stored.status_code == 200 and mark not in stored.text
+
 
 class TestSettingsPolish:
     """Settings click-to-edit affordance — visual cue must be present."""

@@ -7,6 +7,8 @@ import json
 
 from sqlalchemy import create_engine, text
 
+from celerp.json_text import SYNC_TEXT
+
 from .conftest import run_migration_ops, wc_mkcompany
 
 MODULE = "b3c4d5e6f7a8_expand_role_permissions_to_role_grants"
@@ -20,7 +22,7 @@ def _settings(engine, cid: str) -> dict:
 
 def test_sql_ascii_upgrade_and_downgrade_preserve_unrelated_unicode(sql_ascii_fresh_db):
     _, sync_url = sql_ascii_fresh_db
-    engine = create_engine(sync_url)
+    engine = create_engine(sync_url, **SYNC_TEXT)
     try:
         with engine.begin() as conn:
             conn.execute(text(

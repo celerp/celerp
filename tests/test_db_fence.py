@@ -28,6 +28,7 @@ from test_db_compatibility import DATABASE_URL, NEWER, RUNNING, _meta, scratch, 
 
 pytestmark = [
     pytest.mark.process,
+    pytest.mark.timeout(240),
     pytest.mark.skipif(
         not DATABASE_URL.startswith("postgresql"), reason="needs a live Postgres database"
     ),
