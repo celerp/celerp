@@ -217,8 +217,8 @@ def draft_counter(doc_type: str) -> str:
 
 
 def _number_match(wanted: list[str]):
-    """A Document or List shows, keeps or is stored under one of ``wanted`` (lowercase), read
-    through the indexed expressions (ix_projections_number_*)."""
+    """A Document or List shows, keeps or is stored under one of ``wanted`` (lowercase, without
+    surrounding spaces), read through the indexed expressions (ix_projections_canonical_number_*)."""
     return or_(NUMBER_SHOWN.in_(wanted), NUMBER_KEPT.in_(wanted),
                STORAGE_KEY.in_([f"{kind}:{w}" for w in wanted for kind in ("doc", "list")]))
 
@@ -228,11 +228,12 @@ async def number_holder(session: AsyncSession, company_id, number: str, *,
                         doc_type: str | None = None) -> tuple[str, str] | None:
     """(kind, number shown) for the Document or List ("doc" or "list") other than
     ``exclude_entity_id`` that shows, keeps or is stored under ``number``, ignoring case as
-    imports do; None when the number is free. A number a record is stored under stays its own
-    for good, so no other record takes it even after that record is renumbered. Documents and
-    Lists share one number space, so every number is checked against this one rule. ``doc_type`` narrows the Documents that count to that
-    type, for imported books, where another system's bill and invoice may carry the same
-    number; every List still counts."""
+    imports do, and surrounding spaces on either side; None when the number is free. A number a
+    record is stored under stays its own for good, so no other record takes it even after that
+    record is renumbered. Documents and Lists share one number space, so every number is checked
+    against this one rule. ``doc_type`` narrows the Documents that count to that type, for
+    imported books, where another system's bill and invoice may carry the same number; every
+    List still counts."""
     shown = Projection.state["ref_id"].as_string()
     doc_number = Projection.state["doc_number"].as_string()
     query = select(Projection.entity_type, Projection.entity_id, shown, doc_number).where(
@@ -254,11 +255,15 @@ async def number_holder(session: AsyncSession, company_id, number: str, *,
 
 
 async def require_number_free(session: AsyncSession, company_id, number: str, *,
-                              exclude_entity_id: str | None = None, doc_type: str | None = None) -> None:
-    """Refuse ``number`` while another Document or List holds it (number_holder), naming which
-    kind holds it and the number as that record shows it. The company lock serializes the
-    check with every other numbering write. A number no record can be stored under is refused first."""
-    require_storable_number(number.strip())
+                              exclude_entity_id: str | None = None, doc_type: str | None = None) -> str:
+    """Return ``number`` as a record stores it, without surrounding spaces, once no other
+    Document or List holds it (number_holder); refuse it while one does, naming which kind holds
+    it and the number as that record shows it. Every writer stores the returned number. The
+    company lock serializes the check with every other numbering write. A blank number, or one
+    no record can be stored under, is refused first."""
+    number = require_storable_number(number.strip())
+    if not number:
+        raise HTTPException(status_code=422, detail=catalog_refusal("documents.err_number_required"))
     await lock_company(session, company_id)
     holder = await number_holder(session, company_id, number, exclude_entity_id=exclude_entity_id,
                                  doc_type=doc_type)
@@ -266,6 +271,7 @@ async def require_number_free(session: AsyncSession, company_id, number: str, *,
         kind, shown = holder
         raise HTTPException(status_code=409, detail=catalog_refusal(
             "documents.err_doc_number_taken" if kind == "doc" else "documents.err_list_number_taken", number=shown))
+    return number
 
 
 # The first numbers of a counter held_numbers reads; each further read doubles.

@@ -1441,9 +1441,16 @@ async def _ids_numbered(session: AsyncSession, company_id, kind: Literal["doc", 
     return sorted((await session.execute(query)).scalars().all())
 
 
-def _import_numbers(data: dict) -> set[str]:
-    """The numbers an imported Document or List shows, each one checked by require_number_free."""
-    return {str(data[f]).strip() for f in ("doc_number", "ref_id") if str(data.get(f) or "").strip()}
+async def free_import_numbers(session: AsyncSession, company_id, entity_id: str, data: dict, *,
+                              doc_type: str | None = None) -> dict:
+    """``data`` of an imported Document or List with the numbers it shows as require_number_free
+    returns them, once each one, and the number its key ``entity_id`` stores it under, is free."""
+    data = dict(data)
+    for field in ("doc_number", "ref_id"):
+        if str(data.get(field) or "").strip():
+            data[field] = await require_number_free(session, company_id, str(data[field]), doc_type=doc_type)
+    await require_number_free(session, company_id, entity_id.partition(":")[2], doc_type=doc_type)
+    return data
 
 
 @router.get("/numbered", dependencies=[require_permission("view_documents")])
@@ -2120,8 +2127,7 @@ async def create_doc_record(payload: DocCreatePayload, company_id, role: str, se
     if replay is not None:
         return _replay_result(replay, event_type="doc.created", digest=digest)
     if payload.ref_id:
-        await require_number_free(session, company_id, payload.ref_id)
-        ref_id = payload.ref_id
+        ref_id = await require_number_free(session, company_id, payload.ref_id)
     else:
         ref_id = await claim_number(session, company, draft_counter(payload.doc_type))
     entity_id = f"doc:{ref_id}"
@@ -2381,7 +2387,8 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     # Uniqueness check when ref_id is being changed
     new_ref = (fields_changed.get("ref_id") or {}).get("new")
     if new_ref:
-        await require_number_free(session, company_id, new_ref, exclude_entity_id=entity_id)
+        fields_changed["ref_id"] = {**fields_changed["ref_id"], "new": await require_number_free(
+            session, company_id, new_ref, exclude_entity_id=entity_id)}
     # Validate issue/due date ordering against the merged resulting state
     patch_flat = {k: v.get("new") for k, v in fields_changed.items() if v.get("new") is not None}
     _assert_date_order(patch_flat, row.state)
@@ -3946,16 +3953,11 @@ async def renumber_doc(
     if state.get("status") == "void":
         raise HTTPException(status_code=409, detail=t("documents.err_renumber_void"))
 
-    new_ref = payload.ref_id.strip()
-    if not new_ref:
-        raise HTTPException(status_code=422, detail=t("documents.err_number_required"))
-
+    new_ref = await require_number_free(session, company_id, payload.ref_id, exclude_entity_id=entity_id)
     old_ref = state.get("ref_id") or ""
     if new_ref == old_ref:
         # No-op: return current state without emitting an event
         return row.state | {"id": entity_id}
-
-    await require_number_free(session, company_id, new_ref, exclude_entity_id=entity_id)
 
     entry = await emit_event(
         session,
@@ -9275,8 +9277,7 @@ async def create_list_record(payload: ListCreatePayload, company_id, role: str, 
     if (done := await _replay()) is not None:
         return done
     if payload.ref_id:
-        await require_number_free(session, company_id, payload.ref_id)
-        ref_id = payload.ref_id
+        ref_id = await require_number_free(session, company_id, payload.ref_id)
     else:
         ref_id = await claim_number(session, company, list_sequence_key(payload.list_type, company.settings))
     entity_id = f"list:{ref_id}"
@@ -9357,7 +9358,8 @@ async def write_list_patch(session: AsyncSession, company_id, role: str, setting
         raise _stale_doc("documents.err_list_changed")
     new_ref = (fields_changed.get("ref_id") or {}).get("new")
     if new_ref:
-        await require_number_free(session, company_id, new_ref, exclude_entity_id=entity_id)
+        fields_changed["ref_id"] = {**fields_changed["ref_id"], "new": await require_number_free(
+            session, company_id, new_ref, exclude_entity_id=entity_id)}
     _new_values = {f: (c or {}).get("new") for f, c in fields_changed.items()}
     if selecting:
         # Lines a selection reprices are computed from the locked List, so they cannot
@@ -10422,12 +10424,11 @@ async def import_list(
             entity_id=body.entity_id,
         ))
     await _lock_imported_contact(session, company_id, "list", body.data)
-    for number in _import_numbers(body.data):
-        await require_number_free(session, company_id, number)
+    data = await free_import_numbers(session, company_id, body.entity_id, body.data)
 
     entry = await emit_event(
         session, company_id=company_id, entity_id=body.entity_id, entity_type="list",
-        event_type="list.created", data=await _issued_import_data(session, company_id, body.data),
+        event_type="list.created", data=await _issued_import_data(session, company_id, data),
         actor_id=user.id, location_id=None,
         source=body.source, idempotency_key=body.idempotency_key,
         metadata_={"request": import_digest(body.entity_id, body.data),
@@ -10543,11 +10544,10 @@ async def batch_import_lists(
         try:
             refuse_malformed_input(rec.data)
             await _lock_imported_contact(session, company_id, "list", rec.data)
-            for number in _import_numbers(rec.data):
-                await require_number_free(session, company_id, number)
+            data = await free_import_numbers(session, company_id, rec.entity_id, rec.data)
             entry = await emit_event(
                 session, company_id=company_id, entity_id=rec.entity_id, entity_type="list",
-                event_type="list.created", data=await _issued_import_data(session, company_id, rec.data),
+                event_type="list.created", data=await _issued_import_data(session, company_id, data),
                 actor_id=user.id, location_id=None,
                 source=rec.source, idempotency_key=rec.idempotency_key,
                 metadata_={"request": import_digest(rec.entity_id, rec.data),
