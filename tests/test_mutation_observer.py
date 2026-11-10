@@ -19,7 +19,9 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import delete, func, insert, select, text, update
+from packaging.version import Version
+from sqlalchemy import __version__ as sqlalchemy_version
+from sqlalchemy import delete, func, inspect, insert, select, text, update
 
 import mutation_observer
 import mutation_read_notes
@@ -39,6 +41,7 @@ from celerp.services.permissions import authorize_request
 from celerp.services.session_tracker import invalidate_sessions, lock_auth_state, register_token
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.observer_control]
+_CORE_STATEMENT_AUTOFLUSH = Version(sqlalchemy_version) >= Version("2.1")
 
 
 def _kinds() -> list[str]:
@@ -78,7 +81,11 @@ async def test_a_locked_write_made_for_a_read_request_is_reported(session, auth,
     with serving(method, "/observed"):
         cid = _authorize(session, auth)
         await lock_company(session, cid)
-        session.add(Location(company_id=cid, name="Read", type="warehouse"))
+        row = Location(company_id=cid, name="Read", type="warehouse")
+        session.add(row)
+        await session.execute(text("SELECT 1"))
+        if _CORE_STATEMENT_AUTOFLUSH:
+            assert inspect(row).persistent
         await session.commit()
     assert _kinds() == ([] if method == "POST" else ["read-route-write"])
 
@@ -171,8 +178,14 @@ async def test_a_read_request_that_writes_nothing_durable_is_not_reported(sessio
 async def test_autoflush_write_without_the_lock_is_reported(session, auth):
     with serving("POST", "/observed"):
         cid = _authorize(session, auth)
-        session.add(Location(company_id=cid, name="Autoflushed", type="warehouse"))
-        await session.execute(select(Location.id).where(Location.company_id == cid))
+        row = Location(company_id=cid, name="Autoflushed", type="warehouse")
+        session.add(row)
+        await session.execute(text("SELECT 1"))
+        if _CORE_STATEMENT_AUTOFLUSH:
+            assert inspect(row).persistent
+        else:
+            assert inspect(row).pending
+            await session.execute(select(Location.id).where(Location.company_id == cid))
         await session.commit()
     assert _kinds() == ["unprotected"]
 
