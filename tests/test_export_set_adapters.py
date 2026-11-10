@@ -503,12 +503,16 @@ def test_a_delimited_file_is_refused_at_its_row_bound_without_holding_every_row(
 
     from celerp.importers import tabular
 
+    limits = tabular.Limits(rows=1000, cells=10_000, file_bytes=10 ** 9, uncompressed=10 ** 9)
+    # The refusal's message comes from the language catalog, which other tests clear; one
+    # refusal first loads it, so the measured window holds only the reader's own memory.
+    with pytest.raises(tabular.TabularError):
+        tabular.delimited_lines("a,b,c\r\n" * 1001, ",", limits)
     text = "a,b,c\r\n" * 400_000
     tracemalloc.start()
     try:
         with pytest.raises(tabular.TabularError):
-            tabular.delimited_lines(text, ",", tabular.Limits(rows=1000, cells=10_000, file_bytes=10 ** 9,
-                                                              uncompressed=10 ** 9))
+            tabular.delimited_lines(text, ",", limits)
         peak = tracemalloc.get_traced_memory()[1]
     finally:
         tracemalloc.stop()
