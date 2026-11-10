@@ -28141,5 +28141,9 @@
     "tests/test_routers/test_numbering_boundary.py::test_an_import_stored_under_a_key_another_record_holds_is_refused[import doc]": 2.1001725179958157,
     "tests/test_routers/test_numbering_boundary.py::test_an_import_stored_under_a_key_another_record_holds_is_refused[import list batch]": 2.021807782992255,
     "tests/test_routers/test_numbering_boundary.py::test_an_import_stored_under_a_key_another_record_holds_is_refused[import list]": 2.0279807939659804,
-    "tests/test_routers/test_numbering_boundary.py::test_every_writer_stores_the_number_the_boundary_returns": 5.701802072988357
+    "tests/test_routers/test_numbering_boundary.py::test_every_writer_stores_the_number_the_boundary_returns": 5.701802072988357,
+    "tests/test_routers/test_numbering_boundary.py::test_an_import_whose_key_holds_no_number_is_saved[import doc batch]": 3.1293909790110774,
+    "tests/test_routers/test_numbering_boundary.py::test_an_import_whose_key_holds_no_number_is_saved[import doc]": 4.0258891750418115,
+    "tests/test_routers/test_numbering_boundary.py::test_an_import_whose_key_holds_no_number_is_saved[import list batch]": 3.1494786540279165,
+    "tests/test_routers/test_numbering_boundary.py::test_an_import_whose_key_holds_no_number_is_saved[import list]": 3.056154328980483
 }
