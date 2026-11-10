@@ -2328,10 +2328,7 @@ async def write_doc_patch(session: AsyncSession, company_id, role: str, settings
     digest, idem_key = _patch_identity("doc", entity_id, payload)
     if (done := await _find_patch_replay(session, company_id, idem_key, "doc.updated", entity_id, digest)) is not None:
         return done
-    # The company comes before any record when a number changes, as numbering locks it; the
-    # selected contact before the document, the order merge and delete use.
-    if NUMBER_FIELDS & fields_changed.keys():
-        await lock_company(session, company_id)
+    # The selected contact is locked before the document, the order merge and delete use.
     contact = await _lock_selected_contact(session, company_id, settings, role, new_contact_id) if selecting else None
     # Locked load so the version check and the emit are one compare-and-set, as for lists.
     row = await _get_doc(session, company_id, entity_id, for_update=True)
@@ -3966,8 +3963,6 @@ async def renumber_doc(
 
     Voided documents are immutable records and cannot be renumbered.
     """
-    # The company comes before the document, as numbering locks it.
-    await lock_company(session, company_id)
     row = await _get_doc(session, company_id, entity_id, for_update=True)
     state = row.state
     if state.get("status") == "void":
@@ -9357,10 +9352,7 @@ async def write_list_patch(session: AsyncSession, company_id, role: str, setting
     digest, idem_key = _patch_identity("list", entity_id, payload)
     if (done := await _find_patch_replay(session, company_id, idem_key, "list.updated", entity_id, digest)) is not None:
         return done
-    # The company comes before any record when a number changes, as numbering locks it; the
-    # selected contact before the List, the order merge and delete use.
-    if NUMBER_FIELDS & fields_changed.keys():
-        await lock_company(session, company_id)
+    # The selected contact is locked before the List, the order merge and delete use.
     contact = await _lock_selected_contact(session, company_id, settings, role, new_contact_id) if selecting else None
     # Locked load so the version check and the emit are one atomic compare-and-set: two concurrent
     # patches cannot both read version N, both pass the check, and both write (the second clobbering

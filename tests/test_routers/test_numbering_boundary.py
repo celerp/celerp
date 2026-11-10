@@ -959,6 +959,92 @@ async def test_every_writer_stores_the_number_the_boundary_returns():
     assert not _discarded_numbers(), f"a writer checks a number but stores it as sent: {_discarded_numbers()}"
 
 
+# A refusal is fair only where the user holds the number that resolves it. Every caller of the
+# numbering check, by who gives the number: "user" (typed or imported: refused with the choose-
+# another message) or "system" (derived by the app: never refused, the writer takes the path that
+# keeps the record's meaning and only asks number_holder who holds the number).
+_REFUSES = {"require_number_free", "free_number", "free_import_numbers", "free_patched_numbers"}
+_DOCS = "default_modules/celerp-docs/celerp_docs"
+_REFUSAL_WAY_OUT = {
+    (f"{_DOCS}/routes.py", "create_doc_record"): ("user", "the number given on create"),
+    (f"{_DOCS}/routes.py", "create_list_record"): ("user", "the number given on create"),
+    (f"{_DOCS}/routes.py", "write_doc_patch"): ("user", "the number a patch sets"),
+    (f"{_DOCS}/routes.py", "write_list_patch"): ("user", "the number a patch sets"),
+    (f"{_DOCS}/routes.py", "renumber_doc"): ("user", "the number a renumber asks for"),
+    (f"{_DOCS}/routes.py", "import_list"): ("user", "the number and key in the imported file"),
+    (f"{_DOCS}/routes.py", "batch_import_lists"): ("user", "the number and key in the imported file"),
+    (f"{_DOCS}/import_service.py", "create_imported_doc"): ("user", "the number and key in the imported file"),
+    (f"{_DOCS}/routes.py", "revert_doc_to_draft"): (
+        "system", "the order number a bill was converted from: held elsewhere, the bill stays a bill"),
+}
+
+
+def _number_checks() -> dict[tuple[str, str], set[str]]:
+    """(file, function) -> the numbering checks it calls, for every caller outside the checks."""
+    calls = {}
+    for rel, fn in _app_functions():
+        if fn.name in _REFUSES | {"number_holder"}:
+            continue
+        names = {_name(n.func) for n in _own_nodes(fn) if isinstance(n, ast.Call)} & (_REFUSES | {"number_holder"})
+        if names:
+            calls[rel, fn.name] = names
+    return calls
+
+
+async def test_every_caller_of_the_numbering_check_says_who_holds_the_way_out():
+    calls = _number_checks()
+    assert calls.keys() == _REFUSAL_WAY_OUT.keys(), (
+        f"unclassified: {calls.keys() - _REFUSAL_WAY_OUT.keys()}, gone: {_REFUSAL_WAY_OUT.keys() - calls.keys()}")
+    refused = {k: calls[k] & _REFUSES for k, (who, _) in _REFUSAL_WAY_OUT.items() if who == "system"}
+    assert not any(refused.values()), f"a number the app derived is refused: {refused}"
+
+
+async def _imported_bill(client, h, contacts) -> tuple[str, str]:
+    """An imported bill naming an imported purchase order, a separate record holding the order's
+    number: (the bill's key, its number)."""
+    po, number, bill = f"PO-{uuid.uuid4().hex[:6]}", f"BILL-{uuid.uuid4().hex[:6]}", f"doc:{uuid.uuid4()}"
+    vendor = next(c for c in contacts if c.get("contact_type") in ("vendor", "both"))
+    base = {"contact_id": vendor["id"], "line_items": [{"name": "Svc", "quantity": 1, "unit_price": 100}],
+            "currency": "USD", "issue_date": "2026-11-01", "import_treatment": "opening_balances",
+            "subtotal": 100, "total": 100}
+    for key, data in ((f"doc:{uuid.uuid4()}", {"doc_type": "purchase_order", "ref_id": po, "status": "converted"}),
+                      (bill, {"doc_type": "bill", "ref_id": number, "status": "awaiting_payment",
+                              "source_po_ref": po, "amount_outstanding": 100})):
+        r = await client.post("/docs/import", headers=h, json={
+            "entity_id": key, "event_type": "doc.created", "idempotency_key": f"k-{uuid.uuid4().hex}",
+            "source": "csv", "data": {**base, **data}})
+        assert r.status_code == 200, r.text
+    return bill, number
+
+
+@pytest.mark.parametrize("door", (*_DOORS, "revert"))
+async def test_every_door_that_writes_a_number_locks_the_company_before_any_record(client, session, door):
+    """Numbering locks the company (lock_company, FOR NO KEY UPDATE), so a door that locked a
+    record first could deadlock with one that numbers: each takes that lock before any record
+    FOR UPDATE, as lock_projections and emit_event do. A share lock (hold_company) does not count."""
+    auth, contacts = await _demo_company(client, session, "USD")
+    h = auth["headers"]
+    target = (await _imported_bill(client, h, contacts))[0] if door == "revert" else await _target(client, h, contacts, door)
+    seen = []
+    engine = session.bind.sync_engine
+
+    def record(conn, cursor, statement, parameters, *_):
+        if "FROM companies" in statement and "FOR NO KEY UPDATE" in statement:
+            seen.append("companies")
+        elif "FROM projections" in statement and " FOR " in statement and "SHARE" not in statement:
+            seen.append("projections")
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        if door == "revert":
+            r = await client.post(f"/docs/{target}/revert-to-draft", headers=h, json={"reason": "wrong supplier"})
+            assert r.status_code == 200, r.text
+        else:
+            assert (await _give(client, h, contacts, door, f"LK-{uuid.uuid4().hex[:6]}", target=target))[1] is None
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+    assert "companies" in seen and seen.index("companies") <= (seen + ["projections"]).index("projections"), seen
+
+
 def census_report() -> str:
     """The census by number field as text: one line per write with its disposition."""
     return "\n".join(f"{f}\t{rel}:{line}\t{fn}\t{how}" for f, rel, fn, line, how in
@@ -1063,18 +1149,7 @@ async def test_an_imported_bill_whose_order_is_another_record_reverts_to_a_draft
     with no refusal the user could not resolve."""
     auth, contacts = await _demo_company(client, session, "USD")
     h = auth["headers"]
-    po, number, bill = f"PO-{uuid.uuid4().hex[:6]}", f"BILL-{uuid.uuid4().hex[:6]}", f"doc:{uuid.uuid4()}"
-    vendor = next(c for c in contacts if c.get("contact_type") in ("vendor", "both"))
-    base = {"contact_id": vendor["id"], "line_items": [{"name": "Svc", "quantity": 1, "unit_price": 100}],
-            "currency": "USD", "issue_date": "2026-11-01", "import_treatment": "opening_balances",
-            "subtotal": 100, "total": 100}
-    for key, data in ((f"doc:{uuid.uuid4()}", {"doc_type": "purchase_order", "ref_id": po, "status": "converted"}),
-                      (bill, {"doc_type": "bill", "ref_id": number, "status": "awaiting_payment",
-                              "source_po_ref": po, "amount_outstanding": 100})):
-        r = await client.post("/docs/import", headers=h, json={
-            "entity_id": key, "event_type": "doc.created", "idempotency_key": f"k-{uuid.uuid4().hex}",
-            "source": "csv", "data": {**base, **data}})
-        assert r.status_code == 200, r.text
+    bill, number = await _imported_bill(client, h, contacts)
     r = await client.post(f"/docs/{bill}/revert-to-draft", headers=h, json={"reason": "wrong supplier"})
     assert r.status_code == 200, r.text
     after = (await client.get(f"/docs/{bill}", headers=h)).json()
