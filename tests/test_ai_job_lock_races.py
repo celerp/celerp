@@ -149,19 +149,22 @@ async def test_a_company_lock_held_past_the_lease_never_lapses_a_healthy_runners
     """The measurement behind the lease exception: another transaction holds the company
     lock for two lease periods while the runner waits on the model. Every read meanwhile
     finds the job running under its first runner, and it ends with one model run."""
+    # The lease runs on a test clock that moves only between the reads, so a pause of the
+    # whole process never counts as lease time; a renewal that stops lets it run out.
+    clock = {"now": jobs._now()}
+    monkeypatch.setattr(jobs, "_now", lambda: clock["now"])
     monkeypatch.setattr(jobs, "LEASE_S", 1.0)
     monkeypatch.setattr(jobs, "LEASE_RENEW_S", 0.2)
     tok, company_id, user_id = await _single(real_client, monkeypatch, tmp_path)
     _conv, job_id, identity = await _reading_job(real_client, tok, company_id, user_id, cloud)
     first = (await _row(pg, job_id)).runner_id
     seen = set()
-    loop = asyncio.get_running_loop()
     async with _company_held(pg, company_id):
-        end = loop.time() + 2.0
-        while loop.time() < end:
+        for _ in range(20):                                     # 2 s: two lease periods
             row = await _row(pg, job_id)
             seen.add((jobs.liveness(row), row.runner_id))
             await asyncio.sleep(0.1)
+            clock["now"] += timedelta(seconds=0.1)
     assert seen == {("running", first)}
     cloud.release(identity)
     assert (await _finished(real_client, tok, job_id))["status"] == "completed"
