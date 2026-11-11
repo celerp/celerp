@@ -1433,8 +1433,12 @@ async def list_docs(
 async def _ids_numbered(session: AsyncSession, company_id, kind: Literal["doc", "list"], number: str,
                         doc_type: str | None = None) -> list[str]:
     """Every Document (of doc_type, when given) or List whose number is ``number``, both compared
-    in their canonical form as numbering compares them."""
-    wanted = canonical_number(_sa.literal(strip_number(number), _sa.Text))
+    in their canonical form as numbering compares them. A blank number is no number and
+    names no record, as free_number reads it."""
+    number = strip_number(number)
+    if not number:
+        return []
+    wanted = canonical_number(_sa.literal(number, _sa.Text))
     numbers = (NUMBER_KEPT, NUMBER_SHOWN) if kind == "doc" else (NUMBER_SHOWN,)
     query = select(Projection.entity_id).where(
         Projection.company_id == company_id,
