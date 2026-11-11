@@ -28610,7 +28610,6 @@
     "tests/test_migrations/test_lookup_index_failures.py::test_a_failed_lookup_index_build_never_stops_the_upgrade[t3u4v5w6x7y8-left invalid]": 0.003,
     "tests/test_release_workflow.py::test_sign_in_after_refusal_opens_existing_data": 0.102,
     "tests/test_auto_stamp.py::test_cost_scope_index_is_recognized_as_schema_ddl": 0.003,
-    "tests/test_auto_stamp.py::test_an_upgraded_database_without_the_cost_scope_index_is_stamped_below_it[drop_indexes2-invalid_indexes2-t3u4v5w6x7y8]": 0.283,
     "tests/test_sink_check.py::test_sink_check_flags_seeded_mutations[laundering]": 3.3,
     "tests/test_migrations/test_lookup_index_failures.py::test_a_failed_lookup_index_build_never_stops_the_upgrade[q0r1s2t3u4v5-leftover drop-tail fails]": 0.003,
     "default_modules/celerp-subscriptions/tests/test_status_census.py::test_the_census_names_each_way_a_route_can_answer[return await _refused_redrawn(e, stored)-_refused_redrawn]": 0.003,
@@ -28751,5 +28750,7 @@
     "tests/test_browser/test_clean_save_keeps_lines.py::test_a_clean_save_leaves_stored_lines_unchanged[chromium-writeoff]": 7.824,
     "tests/test_browser/test_encoding_guard.py::test_url_rule_same_in_python_and_browser[chromium]": 1.116,
     "tests/test_browser/test_clean_save_keeps_lines.py::test_a_clean_save_leaves_stored_lines_unchanged[chromium-transfer]": 1.139,
-    "tests/test_browser/test_clean_save_keeps_lines.py::test_the_clean_save_check_sees_a_changed_line": 0.391
+    "tests/test_browser/test_clean_save_keeps_lines.py::test_the_clean_save_check_sees_a_changed_line": 0.391,
+    "tests/test_auto_stamp.py::test_an_upgraded_database_without_the_cost_scope_index_is_stamped_below_it[drop_indexes2-invalid_indexes2-u4v5w6x7y8z9]": 0.413,
+    "tests/test_auto_stamp.py::test_every_schema_change_in_a_revision_is_read_by_the_walker[u4v5w6x7y8z9_json_text_unescape_all_encodings]": 0.004
 }
