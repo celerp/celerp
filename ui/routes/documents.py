@@ -7483,10 +7483,10 @@ def _draw_panel_preview(memo: dict, preview: dict) -> FT:
 
 
 def _header_discount_row(doc: dict, discount: float, currency: str):
-    """The totals panel's whole-document discount row, or "" when there is none. A save puts
+    """The totals panel's whole-document discount row, or None when there is none. A save puts
     the server's row back in place of the page's estimate (_celerpShowStoredMoney)."""
     if discount <= 0.005:
-        return ""
+        return None
     raw = float(doc.get("discount") or 0)
     # doc.discount carries its trailing colon ("Discount:"); for the % variant build from the
     # colon-less label.discount and re-add the colon after the percentage.
