@@ -129,7 +129,8 @@ async def test_journal_form_sends_ended_session_to_sign_in():
 async def test_journal_form_says_when_settings_cannot_be_read():
     reason = "Company settings could not be read."
     for role in ("owner", "viewer"):
-        a, b, c = _journal_reads(AsyncMock(side_effect=APIError(500, reason)))
+        # Only the form's settings read fails; later reads (currency, page chrome) answer.
+        a, b, c = _journal_reads(AsyncMock(side_effect=[APIError(500, reason)] + [_COMPANY] * 5))
         with a, b, c:
             r = await _ui("get", "/accounting/journal/new?ts=2026-11-01", role=role)
         body = html.unescape(r.text)
