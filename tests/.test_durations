@@ -28793,5 +28793,12 @@
     "tests/test_woocommerce_held_number.py::test_import_as_answers_the_reason_an_order_still_waits": 0.6563878519809805,
     "tests/test_woocommerce_held_number.py::test_import_as_refuses_an_order_it_cannot_name[61x-422]": 0.6095557649969123,
     "tests/test_woocommerce_held_number.py::test_import_as_refuses_an_order_it_cannot_name[999-404]": 0.5463394719990902,
-    "tests/test_woocommerce_held_number.py::test_import_as_refuses_an_order_it_cannot_name[abc-422]": 0.6586958069819957
+    "tests/test_woocommerce_held_number.py::test_import_as_refuses_an_order_it_cannot_name[abc-422]": 0.6586958069819957,
+    "tests/test_shard_durations.py::test_check_lists_what_is_out_of_date_and_writes_nothing": 0.14470302796689793,
+    "tests/test_shard_durations.py::test_pytest_runs_without_the_calling_session_s_pytest_variables": 0.002371072070673108,
+    "tests/test_shard_durations.py::test_refresh_times_new_tests_and_drops_stale_entries": 0.002392883994616568,
+    "tests/test_shard_durations.py::test_time_refuses_a_failing_or_unmeasured_test[measured0-1-these tests must pass before they are timed]": 0.002334209915716201,
+    "tests/test_shard_durations.py::test_time_refuses_a_failing_or_unmeasured_test[measured1-0-pytest-split measured none of: t.py::a]": 0.002285323978867382,
+    "tests/test_shard_durations.py::test_time_returns_what_pytest_split_measured_for_each_test": 0.0021906300098635256,
+    "tests/test_shard_durations.py::test_tooling_unlike_ci_lists_a_missing_or_unmet_requirement_and_skips_one_not_for_here": 0.0035594229120761156
 }
