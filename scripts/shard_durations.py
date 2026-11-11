@@ -5,12 +5,16 @@
     python scripts/shard_durations.py           # time every unmeasured test, drop stale entries
     python scripts/shard_durations.py --check   # list them and exit 1 if there are any
 
-A new test, a renamed one, or a new alembic revision (test_backfills_run_once and
-test_python310_floor take their parameters from the revision files) changes the ids a job
-collects. tests/test_ci_shard_split.py fails on any id the file does not measure; this script
-is the one place that collects the jobs' ids, and the one way to bring the file back in line.
-Run it after adding or renaming a test or a revision, and before every push that touches the
-tests or the migrations (the --check form is cheap: it only collects).
+The ids a job collects change with the tests themselves and with everything a test takes its
+parameters from or the run is selected by:
+- the shipped sources (every .py under shipped_sources.SHIPPED_ROOTS, e.g. test_python310_floor),
+- the alembic revisions (e.g. test_backfills_run_once),
+- pyproject.toml (pytest markers and addopts),
+- conftest.py.
+So adding, moving or renaming any shipped module can change them as much as a new test can.
+tests/test_ci_shard_split.py fails on any id the file does not measure; this script is the one
+place that collects the jobs' ids, and the one way to bring the file back in line. Run --check
+before every push, whatever it touches (it is cheap: it only collects).
 """
 
 from __future__ import annotations
