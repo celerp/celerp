@@ -57,9 +57,13 @@ def _timeout_of(call: ast.Call | None, where: str) -> float:
 
 
 def _waits(fn: ast.AST) -> tuple[list[float], set[str]]:
-    """The subprocess wait literals a function's own body gives, and the names it calls."""
+    """The subprocess wait literals a function's own body gives, and the names it calls or takes
+    as fixtures (a fixture's setup runs under the timeout of the test that requests it)."""
     longest, called = [], set()
     for node in ast.walk(fn):
+        if isinstance(node, ast.arg):
+            called.add(node.arg)
+            continue
         if not isinstance(node, ast.Call):
             continue
         func = node.func

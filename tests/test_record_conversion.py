@@ -17,7 +17,7 @@ from datetime import date, timedelta
 import pytest
 
 from celerp_docs.doc_money import CONVERSION_KEYS, DOC_TOTAL_FIELDS, document_money, list_money
-from celerp_docs.record_copy import conversion_of
+from celerp_docs.record_copy import RECORD_KEYS, conversion_of
 from test_consignment_in_sale import _consign, _state
 from test_tax_acceptance_matrix import _demo_company, _tax
 
@@ -30,6 +30,12 @@ UNRATED = [{"tax": 70}, {"tax": 70, "tax_rate": None}]
 
 def test_every_conversion_key_has_a_source_value():
     assert set(SOURCE) == CONVERSION_KEYS
+
+
+def test_conversion_keys_hold_no_record_keys():
+    """A key every copy already carries (RECORD_KEYS) is not listed again as a conversion key; only
+    currency is both, a money input the record snapshot also carries."""
+    assert CONVERSION_KEYS & RECORD_KEYS <= {"currency"}
 
 
 class _Reads(dict):
