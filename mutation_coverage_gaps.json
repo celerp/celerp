@@ -626,8 +626,8 @@
  },
  {
   "route": "ui POST /lists/new-audit",
-  "class": "never requested",
-  "reason": "No test requests this route; its source reaches api POST."
+  "class": "requested, no durable write",
+  "reason": "Tests request this route with the API client mocked, so none of their requests made a durable write of company data; its source reaches api POST."
  },
  {
   "route": "ui POST /lists/{entity_id}/items/csv",

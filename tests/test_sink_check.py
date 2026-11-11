@@ -18,6 +18,9 @@ from pathlib import Path
 
 import pytest
 
+# Each check runs the sink check over a whole tree in a subprocess that may take its full wait.
+pytestmark = pytest.mark.timeout(300)
+
 _ROOT = Path(__file__).resolve().parents[1]
 _SCRIPT = _ROOT / "scripts" / "sink_check.py"
 _SEEDS = Path(__file__).resolve().parent / "fixtures" / "sink_check"

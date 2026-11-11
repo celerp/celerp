@@ -56,7 +56,8 @@ def _split_item(company) -> str:
     try:
         with conn.cursor() as cur:
             cur.execute("UPDATE projections SET state = jsonb_set(state::jsonb, '{sell_by}', to_jsonb(%s::text))::json "
-                        "WHERE entity_id = %s", (_BREAK, item_id))
+                        "WHERE company_id = %s AND entity_id = %s",
+                        (_BREAK, company.get("/companies/me").json()["id"], item_id))
             assert cur.rowcount == 1
     finally:
         conn.close()

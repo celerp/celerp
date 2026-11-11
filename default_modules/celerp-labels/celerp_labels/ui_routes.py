@@ -751,9 +751,9 @@ def _field_row_compact(
     return Div(
         Div(
             Input(type="text", readonly=True, cls="form-input form-input--sm searchable-select__display",
-                  placeholder="-- select --"),
+                  placeholder=t("labels.field_select_placeholder")),
             Div(
-                Input(type="text", cls="searchable-select__search", placeholder="Search fields..."),
+                Input(type="text", cls="searchable-select__search", placeholder=t("import.js_search_placeholder")),
                 Div(cls="searchable-select__list"),
                 cls="searchable-select__dropdown",
             ),
@@ -763,7 +763,7 @@ def _field_row_compact(
         ),
         Input(type="text", name=f"fields[{idx}][label]", value=label_val,
               cls="form-input form-input--sm fld-label fld-label-input",
-              placeholder="Display label", title="Label shown on preview",
+              placeholder=t("labels.display_label"), title=t("labels.display_label_hint"),
               oninput="this._userEdited=true; labelEditorUpdatePreview()"),
         Button(t("btn.u00d7"),
             type="button",
@@ -776,12 +776,12 @@ def _field_row_compact(
         Input(type="hidden", name=f"fields[{idx}][y]", value=field.get("y", ""), cls="fld-y"),
         Input(type="number", name=f"fields[{idx}][fontSize]", value=field.get("fontSize", ""),
               cls="form-input form-input--sm fld-fs",
-              min="4", max="72", placeholder="Font", title="Text size in points (4-72)",
+              min="4", max="72", placeholder=t("labels.font_size"), title=t("labels.font_size_hint"),
               style="width:60px;" if is_text else "display:none;width:60px;",
               oninput="labelEditorUpdatePreview()"),
         Input(type="number", name=f"fields[{idx}][barcode_height]", value=field.get("barcode_height", ""),
               cls="form-input form-input--sm fld-bh",
-              min="1", max="30", placeholder="Bar H", title="Barcode bar height (1-30)",
+              min="1", max="30", placeholder=t("labels.bar_height"), title=t("labels.bar_height_hint"),
               style="width:60px;" if ftype == "barcode" else "display:none;width:60px;",
               oninput="labelEditorUpdatePreview()"),
         # Bold has always been stored on the field and honoured by the renderers;
@@ -791,7 +791,7 @@ def _field_row_compact(
             Input(type="checkbox", name=f"fields[{idx}][bold]", value="true", cls="fld-bold",
                   checked=bool(field.get("bold")), onchange="labelEditorUpdatePreview()"),
             B("B"),
-            cls="fld-bold-wrap", title="Bold this field",
+            cls="fld-bold-wrap", title=t("labels.bold_hint"),
             style=None if is_text else "display:none;",
         ),
         cls="field-row-compact",
@@ -1160,7 +1160,7 @@ def _printable_label_sheet(
     page = Html(
         Head(
             Meta(charset="utf-8"),
-            Title("Print Labels"),
+            Title(t("labels.print_labels")),
             Link(rel="stylesheet", href="/static/app.css"),
             Style(_PRINT_SHEET_CSS),
         ),
@@ -1547,7 +1547,7 @@ def setup_ui_routes(app) -> None:
         templates = await _fetch_templates(request)
         from fasthtml.common import Option
         if not templates:
-            return Option("No templates - create one in Settings", value="", disabled=True, selected=True)
+            return Option(t("label.no_templates_found_create_one_in_settings_labels"), value="", disabled=True, selected=True)
         # Pre-select first template
         return tuple(
             Option(tpl["name"], value=tpl["id"], selected=(i == 0))
