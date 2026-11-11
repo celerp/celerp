@@ -13,7 +13,7 @@ from fasthtml.common import *
 from ui.components.attrs import hx_vals
 from ui.components.table import searchable_select
 from ui.i18n import t
-from ui.components.encode import html_response
+from ui.components.encode import html_response, js
 
 # Single source of truth for tag slugs - drives both UI and i18n keys
 _DOCUMENT_TAGS: tuple[str, ...] = (
@@ -296,9 +296,9 @@ def files_section(
     # Vanilla JS: drag resize handles between <th> elements.
     # Injected once per section render; keyed by sid so multiple sections
     # on the same page don't collide.
-    resize_js = f"""
+    resize_js = js("""
 (function(){{
-  var table=document.getElementById('files-table-{sid}');
+  var table=document.getElementById('files-table-' + {0});
   if(!table) return;
   var ths=table.querySelectorAll('thead th');
   ths.forEach(function(th,i){{
@@ -320,7 +320,8 @@ def files_section(
     function onUp(){{ document.removeEventListener('mousemove',onMove); document.removeEventListener('mouseup',onUp); }}
   }});
 }})();
-"""
+""",
+        sid)
 
     # ── Table rows ────────────────────────────────────────────────────────────
     file_rows = []
@@ -545,19 +546,19 @@ def files_section(
     # The global _celerpDZ registry lets the new section call its own init
     # once inserted (htmx:afterSettle fires for hx-* swaps; for plain fetch
     # swaps we call it directly after setting outerHTML).
-    drop_js = f"""
+    drop_js = js("""
 (function(){{
   if(!window._celerpDZ) window._celerpDZ={{}};
   function initDropZone(){{
-    var zone=document.getElementById('file-drop-zone-{sid}');
-    var inp=document.getElementById('file-drop-input-{sid}');
+    var zone=document.getElementById('file-drop-zone-' + {0});
+    var inp=document.getElementById('file-drop-input-' + {0});
     if(!zone||!inp||zone._dzInited) return;
     zone._dzInited=true;
     function upload(file){{
       var fd=new FormData(); fd.append('file',file);
       var txt=zone.querySelector('.file-drop-text');
       if(txt) txt.textContent=zone.dataset.uploadingText;
-      celerpFilesFetch('{sid}','{base_url}',{{method:'POST',body:fd}},null)
+      celerpFilesFetch({1},{2},{{method:'POST',body:fd}},null)
         .catch(function(e){{alert(zone.dataset.uploadFailedText);}})
         .then(function(){{if(txt&&document.body.contains(zone)) txt.textContent=zone.dataset.dropText;}});
     }}
@@ -565,7 +566,7 @@ def files_section(
       if(e.target===zone||e.target.closest('.file-drop-text,.file-drop-icon,.file-drop-hint')) inp.click();
     }});
     inp.addEventListener('change',function(){{ if(inp.files.length) upload(inp.files[0]); }});
-    var cam=document.getElementById('file-camera-input-{sid}');
+    var cam=document.getElementById('file-camera-input-' + {0});
     var camBtn=zone.querySelector('.file-camera-btn');
     if(cam&&camBtn){{
       camBtn.addEventListener('click',function(e){{e.preventDefault(); cam.click();}});
@@ -578,13 +579,14 @@ def files_section(
       if(e.dataTransfer.files.length) upload(e.dataTransfer.files[0]);
     }});
   }}
-  window._celerpDZ['{sid}']=initDropZone;
+  window._celerpDZ[{1}]=initDropZone;
   initDropZone();
   document.addEventListener('htmx:afterSettle',function(e){{
-    if(e.detail&&e.detail.target&&e.detail.target.id==='files-section-{sid}') initDropZone();
+    if(e.detail&&e.detail.target&&e.detail.target.id==='files-section-' + {0}) initDropZone();
   }});
 }})();
-"""
+""",
+        sid, str(sid), str(base_url))
 
     upload_zone = Div(
         Div("📁", cls="file-drop-icon"),
@@ -611,7 +613,9 @@ def files_section(
         Div(table, cls="table-scroll-wrap"),
         Script(resize_js),
         Script(COLUMN_FILTER_JS),
-        Script(f"window.celerpRefreshFilters&&window.celerpRefreshFilters(document.getElementById('files-section-{sid}'));"),
+        Script(js(
+            "window.celerpRefreshFilters&&window.celerpRefreshFilters(document.getElementById('files-section-' + {0}));",
+            sid)),
     ]
     if pagination:
         children.append(pagination)

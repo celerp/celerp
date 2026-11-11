@@ -28,7 +28,7 @@ from ui.routes.reports import _company_today, _get_company
 from celerp.services.business_time import business_today
 from celerp.services.ledger_display import run_reference
 from celerp.services.record_quantities import INCOMPLETE_RUN_STATUSES
-from ui.components.encode import html_response
+from ui.components.encode import html_response, js
 
 logger = logging.getLogger(__name__)
 
@@ -905,10 +905,11 @@ def setup_routes(app):
         # ESC cancels the edit: restore the cell's display chip (innerHTML of the editable-cell)
         # without persisting. Mirrors the inventory inline-edit escape pattern.
         escape_js = (
-            f"if(event.key==='Escape'){{"
-            f"htmx.ajax('GET','/manufacturing/runs/{run_id}/cell/{field}?current={current}',"
-            f"{{target:this.closest('.editable-cell'),swap:'innerHTML'}});"
-            f"event.preventDefault();event.stopPropagation();}}"
+            js(
+                "if(event.key==='Escape'){{htmx.ajax('GET','/manufacturing/runs/' + {0} + '/cell/' + {1} + '?current=' + {2},"
+                "{{target:this.closest('.editable-cell'),swap:'innerHTML'}});event.preventDefault();"
+                'event.stopPropagation();}}',
+                run_id, field, current)
         )
         common = {"hx_post": post, "hx_target": "#mfg-table", "hx_swap": "outerHTML",
                   "hx_trigger": "change", "onkeydown": escape_js, "hx_vals": operation_key_vals()}

@@ -9,7 +9,7 @@ import re
 
 from fasthtml.common import *
 from ui.i18n import t, t_or, field_label
-from ui.components.encode import html_response, js_value
+from ui.components.encode import html_response
 from celerp.services.field_schema import MIXED_VALUE
 from celerp.services.units import plain_number
 # Canonical definitions live with the shared document renderer; re-exported
@@ -1095,13 +1095,16 @@ def editable_cell(
     # ESC: the restore request targets the cell, so the global htmx handler snapshots
     # the table's scroll position before it and restores it when it settles.
     escape_js = (
-        f"if(event.key==='Escape'){{"
-        f"this._escaping=true;"
-        f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
-        f"event.preventDefault();}}"
-        f"else if(event.key==='Enter'){{event.preventDefault();htmx.trigger(this,'blur');}}"
+        js(
+            "if(event.key==='Escape'){{this._escaping=true;htmx.ajax('GET',{0},{{target:this.closest('td'),"
+            "swap:'outerHTML'}});event.preventDefault();}}else if(event.key==='Enter'){{"
+            "event.preventDefault();htmx.trigger(this,'blur');}}",
+            str(restore_url))
     )
-    blur_restore_js = f"if(!this._escaping){{htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}})}}"
+    blur_restore_js = js(
+        "if(!this._escaping){{htmx.ajax('GET',{0},{{target:this.closest('td'),swap:'outerHTML'}}"
+        ')}}',
+        str(restore_url))
     # Typed editors save on blur only a value changed from the one they opened with; leaving
     # an untouched editor restores the cell, so opening one and moving on never writes.
     # The opening value is read from the box on its first focus, not from the HTML value:
@@ -1109,14 +1112,17 @@ def editable_cell(
     blur_save = dict(
         onfocus="if(this._v===undefined)this._v=this.value",
         hx_trigger="blur[this.value!==this._v] delay:200ms",
-        onblur=(f"if(!this._escaping&&this.value===this._v){{"
-                f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}})}}"),
+        onblur=(js(
+            "if(!this._escaping&&this.value===this._v){{htmx.ajax('GET',{0},{{target:this.closest('td'),"
+            "swap:'outerHTML'}})}}",
+            str(restore_url))),
     )
     # ESC handler for combobox wrapper (keydown bubbles up from the inner input)
     combobox_escape_js = (
-        f"if(event.key==='Escape'){{"
-        f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
-        f"event.preventDefault();}}"
+        js(
+            "if(event.key==='Escape'){{htmx.ajax('GET',{0},{{target:this.closest('td'),"
+            "swap:'outerHTML'}});event.preventDefault();}}",
+            str(restore_url))
     )
 
     if cell_type in ("select", "status") and options is not None:
@@ -1184,9 +1190,10 @@ def editable_cell(
     elif cell_type == "textarea":
         # Multi-line editor: Enter inserts a newline (not save), Esc cancels, blur saves.
         textarea_escape_js = (
-            f"if(event.key==='Escape'){{this._escaping=true;"
-            f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
-            f"event.preventDefault();}}"
+            js(
+                "if(event.key==='Escape'){{this._escaping=true;htmx.ajax('GET',{0},{{target:this.closest('td'),"
+                "swap:'outerHTML'}});event.preventDefault();}}",
+                str(restore_url))
         )
         input_el = Textarea(
             display_val, name="value", **swap, **_aria, **blur_save,
@@ -1455,7 +1462,7 @@ def row_menu(safe_id: str, *items: FT) -> FT:
     ``A`` or ``Button`` carrying ``row-menu-item``; ``safe_id`` is unique on the page."""
     return Td(
         Div(
-            Button("⋮", cls="row-menu-btn", onclick=f"toggleRowMenu('{safe_id}')"),
+            Button("⋮", cls="row-menu-btn", onclick=js('toggleRowMenu({0})', str(safe_id))),
             Div(*items, cls="row-menu-dropdown", id=f"menu-{safe_id}"),
             cls="row-menu",
         ),
@@ -1686,19 +1693,19 @@ def data_table(
             paired = f["paired_with"]
             key = f["key"]
             _virtual_followers.setdefault(paired, []).append(key)
-    _js = f"""
+    _js = js("""
 (function(){{
-  var PAGE_KEY = '{page_key}';
-  var ORDER_KEY = 'celerp_col_order_{entity_type}';
-  var SCHEMA_DEFAULTS = {_json.dumps(_schema_defaults)};
+  var PAGE_KEY = {0};
+  var ORDER_KEY = 'celerp_col_order_' + {1};
+  var SCHEMA_DEFAULTS = {2};
   // Virtual columns that must move with their primary (e.g. cost_price_total follows cost_price)
-  var VIRTUAL_FOLLOWERS = {_json.dumps(_virtual_followers)};
+  var VIRTUAL_FOLLOWERS = {3};
   var table = document.getElementById('data-table');
   if (!table) return;
   var ths = Array.from(table.querySelectorAll('thead th[data-key]'));
   var rows = Array.from(table.querySelectorAll('tbody tr.data-row'));
 
-  var AUTO_HIDE = {'true' if auto_hide_empty else 'false'};
+  var AUTO_HIDE = {4};
 
   // Detect empty columns (>80% null/dash cells in tbody)
   var colEmpty = {{}};
@@ -1772,7 +1779,7 @@ def data_table(
   // Re-apply after HTMX settles so rows added during the swap phase are also covered.
   // Guard with a global flag so repeated IIFE executions (after HTMX swaps) don't
   // accumulate duplicate listeners on document.body.
-  var _VIS_SETTLE_KEY = '__celerpVisSettle_{entity_type}';
+  var _VIS_SETTLE_KEY = '__celerpVisSettle_' + {1};
   if (!window[_VIS_SETTLE_KEY]) {{
     window[_VIS_SETTLE_KEY] = true;
     document.body.addEventListener('htmx:afterSettle', function(e) {{
@@ -1787,7 +1794,7 @@ def data_table(
   }}
 
   // Drag-to-resize column headers — persist widths to localStorage
-  var WIDTH_KEY = 'celerp_col_widths_{entity_type}';
+  var WIDTH_KEY = 'celerp_col_widths_' + {1};
   function loadWidths() {{
     try {{ return JSON.parse(localStorage.getItem(WIDTH_KEY) || 'null'); }} catch(e) {{ return null; }}
   }}
@@ -1955,7 +1962,8 @@ def data_table(
     }});
   }}
 }})();
-"""
+""",
+        str(page_key), entity_type, _schema_defaults, _virtual_followers, bool(auto_hide_empty))
     _bulk_i18n_prelude = (
         "var I18N_CONFIRM_MERGE=" + _json.dumps(t("table.confirm_merge")) + ";\n"
         "var I18N_A_NEW_SKU=" + _json.dumps(t("table.a_new_sku")) + ";\n"
@@ -2549,11 +2557,11 @@ def column_manager(schema: list[dict], entity_type: str, visible_cols: list[str]
         for f in schema
     ]
 
-    _mgr_js = f"""
+    _mgr_js = js("""
 (function(){{
-  var VIS_KEY='celerp_cols_{entity_type}',ORDER_KEY='celerp_col_order_{entity_type}',WIDTH_KEY='celerp_col_widths_{entity_type}';
-  var ALL={js_value(col_data)};
-  var DEFAULTS={js_value(default_keys)};
+  var VIS_KEY='celerp_cols_' + {0},ORDER_KEY='celerp_col_order_' + {0},WIDTH_KEY='celerp_col_widths_' + {0};
+  var ALL={1};
+  var DEFAULTS={2};
   var btn=document.getElementById('col-mgr-btn'),menu=document.getElementById('col-mgr-menu');
   if(!btn||!menu) return;
   function loadVis(){{try{{return JSON.parse(localStorage.getItem(VIS_KEY)||'null')}}catch(e){{return null}}}}
@@ -2626,12 +2634,13 @@ def column_manager(schema: list[dict], entity_type: str, visible_cols: list[str]
   if(so){{applyOrderToPicker(so);applyOrderToTable(so);}}
   menu.style.display='none';
 }})();
-"""
+""",
+        entity_type, col_data, default_keys)
     reset_onclick = (
-        f"localStorage.removeItem('celerp_cols_{entity_type}');"
-        f"localStorage.removeItem('celerp_col_order_{entity_type}');"
-        f"localStorage.removeItem('celerp_col_widths_{entity_type}');"
-        f"location.reload();"
+        js(
+            "localStorage.removeItem('celerp_cols_' + {0});localStorage.removeItem('celerp_col_order_' + {0});"
+            "localStorage.removeItem('celerp_col_widths_' + {0});location.reload();",
+            entity_type)
     )
     return Div(
         Button(t("btn.manage_columns"), id="col-mgr-btn", cls="btn btn--secondary", type="button"),

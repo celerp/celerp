@@ -55,6 +55,7 @@ from celerp.importers.tabular import (  # re-exported for the existing CSV impor
     validate_cell,
     validate_column_mapping,
 )
+from ui.components.encode import js
 
 logger = logging.getLogger(__name__)
 
@@ -427,9 +428,9 @@ def column_mapping_form(
             method="post",
             action=confirm_action,
         ),
-        Script(f"var _MAPPING_OPTIONS = {_json.dumps(option_defs)};"),
-        Script(f"var _MUTEX_GROUPS = {_json.dumps(_mutex_groups)};"),
-        Script(f"var _MAP_I18N = {_json.dumps(_mapping_js_labels())};"),
+        Script(js('var _MAPPING_OPTIONS = {0};', option_defs)),
+        Script(js('var _MUTEX_GROUPS = {0};', _mutex_groups)),
+        Script(js('var _MAP_I18N = {0};', _mapping_js_labels())),
         Script(_MAPPING_JS),
         id="import-preview",
         cls="import-panel",
@@ -1055,7 +1056,7 @@ def _fix_errors_panel(
                 fill_widget,
                 Button(t("btn.apply"),
                     type="button",
-                    onclick=f"csvFillColumn({json.dumps(col)})",
+                    onclick=js('csvFillColumn({0})', col),
                     cls="btn btn--secondary btn--xs",
                 ),
                 cls="csv-fill-bar",

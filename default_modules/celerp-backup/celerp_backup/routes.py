@@ -35,7 +35,7 @@ from celerp.config import settings
 from celerp.services.auth import require_install_owner
 from celerp.services.backup import BackupResult
 from ui.i18n import t
-from ui.components.encode import html_response
+from ui.components.encode import html_response, js
 
 router = APIRouter(dependencies=[Depends(require_install_owner)])
 
@@ -160,7 +160,7 @@ def _backup_table(items: list[dict]):
                 Div(
                     Button(
                         t("btn.export"),
-                        onclick=f"window.location.href='/backup/export/{item['id']}'",
+                        onclick=js("window.location.href='/backup/export/' + {0}", item['id']),
                         cls="btn btn--xs btn--secondary",
                     ),
                     Button(

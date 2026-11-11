@@ -29,6 +29,7 @@ from ui.components.table import (
 from ui.config import get_token as _token
 from ui.i18n import t
 from ui.routes.reports import _get_company
+from ui.components.encode import js
 
 
 _MAX_CSV_BYTES = 5 * 1024 * 1024
@@ -258,7 +259,7 @@ def _create_form(session_id: str, line_id: str, line: dict, chart: list[dict], b
             Div(
                 Button(t("btn.create_match"), type="submit", cls="btn btn--primary btn--sm"),
                 Button(t("btn.cancel"), type="button",
-                       onclick=f"document.getElementById('recon-expand-{line_id}').innerHTML=''",
+                       onclick=js("document.getElementById('recon-expand-' + {0}).innerHTML=''", line_id),
                        cls="btn btn--outline btn--sm ml-sm"),
                 cls="form-actions",
             ),
@@ -307,7 +308,7 @@ def _split_form(session_id: str, line_id: str, line: dict, chart: list[dict], ba
             Div(
                 Button(t("btn.split_match"), type="submit", cls="btn btn--primary btn--sm"),
                 Button(t("btn.cancel"), type="button",
-                       onclick=f"document.getElementById('recon-expand-{line_id}').innerHTML=''",
+                       onclick=js("document.getElementById('recon-expand-' + {0}).innerHTML=''", line_id),
                        cls="btn btn--outline btn--sm ml-sm"),
                 cls="form-actions",
             ),
@@ -528,7 +529,7 @@ def _workspace_view(
         ),
         Div(bank_panel, book_panel, cls="recon-panels"),
         Script(_RECON_MATCH_JS),
-        Script(f"celerpToast({json.dumps(notice)}, {json.dumps(notice_kind)});") if notice else None,
+        Script(js('celerpToast({0}, {1});', notice, notice_kind)) if notice else None,
         id="recon-workspace",
         cls="recon-workspace",
         **{"data-session-id": session_id,
@@ -687,7 +688,9 @@ def _mapper_fragment(
                   cls="btn btn--secondary ml-sm"),
                 cls="mt-md",
             ),
-            onkeydown=f"if(event.key==='Escape'){{window.location='/accounting/reconcile/{session_id}'}}",
+            onkeydown=js(
+                "if(event.key==='Escape'){{window.location='/accounting/reconcile/' + {0}}}",
+                session_id),
             hx_post=f"/accounting/reconcile/{session_id}/confirm-import",
             hx_target="#recon-workspace",
             hx_swap="outerHTML",

@@ -29,7 +29,7 @@ from ui.api_client import APIError, _flatten_item_attrs, error_message
 from ui.components.files import files_error, files_section as _shared_files_section, files_session_expired
 from ui.components.operation_key import kept_operation_key, operation_key_vals, required_operation_key
 from ui.components.shell import base_shell, minimal_shell, module_active, page_header, search_help, toast_header, page_title
-from ui.components.encode import html_response, inert_media_type, js_value, raw_html
+from ui.components.encode import html_response, inert_media_type, js, js_value, raw_html
 from ui.components.table import fmt_money, data_table, search_bar, pagination, EMPTY, empty_mark, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum, display_unit, doc_href
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services import import_stage
@@ -719,7 +719,7 @@ def _split_table_form(preview: dict, *, action: str, target: str, form_id: str,
             cls="sp-confirm-row",
         ),
         *(
-            [Script(f"_updateSplitDelta(document.getElementById('{form_id}'));")]
+            [Script(js('_updateSplitDelta(document.getElementById({0}));', str(form_id)))]
             if _show_delta_badge else []
         ),
         hx_post=action,
@@ -1966,7 +1966,10 @@ def setup_routes(app):
         _make_available_btn = (
             Button(
                 t("inventory.make_available"),
-                onclick=f"event.preventDefault();htmx.ajax('POST','/api/items/{entity_id}/make-available',{{target:'#item-header-error',swap:'outerHTML'}});",
+                onclick=js(
+                    "event.preventDefault();htmx.ajax('POST','/api/items/' + {0} + '/make-available',"
+                    "{{target:'#item-header-error',swap:'outerHTML'}});",
+                    entity_id),
                 cls="btn btn--primary",
             )
             if item.get("status") == "draft" and role_has_permission(_item_settings, _item_role, "edit_inventory")
@@ -2069,7 +2072,10 @@ function celerpPrintLabel(entityId, templateId) {
             A(
                 tpl.get("name", "Template"),
                 href="#",
-                onclick=f"celerpPrintLabel('{entity_id}','{tpl['id']}');this.closest('.print-label-dropdown').classList.remove('open');return false;",
+                onclick=js(
+                    "celerpPrintLabel({0},{1});this.closest('.print-label-dropdown').classList.remove('open');"
+                    'return false;',
+                    str(entity_id), str(tpl['id'])),
                 cls="dropdown-item",
             )
             for tpl in templates
@@ -2537,9 +2543,10 @@ function celerpPrintLabel(entityId, templateId) {
             patch_url = f"/api/items/{entity_id}/field/{field}"
             swap = dict(hx_patch=patch_url, hx_target="closest td", hx_swap="outerHTML", hx_include="this")
             escape_js = (
-                f"if(event.key==='Escape'){{"
-                f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
-                f"event.preventDefault();}}"
+                js(
+                    "if(event.key==='Escape'){{htmx.ajax('GET',{0},{{target:this.closest('td'),"
+                    "swap:'outerHTML'}});event.preventDefault();}}",
+                    str(restore_url))
             )
             add_new_url = "/settings/inventory?tab=locations"
             import json as _json_loc
@@ -5612,8 +5619,9 @@ def _pricing_cost_stale(item: dict, currency: str | None, detail: str) -> tuple:
     both cost inputs and their opening texts set to the cost as it is now."""
     unit, total = (_cost_door_text(item, currency, per_unit) for per_unit in (True, False))
     return (Div(t("inventory.not_saved_detail", detail=detail),
-                Script(f"document.getElementById('unit_cost_price').value={json.dumps(unit)};"
-                       f"document.getElementById('total_cost_price').value={json.dumps(total)};"),
+                Script(js(
+                    "document.getElementById('unit_cost_price').value={0};document.getElementById('total_cost_price').value={1};",
+                    unit, total)),
                 id="pricing-save-status", cls="recipe-save-status hint error", hx_swap_oob="true"),
             *_pricing_cost_opened(item, currency, oob=True))
 
@@ -6405,7 +6413,7 @@ def _print_label_dropdown(entity_id: str) -> FT:
         Button("🖨",
             cls="btn btn--secondary btn--icon",
             title=t("btn._print_labels"),
-            onclick=f"var dd=document.getElementById('{dropdown_id}');dd.classList.toggle('open');",
+            onclick=js("var dd=document.getElementById({0});dd.classList.toggle('open');", str(dropdown_id)),
         ),
         Div(
             Div(

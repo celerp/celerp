@@ -23,6 +23,7 @@ from ui.routes.settings import (
     _terms_conditions_tab,
 )
 from ui.routes.settings_general import _section_breadcrumb
+from ui.components.encode import js
 
 # The list types are numbered here too. Transfers and audits may move to an Inventory settings
 # tab when the Lists menu is split by type (SAL-001). The old shared "list" counter is listed
@@ -302,8 +303,10 @@ def _numbering_input(dt: str, field: str, value: str, error: FT = "") -> FT:
     """A numbering cell open for editing, with the reason a save was refused when there is
     one: blur saves, Escape restores the saved value."""
     restore_url = f"/settings/numbering/{dt}/{field}/display"
-    esc_js = (f"if(event.key==='Escape'){{htmx.ajax('GET','{restore_url}',"
-              f"{{target:this.closest('.editable-cell'),swap:'outerHTML'}});event.preventDefault();}}")
+    esc_js = (js(
+        "if(event.key==='Escape'){{htmx.ajax('GET',{0},{{target:this.closest('.editable-cell'),"
+        "swap:'outerHTML'}});event.preventDefault();}}",
+        str(restore_url)))
     extra = {"type": "number", "min": "1"} if field == "next" else {"type": "text"}
     return Div(
         Input(

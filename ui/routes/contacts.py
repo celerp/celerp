@@ -31,7 +31,7 @@ from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
 from ui.i18n import t, get_lang
 from ui.routes.reports import _date_filter_bar, _get_company, _parse_dates, _resolve_preset
-from ui.components.encode import html_response, inert_media_type
+from ui.components.encode import html_response, inert_media_type, js
 
 logger = logging.getLogger(__name__)
 
@@ -889,28 +889,29 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
         if contact_name in {_placeholder_name(kind) for kind in _PLACEHOLDER_KEYS} else ""
     )
 
-    delete_btn = "" if (is_deleted or not show_delete) else Script(f"""
+    delete_btn = "" if (is_deleted or not show_delete) else Script(js("""
 (function(){{
   var btn = document.getElementById('contact-delete-btn');
   if (!btn) return;
   btn.addEventListener('click', function(){{
-    celerpConfirm({_json.dumps(t("contacts.confirm_delete_contact"))}).then(function(yes){{ if (!yes) return;
+    celerpConfirm({0}).then(function(yes){{ if (!yes) return;
     fetch('/crm/contacts/bulk/delete', {{
       method: 'POST',
       headers: {{'Content-Type': 'application/json'}},
-      body: JSON.stringify({{contact_ids: [{_json.dumps(cid)}]}})
+      body: JSON.stringify({{contact_ids: [{1}]}})
     }}).then(function(r){{ return r.json(); }}).then(function(d){{
       if (d.deleted !== undefined) {{
         sessionStorage.removeItem('celerp_contact_selection');
-        window.location.href = {_json.dumps(back_href)};
+        window.location.href = {2};
       }} else {{
-        celerpToast(d.detail || {_json.dumps(t("contacts.delete_failed"))}, 'error');
+        celerpToast(d.detail || {3}, 'error');
       }}
-    }}).catch(function(err){{ celerpToast({_json.dumps(t("contacts.delete_failed"))}, 'error'); }});
+    }}).catch(function(err){{ celerpToast({3}, 'error'); }});
     }});
   }});
 }})();
-""")
+""",
+        t('contacts.confirm_delete_contact'), cid, back_href, t('contacts.delete_failed')))
 
     action_bar = Div(
         Button(t("btn.delete_contact"), id="contact-delete-btn", cls="btn btn--danger",
@@ -1594,7 +1595,9 @@ def setup_routes(app):
                     cls="form-group form-group--inline"),
                 Div(
                     Button(t("btn.save"), type="submit", cls="btn btn--primary btn--sm"),
-                    Button(t("btn.cancel"), type="button", cls="btn btn--secondary btn--sm", onclick=f"document.getElementById('{target_div}').innerHTML=''"),
+                    Button(t("btn.cancel"), type="button", cls="btn btn--secondary btn--sm", onclick=js(
+                        "document.getElementById({0}).innerHTML=''",
+                        str(target_div))),
                     cls="form-row",
                 ),
                 hx_post=f"/contacts/{contact_id}/addresses",
@@ -1652,7 +1655,9 @@ def setup_routes(app):
                 Div(
                     Button(t("btn.save"), type="submit", cls="btn btn--primary btn--sm"),
                     Button(t("btn.cancel"), type="button", cls="btn btn--secondary btn--sm",
-                           onclick=f"htmx.ajax('GET',{_json.dumps(f'/contacts/{contact_id}/addresses/section')},'#addresses-section',{{swap:'outerHTML'}})"),
+                           onclick=js(
+                               "htmx.ajax('GET',{0},'#addresses-section',{{swap:'outerHTML'}})",
+                               f'/contacts/{contact_id}/addresses/section')),
                     cls="form-row",
                 ),
                 hx_patch=f"/contacts/{contact_id}/addresses/{address_id}",
@@ -1858,9 +1863,10 @@ def setup_routes(app):
 
         val = str(contact.get(field, "") or "")
         _esc_js = (
-            "if(event.key==='Escape'){"
-            f"htmx.ajax('GET','/contacts/{contact_id}/field/{field}/display',"
-            "{target:this.closest('td'),swap:'outerHTML'});event.preventDefault()}"
+            js(
+                "if(event.key==='Escape'){{htmx.ajax('GET','/contacts/' + {0} + '/field/' + {1} + '/display',"
+                "{{target:this.closest('td'),swap:'outerHTML'}});event.preventDefault()}}",
+                contact_id, field)
         )
 
         if field == "contact_type":
@@ -1929,23 +1935,21 @@ def setup_routes(app):
                 id=f"edit-{field}",
                 cls="cell-input", autofocus=True,
                 onkeydown=(
-                    "if(event.key==='Escape'){this._escaping=true;"
-                    f"htmx.ajax('GET','/contacts/{contact_id}/field/{field}/display',"
-                    "{target:this.closest('td'),swap:'outerHTML'});event.preventDefault()}"
-                    "else if(event.key==='Enter'){event.preventDefault();this.blur()}"
+                    js(
+                        "if(event.key==='Escape'){{this._escaping=true;htmx.ajax('GET','/contacts/' + {0} + '/field/' + {1} + '/display',"
+                        "{{target:this.closest('td'),swap:'outerHTML'}});event.preventDefault()}}"
+                        "else if(event.key==='Enter'){{event.preventDefault();this.blur()}}",
+                        contact_id, field)
                 ),
             )
             blur_guard_js = Script(
-                "requestAnimationFrame(()=>{"
-                f"var el=document.getElementById('edit-{field}');"
-                "if(!el)return;el._ready=false;"
-                "setTimeout(()=>{el._ready=true;el.focus()},350);"
-                "el.addEventListener('blur',function(e){"
-                "if(!el._ready||el._escaping)return;"
-                f"htmx.ajax('PATCH','/contacts/{contact_id}/field/{field}',"
-                "{target:el.closest('td'),swap:'outerHTML',values:{value:el.value}})"
-                "},{once:true})"
-                "})"
+                js(
+                    "requestAnimationFrame(()=>{{var el=document.getElementById('edit-' + {0});"
+                    'if(!el)return;el._ready=false;setTimeout(()=>{{el._ready=true;el.focus()}}'
+                    ",350);el.addEventListener('blur',function(e){{if(!el._ready||el._escaping)return;"
+                    "htmx.ajax('PATCH','/contacts/' + {1} + '/field/' + {0},{{target:el.closest('td'),"
+                    "swap:'outerHTML',values:{{value:el.value}}}})}},{{once:true}})}})",
+                    field, contact_id)
             )
             return Td(input_el, blur_guard_js, cls="cell cell--editing")
         return Td(input_el, cls="cell cell--editing")

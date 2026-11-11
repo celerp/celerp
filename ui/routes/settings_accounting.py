@@ -36,6 +36,7 @@ _ACCOUNT_CODE_MAX = 32
 from ui.routes.settings import _token, _check_permission
 from ui.routes.settings_general import _section_breadcrumb
 from ui.i18n import refusal_text, role_label, t
+from ui.components.encode import js
 
 
 # Raw bank-account type values. Canonical everywhere (API, comparisons); the
@@ -304,8 +305,10 @@ def _cash_flow_edit_cell(a: dict) -> FT:
     current = a.get("cash_flow_category") or ""
     restore_url = f"/settings/accounting/chart/{code}/cash-flow/display"
     esc_js = (
-        f"if(event.key==='Escape'){{htmx.ajax('GET','{restore_url}',"
-        f"{{target:this.closest('td'),swap:'outerHTML'}});event.preventDefault();}}"
+        js(
+            "if(event.key==='Escape'){{htmx.ajax('GET',{0},{{target:this.closest('td'),"
+            "swap:'outerHTML'}});event.preventDefault();}}",
+            str(restore_url))
     )
     return Td(
         Select(
@@ -340,8 +343,10 @@ def _posting_edit_cell(key: str, candidates: list[dict], code: str | None, label
     row; Escape puts the display cell back without saving."""
     restore_url = f"/settings/accounting/posting-accounts/{key}/display"
     esc_js = (
-        f"if(event.key==='Escape'){{htmx.ajax('GET','{restore_url}',"
-        f"{{target:this.closest('td'),swap:'outerHTML'}});event.preventDefault();}}"
+        js(
+            "if(event.key==='Escape'){{htmx.ajax('GET',{0},{{target:this.closest('td'),"
+            "swap:'outerHTML'}});event.preventDefault();}}",
+            str(restore_url))
     )
     return Td(
         Div(

@@ -32,6 +32,7 @@ from ui.config import COOKIE_NAME
 from ui.i18n import t, get_lang
 from celerp.services.vertical_presets import list_presets, load_preset
 from celerp.tax_regimes import TAX_COUNTRIES, country_name, tax_country
+from ui.components.encode import js
 
 logger = logging.getLogger(__name__)
 
@@ -465,17 +466,17 @@ def _activating_form(lang: str = "en") -> FT:
               id="activating-failed", cls="auth-alt-action", hidden=True),
             cls="activating-body",
         ),
-        Script(f"""
+        Script(js("""
 (function() {{
   var statusEl = document.getElementById('activating-status');
   var modulesEl = document.getElementById('activating-modules');
-  var msgActivatingXofY = {json.dumps(t("setup.activating_module_x_of_y", lang))};
-  var msgLoadingModules = {json.dumps(t("setup.loading_modules", lang))};
-  var msgAllLoaded = {json.dumps(t("setup.all_modules_loaded", lang))};
-  var msgTimedOut = {json.dumps(t("setup.activating_timed_out", lang))};
-  var msgRestarting = {json.dumps(t("setup.restarting_server", lang))};
-  var msgApplying = {json.dumps(t("setup.applying_configuration", lang))};
-  var msgModulesFailed = {json.dumps(t("setup.modules_failed_to_start", lang))};
+  var msgActivatingXofY = {0};
+  var msgLoadingModules = {1};
+  var msgAllLoaded = {2};
+  var msgTimedOut = {3};
+  var msgRestarting = {4};
+  var msgApplying = {5};
+  var msgModulesFailed = {6};
   var failedEl = document.getElementById('activating-failed');
   var spinnerEl = document.querySelector('.activating-spinner');
   var attempts = 0;
@@ -509,7 +510,7 @@ def _activating_form(lang: str = "en") -> FT:
       var li = document.createElement('li');
       var state = m.running ? 'done' : (failed ? 'error' : 'pending');
       li.className = 'activating-module activating-module--' + state;
-      li.textContent = (m.running ? '\u2713' : (failed ? '\u2717' : '\u25cc')) + ' ' + (m.label || m.name);
+      li.textContent = (m.running ? '✓' : (failed ? '✗' : '◌')) + ' ' + (m.label || m.name);
       list.appendChild(li);
     }}
     modulesEl.appendChild(list);
@@ -577,7 +578,8 @@ def _activating_form(lang: str = "en") -> FT:
   // Give the /system/restart background task ~600ms to fire before first poll
   setTimeout(poll, 600);
 }})();
-"""),
+""",
+            t('setup.activating_module_x_of_y', lang), t('setup.loading_modules', lang), t('setup.all_modules_loaded', lang), t('setup.activating_timed_out', lang), t('setup.restarting_server', lang), t('setup.applying_configuration', lang), t('setup.modules_failed_to_start', lang))),
         cls="auth-card",
     )
 

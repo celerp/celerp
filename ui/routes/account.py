@@ -37,7 +37,7 @@ from ui.i18n import t, get_lang, tier_label
 from ui.routes.settings import _token
 from ui.security import is_safe_authorize_url, owner_refusal
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
-from ui.components.encode import html_response
+from ui.components.encode import html_response, js
 
 POLL_MAX = 100   # 100 x 3s = 5 minutes, then stop polling
 
@@ -571,9 +571,10 @@ def setup_routes(app):
         # Open the system browser (Google refuses embedded webviews; same
         # pattern as the marketplace checkout).
         panel.children = (*panel.children, Script(
-            f"(function(){{var u={json.dumps(url)};"
-            f"if(window.celerp&&window.celerp.openExternal){{window.celerp.openExternal(u);}}"
-            f"else{{window.open(u,'_blank');}}}})();"))
+            js(
+                '(function(){{var u={0};if(window.celerp&&window.celerp.openExternal){{window.celerp.openExternal(u);'
+                "}}else{{window.open(u,'_blank');}}}})();",
+                url)))
         return panel
 
     @app.get("/account/poll")

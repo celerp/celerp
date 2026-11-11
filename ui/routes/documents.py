@@ -49,7 +49,7 @@ from celerp.output.document_context import prepare_document_output
 from ui.components.activity import EVENT_TYPE_LABELS, activity_table
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import files_error, files_section as _shared_doc_files_section, files_session_expired
-from ui.components.encode import html_response, raw_html, to_markup
+from ui.components.encode import html_response, js, raw_html, to_markup
 from ui.components.doc_money import ATTRS as DOC_MONEY_ATTRS, redraw_trigger as doc_money_redraw
 from ui.components.preview_confirm import FORM_ATTRS as CONFIRMS_PREVIEW, PREVIEW_ATTRS, binding_input, confirmed_binding
 from ui.components.operation_key import (
@@ -3014,12 +3014,16 @@ celerpUpdateBulkAlloc();
 
         restore_url = f"/docs/{entity_id}/field/{field}/display"
         esc_js = (
-            f"if(event.key==='Escape'){{"
-            f"htmx.ajax('GET','{restore_url}',{{target:this.closest('.editable-cell'),swap:'outerHTML'}});"
-            f"event.preventDefault();}}"
+            js(
+                "if(event.key==='Escape'){{htmx.ajax('GET',{0},{{target:this.closest('.editable-cell'),"
+                "swap:'outerHTML'}});event.preventDefault();}}",
+                str(restore_url))
         )
         enter_js = "if(event.key==='Enter'){event.preventDefault();this.blur();}"
-        blur_restore = f"htmx.ajax('GET','{restore_url}',{{target:this.closest('.editable-cell'),swap:'outerHTML'}})"
+        blur_restore = js(
+            "htmx.ajax('GET',{0},{{target:this.closest('.editable-cell'),swap:'outerHTML'}}"
+            ')',
+            str(restore_url))
         if field == "tax_rate" and _memo_rate_open(doc):
             # Setting a memo's rate cannot be undone, so it waits for Save (never on blur), shows
             # the tax and total it gives first, and saves only the rate whose preview is on screen.
@@ -3319,7 +3323,10 @@ celerpUpdateBulkAlloc();
             hx_target=f"#{cell_id}",
             hx_swap="outerHTML",
         )
-        esc_js = f"if(event.key==='Escape'){{htmx.ajax('GET','{restore_url}',{{target:'#{cell_id}',swap:'outerHTML'}});}}"
+        esc_js = js(
+            "if(event.key==='Escape'){{htmx.ajax('GET',{0},{{target:'#' + {1},swap:'outerHTML'}}"
+            ');}}',
+            str(restore_url), cell_id)
         if field == "account_code":
             try:
                 acct_resp = await api.get_chart(token)
@@ -4310,13 +4317,19 @@ celerpUpdateBulkAlloc();
         filter_bar = Div(
             Input(type="search", name="q", value=q, placeholder=t("documents.search_doc_ref"),
                   cls="form-input form-input--sm", style="max-width:200px;",
-                  onchange=f"window.location='/payments?tab={_tab_enc}&q='+encodeURIComponent(this.value)+'&method={_method_enc}&contact={_contact_enc}{_dates_enc}'"),
+                  onchange=js(
+                      "window.location='/payments?tab=' + {0} + '&q='+encodeURIComponent(this.value)+'&method=' + {1} + '&contact=' + {2} + {3}",
+                      _tab_enc, _method_enc, _contact_enc, _dates_enc)),
             Input(type="text", name="contact", value=contact_filter, placeholder=t("documents.contact_placeholder"),
                   cls="form-input form-input--sm", style="max-width:200px;",
-                  onchange=f"window.location='/payments?tab={_tab_enc}&q={_q_enc}&method={_method_enc}{_dates_enc}&contact='+encodeURIComponent(this.value)"),
+                  onchange=js(
+                      "window.location='/payments?tab=' + {0} + '&q=' + {1} + '&method=' + {2} + {3} + '&contact='+encodeURIComponent(this.value)",
+                      _tab_enc, _q_enc, _method_enc, _dates_enc)),
             Select(*_methods_opts, name="method",
                    cls="form-input form-input--sm", style="max-width:150px;",
-                   onchange=f"window.location='/payments?tab={_tab_enc}&q={_q_enc}&method='+encodeURIComponent(this.value)+'&contact={_contact_enc}{_dates_enc}'"),
+                   onchange=js(
+                       "window.location='/payments?tab=' + {0} + '&q=' + {1} + '&method='+encodeURIComponent(this.value)+'&contact=' + {2} + {3}",
+                       _tab_enc, _q_enc, _contact_enc, _dates_enc)),
             _date_range_select("/payments", date_from, date_to, preset,
                                extra_params=f"&tab={_tab_enc}{extra_params}", lang=get_lang(request)),
             cls="filter-bar",
@@ -4392,11 +4405,12 @@ celerpUpdateBulkAlloc();
                        title=t("btn.copy"), aria_label=t("btn.copy"),
                        # execCommand on the selected input covers plain-HTTP (LAN)
                        # origins where navigator.clipboard does not exist.
-                       onclick=(f"var i=document.getElementById('{input_id}');i.select();"
-                                "try{document.execCommand('copy')}catch(e){}"
-                                "if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(i.value)}"
-                                "var b=this;b.classList.add('share-url__copy--done');"
-                                "setTimeout(function(){b.classList.remove('share-url__copy--done')},1500)")),
+                       onclick=(js(
+                           "var i=document.getElementById({0});i.select();try{{document.execCommand('copy')}}"
+                           'catch(e){{}}if(navigator.clipboard&&window.isSecureContext){{navigator.clipboard.writeText(i.value)}}'
+                           "var b=this;b.classList.add('share-url__copy--done');setTimeout(function(){{"
+                           "b.classList.remove('share-url__copy--done')}},1500)",
+                           str(input_id)))),
                 cls="share-url",
             )
 
@@ -5223,9 +5237,10 @@ celerpUpdateBulkAlloc();
         restore_url = f"/lists/{entity_id}/field/{field}/display"
         patch_url = f"/lists/{entity_id}/field/{field}"
         esc_js = (
-            f"if(event.key==='Escape'){{"
-            f"htmx.ajax('GET','{restore_url}',{{target:this.closest('.editable-cell'),swap:'outerHTML'}});"
-            f"event.preventDefault();}}"
+            js(
+                "if(event.key==='Escape'){{htmx.ajax('GET',{0},{{target:this.closest('.editable-cell'),"
+                "swap:'outerHTML'}});event.preventDefault();}}",
+                str(restore_url))
         )
         enter_js = "if(event.key==='Enter'){event.preventDefault();this.blur();}"
         if field == "list_type":
@@ -5233,14 +5248,14 @@ celerpUpdateBulkAlloc();
                 *[Option(_list_type_label(lt), value=lt, selected=(lt == value)) for lt in _LIST_TYPES],
                 name="value",
                 cls="cell-input cell-input--select", autofocus=True,
-                onchange=f"_celerpPatchListField(this, {_json.dumps(patch_url)}, {_json.dumps(lst.get('status') == 'draft')})",
+                onchange=js('_celerpPatchListField(this, {0}, {1})', patch_url, lst.get('status') == 'draft'),
                 onkeydown=esc_js,
             )
         elif field in _LIST_DATE_FIELDS or field in ("issue_date",):
             input_el = Input(
                 type="date", name="value", value=value[:10] if value else "",
                 cls="cell-input", autofocus=True,
-                onblur=f"setTimeout(()=>_celerpPatchListField(this, {_json.dumps(patch_url)}), 200)",
+                onblur=js('setTimeout(()=>_celerpPatchListField(this, {0}), 200)', patch_url),
                 onkeydown=esc_js + enter_js,
             )
         elif field in ("contact_id", "contact_company_name"):
@@ -5256,14 +5271,14 @@ celerpUpdateBulkAlloc();
                 *[Option(display_enum(s, "doc_status"), value=s, selected=(s == value)) for s in _LIST_STATUSES],
                 name="value",
                 cls="cell-input cell-input--select", autofocus=True,
-                onchange=f"_celerpPatchListField(this, {_json.dumps(patch_url)})",
+                onchange=js('_celerpPatchListField(this, {0})', patch_url),
                 onkeydown=esc_js,
             )
         else:
             input_el = Input(
                 type="text", name="value", value=value,
                 cls="cell-input", autofocus=True,
-                onblur=f"setTimeout(()=>_celerpPatchListField(this, {_json.dumps(patch_url)}), 200)",
+                onblur=js('setTimeout(()=>_celerpPatchListField(this, {0}), 200)', patch_url),
                 onkeydown=esc_js + enter_js,
             )
         return Div(input_el, cls="editable-cell editable-cell--editing")
@@ -5645,9 +5660,10 @@ celerpUpdateBulkAlloc();
         restore_url = f"/lists/{entity_id}/line/{item_id}/counted/display"
         patch_url = f"/lists/{entity_id}/line/{item_id}"
         esc_js = (
-            f"if(event.key==='Escape'){{"
-            f"htmx.ajax('GET','{restore_url}',{{target:this.closest('.editable-cell'),swap:'outerHTML'}});"
-            f"event.preventDefault();}}"
+            js(
+                "if(event.key==='Escape'){{htmx.ajax('GET',{0},{{target:this.closest('.editable-cell'),"
+                "swap:'outerHTML'}});event.preventDefault();}}",
+                str(restore_url))
         )
         enter_js = "if(event.key==='Enter'){event.preventDefault();this.blur();}"
         inp = Input(
@@ -5953,7 +5969,7 @@ def _doc_table(
 
     bulk_js = ""
     if show_checkboxes:
-        bulk_js = Script(f"""
+        bulk_js = Script(js("""
 (function() {{
     var table = document.getElementById('doc-table');
     if (!table) return;
@@ -5973,7 +5989,7 @@ def _doc_table(
     function updateBar() {{
         var sel = getSelected();
         var n = sel.length;
-        if (countEl) countEl.textContent = {_json.dumps(t("documents.n_selected"))}.replace('{{n}}', n);
+        if (countEl) countEl.textContent = {0}.replace('{{n}}', n);
         var ids = sel.map(cb => cb.value).join(',');
         if (idsInput) idsInput.value = ids;
         if (bar) bar.style.display = n > 0 ? 'flex' : 'none';
@@ -6001,7 +6017,7 @@ def _doc_table(
             }}));
             if (keys.size <= 1) return;
             e.preventDefault();
-            celerpConfirm({_json.dumps(t("shipment.mixed_confirm"))}).then(function(yes) {{ if (yes) e.detail.issueRequest(true); }});
+            celerpConfirm({1}).then(function(yes) {{ if (yes) e.detail.issueRequest(true); }});
         }});
     }}
     // Bulk delete now runs via htmx on the button (hx-delete + HX-Refresh); the
@@ -6031,7 +6047,8 @@ def _doc_table(
         if (e.target && e.target.classList.contains('doc-row-select')) updateBar();
     }});
 }})();
-""")
+""",
+            t('documents.n_selected'), t('shipment.mixed_confirm')))
 
     return Div(
         bulk_bar,
@@ -6130,9 +6147,10 @@ async def _contact_picker(token: str, *, resource: str, entity_id: str, field: s
         ),
         no_contacts,
         onkeydown=(
-            f"if(event.key==='Escape'){{"
-            f"htmx.ajax('GET','{restore_url}',{{target:this.closest('.editable-cell'),swap:'outerHTML'}});"
-            f"event.preventDefault();}}"
+            js(
+                "if(event.key==='Escape'){{htmx.ajax('GET',{0},{{target:this.closest('.editable-cell'),"
+                "swap:'outerHTML'}});event.preventDefault();}}",
+                str(restore_url))
         ),
     )
 
@@ -6618,7 +6636,7 @@ def _shipment_fields(doc: dict, entity_id: str, is_draft: bool) -> list:
             Option("--", value="", selected=(not current)),
             *[Option(label, value=val, selected=(val == current)) for val, label in options],
             name="value",
-            onchange=f"_celerpPatchListField(this, {_json.dumps(_url)})",
+            onchange=js('_celerpPatchListField(this, {0})', _url),
             cls="form-select",
         )
 
@@ -6632,7 +6650,7 @@ def _shipment_fields(doc: dict, entity_id: str, is_draft: bool) -> list:
         return Input(
             type="text", name="value", value=current, list="country-options",
             autocomplete="off", placeholder=t("documents.type_to_search"),
-            onchange=f"_celerpPatchListField(this, {_json.dumps(_url)})",
+            onchange=js('_celerpPatchListField(this, {0})', _url),
             cls="form-input",
         )
 
@@ -6737,7 +6755,10 @@ def _contact_ship_to_picker(doc_id: str, current_address: str, contact_shipping_
             hx_target="closest .editable-cell",
             hx_swap="outerHTML",
             hx_trigger="change",
-            onchange=f"if(this.value==='__add_new__'){{window.open('{add_new_url}','_blank');this.value='';return;}}",
+            onchange=js(
+                "if(this.value==='__add_new__'){{window.open({0},'_blank');this.value='';"
+                'return;}}',
+                str(add_new_url)),
             cls="cell-input cell-input--select",
         ),
         cls="editable-cell editable-cell--editing",
@@ -7645,8 +7666,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     *[Option(_list_type_label(lt), value=lt, selected=(lt == _current_lt)) for lt in _LIST_TYPES],
                     name="value",
                     onchange=(
-                        f"_celerpPatchListField(this, '/lists/{entity_id}/field/list_type', "
-                        f"{_json.dumps(is_draft)})"
+                        js(
+                            "_celerpPatchListField(this, '/lists/' + {0} + '/field/list_type', {1})",
+                            entity_id, is_draft)
                     ),
                     cls="form-select",
                 ),
@@ -7961,7 +7983,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             modal_id = f"send-modal-{entity_id.replace(':', '-')}"
             action_btns_left.append(
                 Button(t("btn.send"), type="button",
-                       onclick=f"document.getElementById('{modal_id}').showModal()",
+                       onclick=js('document.getElementById({0}).showModal()', str(modal_id)),
                        title=t("documents.tip_send"),
                        cls="btn btn--secondary"),
             )
@@ -7972,7 +7994,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     Div(
                         H3(t("btn.send"), cls="modal-dialog__title"),
                         Button("✕", type="button",
-                               onclick=f"document.getElementById('{modal_id}').close()",
+                               onclick=js('document.getElementById({0}).close()', str(modal_id)),
                                cls="modal-dialog__close", aria_label=t("btn.close")),
                         cls="modal-dialog__header",
                     ),
@@ -8029,13 +8051,15 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                                  cls="modal-dialog__quota")
                             if email_quota > 0 and email_resets_on else None,
                             Button(t("btn.cancel"), type="button",
-                                   onclick=f"document.getElementById('{modal_id}').close()",
+                                   onclick=js('document.getElementById({0}).close()', str(modal_id)),
                                    cls="btn btn--ghost"),
                             Button(t("btn.send_document"), type="submit", cls="btn btn--primary"),
                             cls="modal-dialog__actions",
                         ),
                         **_on_lines(f"{_base}/action/send", form=True),
-                        hx_on__after_request=f"if(event.detail.successful)document.getElementById('{modal_id}').close()",
+                        hx_on__after_request=js(
+                            'if(event.detail.successful)document.getElementById({0}).close()',
+                            str(modal_id)),
                     ),
                     id=modal_id,
                     cls="modal-dialog",
@@ -8045,9 +8069,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             # reloads with a sessionStorage marker; consume it and open the
             # dialog the user originally asked for, prefilled as usual.
             action_btns_left.append(Script(
-                "(function(){if(sessionStorage.getItem('celerp_open_send')){"
-                "sessionStorage.removeItem('celerp_open_send');"
-                f"document.getElementById('{modal_id}').showModal();}}}})();"
+                js(
+                    "(function(){{if(sessionStorage.getItem('celerp_open_send')){{sessionStorage.removeItem('celerp_open_send');"
+                    'document.getElementById({0}).showModal();}}}})();',
+                    str(modal_id))
             ))
         elif _send_ok and free_send_offer:
             # No relay bound: offer sending through a free Celerp account
@@ -8118,7 +8143,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Div(
                     H3(t("btn.share"), cls="modal-dialog__title"),
                     Button("✕", type="button",
-                           onclick=f"document.getElementById('{_share_modal_id}').close()",
+                           onclick=js('document.getElementById({0}).close()', str(_share_modal_id)),
                            cls="modal-dialog__close", aria_label=t("btn.close")),
                     cls="modal-dialog__header",
                 ),
@@ -8772,7 +8797,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         _csv_import_el = Div(
             Input(type="file", id="csv-import-input", accept=".csv,.tsv,.txt",
                   style="display:none",
-                  onchange=f"celerpCsvImport(this, '{entity_id}')"),
+                  onchange=js('celerpCsvImport(this, {0})', str(entity_id))),
             cls="csv-import-hidden",
         )
 
@@ -8790,14 +8815,14 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     id=f"ai-dropzone-{entity_id}",
                     title=t("documents.ai_dropzone_tip"),
                 ),
-                Script(f"""
+                Script(js("""
 (function() {{
-  var dz = document.getElementById('ai-dropzone-{entity_id}');
+  var dz = document.getElementById('ai-dropzone-' + {0});
   if (!dz) return;
   function handleFile(file) {{
     var fd = new FormData(); fd.append('file', file);
     dz.classList.add('ai-dropzone--over');
-    celerpFetch('/docs/{entity_id}/files', {{method:'POST',body:fd}})
+    celerpFetch('/docs/' + {0} + '/files', {{method:'POST',body:fd}})
       .then(function(r) {{ dz.classList.remove('ai-dropzone--over'); }})
       .catch(function() {{ dz.classList.remove('ai-dropzone--over'); }});
   }}
@@ -8810,7 +8835,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
   dz.addEventListener('dragleave', function() {{ dz.classList.remove('ai-dropzone--over'); }});
   dz.addEventListener('drop', function(e) {{ e.preventDefault(); if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]); }});
 }})();
-"""),
+""",
+                    entity_id)),
             ]
 
         # Scan-bar wording follows what a scan actually does for this (type, state): a finalized
@@ -9038,10 +9064,11 @@ window._L = {_json.dumps({
     "could_not_set_available": t("documents.could_not_set_available"),
     "unexpected_error": t("error.unexpected_error_body"),
 })};
-""" + (f"""
+""" + (js("""
 /* Item-status badges, serialized from the Python _STATUS_BADGE dict (the
    authoritative source) so the JS-rendered cell can never drift from it. */
-window._CELERP_STATUS_BADGE = {_json.dumps({k: {"label": t(v[0]), "cls": v[1]} for k, v in _STATUS_BADGE.items()})};""" if _draft_show_item_status else "") + f"""
+window._CELERP_STATUS_BADGE = {0};""",
+    {k: {'label': t(v[0]), 'cls': v[1]} for k, v in _STATUS_BADGE.items()}) if _draft_show_item_status else "") + f"""
 function _celerpPriceListParam() {{
     const plSelect = document.getElementById('doc-price-list');
     return plSelect ? '&price_list=' + encodeURIComponent(plSelect.value) : '';
@@ -9452,7 +9479,7 @@ function celerpFillRow(row, data) {{
             cb.value = data.entity_id || '';
         }
     }
-""" if _draft_show_item_status else "") + f"""    return true;
+""" if _draft_show_item_status else "") + js("""    return true;
 }}
 /* ── Catalog autocomplete ── */
 window._celerpAcTimer = null;
@@ -9701,7 +9728,7 @@ function _celerpEditTaxLabel(key, rate, labelEl) {{
     const commit = () => {{
         const newLabel = input.value.trim() || 'Custom';
         // Update all matching line rows' hidden tax_label inputs
-        document.querySelectorAll('#{line_body_id} tr').forEach(row => {{
+        document.querySelectorAll('#' + {0} + ' tr').forEach(row => {{
             const sel = row.querySelector('[data-name="tax_select"]');
             if (sel && sel.value === '|custom') {{
                 const rowRate = parseFloat(row.querySelector('[data-name="tax_rate_custom"]')?.value || 0);
@@ -9730,7 +9757,7 @@ function celerpAddLine() {{
     const row = tpl.querySelector('tr') || tpl.children[0];
     const taxCell = row && row.querySelector('.col-tax');
     if (taxCell) _celerpApplyDefaultTaxes(taxCell);
-    const tbody = document.getElementById('{line_body_id}');
+    const tbody = document.getElementById({1});
     tbody.appendChild(tpl);
     // Re-init comboboxes in the newly-added row (cloneNode bypasses htmx:afterSettle)
     const newRow = tbody.lastElementChild;
@@ -9754,7 +9781,7 @@ function celerpUpdateTotals() {{
         window._celerpStoredMoney = _celerpMoneyOn(document);
         _panel.classList.add('total-panel--pending');
     }}
-    const _cur = {repr(currency)};
+    const _cur = {2};
     function _fmt(n) {{
         try {{ return new Intl.NumberFormat('en-US', {{style:'currency',currency:_cur}}).format(n); }}
         catch(e) {{ return _cur + ' ' + n.toLocaleString('en-US', {{minimumFractionDigits:2}}); }}
@@ -9763,7 +9790,7 @@ function celerpUpdateTotals() {{
     let grossSub = 0;
     let totalDiscount = 0;
     const taxByCode = {{}};
-    document.querySelectorAll('#{line_body_id} tr').forEach(row => {{
+    document.querySelectorAll('#' + {0} + ' tr').forEach(row => {{
         const qty = parseFloat(row.querySelector('[data-name="quantity"]')?.value || 0);
         const price = parseFloat(row.querySelector('[data-name="unit_price"]')?.value || 0);
         const discPct = parseFloat(row.querySelector('[data-name="discount_pct"]')?.value || 0);
@@ -9916,7 +9943,7 @@ function _celerpApplyDefaultTaxes(cell) {{
     if (!sel) return;
     if (_celerpDocTaxed()) {{
         const own = cell.closest('tr');
-        const lines = [...document.querySelectorAll('#{line_body_id} tr')]
+        const lines = [...document.querySelectorAll('#' + {0} + ' tr')]
             .filter(r => r !== own && _celerpRowHasContent(r));
         let json = cell.querySelector('[data-name="taxes_json"]');
         if (!json) {{
@@ -9986,7 +10013,7 @@ function _celerpRenderHeaderDiscount(amount) {{
     const vEl = document.getElementById('doc-discount-value');
     let row = document.getElementById('doc-header-discount-row');
     if (amount > 0.005) {{
-        const _cur2 = {repr(currency)};
+        const _cur2 = {2};
         function _f(n) {{ try {{ return new Intl.NumberFormat('en-US', {{style:'currency',currency:_cur2}}).format(n); }} catch(e) {{ return _cur2 + ' ' + n.toFixed(2); }} }}
         const v = vEl ? parseFloat(vEl.value || 0) : 0;
         const isPct = tEl && tEl.value === 'percentage';
@@ -10022,7 +10049,7 @@ function celerpOpenDiscount() {{
     celerpDiscType((_hasExisting && tEl && tEl.value) ? tEl.value : 'percentage');
     // Nothing to remove yet -> the secondary button just cancels.
     const rmBtn = document.getElementById('disc-remove-btn');
-    if (rmBtn) rmBtn.textContent = _hasExisting ? {_json.dumps(t("btn.remove"))} : {_json.dumps(t("btn.cancel"))};
+    if (rmBtn) rmBtn.textContent = _hasExisting ? {3} : {4};
     const willOpen = !pop.classList.contains('disc-popover--open');
     pop.classList.toggle('disc-popover--open', willOpen);
     if (willOpen && input) {{ input.focus(); input.select(); }}
@@ -10111,7 +10138,7 @@ function _celerpCollectLines() {{
     // Returns the serialized lines, or null when a meaningful row carries an
     // invalid quantity - the caller aborts the whole save and sends nothing.
     const lines = [];
-    const rows = document.querySelectorAll('#{line_body_id} tr');
+    const rows = document.querySelectorAll('#' + {0} + ' tr');
     for (const row of rows) {{
         const desc = row.querySelector('[data-name="description"]')?.value;
         const sku = row.querySelector('[data-name="sku"]')?.value;
@@ -10177,14 +10204,14 @@ async function _celerpFetchLineBody() {{
     const page = await celerpFetch(_CELERP_BASE + _CELERP_EID + '?offset=' + _CELERP_LINE_OFFSET
         + '&limit=' + _CELERP_LINE_LIMIT);
     const doc = new DOMParser().parseFromString(await page.text(), 'text/html');
-    return doc.getElementById('{line_body_id}');
+    return doc.getElementById({1});
 }}
 /* The lines the last scan run added or raised keep the scanned highlight, through any re-render of
    the rows, until the next run replaces them. Rows stay in their stored order; after a scan the
    first highlighted row is scrolled into view. */
 window._celerpScannedLines = window._celerpScannedLines || [];
 function _celerpMarkScanned(scroll) {{
-    const tbody = document.getElementById('{line_body_id}');
+    const tbody = document.getElementById({1});
     if (!tbody) return;
     let first = null;
     tbody.querySelectorAll('tr').forEach(function(row) {{
@@ -10244,13 +10271,13 @@ async function _celerpInstallLineBody(html, version) {{
         html = fresh ? fresh.outerHTML : '';
         page = fresh ? fresh.ownerDocument : null;
     }}
-    const tbody = document.getElementById('{line_body_id}');
+    const tbody = document.getElementById({1});
     if (!tbody || !html) return false;
     // Swapping the rows out removes a focused field, and its blur would save the rows being
     // replaced. Leave the field first without saving: the installed rows are the stored ones.
     if (tbody.contains(document.activeElement)) _celerpQuietBlur(document.activeElement);
     tbody.outerHTML = html;
-    const swapped = document.getElementById('{line_body_id}');
+    const swapped = document.getElementById({1});
     htmx.process(swapped);
     swapped.querySelectorAll('.combobox-wrap').forEach(initCombobox);
     _celerpMarkStoredRows();
@@ -10265,7 +10292,8 @@ async function _celerpInstallLineBody(html, version) {{
     if (version != null) _celerpEntityVersion = version;
     return true;
 }}
-""" + (f"""/* A reserved line's badge says how much it holds against its quantity, so a saved quantity
+""",
+    line_body_id, str(line_body_id), str(currency), t('btn.remove'), t('btn.cancel')) + (f"""/* A reserved line's badge says how much it holds against its quantity, so a saved quantity
    can change it. After a save, put each reserved row's stored status cell in place, leaving
    the rest of the rows (and any field being edited) alone. Only the latest save's refresh
    lands. (Status-column pages only.) */

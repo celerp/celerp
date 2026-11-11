@@ -1857,7 +1857,7 @@ def _empty_state(lang: str = "en") -> FT:
                 cls="ai-empty-state__card-body",
             ),
             type="button", cls="ai-empty-state__card",
-            onclick=f"celerpAiFillQuery({json.dumps(q['query'])},{'true' if q.get('needs_files') else 'false'})",
+            onclick=js('celerpAiFillQuery({0},{1})', q['query'], bool(q.get('needs_files'))),
         )
         for q in _get_example_queries(lang)
     ]

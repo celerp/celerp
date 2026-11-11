@@ -49,7 +49,7 @@ from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 
 from ui.routes.settings import _token
 from ui.security import not_permitted_redirect, owner_refusal
-from ui.components.encode import html_response, raw_html
+from ui.components.encode import html_response, js, raw_html
 
 logger = logging.getLogger(__name__)
 
@@ -663,9 +663,10 @@ def _buy_waiting_panel(url: str, slug: str, lang: str, n: int = 0):
         # First render only: open Checkout in the external browser, and wire Esc to
         # cancel. Attached to document once so it isn't re-added on every re-poll.
         parts.append(Script(
-            f"(function(){{var u={_json.dumps(url)};"
-            f"if(window.celerp&&window.celerp.openExternal){{window.celerp.openExternal(u);}}"
-            f"else{{window.open(u,'_blank');}}}})();"))
+            js(
+                '(function(){{var u={0};if(window.celerp&&window.celerp.openExternal){{window.celerp.openExternal(u);'
+                "}}else{{window.open(u,'_blank');}}}})();",
+                url)))
         parts.append(Script("""
         (function () {
           if (window.__celerpBuyEsc) return;

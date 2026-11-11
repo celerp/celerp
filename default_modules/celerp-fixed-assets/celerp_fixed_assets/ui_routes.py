@@ -65,6 +65,7 @@ from celerp.importers import tabular
 from celerp.modules.registry import uses_module
 
 from celerp_fixed_assets.operations import DESCRIPTIVE_FIELDS, MODULE, RESPONSIBLE
+from ui.components.encode import js
 
 log = logging.getLogger(__name__)
 
@@ -133,8 +134,9 @@ def _undo_refused(asset: dict, kind: str) -> tuple:
 def _fill_button(fill: dict) -> FT:
     """The value a refusal names as the one that works (``fill``: its form ``field``, ``value``
     and ``action`` label), one click away: it fills the field and reviews again."""
-    script = (f"const f = this.closest('form'); f.elements[{json.dumps(fill['field'])}].value = "
-              f"{json.dumps(fill['value'])}; f.querySelector('[hx-post$=\"/review\"]').click();")
+    script = (js(
+        'const f = this.closest(\'form\'); f.elements[{0}].value = {1}; f.querySelector(\'[hx-post$="/review"]\').click();',
+        fill['field'], fill['value']))
     return Button(t(fill["action"], value=fill["value"]), type="button", cls="btn btn--sm btn--secondary",
                   onclick=script)
 
