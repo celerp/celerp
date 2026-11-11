@@ -29,6 +29,7 @@ from celerp.services.units import (
     is_pieces_unit,
     is_weight_unit,
 )
+from ui.components.encode import Admitted, library_markup, svg_bars, svg_cells
 
 # reportlab is optional — if absent, render_label_pdf returns a minimal stub PDF.
 try:
@@ -229,23 +230,8 @@ QR_SIZE_MM = 10.0    # QR codes are a fixed 10mm square on labels (minimum scann
 BARCODE_HEIGHT_DEFAULT = 8   # bar height (mm, 1-30) a barcode field uses when none is set
 
 
-def _svg_markup(inner: str, vb_w: float, vb_h: float, w_mm: float, h_mm: float, stretch: bool) -> str:
-    """Wrap barcode/QR rects in an SVG root element.
-
-    stretch=True fills the parent box (print sheet inlines the SVG in a sized
-    div); otherwise the SVG carries its intrinsic mm size (designer preview
-    loads it via <img>). preserveAspectRatio="none" lets both stretch freely,
-    and shape-rendering="crispEdges" suppresses anti-aliased module edges.
-    """
-    size = 'width="100%" height="100%"' if stretch else f'width="{w_mm:.2f}mm" height="{h_mm:.2f}mm"'
-    return (
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {vb_w:g} {vb_h:g}" '
-        f'{size} preserveAspectRatio="none" shape-rendering="crispEdges">{inner}</svg>'
-    )
-
-
 def _make_barcode_svg(value: str, module_height: int = 8, stretch: bool = False,
-                      dpi: int = DEFAULT_PRINTER_DPI) -> tuple[str, float, float] | None:
+                      dpi: int = DEFAULT_PRINTER_DPI) -> tuple[Admitted, float, float] | None:
     """Render a Code128 barcode as vector SVG (bars only, no text).
 
     Vector output rasterizes sharply at the printer's own dot grid; a raster
@@ -258,7 +244,7 @@ def _make_barcode_svg(value: str, module_height: int = 8, stretch: bool = False,
     is what makes printed bars come out uneven.
 
     module_height: bar height in mm (1-30). Default 8.
-    Returns (svg_markup, natural_width_mm, height_mm), or None if the barcode
+    Returns (svg, natural_width_mm, height_mm), or None if the barcode
     library is missing or the value cannot be encoded.
     """
     if not _BARCODE:
@@ -275,31 +261,17 @@ def _make_barcode_svg(value: str, module_height: int = 8, stretch: bool = False,
         shrink_mm = 0.0
     quiet_mm = snap_to_dots(_BC_QUIET_MM, dpi)
     w_mm = len(pattern) * mod_mm + 2 * quiet_mm
-    bars = []
-    i = 0
-    while i < len(pattern):
-        if pattern[i] == "1":
-            j = i
-            while j < len(pattern) and pattern[j] == "1":
-                j += 1
-            x = quiet_mm + i * mod_mm
-            w = (j - i) * mod_mm
-            # Bar-width reduction, dot-wise: a dot-addressed printer can only drop
-            # WHOLE dots, so shave the trailing edge by one dot rather than half a
-            # dot off each side. A symmetric shave would put the bar's left edge on
-            # a half-dot boundary and hand the rasterizer the same rounding problem
-            # this quantisation exists to remove. The following white gap widens by
-            # exactly one dot, which is what compensates for thermal ink bleed.
-            bw = max(dot_mm(dpi), w - shrink_mm)
-            bars.append(f'<rect x="{x:.4f}" y="0" width="{bw:.4f}" height="{h_mm:g}"/>')
-            i = j
-        else:
-            i += 1
-    inner = f'<rect width="100%" height="100%" fill="#fff"/><g fill="#000">{"".join(bars)}</g>'
-    return _svg_markup(inner, w_mm, h_mm, w_mm, h_mm, stretch), w_mm, h_mm
+    # Bar-width reduction, dot-wise: a dot-addressed printer can only drop WHOLE dots,
+    # so svg_bars shaves the trailing edge by one dot (shrink_mm) rather than half a dot
+    # off each side, never below one dot. A symmetric shave would put the bar's left edge
+    # on a half-dot boundary and hand the rasterizer the rounding problem this
+    # quantisation exists to remove. The following white gap widens by exactly one dot,
+    # which is what compensates for thermal ink bleed.
+    svg = library_markup(svg_bars, pattern, mod_mm, shrink_mm, quiet_mm, dot_mm(dpi), h_mm, stretch)
+    return svg, w_mm, h_mm
 
 
-def _make_qr_svg(value: str, stretch: bool = False) -> str | None:
+def _make_qr_svg(value: str, stretch: bool = False) -> Admitted | None:
     """Render a QR code as vector SVG (fixed 10mm square). Returns None on failure.
 
     Same rationale as _make_barcode_svg: vector modules stay crisp at any
@@ -314,21 +286,7 @@ def _make_qr_svg(value: str, stretch: bool = False) -> str | None:
         matrix = qr.get_matrix()
     except Exception:
         return None
-    n = len(matrix)
-    cells = []
-    for r, row in enumerate(matrix):
-        c0 = 0
-        while c0 < n:
-            if row[c0]:
-                c1 = c0
-                while c1 < n and row[c1]:
-                    c1 += 1
-                cells.append(f'<rect x="{c0}" y="{r}" width="{c1 - c0}" height="1"/>')
-                c0 = c1
-            else:
-                c0 += 1
-    inner = f'<rect width="100%" height="100%" fill="#fff"/><g fill="#000">{"".join(cells)}</g>'
-    return _svg_markup(inner, n, n, QR_SIZE_MM, QR_SIZE_MM, stretch)
+    return library_markup(svg_cells, matrix, QR_SIZE_MM, stretch)
 
 
 def render_label_pdf(

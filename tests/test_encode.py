@@ -144,11 +144,11 @@ def test_library_markup_admits_only_listed_producers():
     text = str(svg)
     assert text.startswith("<svg") and "<rect" in text
     words = set(re.findall(r"[A-Za-z][A-Za-z:-]*", text))
-    assert words <= {"svg", "xmlns", "http", "www", "w", "org", "viewBox", "width", "height",
+    assert words <= {"svg", "xmlns", "http:", "www", "w", "org", "viewBox", "width", "height",
                      "mm", "preserveAspectRatio", "none", "shape-rendering", "crispEdges",
                      "rect", "x", "y", "fill", "fff", "g"}, f"only numbers reach the SVG: {words}"
     bars = str(library_markup(svg_bars, "1011", 0.25, 0.0, 1.0, 0.125, 10.0))
-    assert bars.startswith("<svg") and bars.count("<rect") == 2
+    assert bars.startswith("<svg") and bars.count("<rect x=") == 2, "one rect per run of 1s, beside the background"
     with pytest.raises(TypeError):
         library_markup(svg_bars, "1<b>1", 0.25, 0.0, 1.0, 0.125, 10.0)
 

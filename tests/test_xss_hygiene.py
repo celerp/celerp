@@ -12,7 +12,8 @@ import json
 import re
 from pathlib import Path
 
-from ui.components.attrs import esc_attr, hx_vals
+from ui.components.attrs import hx_vals
+from ui.components.encode import esc_attr
 
 _UI_DIR = Path(__file__).resolve().parents[1] / "ui"
 

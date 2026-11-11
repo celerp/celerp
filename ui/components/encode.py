@@ -12,10 +12,14 @@ parser.
 """
 from __future__ import annotations
 
+import html
 import json
 import re
 import string
 from urllib.parse import urlsplit
+
+from fastcore.xml import to_xml
+from starlette.responses import HTMLResponse
 
 from celerp.services.app_paths import is_app_local_path
 
@@ -86,7 +90,7 @@ def hole_positions(template: str, kind: str) -> list[str]:
                 continue
             attr = a.group(1).lower()
             quoted = a.group(2) if a.group(2) is not None else a.group(3)
-            if HOLE in attr:
+            if HOLE in a.group(1):
                 bad.append("attribute name")
             elif a.group(4) and HOLE in a.group(4):
                 bad.append(f"unquoted {attr} value")
@@ -157,3 +161,143 @@ def safe_url(v) -> str:
     if parts.scheme not in _SAFE_SCHEMES or "[" in parts.netloc or "]" in parts.netloc:
         return "#"
     return v
+
+
+# ---------------------------------------------------------------- markup
+class Admitted(str):
+    """Markup built by this module: every hole in it was encoded for its position.
+
+    FastHTML writes a child with ``__html__`` unescaped. Joining an ``Admitted`` with
+    another string gives a plain ``str``, which FastHTML escapes again, so admission
+    never spreads to text added later.
+    """
+
+    def __html__(self) -> str:
+        return str.__str__(self)
+
+
+def esc_attr(value: object) -> str:
+    """HTML-escape a value for element text or a quoted attribute (quotes too)."""
+    return html.escape(str(value), quote=True)
+
+
+def raw_html(template: str, **holes) -> Admitted:
+    """Markup from a constant ``str.format`` template with named holes.
+
+    Each hole is escaped once with ``esc_attr`` unless it is already ``Admitted``. A hole
+    that HTML escaping does not make safe (a URL, event, style, srcdoc or htmx-evaluated
+    attribute, an attribute name, an unquoted value, a comment, script or style text)
+    raises ``ValueError``.
+    """
+    _refuse(template, "html")
+    return Admitted(template.format(**{k: v if isinstance(v, Admitted) else esc_attr(v)
+                                       for k, v in holes.items()}))
+
+
+def to_markup(node) -> Admitted:
+    """A FastHTML node rendered to markup; a ``str`` or ``bytes`` raises ``TypeError``."""
+    if isinstance(node, Admitted):
+        return node
+    if isinstance(node, (str, bytes)):
+        raise TypeError("only a FastHTML node renders to markup")
+    return Admitted(to_xml(node))
+
+
+def html_response(node, **kwargs) -> HTMLResponse:
+    """The one HTML response: a FastHTML node rendered by ``to_markup``."""
+    return HTMLResponse(str(to_markup(node)), **kwargs)
+
+
+_MARKUP_TYPES = {"text/html", "application/xhtml+xml", "image/svg+xml"}
+
+
+def inert_media_type(media_type) -> str:
+    """A stored file's content type, with HTML, XHTML, SVG and XML served as a download type."""
+    if not isinstance(media_type, str):
+        return "application/octet-stream"
+    base = media_type.split(";", 1)[0].strip().lower()
+    if base in _MARKUP_TYPES or base.endswith("/xml") or base.endswith("+xml"):
+        return "application/octet-stream"
+    return media_type
+
+
+# ---------------------------------------------------------------- library markup
+def _number(v) -> float:
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        raise TypeError("SVG sizes must be numbers")
+    return v
+
+
+def _svg_root(inner: str, vb_w: float, vb_h: float, w_mm: float, h_mm: float, stretch: bool) -> str:
+    """Wrap barcode/QR rects in an SVG root element.
+
+    stretch=True fills the parent box (print sheet inlines the SVG in a sized
+    div); otherwise the SVG carries its intrinsic mm size (designer preview
+    loads it via <img>). preserveAspectRatio="none" lets both stretch freely,
+    and shape-rendering="crispEdges" suppresses anti-aliased module edges.
+    """
+    size = 'width="100%" height="100%"' if stretch else f'width="{w_mm:.2f}mm" height="{h_mm:.2f}mm"'
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {vb_w:g} {vb_h:g}" '
+        f'{size} preserveAspectRatio="none" shape-rendering="crispEdges">'
+        f'<rect width="100%" height="100%" fill="#fff"/><g fill="#000">{inner}</g></svg>'
+    )
+
+
+def svg_bars(pattern: str, module_mm: float, shrink_mm: float, quiet_mm: float,
+             min_bar_mm: float, height_mm: float, stretch: bool = False) -> str:
+    """Barcode SVG from a bit pattern of "0" and "1" and sizes in mm.
+
+    Each run of "1" is one bar, shaved on its trailing edge by *shrink_mm* but never
+    narrower than *min_bar_mm*. A dot-addressed printer can only drop whole dots, so the
+    caller passes sizes already snapped to its dot grid and every bar edge stays on it.
+    """
+    if not isinstance(pattern, str) or pattern.strip("01"):
+        raise TypeError("a barcode pattern is a string of 0 and 1")
+    module_mm, shrink_mm, quiet_mm, min_bar_mm, height_mm = (
+        _number(v) for v in (module_mm, shrink_mm, quiet_mm, min_bar_mm, height_mm))
+    bars = []
+    i = 0
+    while i < len(pattern):
+        if pattern[i] == "1":
+            j = i
+            while j < len(pattern) and pattern[j] == "1":
+                j += 1
+            bw = max(min_bar_mm, (j - i) * module_mm - shrink_mm)
+            bars.append(f'<rect x="{quiet_mm + i * module_mm:.4f}" y="0" width="{bw:.4f}" height="{height_mm:g}"/>')
+            i = j
+        else:
+            i += 1
+    w_mm = len(pattern) * module_mm + 2 * quiet_mm
+    return _svg_root("".join(bars), w_mm, height_mm, w_mm, height_mm, stretch)
+
+
+def svg_cells(matrix, size_mm: float, stretch: bool = False) -> str:
+    """QR SVG from a matrix of booleans, drawn as a *size_mm* square."""
+    size_mm = _number(size_mm)
+    n = len(matrix)
+    cells = []
+    for r, row in enumerate(matrix):
+        if any(not isinstance(c, (bool, int)) for c in row):
+            raise TypeError("a QR matrix holds booleans")
+        c0 = 0
+        while c0 < n:
+            if row[c0]:
+                c1 = c0
+                while c1 < n and row[c1]:
+                    c1 += 1
+                cells.append(f'<rect x="{c0}" y="{r}" width="{c1 - c0}" height="1"/>')
+                c0 = c1
+            else:
+                c0 += 1
+    return _svg_root("".join(cells), n, n, size_mm, size_mm, stretch)
+
+
+LIBRARY_PRODUCERS = (svg_bars, svg_cells)
+
+
+def library_markup(producer, *args) -> Admitted:
+    """Markup from one of ``LIBRARY_PRODUCERS``, which format only numbers; any other producer raises."""
+    if not any(producer is p for p in LIBRARY_PRODUCERS):
+        raise ValueError("library markup comes only from LIBRARY_PRODUCERS")
+    return Admitted(producer(*args))
