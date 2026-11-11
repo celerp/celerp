@@ -109,11 +109,13 @@ def _refused(outcome: dict, label: str, *, starting: bool = True) -> None:
                        "params": {"module": label}}, outcome
 
 
+@pytest.mark.timeout(180)  # the module fixture's fresh process waits up to 120 s
 @pytest.mark.parametrize("name", ["receive_payment", "receive_fees", "receive_refund", "receive_release"])
 def test_a_payment_delivery_without_documents_is_refused_naming_it(fresh_process, name):
     _refused(fresh_process[name], "Documents")
 
 
+@pytest.mark.timeout(180)  # the module fixture's fresh process waits up to 120 s
 @pytest.mark.parametrize("call,label", [
     ("woocommerce.sync_products", "Inventory"), ("woocommerce.sync_orders", "Documents"),
     ("shopify.sync_contacts", "Contacts"), ("shopify.sync_orders", "Documents"),
@@ -123,6 +125,7 @@ def test_a_connector_sync_without_its_module_is_refused_naming_it(fresh_process,
     _refused(fresh_process[call], label)
 
 
+@pytest.mark.timeout(180)  # the module fixture's fresh process waits up to 120 s
 def test_connecting_a_store_without_inventory_is_refused_before_anything_is_claimed(fresh_process):
     """The refusal comes before the connector is claimed: the fresh process has no
     database session, so getting any further would fail on it."""
