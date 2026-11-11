@@ -327,7 +327,7 @@ class TestSetupActivatingStatus:
         """When the API client raises, phase=down is returned."""
         import httpx
         ui_client.cookies.update(_authed())
-        with patch("ui.api_client.httpx.AsyncClient") as mock_cls:
+        with patch("ui.api_client._LocalAsyncClient") as mock_cls:
             mock_cls.return_value.__aenter__ = AsyncMock(side_effect=httpx.ConnectError("refused"))
             mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
             r = await ui_client.get("/setup/activating-status")
@@ -349,7 +349,7 @@ class TestSetupActivatingStatus:
 
         ui_client.cookies.update(_authed())
         with patch("celerp.config.read_config", return_value={"modules": {"enabled": ["celerp-inventory", "celerp-contacts", "celerp-sales-funnel"]}}):
-            with patch("ui.api_client.httpx.AsyncClient") as mock_cls:
+            with patch("ui.api_client._LocalAsyncClient") as mock_cls:
                 mock_inst = AsyncMock()
                 mock_inst.get = AsyncMock(return_value=mock_resp)
                 mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_inst)
@@ -375,7 +375,7 @@ class TestSetupActivatingStatus:
 
         ui_client.cookies.update(_authed())
         with patch("celerp.config.read_config", return_value={"modules": {"enabled": ["celerp-inventory", "celerp-contacts", "celerp-sales-funnel"]}}):
-            with patch("ui.api_client.httpx.AsyncClient") as mock_cls:
+            with patch("ui.api_client._LocalAsyncClient") as mock_cls:
                 mock_inst = AsyncMock()
                 mock_inst.get = AsyncMock(return_value=mock_resp)
                 mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_inst)
@@ -402,7 +402,7 @@ class TestSetupActivatingStatus:
         mock_resp.status_code = 503
 
         ui_client.cookies.update(_authed())
-        with patch("ui.api_client.httpx.AsyncClient") as mock_cls:
+        with patch("ui.api_client._LocalAsyncClient") as mock_cls:
             mock_inst = AsyncMock()
             mock_inst.get = AsyncMock(return_value=mock_resp)
             mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_inst)

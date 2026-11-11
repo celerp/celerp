@@ -512,7 +512,7 @@ class TestAuthRouting:
     async def test_health_system_returns_503_on_api_failure(self, ui_client):
         """GET /health/system when API is unreachable → 503 degraded, not fake 200."""
         import httpx
-        with patch("httpx.AsyncClient") as mock_cls:
+        with patch("ui.api_client._LocalAsyncClient") as mock_cls:
             instance = AsyncMock()
             instance.__aenter__ = AsyncMock(return_value=instance)
             instance.__aexit__ = AsyncMock(return_value=False)
@@ -527,7 +527,7 @@ class TestAuthRouting:
     async def test_health_proxy_returns_503_on_api_failure(self, ui_client):
         """GET /health when API is unreachable → 503 with version key, not 404."""
         import httpx
-        with patch("httpx.AsyncClient") as mock_cls:
+        with patch("ui.api_client._LocalAsyncClient") as mock_cls:
             instance = AsyncMock()
             instance.__aenter__ = AsyncMock(return_value=instance)
             instance.__aexit__ = AsyncMock(return_value=False)
@@ -545,7 +545,7 @@ class TestAuthRouting:
         mock_response = MagicMock()
         mock_response.json.return_value = {"status": "ok", "version": "1.0.9"}
         mock_response.status_code = 200
-        with patch("httpx.AsyncClient") as mock_cls:
+        with patch("ui.api_client._LocalAsyncClient") as mock_cls:
             instance = AsyncMock()
             instance.__aenter__ = AsyncMock(return_value=instance)
             instance.__aexit__ = AsyncMock(return_value=False)
@@ -17882,12 +17882,12 @@ class TestBackupRoutes:
         real_cls = httpx.AsyncClient
 
         def _mock_api_client(*args, **kwargs):
-            # Only the route's API client is built via httpx.AsyncClient; the test client
-            # uses the module-imported AsyncClient name, so it is unaffected by this patch.
+            # Only the route's API client is built via the local client class; the test client
+            # is a plain httpx.AsyncClient, so it is unaffected by this patch.
             kwargs["transport"] = httpx.MockTransport(lambda req: httpx.Response(200, text=err))
             return real_cls(*args, **kwargs)
 
-        with patch("httpx.AsyncClient", _mock_api_client):
+        with patch("ui.api_client._LocalAsyncClient", _mock_api_client):
             async with ui_client as c:
                 c.cookies.update({"celerp_token": test_token})
                 r = await c.post(

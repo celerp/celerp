@@ -823,7 +823,7 @@ class TestReportApiErrors:
         def _refuses(*a, **kw):
             raise failure
 
-        with patch.object(api_client.httpx, "AsyncClient", _refuses):
+        with patch.object(api_client, "_LocalAsyncClient", _refuses):
             with pytest.raises(api_client.APIError) as caught:
                 async with getattr(api_client, factory)(*args):
                     pass

@@ -480,7 +480,7 @@ async def test_health_proxy_follows_patched_api_base():
             return _FakeResponse()
 
     with patch.object(ui.config, "API_BASE", "http://sentinel-api:1"), \
-         patch("httpx.AsyncClient", _FakeClient):
+         patch("ui.api_client._LocalAsyncClient", _FakeClient):
         async with AsyncClient(
             transport=ASGITransport(app=ui_app), base_url="http://ui"
         ) as c:

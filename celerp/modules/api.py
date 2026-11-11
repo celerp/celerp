@@ -33,7 +33,8 @@ async def api_request(
     """Call the Celerp API as the user signed in on ``request``.
 
     ``path`` is a path inside Celerp, such as "/companies/me"; the address, the
-    timeout and the sign-in come from Celerp. Raises ValueError for any other path.
+    timeout and the sign-in come from Celerp. Raises ValueError for any other path,
+    and for a json body holding inf or nan.
     """
     import ui.config
     from celerp.services.app_paths import is_app_local_path

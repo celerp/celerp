@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import httpx
 import logging
+import math
 from ui.api_client import error_text
 from ui.i18n import t, get_lang, category_label
 
@@ -1772,12 +1773,15 @@ def setup_ui_routes(app) -> None:
 
 
 def _parse_float(val) -> float | None:
+    """A number the form sent, or None for text that is not a finite number (inf and nan
+    included: the API cannot store them)."""
     if val is None or str(val).strip() == "":
         return None
     try:
-        return float(val)
+        f = float(val)
     except ValueError:
         return None
+    return f if math.isfinite(f) else None
 
 
 def _extract_fields_from_form(form) -> list[dict]:

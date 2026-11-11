@@ -202,6 +202,21 @@ def _local_timeout(timeout: float | httpx.Timeout) -> httpx.Timeout:
     return httpx.Timeout(timeout, pool=_POOL_ACQUIRE_TIMEOUT)
 
 
+class _LocalAsyncClient(httpx.AsyncClient):
+    """The local API client. httpx refuses to encode a json body holding inf or nan with a
+    ValueError, which would answer 500; here it is the invalid input it is, refused before
+    anything is sent. Only the encoding is caught, so a ValueError from the caller's own
+    code (a bad response's JSONDecodeError included) is never reported as invalid input."""
+
+    def build_request(self, *args, **kwargs) -> httpx.Request:
+        if kwargs.get("json") is None:
+            return super().build_request(*args, **kwargs)
+        try:
+            return super().build_request(*args, **kwargs)
+        except ValueError as exc:
+            raise APIError(422, t("error.invalid_input")) from exc
+
+
 def _local_client(
     token: str | None = None,
     *,
@@ -235,7 +250,7 @@ def _local_client(
     if token is not None:
         merged_headers["Authorization"] = f"Bearer {token}"
 
-    return httpx.AsyncClient(
+    return _LocalAsyncClient(
         base_url=API_BASE,
         headers=merged_headers or None,
         timeout=_local_timeout(timeout),
