@@ -6011,12 +6011,13 @@ class TestItemActionRouteCompleteness:
         """Only a draft can be deleted, so stock rows carry no Delete (the bulk bar's rule)."""
         from ui.components.table import data_table
         from fasthtml.common import to_xml
+        from html import unescape
         schema = [{"key": "sku", "label": "SKU"}]
         rows = [{"entity_id": "item:d", "sku": "D", "status": "draft"},
                 {"entity_id": "item:a", "sku": "A", "status": "available"}]
-        html = to_xml(data_table(schema=schema, rows=rows, entity_type="inventory", show_row_menu=True))
-        assert "htmx.ajax('DELETE','/api/items/item:d'" in html
-        assert "/api/items/item:a'" not in html
+        html = unescape(to_xml(data_table(schema=schema, rows=rows, entity_type="inventory", show_row_menu=True)))
+        assert "htmx.ajax('DELETE',\"/api/items/item:d\"" in html
+        assert "/api/items/item:a\"" not in html
 
     @pytest.mark.asyncio
     async def test_row_menu_delete_calls_bulk_delete_with_correct_id(self, ui_client):
@@ -6034,10 +6035,11 @@ class TestItemActionRouteCompleteness:
         """data_table renders row-menu delete using onclick+htmx.ajax (same pattern as bulk ops)."""
         from ui.components.table import data_table
         from fasthtml.common import to_xml
+        from html import unescape
         schema = [{"key": "sku", "label": "SKU"}, {"key": "name", "label": "Name"}]
         rows = [{"entity_id": "gc:ROW-001", "sku": "TEST", "name": "Widget", "status": "draft"}]
-        html = to_xml(data_table(schema=schema, rows=rows, entity_type="item", show_row_menu=True))
-        assert "htmx.ajax('DELETE','/api/items/gc:ROW-001'" in html, \
+        html = unescape(to_xml(data_table(schema=schema, rows=rows, entity_type="item", show_row_menu=True)))
+        assert "htmx.ajax('DELETE',\"/api/items/gc:ROW-001\"" in html, \
             "row-menu delete must use htmx.ajax DELETE to /api/items/{id} (same as bulk pattern)"
         assert 'hx-delete="/api/items/gc:ROW-001"' not in html, \
             "row-menu delete must not use hx-delete attribute (breaks in Electron via htmx:confirm)"
@@ -6048,10 +6050,11 @@ class TestItemActionRouteCompleteness:
         """data_table with entity_type='inventory' must still DELETE to /api/items/{id}, not /api/inventorys/{id}."""
         from ui.components.table import data_table
         from fasthtml.common import to_xml
+        from html import unescape
         schema = [{"key": "sku", "label": "SKU"}, {"key": "name", "label": "Name"}]
         rows = [{"entity_id": "item:demo-abc123", "sku": "TEST", "name": "Widget", "status": "draft"}]
-        html = to_xml(data_table(schema=schema, rows=rows, entity_type="inventory", show_row_menu=True))
-        assert "htmx.ajax('DELETE','/api/items/item:demo-abc123'" in html, \
+        html = unescape(to_xml(data_table(schema=schema, rows=rows, entity_type="inventory", show_row_menu=True)))
+        assert "htmx.ajax('DELETE',\"/api/items/item:demo-abc123\"" in html, \
             "row-menu delete with entity_type='inventory' must target /api/items/{id}, not /api/inventorys/{id}"
         assert "/api/inventorys/" not in html, \
             "row-menu must never generate /api/inventorys/ (misspelled pluralized route)"
@@ -12776,7 +12779,7 @@ class TestInventoryItemDetailFixes:
         """Label-template route source must dereference tpl entries, not the translation function t."""
         src = (Path(__file__).parent.parent / "ui" / "routes" / "inventory.py").read_text()
         assert 'tpl.get("name", "Template")' in src
-        assert "celerpPrintLabel('{entity_id}','{tpl['id']}')" in src
+        assert "str(entity_id), str(tpl['id'])" in src
         assert 't.get("name", "Template")' not in src
 
     @pytest.mark.asyncio
@@ -16262,7 +16265,7 @@ class TestInventoryUXFixes:
         assert isinstance(result, HTMLResponse)
         # Full page with print trigger - not an HTMX fragment
         assert b"window.print()" in result.body
-        assert b"<!DOCTYPE html>" in result.body
+        assert result.body.lower().startswith(b"<!doctype html>")
 
     def test_print_bulk_helper_generates_html(self):
         """_bulk_print_preview_page returns base_shell response with template picker."""
