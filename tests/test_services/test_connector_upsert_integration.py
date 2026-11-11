@@ -173,6 +173,10 @@ async def test_woocommerce_order_with_a_held_number_needs_attention(use_test_ses
         assert "409:" not in line and "{'code'" not in line, line
     assert await number_holder(session, str(cid), "WOO-1001", exclude_entity_id="doc:typed") is None
     assert (await _state(session, cid, "woocommerce:order:62"))["ref_id"] == "WOO-1002"
+    written = await session.scalar(text(
+        "SELECT data->>'ref_id' FROM ledger WHERE company_id = :c AND event_type = 'doc.created' "
+        "AND idempotency_key LIKE 'woocommerce:order:62:%'"), {"c": cid})
+    assert written == "WOO-1002"  # the event holds the number require_number_free returned
     assert (await _state(session, cid, "woocommerce:order:63"))["ref_id"] == "WOO-1003"
 
 

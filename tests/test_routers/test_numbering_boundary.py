@@ -963,7 +963,6 @@ _NOT_A_RECORD_NUMBER = {
         ("celerp-docs/celerp_docs/doc_service.py", "upsert_order_from_shopify"),
         ("celerp-docs/celerp_docs/doc_service.py", "upsert_invoice_from_quickbooks"),
         ("celerp-docs/celerp_docs/doc_service.py", "upsert_invoice_from_xero"),
-        ("celerp-docs/celerp_docs/doc_service.py", "upsert_order_from_woocommerce"),
     },
     "a bill taking back the number of the order it was, which no other record holds (number_holder)": {
         ("celerp-docs/celerp_docs/routes.py", "revert_doc_to_draft"),
@@ -1149,6 +1148,8 @@ _REFUSAL_WAY_OUT = {
     (f"{_DOCS}/routes.py", "import_list"): ("user", "the number and key in the imported file"),
     (f"{_DOCS}/routes.py", "batch_import_lists"): ("user", "the number and key in the imported file"),
     (f"{_DOCS}/import_service.py", "create_imported_doc"): ("user", "the number and key in the imported file"),
+    (f"{_DOCS}/doc_service.py", "upsert_order_from_woocommerce"): (
+        "user", "the WOO- number composed from a store order: renumber the holder and sync again"),
     (f"{_DOCS}/routes.py", "revert_doc_to_draft"): (
         "system", "the order number a bill was converted from: held elsewhere, the bill stays a bill"),
 }
