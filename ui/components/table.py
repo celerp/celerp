@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 
 from fasthtml.common import *
@@ -1220,11 +1221,13 @@ def editable_cell(
 
 def _normalize_number_str(s: str) -> str:
     """Format a numeric string for display and editing: drop .0 for integers and keep
-    every digit of a real number, so an editor opened on a value holds exactly that value."""
+    every digit of a real number, so an editor opened on a value holds exactly that value.
+    Text that is not a finite number (a refused entry such as "inf" or "1e309") stays as typed."""
     try:
-        return plain_number(float(s))
+        n = float(s)
     except (ValueError, TypeError):
         return s
+    return plain_number(n) if math.isfinite(n) else s
 
 
 def _display_val(value, cell_type: str, currency: str | None = None,

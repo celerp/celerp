@@ -5753,10 +5753,13 @@ celerpUpdateBulkAlloc();
         if field == "qty_out":
             if raw != "":
                 try:
-                    kwargs["qty_out"] = float(raw)
+                    qty = float(raw)
                 except ValueError:
+                    qty = math.nan
+                if not math.isfinite(qty):
                     return _writeoff_editable_cell(entity_id, line_id, field, raw, opts, labels)(
                         _cell_save_refusal(t("documents.enter_a_number")))
+                kwargs["qty_out"] = qty
         elif field == "account":
             if raw != "":
                 kwargs["account"] = raw
