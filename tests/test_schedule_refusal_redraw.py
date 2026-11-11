@@ -53,8 +53,10 @@ def _oob_ids(body: str) -> set[str]:
 async def test_schedule_refusal_redraws_frequency_views():
     r = await _patch("frequency", "custom")
     assert _REFUSAL in _toast(r)
+    # The days box comes back hidden, inside the schedule section swapped out of band by its id.
     days = re.search(r'<label[^>]*id="sub-custom-days"[^>]*>', r.text)
-    assert days and 'hx-swap-oob="true"' in days.group(0) and "display:none" in days.group(0), r.text
+    assert days and "display:none" in days.group(0), r.text
+    assert r.text.startswith("<") and _oob_ids(r.text), r.text
     # The redraw read fails: the refusal alone, nothing drawn without the stored state.
     r = await _patch("frequency", "custom", sub=AsyncMock(side_effect=APIError(500, "The agreement could not be read.")))
     assert _REFUSAL in _toast(r)

@@ -425,6 +425,12 @@ def _action_groups(entity_id: str, sub: dict, schedule: dict) -> tuple[FT, FT]:
             Span(*right, id="sub-actions-right", style="display:contents"))
 
 
+def _stored_schedule_views(entity_id: str, sub: dict, schedule: dict) -> str:
+    """Every element showing the schedule, drawn from what the agreement stores, each swapped
+    out of band by its id."""
+    return to_xml(tuple(v(hx_swap_oob="true") for v in _schedule_views(entity_id, sub, schedule) if v != ""))
+
+
 def _schedule_views(entity_id: str, sub: dict, schedule: dict) -> list[FT]:
     """Every element of the agreement page that shows its schedule or billing settings: the
     actions with the bill date note and badge, the header's frequency and next bill date, the
@@ -1411,12 +1417,22 @@ def setup_routes(app) -> None:
         try:
             saved = await api.update_subscription_schedule(token, entity_id, changes)
         except APIError as e:
-            return _refused(e)
+            refusal = _refused(e)
+            # The control already shows the refused value (Custom shows the days box): redraw every
+            # view from what is stored. When that read fails, the refusal is shown alone.
+            try:
+                views = _stored_schedule_views(entity_id, await api.get_subscription(token, entity_id),
+                                               await api.get_subscription_periods(token, entity_id))
+            except APIError as read_error:
+                _signed_out(read_error)
+                return refusal
+            return HTMLResponse(views, headers={k: v for k, v in refusal.headers.items()
+                                                if k not in ("content-length", "content-type")})
 
         async def draw():
             sub = await api.get_subscription(token, entity_id)
             schedule = await api.get_subscription_periods(token, entity_id)
-            views = to_xml(tuple(v(hx_swap_oob="true") for v in _schedule_views(entity_id, sub, schedule) if v != ""))
+            views = _stored_schedule_views(entity_id, sub, schedule)
             # The version the save stored, for the page's next lines save, as a document's field saves hand it.
             version = {"celerpListVersion": {"version": sub.get("version")}}
             if saved.get("sending_off"):
