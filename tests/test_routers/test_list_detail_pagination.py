@@ -12,6 +12,7 @@ in-page position alone, so the correct stored line is edited.
 
 from __future__ import annotations
 
+from html import unescape
 import re
 
 import pytest
@@ -226,7 +227,7 @@ async def test_draft_list_pager_saves_first(ui_app):
             c.cookies.update(_cookies())
             r = await c.get("/lists/list:big")
     assert r.status_code == 200, r.text
-    assert "celerpPageNav(this.getAttribute('href'))" in _pager_html(r.text)
+    assert "window[\"celerpPageNav\"](this.getAttribute('href'))" in unescape(_pager_html(r.text))
     assert "window._CELERP_CAN_EDIT_LINES = true" in r.text
 
 

@@ -67,6 +67,19 @@ async def _redrawn(draw, fallback=None, said: str = ""):
         return html_response(fallback() if fallback else (), headers=toast_header(warning, "warning"))
 
 
+async def _refused_redrawn(e: APIError, draw):
+    """A refused action whose control already shows the refused value: the refusal with every view
+    drawn again from what is stored (``draw()``'s markup). When that read fails, the refusal alone."""
+    refusal = _refused(e)
+    try:
+        views = await draw()
+    except APIError as read_error:
+        api.raise_if_signed_out(read_error)
+        return refusal
+    return html_response(views, headers={k: v for k, v in refusal.headers.items()
+                                        if k not in ("content-length", "content-type")})
+
+
 # How a send from the page reads after it, by billing.send_status: the toast it answers with.
 _SEND_TOAST = {"sent": "success", "failed": "error"}
 
@@ -1407,20 +1420,15 @@ def setup_routes(app) -> None:
             return _action_error(t(_FIELD_ERRORS[field]))
         # The days box is the custom frequency: entering days chooses it (an empty box chooses nothing).
         changes = {field: value, **({"frequency": "custom"} if field == "custom_interval_days" and value is not None else {})}
+
+        async def stored():
+            return _stored_schedule_views(entity_id, await api.get_subscription(token, entity_id),
+                                          await api.get_subscription_periods(token, entity_id))
         try:
             saved = await api.update_subscription_schedule(token, entity_id, changes)
         except APIError as e:
-            refusal = _refused(e)
-            # The control already shows the refused value (Custom shows the days box): redraw every
-            # view from what is stored. When that read fails, the refusal is shown alone.
-            try:
-                views = _stored_schedule_views(entity_id, await api.get_subscription(token, entity_id),
-                                               await api.get_subscription_periods(token, entity_id))
-            except APIError as read_error:
-                api.raise_if_signed_out(read_error)
-                return refusal
-            return html_response(views, headers={k: v for k, v in refusal.headers.items()
-                                                if k not in ("content-length", "content-type")})
+            # The control already shows the refused value (Custom shows the days box).
+            return await _refused_redrawn(e, stored)
 
         async def draw():
             sub = await api.get_subscription(token, entity_id)

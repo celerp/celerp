@@ -171,7 +171,7 @@ async def test_setup_post_needing_restart_goes_to_activating_then_dashboard(ui_c
     s.restart_system.assert_awaited_once()
     ui_client.cookies.update(_authed())
     page = await ui_client.get("/setup/activating")
-    assert "window.location.href = '/dashboard'" in page.text
+    assert "celerpGo('/dashboard')" in page.text
     assert "/onboarding" not in page.text
 
 

@@ -73,9 +73,10 @@ def _posted(form) -> list[tuple[str, str]]:
     for el in [form, *form.find_all(attrs={"hx-vals": True})]:
         if el.get("hx-vals"):
             fields.extend((k, str(v)) for k, v in json.loads(el["hx-vals"]).items())
-    if form.get("data-chosen-rows"):
+    if form.has_attr("data-chosen-rows"):
         assert any(subs_ui._CHOSEN_ROWS_JS.strip() in js.get_text() for js in form.find_all("script"))
-        fields.append((form["data-chosen-rows"], json.dumps(
+        assert "e.detail.parameters.item=" in subs_ui._CHOSEN_ROWS_JS
+        fields.append(("item", json.dumps(
             [c["value"] for c in form.select(".bulk-select") if c.has_attr("checked")])))
     return fields
 

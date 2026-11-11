@@ -277,6 +277,7 @@ def test_every_ui_action_answers_by_loading_its_page_redrawing_or_refusing():
     ("return _done(page, 'subscriptions.done_created')", "_done"),
     ("return _done(f'/subscriptions/{eid}#periods', 'subscriptions.done_created')", "fragment"),
     ("return await _redrawn(request, eid)", status_census.REDRAW),
+    ("return await _refused_redrawn(e, stored)", status_census.REFUSED_REDRAW),
     ("return _refused(exc)", "_refused"),
     ("return base_shell(title, body)", "page"),
     ("return wizard_step(request)", "wizard"),

@@ -9,6 +9,7 @@ a setting is decided too."""
 from __future__ import annotations
 
 import ast
+import json
 import re
 from pathlib import Path
 
@@ -49,7 +50,7 @@ def _posts(doc: dict, role: str = "owner") -> list[tuple[str, object]]:
         url = node.attrs.get("hx-post") or node.attrs.get("hx_post")
         js = node.attrs.get("onclick") or node.attrs.get("onsubmit") or ""
         if not url and "_celerpPostOnLines(" in js:
-            url = js.split("_celerpPostOnLines('", 1)[1].split("'", 1)[0]
+            url = json.JSONDecoder().raw_decode(js.split("_celerpPostOnLines(", 1)[1])[0]
         if url:
             out.append((url, node))
     return out

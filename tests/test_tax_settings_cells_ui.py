@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
+import html
 import re
 
 import pytest
@@ -167,9 +168,10 @@ async def test_a_typed_tax_cell_saves_on_enter_and_leaves_untouched_without_a_wr
     ui_client.cookies.update(_authed())
     with patch(f"ui.api_client.{gname}", new=AsyncMock(side_effect=lambda *_: _taxes())):
         r = await ui_client.get(f"/settings/{prefix}/0/{field}/edit")
-    assert "event.key==='Enter'" in r.text, field
+    text = html.unescape(r.text)
+    assert "event.key==='Enter'" in text, field
     # Blur saves only a changed value; an untouched editor restores the shown cell.
-    assert "this.value!==this._v" in r.text, field
+    assert "this.value!==this._v" in text, field
 
 
 @pytest.mark.parametrize("prefix", ["taxes", "purchasing-taxes"])

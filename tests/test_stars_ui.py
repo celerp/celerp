@@ -97,8 +97,8 @@ async def test_a_returned_credential_is_saved_only_when_the_user_confirms(monkey
                                  follow_redirects=False, cookies={"celerp_token": make_test_token()}) as c:
         r = await c.get("/stars/claim", params={"cred": "a'b<c"})
         assert r.status_code == 200 and said.posted == []
-        assert "method='post' action='/stars/claim'" in r.text
-        assert "value='a&#x27;b&lt;c'" in r.text
+        assert '<form enctype="multipart/form-data" method="post" action="/stars/claim">' in r.text
+        assert 'value="a\'b&lt;c"' in r.text
         r = await c.post("/stars/claim", data={"cred": "a'b<c"})
     assert said.posted == [("/stars/badge", {"cred": "a'b<c"})]
     assert r.status_code == 200 and "Supporter &lt;1&gt;" in r.text
