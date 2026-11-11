@@ -9852,6 +9852,23 @@ class ListLinePagePatch(BaseModel):
     expected_version: int | None = None
 
 
+def _keep_unchanged_lines(page: list, window: list) -> list:
+    """The page with every row it sent as unchanged ({"line_id": ..., "unchanged": true}, a row
+    the editor did not touch) put back as the stored line of that id, exactly as stored. The page
+    shows only some of a line's fields, so a row rebuilt from it would drop or reset the rest. A
+    row naming no line of the loaded window means the page is out of date."""
+    by_id = {li["line_id"]: li for li in window if isinstance(li, dict) and li.get("line_id")}
+    kept = []
+    for li in page:
+        if isinstance(li, dict) and li.get("unchanged") is True:
+            stored = by_id.get(li.get("line_id"))
+            if stored is None:
+                raise _stale_doc("documents.err_list_changed")
+            li = stored
+        kept.append(li)
+    return kept
+
+
 @lists_router.patch("/{entity_id}/line-page")
 async def patch_list_line_page(
     entity_id: str,
@@ -9915,6 +9932,7 @@ async def patch_list_line_page(
     # any window outside it means the client's view is stale: reject and reload rather than mutate.
     if offset > len(stored) or offset + original_count > len(stored):
         raise _stale_doc("documents.err_list_changed")
+    page = _keep_unchanged_lines(page, stored[offset:offset + original_count])
     # No positional id comparison: the page replaces the WHOLE window [offset:offset+original_count],
     # so a delete or insert legitimately shifts the surviving rows out of id-for-id alignment with
     # `stored`. Concurrency is guarded by the version pin (every save bumps the list version), not by

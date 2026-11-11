@@ -10268,6 +10268,7 @@ async function _celerpInstallLineBody(html, version) {{
     const swapped = document.getElementById('{line_body_id}');
     htmx.process(swapped);
     swapped.querySelectorAll('.combobox-wrap').forEach(initCombobox);
+    _celerpMarkStoredRows();
     // The installed rows are the stored window now, so the next save replaces exactly them.
     if (swapped.dataset.lineCount != null) _CELERP_ORIGINAL_COUNT = Number(swapped.dataset.lineCount);
     celerpUpdateTotals();
@@ -10323,6 +10324,14 @@ async function _celerpRefreshHeldBadges() {{
         return true;
     }}
     const hd = _celerpHeaderDiscount(lines.reduce((s, l) => s + l.line_total, 0));
+    // What each row holds as sent, so the rows this save writes count as unchanged after it.
+    const sentAs = savedRows.map(_celerpRowSignature);
+    // A list keeps the stored line of a row sent as unchanged: the page shows only some of a
+    // line's fields, so a row rebuilt from it would drop or reset the rest. A document save
+    // replaces every line.
+    const sent = _CELERP_BASE === '/lists/'
+        ? lines.map((l, i) => _celerpRowUnchanged(savedRows[i]) ? {{line_id: l.line_id, unchanged: true}} : l)
+        : lines;
     const statusEl = document.getElementById('save-status');
     const _docTaxesState = document.getElementById('doc-taxes-state');
     // Send the current page's rows, the stored offset they occupy, and the length of the
@@ -10331,7 +10340,7 @@ async function _celerpRefreshHeldBadges() {{
     // recomputes totals from the full merged array, so off-page rows are never touched by a page save.
     const resp = await celerpFetch(_CELERP_BASE + _CELERP_EID + '/lines', {{
         method: 'POST', headers: {{'Content-Type': 'application/json'}},
-        body: JSON.stringify(Object.assign({{line_items: lines, offset: _CELERP_LINE_OFFSET,
+        body: JSON.stringify(Object.assign({{line_items: sent, offset: _CELERP_LINE_OFFSET,
             original_count: _CELERP_ORIGINAL_COUNT,
             discount: hd.value, discount_type: hd.type,
             expected_version: _celerpEntityVersion}},
@@ -10348,6 +10357,7 @@ async function _celerpRefreshHeldBadges() {{
             if (data && data.version != null) _celerpEntityVersion = data.version;
             if (data && Array.isArray(data.line_ids) && data.line_ids.length === savedRows.length)
                 savedRows.forEach((row, i) => _celerpSetRowLineId(row, data.line_ids[i]));
+            savedRows.forEach((row, i) => {{ row.dataset.storedAs = sentAs[i]; }});
             // The server's money for what was just saved, unless a newer edit is already pending
             // (its own save brings fresher figures).
             if (data && data.money && revision === window._celerpLineRevision) _celerpShowStoredMoney(data.money);
@@ -10397,6 +10407,24 @@ function _celerpPersist() {{
     window._celerpLineRevision += 1;
     return _celerpMutate(_celerpPersistOnce);
 }}
+/* A row is unchanged while every field it shows holds what it held when its stored line was
+   drawn or last saved. Carried values are left out: the page never edits them (a write-off
+   cell saves its own entry and refreshes them). */
+function _celerpRowSignature(row) {{
+    return JSON.stringify(Array.from(row.querySelectorAll('input, select, textarea, [data-name]'))
+        .filter(el => !el.matches('[data-carry]'))
+        .map(el => 'value' in el ? el.value : el.textContent));
+}}
+function _celerpRowUnchanged(row) {{
+    return row.dataset.storedAs != null && row.dataset.storedAs === _celerpRowSignature(row);
+}}
+function _celerpMarkStoredRows() {{
+    // Rows drawn from stored lines (they carry the line's id) start unchanged.
+    document.querySelectorAll('#{line_body_id} tr').forEach(row => {{
+        if (row.querySelector('[data-name="line_id"]')?.value) row.dataset.storedAs = _celerpRowSignature(row);
+    }});
+}}
+_celerpMarkStoredRows();
 /* Click-to-edit line cells (a write-off's quantity out, account and comment) save on their own
    PATCH, outside the line rows' save. Each such save, from the blur that starts it until its
    answer, is held here, so an action on the lines can wait for it. */

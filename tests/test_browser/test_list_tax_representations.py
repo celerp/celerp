@@ -29,11 +29,16 @@ def test_one_save_with_compound_taxes_and_a_rate_only_line_charges_what_the_invo
         page, api_server, ui_server, api):
     with _demo_company(api_server, ui_server, api, "GB", _COMPOUND_AFTER_VAT) as (company, ui, token, items):
         r = company.post("/lists", json={"list_type": "quotation", "line_items": [
-            _line(items[0], 50.0, taxes=[_VAT, _LEVY]), _line(items[1], 50.0, tax_rate=7.0)]})
+            _line(items[0], 50.0, taxes=[_VAT, _LEVY]), _line(items[1], 40.0, tax_rate=7.0)]})
         assert r.status_code == 200, r.text
         list_id = r.json()["id"]
         ctx, tab = _open(page, ui_server, token, list_id, "lists")
         try:
+            # Both rows are edited: a list save sends a row the page did not touch as unchanged,
+            # keeping its stored line, so only edited rows show the page's own serialization.
+            second = tab.locator('table.doc-lines tbody tr input[data-name="unit_price"]').nth(1)
+            second.fill("50")
+            second.dispatch_event("input")
             held = _held_saves(tab, list_id, "lists")
             _type_price(tab, "100")
             _wait_for(tab, held)
