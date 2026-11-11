@@ -4319,17 +4319,17 @@ celerpUpdateBulkAlloc();
             Input(type="search", name="q", value=q, placeholder=t("documents.search_doc_ref"),
                   cls="form-input form-input--sm", style="max-width:200px;",
                   onchange=js(
-                      "window.location='/payments?tab=' + {0} + '&q='+encodeURIComponent(this.value)+'&method=' + {1} + '&contact=' + {2} + {3}",
+                      "celerpGo('/payments?tab=' + {0} + '&q='+encodeURIComponent(this.value)+'&method=' + {1} + '&contact=' + {2} + {3})",
                       _tab_enc, _method_enc, _contact_enc, _dates_enc)),
             Input(type="text", name="contact", value=contact_filter, placeholder=t("documents.contact_placeholder"),
                   cls="form-input form-input--sm", style="max-width:200px;",
                   onchange=js(
-                      "window.location='/payments?tab=' + {0} + '&q=' + {1} + '&method=' + {2} + {3} + '&contact='+encodeURIComponent(this.value)",
+                      "celerpGo('/payments?tab=' + {0} + '&q=' + {1} + '&method=' + {2} + {3} + '&contact='+encodeURIComponent(this.value))",
                       _tab_enc, _q_enc, _method_enc, _dates_enc)),
             Select(*_methods_opts, name="method",
                    cls="form-input form-input--sm", style="max-width:150px;",
                    onchange=js(
-                       "window.location='/payments?tab=' + {0} + '&q=' + {1} + '&method='+encodeURIComponent(this.value)+'&contact=' + {2} + {3}",
+                       "celerpGo('/payments?tab=' + {0} + '&q=' + {1} + '&method='+encodeURIComponent(this.value)+'&contact=' + {2} + {3})",
                        _tab_enc, _q_enc, _contact_enc, _dates_enc)),
             _date_range_select("/payments", date_from, date_to, preset,
                                extra_params=f"&tab={_tab_enc}{extra_params}", lang=get_lang(request)),
@@ -6255,7 +6255,7 @@ def _tc_dropdown(entity_id: str, doc: dict, tc_templates: list[dict], doc_type: 
     options.append(Option(t("label._add_new"), value="__add_new__"))
     settings_url = "/settings/sales?tab=terms-conditions" if doc_type not in ("purchase_order", "bill", "consignment_in") else "/settings/purchasing?tab=terms-conditions"
     # JS: if user picks __add_new__, navigate to settings
-    select_js = f"if(this.value==='__add_new__'){{window.location.href='{settings_url}';return false;}}"
+    select_js = js("if(this.value==='__add_new__'){{celerpGo({0});return false;}}", settings_url)
     return [
         Div(
             Div(t("doc.template"), cls="form-label"),
@@ -6716,7 +6716,7 @@ def _ship_to_picker(doc_id: str, current_address: str, locations: list, is_list:
             hx_target="closest .editable-cell",
             hx_swap="outerHTML",
             hx_trigger="change",
-            onchange="if(this.value==='__add_new__'){window.open('/settings/inventory?tab=locations','_blank');this.value='';return;}",
+            onchange="if(this.value==='__add_new__'){celerpOpen('/settings/inventory?tab=locations','_blank');this.value='';return;}",
             cls="cell-input cell-input--select",
         ),
         cls="editable-cell editable-cell--editing",
@@ -6757,7 +6757,7 @@ def _contact_ship_to_picker(doc_id: str, current_address: str, contact_shipping_
             hx_swap="outerHTML",
             hx_trigger="change",
             onchange=js(
-                "if(this.value==='__add_new__'){{window.open({0},'_blank');this.value='';"
+                "if(this.value==='__add_new__'){{celerpOpen({0},'_blank');this.value='';"
                 'return;}}',
                 str(add_new_url)),
             cls="cell-input cell-input--select",
@@ -8475,7 +8475,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     *_cat_options,
                     data_name="category",
                     cls="cell-input cell-input--select cell-input--xs",
-                    onchange="if(this.value==='__add_new__'){window.open('/settings/inventory?tab=category-library','_blank');this.value='';}else{celerpAutoSave();}",
+                    onchange="if(this.value==='__add_new__'){celerpOpen('/settings/inventory?tab=category-library','_blank');this.value='';}else{celerpAutoSave();}",
                 ), cls="col-cat")
             elif _show_category:
                 _cat_val = li.get("category") or ""
@@ -8668,7 +8668,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     *_cat_options,
                     data_name="category",
                     cls="cell-input cell-input--select cell-input--xs",
-                    onchange="if(this.value==='__add_new__'){window.open('/settings/inventory?tab=category-library','_blank');this.value='';}else{celerpAutoSave();}",
+                    onchange="if(this.value==='__add_new__'){celerpOpen('/settings/inventory?tab=category-library','_blank');this.value='';}else{celerpAutoSave();}",
                 ), cls="col-cat")
             else:
                 _cat_cell = None
@@ -9356,13 +9356,13 @@ function celerpFillRow(row, data) {{
     const linkEl = row.querySelector('[data-name="item_link"]');
     if (linkEl) {{
         if (data.entity_id) {{
-            linkEl.href = '/inventory/' + data.entity_id;
+            celerpSetUrl(linkEl, 'href', '/inventory/' + data.entity_id);
             linkEl.target = '_blank';
             linkEl.className = 'item-link item-link--active';
             linkEl.title = _L.view_item_details;
             linkEl.onclick = null;
         }} else {{
-            linkEl.href = '#';
+            celerpSetUrl(linkEl, 'href', '#');
             linkEl.target = '';
             linkEl.className = 'item-link item-link--inactive';
             linkEl.title = _L.no_linked_item;
@@ -9407,16 +9407,16 @@ function celerpFillRow(row, data) {{
                 const span = document.createElement('span');
                 span.className = 'badge ' + badge.cls;
                 const invA = document.createElement('a');
-                invA.href = invHref; invA.title = _L.view_in_catalog;
+                celerpSetUrl(invA, 'href', invHref); invA.title = _L.view_in_catalog;
                 invA.className = 'badge__doc-link'; invA.textContent = badge.label;
                 const docA = document.createElement('a');
-                docA.href = '/docs/' + data.status_doc_id; docA.title = _L.view_reserving_document;
+                celerpSetUrl(docA, 'href', '/docs/' + data.status_doc_id); docA.title = _L.view_reserving_document;
                 docA.className = 'badge__doc-link'; docA.textContent = docNum;
                 span.append(invA, ': ', docA);
                 statusCell.replaceChildren(span);
             }} else {{
                 const invA = document.createElement('a');
-                invA.href = invHref; invA.title = _L.view_in_catalog;
+                celerpSetUrl(invA, 'href', invHref); invA.title = _L.view_in_catalog;
                 const span = document.createElement('span');
                 span.className = 'badge ' + badge.cls + ' badge--link';
                 span.textContent = badge.label;
@@ -10494,7 +10494,7 @@ async function celerpPageNav(url) {{
         // (hx select) before swapping it in place.
         htmx.ajax('GET', url, {{target: target, select: sel, swap: 'outerHTML'}});
     }} else {{
-        window.location.assign(url);
+        celerpGo(url);
     }}
 }}
 /* Foreign-reserved save rejection: resolution dialog instead of the inline error.
@@ -10531,7 +10531,7 @@ function _celerpShowReservedConflicts(conflicts) {{
         p.append((c.sku || c.entity_id) + _L.is_reserved_on);
         if (c.doc_id) {{
             const a = document.createElement('a');
-            a.href = '/docs/' + c.doc_id;
+            celerpSetUrl(a, 'href', '/docs/' + c.doc_id);
             a.className = 'auth-link';
             a.textContent = c.doc_number || String(c.doc_id).replace(/^doc:/, '');
             p.appendChild(a);
@@ -10877,7 +10877,7 @@ async function celerpCsvImport(input, entityId) {{
     }});
     if(!ids.length){{if(window.celerpToast)celerpToast(_L.no_inventory_labels,'error');return;}}
     var form=document.createElement('form');
-    form.method='POST';form.action='/labels/print-bulk';form.target='_blank';
+    form.method='POST';celerpSetUrl(form, 'action', '/labels/print-bulk');form.target='_blank';
     ids.forEach(function(id){{
       var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;
       form.appendChild(inp);
@@ -11171,7 +11171,7 @@ async function celerpCsvImport(input, entityId) {{
     }});
     if(!ids.length){{if(window.celerpToast)celerpToast(_L.no_inventory_labels,'error');return;}}
     var form=document.createElement('form');
-    form.method='POST';form.action='/labels/print-bulk';form.target='_blank';
+    form.method='POST';celerpSetUrl(form, 'action', '/labels/print-bulk');form.target='_blank';
     ids.forEach(function(id){{
       var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;
       form.appendChild(inp);

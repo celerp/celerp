@@ -12,7 +12,7 @@ const VIEW = {
   message: "Your data was last opened with Celerp 2.6.0, which is newer than this copy (2.5.3).",
   detail: "Your data has not been changed. Update Celerp to open it.",
   update: "Update Celerp", restart: "Restart to install", download: "Download the installer",
-  downloadUrl: "https://celerp.com/download", quit: "Quit", checking: "Checking...",
+  quit: "Quit", checking: "Checking...",
   downloading: "Downloading... {pct}%", ready: "v{version} ready to install",
   noUpdate: "No newer version is available yet.",
   notReleased: "Your data has not been changed. Celerp can open it once version 2.6.0 or newer is available.",
@@ -30,7 +30,7 @@ function page() {
   const elements = {};
   const doc = {
     getElementById: (id) => {
-      elements[id] ??= { id, textContent: "", hidden: id === "refusal", disabled: false, href: "", clicks: [],
+      elements[id] ??= { id, textContent: "", hidden: id === "refusal", disabled: false, clicks: [],
                          addEventListener(type, fn) { this.clicks.push(fn); },
                          // A disabled button takes no click, as in a browser.
                          click() { if (!this.disabled) this.clicks.forEach((fn) => fn()); } };
@@ -68,7 +68,7 @@ test("the screen says what happened and offers Update Celerp, the installer and 
     // Nothing has been checked yet, so the status line claims nothing.
     expect(p.el("status").textContent).toBe("");
     expect(p.el("refusal-update")).toMatchObject({ textContent: "Update Celerp", disabled: false });
-    expect(p.el("refusal-download")).toMatchObject({ textContent: VIEW.download, href: VIEW.downloadUrl });
+    expect(p.el("refusal-download")).toMatchObject({ textContent: VIEW.download });
     expect(p.el("refusal-quit").textContent).toBe(VIEW.quit);
     p.el("refusal-quit").click();
     expect(p.calls).toEqual(["quit"]);
@@ -187,6 +187,7 @@ test("loading.html carries the screen's elements and loads its script", function
                     "refusal-quit", "status"]) {
     expect([id, html.includes(`id="${id}"`)]).toEqual([id, true]);
   }
+  expect(html).toContain('<a id="refusal-download" href="https://celerp.com/download"></a>');
   expect(html).toContain('<script src="refusal.js"></script>');
   expect(html).toMatch(/<div class="refusal" id="refusal" hidden>/);
 });
@@ -212,9 +213,8 @@ test("a release that cannot open the data is not offered: the screen says no rel
     expect(p.calls).toEqual(["check", "check"]);
     expect(p.el("refusal-update")).toMatchObject({ textContent: "Check again", disabled: true });
     expect(p.el("status").textContent).toBe("Checking...");
-    // Quit and the installer page stay.
+    // Quit stays.
     expect(p.el("refusal-quit").hidden).toBe(false);
-    expect(p.el("refusal-download").href).toBe(VIEW.downloadUrl);
   });
 
 test("a release being downloaded is offered as the way out, and ends at Restart to install",
@@ -279,8 +279,7 @@ test("Check again ends when the check settles, even when main sends nothing (a w
       await settle();
       expect([ending, p.el("status").textContent, p.el("refusal-update").textContent, p.el("refusal-update").disabled])
         .toEqual([ending, VIEW.noUpdate, "Check again", false]);
-      // Quit and the download link stay usable throughout.
-      expect(p.el("refusal-download").href).toBe(VIEW.downloadUrl);
+      // Quit stays usable throughout.
       p.el("refusal-quit").click();
       expect(p.calls).toEqual(["check", "quit"]);
     }

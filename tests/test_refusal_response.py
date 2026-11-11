@@ -80,7 +80,7 @@ def test_every_caught_api_refusal_is_answered_through_refusal_response():
 def test_no_button_navigates_away_after_its_request_whatever_the_reply():
     found = [f"{p.relative_to(_ROOT).as_posix()}:{n}"
              for p in _ui_sources() for n, line in enumerate(p.read_text().splitlines(), 1)
-             if "hx_on__after_request" in line and "window.location" in line]
+             if "hx_on__after_request" in line and ("window.location" in line or "celerpGo(" in line)]
     assert not found, f"a request's refusal is wiped by a navigation after it: {found}"
 
 

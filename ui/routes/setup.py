@@ -287,6 +287,7 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         return auth_shell(
+            *client_scripts(get_lang(request), request),
             _activating_form(lang=get_lang(request)),
             title=page_title("page.activating_modules"),
         )
@@ -554,7 +555,7 @@ def _activating_form(lang: str = "en") -> FT:
           if (!readyAt) {{ readyAt = Date.now(); }}
           // Wait for the UI itself to be stable after its own restart
           if (Date.now() - readyAt >= readyStableMs) {{
-            window.location.href = '/dashboard';
+            celerpGo('/dashboard');
           }} else {{
             setTimeout(poll, 600);
           }}

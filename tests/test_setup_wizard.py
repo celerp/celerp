@@ -305,7 +305,7 @@ class TestSetupActivating:
         """Poll script must go to the dashboard on success."""
         ui_client.cookies.update(_authed())
         r = await ui_client.get("/setup/activating")
-        assert b"window.location.href = '/dashboard'" in r.content
+        assert b"celerpGo('/dashboard')" in r.content
         assert b"/onboarding" not in r.content
 
     @pytest.mark.asyncio

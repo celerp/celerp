@@ -42,7 +42,7 @@ _IDLE_LOGOUT_JS = ("""
   var IDLE_MS = {0} * 60000;
   if (IDLE_MS <= 0) return;
   var t;
-  function out(){{ window.location.href = '/logout?reason=idle&next=' + encodeURIComponent(location.pathname + location.search); }}
+  function out(){{ celerpGo('/logout?reason=idle&next=' + encodeURIComponent(location.pathname + location.search)); }}
   function reset(){{ clearTimeout(t); t = setTimeout(out, IDLE_MS); }}
   // capture:true so scroll counts as activity: scroll events do not bubble, so a
   // document listener only sees them in the capture phase. Without it, scrolling an
@@ -125,7 +125,7 @@ function celerpFetch(url, opts) {
   return fetch(url, opts).then(function(r) {
     var to = r.headers.get('HX-Redirect');
     if (!to) return r;
-    location.href = to;
+    celerpGo(to);
     return new Promise(function() {});
   });
 }
@@ -257,7 +257,7 @@ var _CELERP_NOTICE = '.cell-error, .flash, .error-banner, .error-inline, .toast_
 function celerpTryAgainButton() {
   var button = document.createElement('a');
   button.className = 'btn btn--secondary btn--sm try-again';
-  button.href = window.__shellI18n.tryAgainHref || location.href;
+  celerpSetUrl(button, 'href', window.__shellI18n.tryAgainHref || location.href);
   button.textContent = window.__shellI18n.tryAgain;
   return button;
 }
@@ -326,7 +326,7 @@ function celerpToast(message, type, persist, action) {
     if (!a || !a.href || !a.label) return;
     var link = document.createElement('a');
     link.className = 'toast__action';
-    link.href = a.href;
+    celerpSetUrl(link, 'href', a.href);
     link.textContent = a.label;
     toast.appendChild(link);
   });
@@ -1411,15 +1411,15 @@ document.addEventListener('DOMContentLoaded', function() {
         var data = JSON.parse(e.data || '{}');
         var by = data.by ? '&by=' + encodeURIComponent(data.by) : '';
         var nx = '&next=' + encodeURIComponent(location.pathname + location.search);
-        window.location.href = '/login?reason=evicted' + by + nx;
+        celerpGo('/login?reason=evicted' + by + nx);
       } catch(_) {
-        window.location.href = '/login?reason=evicted&next=' + encodeURIComponent(location.pathname + location.search);
+        celerpGo('/login?reason=evicted&next=' + encodeURIComponent(location.pathname + location.search));
       }
     });
 
     es.addEventListener('drain', function(e) {
       es.close();
-      window.location.href = '/login?reason=expired';
+      celerpGo('/login?reason=expired');
     });
 
     es.onerror = function() {
@@ -1483,7 +1483,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // download that failed its security check names none: it offers help instead.
     function setInstallerLink(url) {
       if (!installerLink) return;
-      if (url) installerLink.href = url;
+      if (url) celerpSetUrl(installerLink, 'href', url);
       installerLink.style.display = url ? '' : 'none';
     }
 
@@ -1811,7 +1811,7 @@ window.celerpUseDays = function(record){
     var label = '\\u2605 ' + window.__shellI18n.starOnGithub;
     if (d.show_count && d.count != null) label = '\\u2605 ' + d.count;  // proof/momentum: star count
     el.textContent = label;
-    el.href = d.url;
+    celerpSetUrl(el, 'href', d.url);
     el.title = d.tooltip || window.__shellI18n.appreciateSupport;
     el.style.display = '';
   }).catch(function(){});
@@ -1925,13 +1925,13 @@ def star_supporter_card() -> FT:
         "var actions=document.getElementById('star-card-actions');"
         "var wall=document.getElementById('star-card-wall');"
         "var link=document.getElementById('star-card-star');"
-        "if(link&&d.url)link.href=d.url;"
+        "if(link&&d.url)celerpSetUrl(link,'href',d.url);"
         "if(bd&&bd.badge){"
         "if(h)h.textContent=d.thanks_headline||card.dataset.fallbackThanksHeadline;"
         "if(b)b.textContent=(d.thanks_body||'').replace('{badge}',bd.badge.label);"
         "if(b2)b2.style.display='none';"
         "if(actions)actions.style.display='none';"
-        "if(wall&&bd.wall_url){wall.href=bd.wall_url;wall.style.display='inline-block';}"
+        "if(wall&&bd.wall_url){celerpSetUrl(wall,'href',bd.wall_url);wall.style.display='inline-block';}"
         "}else{"
         "if(h)h.textContent=d.headline||card.dataset.fallbackHeadline;"
         "var parts=(d.body||'').split('\\n\\n');"
@@ -2808,7 +2808,7 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
                         cls="user-menu__item",
                         # Append the current page (and the matching Area) to the bug form at click
                         # time — the path is only known client-side; see _BUG_LINK_JS.
-                        onclick="this.href=celerpBugUrl(this.dataset.base)",
+                        onclick="celerpSetUrl(this, 'href', celerpBugUrl(this.dataset.base))",
                         **{"data-base": _bug_report_url()},
                     ),
                     A(
@@ -2827,7 +2827,7 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
                         "⎋ " + t("nav.logout", lang),
                         href="/logout",
                         cls="user-menu__item user-menu__item--logout",
-                        onclick="event.preventDefault();fetch('/logout',{method:'POST',credentials:'same-origin'}).then(()=>window.location='/login')",
+                        onclick="event.preventDefault();fetch('/logout',{method:'POST',credentials:'same-origin'}).then(()=>celerpGo('/login'))",
                     ),
                     id="user-menu-panel",
                     cls="user-menu__panel",
@@ -3269,7 +3269,7 @@ RESTART_POLL_JS = """
   setTimeout(function () {
     var timer = setInterval(function () {
       fetch("/login", { cache: "no-store" }).then(function (r) {
-        if (r.ok) { clearInterval(timer); window.location.href = "/"; }
+        if (r.ok) { clearInterval(timer); celerpGo("/"); }
       }).catch(function () { /* still restarting */ });
     }, 1500);
   }, 4000);

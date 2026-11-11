@@ -856,7 +856,7 @@ def _account_form(chart: list[dict], values: dict | None = None) -> FT:
             ),
             Div(id="account-form-error"),
         ),
-        onkeydown="if(event.key==='Escape'){window.location='/settings/accounting?tab=chart'}",
+        onkeydown="if(event.key==='Escape'){celerpGo('/settings/accounting?tab=chart')}",
         hx_target="#account-form-error",
         hx_swap="innerHTML",
         **action,

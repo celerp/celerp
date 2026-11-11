@@ -20745,7 +20745,7 @@ async def test_module_restart_refresh_failure_still_restarts(ui_client):
         r = await ui_client.post("/modules/restart")
     assert r.status_code == 200
     # Restart proceeded: the poll-and-reload panel is returned.
-    assert "window.location = '/modules'" in r.content.decode()
+    assert "celerpGo('/modules')" in r.content.decode()
     # No new session cookie was minted on the failure path.
     set_cookie = r.headers.get("set-cookie", "")
     assert "celerp_token=" not in set_cookie

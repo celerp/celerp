@@ -419,7 +419,7 @@ _EDITOR_JS = """
         var bcHPx = Math.max(4, bcHeightVal * BC_PX_PER_H);
         block.style.width = bcWPx + 'px';
         var img = document.createElement('img');
-        img.src = '/api/labels/preview/barcode?value=' + encodeURIComponent(sample) + '&height=' + bcHeightVal;
+        celerpSetUrl(img, 'src', '/api/labels/preview/barcode?value=' + encodeURIComponent(sample) + '&height=' + bcHeightVal);
         img.style.width = bcWPx + 'px';
         img.style.height = bcHPx + 'px';
         img.alt = 'barcode';
@@ -445,7 +445,7 @@ _EDITOR_JS = """
         block.style.width = qrPx + 'px';
         block.style.height = qrPx + 'px';
         var img = document.createElement('img');
-        img.src = '/api/labels/preview/qr?value=' + encodeURIComponent(sample);
+        celerpSetUrl(img, 'src', '/api/labels/preview/qr?value=' + encodeURIComponent(sample));
         img.alt = 'qr';
         block.appendChild(img);
       }} else {{

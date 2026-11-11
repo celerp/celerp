@@ -788,7 +788,7 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
       var ids = typeof CelerpSelection !== 'undefined' ? CelerpSelection.ids() : [];
       if (!ids.length) return;
       var qs = ids.map(function(id){{return 'selected=' + encodeURIComponent(id);}}).join('&');
-      window.location.href = '/contacts/' + {1} + 's/export/csv?' + qs;
+      celerpGo('/contacts/' + {1} + 's/export/csv?' + qs);
       return;
     }}
     if (action === 'delete'){{
@@ -904,7 +904,7 @@ async def build_contact_detail(contact: dict, docs: list, vocab: list, company: 
     }}).then(function(r){{ return r.json(); }}).then(function(d){{
       if (d.deleted !== undefined) {{
         sessionStorage.removeItem('celerp_contact_selection');
-        window.location.href = {2};
+        celerpGo({2});
       }} else {{
         celerpToast(d.detail || {3}, 'error');
       }}
@@ -1912,7 +1912,7 @@ def setup_routes(app):
                 hx_target="closest td", hx_swap="outerHTML", hx_trigger="change",
                 cls="cell-input cell-input--select", autofocus=True,
                 onkeydown=_esc_js,
-                onchange="if(this.value==='__add_new__'){window.location.href='/settings/contacts?tab=payment-terms';return false;}",
+                onchange="if(this.value==='__add_new__'){celerpGo('/settings/contacts?tab=payment-terms');return false;}",
             )
         elif field == "phone":
             return phone_input_td(

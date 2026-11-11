@@ -544,7 +544,7 @@ def _restarting_panel(lang: str, panel_id: str = "local-modules-panel") -> FT:
               return;
             }
             fetch('/', {cache: 'no-store'}).then(function (r) {
-              if (r.ok) { window.location = '/modules'; } else { setTimeout(poll, 1500); }
+              if (r.ok) { celerpGo('/modules'); } else { setTimeout(poll, 1500); }
             }).catch(function () { setTimeout(poll, 1500); });
           }, 2500);
         })();
@@ -663,7 +663,7 @@ def _buy_waiting_panel(url: str, slug: str, lang: str, n: int = 0):
         parts.append(Script(
             js(
                 '(function(){{var u={0};if(window.celerp&&window.celerp.openExternal){{window.celerp.openExternal(u);'
-                "}}else{{window.open(u,'_blank');}}}})();",
+                "}}else{{celerpOpen(u,'_blank');}}}})();",
                 url)))
         parts.append(Script("""
         (function () {

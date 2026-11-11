@@ -536,7 +536,7 @@ _MAPPING_JS = """
     var toggleRow = document.createElement('div');
     toggleRow.className = 'mapping-dd-toggle-matched';
     var toggleLink = document.createElement('a');
-    toggleLink.href = '#';
+    celerpSetUrl(toggleLink, 'href', '#');
     toggleLink.textContent = _MAP_I18N.show_matched;
     toggleRow.appendChild(toggleLink);
     panel.appendChild(toggleRow);

@@ -1562,10 +1562,10 @@ def _outcome_line(outcome: dict, lang: str = "en", *, message_id: str | None = N
     and a link to the record when one was created."""
     ok, text = _outcome_text(outcome, lang)
     title = outcome.get("title") or ""
-    link = safe_url(_record_link(outcome))
+    link = _record_link(outcome)
     parts = [f"{title}: {text}" if title else text]
     if link:
-        parts += [" ", A(t("ai.open_record", lang), href=link, cls="table-link")]
+        parts += [" ", A(t("ai.open_record", lang), href=safe_url(link), cls="table-link")]
     attrs = {}
     if message_id is not None:
         attrs = {"id": _action_dom_id(message_id, outcome.get("tool_call_id", "")), "hx_swap_oob": "true"}
@@ -1592,7 +1592,7 @@ def _outcome_swap(message_id: str, outcome: dict, view: str, lang: str = "en",
         return [_outcome_line(outcome, lang, message_id=message_id)]
     dom_id = _action_dom_id(message_id, outcome.get("tool_call_id", ""))
     ok, text = _outcome_text(outcome, lang)
-    link = safe_url(_record_link(outcome))
+    link = _record_link(outcome)
     if retryable or pending:
         cell = [Span(t("btn.retry", lang) if retryable else t("ai.action_proposal", lang),
                      cls="badge badge--proposal"),
@@ -1603,7 +1603,7 @@ def _outcome_swap(message_id: str, outcome: dict, view: str, lang: str = "en",
     elif ok:
         cell = [Span(t("th.applied", lang), cls="badge badge--active")]
         if link:
-            cell += [" ", A(t("ai.open_record", lang), href=link, cls="table-link")]
+            cell += [" ", A(t("ai.open_record", lang), href=safe_url(link), cls="table-link")]
         pick = Td(id=f"{dom_id}-pick", hx_swap_oob="true")
     else:
         cell = [Span(t("ai.action_failed_badge", lang), cls="badge badge--error"),
@@ -2486,7 +2486,7 @@ function _celerpAiUploadFormData(formData, fileNames, receiptEligible) {
             badge.classList.add('ai-quota--low');
         }
         if (remaining < 20 && link && data.topup_url) {
-            link.href = data.topup_url;
+            celerpSetUrl(link, 'href', data.topup_url);
             link.style.display = 'inline';
         }
     })

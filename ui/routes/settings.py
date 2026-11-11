@@ -2008,7 +2008,7 @@ def setup_routes(app):
         widget = Select(
             *options,
             Option(t("firm_view.all_companies", get_lang(request)), value=""),
-            onchange="location=this.value?'/switch-company/'+this.value:'/companies'",
+            onchange="celerpGo(this.value?'/switch-company/'+this.value:'/companies')",
             cls="company-switcher-select",
         )
         return html_response(widget)
@@ -3201,7 +3201,7 @@ async def _companies_list_response(token: str, lang: str, *notice) -> Response:
         content = Select(
             *[Option(c.get("company_name", ""), value=c.get("company_id", ""),
                      selected=c.get("is_current", False)) for c in companies],
-            onchange="location='/switch-company/'+this.value",
+            onchange="celerpGo('/switch-company/'+this.value)",
             cls="cell-input cell-input--select",
             style="max-width:320px;",
         )

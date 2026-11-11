@@ -686,7 +686,7 @@ def _mapper_fragment(
                 cls="mt-md",
             ),
             onkeydown=js(
-                "if(event.key==='Escape'){{window.location='/accounting/reconcile/' + {0}}}",
+                "if(event.key==='Escape'){{celerpGo('/accounting/reconcile/' + {0})}}",
                 session_id),
             hx_post=f"/accounting/reconcile/{session_id}/confirm-import",
             hx_target="#recon-workspace",

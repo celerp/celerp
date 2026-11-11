@@ -652,9 +652,9 @@ def _sales_view(data: dict, sort: str = "amount", sort_dir: str = "desc", curren
             v = float(val or 0)
             color_cls = " report-kpi__value--positive" if v >= 0 else " report-kpi__value--negative"
             return Td(Span(f"{v:.1f}%", cls=f"report-kpi__value{color_cls}"), cls=css)
-        link = safe_url(l.get("_link", ""))
+        link = l.get("_link", "")
         if key == "label" and link:
-            return Td(A(str(val) or EMPTY, href=link, cls="link"), cls=css)
+            return Td(A(str(val) or EMPTY, href=safe_url(link), cls="link"), cls=css)
         return Td(str(val) if val != "" else EMPTY, cls=css)
 
     def _row(l: dict) -> FT:

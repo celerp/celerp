@@ -38,6 +38,11 @@
     if (accepted('navigation', url)) window.location.assign(url);
   }
 
+  // Open a window only when the URL is safe.
+  function celerpOpen(url, target, features) {
+    if (accepted('navigation', url)) window.open(url, target, features);
+  }
+
   // An element with attributes and children: strings become text nodes, nodes are kept.
   function celerpNode(tag, attrs, children) {
     var el = document.createElement(tag);
@@ -68,6 +73,7 @@
   window.celerpSafeUrl = celerpSafeUrl;
   window.celerpSetUrl = celerpSetUrl;
   window.celerpGo = celerpGo;
+  window.celerpOpen = celerpOpen;
   window.celerpNode = celerpNode;
   window.celerpFragment = celerpFragment;
 })();

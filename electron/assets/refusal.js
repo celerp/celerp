@@ -90,7 +90,6 @@
 
     el("refusal-message").textContent = view.message;
     el("refusal-download").textContent = view.download;
-    el("refusal-download").href = view.downloadUrl;
     el("refusal-quit").textContent = view.quit;
     el("refusal-update").addEventListener("click", () => {
       if (action === "relaunch") {

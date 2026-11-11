@@ -2065,7 +2065,7 @@ def setup_routes(app):
         print_js = """
 function celerpPrintLabel(entityId, templateId) {
     // UI-layer GET route: no API auth needed, auto-triggers window.print()
-    window.open('/labels/print/' + encodeURIComponent(entityId) + '?template_id=' + encodeURIComponent(templateId));
+    celerpOpen('/labels/print/' + encodeURIComponent(entityId) + '?template_id=' + encodeURIComponent(templateId));
 }
 """
         items = [
@@ -2551,7 +2551,7 @@ function celerpPrintLabel(entityId, templateId) {
             add_new_url = "/settings/inventory?tab=locations"
             onchange_js = (
                 js(
-                    "if(this.value==='__add_new__'){{window.open({0},'_blank');this.value={1};"
+                    "if(this.value==='__add_new__'){{celerpOpen({0},'_blank');this.value={1};"
                     '}}',
                     str(add_new_url), current_val)
             )

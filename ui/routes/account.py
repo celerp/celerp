@@ -469,7 +469,7 @@ def _resume_parts(next_action: str) -> list:
                                         "location.reload();"))]
     if next_action == "ai":
         # The AI page renders its chat once the account exists; load it fresh.
-        return [_resume_guard_script(next_action, js("location.assign('/ai');"))]
+        return [_resume_guard_script(next_action, js("celerpGo('/ai');"))]
     if next_action in _RESUBMIT_FORMS:
         return [_resume_guard_script(next_action,
                                      js("var f=document.getElementById({0});"
@@ -573,7 +573,7 @@ def setup_routes(app):
         panel.children = (*panel.children, Script(
             js(
                 '(function(){{var u={0};if(window.celerp&&window.celerp.openExternal){{window.celerp.openExternal(u);'
-                "}}else{{window.open(u,'_blank');}}}})();",
+                "}}else{{celerpOpen(u,'_blank');}}}})();",
                 url)))
         return panel
 

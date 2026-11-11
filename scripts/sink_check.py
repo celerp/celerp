@@ -67,7 +67,7 @@ THE INVARIANT: the raw primitives are named only in the encoder module.
 There is no allowlist. The exemption is the encoder module, one file per language:
 ui/components/encode.py (raw_html, js, js_value, safe_url, inert_media_type, to_markup,
 html_response, library_markup; nothing in it is reported) and ui/static/celerp-dom.js
-(celerpNode, celerpSetUrl, celerpGo; its JS-HTML, JS-NAV and JS-COMPUTED hits are not
+(celerpNode, celerpSetUrl, celerpGo, celerpOpen; its JS-HTML, JS-NAV and JS-COMPUTED hits are not
 reported). hole_positions() and the JavaScript token pattern are loaded from encode.py, so
 raw_html and js at run time and this check share one position parser.
 """
@@ -92,7 +92,7 @@ HOLE, EVENT_ATTR_RE, URL_ATTRS, HTMX_JS_ATTRS, TOKEN_RE, hole_positions = (
 
 FRAMEWORK_PREFIXES = ("fasthtml", "fastcore", "starlette", "fastapi")
 ENCODER_PATH = "ui/components/encode.py"
-ADMISSION_JS = "ui/static/celerp-dom.js"  # celerpNode, celerpSetUrl, celerpGo
+ADMISSION_JS = "ui/static/celerp-dom.js"  # celerpNode, celerpSetUrl, celerpGo, celerpOpen
 RAW_PRIMS = {"NotStr", "Safe", "Markup", "__html__", "to_xml", "to_html", "HTMLResponse", "Js"}
 RAW_FRAMEWORK_ONLY = {"raw"}  # an ordinary word: refused only when imported from a framework
 # A name as a string feeds getattr laundering. Compared against or listed in a set literal

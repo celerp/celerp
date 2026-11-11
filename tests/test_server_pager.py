@@ -59,7 +59,7 @@ def test_navigation_modes():
     js = _html(0, 100, 250, nav_js="goTo")
     assert 'window["goTo"](this.getAttribute(' in js and "hx-get" not in js
     plain = _html(0, 100, 250)
-    assert "hx-get" not in plain and "window.location=this.value" in plain
+    assert "hx-get" not in plain and "celerpGo(this.value)" in plain
 
 
 def test_past_the_end_marks_no_page_and_counts_no_rows():

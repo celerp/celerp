@@ -2532,7 +2532,7 @@
     "default_modules/celerp-labels/tests/test_labels.py::TestColumnManagerUi::test_reset_button_clears_all_three_ls_keys": 0.004,
     "default_modules/celerp-labels/tests/test_labels.py::TestColumnManagerUi::test_reset_button_rendered_in_column_manager": 0.004,
     "default_modules/celerp-labels/tests/test_labels.py::TestColumnManagerUi::test_resize_widths_persisted_to_localstorage": 0.004,
-    "default_modules/celerp-labels/tests/test_labels.py::TestLabelPrintJsFlow::test_print_js_uses_window_open_not_fetch": 0.005,
+    "default_modules/celerp-labels/tests/test_labels.py::TestLabelPrintJsFlow::test_print_js_uses_celerp_open_not_fetch": 0.005,
     "default_modules/celerp-labels/tests/test_labels.py::TestLabelsUiRoutes::test_setup_ui_routes_exists": 0.003,
     "default_modules/celerp-labels/tests/test_labels.py::test_a_third_party_label_source_with_only_the_required_keys_gets_its_template": 0.064,
     "default_modules/celerp-labels/tests/test_labels.py::test_attribute_discovery_skips_builtin_measurements": 0.003,

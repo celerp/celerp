@@ -610,11 +610,11 @@ async def _opening_page(request: Request, mode: WizardMode):
           var stage = document.getElementById('opening-stage'), bar = document.getElementById('opening-bar');
           setTimeout(function poll() {{
             fetch({0}, {{cache: 'no-store'}}).then(function (r) {{
-              if (r.status === 404) {{ window.location = {1}; return null; }}
+              if (r.status === 404) {{ celerpGo({1}); return null; }}
               return r.ok ? r.json() : null;
             }}).then(function (s) {{
               if (!s) {{ setTimeout(poll, 2000); return; }}
-              if (s.state !== 'running') {{ window.location = {1}; return; }}
+              if (s.state !== 'running') {{ celerpGo({1}); return; }}
               stage.textContent = s.text;
               bar.style.width = (s.percent || 0) + '%';
               setTimeout(poll, 1000);
@@ -783,7 +783,7 @@ async def _restarting_page(request: Request, mode: WizardMode, message: str | No
           setTimeout(function poll() {{
             if (tries++ >= MAX) {{ document.getElementById('restart-timeout').style.display = ''; return; }}
             fetch({0}, {{cache: 'no-store'}}).then(function (r) {{
-              if (r.ok && r.headers.get('X-Celerp-Staged')) {{ window.location = {0}; }}
+              if (r.ok && r.headers.get('X-Celerp-Staged')) {{ celerpGo({0}); }}
               else {{ setTimeout(poll, 1500); }}
             }}).catch(function () {{ setTimeout(poll, 1500); }});
           }}, 2500);

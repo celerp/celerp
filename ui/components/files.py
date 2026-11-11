@@ -333,7 +333,7 @@ def files_section(
         desc = f.get("description") or ""
         uploaded_at = _fmt_date(f.get("uploaded_at"))
         linked_ref = f.get("linked_ref") or ""
-        linked_url = safe_url(f.get("linked_url") or "")
+        linked_url = f.get("linked_url") or ""
         # Files from a foreign entity carry their own URL overrides.
         file_download_url = safe_url(f.get("_download_url") or f"{base_url}/{fid}/download")
         # Action base: tag/describe/hero/delete target (defaults to this entity's base_url)
@@ -421,7 +421,7 @@ def files_section(
         if has_linked:
             if linked_ref:
                 linked_content = (
-                    A(linked_ref, href=linked_url, cls="doc-ref-link")
+                    A(linked_ref, href=safe_url(linked_url), cls="doc-ref-link")
                     if linked_url else
                     Span(linked_ref, cls="badge badge--muted")
                 )

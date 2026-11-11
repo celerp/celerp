@@ -387,7 +387,7 @@ class TestPerPageSelector:
         html = self._size_select(to_xml(pagination(3, 400, 50, "/docs", "q=&type=invoice&sort=date&dir=desc")))
         assert "inventory-content" not in html, "still hardcodes the inventory swap target"
         assert "hx-get" not in html and "hx-target" not in html
-        assert "window.location=this.value" in html
+        assert "celerpGo(this.value)" in html
         values = re.findall(r'value="([^"]*)"', html)
         assert "/docs?page=1&amp;per_page=100&amp;q=&amp;type=invoice&amp;sort=date&amp;dir=desc" in values
         assert all("page=1&amp;" in v and "type=invoice" in v for v in values)

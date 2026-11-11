@@ -454,8 +454,8 @@ async def test_labels_print_single_ui_route_reachable(client: AsyncClient):
 class TestLabelPrintJsFlow:
     """Verify the JS print helper uses the UI GET route (no fetch/blob)."""
 
-    def test_print_js_uses_window_open_not_fetch(self):
-        """celerpPrintLabel must use window.open() pointing to /labels/print/."""
+    def test_print_js_uses_celerp_open_not_fetch(self):
+        """celerpPrintLabel must open /labels/print/ in a window through celerpOpen()."""
         import sys, os
         sys.path.insert(0, _REPO_ROOT)
         from fasthtml.common import to_xml
@@ -466,8 +466,8 @@ class TestLabelPrintJsFlow:
         import inspect
         from ui.routes import inventory
         src = inspect.getsource(inventory)
-        assert "window.open('/labels/print/" in src, (
-            "celerpPrintLabel must use window.open('/labels/print/...') not fetch+blob; "
+        assert "celerpOpen('/labels/print/" in src, (
+            "celerpPrintLabel must use celerpOpen('/labels/print/...') not fetch+blob; "
             "the API /api/labels/print route is not available on the UI layer"
         )
         assert "fetch('/api/labels/print/" not in src, (

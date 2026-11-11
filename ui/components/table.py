@@ -233,7 +233,7 @@ BULK_TOOLBAR_JS = """
     var t=table(bar);if(!t||!a)return;var ids=checkedIds(t);if(!ids.length)return;
     if(a.confirm){var q=a.confirm.replace('{n}',ids.length);a=Object.assign({},a,{confirm:null});
       celerpConfirm(q).then(function(yes){if(yes)runAction(bar,a);});return;}
-    if(a.method==='open'){window.open(a.url+(a.url.indexOf('?')>=0?'&':'?')+'ids='+encodeURIComponent(ids.join(',')),'_blank');return;}
+    if(a.method==='open'){celerpOpen(a.url+(a.url.indexOf('?')>=0?'&':'?')+'ids='+encodeURIComponent(ids.join(',')),'_blank');return;}
     var form=document.createElement('form');
     ids.forEach(function(id){var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;form.appendChild(inp);});
     // A table that carries its render's operation key sends it, so an action sent again
@@ -1247,7 +1247,7 @@ def _display_val(value, cell_type: str, currency: str | None = None,
     linking to the document.
     domain: for status cells only - the enum domain (see display_enum) used to
             translate the raw status value's label; omit when unknown."""
-    s = safe_url(str(value).strip()) if value is not None else ""
+    s = str(value).strip() if value is not None else ""
     if cell_type == "bool":
         is_true = str(value).strip().lower() in ("true", "1", "yes")
         return Span(t("settings.yes") if is_true else t("settings.no"),
@@ -1280,7 +1280,7 @@ def _display_val(value, cell_type: str, currency: str | None = None,
         return Span(*[Span(t, cls="tag-pill tag-pill--sm") for tag in tags]) if tags else empty_mark()
     if cell_type == "image":
         if s:
-            return Img(src=s, cls="cell-thumbnail", loading="lazy", alt="")
+            return Img(src=safe_url(s), cls="cell-thumbnail", loading="lazy", alt="")
         return Span("＋", cls="cell-image-empty", title=t("table.drop_image_upload_hint"))
     if cell_type == "textarea":
         # Multi-line text: preserve line breaks on display (CSS white-space: pre-wrap).
@@ -1746,7 +1746,7 @@ def data_table(
     document.querySelectorAll('a[href*="/inventory/export/csv"]').forEach(function(a) {{
       var url = new URL(a.getAttribute('href'), window.location.origin);
       url.searchParams.set('cols', keys.join(','));
-      a.setAttribute('href', url.pathname + url.search);
+      celerpSetUrl(a, 'href', url.pathname + url.search);
     }});
   }};
 
@@ -2709,7 +2709,7 @@ def server_pager(offset: int, limit: int, total: int, href, *,
     elif hx_target:
         onchange = js("htmx.ajax('GET',this.value,{{target:{0},select:{0},swap:'outerHTML'}})", hx_target)
     else:
-        onchange = js("window.location=this.value")
+        onchange = js("celerpGo(this.value)")
     sizes = sorted(set(page_sizes) | {limit})
     size_select = Select(
         *[Option(t("table.per_page_option", n=n), value=href(0, n), selected=(n == limit)) for n in sizes],

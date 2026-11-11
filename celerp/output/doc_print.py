@@ -58,11 +58,12 @@ def import_accept_url(page: str) -> str:
 
 
 # On a share page the address the recipient is actually reading is the one to
-# import from; behind the relay the server cannot know it, so the page fills it in.
+# import from; behind the relay the server cannot know it, so the page puts it in the
+# link's query and keeps the accept address the server wrote.
 _IMPORT_FROM_PAGE_JS = (
     "(function(){var a=document.getElementById('dp-import');"
-    "if(a&&/^https?:$/.test(location.protocol)){a.href='" + IMPORT_ACCEPT_URL
-    + "?link='+encodeURIComponent(location.origin+location.pathname);}})();"
+    "if(a&&/^https?:$/.test(location.protocol)){"
+    "a.search='?link='+encodeURIComponent(location.origin+location.pathname);}})();"
 )
 
 _BRAND_URL = safe_url(_brand_url("doc-print"))

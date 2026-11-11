@@ -13,7 +13,6 @@
 // Pure apart from the injected runner, dialog, shell and callbacks, so it is unit-testable
 // without Electron, like restart.js.
 
-const DOWNLOAD_URL = "https://celerp.com/download";
 // `celerp compatibility` exits with this when this copy must not open the database.
 const REFUSED_EXIT = 3;
 
@@ -67,7 +66,6 @@ function refusalView(decision, t, windows) {
     update: t("btn.update_celerp"),
     restart: t("btn.restart_to_install"),
     download: t("btn.download_installer"),
-    downloadUrl: DOWNLOAD_URL,
     quit: t("btn.quit"),
     checking: t("shell.checking"),
     downloading: t("shell.js_downloading_pct"),
@@ -121,5 +119,5 @@ async function mayOpenData({ check, t, windows, stop, offerUpdate, dialog, shell
 }
 
 module.exports = {
-  DOWNLOAD_URL, HELP_URL, REFUSED_EXIT, UPDATE_FAILURES, compatibilityArgs, readDecision, refusalView, invalidRecordDialog, mayOpenData,
+  HELP_URL, REFUSED_EXIT, UPDATE_FAILURES, compatibilityArgs, readDecision, refusalView, invalidRecordDialog, mayOpenData,
 };
