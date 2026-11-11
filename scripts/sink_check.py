@@ -24,7 +24,9 @@ THE INVARIANT: the raw primitives are named only in the encoder module.
                do_escape other than the constant True, a def __html__; raw_html(...) or
                js(...) whose template is not a constant; a lowercase tag builder (ft, ft_hx,
                ft_html) with a computed tag; a computed attribute NAME (**{k: v}, a mapping
-               child with a computed key, el.attrs[k] = v); a bytes child (.encode(),
+               child with a computed key, el.attrs[k] = v, a mapping an in-repo helper
+               returns into **helper(...), which is checked attribute by attribute like
+               an inline mapping); a bytes child (.encode(),
                bytes(), bytearray()); a mapping child read from a mapping parameter; a
                non-constant srcdoc; a returned string that builds markup (a "<tag" literal
                with a hole), which FastHTML would send as an HTML response
@@ -116,6 +118,7 @@ MARKUP_RE = re.compile(rf"<(/?(?:{HTML_TAGS}))[\s>/]", re.I)
 UI_ROOTS = ("ui/", "default_modules/")  # where in-repo components wrap elements; core has none
 LOCAL_TOPS: set[str] = set()  # top-level packages of the scanned repo
 MODULE_CONSTS: dict[str, dict[str, ast.AST]] = {}
+MODULE_CLASSES: dict[str, set[str]] = {}  # value classes per module (_value_class)
 
 
 def _inline_consts(table: dict[str, ast.AST]) -> dict[str, ast.AST]:
@@ -343,6 +346,14 @@ MAPPING_ANN = {"dict", "Dict", "Mapping", "MutableMapping"}
 DATA_BASES = {"NamedTuple", "TypedDict", "Enum", "StrEnum", "IntEnum"}
 
 
+def _value_class(st) -> bool:
+    """A class whose instances are values, never elements: a dataclass or one on data bases only."""
+    names = lambda nodes: {n.id if isinstance(n, ast.Name) else getattr(n, "attr", None) for n in nodes}
+    return isinstance(st, ast.ClassDef) and (
+        names(st.bases) <= DATA_BASES or "dataclass" in names(
+            d.func if isinstance(d, ast.Call) else d for d in st.decorator_list))
+
+
 class PyScan(ast.NodeVisitor):
     def __init__(self, path, src):
         self.path, self.src = path, src
@@ -352,8 +363,9 @@ class PyScan(ast.NodeVisitor):
         self.imported: dict[str, tuple[str, str]] = {}
         self.funcs = MODULE_FUNCS.get(module_name(path), {})
         self.locals: list[dict[str, ast.AST]] = []
+        self.nested: list[dict[str, ast.AST]] = []  # defs nested in each enclosing function
         self.mapping_params: list[set[str]] = []
-        self.classes: set[str] = set()  # module classes on a data base only: values, not elements
+        self.classes: set[str] = set()  # value classes (_value_class): calls build values, not elements
 
     def snip(self, node):
         return (ast.get_source_segment(self.src, node) or "")[:140]
@@ -397,7 +409,7 @@ class PyScan(ast.NodeVisitor):
         for st in node.body:
             if isinstance(st, ast.Assign) and len(st.targets) == 1 and isinstance(st.targets[0], ast.Name):
                 self.consts[st.targets[0].id] = st.value
-            elif isinstance(st, ast.ClassDef) and all(self.leaf(b) in DATA_BASES for b in st.bases):
+            elif _value_class(st):
                 self.classes.add(st.name)
         self.generic_visit(node)
 
@@ -453,12 +465,14 @@ class PyScan(ast.NodeVisitor):
         for a in args:
             counts[a.arg] = 2  # a parameter is never a constant
         self.locals.append({k: v for k, v in found.items() if counts.get(k) == 1})
+        self.nested.append({st.name: st for st in node.body if isinstance(st, (ast.FunctionDef, ast.AsyncFunctionDef))})
         self.mapping_params.append({a.arg for a in args if a.annotation is not None and (
             (isinstance(a.annotation, ast.Name) and a.annotation.id in MAPPING_ANN) or
             (isinstance(a.annotation, ast.Subscript) and isinstance(a.annotation.value, ast.Name)
              and a.annotation.value.id in MAPPING_ANN))})
         self.generic_visit(node)
         self.locals.pop()
+        self.nested.pop()
         self.mapping_params.pop()
 
     visit_AsyncFunctionDef = visit_FunctionDef
@@ -612,7 +626,8 @@ class PyScan(ast.NodeVisitor):
         a capitalized class imported from any other package (Request, BaseModel) is not one."""
         if not name or not name[0].isupper() or name in RESPONSES:
             return False
-        if isinstance(func, ast.Name) and func.id in self.classes:
+        if isinstance(func, ast.Name) and (func.id in self.classes or (
+                func.id in self.imported and self.imported[func.id][1] in MODULE_CLASSES.get(self.imported[func.id][0], ()))):
             return False
         q = self.qual(func)
         if q and q.startswith(FRAMEWORK_PREFIXES):
@@ -659,8 +674,32 @@ class PyScan(ast.NodeVisitor):
                 elif _call_name(value) == "dict" and not value.args:
                     for k in value.keywords:
                         self._check_attr(k.arg, k.value, tag)
+                elif (fn := self._callee(value)) is not None:
+                    self._check_returned_attrs(fn)
             else:
                 self._check_attr(kw.arg, kw.value, tag)
+
+    def _callee(self, node):
+        """The in-repo function a plain-name call resolves to: nested in an enclosing def, module, or imported."""
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+            return None
+        name = node.func.id
+        for scope in reversed(self.nested):
+            if name in scope:
+                return scope[name]
+        if name in self.funcs:
+            return self.funcs[name]
+        if name in self.imported:
+            return MODULE_FUNCS.get(self.imported[name][0], {}).get(self.imported[name][1])
+        return None
+
+    def _check_returned_attrs(self, fn):
+        """**helper(...): every mapping the helper returns becomes attributes, so check each one."""
+        for r in ast.walk(fn):
+            if isinstance(r, ast.Return) and r.value is not None:
+                for v in ([r.value.body, r.value.orelse] if isinstance(r.value, ast.IfExp) else [r.value]):
+                    if isinstance(v, ast.Dict):
+                        self._check_attr_dict(v)
 
     def _from_mapping_param(self, node, params):
         """row["meta"] or row.get("meta") where row is a parameter declared as a mapping:
@@ -672,6 +711,10 @@ class PyScan(ast.NodeVisitor):
     def _check_attr_dict(self, node):
         for k, v in zip(node.keys, node.values):
             if k is None:  # {**other}
+                continue
+            if isinstance(k, ast.IfExp) and _key(k.body) is not None and _key(k.orelse) is not None:
+                self._check_attr(_key(k.body), v)
+                self._check_attr(_key(k.orelse), v)
                 continue
             key = _key(k)
             if key is None:
@@ -940,6 +983,7 @@ def _index(root: Path, files: list[str]) -> None:
             tg.id for sub in ast.walk(tree) if isinstance(sub, ast.Assign)
             and _framework_import(sub.value)
             for tg in sub.targets if isinstance(tg, ast.Name)}
+        MODULE_CLASSES[module_name(f)] = {st.name for st in tree.body if _value_class(st)}
         MODULE_FUNCS[module_name(f)] = {
             st.name: st for st in tree.body if isinstance(st, ast.FunctionDef)}
 

@@ -1,3 +1,5 @@
 PY-JSHOLE | ui/composition.py:5
 PY-JSHOLE | ui/composition.py:7
+PY-JSHOLE | ui/composition.py:9
+PY-JSHOLE | ui/composition.py:12
 PY-CSSHOLE | ui/styles.py:6
