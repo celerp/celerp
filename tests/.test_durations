@@ -28800,5 +28800,8 @@
     "tests/test_shard_durations.py::test_time_refuses_a_failing_or_unmeasured_test[measured0-1-these tests must pass before they are timed]": 0.002334209915716201,
     "tests/test_shard_durations.py::test_time_refuses_a_failing_or_unmeasured_test[measured1-0-pytest-split measured none of: t.py::a]": 0.002285323978867382,
     "tests/test_shard_durations.py::test_time_returns_what_pytest_split_measured_for_each_test": 0.0021906300098635256,
-    "tests/test_shard_durations.py::test_tooling_unlike_ci_lists_a_missing_or_unmet_requirement_and_skips_one_not_for_here": 0.0035594229120761156
+    "tests/test_shard_durations.py::test_tooling_unlike_ci_lists_a_missing_or_unmet_requirement_and_skips_one_not_for_here": 0.0035594229120761156,
+    "tests/test_connectors_proxy.py::test_held_number_line_opens_the_record_holding_it[doc:WOO-1001-/docs/doc:WOO-1001]": 0.12551372789312154,
+    "tests/test_connectors_proxy.py::test_held_number_line_opens_the_record_holding_it[list:WOO-1001-/lists/list:WOO-1001]": 0.0027356320060789585,
+    "tests/test_connectors_proxy.py::test_held_number_line_stored_with_a_holder_kind_still_renders": 0.0024438740219920874
 }

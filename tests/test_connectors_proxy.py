@@ -659,6 +659,36 @@ def test_reconciled_attention_entries_sit_in_a_collapsed_section():
     assert "<details open" not in html
 
 
+def _held_entry(holder_id: str, **extra) -> dict:
+    return {"id": "9", "label": "Order 1001", "reason": "documents.err_woo_number_held", "signature": "sig-9",
+            "number_held": {"number": "WOO-1001", "holder": "WOO-1001", "holder_id": holder_id,
+                            "next_number": "WOO-1001-2", **extra}}
+
+
+@pytest.mark.parametrize("holder_id, href", [
+    ("doc:WOO-1001", "/docs/doc:WOO-1001"),
+    ("list:WOO-1001", "/lists/list:WOO-1001"),
+])
+def test_held_number_line_opens_the_record_holding_it(holder_id, href):
+    """The Open link goes to the document or list that holds the order's number."""
+    from fasthtml.common import to_xml
+    from ui.routes.settings_connectors import _attention_item
+
+    html = to_xml(_attention_item("woocommerce", _held_entry(holder_id), "en"))
+    assert f'href="{href}"' in html
+    assert "Open WOO-1001" in html
+
+
+def test_held_number_line_stored_with_a_holder_kind_still_renders():
+    """An entry stored before the holder kind was dropped renders the same way; the extra key is ignored."""
+    from fasthtml.common import to_xml
+    from ui.routes.settings_connectors import _attention_item
+
+    html = to_xml(_attention_item("woocommerce", _held_entry("doc:WOO-1001", holder_kind="list"), "en"))
+    assert 'href="/docs/doc:WOO-1001"' in html
+    assert "attention/9/import-next" in html
+
+
 @pytest.mark.asyncio
 async def test_attention_read_failure_shows_no_list():
     from ui.routes import settings_connectors as sc

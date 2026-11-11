@@ -319,8 +319,7 @@ async def _woocommerce_order_number(session, cid, order: dict, entity_id: str, e
     raise WooCommerceNumberHeld(
         catalog_refusal("documents.err_woo_number_held", number=number, holder=holder.shown, next=next_number),
         woocommerce_reconciliation_signature(order),
-        {"number": number, "holder": holder.shown, "holder_kind": holder.kind,
-         "holder_id": holder.entity_id, "next_number": next_number},
+        {"number": number, "holder": holder.shown, "holder_id": holder.entity_id, "next_number": next_number},
     )
 
 
