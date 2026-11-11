@@ -19,6 +19,7 @@ import httpx
 
 import json
 
+from celerp.accounting_roles import refusal_detail
 from celerp.connectors.http import RateLimitedClient, raise_for_store_status
 from celerp.services.outbound_url import validate_public_base_url
 from celerp.connectors.util import money
@@ -817,7 +818,7 @@ class WooCommerceConnector(ConnectorBase):
                 pending[order_id] = {
                     "id": order_id,
                     "label": f"Order {order.get('number') or order_id}",
-                    "reason": str(exc),
+                    "reason": refusal_detail(exc),
                 }
                 # A change only a person can reconcile carries the signature
                 # they mark reconciled; other reasons clear once data is fixed.

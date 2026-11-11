@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
@@ -122,7 +123,7 @@ async def test_woocommerce_order_creates_doc(use_test_session):
 
 
 @pytest.mark.asyncio
-async def test_woocommerce_order_with_a_held_number_needs_attention(use_test_session):
+async def test_woocommerce_order_with_a_held_number_needs_attention(use_test_session, monkeypatch):
     """WOO- plus the order number is a number Celerp composes, so it is checked like every number
     Celerp issues: an order whose number another record holds lands on the attention list with
     the translated refusal naming the number, and the other orders sync under the number a
@@ -147,12 +148,15 @@ async def test_woocommerce_order_with_a_held_number_needs_attention(use_test_ses
     await session.commit()
 
     def order(oid: int, number: str) -> dict:
-        return {"id": oid, "number": number, "status": "completed", "date_paid": "2024-06-01T10:00:00",
+        # A pending order stays a draft, so it keeps the number the upsert stored (finalizing an
+        # invoice claims its INV number).
+        return {"id": oid, "number": number, "status": "pending",
                 "line_items": [{"name": "Widget", "quantity": 1, "price": "5.00", "total": "5.00"}],
                 "total": "5.00"}
 
     ctx = ConnectorContext(company_id=str(cid), access_token="ck_testkey:cs_testsecret",
                            store_handle="https://store.example.com")
+    monkeypatch.setattr("celerp.connectors.woocommerce.validate_public_base_url", AsyncMock(return_value=None))
     with respx.mock:
         respx.get("https://store.example.com/wp-json/wc/v3/orders").mock(return_value=httpx.Response(
             200, json=[order(61, "1001"), order(62, "1002 "), order(63, "1003")]))
