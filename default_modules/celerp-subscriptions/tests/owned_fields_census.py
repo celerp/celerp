@@ -18,10 +18,11 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass, field
 from pathlib import Path
+from shipped_sources import PREMIUM_ROOT, SHIPPED_ROOTS
 
 ROOT = Path(__file__).resolve().parents[3]
 PACKAGE = ROOT / "default_modules" / "celerp-subscriptions" / "celerp_subscriptions"
-SOURCE_TOPS = ("celerp", "default_modules", "premium_modules")
+SOURCE_TOPS = (*SHIPPED_ROOTS, PREMIUM_ROOT)
 SINK = "write_agreement"
 DOC_WRITE_EVENTS = {"doc.created", "doc.updated"}
 # What a writing function runs that keeps owned and removed fields out of a caller's data:

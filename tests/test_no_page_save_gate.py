@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from shipped_sources import MODULE_ROOT, UI_ROOT
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -22,7 +23,7 @@ GATE_SYMBOLS = (
 
 
 def _sources():
-    for base in ("ui", "default_modules"):
+    for base in (UI_ROOT, MODULE_ROOT):
         for path in (ROOT / base).rglob("*"):
             if path.suffix in (".py", ".js", ".json") and path.is_file() and "/tests/" not in path.as_posix():
                 yield path

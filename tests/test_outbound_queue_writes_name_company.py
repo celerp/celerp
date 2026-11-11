@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from shipped_sources import SHIPPED_ROOTS
 
 ROOT = Path(__file__).resolve().parents[1]
 # A where clause names the company when it holds the column itself or one of the
@@ -42,7 +43,7 @@ def unscoped_queue_writes(source: str) -> list[int]:
 
 
 def _sources():
-    for base in ("celerp", "default_modules"):
+    for base in SHIPPED_ROOTS:
         for path in sorted((ROOT / base).rglob("*.py")):
             if "/tests/" in str(path) or "/migrations/" in str(path):
                 continue

@@ -44,6 +44,7 @@ import ast
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from shipped_sources import APP_ROOTS, MODULE_ROOT, PREMIUM_ROOT
 
 ROOT = Path(__file__).resolve().parents[3]
 PACKAGE = ROOT / "default_modules" / "celerp-subscriptions" / "celerp_subscriptions"
@@ -476,7 +477,7 @@ class DeliverDoor:
 
 def _code_files() -> list[Path]:
     files = []
-    for top in ("celerp", "ui", "default_modules", "premium_modules"):
+    for top in (*APP_ROOTS, PREMIUM_ROOT):
         files += [p for p in (ROOT / top).rglob("*.py") if "tests" not in p.parts]
     return sorted(files)
 
@@ -562,7 +563,7 @@ class BadgeRender:
 def badge_renders() -> list[BadgeRender]:
     """Every doc_detail_badges render a bundled or premium module's manifest names."""
     rows = []
-    for top in ("default_modules", "premium_modules"):
+    for top in (MODULE_ROOT, PREMIUM_ROOT):
         for manifest in sorted((ROOT / top).glob("*/__init__.py")):
             text = manifest.read_text(encoding="utf-8")
             if '"doc_detail_badges"' not in text:

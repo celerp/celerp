@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from shipped_sources import SHIPPED_ROOTS
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -51,7 +52,7 @@ def account_row_locks_outside_the_chart_lock(root: Path) -> list[str]:
     """Each ``with_for_update`` on an Account select that is FOR SHARE, or that its function
     does not precede with the company lock."""
     wrong = []
-    for path in sorted([*(root / "celerp").rglob("*.py"), *(root / "default_modules").rglob("*.py")]):
+    for path in sorted([p for r in SHIPPED_ROOTS for p in (root / r).rglob("*.py")]):
         rel = path.relative_to(root).as_posix()
         if "/tests/" in rel or "/migrations/" in rel:
             continue
@@ -100,7 +101,7 @@ def account_writes_outside_the_chart_lock(root: Path) -> list[str]:
     ``-> Account``, outside such a builder) and each ``insert``/``update``/``delete`` of
     ``Account`` that its function does not precede with the company lock."""
     wrong = []
-    for path in sorted([*(root / "celerp").rglob("*.py"), *(root / "default_modules").rglob("*.py")]):
+    for path in sorted([p for r in SHIPPED_ROOTS for p in (root / r).rglob("*.py")]):
         rel = path.relative_to(root).as_posix()
         if "/tests/" in rel or "/migrations/" in rel:
             continue

@@ -23,6 +23,7 @@ from celerp_docs.doc_money import draft_route, refuse_unset_line_tax, unreadable
 from test_receipt_accounting import _doc, _finalize, _receive, _return
 from test_supplier_return_settles_bill import _restated_bill
 from ui.i18n import t, refusal_text
+from shipped_sources import APP_ROOTS
 
 DATE = "2026-01-15"
 
@@ -239,6 +240,6 @@ def test_only_the_selector_words_a_tax_refusal_past_draft():
 
     root = Path(__file__).resolve().parent.parent
     keys = ('"documents.err_line_tax_unset_issued"', '"documents.err_tax_unreadable_issued"', '"documents.tax_route_')
-    users = sorted(str(p.relative_to(root)) for top in ("celerp", "default_modules", "ui")
+    users = sorted(str(p.relative_to(root)) for top in APP_ROOTS
                    for p in (root / top).rglob("*.py") if any(k in p.read_text() for k in keys))
     assert users == ["default_modules/celerp-docs/celerp_docs/doc_money.py"], users

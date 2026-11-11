@@ -17,6 +17,7 @@ from sqlalchemy import select
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 from test_helpers import company_auth
+from shipped_sources import APP_ROOTS
 
 _KEPT = "11111111-1111-4111-8111-111111111111"
 
@@ -109,7 +110,7 @@ def test_no_action_gives_a_stored_line_an_id_of_its_own():
     from pathlib import Path
     root = Path(__file__).resolve().parents[1]
     fallback = re.compile(r"""\.get\(\s*["']line_id["']\s*\)\s*or\s*(str\(\s*)?uuid""")
-    found = [f"{p.relative_to(root)}:{n}" for base in ("celerp", "ui", "default_modules")
+    found = [f"{p.relative_to(root)}:{n}" for base in APP_ROOTS
              for p in (root / base).rglob("*.py") if "tests" not in p.parts
              for n, text in enumerate(p.read_text(encoding="utf-8").splitlines(), 1) if fallback.search(text)]
     assert found == []

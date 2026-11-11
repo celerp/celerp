@@ -12,6 +12,7 @@ import pytest
 from fastapi import HTTPException
 
 from ui.i18n import refusal_text, set_lang, t
+from shipped_sources import APP_ROOTS
 
 _ROOT = Path(__file__).resolve().parents[1]
 _LOCALES = _ROOT / "ui" / "locales"
@@ -177,7 +178,7 @@ def test_every_literal_translation_key_exists_in_a_catalog():
     for module_en in (_ROOT / "default_modules").glob("*/*/locales/en.json"):
         known |= set(json.loads(module_en.read_text(encoding="utf-8")))
     missing = []
-    for root in ("ui", "celerp", "default_modules"):
+    for root in APP_ROOTS:
         for path in (_ROOT / root).rglob("*.py"):
             if "tests" in path.parts:
                 continue

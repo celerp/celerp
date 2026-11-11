@@ -28,6 +28,7 @@ from test_payments_stripe import BOOKS, PAID, _company_id, _fee_notices, _payabl
 from test_reconciliation_history import (
     OPENING, admin, bank, complete, completed, deposit, legacy_session, match, post_je, start,
 )
+from shipped_sources import APP_ROOTS
 
 pytestmark = pytest.mark.asyncio
 
@@ -513,7 +514,7 @@ async def test_peer_journal_refused_by_reconciliation_reports_the_reason(monkeyp
 async def test_every_journal_change_goes_through_emit_event():
     """A journal entry changes only through emit_event, so the check sees every change.
     The one other direct projection apply writes received documents, never journals."""
-    sources = [p for d in ("celerp", "default_modules", "ui") for p in (ROOT / d).rglob("*.py")
+    sources = [p for d in APP_ROOTS for p in (ROOT / d).rglob("*.py")
                if "tests" not in p.relative_to(ROOT).parts]
     constructs = sorted(str(p.relative_to(ROOT)) for p in sources if "LedgerEntry(" in p.read_text(errors="ignore")
                         and "class LedgerEntry(" not in p.read_text(errors="ignore"))

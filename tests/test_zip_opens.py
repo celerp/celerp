@@ -16,6 +16,7 @@ import pytest
 
 from company_backup_support import repacked
 from ui.i18n import refusal_text, t
+from shipped_sources import SHIPPED_ROOTS
 
 ROOT = Path(__file__).resolve().parent.parent
 ATTACHMENTS = "default_modules/celerp-inventory/celerp_inventory/routes_attachments.py"
@@ -77,7 +78,7 @@ def _zip_opens() -> dict[str, list[tuple[ast.AST, list[ast.AST]]]]:
         for child in ast.iter_child_nodes(node):
             visit(child, path, [*ancestors, node])
 
-    for file in [*(ROOT / "celerp").rglob("*.py"), *(ROOT / "default_modules").rglob("*.py")]:
+    for file in [p for r in SHIPPED_ROOTS for p in (ROOT / r).rglob("*.py")]:
         visit(ast.parse(file.read_text(encoding="utf-8")), file.relative_to(ROOT).as_posix(), [])
     return found
 
@@ -255,7 +256,7 @@ def _zip_reads() -> dict[str, list[ast.Call]]:
     """Each function reading a file out of a zip in the app, with the calls doing it. A write
     (`open(name, "w")`) is not a read."""
     found: dict[str, list] = {}
-    for file in [*(ROOT / "celerp").rglob("*.py"), *(ROOT / "default_modules").rglob("*.py")]:
+    for file in [p for r in SHIPPED_ROOTS for p in (ROOT / r).rglob("*.py")]:
         tree = ast.parse(file.read_text(encoding="utf-8"))
         bound = _zip_bound(tree)
         for func in ast.walk(tree):
@@ -275,7 +276,7 @@ def test_every_file_the_app_reads_out_of_a_zip_goes_through_the_member_check():
     itself, is checked file by file before it is handed over."""
     assert set(_zip_reads()) == {MEMBER_CHECK}
     loads = [f"{f.relative_to(ROOT).as_posix()}:{func.name}"
-             for f in [*(ROOT / "celerp").rglob("*.py"), *(ROOT / "default_modules").rglob("*.py")]
+             for f in [p for r in SHIPPED_ROOTS for p in (ROOT / r).rglob("*.py")]
              for func in ast.walk(ast.parse(f.read_text(encoding="utf-8")))
              if isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)) and "load_workbook" in _names(func)]
     assert loads == ["celerp/importers/tabular.py:_xlsx_lines"]

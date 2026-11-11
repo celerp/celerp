@@ -27,6 +27,7 @@ from celerp.projections.engine import ProjectionEngine
 from celerp.services.company_lock import lock_company
 from test_helpers import create_item, perm_setup
 from ui.i18n import t, refusal_text
+from shipped_sources import SHIPPED_ROOTS
 
 
 
@@ -237,7 +238,7 @@ def test_no_other_module_writes_a_new_run():
     allowed = {"celerp/events/schemas.py", "celerp/events/types.py",
                "default_modules/celerp-manufacturing/celerp_manufacturing/projection_handler.py",
                "default_modules/celerp-manufacturing/celerp_manufacturing/routes.py"}
-    found = {str(p.relative_to(root)) for base in ("celerp", "default_modules") for p in (root / base).rglob("*.py")
+    found = {str(p.relative_to(root)) for base in SHIPPED_ROOTS for p in (root / base).rglob("*.py")
              if "/tests/" not in str(p) and "mfg.order.created" in p.read_text(encoding="utf-8")}
     assert found <= allowed, found - allowed
 

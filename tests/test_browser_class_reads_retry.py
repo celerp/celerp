@@ -15,10 +15,11 @@ from __future__ import annotations
 import ast
 import re
 from pathlib import Path
+from shipped_sources import APP_ROOTS
 
 _TESTS = Path(__file__).resolve().parent
 _BROWSER_TESTS = _TESTS / "test_browser"
-_APP_DIRS = ("ui", "celerp", "default_modules")
+_APP_DIRS = APP_ROOTS
 _SCRIPT_READS = re.compile(
     r"className|classList(?!\s*\.\s*(?:add|remove|toggle|replace)\b)|getAttribute\(\s*['\"]class['\"]|activeElement")
 # Test functions whose class read cannot see a change in flight, each with the reason.

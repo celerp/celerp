@@ -13,16 +13,12 @@ import re
 import pytest
 
 from ui.api_client import APIError
+from shipped_sources import ui_sources
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 _RESPONSES = {"Response", "_R", "_Resp", "HTMLResponse", "PlainTextResponse", "JSONResponse"}
 # The app's own error page handler renders a whole page for an uncaught APIError.
 _FULL_PAGE = {"ui/app.py"}
-
-
-def _ui_sources() -> list[pathlib.Path]:
-    return sorted({*_ROOT.glob("ui/**/*.py"), *_ROOT.glob("default_modules/*/*/ui*.py"),
-                   *_ROOT.glob("default_modules/*/*/ui/**/*.py")})
 
 
 def _names(node) -> list[str]:
@@ -53,7 +49,7 @@ def test_an_ended_session_is_left_to_the_apps_sign_in_redirect():
 
 def test_every_caught_api_refusal_is_answered_through_refusal_response():
     found = []
-    for path in _ui_sources():
+    for path in ui_sources():
         rel = path.relative_to(_ROOT).as_posix()
         if rel in _FULL_PAGE:
             continue
@@ -79,7 +75,7 @@ def test_every_caught_api_refusal_is_answered_through_refusal_response():
 
 def test_no_button_navigates_away_after_its_request_whatever_the_reply():
     found = [f"{p.relative_to(_ROOT).as_posix()}:{n}"
-             for p in _ui_sources() for n, line in enumerate(p.read_text().splitlines(), 1)
+             for p in ui_sources() for n, line in enumerate(p.read_text().splitlines(), 1)
              if "hx_on__after_request" in line and ("window.location" in line or "celerpGo(" in line)]
     assert not found, f"a request's refusal is wiped by a navigation after it: {found}"
 
@@ -130,7 +126,7 @@ def test_every_hx_trigger_event_has_a_listener():
 def test_every_create_blank_door_answers_a_refusal_through_refusal_response():
     """A New button that cannot create shows why, the same way at every door."""
     doors = {}
-    for path in _ui_sources():
+    for path in ui_sources():
         for fn in ast.walk(ast.parse(path.read_text())):
             if isinstance(fn, ast.AsyncFunctionDef) and any(
                     isinstance(d, ast.Call) and d.args and isinstance(d.args[0], ast.Constant)
@@ -201,7 +197,7 @@ def test_create_doors_send_ended_session_to_sign_in():
     through to the app's sign-in handler (which clears the session cookies) instead of showing
     "session expired" as text in the form."""
     doors, wrong = 0, []
-    for path in _ui_sources():
+    for path in ui_sources():
         rel = path.relative_to(_ROOT).as_posix()
         for node in _door_tries(ast.parse(path.read_text())):
             for h in node.handlers:
@@ -255,7 +251,7 @@ def test_door_reads_never_fall_back_to_an_invented_value():
     """The closed list: every create door function, every UI function it calls (followed
     transitively), and every GET route on a door's POST path (its form loader). None of them
     turns a failed read into an empty value the user is not told about."""
-    trees = {p: ast.parse(p.read_text()) for p in _ui_sources()}
+    trees = {p: ast.parse(p.read_text()) for p in ui_sources()}
     imported = {p: {a.asname or a.name for n in ast.walk(t) if isinstance(n, ast.ImportFrom) for a in n.names}
                 for p, t in trees.items()}
     defs: dict[str, list] = {}
@@ -293,7 +289,7 @@ def test_line_builders_are_called_inside_a_refusal_handler():
     """A line builder reads items and units; its refusal must reach a handler that shows it,
     never a 500 page."""
     calls, outside = 0, []
-    for path in _ui_sources():
+    for path in ui_sources():
         tree = ast.parse(path.read_text())
         guarded = {id(x) for node in ast.walk(tree) if isinstance(node, ast.Try)
                    and any(_catches_api_error(h) and h.type is not None for h in node.handlers)

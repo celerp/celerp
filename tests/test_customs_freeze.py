@@ -19,6 +19,7 @@ from celerp.models.projections import Projection
 
 from test_ui import (_authed, _list_page_stub, _mock_category_schemas, _mock_column_prefs,  # noqa: F401  (fixtures)
                      _mock_get_company, _mock_get_locations, _mock_get_modules, ui_client)
+from shipped_sources import APP_ROOTS
 
 pytestmark = pytest.mark.asyncio
 
@@ -138,7 +139,7 @@ async def test_every_reader_of_a_shipping_docs_lines_fills_the_items_codes_by_on
     root = Path(__file__).resolve().parent.parent
     allowed = {root / "celerp" / "services" / "shipping.py",
                root / "default_modules" / "celerp-docs" / "celerp_docs" / "routes.py"}
-    callers = {path for top in ("celerp", "ui", "default_modules") for path in (root / top).rglob("*.py")
+    callers = {path for top in APP_ROOTS for path in (root / top).rglob("*.py")
                if "customs_backfill(" in path.read_text()}
     assert callers <= allowed, sorted(str(p.relative_to(root)) for p in callers - allowed)
 
@@ -412,7 +413,7 @@ async def test_one_rule_says_when_a_printout_reads_the_items_codes(state, reads)
 
     assert reads_item_customs(state) is reads
     root = Path(__file__).resolve().parent.parent
-    readers = sorted(str(path.relative_to(root)) for top in ("celerp", "default_modules", "ui")
+    readers = sorted(str(path.relative_to(root)) for top in APP_ROOTS
                      for path in (root / top).rglob("*.py") if 'get("customs_saved")' in path.read_text())
     assert readers == ["celerp/services/shipping.py", "default_modules/celerp-docs/celerp_docs/customs_freeze.py"]
 

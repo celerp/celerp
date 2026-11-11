@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from test_ui import ui_client  # noqa: F401  (fixture)
+from shipped_sources import APP_ROOTS
 
 ROOT = Path(__file__).resolve().parent.parent
 LOCALE_DIRS = [ROOT / "ui" / "locales", ROOT / "default_modules/celerp-fixed-assets/celerp_fixed_assets/locales"]
@@ -96,7 +97,7 @@ _SENTENCE_START = re.compile(r"(?:^|[.;,:] |\band )(?:[Rr]efresh|[Rr]eload)\b(?=
 
 
 def _python_sources():
-    for root in ("celerp", "ui", "default_modules"):
+    for root in APP_ROOTS:
         for path in (ROOT / root).rglob("*.py"):
             rel = path.relative_to(ROOT).as_posix()
             if "/tests/" in rel or "/migrations/" in rel or "/fixtures/" in rel:

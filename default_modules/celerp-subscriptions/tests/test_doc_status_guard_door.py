@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from agreement_kit import agreement, freeze_day, generate_due, register
+from shipped_sources import PREMIUM_ROOT, SHIPPED_ROOTS
 
 ROOT = Path(__file__).resolve().parents[3]
 DOCS = ROOT / "default_modules" / "celerp-docs" / "celerp_docs"
@@ -27,7 +28,7 @@ APPLIES_OUTSIDE_THE_DOOR = {
 
 
 def _sources():
-    for top in ("celerp", "default_modules", "premium_modules"):
+    for top in (*SHIPPED_ROOTS, PREMIUM_ROOT):
         for path in sorted((ROOT / top).rglob("*.py")):
             if "tests" not in path.parts:
                 yield path, ast.parse(path.read_text(encoding="utf-8"))

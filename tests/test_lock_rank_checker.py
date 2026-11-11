@@ -17,6 +17,7 @@ import pytest
 
 import lock_rank
 from lock_rank import Lock, Recorder, classify
+from shipped_sources import CORE_ROOT, MODULE_ROOT
 
 
 @pytest.fixture(autouse=True)
@@ -583,7 +584,7 @@ def test_a_notice_is_written_after_every_parent_key_and_nothing_after_it():
 
 def _production_sources():
     root = lock_rank.Path(lock_rank._ROOT)
-    for path in [*root.joinpath("celerp").rglob("*.py"), *root.joinpath("default_modules").glob("*/celerp_*/**/*.py")]:
+    for path in [*root.joinpath(CORE_ROOT).rglob("*.py"), *root.joinpath(MODULE_ROOT).glob("*/celerp_*/**/*.py")]:
         yield path, path.read_text()
 
 

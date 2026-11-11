@@ -23,9 +23,10 @@ from pathlib import Path
 import pytest
 
 from celerp.compat import StrEnum
+from shipped_sources import SHIPPED_ROOTS
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-_SHIPPED_ROOTS = [_REPO_ROOT / "celerp", _REPO_ROOT / "default_modules"]
+_SHIPPED_ROOTS = [_REPO_ROOT / root for root in SHIPPED_ROOTS]
 _EXEMPT = {_REPO_ROOT / "celerp" / "compat.py"}
 
 

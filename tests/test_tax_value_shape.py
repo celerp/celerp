@@ -23,6 +23,7 @@ from test_ui import _authed, _mock_get_company, _mock_get_modules, ui_client  # 
 from test_tax_refusal_draft_route import route
 from ui.i18n import refusal_text, t
 from test_helpers import doc_version
+from shipped_sources import APP_ROOTS
 
 pytestmark = pytest.mark.asyncio
 
@@ -256,7 +257,7 @@ async def test_only_the_one_helper_and_the_share_import_choose_an_unreadable_tax
     from pathlib import Path
 
     root = Path(__file__).resolve().parent.parent
-    users = sorted(str(p.relative_to(root)) for top in ("celerp", "default_modules", "ui")
+    users = sorted(str(p.relative_to(root)) for top in APP_ROOTS
                    for p in (root / top).rglob("*.py") if '"documents.err_tax_unreadable' in p.read_text())
     assert users == ["default_modules/celerp-docs/celerp_docs/doc_money.py",
                      "default_modules/celerp-docs/celerp_docs/routes_share.py"], users

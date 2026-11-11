@@ -18,6 +18,7 @@ from sqlalchemy import select
 
 from test_reconciliation_history import admin, bank, match, start
 from ui.i18n import refusal_text
+from shipped_sources import SHIPPED_ROOTS
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 RATES = {"EUR": 1.08, "JPY": 0.0067}
@@ -174,7 +175,7 @@ _BANKISH = ("bank", "chart_account_code", "deposit_account")
 
 def _writers_touching_banks() -> set[tuple[str, str]]:
     found: set[tuple[str, str]] = set()
-    for root in ("celerp", "default_modules"):
+    for root in SHIPPED_ROOTS:
         for path in (ROOT / root).rglob("*.py"):
             rel = path.relative_to(ROOT).as_posix()
             if "/tests/" in rel or "/migrations/" in rel:

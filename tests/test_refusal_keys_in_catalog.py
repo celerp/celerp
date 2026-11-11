@@ -22,9 +22,10 @@ import json
 from pathlib import Path
 
 from celerp_fixed_assets.calc.rules import CORE
+from shipped_sources import SHIPPED_ROOTS
 
 _ROOT = Path(__file__).resolve().parents[1]
-_ROOTS = [_ROOT / "celerp", _ROOT / "default_modules"]
+_ROOTS = [_ROOT / root for root in SHIPPED_ROOTS]
 
 
 def _en_keys() -> set[str]:

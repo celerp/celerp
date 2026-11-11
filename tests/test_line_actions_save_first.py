@@ -15,6 +15,7 @@ from pathlib import Path
 
 from celerp.services.list_behavior import LIST_BEHAVIOR
 from ui.routes.documents import _DOC_TYPES, _doc_detail, persist_then_post
+from shipped_sources import MODULE_ROOT, UI_ROOT, ui_sources
 
 # Server actions that read the stored lines.
 _ON_LINES = ("/action/finalize", "/action/write-off", "/action/duplicate", "/convert", "/action/send")
@@ -90,7 +91,7 @@ def test_without_editable_lines_the_actions_post_directly():
 # its answer data-cell-unsaved, and that mark is the only thing the page reads for it: nothing else
 # sets it and no styling class stands in for it, so a hint can never stop an action.
 _ROOT = Path(__file__).resolve().parents[1]
-_SOURCES = [p for d in ("ui", "default_modules") for p in (_ROOT / d).rglob("*") if p.suffix in (".py", ".js")]
+_SOURCES = [p for d in (UI_ROOT, MODULE_ROOT) for p in (_ROOT / d).rglob("*") if p.suffix in (".py", ".js")]
 _DOCS = _ROOT / "ui" / "routes" / "documents.py"
 
 
@@ -158,11 +159,6 @@ _HANDLERS = {"onclick", "onsubmit"}
 _SAVES_FIRST = "persist_then_post"
 
 
-def _ui_sources() -> list[Path]:
-    return sorted({*_ROOT.glob("ui/**/*.py"), *_ROOT.glob("default_modules/*/*/ui*.py"),
-                   *_ROOT.glob("default_modules/*/*/ui/**/*.py")})
-
-
 def _literal_text(node) -> str:
     """The literal text a string expression holds (f-string and + parts joined)."""
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
@@ -198,7 +194,7 @@ def _violations(source: str, path: str = "<snippet>") -> list[str]:
 
 def test_line_actions_save_the_lines_first():
     found = []
-    for path in _ui_sources():
+    for path in ui_sources():
         found += _violations(path.read_text(encoding="utf-8"), str(path.relative_to(_ROOT)))
     assert not found, "\n".join(found)
 

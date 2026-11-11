@@ -43,6 +43,7 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
+from shipped_sources import SHIPPED_ROOTS
 
 # ── The one map ────────────────────────────────────────────────────────────────
 # class -> rank. Lower ranks are taken first. Filled from the measured graph.
@@ -1799,7 +1800,7 @@ def _production_files():
     """The files the census scans for writers, by their path alone: the writers are cached for
     the process, so they must not follow a census hook a test patches (``_production_site``)."""
     root = Path(_ROOT)
-    yield from sorted(p for p in [*root.joinpath("celerp").rglob("*.py"), *root.joinpath("default_modules").rglob("*.py")]
+    yield from sorted(p for r in SHIPPED_ROOTS for p in root.joinpath(r).rglob("*.py")
                       if _PRODUCTION_PATH.match(os.path.relpath(p, _ROOT)))
 
 

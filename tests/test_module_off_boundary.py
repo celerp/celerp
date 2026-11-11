@@ -31,6 +31,7 @@ from migration_support import real_engine  # noqa: F401 - fixture
 from test_helpers import REPO_ROOT, as_another_client, mark_running
 from test_payments_stripe import (  # noqa: F401  (payments_on is a fixture)
     BOOKS, PAID, _company_id, _doc_state, _h, _payable_invoice, _register, payments_on)
+from shipped_sources import CORE_ROOT, MODULE_ROOT, UI_ROOT
 
 _OFF = "The {} module is turned off for your company."
 _STARTS = "The {} module starts after Celerp restarts."
@@ -778,8 +779,8 @@ def _core_files():
     """Code that runs whichever modules a company uses: celerp/, ui/ and the modules
     folded into core."""
     from celerp.modules.loader import CORE_FOLDED
-    roots = [REPO_ROOT / "celerp", REPO_ROOT / "ui",
-             *(REPO_ROOT / "default_modules" / name for name in sorted(CORE_FOLDED))]
+    roots = [REPO_ROOT / CORE_ROOT, REPO_ROOT / UI_ROOT,
+             *(REPO_ROOT / MODULE_ROOT / name for name in sorted(CORE_FOLDED))]
     for root in roots:
         for path in sorted(root.rglob("*.py")):
             rel = path.relative_to(REPO_ROOT)

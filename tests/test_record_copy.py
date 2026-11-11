@@ -14,13 +14,14 @@ import ast
 from pathlib import Path
 
 from test_tax_acceptance_matrix import _demo_company
+from shipped_sources import APP_ROOTS
 
 ROOT = Path(__file__).resolve().parent.parent
 CREATED = {"doc.created", "list.created"}
 
 
 def app_sources():
-    for top in ("celerp", "ui", "default_modules"):
+    for top in APP_ROOTS:
         for path in sorted((ROOT / top).rglob("*.py")):
             rel = path.relative_to(ROOT)
             if "tests" in rel.parts or path.name.startswith(("test_", "conftest")):

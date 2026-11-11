@@ -18,6 +18,7 @@ from celerp.models.ledger import LedgerEntry
 from celerp.models.notification import Notification
 from celerp.models.projections import Projection
 from stock_books import assert_books_carry_stock, assert_wip_carried
+from shipped_sources import SHIPPED_ROOTS
 
 pytestmark = pytest.mark.asyncio
 
@@ -95,7 +96,7 @@ async def test_whatever_marks_the_records_current_also_clears_why_they_were_held
 
     root = Path(__file__).resolve().parents[1]
     halves = []
-    for path in [root / "conftest.py", *(p for d in ("celerp", "default_modules", "tests")
+    for path in [root / "conftest.py", *(p for d in (*SHIPPED_ROOTS, "tests")
                                           for p in (root / d).rglob("*.py"))]:
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if not isinstance(node, ast.Assign):

@@ -30,6 +30,7 @@ from celerp.models.ai import AIBatchJob
 from celerp.services.company_reset import AI_BATCH_ACTIVE
 from test_ai_jobs import AUTH, _files, _job, _op
 from test_ai_usage import _conversation, owner  # noqa: F401
+from shipped_sources import CORE_ROOT, MODULE_ROOT, UI_ROOT
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 QUERY = "How do I add a supplier?"
@@ -608,9 +609,9 @@ async def test_continue_never_reopens_a_job_a_runner_holds_and_stop_never_acts_o
 # ── Guard: the job module owns what a job's state means, who owns it, and how it moves ──
 
 def _scanned() -> list[pathlib.Path]:
-    paths = [p for p in (ROOT / "celerp").rglob("*.py") if "migrations" not in p.parts]
-    paths += [p for p in (ROOT / "default_modules").glob("*/celerp_*/**/*.py")]
-    paths += [p for p in (ROOT / "ui").rglob("*.py") if "tests" not in p.parts]
+    paths = [p for p in (ROOT / CORE_ROOT).rglob("*.py") if "migrations" not in p.parts]
+    paths += [p for p in (ROOT / MODULE_ROOT).glob("*/celerp_*/**/*.py")]
+    paths += [p for p in (ROOT / UI_ROOT).rglob("*.py") if "tests" not in p.parts]
     return [p for p in paths if p != ROOT / "celerp" / "ai" / "jobs.py" and (ROOT / "celerp" / "models") not in p.parents]
 
 

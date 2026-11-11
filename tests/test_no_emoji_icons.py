@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from shipped_sources import MODULE_ROOT, UI_ROOT
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -91,7 +92,7 @@ def _emoji(text: str) -> list[str]:
 def _ui_sources() -> list[Path]:
     """Every page-building Python and JavaScript file: the UI layer and the modules (not their tests)."""
     found = []
-    for top in ("ui", "default_modules"):
+    for top in (UI_ROOT, MODULE_ROOT):
         for path in (ROOT / top).rglob("*"):
             rel = path.relative_to(ROOT)
             if path.suffix in (".py", ".js") and not path.name.endswith(".min.js") and not (_SKIPPED_DIRS & set(rel.parts)):

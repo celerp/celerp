@@ -20,6 +20,12 @@ _SHARED = re.compile(r"^\s*from shipped_sources import |^\s*import shipped_sourc
 # Files that pass for a stated reason.
 _ALLOWED: dict[str, str] = {
     "tests/shipped_sources.py": "the one root list itself",
+    "tests/test_company_backup.py": "walks a company backup directory, not the source",
+    "tests/test_company_backup_lifecycle.py": "walks the data directory's company backups, not the source",
+    "tests/test_system_recovery_exact.py": "walks a backup and the recovery staging directory, not the source",
+    "tests/test_modules/test_admission.py": "walks the module packages the test builds",
+    "tests/test_regression.py": "reads only ui/, not a server root",
+    "tests/test_connectors_proxy.py": "reads only ui/, not a server root",
 }
 
 

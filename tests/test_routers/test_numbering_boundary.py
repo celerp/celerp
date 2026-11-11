@@ -28,6 +28,7 @@ from test_tax_acceptance_matrix import _demo_company
 from fasthtml.common import to_xml
 from ui.i18n import refusal_text, t
 from ui.routes.documents import _doc_detail
+from shipped_sources import APP_ROOTS
 
 pytestmark = pytest.mark.asyncio
 
@@ -989,7 +990,7 @@ def _own_nodes(fn):
             todo.extend(ast.iter_child_nodes(node))
 
 
-def _app_functions(roots=("celerp", "default_modules", "ui")):
+def _app_functions(roots=APP_ROOTS):
     """(file, function node) for every function of the app under ``roots``, tests left out."""
     for path in sorted(_REPO.rglob("*.py")):
         rel = path.relative_to(_REPO)
@@ -1237,7 +1238,7 @@ def _map_census() -> list[tuple[str, str, str, str]]:
     rows = []
     for path in sorted(_REPO.rglob("*.py")):
         rel = str(path.relative_to(_REPO))
-        if rel.split("/")[0] not in {"celerp", "default_modules", "ui"} or "/tests/" in rel or "/test_" in rel:
+        if rel.split("/")[0] not in APP_ROOTS or "/tests/" in rel or "/test_" in rel:
             continue
         tree = ast.parse(path.read_text())
         owner = {}

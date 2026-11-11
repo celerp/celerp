@@ -23,6 +23,7 @@ from celerp.db import get_session_ctx
 from connector_test_support import connected, retry_due
 from migration_support import real_engine  # noqa: F401
 from pacing_guard import seeding_pacing
+from shipped_sources import SHIPPED_ROOTS
 
 pytestmark = pytest.mark.asyncio
 
@@ -33,7 +34,7 @@ def _raised_reasons() -> set[str]:
     """Every reason the code refuses an execution with: the literal of each
     ExecutionRefused(...) and each string ``eligible`` returns, read from the source."""
     reasons: set[str] = set()
-    for path in [*(_ROOT / "celerp").rglob("*.py"), *(_ROOT / "default_modules").rglob("*.py")]:
+    for path in [p for r in SHIPPED_ROOTS for p in (_ROOT / r).rglob("*.py")]:
         if "/tests/" in str(path):
             continue
         tree = ast.parse(path.read_text())
