@@ -992,6 +992,52 @@ async def test_general_ledger_opening_period_closing(client):
 
 
 @pytest.mark.asyncio
+async def test_gl_totals_carry_no_opening_or_closing(client):
+    """The total row sums debits and credits only: signed opening and closing
+    balances of mixed account types add up to nothing a reader can use."""
+    tok = await _reg(client)
+    empty = (await client.get("/accounting/general-ledger", headers=_h(tok))).json()
+    assert set(empty["totals"]) == {"debit", "credit"}
+    assert empty["totals"] == {"debit": 0, "credit": 0}
+    assert empty["balanced"] is True
+
+    await _post_manual_je(client, tok, _bal(100.0), ts="2026-01-10")
+    await _post_manual_je(client, tok, _bal(40.0), ts="2026-02-10")
+    gl = (await client.get("/accounting/general-ledger", headers=_h(tok),
+                           params={"date_from": "2026-02-01", "date_to": "2026-02-28"})).json()
+    assert set(gl["totals"]) == {"debit", "credit"}
+    assert abs(gl["totals"]["debit"] - 40.0) < 0.01
+    assert abs(gl["totals"]["credit"] - 40.0) < 0.01
+    assert gl["balanced"] is True
+
+
+@pytest.mark.asyncio
+async def test_gl_balanced_uses_raw_balances_not_signed_totals(client, monkeypatch):
+    """Balanced is the raw debit-positive closing sum near zero. A balanced
+    ledger's signed closing balances do not net to zero (cash and sales both
+    read positive), so a rule on signed totals would call it unbalanced."""
+    tok = await _reg(client)
+    await _post_manual_je(client, tok, _bal(100.0), ts="2026-01-10")
+    gl = (await client.get("/accounting/general-ledger", headers=_h(tok))).json()
+    rows = {r["code"]: r for r in gl["rows"]}
+    assert abs(rows["1111"]["closing"] + rows["4100"]["closing"] - 200.0) < 0.01
+    assert gl["balanced"] is True
+
+    from celerp_accounting import routes as acct_routes
+    real = acct_routes.journal_rows
+
+    async def _with_a_lone_debit(session, company_id):
+        rows = list(await real(session, company_id))
+        rows.append(("je:lone", {"entries": [{"account": "1111", "debit": 5.0, "credit": 0}]},
+                     "2026-01-11"))
+        return rows
+
+    monkeypatch.setattr(acct_routes, "journal_rows", _with_a_lone_debit)
+    gl = (await client.get("/accounting/general-ledger", headers=_h(tok))).json()
+    assert gl["balanced"] is False
+
+
+@pytest.mark.asyncio
 async def test_general_ledger_agrees_with_trial_balance(client):
     tok = await _reg(client)
     await _post_manual_je(client, tok, _bal(75.0), ts="2026-01-10")

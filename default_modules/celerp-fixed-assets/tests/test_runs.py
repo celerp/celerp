@@ -146,6 +146,29 @@ async def test_run_posts_one_journal_per_month_at_month_end(fa):
     assert future.status_code == 422
 
 
+@pytest.mark.parametrize("stored,reads_as", [("13-01", "01-01"), ("04-15", "04-01")])
+async def test_fixed_assets_fiscal_year_start_parse_is_unchanged(fa, stored, reads_as):
+    """Fixed assets read the start month from the first two characters of the setting,
+    so a stored "13-01" or "04-15" is not refused: corrections name the fiscal year and a
+    run depreciates exactly as with the start those characters read as."""
+    from celerp.services.company_lock import locked_company
+    from celerp_fixed_assets.corrections import _fiscal_year
+
+    for index in range(2026 * 12, 2027 * 12):
+        assert _fiscal_year({"fiscal_year_start": stored}, index) == \
+            _fiscal_year({"fiscal_year_start": reads_as}, index), index
+
+    await _managed_from(fa)
+    await _contributed(fa)
+    company = await locked_company(fa.session, fa.auth["company_id"])
+    company.settings = {**(company.settings or {}), "fiscal_year_start": stored}
+    await fa.session.commit()
+    preview = await fa.ok(await fa.post("/runs", {"month": "2026-03", "preview": True, "op_key": "p"}))
+    assert D(preview["total"]) == D("600") and preview["ready"] == 1
+    done = await _run(fa, "2026-03")
+    assert [r["month"] for r in done["runs"]] == ["2026-01", "2026-02", "2026-03"]
+
+
 async def test_u13_a_run_lists_each_asset_and_the_months_it_catches_up(fa):
     await _managed_from(fa, "2026-03-01")
     car = await _contributed(fa, on="2026-01-15")

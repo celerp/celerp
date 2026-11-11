@@ -74,7 +74,7 @@ _TB = {"lines": [{"code": "1120", "name": "Accounts Receivable", "account_type":
        "total_debit": 60.0, "total_credit": 60.0, "balanced": True}
 _GL = {"rows": [{"code": "1120", "name": "Accounts Receivable", "account_type": "asset",
                  "debit_normal": True, "opening": 0, "debit": 60.0, "credit": 0, "closing": 60.0}],
-       "totals": {"opening": 0, "debit": 60.0, "credit": 60.0, "closing": 60.0}, "balanced": True}
+       "totals": {"debit": 60.0, "credit": 60.0}, "balanced": True}
 _CASH_FLOW = {
     "cash_accounts": ["1111"], "opening_cash": 0.0, "closing_cash": 60.0, "net_change": 60.0,
     "direct": {"operating": {"lines": [{"code": "4100", "name": "Sales", "amount": 60.0}],
@@ -511,6 +511,39 @@ async def test_trial_balance_export_passes_dates(ui_client):
     assert r.status_code == 200
     _token, params = r.mocks["get_trial_balance"].await_args.args
     assert params == {"date_from": "2026-01-01", "date_to": "2026-01-31"}
+
+
+def _valuation_bar(html: str) -> str:
+    start = html.index('class="valuation-bar"')
+    return html[start:html.index("</div>", start)]
+
+
+@pytest.mark.asyncio
+async def test_gl_total_row_leaves_opening_and_closing_blank(ui_client):
+    """Debit and Credit carry their totals; the Opening and Closing cells under
+    them stay empty, keeping the columns aligned."""
+    import re
+    r = await _get(ui_client, "/reports/general-ledger?from=2026-01-01&to=2026-01-31")
+    assert r.status_code == 200
+    rows = re.findall(r"<tr>(.*?)</tr>", r.text, re.S)
+    total = next(row for row in rows if t("label.total") in row)
+    cells = re.findall(r"<td[^>]*>(.*?)</td>", total, re.S)
+    assert len(cells) == 6
+    assert cells[2].strip() == "" and cells[5].strip() == ""
+    assert "60.00" in cells[3] and "60.00" in cells[4]
+    assert len(re.findall(r"<td class=\"cell--number\">", total)) == 4
+
+
+@pytest.mark.asyncio
+async def test_gl_links_trial_balance_for_the_same_period(ui_client):
+    """The totals strip links to the Trial Balance for the period being read, in
+    the class the strip's other link uses."""
+    r = await _get(ui_client, "/reports/general-ledger?from=2026-02-01&to=2026-02-28")
+    bar = _valuation_bar(r.text)
+    tb = REPORTS["trial-balance"][0]
+    link = (f'<a href="{tb}?from=2026-02-01&amp;to=2026-02-28" class="btn btn--ghost btn--sm">'
+            f'{escape(t("acct.tab_trial_balance"))}</a>')
+    assert link in bar
 
 
 @pytest.mark.asyncio

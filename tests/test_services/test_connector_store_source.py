@@ -196,6 +196,29 @@ async def test_store_must_hold_most_of_the_whole_sample(returned, expected):
         assert await QuickBooksConnector().same_store(ctx, invoices) is expected
 
 
+def _hostile():
+    from test_routers.test_numbering_boundary import HOSTILE
+
+    return HOSTILE
+
+
+@pytest.mark.parametrize("pad", sorted(k for k, v in _hostile().items() if v[0] is None))
+async def test_quickbooks_same_store_reads_padded_numbers_as_stored(pad):
+    """A record stores its number stripped (strip_number), so a DocNumber that differs from
+    it only by padding is the same invoice; one that differs beyond padding is not."""
+    from celerp.models.projections import strip_number
+
+    _prefix, sent, _twin = _hostile()[pad]
+    n = "INV-7"
+    doc_number = sent.format(n=n)
+    record = {"quickbooks_invoice_id": "7", "ref_id": strip_number(doc_number), "total": 10.0}
+    ctx = ConnectorContext(company_id="c", access_token="t", store_handle="123")
+    for fetched_number, expected in ((doc_number, True), (sent.format(n=f"{n}8"), False)):
+        fetched = [{"Id": "7", "DocNumber": fetched_number, "TotalAmt": 10}]
+        with patch("celerp.connectors.quickbooks._query", AsyncMock(return_value=fetched)):
+            assert await QuickBooksConnector().same_store(ctx, [record]) is expected, repr(fetched_number)
+
+
 @pytest.mark.parametrize("stored, fetched, expected", [
     ({"email": "Pat@Example.com", "name": "P"}, {"email": "pat@example.com"}, True),
     ({"email": "pat@example.com", "name": "Pat Buyer"}, {**_CUSTOMER, "email": "x@example.com"}, False),

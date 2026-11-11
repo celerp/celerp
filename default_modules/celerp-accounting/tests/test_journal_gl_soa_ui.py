@@ -85,7 +85,7 @@ _GL = {
         {"code": "4100", "name": "Sales Revenue", "account_type": "revenue", "debit_normal": False,
          "opening": 100.0, "debit": 0.0, "credit": 40.0, "closing": 140.0},
     ],
-    "totals": {"opening": 0.0, "debit": 40.0, "credit": 40.0, "closing": 0.0},
+    "totals": {"debit": 40.0, "credit": 40.0},
     "balanced": True,
 }
 

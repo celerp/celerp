@@ -122,6 +122,57 @@ async def test_woocommerce_order_creates_doc(use_test_session):
 
 
 @pytest.mark.asyncio
+async def test_woocommerce_order_with_a_held_number_needs_attention(use_test_session):
+    """WOO- plus the order number is a number Celerp composes, so it is checked like every number
+    Celerp issues: an order whose number another record holds lands on the attention list with
+    the translated refusal naming the number, and the other orders sync under the number a
+    record stores (a padded platform number stored stripped)."""
+    from datetime import datetime, timezone
+
+    import httpx
+    import respx
+    from fasthtml.common import to_xml
+
+    from celerp.connectors.base import ConnectorContext
+    from celerp.connectors.woocommerce import WooCommerceConnector
+    from celerp.models.projections import Projection
+    from celerp_docs.sequences import number_holder
+    from ui.i18n import _current_lang, t
+    from ui.routes.settings_connectors import _attention_item
+
+    session = use_test_session
+    cid = await _seed_company(session, "WooHeld")
+    session.add(Projection(company_id=cid, entity_id="doc:typed", entity_type="doc", version=1,
+                           updated_at=datetime.now(timezone.utc), state={"doc_type": "invoice", "ref_id": "WOO-1001", "status": "draft"}))
+    await session.commit()
+
+    def order(oid: int, number: str) -> dict:
+        return {"id": oid, "number": number, "status": "completed", "date_paid": "2024-06-01T10:00:00",
+                "line_items": [{"name": "Widget", "quantity": 1, "price": "5.00", "total": "5.00"}],
+                "total": "5.00"}
+
+    ctx = ConnectorContext(company_id=str(cid), access_token="ck_testkey:cs_testsecret",
+                           store_handle="https://store.example.com")
+    with respx.mock:
+        respx.get("https://store.example.com/wp-json/wc/v3/orders").mock(return_value=httpx.Response(
+            200, json=[order(61, "1001"), order(62, "1002 "), order(63, "1003")]))
+        result = await WooCommerceConnector().sync_orders(ctx)
+
+    assert [a["id"] for a in result.attention] == ["61"], result.attention
+    for lang in ("en", "th"):
+        token = _current_lang.set(lang)
+        try:
+            line = to_xml(_attention_item("woocommerce", result.attention[0], lang))
+        finally:
+            _current_lang.reset(token)
+        assert t("documents.err_doc_number_taken", lang, number="WOO-1001") in line, line
+        assert "409:" not in line and "{'code'" not in line, line
+    assert await number_holder(session, str(cid), "WOO-1001", exclude_entity_id="doc:typed") is None
+    assert (await _state(session, cid, "woocommerce:order:62"))["ref_id"] == "WOO-1002"
+    assert (await _state(session, cid, "woocommerce:order:63"))["ref_id"] == "WOO-1003"
+
+
+@pytest.mark.asyncio
 async def test_quickbooks_invoice_creates_doc(use_test_session):
     session = use_test_session
     cid = await _seed_company(session, "QbInv")

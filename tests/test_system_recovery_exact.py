@@ -2205,6 +2205,45 @@ async def test_a_backup_from_a_sql_ascii_install_with_thai_text_is_restored(
     assert await _company_names(real_engine) == {"บริษัท Exim"}
 
 
+def test_a_utf8_backup_with_legacy_escapes_restores_into_sql_ascii(tmp_path, monkeypatch):
+    """A UTF8 install's json, which earlier versions stored with \\u escapes past ASCII, restores into
+    a SQL_ASCII database once upgraded; a SQL_ASCII backup from before that upgrade restores and its
+    reconcile upgrades it. A row holding an escape PostgreSQL cannot turn into text (a lone
+    surrogate, NUL) keeps it byte for byte, and ->> on it answers as on the source."""
+    import asyncio
+
+    from celerp.config import settings
+    from celerp.services import backup, backup_import
+    from test_migrations.conftest import throwaway_db, upgrade_to
+    from test_migrations.test_s2t3u4v5w6x7_json_text_utf8 import RELEASED_HEAD
+    from test_migrations.test_u4v5w6x7y8z9_json_text_all_encodings import (
+        NOTES, _arrow, _company, _migrate, _note_rows, _stored)
+
+    def libpq(url: str) -> str:
+        return url.replace("+psycopg2", "")
+
+    for encoding, start in (("UTF8", RELEASED_HEAD), ("SQL_ASCII", "t3u4v5w6x7y8")):
+        with throwaway_db("rsrc", encoding) as (src_async, src_url), \
+                throwaway_db("rdst", "SQL_ASCII") as (dst_async, dst_url):
+            upgrade_to(src_url, start)
+            _note_rows(src_url, _company(src_url))
+            if encoding == "UTF8":
+                _migrate(src_async)
+            source, arrow = _stored(src_url), _arrow(src_url)
+            dump = tmp_path / f"{encoding}.dump"
+            backup.dump_database(libpq(src_url), dump)
+
+            backup.restore_database_file(dump, libpq(dst_url))
+            monkeypatch.setattr(settings, "database_url", dst_async)
+            asyncio.run(backup_import._reconcile_schema())
+
+            restored = _stored(dst_url)
+            assert {k: json.loads(v) for k, v in restored.items()} == NOTES, encoding
+            assert (restored["lone"], restored["nul"]) == (source["lone"], source["nul"]), encoding
+            assert {k: _arrow(dst_url)[k] for k in ("lone", "nul")} == {k: arrow[k] for k in ("lone", "nul")}
+            assert _arrow(dst_url)["thai"] == ("ok", NOTES["thai"]["title"]), encoding
+
+
 async def test_an_update_while_pgclientencoding_is_set_is_not_refused(
         tmp_path, monkeypatch, code_config, real_engine):
     """pg_dump writes its archive in the client encoding the environment names; the update

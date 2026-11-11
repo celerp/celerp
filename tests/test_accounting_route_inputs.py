@@ -66,6 +66,78 @@ async def test_close_year_with_a_valid_year_end_closes_and_locks_through_it(clie
     assert (await _settings(session, cid))["lock_date"] == "2025-12-31"
 
 
+async def _store_start(session, cid, value) -> None:
+    """Store a fiscal year start as it sits in settings, bypassing the settings writer's check."""
+    company = await locked_company(session, cid)
+    company.settings = {**(company.settings or {}), "fiscal_year_start": value}
+    await session.commit()
+
+
+@pytest.mark.parametrize("bad", ["bad", "1-1", "13-01", "04-15"])
+async def test_close_year_refuses_a_malformed_fiscal_year_start(client, session, auth, bad):
+    """A close posts and locks, so a start it cannot read refuses instead of a guessed January."""
+    await _revenue(client, auth)
+    cid = auth["company_id"]
+    await _store_start(session, cid, bad)
+    before, lock0 = await _je_count(session, cid), (await _settings(session, cid)).get("lock_date")
+    r = await client.post("/accounting/close-year", headers=auth["headers"], json={"fiscal_year_end": "2025-12-31"})
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "accounting.fiscal_year_start_invalid"
+    assert detail["params"]["value"] == bad
+    assert await _je_count(session, cid) == before
+    assert (await _settings(session, cid)).get("lock_date") == lock0
+
+
+@pytest.mark.parametrize("start,entered,suggested", [
+    ("04-01", "2026-06-30", "2026-03-31"),  # mid-year
+    ("04-01", "2026-04-01", "2026-03-31"),  # first day of the year
+    ("04-01", "2026-12-31", "2026-03-31"),  # calendar year end, April start
+    ("03-01", "2024-02-28", "2023-02-28"),  # Feb 28 in a leap year, March start
+    ("01-01", "2026-06-30", "2025-12-31"),
+])
+async def test_close_year_refuses_a_date_that_is_not_the_fiscal_year_end(
+        client, session, auth, start, entered, suggested):
+    """The refusal names the last fiscal year end on or before the entered date, so
+    following it never closes the open year. Nothing posts, nothing locks."""
+    await _revenue(client, auth, ts="2023-01-15")
+    cid = auth["company_id"]
+    r = await client.patch("/companies/me/books", headers=auth["headers"], json={"fiscal_year_start": start})
+    assert r.status_code == 200, r.text
+    before, lock0 = await _je_count(session, cid), (await _settings(session, cid)).get("lock_date")
+    r = await client.post("/accounting/close-year", headers=auth["headers"], json={"fiscal_year_end": entered})
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == "accounting.year_end_not_fiscal"
+    assert detail["params"] == {"value": entered, "year_end": suggested}
+    assert await _je_count(session, cid) == before
+    assert (await _settings(session, cid)).get("lock_date") == lock0
+
+
+_YEAR_ENDS = {  # start -> its fiscal year end; March closes on Feb 29 of a leap year
+    "01-01": "2025-12-31", "02-01": "2025-01-31", "03-01": "2024-02-29", "04-01": "2025-03-31",
+    "05-01": "2025-04-30", "06-01": "2025-05-31", "07-01": "2025-06-30", "08-01": "2025-07-31",
+    "09-01": "2025-08-31", "10-01": "2025-09-30", "11-01": "2025-10-31", "12-01": "2025-11-30",
+}
+
+
+_FUTURE = f"{date.today().year + 1}-12-31"  # a year end after today is not refused
+
+
+@pytest.mark.parametrize("start,year_end", [*sorted(_YEAR_ENDS.items()), ("01-01", _FUTURE)])
+async def test_close_year_accepts_the_fiscal_year_end_for_every_start(client, session, auth, start, year_end):
+    """The true end for every start closes and locks through it."""
+    await _revenue(client, auth, ts=year_end[:8] + "01" if year_end != _FUTURE else "2025-06-01")
+    cid = auth["company_id"]
+    r = await client.patch("/companies/me/books", headers=auth["headers"], json={"fiscal_year_start": start})
+    assert r.status_code == 200, r.text
+    before = await _je_count(session, cid)
+    r = await client.post("/accounting/close-year", headers=auth["headers"], json={"fiscal_year_end": year_end})
+    assert r.status_code == 200, r.text
+    assert await _je_count(session, cid) == before + 1
+    assert (await _settings(session, cid))["lock_date"] == year_end
+
+
 # --- Malformed bank ids ----------------------------------------------------------
 
 
