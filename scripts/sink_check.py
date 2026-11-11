@@ -4,6 +4,8 @@
 """Sink check: raw markup is built only inside the encoder module; every other raw door is refused.
 
 Usage: sink_check.py <repo-root>
+A module checkout is a root too: its whole tree is module code (as default_modules/ is in the
+app), and names it imports from the app this script lives in resolve as they do in the app.
 Exit code: number of hits (0 = clean). One line per hit: CODE | path:line | snippet.
 
 SCOPE (declared): every tracked *.py file that is not a test (tests/ dirs, test_*.py,
@@ -916,31 +918,44 @@ def in_scope(path: str) -> str | None:
     return None
 
 
+def _ls_files(root: Path) -> list[str]:
+    return subprocess.run(["git", "-C", str(root), "ls-files"], capture_output=True, text=True,
+                          check=True).stdout.split()
+
+
+def _index(root: Path, files: list[str]) -> None:
+    """Record the module constants, functions and dynamic-import names of every Python file."""
+    for f in files:
+        if in_scope(f) != "py":
+            continue
+        try:
+            tree = ast.parse((root / f).read_text(encoding="utf-8", errors="replace"), f)
+        except SyntaxError:
+            continue
+        LOCAL_TOPS.add(module_name(f).split(".")[0])
+        MODULE_CONSTS[module_name(f)] = _inline_consts({
+            st.targets[0].id: st.value for st in tree.body
+            if isinstance(st, ast.Assign) and len(st.targets) == 1 and isinstance(st.targets[0], ast.Name)})
+        DYNAMIC_MODULES[f] = {
+            tg.id for sub in ast.walk(tree) if isinstance(sub, ast.Assign)
+            and _framework_import(sub.value)
+            for tg in sub.targets if isinstance(tg, ast.Name)}
+        MODULE_FUNCS[module_name(f)] = {
+            st.name: st for st in tree.body if isinstance(st, ast.FunctionDef)}
+
+
 def main(argv):
     root = Path(argv[1])
     try:
-        files = subprocess.run(["git", "-C", str(root), "ls-files"], capture_output=True, text=True,
-                               check=True).stdout.split()
+        files = _ls_files(root)
     except subprocess.CalledProcessError as e:
         print(f"not a git checkout: {root}: {e.stderr.strip()}", file=sys.stderr)
         return 1
-    trees = {}
-    for f in files:
-        if in_scope(f) == "py":
-            try:
-                trees[f] = ast.parse((root / f).read_text(encoding="utf-8", errors="replace"), f)
-            except SyntaxError:
-                continue
-            LOCAL_TOPS.add(module_name(f).split(".")[0])
-            MODULE_CONSTS[module_name(f)] = _inline_consts({
-                st.targets[0].id: st.value for st in trees[f].body
-                if isinstance(st, ast.Assign) and len(st.targets) == 1 and isinstance(st.targets[0], ast.Name)})
-            DYNAMIC_MODULES[f] = {
-                tg.id for sub in ast.walk(trees[f]) if isinstance(sub, ast.Assign)
-                and _framework_import(sub.value)
-                for tg in sub.targets if isinstance(tg, ast.Name)}
-            MODULE_FUNCS[module_name(f)] = {
-                st.name: st for st in trees[f].body if isinstance(st, ast.FunctionDef)}
+    if root.resolve() != _APP:  # a module root
+        global UI_ROOTS
+        UI_ROOTS = ("",)
+        _index(_APP, _ls_files(_APP))
+    _index(root, files)
     for f in files:
         kind = in_scope(f)
         if not kind or f == ENCODER_PATH:

@@ -101,3 +101,17 @@ def test_sink_check_fails_closed(tmp_path):
     result = _run(repo)
     assert [h.split(" | ")[0] for h in _hits(result.stdout)] == ["PARSE"]
     assert result.returncode == 1
+
+
+def test_sink_check_module_root_reads_app_names(tmp_path):
+    """A marketplace module is checked from its own checkout: app scripts it imports fold as
+    they do in the app, and its own markup builders are module code like default_modules/."""
+    repo = _git_repo(tmp_path, {
+        "acme_tool/ui_routes.py": (
+            "from fasthtml.common import Div, Script\n"
+            "from ui.components.table import COLUMN_FILTER_JS\n\n"
+            "def page(v):\n"
+            "    return Div(Script(COLUMN_FILTER_JS), Script(v))\n"),
+    })
+    hits = _hits(_run(repo).stdout)
+    assert hits == Counter({"PY-JSHOLE | acme_tool/ui_routes.py:5": 1}), hits

@@ -24892,7 +24892,6 @@
     "tests/test_ws5_infra_entitlement.py::test_infra_test_storage_requires_team_entitlement": 0.005,
     "tests/test_xss_hygiene.py::test_esc_attr_escapes_quotes_and_brackets": 0.003,
     "tests/test_xss_hygiene.py::test_hx_vals_escapes_json_breakout": 0.003,
-    "tests/test_xss_hygiene.py::test_no_fstring_hx_vals_in_ui_tree": 0.015,
     "tests/test_zero_journal_lines.py::test_a_stored_line_that_moves_nothing_is_not_shown_and_stays_stored": 0.389,
     "tests/test_zero_journal_lines.py::test_a_taxed_invoice_posts_its_vat_line_exactly_once": 0.33,
     "tests/test_zero_journal_lines.py::test_an_invoice_without_tax_posts_no_vat_line": 0.308,
