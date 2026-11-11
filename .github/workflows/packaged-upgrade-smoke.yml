@@ -520,7 +520,7 @@ jobs:
           # Setup reopened Celerp without a debugging port, so it is started again with one.
           CloseCelerp
           StartCelerp
-          python scripts/ci_update_drive.py sign-in $script:port 300
+          python scripts/ci_update_drive.py open-data $script:port 300
           if ($LASTEXITCODE -ne 0) { Fail "the reinstalled $new did not open the data $real opened" }
           Write-Host "check_update_from_newer_data: the candidate as $older was refused on data $real opened, updated from the refusal screen through setup, and the reinstalled $new ($real) opened the data"
           Stop-Process $server -Force

@@ -1014,7 +1014,7 @@ def test_an_older_copy_on_newer_data_updates_from_its_refusal_screen_and_opens_t
              "ci_update_drive.py refused $script:port 180 $refusedText" + checked,
              "ci_update_drive.py refusal $script:port 600" + checked, 'WaitFor "setup window"', "ExpectNewRunning",
              "if ([IO.File]::ReadAllText((PackageMetadata)) -ne $metadata) { Fail ", "CloseCelerp\nStartCelerp",
-             "ci_update_drive.py sign-in $script:port 300" + checked, "opened the data"]
+             "ci_update_drive.py open-data $script:port 300" + checked, "opened the data"]
     positions = [check.index(marker, check.index(order[i - 1]) if i else 0) for i, marker in enumerate(order)]
     assert positions == sorted(positions)
     # The older copy is older than the data it opened, and the feed's release is newer.

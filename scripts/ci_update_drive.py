@@ -7,6 +7,10 @@
         which signs the owner in. Celerp keeps the sign-in after a restart, so a
         Celerp reopened by setup shows its update card. Exits 1 if no page is
         signed in within the time.
+    python scripts/ci_update_drive.py open-data <debugging port> <seconds>
+        On data Celerp has opened before, waits until a page is signed in. Exits 1
+        at once if Celerp offers setup (the data is not there), and 1 if no page is
+        signed in within the time.
     python scripts/ci_update_drive.py install <debugging port> <seconds>
         Waits until the updater has downloaded the update and sends the same
         install-update message Restart to install sends. Exits 1, printing the
@@ -79,7 +83,7 @@ def celerp_page(browser):
     return pages[0] if pages else None
 
 
-def sign_in(browser, end: float) -> int:
+def sign_in(browser, end: float, setup: bool = True) -> int:
     sent = False
     path = None
     while time.monotonic() < end:
@@ -89,6 +93,9 @@ def sign_in(browser, end: float) -> int:
             if path and not path.startswith(("/setup", "/login")) and page.query_selector(".topbar"):
                 print(f"signed in, on {path}")
                 return 0
+            if path == "/setup" and not setup:
+                print("Celerp offers setup: the data it opened before is not there")
+                return 1
             if path == "/setup" and not sent:
                 answer = page.evaluate(
                     "async (owner) => { const r = await fetch('/setup', {method: 'POST',"
@@ -192,6 +199,10 @@ def card(browser, end: float, text: str) -> int:
     return 1
 
 
+def open_data(browser, end: float) -> int:
+    return sign_in(browser, end, setup=False)
+
+
 def main(command: str, port: int, seconds: int, *args: str) -> int:
     end = time.monotonic() + seconds
     with sync_playwright() as pw:
@@ -204,7 +215,7 @@ def main(command: str, port: int, seconds: int, *args: str) -> int:
                     print(f"no Celerp window on port {port} in {seconds} s: {str(e)[:600]}")
                     return 1
                 time.sleep(2)
-        return {"sign-in": sign_in, "install": install, "refusal": refusal, "refused": refused,
+        return {"sign-in": sign_in, "open-data": open_data, "install": install, "refusal": refusal, "refused": refused,
                 "card": card}[command](browser, end, *args)
 
 
