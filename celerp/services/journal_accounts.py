@@ -30,7 +30,9 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.accounting_roles import (
+    INCOME_ACCOUNT_FIELD,
     ROLE_LABELS,
+    ROLE_TYPES,
     SCHEMA_KEY,
     AccountRole,
     Refused,
@@ -220,20 +222,76 @@ async def require_destinations(session: AsyncSession, company_id, codes) -> dict
     if accounts is None:
         return None
     for code in sorted(set(codes)):
-        account = accounts.get(code)
-        if account is None:
-            detail = refusal("posting.destination.not_in_chart",
-                             f"Account {code} is not in the chart of accounts.", code=code)
-        elif not account["is_active"]:
-            detail = refusal("posting.destination.inactive",
-                             f"Account {code} is inactive. Choose an active account.", code=code)
-        elif account["has_children"]:
-            detail = refusal("posting.destination.header",
-                             f"Account {code} is a header account. Choose one of the accounts under it.", code=code)
-        else:
-            continue
-        raise HTTPException(status_code=422, detail=detail)
+        problem = _destination_problem(accounts.get(code))
+        if problem is not None:
+            raise HTTPException(status_code=422, detail=refusal(
+                f"posting.destination.{problem}", _DESTINATION_PROBLEMS[problem].format(code=code), code=code))
     return accounts
+
+
+_DESTINATION_PROBLEMS = {
+    "not_in_chart": "Account {code} is not in the chart of accounts.",
+    "inactive": "Account {code} is inactive. Choose an active account.",
+    "header": "Account {code} is a header account. Choose one of the accounts under it.",
+}
+
+_INCOME_ACCOUNT_PROBLEMS = {
+    "not_in_chart": "{item} is sold on account {code}, which is not in the chart of accounts.",
+    "inactive": "{item} is sold on account {code}, which is inactive. Choose an active revenue account for it.",
+    "header": "{item} is sold on account {code}, which is a header account. Choose one of the accounts under it.",
+    "not_revenue": "{item} is sold on account {code}, which is not a revenue account. Choose a revenue account for it.",
+}
+
+
+def _destination_problem(account: dict | None) -> str | None:
+    """Why ``require_destinations`` refuses an account (a key of _DESTINATION_PROBLEMS),
+    or None when a new posting may go to it."""
+    if account is None:
+        return "not_in_chart"
+    if not account["is_active"]:
+        return "inactive"
+    if account["has_children"]:
+        return "header"
+    return None
+
+
+CATEGORY_INCOME_ACCOUNTS = "category_income_accounts"  # company setting {category key: account code}
+
+
+def income_account_of(settings: dict, item: dict | None) -> str | None:
+    """The account a sale of ``item`` (its state) is credited to: the item's own income
+    account, else its category's, else None for the sales revenue account."""
+    if not item:
+        return None
+    return item.get(INCOME_ACCOUNT_FIELD) or (settings.get(CATEGORY_INCOME_ACCOUNTS) or {}).get(
+        str(item.get("category") or "")) or None
+
+
+async def require_income_account(session: AsyncSession, company_id, code: str, *, item: str | None = None) -> None:
+    """Refuse ``code`` as the account a sale is credited to: a destination
+    ``require_destinations`` accepts whose type is revenue. Saving an item's or a
+    category's income account checks it plainly; finalizing a sale checks it again
+    for each line, naming the ``item`` that line sells, since the account may have
+    changed since it was saved. Nothing is checked while the accounting module is off."""
+    accounts = await lock_accounts(session, company_id, {code})
+    if accounts is None:
+        return
+    account = accounts.get(code)
+    problem = _destination_problem(account)
+    if problem is None and account["account_type"] not in ROLE_TYPES[AccountRole.SALES_REVENUE]:
+        problem = "not_revenue"
+    if problem is None:
+        return
+    if item is not None:
+        detail = refusal(f"posting.income_account.{problem}",
+                         _INCOME_ACCOUNT_PROBLEMS[problem].format(item=item, code=code), item=item, code=code)
+    elif problem == "not_revenue":
+        detail = refusal("posting.destination.not_revenue",
+                         f"Account {code} is of type {account['account_type']}. Sales are credited to a revenue account.",
+                         code=code, type=account["account_type"])
+    else:
+        detail = refusal(f"posting.destination.{problem}", _DESTINATION_PROBLEMS[problem].format(code=code), code=code)
+    raise HTTPException(status_code=422, detail=detail)
 
 
 async def require_line_destinations(session: AsyncSession, company_id, line_items) -> None:

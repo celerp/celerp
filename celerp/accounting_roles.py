@@ -40,6 +40,9 @@ SOURCE_CONTROLS_KEY = "posting_source_controls"
 
 # The item-state field holding the inventory account a lot's value sits in.
 LOT_ACCOUNT_FIELD = "inventory_account_code"
+# The item-state field holding the revenue account the item's sales are credited to,
+# when it is not its category's or the sales revenue account (journal_accounts.income_account_of).
+INCOME_ACCOUNT_FIELD = "income_account"
 # The item-state field holding the account a consigned lot's sale is owed to the
 # consignor on, recorded when the lot is first sold. A consigned lot is not the
 # company's stock, so it has no inventory account until the company buys it.

@@ -64,7 +64,8 @@ from .services import (
     replaced_price,
     source_header_semantics,
 )
-from celerp.accounting_roles import LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD, Refused, catalog_refusal, refusal
+from celerp.accounting_roles import INCOME_ACCOUNT_FIELD, LOT_ACCOUNT_FIELD, ON_BOOKS_FIELD, Refused, catalog_refusal, refusal
+from celerp.services.journal_accounts import require_income_account
 from celerp.services.company_lock import lock_company, lock_projections
 from celerp.services.item_erasure import depended_on, erase_items, holding_files, referrers, release_from_imports
 from celerp.services.lot_origin import (
@@ -2395,6 +2396,9 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
         raise HTTPException(status_code=422, detail=inventory_type_refused())
     if not payload.sell_by:
         raise HTTPException(status_code=422, detail=catalog_refusal("inventory.err_sell_by_required"))
+    _income_account = (payload.model_extra or {}).get(INCOME_ACCOUNT_FIELD)
+    if _income_account not in (None, ""):
+        await require_income_account(session, company_id, str(_income_account))
 
     if payload.landed_cost_kind is not None and payload.landed_cost_kind not in LANDED_COST_KINDS:
         raise HTTPException(status_code=422, detail=_landed_cost_kind_refused())
@@ -2661,6 +2665,11 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
             if _new is not None and coerce_price(_new) is None:
                 raise HTTPException(status_code=422, detail=catalog_refusal("inventory.err_price_not_number",
                                                               field=_field_name(_f, _price_lists)))
+
+    if INCOME_ACCOUNT_FIELD in changed_keys:
+        _income_account = (payload.fields_changed[INCOME_ACCOUNT_FIELD] or {}).get("new")
+        if _income_account is not None:
+            await require_income_account(session, company_id, str(_income_account))
 
     # A renamed SKU is held to the same rule as a created one: no comma (the OR operator).
     if "sku" in changed_keys:
