@@ -25,6 +25,7 @@ from celerp.accounting_roles import account_label
 from celerp.downloads import content_disposition
 from celerp.services.units import (
     DEFAULT_UNITS, RECEIVE_KINDS, build_unit_map, default_receive_as, format_qty, line_receive_kind, plain_number, quantity_step,
+    unit_decimals,
 )
 from celerp.services.line_measures import identifier_backfill, item_measure_meta, line_identifier, line_label, line_name, measure_locks, measure_sublines, qty_label, resolve_line_measures, splitting_allowed
 from ui.components.shell import base_shell, page_header, toast_header, page_title
@@ -1555,16 +1556,14 @@ async def _new_line_taxes(token: str, doc_type: str | None, doc: dict | None) ->
 async def _line_items_from_inventory(token: str, entity_ids: list[str], price_list: str = DEFAULT_PRICE_LIST_NAME,
                                      doc_type: str | None = None, doc: dict | None = None) -> list[dict]:
     """Fetch inventory items and build doc/list line items; a document's lines start with its default
-    taxes (see _new_line_taxes; pass the target `doc` when appending)."""
+    taxes (see _new_line_taxes; pass the target `doc` when appending). A failed item read raises
+    (APIError), so the door shows it and nothing is created, never a document missing the item."""
     from celerp_inventory.services import line_rate
 
     line_taxes = await _new_line_taxes(token, doc_type, doc)
     line_items = []
     for eid in entity_ids:
-        try:
-            item = await api.get_item(token, eid)
-        except APIError:
-            continue
+        item = await api.get_item(token, eid)
         sku = item.get("sku", "")
         name = item.get("name", "")
         sell_by = item.get("sell_by") or "piece"
@@ -1615,8 +1614,9 @@ def _reorder_po_line(item: dict, unit_decimals: int | None = None) -> dict:
     Purchase-side (mirrors _line_items_from_inventory but for buying):
     - quantity = reorder_qty (sell units) converted to the purchase unit via
       purchase_conversion_factor and ceil'd to the purchase unit's precision; BLANK (0)
-      when reorder_qty is unset (never a fabricated number - the qty field then shows
-      the velocity suggestion as a placeholder instead).
+      when reorder_qty is unset (never a fabricated number). The API refuses 0 in a known
+      unit, so _reorder_lines_from_inventory refuses such an item by name; only a unit the
+      API does not constrain keeps the blank, with the velocity suggestion as placeholder.
     - unit_price = cost per PURCHASE unit = cost_price (per sell unit) x factor, so the
       PO total is the real money owed (qty_purchase x price_purchase == sell_qty x cost);
       left out when the item's goods cost is not known (line_rate), so the line asks for it.
@@ -1660,25 +1660,25 @@ async def _reorder_lines_from_inventory(token: str, entity_ids: list[str], doc_t
     """Fetch inventory items and build purchase-order reorder lines (see _reorder_po_line).
 
     Loads the company unit map once so each line's qty is ceil'd to its purchase
-    unit's precision. With a doc_type, each line starts with that document's default taxes
-    (see _new_line_taxes; pass the target `doc` when appending).
+    unit's precision (unit_decimals, the API's own rule). With a doc_type, each line starts with
+    that document's default taxes (see _new_line_taxes; pass the target `doc` when appending).
+    A failed unit or item read raises (APIError), and so does an item with no reorder quantity in
+    a unit the API refuses a zero quantity for, naming each such item: nothing is created.
     """
     line_taxes = await _new_line_taxes(token, doc_type, doc)
-    try:
-        unit_map = build_unit_map(await api.get_units(token))
-    except Exception:
-        unit_map = {}
-    lines = []
+    unit_map = build_unit_map(await api.get_units(token))
+    lines, unset = [], []
     for eid in entity_ids:
-        try:
-            item = await api.get_item(token, eid)
-        except APIError:
-            continue
+        item = await api.get_item(token, eid)
         pu = item.get("purchase_unit") or item.get("sell_by") or "piece"
-        decimals = (unit_map.get(pu) or {}).get("decimals")
+        decimals = unit_decimals(pu, unit_map)
         line = _reorder_po_line(item, unit_decimals=decimals)
+        if not line["quantity"] and decimals is not None:
+            unset.append(item.get("sku") or item.get("name") or eid)
         set_new_line_taxes(line, line_taxes)
         lines.append(line)
+    if unset:
+        raise APIError(422, t("inv.reorder_needs_quantity", items=", ".join(unset)))
     return lines
 
 
@@ -1716,8 +1716,7 @@ async def _po_line_suggestions(token: str, doc: dict) -> dict[str, str]:
             continue
         factor = float(item.get("purchase_conversion_factor") or 1) or 1
         pu = item.get("purchase_unit") or item.get("sell_by") or "piece"
-        decimals = (unit_map.get(pu) or {}).get("decimals")
-        q = _to_purchase_qty(float(sv), factor, decimals)
+        q = _to_purchase_qty(float(sv), factor, unit_decimals(pu, unit_map))
         if q:
             out[eid] = f"{q:g}"
     return out

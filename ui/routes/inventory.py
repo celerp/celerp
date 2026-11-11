@@ -4172,17 +4172,16 @@ function celerpPrintLabel(entityId, templateId) {
                     doc_id = result.get("entity_id") or result.get("id", "")
                     return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{doc_id}"})
                 elif doc_type == "purchase_order":
-                    # Purchase-side: qty = reorder_qty in purchase units (blank when unset),
+                    # Purchase-side: qty = reorder_qty in purchase units (an unset one is refused by name),
                     # cost price, purchase unit, the purchase-side default tax. Group the selection by each
                     # item's preferred supplier so a multi-supplier reorder becomes one draft
                     # PO per supplier (plus one for items with no supplier set).
                     from celerp.services.reorder import group_by_supplier
+                    # A failed read reaches the outer handler before anything is created, never
+                    # an item silently left out of every supplier group.
                     items = []
                     for eid in entity_ids:
-                        try:
-                            it = await api.get_item(token, eid)
-                        except APIError:
-                            it = {}
+                        it = await api.get_item(token, eid)
                         items.append({"entity_id": eid, "preferred_supplier": it.get("preferred_supplier")})
                     groups = group_by_supplier(items)
                     created: list[tuple[str, str, str]] = []

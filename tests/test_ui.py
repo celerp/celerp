@@ -13638,7 +13638,9 @@ class TestSendToPurchaseOrder:
         assert line["unit"] == "box"        # purchase unit, not sell unit
 
     @pytest.mark.asyncio
-    async def test_send_to_new_po_blank_qty_when_reorder_unset(self, ui_client):
+    async def test_send_to_new_po_refuses_an_item_without_reorder_qty(self, ui_client):
+        """The API refuses a zero quantity in a whole unit, so the item is named and no PO is made
+        (never a quantity the user did not choose)."""
         item = dict(self._PO_ITEM)
         item.pop("reorder_qty")
         mock_create = AsyncMock(return_value={"id": "doc:PO-002"})
@@ -13654,9 +13656,9 @@ class TestSendToPurchaseOrder:
                 content=b"selected=item%3Apo1&send_to_doc_type=purchase_order&send_to_target=__new__",
                 headers={"content-type": "application/x-www-form-urlencoded"},
             )
-        assert r.status_code == 204
-        line = mock_create.call_args[0][1]["line_items"][0]
-        assert line["quantity"] == 0  # blank/editable, never a fabricated number
+        assert r.status_code == 200
+        assert t("inv.reorder_needs_quantity", items="WIDGET") in html.unescape(r.text)
+        mock_create.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_send_to_existing_po_appends_lines(self, ui_client):
@@ -19943,7 +19945,7 @@ class TestChartOfAccountsAddEdit:
         assert b"Account not found" in r.content
 
     @pytest.mark.asyncio
-    async def test_create_account_submit_expired_token_shows_error_banner(self, ui_client):
+    async def test_create_account_submit_expired_token_sends_to_sign_in(self, ui_client):
         create = AsyncMock(side_effect=APIError(401, "Unauthorized"))
         ui_client.cookies.update(_authed())
         with patch("ui.api_client.create_account", new=create), \
@@ -19952,8 +19954,8 @@ class TestChartOfAccountsAddEdit:
                 "/settings/accounting/chart/new",
                 data={"code": "1999", "name": "X", "account_type": "asset", "parent_code": ""},
             )
-        assert r.status_code == 200
-        assert b"Unauthorized" in r.content
+        assert r.status_code == 302
+        assert r.headers.get("location", "").startswith("/login")
 
     @pytest.mark.asyncio
     async def test_create_account_submit_unauthenticated_redirects_login(self, ui_client):
