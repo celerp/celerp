@@ -13,6 +13,7 @@ from fasthtml.common import *
 from ui.components.attrs import hx_vals
 from ui.components.table import searchable_select
 from ui.i18n import t
+from ui.components.encode import html_response
 
 # Single source of truth for tag slugs - drives both UI and i18n keys
 _DOCUMENT_TAGS: tuple[str, ...] = (
@@ -95,14 +96,14 @@ def files_error_block(body, status: int = 400) -> FT:
     return Div(body, cls="flash flash--error")
 
 
-def files_error(body, status: int = 400) -> HTMLResponse:
+def files_error(body, status: int = 400) -> Response:
     """A refused Files-section request: an error status, so the client leaves the section as it is
     and shows ``body`` in its notice. Every Files route answers a refusal this way, never with a
     200 fragment that would be swapped over the section."""
-    return HTMLResponse(to_xml(files_error_block(body, status)), status_code=max(status, 400))
+    return html_response(files_error_block(body, status), status_code=max(status, 400))
 
 
-def files_session_expired() -> HTMLResponse:
+def files_session_expired() -> Response:
     """The sign-in notice for a Files-section request made without a session."""
     return files_error("", 401)
 

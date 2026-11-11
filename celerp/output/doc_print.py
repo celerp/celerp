@@ -18,7 +18,7 @@ from decimal import Decimal
 
 from fasthtml.common import (
     A, Body, Div, Head, Html, Meta, P, Script, Span, Strong, Style,
-    Table, Tbody, Td, Th, Thead, Title, Tr, to_xml,
+    Table, Tbody, Td, Th, Thead, Title, Tr,
 )
 
 from celerp.output.branding import BRAND_TEXT as _BRAND_LABEL, brand_url as _brand_url
@@ -30,6 +30,7 @@ from celerp.services.money import document_line_amount, to_decimal
 from celerp.services.shipping import REASON_EXPORT_LABELS, SHIPPING_LIST_TYPE
 from celerp.services.units import DEFAULT_UNITS, build_unit_map
 from celerp.tax_regimes import country_name
+from ui.components.encode import to_markup
 
 EMPTY = "--"
 
@@ -710,4 +711,4 @@ def render_doc_print_html(doc: dict, *, import_url: str | None = None,
             Script("window.onload = function() { window.print(); }") if auto_print else None,
         ),
     )
-    return to_xml(page)
+    return to_markup(page)

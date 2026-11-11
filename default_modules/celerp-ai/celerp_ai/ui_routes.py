@@ -24,6 +24,7 @@ from ui.components.shell import base_shell, load_error
 from ui.config import get_token as _token, get_role
 from ui.i18n import doc_type_label, refusal_text, t, t_or, get_lang, tier_label
 from ui.security import not_permitted_redirect
+from ui.components.encode import html_response
 
 # A proposal set larger than this renders as the review table instead of cards.
 TABLE_FROM = 5
@@ -491,7 +492,7 @@ def setup_ui_routes(app) -> None:
         # started job (a failed job offers Ask again), and holds the question's id, so sending it
         # again asks the same question instead of a new one. A question id of None
         # (one the API will not take again) gives the composer a new id.
-        def _reply(parts: tuple, *, done: bool, question_id: str | None, asked_again: bool = False) -> HTMLResponse:
+        def _reply(parts: tuple, *, done: bool, question_id: str | None, asked_again: bool = False) -> Response:
             if asked_again:
                 parts = tuple(p for p in parts if p is not user_bubble)
             headers = {"HX-Push-Url": f"/ai?conversation={conversation_id}"}
@@ -505,7 +506,7 @@ def setup_ui_routes(app) -> None:
                 Div(id="ai-history", hx_swap_oob="true",
                     hx_get="/ai/conversations-list", hx_trigger="load", hx_swap="innerHTML"),
             )
-            return HTMLResponse(to_xml((*parts, *oob)), headers=headers)
+            return html_response((*parts, *oob), headers=headers)
 
         # An empty conversation id means this is the thread's first message: start
         # the conversation, then run the query inside it. Once created, retain that
@@ -522,7 +523,7 @@ def setup_ui_routes(app) -> None:
             except APIError as e:
                 if e.status == 401:
                     raise
-                return HTMLResponse(to_xml(_failed_reply(user_bubble, e, lang)))
+                return html_response(_failed_reply(user_bubble, e, lang))
 
         try:
             result = await api.ai_conversation_query(
@@ -633,7 +634,7 @@ def setup_ui_routes(app) -> None:
             state = await api.ai_question_state(token, get_session_token(), conversation_id, question_id)
         except APIError as e:
             if e.status == 404:
-                return HTMLResponse("")
+                return html_response(())
             # The question's state could not be read this time: say so and read it again.
             return _question_bubble({"notice": _error_text(e.detail, lang)}, conversation_id, question_id, lang)
         return await _question_view(token, state, conversation_id, question_id, lang)
@@ -793,7 +794,7 @@ def setup_ui_routes(app) -> None:
         swaps = [_outcome_swap(message_id, o, view, lang, conversation_id=conversation_id)
                  for o in outcomes]
         tail = _confirm_tail(conversation_id, message_id, view, rest, tally, lang)
-        return HTMLResponse(to_xml((tail, *[x for sw in swaps for x in sw])))
+        return html_response((tail, *[x for sw in swaps for x in sw]))
 
     @app.get("/ai/conversations-list")
     async def ai_conversations_list(request: Request):

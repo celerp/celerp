@@ -9,7 +9,7 @@ import re
 
 from fasthtml.common import *
 from ui.i18n import t, t_or, field_label
-from ui.components.encode import js_value
+from ui.components.encode import html_response, js_value
 from celerp.services.field_schema import MIXED_VALUE
 from celerp.services.units import plain_number
 # Canonical definitions live with the shared document renderer; re-exported
@@ -2806,8 +2806,7 @@ def search_results(fragment: FT, page_url: str, *out_of_band: FT):
     """The response to a search_bar or sort request: the result fragment, with the page's own
     URL for the address bar, so a reload or a shared link opens the whole page. Page controls
     outside the fragment that carry the search are passed as out_of_band (hx_swap_oob) elements."""
-    from starlette.responses import HTMLResponse
-    return HTMLResponse("".join(to_xml(ft) for ft in (fragment, *out_of_band)), headers={"HX-Push-Url": page_url})
+    return html_response(tuple((fragment, *out_of_band)), headers={"HX-Push-Url": page_url})
 
 
 def table_search(table_id: str, placeholder: str = "") -> FT:

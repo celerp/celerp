@@ -9,50 +9,55 @@ flow and, once the user confirms, stores the returned credential.
 """
 from __future__ import annotations
 
-import html
-
 import httpx
+from fasthtml.common import A, Body, Button, Div, Form, H1, Head, Html, Input, Meta, P, Strong, Title
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse, Response
+from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
 from ui.config import get_token as _token
 from ui.i18n import get_lang, t
+from ui.components.encode import html_response
 
 
-def _claim_success_body(escaped_label: str) -> str:
-    """Body copy for a successful badge claim. *escaped_label* must already be
-    HTML-escaped by the caller; this only performs the t() interpolation."""
-    return t("stars.claim_success_body", label=f"<strong>{escaped_label}</strong>")
+def _claim_success_body(label: str) -> tuple:
+    """Body copy for a successful badge claim: the translated sentence with the label in bold.
+    {label} marks where the label sits so each locale can place it in its own sentence."""
+    pre, _, post = t("stars.claim_success_body").partition("{label}")
+    return pre, Strong(label), post
 
 
 _CLAIM_BUTTON = ("display:inline-block;margin-top:12px;padding:10px 20px;background:#1f883d;color:#fff;"
                  "border:0;border-radius:6px;font:inherit;text-decoration:none;cursor:pointer")
 
 
-def _claim_result_page(title: str, body: str, action: str = "") -> str:
-    action = action or f"<p><a href='/' style='{_CLAIM_BUTTON}'>{t('stars.back_to_celerp')}</a></p>"
-    return (
-        "<!doctype html><meta charset=utf-8><title>Celerp</title>"
-        "<div style='font-family:system-ui,sans-serif;max-width:560px;margin:80px auto;"
-        "text-align:center;line-height:1.5'>"
-        f"<h1>{html.escape(title)}</h1><p style='color:#555'>{body}</p>"
-        f"{action}"
-        "</div>"
+def _claim_result_page(title: str, body, action=None):
+    """A standalone result page; *body* is text or nodes, *action* replaces the back link."""
+    if action is None:
+        action = P(A(t("stars.back_to_celerp"), href="/", style=_CLAIM_BUTTON))
+    return Html(
+        Head(Meta(charset="utf-8"), Title("Celerp")),
+        Body(Div(
+            H1(title), P(body, style="color:#555"), action,
+            style="font-family:system-ui,sans-serif;max-width:560px;margin:80px auto;"
+                  "text-align:center;line-height:1.5",
+        )),
     )
 
 
-def _claim_confirm_page(cred: str) -> str:
+def _claim_confirm_page(cred: str):
     """The relay returns the browser here by a GET carrying the credential; the badge is
     saved only when the signed-in user confirms it with a POST, so a link alone never
     stores a credential to whoever opens it."""
     action = (
-        "<form method='post' action='/stars/claim'>"
-        f"<input type='hidden' name='cred' value='{html.escape(cred, quote=True)}'>"
-        f"<button type='submit' style='{_CLAIM_BUTTON}'>{html.escape(t('stars.claim_confirm_button'))}</button></form>"
-        f"<p><a href='/' style='color:#555'>{t('stars.back_to_celerp')}</a></p>"
+        Form(
+            Input(type="hidden", name="cred", value=cred),
+            Button(t("stars.claim_confirm_button"), type="submit", style=_CLAIM_BUTTON),
+            method="post", action="/stars/claim",
+        ),
+        P(A(t("stars.back_to_celerp"), href="/", style="color:#555")),
     )
-    return _claim_result_page(t("stars.claim_confirm_title"), html.escape(t("stars.claim_confirm_body")), action)
+    return _claim_result_page(t("stars.claim_confirm_title"), t("stars.claim_confirm_body"), action)
 
 
 def setup_routes(app):
@@ -103,7 +108,7 @@ def setup_routes(app):
 
         cred = request.query_params.get("cred")
         if cred:
-            return HTMLResponse(_claim_confirm_page(cred))
+            return html_response(_claim_confirm_page(cred))
 
         # No cred yet: ask the API for the relay verify-start URL, return here after.
         return_url = str(request.base_url).rstrip("/") + "/stars/claim"
@@ -114,7 +119,7 @@ def setup_routes(app):
             except Exception:
                 url = None
         if not url:
-            return HTMLResponse(_claim_result_page(
+            return html_response(_claim_result_page(
                 t("stars.claim_unavailable_title"), t("stars.claim_unavailable_body")))
         return RedirectResponse(url, status_code=302)
 
@@ -132,11 +137,10 @@ def setup_routes(app):
                 r = await c.post("/stars/badge", json={"cred": cred})
                 data = r.json()
             except Exception:
-                return HTMLResponse(_claim_result_page(
+                return html_response(_claim_result_page(
                     t("stars.claim_save_failed_title"), t("stars.claim_save_failed_body")))
         if data.get("error") or not data.get("badge"):
-            return HTMLResponse(_claim_result_page(
+            return html_response(_claim_result_page(
                 t("stars.claim_no_star_title"), t("stars.claim_no_star_body")))
-        label = html.escape(data["badge"]["label"])
-        return HTMLResponse(_claim_result_page(
-            t("stars.claim_success_title"), _claim_success_body(label)))
+        return html_response(_claim_result_page(
+            t("stars.claim_success_title"), _claim_success_body(data["badge"]["label"])))

@@ -8,12 +8,13 @@ starts after Celerp restarts. Either way the Modules button is the way forward."
 
 from __future__ import annotations
 
-from fasthtml.common import A, Div, P, to_xml
+from fasthtml.common import A, Div, P
 from starlette.requests import Request
-from starlette.responses import HTMLResponse
+from starlette.responses import Response
 
 from celerp.modules.loader import is_running, module_label
 from celerp.modules.registry import uses_module
+from ui.components.encode import html_response
 
 
 def can_open(company: dict, module: str) -> bool:
@@ -21,7 +22,7 @@ def can_open(company: dict, module: str) -> bool:
     return uses_module(company.get("settings"), module) and is_running(module)
 
 
-async def module_off_page(request: Request, module: str, company: dict) -> HTMLResponse | None:
+async def module_off_page(request: Request, module: str, company: dict) -> Response | None:
     """The refusal page for *module*, or None when the company can open it."""
     if can_open(company, module):
         return None
@@ -50,4 +51,4 @@ async def module_off_page(request: Request, module: str, company: dict) -> HTMLR
         body = (page_header(t(title_key)),
                 Div(P(t(message_key, module=module_label(module)), cls="flash flash--error"), way_on))
     page = await base_shell(*body, title=t(title_key), request=request, company_settings=settings or {})
-    return HTMLResponse(to_xml(page), status_code=403)
+    return html_response(page, status_code=403)

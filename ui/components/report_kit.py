@@ -26,6 +26,7 @@ from ui.api_client import APIError
 from ui.components.shell import no_access_text
 from ui.components.table import fmt_money
 from ui.i18n import t
+from ui.components.encode import raw_html
 
 # SVG icons (matching documents.py style)
 ICON_CSV_EXPORT = (
@@ -71,13 +72,13 @@ def action_bar(print_path: str, csv_path: str, params) -> FT:
     """
     return Div(
         A(
-            NotStr(ICON_CSV_EXPORT),
+            raw_html(ICON_CSV_EXPORT),
             href=href(csv_path, params),
             cls="btn btn--ghost btn--icon",
             title=t("btn.export_csv"),
         ),
         A(
-            NotStr(ICON_PRINT),
+            raw_html(ICON_PRINT),
             href=href(print_path, params),
             target="_blank",
             cls="btn btn--ghost btn--icon",

@@ -25,6 +25,7 @@ from ui.routes.company_backup import SETTINGS as _RESTORE
 from ui.routes.migrations import COMPANY as _MIGRATE
 from ui.routes.setup import has_business_type
 from urllib.parse import urlencode as _urlencode
+from ui.components.encode import raw_html
 
 # The invoice lists the receivables cards open: what is overdue, and what still awaits payment.
 _AR_OVERDUE_HREF = "/docs?type=invoice&overdue_only=1"
@@ -1034,7 +1035,7 @@ async def _getting_started_card(token: str, settings: dict, role: str) -> FT | N
         await _getting_started_ai_line(token, settings, role),
         P(t("dashboard.getting_started_where"), cls="getting-started-note"),
         options,
-        NotStr("<!-- /getting-started-card -->"),
+        raw_html("<!-- /getting-started-card -->"),
         id="getting-started-card",
         cls="getting-started-card",
     )

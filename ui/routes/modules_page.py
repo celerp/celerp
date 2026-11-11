@@ -29,7 +29,7 @@ import logging
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
+from starlette.responses import JSONResponse, RedirectResponse
 
 from celerp.modules.license import PAID_MODULE_REFUSAL, marketplace_flags
 
@@ -49,6 +49,7 @@ from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 
 from ui.routes.settings import _token
 from ui.security import not_permitted_redirect, owner_refusal
+from ui.components.encode import html_response, raw_html
 
 logger = logging.getLogger(__name__)
 
@@ -152,7 +153,7 @@ def _tabs(active: str, lang: str) -> FT:
     # The marketplace tab carries a shield badge on the left: its listings are
     # vetted (official and verified only), so the same trust mark used on the
     # rows also labels the tab.
-    badge = Span(NotStr(_SHIELD_SVG), cls="trust-icon trust-icon--trusted tab-badge",
+    badge = Span(raw_html(_SHIELD_SVG), cls="trust-icon trust-icon--trusted tab-badge",
                  aria_hidden="true")
     items = [
         ("local", (t("modules.tab_local", lang),)),
@@ -568,7 +569,7 @@ _SHIELD_SVG = (
 
 def _trust_icon(tier: str, lang: str):
     tip = t("marketplace.official_tip", lang) if tier == "official" else t("marketplace.verified_tip", lang)
-    return Span(NotStr(_SHIELD_SVG), cls="trust-icon trust-icon--trusted",
+    return Span(raw_html(_SHIELD_SVG), cls="trust-icon trust-icon--trusted",
                 title=tip, aria_label=tip, role="img")
 
 
@@ -581,7 +582,7 @@ def _source_icon(is_default: bool, lang: str):
     if not is_default:
         return None
     tip = t("modules.source_default", lang)
-    return Span(NotStr(_SHIELD_SVG),
+    return Span(raw_html(_SHIELD_SVG),
                 cls="module-source-icon trust-icon trust-icon--default",
                 title=tip, aria_label=tip, role="img")
 
@@ -987,12 +988,12 @@ def _load_error_message(label: str, error: str, lang: str) -> str:
     return t("modules.load_failed", lang, label=label, error=error)
 
 
-def _toast(fragment: FT, message: str | None, *, error: bool = True) -> HTMLResponse:
+def _toast(fragment: FT, message: str | None, *, error: bool = True) -> Response:
     """Swap the fragment in place and surface the message as a corner toast, the
     app-wide notice surface, rather than crowding the fragment itself. A None
     message swaps silently."""
     headers = toast_header(message, "error" if error else "success") if message else {}
-    return HTMLResponse(to_xml(fragment), headers=headers)
+    return html_response(fragment, headers=headers)
 
 
 def _close_gate_host() -> FT:
@@ -1184,7 +1185,7 @@ def setup_routes(app):
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             return _unavailable_panel(lang)
-        return HTMLResponse("", headers={"HX-Refresh": "true"})
+        return html_response((), headers={"HX-Refresh": "true"})
 
     @app.post("/modules/{module_name}/enable")
     async def module_enable(request: Request, module_name: str):
@@ -1433,7 +1434,7 @@ def setup_routes(app):
             catalog.discard_staged_archive(module_id, download_token)
         except OSError:
             pass
-        return HTMLResponse("", headers={"HX-Redirect": "/modules?tab=local"})
+        return html_response((), headers={"HX-Redirect": "/modules?tab=local"})
 
     @app.post("/modules/restart")
     async def module_restart(request: Request):
@@ -1469,7 +1470,7 @@ def setup_routes(app):
                 pass
             return _local_panel(modules, lang=lang, flash_text=e.detail or str(e), flash_error=True,
                                 owner=await api.installation_owner(token))
-        resp = HTMLResponse(to_xml(_restarting_panel(lang, panel_id="local-modules-panel")))
+        resp = html_response(_restarting_panel(lang, panel_id="local-modules-panel"))
         if new:
             set_session_cookies(resp, new[0], new[1], request)
         return resp
@@ -1611,7 +1612,7 @@ def setup_routes(app):
         # Installed: land on the Installed tab where the new module's row sits
         # with its Enable button - the next step in the flow - rather than
         # leaving the user on the catalog row.
-        return HTMLResponse("", headers={"HX-Redirect": "/modules?tab=local"})
+        return html_response((), headers={"HX-Redirect": "/modules?tab=local"})
 
     @app.get("/modules/community-panel")
     async def community_panel(request: Request):

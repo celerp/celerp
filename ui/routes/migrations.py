@@ -57,6 +57,7 @@ from ui.security import company_owner
 from ui.routes.auth import auth_header, finish_sign_in
 from ui.routes.setup import browser_timezone_field, company_choice_script, setup_timezone
 from ui.streaming import ClosingStreamingResponse
+from ui.components.encode import html_response
 
 SCAN_COOKIE = "celerp_migration_scan"
 SCAN_TTL_SECONDS = 3600
@@ -172,7 +173,7 @@ def wizard_page(request: Request, *content, status_code: int = 200, title: str =
                       title=page_title(title))
     if status_code == 200:
         return page
-    return HTMLResponse(to_xml(page), status_code=status_code)
+    return html_response(page, status_code=status_code)
 
 
 def wizard_table(*parts, cls: str = "data-table") -> FT:
@@ -268,12 +269,12 @@ def api_token(request: Request, mode: WizardMode) -> str | None:
     return None if mode.bootstrap or mode.start_company else get_token(request)
 
 
-def upload_again_page(request: Request, mode: WizardMode, message: str) -> HTMLResponse:
+def upload_again_page(request: Request, mode: WizardMode, message: str) -> Response:
     """An upload that is gone: the reason, and the way to upload the file again."""
     resp = wizard_page(request, auth_header(t(mode.title)), flash(message),
                        A(t("migration.upload_again"), href=mode.base, cls="btn btn--primary btn--full"),
                        back_link(mode.back), title=mode.title)
-    return resp if isinstance(resp, HTMLResponse) else HTMLResponse(to_xml(resp))
+    return resp if isinstance(resp, Response) else html_response(resp)
 
 
 def _expired(request: Request, mode: WizardMode, message: str | None = None):
@@ -556,16 +557,16 @@ async def _choose_source(request: Request, mode: WizardMode):
 
 
 def _with_cleared_scan(resp, request: Request, mode: WizardMode):
-    if not isinstance(resp, HTMLResponse):
-        resp = HTMLResponse(to_xml(resp))
+    if not isinstance(resp, Response):
+        resp = html_response(resp)
     _clear_scan_cookie(resp, mode, request)
     return resp
 
 
 def _with_draft(resp, request: Request, mode: WizardMode, token: str | None):
     """``resp`` keeping the export-set draft ``token``, or dropping a draft the API no longer holds."""
-    if not isinstance(resp, HTMLResponse):
-        resp = HTMLResponse(to_xml(resp))
+    if not isinstance(resp, Response):
+        resp = html_response(resp)
     if token:
         _set_cookie(resp, DRAFT_COOKIE, token, mode, request)
     else:
@@ -793,7 +794,7 @@ async def _requests_panel(request: Request, mode: WizardMode, *, values: dict | 
         id="export-request-form", hx_post=f"{mode.base}/requests", hx_target="#export-requests",
         hx_swap="outerHTML", method="post", action=f"{mode.base}/requests", cls="auth-form",
     ) if asked else P(sources_error or t("migration.export_requests_no_source"), cls="form-hint")
-    return HTMLResponse(to_xml(Div(
+    return html_response(Div(
         H3(t("migration.export_requests_title")),
         P(t("migration.export_requests_hint"), cls="form-hint"),
         P(notice, cls="flash flash--success") if notice else "",
@@ -801,7 +802,7 @@ async def _requests_panel(request: Request, mode: WizardMode, *, values: dict | 
         form,
         flash(list_error) if list_error else _requests_table(mode, rows, {s["key"]: s["display_name"] for s in sources}),
         id="export-requests", cls="export-requests",
-    )))
+    ))
 
 
 async def _requests(request: Request, mode: WizardMode):
@@ -952,7 +953,7 @@ async def _moves_panel(request: Request, mode: WizardMode, *, values: dict | Non
         id="move-request-form", hx_post=f"{mode.base}/move-requests", hx_target="#move-requests",
         hx_swap="outerHTML", method="post", action=f"{mode.base}/move-requests", cls="auth-form",
     )
-    return HTMLResponse(to_xml(Div(
+    return html_response(Div(
         H3(t("migration.move_requests_title")),
         P(t("migration.move_requests_hint"), cls="form-hint"),
         P(notice, cls="flash flash--success") if notice else "",
@@ -960,7 +961,7 @@ async def _moves_panel(request: Request, mode: WizardMode, *, values: dict | Non
         form,
         flash(list_error) if list_error else _moves_table(mode, rows, {s["key"]: s["display_name"] for s in sources}),
         id="move-requests", cls="export-requests",
-    )))
+    ))
 
 
 async def _moves(request: Request, mode: WizardMode):
@@ -1116,9 +1117,9 @@ async def _upload_several(request: Request, mode: WizardMode):
             str(form.get("source", "")).strip() or None, str(form.get("prepared_by", "")).strip())
     except APIError as e:
         detail = e.detail.get("prepared_by") if isinstance(e.detail, dict) else e.detail
-        return HTMLResponse(to_xml(await _several_panel(request, mode, error=str(detail))))
-    return HTMLResponse(to_xml(await _several_panel(
-        request, mode, rows=body["items"], notice=t("migration.several_added", count=len(uploads)))))
+        return html_response(await _several_panel(request, mode, error=str(detail)))
+    return html_response(await _several_panel(
+        request, mode, rows=body["items"], notice=t("migration.several_added", count=len(uploads))))
 
 
 def _file_id(request: Request) -> str | None:
@@ -1147,12 +1148,12 @@ async def _remove_several(request: Request, mode: WizardMode):
     if (denied := await gate(request, mode)) is not None:
         return denied
     if (file_id := _file_id(request)) is None:
-        return HTMLResponse(to_xml(await _several_panel(request, mode, error=t("migration.several_gone"))))
+        return html_response(await _several_panel(request, mode, error=t("migration.several_gone")))
     try:
         await api.migration_several_remove(get_token(request), file_id)
     except APIError as e:
-        return HTMLResponse(to_xml(await _several_panel(request, mode, error=str(e.detail))))
-    return HTMLResponse(to_xml(await _several_panel(request, mode, notice=t("migration.several_removed"))))
+        return html_response(await _several_panel(request, mode, error=str(e.detail)))
+    return html_response(await _several_panel(request, mode, notice=t("migration.several_removed")))
 
 
 async def _sample(request: Request, mode: WizardMode):
@@ -1709,7 +1710,7 @@ def migrations_routes(app) -> None:
             # A poll swaps its answer into the block, so it never gets the full error page.
             if e.status in (503, 504):
                 return _reconnecting_fragment(run_id)
-            return HTMLResponse("", headers={"HX-Refresh": "true"})
+            return html_response((), headers={"HX-Refresh": "true"})
 
     async def _action(request: Request, run_id: str, action: str):
         token = get_token(request)
@@ -2121,7 +2122,7 @@ def _xero_attachments_slot(run: dict) -> FT | str:
 
 
 def _xero_attachments_panel(request: Request, run_id: str, fetch: dict, *, error: str | None = None,
-                            account: bool = False) -> HTMLResponse:
+                            account: bool = False) -> Response:
     """The Xero attachments section, swapped in place by every action on it and refreshed
     every few seconds while a fetch is under way."""
     base = f"/migrations/{run_id}/xero-attachments"
@@ -2167,7 +2168,7 @@ def _xero_attachments_panel(request: Request, run_id: str, fetch: dict, *, error
     message = account_panel(get_lang(request), next_action="xero-attachments") if account \
         else (flash(error) if error else "")
     polling = {"hx_get": base, "hx_trigger": "every 5s", "hx_swap": "outerHTML"} if status in _XERO_LIVE else {}
-    return HTMLResponse(to_xml(Div(
+    return html_response(Div(
         H3(t("migration.xero_attachments_title")),
         P(t("migration.xero_attachments_hint"), cls="form-hint"),
         message,
@@ -2185,10 +2186,10 @@ def _xero_attachments_panel(request: Request, run_id: str, fetch: dict, *, error
             cls="mt-md",
         ) if unmatched else "",
         id="xero-attachments", cls="export-requests mt-md", **polling,
-    )))
+    ))
 
 
-async def _xero_attachments(request: Request, run_id: str, action: str = "") -> HTMLResponse:
+async def _xero_attachments(request: Request, run_id: str, action: str = "") -> Response:
     token = get_token(request)
     error, account = None, False
     if action:

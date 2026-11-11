@@ -8,7 +8,7 @@ from decimal import Decimal
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse
+from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError, error_message
@@ -28,6 +28,7 @@ from ui.routes.reports import _company_today, _get_company
 from celerp.services.business_time import business_today
 from celerp.services.ledger_display import run_reference
 from celerp.services.record_quantities import INCOMPLETE_RUN_STATUSES
+from ui.components.encode import html_response
 
 logger = logging.getLogger(__name__)
 
@@ -633,10 +634,7 @@ def setup_routes(app):
             msg, kind = t(key, n=made), "success"
         else:
             msg, kind = t("manufacturing.nothing_to_make_selected"), "info"
-        return HTMLResponse(
-            to_xml(_demand_table(lines, kept)),
-            headers=toast_header(msg, kind),
-        )
+        return html_response(_demand_table(lines, kept), headers=toast_header(msg, kind))
 
     @app.get("/manufacturing/requirements")
     async def requirements_print(request: Request):
@@ -704,7 +702,7 @@ def setup_routes(app):
             return api.refusal_response(e)
         items = (await api.list_items(token, {"limit": 1000, "status": "all"})).get("items", [])
         items += (await deleted_items(token, [i.get("item_id") for i in order.get("inputs") or []])).values()
-        return HTMLResponse(to_xml(_run_sheet_print_view(order, items, await _company_today(token))))
+        return html_response(_run_sheet_print_view(order, items, await _company_today(token)))
 
     @app.get("/manufacturing/to-make-search")
     async def to_make_search(request: Request):
@@ -794,11 +792,8 @@ def setup_routes(app):
                                  *(w.rstrip(".") for w in why if w)]) + "."
             kind = "success" if done else "info"
         runs = _runs_for_status(orders, status)
-        return HTMLResponse(
-            to_xml(_order_table(runs, await _deleted_outputs(token, runs), today=await _company_today(token),
-                                kept_key=kept)),
-            headers=toast_header(msg, kind),
-        )
+        return html_response(_order_table(runs, await _deleted_outputs(token, runs), today=await _company_today(token),
+                                kept_key=kept), headers=toast_header(msg, kind))
 
     async def _reconcile_context(token: str, run_id: str) -> tuple[dict, list[dict]]:
         needs = await api.mfg_reconcile_needs(token, run_id)
@@ -952,7 +947,7 @@ def setup_routes(app):
                     return P(t("error.session_expired"), cls="cell-error")
                 refused = error_message(e)  # e.g. the run closed meanwhile: say so
         table = await _incomplete_runs_table(token)
-        return HTMLResponse(to_xml(table), headers=toast_header(refused, "error")) if refused else table
+        return html_response(table, headers=toast_header(refused, "error")) if refused else table
 
     # ── Work Centers ──────────────────────────────────────────────────────
     async def _wc_table_response(token: str) -> FT:
@@ -966,11 +961,10 @@ def setup_routes(app):
         loc_names = {l.get("id"): l.get("name") for l in locations}
         return _wc_table(centers, loc_names)
 
-    async def _wc_error_response(token: str, message: str) -> HTMLResponse:
+    async def _wc_error_response(token: str, message: str) -> Response:
         # A refused work-center action re-renders the table and says why through
         # the corner toast, rather than leaving the row silently reverted.
-        return HTMLResponse(to_xml(await _wc_table_response(token)),
-                            headers=toast_header(message, "error"))
+        return html_response(await _wc_table_response(token), headers=toast_header(message, "error"))
 
     @app.get("/manufacturing/work-centers")
     async def work_centers_page(request: Request):

@@ -18,13 +18,14 @@ from __future__ import annotations
 from urllib.parse import urlparse
 
 import httpx
-from fasthtml.common import A, Div, H1, P, to_xml
+from fasthtml.common import A, Div, H1, P
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse
+from starlette.responses import RedirectResponse
 
 from ui.components.shell import auth_shell, page_title
 from ui.config import get_token as _token
 from ui.i18n import t
+from ui.components.encode import html_response
 
 # The direct-checkout paths on the trusted Celerp handoff host that take a
 # handoff token. A destination outside these (the Enterprise route, a partner
@@ -55,7 +56,7 @@ def _is_direct_checkout(destination: str) -> bool:
     return parsed.hostname == trusted_host and parsed.path in _DIRECT_CHECKOUT_PATHS
 
 
-def _mint_failed_page() -> str:
+def _mint_failed_page():
     """Neutral error page shown when the handoff mint could not complete. No
     redirect and no fabricated checkout URL: the user stays put and can retry.
 
@@ -75,7 +76,7 @@ def _mint_failed_page() -> str:
         ),
         title=page_title("commercial.checkout_unavailable_title"),
     )
-    return to_xml(page)
+    return page
 
 
 def _append_token(url: str, token: str) -> str:
@@ -139,6 +140,6 @@ def setup_routes(app):
         try:
             token = await _mint_handoff_token("topup" if intent == "topup" else "subscribe")
         except (RuntimeError, httpx.HTTPError):
-            return HTMLResponse(_mint_failed_page())
+            return html_response(_mint_failed_page())
 
         return RedirectResponse(_append_token(destination, token), status_code=302)

@@ -18,6 +18,7 @@ import pytest
 from ui.components.encode import (
     Admitted,
     as_js,
+    hole_positions,
     inert_media_type,
     js,
     js_value,
@@ -128,6 +129,15 @@ def test_raw_html_text_and_quoted_attribute_holes_render_escaped(template):
 def test_js_refuses_holes_in_literals(template):
     with pytest.raises(ValueError):
         js(template, "x")
+
+
+@pytest.mark.parametrize("template", ["x { y", "}", ".a { color: red } }"])
+def test_malformed_templates_are_refused(template):
+    assert hole_positions(template, "html") == ["malformed template"]
+    with pytest.raises(ValueError):
+        raw_html(template)
+    with pytest.raises(ValueError):
+        js(template)
 
 
 def test_js_whole_expression_hole_is_one_literal():

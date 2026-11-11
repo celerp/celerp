@@ -27,7 +27,7 @@ from urllib.parse import quote, urlparse
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, Response
+from starlette.responses import Response
 
 import ui.api_client as api
 from ui.api_client import APIError
@@ -37,6 +37,7 @@ from ui.i18n import t, get_lang, tier_label
 from ui.routes.settings import _token
 from ui.security import is_safe_authorize_url, owner_refusal
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
+from ui.components.encode import html_response
 
 POLL_MAX = 100   # 100 x 3s = 5 minutes, then stop polling
 
@@ -160,10 +161,10 @@ def gate_modal(panel: FT) -> FT:
         id="account-gate-host")
 
 
-def gate_modal_response(panel: FT) -> HTMLResponse:
+def gate_modal_response(panel: FT) -> Response:
     """gate_modal as an HTMX response: retargets the swap at the modal host
     regardless of which control triggered it."""
-    return HTMLResponse(to_xml(gate_modal(panel)), headers={
+    return html_response(gate_modal(panel), headers={
         "HX-Retarget": "#account-gate-host", "HX-Reswap": "outerHTML"})
 
 
@@ -511,9 +512,7 @@ def setup_routes(app):
         if not await _account_allowed(request):
             # Below-admin click on an account entry point: say why nothing
             # opens instead of swapping in silence.
-            return HTMLResponse(
-                to_xml(Div(id=panel_id)),
-                headers=toast_header(t("account.admin_only", lang), "info"))
+            return html_response(Div(id=panel_id), headers=toast_header(t("account.admin_only", lang), "info"))
         intent = request.query_params.get("intent", "signup")
         next_action = _next_from(request.query_params.get("next"))
         methods = await signup_methods(token) if intent != "claim" else {}

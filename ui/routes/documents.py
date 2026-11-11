@@ -520,6 +520,7 @@ from celerp.services.list_behavior import (
     behavior as _list_behavior, status_key as _list_status_key, list_fact, SUPPLIER_DOC_TYPES,
     LIST_TYPES as _REG_LIST_TYPES, LIST_STATUSES as _LIST_STATUSES, DRAFT as _LD, FINALIZED as _LF, CLOSED as _LC,
 )
+from ui.components.encode import html_response, raw_html, to_markup
 
 
 def _list_status_label(state: dict) -> str:
@@ -2447,7 +2448,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 raise
-            return _HR(to_xml(P(error_message(e))), status_code=e.status)
+            return _HR(to_markup(P(error_message(e))), status_code=e.status)
         layout = request.query_params.get("layout") or None
         lst.setdefault("doc_type", "list")
         if not lst.get("issue_date"):
@@ -2490,7 +2491,7 @@ def setup_routes(app):
             if e.status == 401:
                 raise
             from starlette.responses import HTMLResponse as _HR
-            return _HR(to_xml(P(error_message(e))), status_code=e.status)
+            return _HR(to_markup(P(error_message(e))), status_code=e.status)
         # Inject company fields
         doc = await _merge_company_letterhead(token, doc)
         # Fill any missing customer-facing fields independently from the selected contact.
@@ -3289,14 +3290,10 @@ celerpUpdateBulkAlloc();
         else:
             display_value = doc.get(field)
         from starlette.responses import Response as _R
-        return _R(
-            to_xml(_doc_display_cell(entity_id, field, display_value)),
-            media_type="text/html",
-            headers={"HX-Trigger": _json.dumps({
+        return html_response(_doc_display_cell(entity_id, field, display_value), headers={"HX-Trigger": _json.dumps({
                 "celerpListVersion": {"version": doc.get("version")},
                 **(doc_money_redraw() if field in DOC_MONEY_FIELDS else {}),
-            })},
-        )
+            })})
 
     # Line-item fields editable on finalized docs (description, account_code)
     _LI_FINALIZED_EDITABLE = {"description", "account_code"}
@@ -4395,7 +4392,7 @@ celerpUpdateBulkAlloc();
             url_row = Div(
                 Input(type="text", value=view_url, readonly=True, onclick="this.select()",
                       cls="form-input share-url__input", id=input_id),
-                Button(NotStr(_ICON_COPY), type="button", cls="share-url__copy",
+                Button(raw_html(_ICON_COPY), type="button", cls="share-url__copy",
                        title=t("btn.copy"), aria_label=t("btn.copy"),
                        # execCommand on the selected input covers plain-HTTP (LAN)
                        # origins where navigator.clipboard does not exist.
@@ -5321,13 +5318,9 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             return _action_error(e)
         cell = _doc_display_cell(entity_id, field, lst.get(field), "list")
-        return _R(
-            to_xml(cell),
-            media_type="text/html",
-            headers={"HX-Trigger": _json.dumps({
+        return html_response(cell, headers={"HX-Trigger": _json.dumps({
                 "celerpListVersion": {"version": result.get("version")},
-            })},
-        )
+            })})
 
     @app.post("/lists/{entity_id}/lines")
     async def save_list_lines(request: Request, entity_id: str):
@@ -5586,10 +5579,9 @@ celerpUpdateBulkAlloc();
             # Only a finalized audit (the locked counting manifest) gets the fast static tbody swap; a
             # draft audit is editable, so it reloads like every other building list to keep its inputs.
             # Read the header only (bounded page); the whole list array is never pulled.
-            from fasthtml.common import to_xml
             lst = (await api.get_list_page(token, entity_id, limit=1)).get("list", {}) or {}
             if (lst.get("list_type") or "") == "audit" and lst.get("status") in (_LF, _LC):
-                return to_xml(await _audit_line_tbody(token, entity_id, *_line_window(form)))
+                return to_markup(await _audit_line_tbody(token, entity_id, *_line_window(form)))
             return ""
         return await _proxy_scan(request, entity_id, "lists", _audit_tbody)
 
@@ -5599,7 +5591,6 @@ celerpUpdateBulkAlloc();
         Returns the re-rendered audit tbody for the same smooth #line-body swap scanning uses, with
         a notice counting the rows it changed, then naming the rows it left as they are."""
         from starlette.responses import Response as _R
-        from fasthtml.common import to_xml
         token = _token(request)
         if not token:
             return _R(t("error.session_expired"), status_code=401)
@@ -5611,8 +5602,7 @@ celerpUpdateBulkAlloc();
             return api.refusal_response(e)
         verb = "lines_scanned" if scanned else "lines_unscanned"
         message, persist = _with_notices(_count_text(f"documents.{verb}", result.get("changed") or 0), result)
-        return HTMLResponse(to_xml(await _audit_line_tbody(token, entity_id, *_line_window(form))),
-                            headers=toast_header(message, "info", persist=persist))
+        return html_response(await _audit_line_tbody(token, entity_id, *_line_window(form)), headers=toast_header(message, "info", persist=persist))
 
     @app.post("/lists/{entity_id}/line/{item_id}")
     async def list_audit_set_count(request: Request, entity_id: str, item_id: str):
@@ -5779,12 +5769,7 @@ celerpUpdateBulkAlloc();
         # list's new version, so its next line save neither drops the entry nor is refused as
         # someone else's change.
         value = _writeoff_line_field(lst, line_id, field)
-        return _R(
-            to_xml(_writeoff_display_cell(entity_id, line_id, field, value, opts, labels))
-            + to_xml(_writeoff_carry_input(line_id, field, value, oob=True)),
-            media_type="text/html",
-            headers={"HX-Trigger": _json.dumps({"celerpListVersion": {"version": lst.get("version")}})},
-        )
+        return html_response((_writeoff_display_cell(entity_id, line_id, field, value, opts, labels), _writeoff_carry_input(line_id, field, value, oob=True)), headers={"HX-Trigger": _json.dumps({"celerpListVersion": {"version": lst.get("version")}})})
 
     @app.get("/lists/{entity_id}/writeoff-line/{line_id}/{field}/display")
     async def list_writeoff_line_display(request: Request, entity_id: str, line_id: str, field: str):
@@ -7515,9 +7500,9 @@ def _doc_money(doc: dict) -> dict:
     customs = _list_column_policy(doc_type, (doc.get("list_type") or "") if doc_type == "list" else "")["customs"]
     total = doc.get("total_amount") if doc.get("total_amount") is not None else doc.get("total")
     line_tax_rows, stored_tax_rows = _doc_tax_rows(doc, currency, doc.get("status") == "draft")
-    return {"tax_rows_html": to_xml(line_tax_rows), "stored_tax_rows_html": to_xml(stored_tax_rows),
+    return {"tax_rows_html": to_markup(line_tax_rows), "stored_tax_rows_html": to_markup(stored_tax_rows),
             "subtotal": fmt_money(float(doc.get("subtotal") or 0), currency),
-            "discount_row_html": to_xml(_header_discount_row(doc, float(doc.get("discount_amount") or 0), currency)),
+            "discount_row_html": to_markup(_header_discount_row(doc, float(doc.get("discount_amount") or 0), currency)),
             "total": fmt_money(float((doc.get("subtotal") if customs else total) or 0), currency),
             "outstanding": fmt_money(float(doc_value(doc, "amount_outstanding") or 0), currency)}
 
@@ -8151,16 +8136,16 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         if pol["customs"]:
             # One shipment, two papers: printer icon = delivery note, globe icon =
             # commercial invoice; tooltips name the paper each one produces.
-            action_btns_print.append(A(NotStr(_ICON_PRINT), href=_print_href, target="_blank",
+            action_btns_print.append(A(raw_html(_ICON_PRINT), href=_print_href, target="_blank",
                                        cls="btn btn--ghost btn--icon", title=t("btn.print_delivery_note")))
-            action_btns_print.append(A(NotStr(_ICON_GLOBE), href=f"{_print_href}?layout=commercial_invoice",
+            action_btns_print.append(A(raw_html(_ICON_GLOBE), href=f"{_print_href}?layout=commercial_invoice",
                                        target="_blank", cls="btn btn--ghost btn--icon",
                                        title=t("btn.print_commercial_invoice")))
         else:
-            action_btns_print.append(A(NotStr(_ICON_PRINT), href=_print_href, target="_blank", cls="btn btn--ghost btn--icon", title=t("btn.print")))
+            action_btns_print.append(A(raw_html(_ICON_PRINT), href=_print_href, target="_blank", cls="btn btn--ghost btn--icon", title=t("btn.print")))
         # CSV line items export/import icons
         action_btns_print.append(
-            A(NotStr(_ICON_CSV_EXPORT), href=f"{_base}/items/csv",
+            A(raw_html(_ICON_CSV_EXPORT), href=f"{_base}/items/csv",
               cls="btn btn--ghost btn--icon", title=t("doc.export_line_items_csv")),
         )
         if is_draft:
@@ -8228,7 +8213,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         # without the select-something-else-and-back workaround. Browser-style reload glyph,
         # so its meaning is recognizable at a glance.
         _reprice_icon = Button(
-            NotStr(
+            raw_html(
                 '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
                 'stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
                 '<path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/></svg>'

@@ -8,7 +8,7 @@ from urllib.parse import quote, urlencode
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse, Response
+from starlette.responses import RedirectResponse, Response
 
 from celerp.services.business_time import business_today
 import ui.api_client as api
@@ -22,6 +22,7 @@ from ui.i18n import t
 from celerp_fixed_assets.files import ASSET_FILE_TAGS
 from celerp_fixed_assets.ui_routes import (_STACK, _error_box, _error_text, _field, _hx_write, _input, _page,
                                            _refuse_if_switched, _refused, _send, _send_form, _text, _token)
+from ui.components.encode import to_markup
 
 _CHECKS = "/fixed-assets/checks"
 
@@ -309,7 +310,7 @@ def setup_physical_routes(app) -> None:
             checks = (await api.fixed_assets_get(token, "/checks"))["items"]
         except APIError as e:
             return Response(status_code=204, headers=toast_header(_error_text(e), "error", persist=True))
-        return Response(to_xml(_checks_list(checks, str(get_claims(request).get("sub", "")))),
+        return Response(to_markup(_checks_list(checks, str(get_claims(request).get("sub", "")))),
                         headers=toast_header(t("fixed_assets.check_already", number=check["number"]), "info")
                         if check.get("already")
                         else toast_header(t("fixed_assets.check_recorded", number=check["number"])))

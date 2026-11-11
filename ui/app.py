@@ -59,7 +59,9 @@ from ui.routes import (
     sync_accounts, help, settings_menu,
 )
 from fasthtml.common import *
-from starlette.responses import HTMLResponse
+from starlette.responses import PlainTextResponse
+
+from ui.components.encode import html_response, inert_media_type
 
 # Public paths that don't require auth
 _PUBLIC = {"/login", "/setup", "/logout", "/static", "/health", "/api/labels/preview",
@@ -371,7 +373,6 @@ async def _module_refusal(request: Request, module: str) -> Response | None:
     token = request.cookies.get(COOKIE_NAME)
     if not token:
         return _auth_guard(request)
-    from fasthtml.common import to_xml
     from ui.components.shell import minimal_shell, page_header
     from ui.i18n import t
     try:
@@ -389,7 +390,7 @@ async def _module_refusal(request: Request, module: str) -> Response | None:
             title=t("page.api_unavailable"),
             request=request,
         )
-        return HTMLResponse(to_xml(page), status_code=exc.status)
+        return html_response(page, status_code=exc.status)
     from celerp.modules.loader import reads_when_off
     if reads_when_off(request.scope, module):
         return None
@@ -460,7 +461,7 @@ app.add_middleware(CallerMiddleware)
 
 # ── Error handlers ─────────────────────────────────────────────────────────────
 
-async def ui_404_handler(request: Request, exc) -> HTMLResponse:
+async def ui_404_handler(request: Request, exc) -> Response:
     from ui.components.shell import base_shell, page_header
     from ui.i18n import t
     from fasthtml.common import A, Div, P
@@ -474,13 +475,12 @@ async def ui_404_handler(request: Request, exc) -> HTMLResponse:
         title=t("error.not_found_title"),
         request=request,
     )
-    from fasthtml.common import to_xml
-    return HTMLResponse(to_xml(page), status_code=404)
+    return html_response(page, status_code=404)
 
 app.exception_handlers[404] = ui_404_handler
 
 
-async def ui_500_handler(request: Request, exc) -> HTMLResponse:
+async def ui_500_handler(request: Request, exc) -> Response:
     import logging as _logging
     _logging.getLogger(__name__).error("UI 500: %s", exc, exc_info=True)
     from ui.components.shell import base_shell, page_header
@@ -496,8 +496,7 @@ async def ui_500_handler(request: Request, exc) -> HTMLResponse:
         title=t("error.server_error_title"),
         request=request,
     )
-    from fasthtml.common import to_xml
-    return HTMLResponse(to_xml(page), status_code=500)
+    return html_response(page, status_code=500)
 
 app.exception_handlers[500] = ui_500_handler
 
@@ -507,7 +506,7 @@ from ui.routes.reports import CompanySettingsUnavailable as _CompanySettingsUnav
 from starlette.responses import RedirectResponse as _RR
 
 
-async def ui_company_settings_unavailable_handler(request: Request, exc) -> HTMLResponse:
+async def ui_company_settings_unavailable_handler(request: Request, exc) -> Response:
     """A page that needs the company's timezone or fiscal year could not read them.
 
     Say so, with a way to try again, rather than showing dates worked out from a guess.
@@ -517,9 +516,9 @@ async def ui_company_settings_unavailable_handler(request: Request, exc) -> HTML
     from ui.i18n import t
     message = t("error.company_settings_unavailable")
     if request.headers.get("hx-request"):
-        return HTMLResponse(message, status_code=503)
+        return PlainTextResponse(message, status_code=503)
     from ui.components.shell import base_shell, page_header
-    from fasthtml.common import A, Button, Div, P, to_xml
+    from fasthtml.common import A, Button, Div, P
     page = await base_shell(
         page_header(t("error.company_settings_unavailable_title")),
         Div(
@@ -534,7 +533,7 @@ async def ui_company_settings_unavailable_handler(request: Request, exc) -> HTML
         title=t("error.company_settings_unavailable_title"),
         request=request,
     )
-    return HTMLResponse(to_xml(page), status_code=503)
+    return html_response(page, status_code=503)
 
 
 def _401_redirect(detail: str, request: Request | None = None):
@@ -604,7 +603,8 @@ async def proxy_attachment(request: Request, path: str) -> Response:
     # never contend with interactive page traffic for a connection.
     async with api._local_client(token=token, timeout=30.0, follow_redirects=False, bulk=True) as c:
         r = await c.get(f"/static/attachments/{path}")
-    return Response(content=r.content, media_type=r.headers.get("content-type", "application/octet-stream"), status_code=r.status_code)
+    return Response(content=r.content, media_type=inert_media_type(r.headers.get("content-type", "application/octet-stream")),
+                    status_code=r.status_code)
 
 @app.route("/static/try-again/{lang}.js")
 async def try_again_pattern_js(request: Request, lang: str) -> Response:

@@ -54,8 +54,12 @@ def hole_positions(template: str, kind: str) -> list[str]:
 
     html: a hole may sit in element text or a quoted value of an ordinary attribute.
     js: a hole may sit only where a whole JavaScript expression goes (js_value output).
+    A template ``str.format`` cannot parse (a lone brace) is refused as malformed.
     """
-    s = _holes(template)
+    try:
+        s = _holes(template)
+    except ValueError:
+        return ["malformed template"]
     bad: list[str] = []
     if kind == "js":
         for m in TOKEN_RE.finditer(s):

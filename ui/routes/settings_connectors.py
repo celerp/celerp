@@ -14,7 +14,7 @@ from urllib.parse import quote
 from fasthtml.common import *
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse
+from starlette.responses import RedirectResponse
 
 from ui.components.attrs import hx_vals
 from ui.components.shell import secret_input
@@ -29,6 +29,7 @@ from celerp.connectors.base import (
 )
 from celerp.connectors.ownership import PRODUCT_CHANNEL_PLATFORMS
 from celerp.connectors.sync_runner import CONNECTOR_RESET_ENTITY
+from ui.components.encode import html_response
 
 log = logging.getLogger(__name__)
 
@@ -1126,12 +1127,12 @@ def _entitlement_cta(lang: str = "en") -> FT:
     )
 
 
-def _connect_refused(platform: str, reason: str | FT) -> HTMLResponse:
+def _connect_refused(platform: str, reason: str | FT) -> Response:
     """A refused connect answers beside the form, so the values typed or pasted into it
     stay where they are for the user to check."""
     if isinstance(reason, str):
         reason = Span(reason, cls="flash flash--warning")
-    return HTMLResponse(to_xml(reason), headers={
+    return html_response(reason, headers={
         "HX-Retarget": f"#connector-connect-result-{platform}", "HX-Reswap": "innerHTML"})
 
 
@@ -1507,7 +1508,7 @@ async def _grant_action(request: Request, grant_id: str, action):
         errors.append(str(exc))
     table = _grants_table(grants, lang)
     table.children = (*(P(e, cls="flash flash--warning") for e in errors), *table.children)
-    return HTMLResponse(to_xml(table))
+    return html_response(table)
 
 
 def setup_routes(app):
@@ -1535,7 +1536,7 @@ def setup_routes(app):
                 page_header(t("accountant_access.title", lang), back),
                 P(t("accountant_access.owner_only", lang, owner=owner), cls="flash flash--warning"),
                 title=t("accountant_access.title", lang), nav_active="settings", request=request)
-            return HTMLResponse(to_xml(page), status_code=403)
+            return html_response(page, status_code=403)
         if (denied := await _check_permission(request, "manage_integrations")):
             return denied
         company = getattr(request.state, "auth_company", {})
@@ -1624,9 +1625,7 @@ def setup_routes(app):
         except api.APIError:
             grants = None
         refreshed = [] if grants is None else [_grants_table(grants, lang, hx_swap_oob="true")]
-        return HTMLResponse(
-            to_xml(Div(content, *refreshed)),
-            headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
+        return html_response(Div(content, *refreshed), headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
 
     @app.post("/settings/accountant-access/grants/{grant_id}/renew")
     async def accountant_access_renew(request: Request, grant_id: str):
@@ -1771,9 +1770,9 @@ def setup_routes(app):
             rows = _entity_direction_rows(platform, directions, lang, detail=detail, error=error)
             if detail:
                 # A first sync's preview on the same page shows the new directions.
-                return HTMLResponse(to_xml(rows), headers={} if error else {
+                return html_response(rows, headers={} if error else {
                     "HX-Trigger": "connectorDirectionsChanged"})
-            return HTMLResponse(to_xml(rows), headers={
+            return html_response(rows, headers={
                 "HX-Retarget": f"#connector-directions-{platform}", "HX-Reswap": "outerHTML"})
 
         catalog, _fetch_err, _needs_plan = await _fetch_catalog(RELAY_URL, company_id, token=token)
@@ -1927,7 +1926,7 @@ def setup_routes(app):
         if polling and runs and not _any_in_progress(runs):
             msg, kind = _sync_complete_toast(runs, attention, service_name(platform), lang)
             from ui.components.shell import toast_header
-            return HTMLResponse(to_xml(view), headers=toast_header(msg, kind))
+            return html_response(view, headers=toast_header(msg, kind))
         return view
 
     @app.post("/settings/connectors/{platform}/deposit-account")
@@ -2050,9 +2049,9 @@ def setup_routes(app):
         section = await _from_accountant_section(token, lang)
         date = result.get("ts") or "--"
         if result.get("already"):  # a stale tab repeated it; nothing new was posted
-            return HTMLResponse(to_xml(section), headers=toast_header(
+            return html_response(section, headers=toast_header(
                 t("accountant_access.from_already", lang, date=date), "info"))
-        return HTMLResponse(to_xml(section), headers=toast_header(
+        return html_response(section, headers=toast_header(
             t("accountant_access.from_posted", lang, date=date), "success"))
 
     @app.get("/settings/connectors/{platform}")

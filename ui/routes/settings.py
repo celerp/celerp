@@ -10,7 +10,7 @@ from typing import Any
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse, Response
+from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
 from ui.components.icons import import_icon
@@ -33,6 +33,7 @@ from celerp.services.pricing import ROUNDING_CHOICES
 from ui.i18n import category_label, get_lang, refusal_text, t, tier_label
 from ui.routes.documents import _action_error
 from ui.routes.setup import business_type_label, business_type_options
+from ui.components.encode import html_response, to_markup
 
 
 def _refusal_message(e: APIError) -> str:
@@ -472,7 +473,7 @@ def _toast_response(message: str, *fragments: FT):
     """Swap the given fragments and surface ``message`` as an auto-dismissing error toast,
     so no stale error text persists in the page."""
     from starlette.responses import HTMLResponse as _HR
-    body = "".join(to_xml(f) for f in fragments)
+    body = "".join(to_markup(f) for f in fragments)
     return _HR(body, headers=toast_header(message, "error"))
 
 
@@ -1073,8 +1074,7 @@ def setup_routes(app):
             changes = _business_type_change_lines(result.get("changes") or {})
             headline = t("settings.business_type_saved_restart" if restart else "settings.business_type_saved")
             # Changes made on the user's behalf stay on screen until dismissed.
-            return Response(to_xml(cell), media_type="text/html",
-                            headers=toast_header("\n".join([headline, *changes]), "success",
+            return html_response(cell, headers=toast_header("\n".join([headline, *changes]), "success",
                                                  persist=restart or bool(changes)))
 
         try:
@@ -1137,7 +1137,7 @@ def setup_routes(app):
         except APIError:
             # The reset is done; only the redraw failed, so the cell says so.
             return Td(flash(t("users.reset_password_done", lang), "success"), cls="cell")
-        return HTMLResponse(to_xml(card), headers={"HX-Retarget": "#users-card", "HX-Reswap": "outerHTML"})
+        return html_response(card, headers={"HX-Retarget": "#users-card", "HX-Reswap": "outerHTML"})
 
     # ── Users PATCH endpoints ────────────────────────────────────────
     @app.get("/settings/users/{user_id}/{field}/edit")
@@ -1764,7 +1764,7 @@ def setup_routes(app):
             return cell
         # Naming the country replaced the company's starting taxes: say so, with the way to them.
         from starlette.responses import HTMLResponse as _HR
-        return _HR(to_xml(cell), headers=toast_header(
+        return _HR(to_markup(cell), headers=toast_header(
             t("settings.taxes_set_from_country", country=country_name(saved["taxes_from"])), persist=True,
             action={"href": "/settings/sales?tab=taxes", "label": t("settings.review_taxes")}))
 
@@ -1989,7 +1989,6 @@ def setup_routes(app):
     @app.get("/topbar-company-switcher")
     async def topbar_company_switcher(request: Request):
         """HTMX fragment: company switcher pill for the topbar. Renders empty when only 1 company."""
-        from fasthtml.common import to_xml
         token = _token(request)
         if not token:
             return Response(content="", media_type="text/html")
@@ -2010,12 +2009,11 @@ def setup_routes(app):
             onchange="location=this.value?'/switch-company/'+this.value:'/companies'",
             cls="company-switcher-select",
         )
-        return Response(to_xml(widget), media_type="text/html")
+        return html_response(widget)
 
     @app.get("/topbar-relay-status")
     async def topbar_relay_status(request: Request):
         """HTMX fragment: return the relay dot span for the topbar user menu."""
-        from fasthtml.common import to_xml
         from ui.i18n import get_lang
         token = _token(request)
         lang = get_lang(request)
@@ -2043,7 +2041,7 @@ def setup_routes(app):
               cls="relay-dot-link", onclick="event.stopPropagation()"),
             id="relay-dot-wrap",
         )
-        return Response(to_xml(dot), media_type="text/html")
+        return html_response(dot)
 
     def _cloud_claim_selection(
         matches: list[dict], email: str, iid: str,
@@ -2546,14 +2544,11 @@ def setup_routes(app):
     # token is missing.
 
     def _backup_error(detail: str, lang: str = "en", flash_id: str | None = None) -> Response:
-        from fasthtml.common import Div, to_xml
+        from fasthtml.common import Div
         kwargs = {"cls": "empty-state-msg"}
         if flash_id:
             kwargs["id"] = flash_id
-        return Response(
-            content=to_xml(Div(detail, **kwargs)),
-            media_type="text/html",
-        )
+        return html_response(Div(detail, **kwargs))
 
     @app.get("/backup/active")
     async def backup_active(request: Request):
@@ -2580,7 +2575,7 @@ def setup_routes(app):
         if refused := await owner_refusal(request):
             return refused
         import ui.api_client as _api
-        from fasthtml.common import Div, to_xml
+        from fasthtml.common import Div
         token = _token(request)
         lang = get_lang(request)
         try:
@@ -2591,10 +2586,7 @@ def setup_routes(app):
             return _backup_error(msg, lang)
         items = data.get("items", []) if isinstance(data, dict) else []
         if not items:
-            return Response(
-                content=to_xml(Div(t("settings.no_backups_yet", lang), cls="empty-state-msg")),
-                media_type="text/html",
-            )
+            return html_response(Div(t("settings.no_backups_yet", lang), cls="empty-state-msg"))
         from fasthtml.common import A, Button, Div, Table, Thead, Tbody, Tr, Th, Td
         def _fmt(iso: str | None) -> str:
             if not iso:
@@ -2629,7 +2621,7 @@ def setup_routes(app):
             Tbody(*rows),
             cls="data-table",
         )
-        return Response(content=to_xml(table), media_type="text/html")
+        return html_response(table)
 
     @app.post("/backup/trigger")
     async def backup_trigger(request: Request):
@@ -2637,7 +2629,7 @@ def setup_routes(app):
         if refused := await owner_refusal(request):
             return refused
         import ui.api_client as _api
-        from fasthtml.common import Div, to_xml
+        from fasthtml.common import Div
         token = _token(request)
         lang = get_lang(request)
         try:
@@ -2650,10 +2642,7 @@ def setup_routes(app):
         except Exception:
             return _backup_error(t("settings.cloud_not_connected", lang), lang, flash_id="backup-flash")
         msg = t("settings.backup_triggered", lang)
-        resp = Response(
-            content=to_xml(Div(msg, cls="flash flash--success", id="backup-flash")),
-            media_type="text/html",
-        )
+        resp = html_response(Div(msg, cls="flash flash--success", id="backup-flash"))
         resp.headers["HX-Trigger"] = "backupDone"
         return resp
 
@@ -2672,11 +2661,8 @@ def setup_routes(app):
         try:
             stream, headers = await _api.export_backup(token)
         except _api.APIError as exc:
-            from fasthtml.common import Div, to_xml
-            return Response(
-                content=to_xml(Div(str(exc.detail), cls="flash flash--error")),
-                media_type="text/html",
-            )
+            from fasthtml.common import Div
+            return html_response(Div(str(exc.detail), cls="flash flash--error"))
         return ClosingStreamingResponse(
             stream,
             media_type=headers.get("content-type", "application/octet-stream"),
@@ -2697,11 +2683,8 @@ def setup_routes(app):
         try:
             stream, headers = await _api.export_backup(token, backup_id)
         except _api.APIError as exc:
-            from fasthtml.common import Div, to_xml
-            return Response(
-                content=to_xml(Div(str(exc.detail), cls="flash flash--error")),
-                media_type="text/html",
-            )
+            from fasthtml.common import Div
+            return html_response(Div(str(exc.detail), cls="flash flash--error"))
         return ClosingStreamingResponse(
             stream,
             media_type=headers.get("content-type", "application/octet-stream"),
@@ -2717,14 +2700,11 @@ def setup_routes(app):
         has ended, so the browser's session cookies are dropped as well. Any
         other status (403 for anyone but the installation owner) is an error flash.
         """
-        from fasthtml.common import Div, to_xml
+        from fasthtml.common import Div
         from celerp.services.backup_import import SESSION_ENDED_HEADER
         if r.status_code >= 400:
             detail = api.error_text(r, r.text[:200])
-            return Response(
-                content=to_xml(Div(detail, cls="flash flash--error", id="backup-flash")),
-                media_type="text/html",
-            )
+            return html_response(Div(detail, cls="flash flash--error", id="backup-flash"))
         resp = Response(content=r.text, media_type="text/html")
         if r.headers.get(SESSION_ENDED_HEADER):
             from ui.config import clear_session_cookies
@@ -2732,11 +2712,8 @@ def setup_routes(app):
         return resp
 
     def _recovery_error(detail: str) -> Response:
-        from fasthtml.common import Div, to_xml
-        return Response(
-            content=to_xml(Div(detail, cls="flash flash--error", id="backup-flash")),
-            media_type="text/html",
-        )
+        from fasthtml.common import Div
+        return html_response(Div(detail, cls="flash flash--error", id="backup-flash"))
 
     @app.post("/backup/restore/{backup_id}")
     async def backup_restore(request: Request, backup_id: str):
@@ -3207,7 +3184,6 @@ def _company_settings_card(company: dict, lang: str = "en", can_change_business_
 async def _companies_list_response(token: str, lang: str, *notice) -> Response:
     """The "Your companies" fragment: the companies to work in, plus a Deactivated
     section when one of the user's companies is deactivated, with any *notice* on top."""
-    from fasthtml.common import to_xml
     try:
         resp = await api.my_companies(token)
     except Exception:
@@ -3233,7 +3209,7 @@ async def _companies_list_response(token: str, lang: str, *notice) -> Response:
             Table(Tbody(*[_deactivated_company_row(c, lang) for c in deactivated]), cls="detail-table"),
             cls="companies-deactivated",
         ))
-    return Response(to_xml(Div(*parts) if len(parts) > 1 else content), media_type="text/html")
+    return html_response(Div(*parts) if len(parts) > 1 else content)
 
 
 def _deactivated_company_row(company: dict, lang: str) -> FT:

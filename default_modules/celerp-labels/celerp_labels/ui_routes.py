@@ -126,6 +126,7 @@ _FIELD_TYPE_MAP = {k: t for k, _label, t in _COMMON_FIELDS}
 # Default templates live in presets.py (shared with the API, which seeds them on first read).
 from .service import BARCODE_HEIGHT_DEFAULT
 from .service import display_label as _svc_display_label
+from ui.components.encode import html_response, raw_html, safe_url
 
 # The human-readable barcode number is a fallback for keying the code by hand, so it
 # defaults small and leaves the label's vertical space for actual content. A size set
@@ -1056,12 +1057,36 @@ async def _fetch_unit_map(api_base: str, token: str) -> dict[str, dict]:
     return build_unit_map(DEFAULT_UNITS)
 
 
+_PRINT_SHEET_CSS = """
+body { font-family: sans-serif; margin: 0; padding: 1rem; background: #fff; min-height: 0; }
+.label-sheet { display: flex; flex-wrap: wrap; gap: 0; }
+.label-item {
+  position: relative;
+  border: 1px solid #999;
+  font-size: 11px;
+  break-inside: avoid;
+  box-sizing: border-box;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.label-field { position: absolute; overflow: hidden; white-space: nowrap; line-height: 1.2; }
+.label-field--barcode svg, .label-field--qr svg { display: block; }
+.bc-human { font-family: monospace; font-size: 9px; display: block; text-align: center; }
+.no-print { display: flex; gap: 8px; margin-bottom: 1rem; }
+@media print {
+  .no-print { display: none; }
+  body { padding: 0; margin: 0; }
+  .label-sheet { gap: 0; padding: 0; }
+}
+"""
+
+
 def _printable_label_sheet(
     items: list[dict], template: dict | None, unit_map: dict[str, dict] | None = None, back_url: str = "/inventory"
 ) -> object:
     """Return a minimal printable HTML page that auto-triggers window.print(); Back returns to
     ``back_url``, an in-app path."""
-    from html import escape as html_escape
+    from fasthtml.common import A, Body, Button, Div, Head, Html, Link, Meta, Script, Span, Style, Title
 
     from celerp.services.units import DEFAULT_UNITS, build_unit_map
 
@@ -1077,13 +1102,11 @@ def _printable_label_sheet(
             template.get("height_mm"),
         )
 
-    from starlette.responses import HTMLResponse
     from celerp_labels.service import (QR_SIZE_MM, _make_barcode_svg, _make_qr_svg,
                                        display_label, resolve_field_value)
 
-    def _barcode_tag(val: str, module_height: int, wrap_style: str, avail_mm: float) -> str:
+    def _barcode_tag(val: str, module_height: int, wrap_style: str, avail_mm: float):
         res = _make_barcode_svg(val, module_height=module_height, stretch=True)
-        safe_val = html_escape(str(val), quote=True)
         if res:
             svg, natural_mm, _ = res
             # Natural width keeps every bar a whole multiple of the 0.2mm module;
@@ -1091,20 +1114,17 @@ def _printable_label_sheet(
             # the editor preview (BC_MIN_W_MM).
             bc_w = min(avail_mm, max(20.0, natural_mm))
             h_px = max(4, int(module_height) * 4)
-            return (
-                f'<div class="label-field label-field--barcode" data-value="{safe_val}"'
-                f' style="{wrap_style}width:{bc_w:.2f}mm;height:{h_px}px;">{svg}</div>'
-            )
-        return f'<div class="label-field label-field--barcode" style="{wrap_style}">{safe_val}</div>'
+            return Div(svg, cls="label-field label-field--barcode", data_value=str(val),
+                       style=f"{wrap_style}width:{bc_w:.2f}mm;height:{h_px}px;")
+        return Div(str(val), cls="label-field label-field--barcode", style=wrap_style)
 
-    def _qr_tag(val: str, wrap_style: str = "") -> str:
+    def _qr_tag(val: str, wrap_style: str = ""):
         svg = _make_qr_svg(val, stretch=True)
-        safe_val = html_escape(str(val), quote=True)
         # QR is a fixed 10mm square in the editor preview; match it here.
         qr_style = f"{wrap_style}width:{QR_SIZE_MM:g}mm;height:{QR_SIZE_MM:g}mm;"
         if svg:
-            return f'<div class="label-field label-field--qr" data-value="{safe_val}" style="{qr_style}">{svg}</div>'
-        return f'<div class="label-field label-field--qr" style="{qr_style}">{safe_val}</div>'
+            return Div(svg, cls="label-field label-field--qr", data_value=str(val), style=qr_style)
+        return Div(str(val), cls="label-field label-field--qr", style=qr_style)
 
     # Auto-stack step (mm) per field type — only for legacy fields that carry no x/y.
     # Auto-stack step (mm) per field type — only for legacy fields that carry no x/y.
@@ -1158,8 +1178,8 @@ def _printable_label_sheet(
                 # space the label needs for actual content. Default small; an explicit
                 # per-field size still wins.
                 fs_pt = float(fs) if fs not in (None, "") else BARCODE_TEXT_DEFAULT_PT
-                span_style = f' style="font-size:{fs_pt}pt;"'
-                field_lines.append(f'<div class="label-field label-field--barcode-text" style="{pos}"><span class="bc-human"{span_style}>{html_escape(str(val))}</span></div>')
+                field_lines.append(Div(Span(str(val), cls="bc-human", style=f"font-size:{fs_pt}pt;"),
+                                       cls="label-field label-field--barcode-text", style=pos))
             elif ftype == "qr":
                 field_lines.append(_qr_tag(val, wrap_style=pos))
             else:
@@ -1172,51 +1192,27 @@ def _printable_label_sheet(
                 # still printed regular. Emit it here too.
                 bold_style = "font-weight:700;" if f.get("bold") else ""
                 display = f"{field_label}: {val}" if field_label else val
-                field_lines.append(
-                    f'<div class="label-field" style="{pos}{fs_style}{bold_style}">{html_escape(str(display))}</div>')
-        label_rows.append(f'<div class="label-item">{"".join(field_lines)}</div>')
+                field_lines.append(Div(str(display), cls="label-field", style=f"{pos}{fs_style}{bold_style}"))
+        label_rows.append(Div(*field_lines, cls="label-item", style=f"width: {w_mm}mm; height: {h_mm}mm;"))
 
-    html = f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>Print Labels</title>
-<link rel="stylesheet" href="/static/app.css">
-<style>
-body {{ font-family: sans-serif; margin: 0; padding: 1rem; background: #fff; min-height: 0; }}
-.label-sheet {{ display: flex; flex-wrap: wrap; gap: 0; }}
-.label-item {{
-  position: relative;
-  border: 1px solid #999;
-  font-size: 11px;
-  break-inside: avoid;
-  width: {w_mm}mm;
-  height: {h_mm}mm;
-  box-sizing: border-box;
-  overflow: hidden;
-  flex-shrink: 0;
-}}
-.label-field {{ position: absolute; overflow: hidden; white-space: nowrap; line-height: 1.2; }}
-.label-field--barcode svg, .label-field--qr svg {{ display: block; }}
-.bc-human {{ font-family: monospace; font-size: 9px; display: block; text-align: center; }}
-.no-print {{ display: flex; gap: 8px; margin-bottom: 1rem; }}
-@media print {{
-  .no-print {{ display: none; }}
-  body {{ padding: 0; margin: 0; }}
-  .label-sheet {{ gap: 0; padding: 0; }}
-}}
-</style>
-</head>
-<body>
-<div class="no-print">
-  <button type="button" class="btn btn--primary" onclick="window.print()">{html_escape(t("btn.print"))}</button>
-  <a href="{html_escape(back_url)}" class="btn btn--secondary">{html_escape(t("label.back"))}</a>
-</div>
-<div class="label-sheet">{"".join(label_rows)}</div>
-<script>window.onload = function() {{ window.print(); }};</script>
-</body>
-</html>"""
-    return HTMLResponse(content=html)
+    page = Html(
+        Head(
+            Meta(charset="utf-8"),
+            Title("Print Labels"),
+            Link(rel="stylesheet", href="/static/app.css"),
+            Style(_PRINT_SHEET_CSS),
+        ),
+        Body(
+            Div(
+                Button(t("btn.print"), type="button", cls="btn btn--primary", onclick="window.print()"),
+                A(t("label.back"), href=safe_url(back_url), cls="btn btn--secondary"),
+                cls="no-print",
+            ),
+            Div(*label_rows, cls="label-sheet"),
+            Script("window.onload = function() { window.print(); };"),
+        ),
+    )
+    return html_response(page)
 
 
 def setup_ui_routes(app) -> None:
@@ -1491,13 +1487,12 @@ def setup_ui_routes(app) -> None:
             error = str(exc)
 
         # Nothing was saved: the editor keeps what was typed and says why.
-        from fasthtml.common import to_xml
         from ui.components.shell import toast_header
         panel = _editor_panel({
             "id": tmpl_id, "name": name, "format": fmt,
             "fields": fields, "width_mm": width_mm, "height_mm": height_mm,
         })
-        return HTMLResponse(to_xml(panel), headers=toast_header(t("labels.could_not_save", error=error), "error"))
+        return html_response(panel, headers=toast_header(t("labels.could_not_save", error=error), "error"))
 
     @app.get("/labels/print/{entity_id}")
     async def labels_print_single(request: Request, entity_id: str):
@@ -1590,7 +1585,7 @@ def setup_ui_routes(app) -> None:
         templates = await _fetch_templates(request)
         from fasthtml.common import Option, NotStr
         if not templates:
-            return NotStr('<option value="" disabled selected>No templates - create one in Settings</option>')
+            return raw_html('<option value="" disabled selected>No templates - create one in Settings</option>')
         opts = "".join(
             f'<option value="{tpl["id"]}">{tpl["name"]}</option>'
             for tpl in templates

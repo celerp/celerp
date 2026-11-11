@@ -37,6 +37,7 @@ from ui.routes.documents import _action_error, persist_then_post
 from ui.routes.reports import _get_company
 from ui.routes.settings import _check_permission
 from ui.i18n import refusal_text, sentence, t
+from ui.components.encode import html_response, to_markup
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,7 @@ async def _redrawn(draw, fallback=None, said: str = ""):
     except APIError as e:
         api.raise_if_signed_out(e)
         warning = f"{said} {t('subscriptions.done_not_redrawn')}".strip()
-        return HTMLResponse(to_xml(fallback() if fallback else ""), headers=toast_header(warning, "warning"))
+        return html_response(fallback() if fallback else "", headers=toast_header(warning, "warning"))
 
 
 # How a send from the page reads after it, by billing.send_status: the toast it answers with.
@@ -422,7 +423,7 @@ def _action_groups(entity_id: str, sub: dict, schedule: dict) -> tuple[FT, FT]:
 def _stored_schedule_views(entity_id: str, sub: dict, schedule: dict) -> str:
     """Every element showing the schedule, drawn from what the agreement stores, each swapped
     out of band by its id."""
-    return to_xml(tuple(v(hx_swap_oob="true") for v in _schedule_views(entity_id, sub, schedule) if v != ""))
+    return to_markup(tuple(v(hx_swap_oob="true") for v in _schedule_views(entity_id, sub, schedule) if v != ""))
 
 
 def _schedule_views(entity_id: str, sub: dict, schedule: dict) -> list[FT]:

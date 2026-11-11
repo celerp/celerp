@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse
+from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.components.icons import import_icon
@@ -31,6 +31,7 @@ from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
 from ui.i18n import t, get_lang
 from ui.routes.reports import _date_filter_bar, _get_company, _parse_dates, _resolve_preset
+from ui.components.encode import html_response
 
 logger = logging.getLogger(__name__)
 
@@ -1111,8 +1112,7 @@ def setup_routes(app):
         has_real_contacts = any(not val.startswith("__new__") for val, _ in opts)
         opt_els.append(Div(t("msg.no_results"), cls="combobox-option combobox-option--empty",
                            style="display:none" if has_real_contacts else ""))
-        from fasthtml.common import to_xml
-        return _R(content="".join(to_xml(el) for el in opt_els), media_type="text/html")
+        return html_response(tuple(opt_els))
 
     # ── /contacts/search ─────────────────────────────────────────────────
 
@@ -1988,7 +1988,7 @@ def setup_routes(app):
         cell = _contact_display_cell(contact_id, field, contact.get(field))
         if refused is not None:
             # The stored value stays in the cell and the reason shows as a toast.
-            return HTMLResponse(to_xml(cell), headers=toast_header(str(refused.detail), "error"))
+            return html_response(cell, headers=toast_header(str(refused.detail), "error"))
         if field == "name":
             # The page's heading and breadcrumb carry the name too (absent on Company Details).
             name = contact.get("name") or ""

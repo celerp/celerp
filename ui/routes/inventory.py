@@ -16,10 +16,9 @@ from urllib.parse import quote, urlencode, urlsplit
 logger = logging.getLogger(__name__)
 
 from fasthtml.common import *
-from fasthtml.common import to_xml
 from starlette.datastructures import QueryParams
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse, Response
+from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
 from ui.components.module_off import can_open
@@ -30,7 +29,7 @@ from ui.api_client import APIError, _flatten_item_attrs, error_message
 from ui.components.files import files_error, files_section as _shared_files_section, files_session_expired
 from ui.components.operation_key import kept_operation_key, operation_key_vals, required_operation_key
 from ui.components.shell import base_shell, minimal_shell, module_active, page_header, search_help, toast_header, page_title
-from ui.components.encode import js_value
+from ui.components.encode import html_response, js_value, raw_html
 from ui.components.table import fmt_money, data_table, search_bar, pagination, EMPTY, empty_mark, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum, display_unit, doc_href
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services import import_stage
@@ -1980,7 +1979,7 @@ def setup_routes(app):
                 Div(_make_available_btn, cls="doc-actions-left"),
                 Div(
                     Div(
-                        A(NotStr(_ICON_PRINT_SVG), href=f"/inventory/{entity_id}/worksheet/print", target="_blank",
+                        A(raw_html(_ICON_PRINT_SVG), href=f"/inventory/{entity_id}/worksheet/print", target="_blank",
                           cls="btn btn--ghost btn--icon", title=t("inventory.print_production_worksheet")),
                         _print_label_dropdown(entity_id),
                         A(t("inv.back_to_inventory"), href="/inventory", cls="btn btn--secondary"),
@@ -2410,8 +2409,6 @@ function celerpPrintLabel(entityId, templateId) {
     @app.get("/inventory/{entity_id}/worksheet/print")
     async def worksheet_print(request: Request, entity_id: str):
         """Standalone printable production worksheet (auto window.print(); user saves as PDF)."""
-        from fasthtml.common import to_xml
-        from starlette.responses import HTMLResponse
         from ui.routes.reports import _company_today
         token = _token(request)
         if not token:
@@ -2425,7 +2422,7 @@ function celerpPrintLabel(entityId, templateId) {
         cat = item.get("category") or ""
         category = category_label(cat, (await api.get_category_labels(token)).get(cat)) if cat else ""
         today = await _company_today(token)
-        return HTMLResponse(to_xml(_worksheet_print_view(entity_id, item, items, today, category)))
+        return html_response(_worksheet_print_view(entity_id, item, items, today, category))
 
     @app.post("/api/items/{entity_id}/gallery-hero/{file_id}")
     async def gallery_set_hero(request: Request, entity_id: str, file_id: str):
@@ -3327,7 +3324,6 @@ function celerpPrintLabel(entityId, templateId) {
         read (what a merge did to the books) is also raised as a toast that stays until
         dismissed.
         """
-        from starlette.responses import HTMLResponse
         # Without a result filter of its own the table reloads the list the owner is on
         # (search, tab, filters), never the unfiltered default.
         state = _base_state(_current_list_query(request))
@@ -3343,16 +3339,12 @@ function celerpPrintLabel(entityId, templateId) {
         )
         headers = (toast_header(f"{message} {notice}", persist=True, celerpSelectionClear=True) if notice
                    else {"HX-Trigger": "celerpSelectionClear"})
-        return HTMLResponse(to_xml(content), headers=headers)
+        return html_response(content, headers=headers)
 
     def _bulk_toast_error(msg: str) -> Response:
         """Surface a bulk-action error as the standard lower-right toast (no inline swap), so
         validation failures like a weight-unit mismatch read as a clear popup."""
-        from starlette.responses import HTMLResponse
-        return HTMLResponse(
-            "", status_code=200,
-            headers={"HX-Reswap": "none", **toast_header(str(msg), "error")},
-        )
+        return html_response((), status_code=200, headers={"HX-Reswap": "none", **toast_header(str(msg), "error")})
 
     @app.post("/api/items/bulk/status")
     async def bulk_item_status(request: Request):
@@ -5654,7 +5646,7 @@ def _is_version_stale(e: APIError) -> bool:
 def _stale(content) -> Response:
     """A cost refused because it changed since its editor opened: 409, swapped in like any
     answer (X-Swap-Refusal), so the editor shows the cost as it is now."""
-    return HTMLResponse(to_xml(content), status_code=409, headers={"X-Swap-Refusal": "1"})
+    return html_response(content, status_code=409, headers={"X-Swap-Refusal": "1"})
 
 
 async def _patch_cost(token: str, entity_id: str, old_item: dict, change: dict, opened_version: int | None) -> dict:

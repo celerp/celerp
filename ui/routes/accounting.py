@@ -17,7 +17,7 @@ from datetime import date as _date
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse, PlainTextResponse
+from starlette.responses import RedirectResponse, PlainTextResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
@@ -47,6 +47,7 @@ from ui.routes.reports import (
     _company_today, _date_filter_bar, _page_or_fragment, _parse_dates,
 )
 from celerp.services.money import CURRENCY_DP, DEFAULT_DP, currency_dp
+from ui.components.encode import html_response
 
 
 def _moved_to(path: str):
@@ -381,10 +382,7 @@ def setup_routes(app):
             data, currency, oob=True,
             filter_words=journal_filter_words(filters, get_lang(request)),
             clear_href=_href(base, carried))
-        return HTMLResponse(
-            to_xml(table) + to_xml(totals),
-            headers=journal_void_toast(result),
-        )
+        return html_response((table, totals), headers=journal_void_toast(result))
 
     @app.post("/accounting/journal/bulk-void")
     async def journal_bulk_void(request: Request):

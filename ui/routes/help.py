@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse, Response
+from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
 from celerp.help.registry import MAX_ADDRESS_LEN, get_index
@@ -22,6 +22,7 @@ from ui.components.shell import base_shell, load_error, page_header, visible_nav
 from ui.config import get_role
 from ui.config import get_token as _token
 from ui.i18n import get_lang, t
+from ui.components.encode import html_response
 
 _LOGIN = "/login"
 
@@ -153,7 +154,7 @@ def setup_routes(app):
             title=t("help.title", lang), nav_active="help", lang=lang, request=request,
             company_settings=settings,
         )
-        return HTMLResponse(to_xml(page))
+        return html_response(page)
 
     @app.get("/help/for-page")
     async def help_for_page(request: Request):
@@ -230,4 +231,4 @@ def setup_routes(app):
                               _back(lang), cls="help-page")
         page = await base_shell(page_header(title), content, title=title, nav_active="help",
                                 lang=lang, request=request, company_settings=settings)
-        return HTMLResponse(to_xml(page), status_code=status)
+        return html_response(page, status_code=status)

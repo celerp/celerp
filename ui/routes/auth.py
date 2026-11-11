@@ -19,7 +19,7 @@ from urllib.parse import unquote, urlsplit
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse
+from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError, bootstrap_status
@@ -35,6 +35,7 @@ from celerp.services import backup_import
 from celerp.services.app_paths import is_app_local_path
 from celerp.services.auth import MIN_PASSWORD_LENGTH, NO_COMPANY
 from celerp.services.currencies import is_email
+from ui.components.encode import html_response
 
 
 logger = logging.getLogger(__name__)
@@ -138,8 +139,7 @@ def setup_routes(app):
         if token:
             # Clear the invalid token so the browser doesn't keep sending it
             from starlette.responses import Response as _Resp
-            from fasthtml.common import to_xml
-            html_resp = _Resp(content=to_xml(resp), media_type="text/html")
+            html_resp = html_response(resp)
             clear_session_cookies(html_resp, request)
             return html_resp
         return resp
@@ -588,8 +588,8 @@ async def finish_sign_in(request: Request, access_token: str, refresh_token: str
         logger.warning("Password reset notices could not be loaded at sign-in", exc_info=True)
         notices = []
     if notices:
-        resp = HTMLResponse(to_xml(auth_shell(_reset_notices(notices, dest),
-                                              title=page_title("recovery.notice_title"))))
+        resp = html_response(auth_shell(_reset_notices(notices, dest),
+                                              title=page_title("recovery.notice_title")))
     else:
         resp = RedirectResponse(dest, status_code=status_code)
     set_session_cookies(resp, access_token, refresh_token, request)

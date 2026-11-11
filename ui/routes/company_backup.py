@@ -77,6 +77,7 @@ from ui.routes.migrations import (
     wizard_table,
 )
 from ui.streaming import ClosingStreamingResponse
+from ui.components.encode import html_response
 
 DOWNLOAD = "/company-backup/download"
 SEND = "/settings/company-handoff"
@@ -106,8 +107,8 @@ _REPLACED, _PUT_BACK = "replaced", "put_back"
 _OUTCOMES = frozenset({_CREATED, _OPENED, _TEAM_ADDED, _REACTIVATED, _REPLACED, _PUT_BACK})
 
 
-def _html(page, status_code: int = 200) -> HTMLResponse:
-    return page if isinstance(page, HTMLResponse) else HTMLResponse(to_xml(page), status_code=status_code)
+def _html(page, status_code: int = 200) -> Response:
+    return page if isinstance(page, Response) else html_response(page, status_code=status_code)
 
 
 def _message(e: APIError) -> str:

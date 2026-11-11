@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse
+from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.components.attrs import hx_vals
@@ -19,6 +19,7 @@ from ui.components.table import EMPTY, searchable_select
 from ui.config import get_token as _token
 from ui.i18n import get_lang, refusal_text, t
 from ui.routes.financial_reports import ledger_path
+from ui.components.encode import html_response
 
 PAGE = "/accounting/sync-accounts"
 _SWAP = {"hx_target": "#sync-accounts", "hx_swap": "outerHTML"}
@@ -237,7 +238,7 @@ def setup_routes(app) -> None:
         except api.APIError:
             started = False
         message = t("sync_accounts.fixed_syncing" if started else "sync_accounts.fixed_next_sync", lang)
-        return HTMLResponse(to_xml(await sync_accounts_body(token, lang)), headers=toast_header(message, "success"))
+        return html_response(await sync_accounts_body(token, lang), headers=toast_header(message, "success"))
 
     @app.post(PAGE + "/added/{item_id}")
     async def sync_accounts_added(request: Request, item_id: str):
@@ -254,7 +255,7 @@ def setup_routes(app) -> None:
         except api.APIError as exc:
             return await sync_accounts_body(token, lang, refusal_text(exc.detail))
         message = t(f"sync_accounts.{action}_done", lang, account=label)
-        return HTMLResponse(to_xml(await sync_accounts_body(token, lang)), headers=toast_header(message, "success"))
+        return html_response(await sync_accounts_body(token, lang), headers=toast_header(message, "success"))
 
     @app.post(PAGE + "/review")
     async def sync_accounts_review(request: Request):
@@ -272,4 +273,4 @@ def setup_routes(app) -> None:
         except api.APIError as exc:
             return await sync_accounts_body(token, lang, refusal_text(exc.detail))
         message = t("sync_accounts.review_done" if finish else "sync_accounts.review_saved", lang)
-        return HTMLResponse(to_xml(await sync_accounts_body(token, lang)), headers=toast_header(message, "success"))
+        return html_response(await sync_accounts_body(token, lang), headers=toast_header(message, "success"))

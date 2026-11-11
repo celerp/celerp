@@ -16,7 +16,7 @@ import re
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse
+from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
@@ -41,6 +41,7 @@ from ui.routes.reports import (
     OPERATIONAL_REPORTS, _date_filter_bar, _get_company, _parse_dates,
     _resolve_preset,
 )
+from ui.components.encode import html_response
 
 # Financial report cards on the /reports index, in reading order: the summary
 # statements first, then the detail an accountant works down into.
@@ -270,7 +271,7 @@ async def _every_contact(token: str, params: dict) -> list[dict]:
             return items
 
 
-def _option_markup(opts: list[tuple[str, str]], selected: set[str]) -> str:
+def _option_markup(opts: list[tuple[str, str]], selected: set[str]) -> tuple:
     """Combobox options in the shape the picker's JS reads.
 
     Search results replace the option list whole, so each option has to carry
@@ -286,16 +287,16 @@ def _option_markup(opts: list[tuple[str, str]], selected: set[str]) -> str:
     ]
     els.append(Div(t("msg.no_results"), cls="combobox-option combobox-option--empty",
                    **({"style": "display:none"} if opts else {})))
-    return "".join(to_xml(el) for el in els)
+    return tuple(els)
 
 
-def _option_notice(message: str) -> str:
+def _option_notice(message: str):
     """A line of text in place of options, which the picker cannot select.
 
     An empty list would read as "nobody matched", so a search that could not run
     says what happened instead of answering with a result it does not have.
     """
-    return to_xml(Div(message, cls="combobox-option combobox-option--empty"))
+    return Div(message, cls="combobox-option combobox-option--empty")
 
 
 # Reports a ledger drilldown can arrive from, via the "src" query param.
@@ -1232,23 +1233,23 @@ def setup_routes(app):
         """
         token = _token(request)
         if not token:
-            return HTMLResponse(_option_notice(t("error.session_expired")))
+            return html_response(_option_notice(t("error.session_expired")))
         q = request.query_params.get("q", "").strip()
         if not q:
-            return HTMLResponse("")
+            return html_response(())
         selected = set(request.query_params.getlist("account"))
         try:
             contacts = await _every_contact(token, {"q": q})
             accounts = (await api.get_chart(token)).get("items") or []
         except APIError as e:
-            return HTMLResponse(_option_notice(
+            return html_response(_option_notice(
                 e.detail or t("acct.error_loading_data")))
         needle = q.lower()
         opts = _contact_options(contacts) + [
             (val, label) for val, label in _account_options(accounts)
             if needle in label.lower()
         ]
-        return HTMLResponse(_option_markup(opts, selected))
+        return html_response(_option_markup(opts, selected))
 
     async def _quick_pick(token: str, pick: str) -> list[tuple[str, str]]:
         """Expand a quick-pick into the subjects it stands for.
