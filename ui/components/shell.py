@@ -420,12 +420,12 @@ document.addEventListener('htmx:beforeSwap', function(e) {
     e.detail.isError = false;
   }
   var t = e.detail.target;
-  _cellBeforeEdit = (t && t.matches && t.matches('td.cell:not(.cell--editing)')) ? t.outerHTML : null;
+  _cellBeforeEdit = (t && t.matches && t.matches('td.cell:not(.cell--editing)')) ? t.cloneNode(true) : null;
 });
 document.addEventListener('htmx:afterSwap', function() {
   if (_cellBeforeEdit === null) return;
   document.querySelectorAll('.cell--editing').forEach(function(c) {
-    if (c._restoreHtml === undefined) c._restoreHtml = _cellBeforeEdit;
+    if (c._restoreNode === undefined) c._restoreNode = _cellBeforeEdit;
   });
   _cellBeforeEdit = null;
 });
@@ -434,11 +434,9 @@ document.addEventListener('keydown', function(e) {
     var editing = document.querySelector('.cell--editing');
     if (editing) {
       var cell = e.target.closest && e.target.closest('.cell--editing');
-      if (!e.defaultPrevented && cell && cell._restoreHtml !== undefined) {
+      if (!e.defaultPrevented && cell && cell._restoreNode !== undefined) {
         e.preventDefault();
-        var tpl = document.createElement('template');
-        tpl.innerHTML = cell._restoreHtml.trim();
-        var shown = tpl.content.firstElementChild;
+        var shown = cell._restoreNode;
         cell.replaceWith(shown);
         htmx.process(shown);
       }
@@ -575,9 +573,12 @@ function initCombobox(wrap) {
   if (wrap._comboboxInit) return;
   wrap._comboboxInit = true;
   var allowCustom = wrap.dataset.allowCustom === 'true';
-  // Server-search mode: HTMX swaps the list innerHTML; we save original for restore.
+  // Server-search mode: HTMX swaps the list contents; we keep a copy of the original for restore.
   var isServerSearch = wrap.dataset.searchUrl === '1';
-  var originalListHTML = isServerSearch ? list.innerHTML : null;
+  var originalList = isServerSearch ? Array.from(list.childNodes, function(n) { return n.cloneNode(true); }) : null;
+  function restoreOriginalList() {
+    list.replaceChildren.apply(list, originalList.map(function(n) { return n.cloneNode(true); }));
+  }
   // Multi-select mode: values live in a bag of hidden inputs (one per selection)
   // rather than the single hidden input, because a repeated query key is what the
   // server reads and one input cannot carry two values.
@@ -825,8 +826,8 @@ function initCombobox(wrap) {
 
   function openList() {
     // Restore original static options so user sees full list on re-focus after a search
-    if (isServerSearch && originalListHTML) {
-      list.innerHTML = originalListHTML;
+    if (isServerSearch) {
+      restoreOriginalList();
       markSelected();
     }
     // Clear the summary so typing searches rather than filtering against "3 selected".
@@ -842,7 +843,7 @@ function initCombobox(wrap) {
     if (isServerSearch) {
       if (!input.value) {
         // User cleared the search, so put the static options back and show them all
-        list.innerHTML = originalListHTML;
+        restoreOriginalList();
         markSelected();
         filterOpts('');
       }
@@ -1303,7 +1304,7 @@ function _renderNotifs(data) {
   }
   if (list) {
     if (!data.items || data.items.length === 0) {
-      list.innerHTML = '<div class="notif-panel__empty">' + window.__shellI18n.noNotifications + '</div>';
+      list.replaceChildren(celerpNode('div', {class: 'notif-panel__empty'}, window.__shellI18n.noNotifications));
     } else {
       list.replaceChildren.apply(list, data.items.slice(0, 10).map(_notifItem));
     }

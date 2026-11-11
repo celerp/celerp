@@ -56,8 +56,18 @@
     return el;
   }
 
+  // The app's own fetched reply (a fragment the server rules encoded, as an htmx swap is) as
+  // nodes to put in the page; its scripts stay inert, as with an htmx or outerHTML swap. Never
+  // for a stored or typed value: those go through celerpNode or textContent.
+  function celerpFragment(html) {
+    var tpl = document.createElement('template');
+    tpl.innerHTML = html;
+    return tpl.content;
+  }
+
   window.celerpSafeUrl = celerpSafeUrl;
   window.celerpSetUrl = celerpSetUrl;
   window.celerpGo = celerpGo;
   window.celerpNode = celerpNode;
+  window.celerpFragment = celerpFragment;
 })();

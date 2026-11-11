@@ -237,7 +237,7 @@ _PANEL_ESC_JS = Script("""
 document.addEventListener('keydown', function(e) {
   // Only a key the user pressed: a refusal's restore step sends its own Escape.
   if (e.key !== 'Escape' || !e.isTrusted) return;
-  document.querySelectorAll('[data-esc-clear]').forEach(function(p) { p.innerHTML = ''; });
+  document.querySelectorAll('[data-esc-clear]').forEach(function(p) { p.replaceChildren(); });
 });
 """)
 
@@ -676,7 +676,7 @@ def _due_panel(preview: dict, subs: dict[str, dict]) -> FT:
               Tbody(*[_row(i) for i in items])),
         Div(Button(t("btn.generate_due"), type="submit", cls="btn btn--primary btn--sm"),
             Button(t("btn.close"), type="button", cls="btn btn--ghost btn--sm",
-                   onclick="document.getElementById('sub-due-panel').innerHTML=''"),
+                   onclick="document.getElementById('sub-due-panel').replaceChildren()"),
             cls="form-actions"),
         hx_post="/subscriptions/generate-due", hx_target="#sub-due-panel", hx_swap="innerHTML",
         cls="settings-card",
@@ -722,7 +722,7 @@ def _due_results(result: dict, subs: dict[str, dict], request_key: str) -> FT:
         P(t("subscriptions.due_already", n=result["already_billed"]), cls="text-muted") if result.get("already_billed") else "",
         _outcome_table(result.get("results") or [], subs, request_key),
         Div(Button(t("btn.close"), type="button", cls="btn btn--ghost btn--sm",
-                   onclick="document.getElementById('sub-due-panel').innerHTML=''"), cls="form-actions"),
+                   onclick="document.getElementById('sub-due-panel').replaceChildren()"), cls="form-actions"),
         cls="settings-card",
     )
 

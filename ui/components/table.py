@@ -1993,19 +1993,19 @@ function submitBulkAction(formEl){{
 }}
 function _clearBulkResult(){{
   var r=document.getElementById('bulk-action-result');
-  if(r) r.innerHTML='';
+  if(r) r.replaceChildren();
 }}
 function _resetBulkActions(){{
   var sel=document.getElementById('bulk-action-select');
   if(sel) sel.value='';
   var ctx=document.getElementById('bulk-context');
-  if(ctx) ctx.innerHTML='';
+  if(ctx) ctx.replaceChildren();
   _clearBulkResult();
 }}
 function bulkActionChanged(action){{
   var ctx=document.getElementById('bulk-context');
   if(!ctx) return;
-  ctx.innerHTML='';
+  ctx.replaceChildren();
   _clearBulkResult();
   var n=CelerpSelection.count();
   // Immediate actions (no context UI)
@@ -2177,7 +2177,7 @@ function _populateMergeTargets(){{
     var n=CelerpSelection.count();
     var isNewSku=sel.value==='__new__';
     var targetText=sel.options[sel.selectedIndex].textContent;
-    confirmDiv.innerHTML='';
+    confirmDiv.replaceChildren();
     confirmDiv.style.display='flex';
     confirmDiv.style.flexDirection='column';
     confirmDiv.style.gap='0.5rem';
@@ -2281,7 +2281,7 @@ function sendToTypeChanged(docType, docLabel){{
   var targetSel=document.getElementById('send-to-target-select');
   if(!targetSel) return;
   // Reset to just "New <type>", using the type's display label not its raw key
-  targetSel.innerHTML='';
+  targetSel.replaceChildren();
   var newOpt=document.createElement('option');
   newOpt.value='__new__';newOpt.textContent=I18N_NEW_DOC_TYPE.replace('{{type}}',(docLabel||docType));
   targetSel.appendChild(newOpt);

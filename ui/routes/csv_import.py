@@ -542,7 +542,7 @@ _MAPPING_JS = """
     panel.appendChild(toggleRow);
 
     function renderOptions() {
-      optList.innerHTML = '';
+      optList.replaceChildren();
       var q = search.value.toLowerCase();
       var used = getUsedValues(col);
       var lastGroup = '';

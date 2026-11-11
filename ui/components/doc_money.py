@@ -29,7 +29,7 @@ DOC_MONEY_JS = f"""
     const fresh = new DOMParser().parseFromString(await page.text(), 'text/html');
     fresh.querySelectorAll('[data-doc-money][id]').forEach(function(el){{
       const shown = document.getElementById(el.id);
-      if (shown) shown.outerHTML = el.outerHTML;
+      if (shown) shown.replaceWith(document.importNode(el, true));
     }});
     document.querySelectorAll('[data-doc-money][id]').forEach(function(el){{
       if (!fresh.getElementById(el.id)) el.remove();

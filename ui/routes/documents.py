@@ -1815,7 +1815,7 @@ def _send_to_modal(
 })();
 """),
             Button(t("btn.cancel"), cls="btn btn--ghost btn--full send-to-cancel",
-                   onclick="document.getElementById('modal-container').innerHTML=''"),
+                   onclick="document.getElementById('modal-container').replaceChildren()"),
             cls="modal-body send-to-modal",
         ),
         id="modal-container",
@@ -6034,7 +6034,7 @@ def _doc_table(
         }});
     }};
     window.docBulkPayCancel = function() {{
-        document.getElementById('bulk-payment-panel').innerHTML = '';
+        document.getElementById('bulk-payment-panel').replaceChildren();
         if (payBtn) payBtn.style.display = '';
         if (sel_input) sel_input.value = '';
     }};
@@ -9453,7 +9453,7 @@ async function celerpAcSearch(input, field) {{
         const items = await resp.json();
         // Typing moved on while this answered (the starting list, or an earlier word).
         if (input.value.trim() !== q) return;
-        list.innerHTML = '';
+        list.replaceChildren();
         if (!q && !items.length) {{
             const none = document.createElement('div');
             none.className = 'catalog-ac-option catalog-ac-option--empty';
@@ -9796,11 +9796,13 @@ function celerpUpdateTotals() {{
                 if (subRow) {{
                     const discRow = document.createElement('div');
                     discRow.className = 'total-row';
-                    discRow.innerHTML = '<span class="total-label">' + _L.discount + '</span><span class="total-value" id="doc-line-discount">-' + _fmt(totalDiscount) + '</span>';
+                    discRow.append(celerpNode('span', {{class: 'total-label'}}, _L.discount),
+                                   celerpNode('span', {{class: 'total-value', id: 'doc-line-discount'}}, '-' + _fmt(totalDiscount)));
                     subRow.parentNode.insertBefore(discRow, subRow);
                     const grossRow = document.createElement('div');
                     grossRow.className = 'total-row';
-                    grossRow.innerHTML = '<span class="total-label">' + _L.subtotal + '</span><span class="total-value" id="doc-gross-subtotal">' + _fmt(grossSub) + '</span>';
+                    grossRow.append(celerpNode('span', {{class: 'total-label'}}, _L.subtotal),
+                                    celerpNode('span', {{class: 'total-value', id: 'doc-gross-subtotal'}}, _fmt(grossSub)));
                     discRow.parentNode.insertBefore(grossRow, discRow);
                     // Relabel net subtotal
                     const lbl = subRow.querySelector('.total-label');
@@ -9981,8 +9983,8 @@ function _celerpRenderHeaderDiscount(amount) {{
             const tax = document.getElementById('doc-tax-rows');
             if (tax && tax.parentNode) tax.parentNode.insertBefore(row, tax);
         }}
-        row.innerHTML = '<span class="total-label">' + label + ':</span>'
-            + '<span class="total-value" id="doc-header-discount">-' + _f(amount) + '</span>';
+        row.replaceChildren(celerpNode('span', {{class: 'total-label'}}, label + ':'),
+                            celerpNode('span', {{class: 'total-value', id: 'doc-header-discount'}}, '-' + _f(amount)));
     }} else if (row) {{
         row.remove();
     }}
@@ -10198,16 +10200,16 @@ function _celerpShowStoredMoney(money) {{
     ['doc-tax-rows', 'doc-stored-tax-rows'].forEach(id => {{
         const el = document.getElementById(id);
         const html = money[id === 'doc-tax-rows' ? 'tax_rows_html' : 'stored_tax_rows_html'];
-        if (el && html != null) el.outerHTML = html;
+        if (el && html != null) el.replaceWith(celerpFragment(html));
     }});
     // The discount row is the server's too: the page's estimate drops it where the discount is
     // not edited on the page (a list), and only the stored row can put it back.
     const discRow = document.getElementById('doc-header-discount-row');
     if (money.discount_row_html != null) {{
-        if (discRow) discRow.outerHTML = money.discount_row_html;
+        if (discRow) discRow.replaceWith(celerpFragment(money.discount_row_html));
         else if (money.discount_row_html) {{
             const tax = document.getElementById('doc-tax-rows');
-            if (tax) tax.insertAdjacentHTML('beforebegin', money.discount_row_html);
+            if (tax) tax.before(celerpFragment(money.discount_row_html));
         }}
     }}
     [['doc-subtotal', 'subtotal'], ['doc-total', 'total'],
@@ -10232,7 +10234,7 @@ async function _celerpInstallLineBody(html, version) {{
     // Swapping the rows out removes a focused field, and its blur would save the rows being
     // replaced. Leave the field first without saving: the installed rows are the stored ones.
     if (tbody.contains(document.activeElement)) _celerpQuietBlur(document.activeElement);
-    tbody.outerHTML = html;
+    tbody.replaceWith(celerpFragment(html));
     const swapped = document.getElementById({1});
     htmx.process(swapped);
     swapped.querySelectorAll('.combobox-wrap').forEach(initCombobox);
@@ -10413,9 +10415,8 @@ if (!window._celerpLineCellsBound) {{
             // stored value over the reason.
             el.addEventListener('htmx:afterRequest', (e) => {{
                 const body = document.getElementById({2});
-                const answer = document.createElement('template');
-                answer.innerHTML = (e.detail.xhr && e.detail.xhr.responseText) || '';
-                const reason = answer.content.querySelector('[data-cell-unsaved]');
+                const answer = celerpFragment((e.detail.xhr && e.detail.xhr.responseText) || '');
+                const reason = answer.querySelector('[data-cell-unsaved]');
                 if (reason) _celerpSaveRefused(reason.textContent);
                 const again = reason && el._v !== undefined && body
                     && body.querySelector('[hx-patch="' + CSS.escape(el.getAttribute('hx-patch')) + '"]');
@@ -10844,7 +10845,7 @@ async function celerpCsvImport(input, entityId) {{
       var html=await resp.text();
       if(resp.ok){{
         var tbody=document.getElementById({2});
-        if(tbody&&html) tbody.outerHTML=html;
+        if(tbody&&html) tbody.replaceWith(celerpFragment(html));
         htmx.process(document.getElementById({2}));
         var tr=null;
         try{{ tr=JSON.parse(resp.headers.get('HX-Trigger')||'null'); }}catch(e){{}}

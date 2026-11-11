@@ -2235,7 +2235,9 @@ function celerpAiBeforeRequest() {
     var typing = document.createElement('div');
     typing.id = 'ai-typing-indicator';
     typing.className = 'ai-msg ai-msg--ai';
-    typing.innerHTML = '<div class="ai-typing"><span class="ai-typing__dot"></span><span class="ai-typing__dot"></span><span class="ai-typing__dot"></span></div>';
+    typing.appendChild(celerpNode('div', {class: 'ai-typing'}, [0, 1, 2].map(function () {
+        return celerpNode('span', {class: 'ai-typing__dot'});
+    })));
     m.appendChild(typing);
     m.scrollTop = m.scrollHeight;
 }
@@ -2293,7 +2295,7 @@ function celerpAiResetForm() {
     document.getElementById('ai-query-input').value = '';
     document.getElementById('ai-file-ids').value = '';
     document.getElementById('ai-file-input').value = '';
-    document.getElementById('ai-file-chips').innerHTML = '';
+    document.getElementById('ai-file-chips').replaceChildren();
     CELERP_AI_RECEIPT_FILES = {};
     document.getElementById('ai-chat-dropzone').classList.remove('ai-chat-dropzone--has-files');
 }
@@ -2387,7 +2389,8 @@ function _celerpAiUploadFormData(formData, fileNames, receiptEligible) {
         progressWrap.className = 'ai-upload-progress';
         progressWrap.setAttribute('role', 'status');
         progressWrap.setAttribute('aria-live', 'polite');
-        progressWrap.innerHTML = '<div class="ai-upload-progress__bar"></div><span class="ai-upload-progress__text"></span>';
+        progressWrap.append(celerpNode('div', {class: 'ai-upload-progress__bar'}),
+                            celerpNode('span', {class: 'ai-upload-progress__text'}));
         zone.appendChild(progressWrap);
     }
     progressWrap.style.display = 'flex';
@@ -2517,7 +2520,7 @@ def _showcase_script() -> FT:
     scenarioBar.addEventListener('mouseleave', function() { paused = false; });
   }
 
-  function clear() { msgArea.innerHTML = ''; if (typingIv) { clearInterval(typingIv); typingIv = null; } }
+  function clear() { msgArea.replaceChildren(); if (typingIv) { clearInterval(typingIv); typingIv = null; } }
 
   function appendMsg(role, text, cb) {
     var el = document.createElement('div');

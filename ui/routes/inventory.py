@@ -6685,8 +6685,8 @@ WORKFLOW_JS = """
   var sec=document.getElementById('workflow-section');
   if(!sec||sec._wfInit) return; sec._wfInit=true;
   var base=sec.getAttribute('data-base');
-  // outerHTML swaps do not re-run inline scripts, so re-init the fresh section after a reload.
-  function reload(html){ sec.outerHTML=html; var ns=document.getElementById('workflow-section'); if(ns&&window.htmx) htmx.process(ns); init(); }
+  // Fragment swaps do not re-run inline scripts, so re-init the fresh section after a reload.
+  function reload(html){ sec.replaceWith(celerpFragment(html)); var ns=document.getElementById('workflow-section'); if(ns&&window.htmx) htmx.process(ns); init(); }
   // Running total, recomputed client-side after each single-cell edit so editing a value or unit
   // never triggers a section reload.
   function fmtMin(m){ m=Math.round(m); if(m<=0)return '0 min'; if(m%1440===0)return (m/1440)+' d'; if(m%60===0)return (m/60)+' h'; if(m>=60){var h=Math.floor(m/60),mm=m%60;return h+' h '+mm+' min';} return m+' min'; }

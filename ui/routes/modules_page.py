@@ -462,7 +462,7 @@ def _local_panel(modules: list[dict], lang: str = "en",
               body: JSON.stringify({path: p}),
             }).then(function (r) { return r.text(); }).then(function (html) {
               var panel = document.getElementById('local-modules-panel');
-              if (panel) { panel.outerHTML = html; }  // fragment swap, no reload
+              if (panel) { panel.replaceWith(celerpFragment(html)); }  // fragment swap, no reload
             });
           });
         };

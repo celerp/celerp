@@ -138,8 +138,8 @@ BARCODE_TEXT_DEFAULT_PT = 6.0
 # preset text sizes; the user changes it in place.
 FIELD_DEFAULT_PT = 6
 
-# The editor script: holes {0}-{6} are the sample data, the field list, the key to
-# render type map, the format sizes, the add-field option groups and the two field defaults.
+# The editor script: holes {0}-{4} are the sample data, the field list, the key to
+# render type map, the format sizes and the add-field option groups.
 _EDITOR_JS = """
 (function() {{
   var MAX_CANVAS_PX = 400;
@@ -148,8 +148,6 @@ _EDITOR_JS = """
   var typeMap = {2};
   var formatSizes = {3};
   var addFieldGroups = {4};
-  var FIELD_DEFAULT_PT = {5};
-  var BARCODE_HEIGHT_DEFAULT = {6};
 
   function fieldType(key) {{ return typeMap[key] || 'text'; }}
 
@@ -210,7 +208,7 @@ _EDITOR_JS = """
     var currentVal = wrapper.getAttribute('data-value') || '';
 
     function renderOptions(filter) {{
-      listEl.innerHTML = '';
+      listEl.replaceChildren();
       var f = filter ? filter.toLowerCase() : '';
       groups.forEach(function(grp) {{
         var visOpts = grp.options.filter(function(o) {{
@@ -310,35 +308,11 @@ _EDITOR_JS = """
     addBtn.addEventListener('click', function() {{
       var list = document.getElementById('field-list');
       var idx = list.querySelectorAll('.field-row-compact').length;
-      var row = document.createElement('div');
-      row.className = 'field-row-compact';
-      row.setAttribute('data-idx', idx);
-      row.innerHTML =
-        '<div class="searchable-select" data-name="fields[' + idx + '][key]" data-value="">' +
-        '<input type="text" readonly class="form-input form-input--sm searchable-select__display" placeholder="-- select --">' +
-        '<div class="searchable-select__dropdown">' +
-        '<input type="text" class="searchable-select__search" placeholder="Search fields...">' +
-        '<div class="searchable-select__list"></div>' +
-        '</div>' +
-        '<input type="hidden" name="fields[' + idx + '][key]" value="" class="fld-key">' +
-        '</div>' +
-        '<input type="text" name="fields[' + idx + '][label]" value="" class="form-input form-input--sm fld-label fld-label-input"' +
-        ' placeholder="Display label" title="Label shown on preview" oninput="this._userEdited=true; labelEditorUpdatePreview()">' +
-        '<button type="button" class="btn btn--icon btn--danger" title="Remove field"' +
-        ' onclick="this.closest(\\'.field-row-compact\\').remove(); reindexFields(); labelEditorUpdatePreview()">×</button>' +
-        '<input type="hidden" name="fields[' + idx + '][type]" value="text" class="fld-type">' +
-        '<input type="hidden" name="fields[' + idx + '][x]" value="" class="fld-x">' +
-        '<input type="hidden" name="fields[' + idx + '][y]" value="" class="fld-y">' +
-        '<input type="number" name="fields[' + idx + '][fontSize]" value="' + FIELD_DEFAULT_PT + '" class="form-input form-input--sm fld-fs"' +
-        ' min="4" max="72" placeholder="Font" title="Text size in points (4-72)"' +
-        ' style="width:60px;" oninput="labelEditorUpdatePreview()">' +
-        '<input type="number" name="fields[' + idx + '][barcode_height]" value="' + BARCODE_HEIGHT_DEFAULT + '" class="form-input form-input--sm fld-bh"' +
-        ' min="1" max="30" placeholder="Bar H" title="Barcode bar height (1-30)"' +
-        ' style="display:none;width:60px;" oninput="labelEditorUpdatePreview()">' +
-        '<label class="fld-bold-wrap" title="Bold this field">' +
-        '<input type="checkbox" name="fields[' + idx + '][bold]" value="true" class="fld-bold"' +
-        ' onchange="labelEditorUpdatePreview()"><b>B</b></label>';
+      // A copy of the server's empty row, so a new field starts from the same markup and defaults.
+      var row = document.getElementById('field-row-template').content.firstElementChild.cloneNode(true);
+      row.querySelector('.searchable-select').id = 'ss-' + idx;
       list.appendChild(row);
+      reindexFields();
       initSearchableSelect(row.querySelector('.searchable-select'), addFieldGroups);
       labelEditorUpdatePreview();
     }});
@@ -401,7 +375,7 @@ _EDITOR_JS = """
     var dims = getCanvasDims();
     canvas.style.width = dims.wPx + 'px';
     canvas.style.height = dims.hPx + 'px';
-    canvas.innerHTML = '';
+    canvas.replaceChildren();
     var list = document.getElementById('field-list');
     if (!list) return;
     var rows = list.querySelectorAll('.field-row-compact');
@@ -667,7 +641,7 @@ def _ft():
     from fasthtml.common import (
         A, B, Button, Div, Form, H2, H3, H4, Input, Label, Li,
         Option, P, Script, Select, Span, Strong, Style,
-        Table, Tbody, Td, Th, Thead, Tr, Ul,
+        Table, Tbody, Td, Template, Th, Thead, Tr, Ul,
     )
     return locals()
 
@@ -841,6 +815,7 @@ def _editor_panel(
         ft["Select"], ft["Option"], ft["Button"], ft["Script"],
         ft["Span"], ft["P"],
     )
+    Template = ft["Template"]
 
     tid = tpl["id"]
     raw_fields = tpl.get("fields") or []
@@ -878,8 +853,9 @@ def _editor_panel(
     type_map = {k: rtype for k, _v, rtype in _COMMON_FIELDS}
     format_sizes = {name: list(mm) for name, mm in _FORMAT_MM.items()}
 
-    init_js = Script(js(_EDITOR_JS, dict(_SAMPLE_DATA), all_fields, type_map, format_sizes, add_field_groups,
-                       FIELD_DEFAULT_PT, BARCODE_HEIGHT_DEFAULT))
+    init_js = Script(js(_EDITOR_JS, dict(_SAMPLE_DATA), all_fields, type_map, format_sizes, add_field_groups))
+    new_row = _field_row_compact(0, {"key": "", "label": "", "type": "text", "fontSize": FIELD_DEFAULT_PT,
+                                     "barcode_height": BARCODE_HEIGHT_DEFAULT}, global_extra, category_attrs)
 
     return Div(
         H3(t("labels.edit_name", name=tpl['name']), cls="section-title"),
@@ -930,6 +906,7 @@ def _editor_panel(
                 Div(
                     H4(t("page.fields")),
                     Div(*field_rows, id="field-list", cls="field-list"),
+                    Template(new_row, id="field-row-template"),
                     Button(t("btn._add_field"), type="button", id="add-field-btn",
                            cls="btn btn--sm btn--outline"),
                     cls="label-fields-panel",

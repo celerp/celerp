@@ -259,7 +259,7 @@ def _create_form(session_id: str, line_id: str, line: dict, chart: list[dict], b
             Div(
                 Button(t("btn.create_match"), type="submit", cls="btn btn--primary btn--sm"),
                 Button(t("btn.cancel"), type="button",
-                       onclick=js("document.getElementById('recon-expand-' + {0}).innerHTML=''", line_id),
+                       onclick=js("document.getElementById('recon-expand-' + {0}).replaceChildren()", line_id),
                        cls="btn btn--outline btn--sm ml-sm"),
                 cls="form-actions",
             ),
@@ -308,7 +308,7 @@ def _split_form(session_id: str, line_id: str, line: dict, chart: list[dict], ba
             Div(
                 Button(t("btn.split_match"), type="submit", cls="btn btn--primary btn--sm"),
                 Button(t("btn.cancel"), type="button",
-                       onclick=js("document.getElementById('recon-expand-' + {0}).innerHTML=''", line_id),
+                       onclick=js("document.getElementById('recon-expand-' + {0}).replaceChildren()", line_id),
                        cls="btn btn--outline btn--sm ml-sm"),
                 cls="form-actions",
             ),

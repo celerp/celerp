@@ -782,8 +782,8 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
   }}
   window.contactBulkChanged = function(action){{
     var ctx = document.getElementById('contact-bulk-context');
-    if (ctx) ctx.innerHTML = '';
-    document.getElementById('bulk-action-result').innerHTML = '';
+    if (ctx) ctx.replaceChildren();
+    document.getElementById('bulk-action-result').replaceChildren();
     if (action === 'contact-export'){{
       var ids = typeof CelerpSelection !== 'undefined' ? CelerpSelection.ids() : [];
       if (!ids.length) return;
@@ -1598,7 +1598,7 @@ def setup_routes(app):
                 Div(
                     Button(t("btn.save"), type="submit", cls="btn btn--primary btn--sm"),
                     Button(t("btn.cancel"), type="button", cls="btn btn--secondary btn--sm", onclick=js(
-                        "document.getElementById({0}).innerHTML=''",
+                        "document.getElementById({0}).replaceChildren()",
                         str(target_div))),
                     cls="form-row",
                 ),
