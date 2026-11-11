@@ -30,6 +30,7 @@ from ui.api_client import APIError, _flatten_item_attrs, error_message
 from ui.components.files import files_error, files_section as _shared_files_section, files_session_expired
 from ui.components.operation_key import kept_operation_key, operation_key_vals, required_operation_key
 from ui.components.shell import base_shell, minimal_shell, module_active, page_header, search_help, toast_header, page_title
+from ui.components.encode import js_value
 from ui.components.table import fmt_money, data_table, search_bar, pagination, EMPTY, empty_mark, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum, display_unit, doc_href
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services import import_stage
@@ -5990,13 +5991,12 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     Server-side pref save is preserved for cross-device sync (background fetch).
     Client-side: checkboxes immediately show/hide columns and persist to localStorage.
     """
-    import json as _json
     selected = set(visible_cols) if visible_cols else {f.get("key") for f in schema if f.get("show_in_table", True)}
     cat_pref = active_cat or "__all__"
     # JS data for all columns (key, label, visible) — exclude paired secondaries and virtual columns
     _cm_exclude = _PAIRED_SECONDARY_KEYS | {f.get("key") for f in schema if f.get("virtual")}
     col_data = [{"key": f.get("key", ""), "label": field_label(f)} for f in schema if f.get("key") not in _cm_exclude]
-    col_data_js = _json.dumps(col_data)
+    col_data_js = js_value(col_data)
     # Map: primary_key → [virtual_key, ...] so applyOrderToTable can drag virtual cols alongside primary.
     # Virtual total always follows its paired unit-price column (the primary).
     _vf_map: dict[str, list[str]] = {}
@@ -6004,8 +6004,8 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
         if f.get("virtual") and f.get("paired_with"):
             key, paired = f["key"], f["paired_with"]
             _vf_map.setdefault(paired, []).append(key)
-    virtual_followers_js = _json.dumps(_vf_map)
-    selected_js = _json.dumps(sorted(selected))
+    virtual_followers_js = js_value(_vf_map)
+    selected_js = js_value(sorted(selected))
     # Hidden inputs for fallback server save (category, status, sort etc.)
     hidden_state = {k: v for k, v in _base_state(p).items() if k != "cols"}
     hidden_state["_cat_pref"] = cat_pref
@@ -6032,13 +6032,13 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     hidden_inputs = [Input(type="hidden", name=k, value=v) for k, v in hidden_state.items()]
 
     # JS: localStorage key matches data_table's PAGE_KEY for inventory
-    paired_secondaries_js = _json.dumps(list(_PAIRED_TABLE.values()))
+    paired_secondaries_js = js_value(list(_PAIRED_TABLE.values()))
 
     col_mgr_js = f"""
 (function() {{
   var LS_VIS_KEY = 'celerp_cols_inventory';
   var LS_ORDER_KEY = 'celerp_col_order_inventory';
-  var CAT_PREF = '{cat_pref}';
+  var CAT_PREF = {js_value(cat_pref)};
   var ALL_COLS = {col_data_js};
   // Keys that are now merged into their primary column - strip from saved prefs
   var MERGED_SECONDARIES = {paired_secondaries_js};
@@ -6153,7 +6153,7 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
   function saveToServer(visibleKeys) {{
     var form = new FormData();
     visibleKeys.forEach(function(k) {{ form.append('cols', k); }});
-    Object.entries({_json.dumps(hidden_state)}).forEach(function(kv) {{
+    Object.entries({js_value(hidden_state)}).forEach(function(kv) {{
       form.append(kv[0], kv[1]);
     }});
     fetch('/inventory/columns', {{method:'POST', body:form}}).catch(function(){{}});
@@ -6182,7 +6182,7 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     var prefs = loadVis() || {{}};
     // Init prefs from current state if empty
     if (!Object.keys(prefs).length) {{
-      ALL_COLS.forEach(function(c) {{ prefs[c.key] = {_json.dumps(sorted(selected))} .indexOf(c.key) !== -1; }});
+      ALL_COLS.forEach(function(c) {{ prefs[c.key] = {selected_js}.indexOf(c.key) !== -1; }});
     }}
     prefs[key] = e.target.checked;
     saveVis(prefs);
@@ -8113,6 +8113,40 @@ async def _item_split_preview(token: str, entity_id: str) -> dict:
         return {"cannot_split": True, "reason": str(e.detail)}
 
 
+# Batch Split preview and submit. Constant script: the unit, available quantity and post URL
+# come from the form's data attributes, and the preview is written as text.
+_BATCH_SPLIT_JS = """
+function batchSplitPreview(form) {
+  var qty   = parseFloat(form.querySelector('[name=batch_qty]').value)     || 0;
+  var count = parseInt(form.querySelector('[name=batch_count]').value, 10) || 0;
+  var avail = parseFloat(form.getAttribute('data-avail')) || 0;
+  var unit  = form.getAttribute('data-unit') || '';
+  var el    = form.querySelector('.batch-split-preview');
+  if (!el) return;
+  if (!qty || !count) { el.replaceChildren(); return; }
+  var total = qty * count;
+  el.replaceChildren(count + ' \u00d7 ' + qty + '\u00a0' + unit + ' = ' + total.toFixed(2) + '\u00a0' + unit);
+  if (total > avail) {
+    el.append(' ', celerpNode('span', {'class': 'batch-split-over'},
+      [(form.getAttribute('data-exceeds-label') || '').replace('{avail}', avail)]));
+  }
+}
+function batchSplitSubmit(form) {
+  var qty   = parseFloat(form.querySelector('[name=batch_qty]').value);
+  var count = parseInt(form.querySelector('[name=batch_count]').value, 10);
+  if (!qty || qty <= 0) { alert(form.getAttribute('data-alert-qty')); return; }
+  if (!count || count < 2) { alert(form.getAttribute('data-alert-count')); return; }
+  var btn = form.querySelector('.btn--batch-submit');
+  if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
+  var compEl = form.querySelector('[name=batch_complement]');
+  var vals = { batch_qty: qty, batch_count: count };
+  if (compEl && compEl.value) vals.batch_complement = compEl.value;
+  htmx.ajax('POST', form.getAttribute('data-split-url'),
+    { target: '#item-action-error', swap: 'outerHTML', values: vals });
+}
+"""
+
+
 def _advanced_panel(entity_id: str, item: dict, split_preview: dict | None = None, role: str = "owner", settings: dict | None = None,
                     connected_connectors: set[str] | None = None) -> FT:
     """Compact item operations grid: Split, Duplicate, Expire, Dispose."""
@@ -8180,12 +8214,12 @@ def _advanced_panel(entity_id: str, item: dict, split_preview: dict | None = Non
                           title=_batch_qty_title,
                           step="any", min="0.001",
                           cls="form-input form-input--sm split-qty-main",
-                          oninput=f"batchSplitPreview_{safe_id}(this.form)"),
+                          oninput="batchSplitPreview(this.form)"),
                     *([Input(type="number", name="batch_complement",
                              placeholder=_comp_ph, title=_comp_title,
                              step=_comp_step, min="0",
                              cls="form-input form-input--sm split-complement",
-                             oninput=f"batchSplitPreview_{safe_id}(this.form)")]
+                             oninput="batchSplitPreview(this.form)")]
                       if _comp_name else []),
                     Span("×", cls="batch-split-sep"),
                     Input(type="number", name="batch_count",
@@ -8193,45 +8227,20 @@ def _advanced_panel(entity_id: str, item: dict, split_preview: dict | None = Non
                           title=_batch_count_title,
                           step="1", min="2",
                           cls="form-input form-input--sm batch-split-count",
-                          oninput=f"batchSplitPreview_{safe_id}(this.form)"),
+                          oninput="batchSplitPreview(this.form)"),
                     Button(t("th.batch"), type="button",
                            title=t("inv.tooltip.batch_submit"),
                            cls="btn btn--primary btn--xs btn--batch-submit",
-                           onclick=f"batchSplitSubmit_{safe_id}(this.closest('form'))"),
+                           onclick="batchSplitSubmit(this.closest('form'))"),
                     cls="action-card-row",
                 ),
-                Div(id=f"batch-split-preview-{safe_id}", cls="batch-split-preview"),
-                Script(f"""
-function batchSplitPreview_{safe_id}(form) {{
-  var qty   = parseFloat(form.querySelector('[name=batch_qty]').value)     || 0;
-  var count = parseInt(form.querySelector('[name=batch_count]').value, 10) || 0;
-  var avail = {current_qty};
-  var unit  = '{sell_by_label}';
-  var el    = document.getElementById('batch-split-preview-{safe_id}');
-  if (!el) return;
-  if (!qty || !count) {{ el.innerHTML = ''; return; }}
-  var total = qty * count;
-  var over  = total > avail;
-  el.innerHTML = count + ' \u00d7 ' + qty + '\u00a0' + unit
-    + ' = ' + total.toFixed(2) + '\u00a0' + unit
-    + (over ? ' <span class="batch-split-over">' + (form.getAttribute('data-exceeds-label') || '').replace('{{avail}}', avail) + '</span>' : '');
-}}
-function batchSplitSubmit_{safe_id}(form) {{
-  var qty   = parseFloat(form.querySelector('[name=batch_qty]').value);
-  var count = parseInt(form.querySelector('[name=batch_count]').value, 10);
-  if (!qty || qty <= 0) {{ alert(form.getAttribute('data-alert-qty')); return; }}
-  if (!count || count < 2) {{ alert(form.getAttribute('data-alert-count')); return; }}
-  var btn = form.querySelector('.btn--batch-submit');
-  if (btn) {{ btn.disabled = true; btn.style.opacity = '0.5'; }}
-  var compEl = form.querySelector('[name=batch_complement]');
-  var vals = {{ batch_qty: qty, batch_count: count }};
-  if (compEl && compEl.value) vals.batch_complement = compEl.value;
-  htmx.ajax('POST', '/api/items/{entity_id}/batch-split',
-    {{ target: '#item-action-error', swap: 'outerHTML', values: vals }});
-}}
-"""),
+                Div(cls="batch-split-preview"),
+                Script(_BATCH_SPLIT_JS),
                 onsubmit="return false;",
                 **{
+                    "data-unit": sell_by_label,
+                    "data-avail": current_qty,
+                    "data-split-url": f"/api/items/{entity_id}/batch-split",
                     "data-exceeds-label": t("inventory.js_exceeds_available"),
                     "data-alert-qty": t("inventory.js_enter_valid_qty"),
                     "data-alert-count": t("inventory.count_min_two"),

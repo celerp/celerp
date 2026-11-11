@@ -9,6 +9,7 @@ import re
 
 from fasthtml.common import *
 from ui.i18n import t, t_or, field_label
+from ui.components.encode import js_value
 from celerp.services.field_schema import MIXED_VALUE
 from celerp.services.units import plain_number
 # Canonical definitions live with the shared document renderer; re-exported
@@ -2533,10 +2534,9 @@ def column_manager(schema: list[dict], entity_type: str, visible_cols: list[str]
       the picker in sync when the user drags a table column header directly
     - Reset to default button (clears all localStorage keys and reloads)
     """
-    import json as _json
     selected = set(visible_cols) if visible_cols else {f["key"] for f in schema if f.get("show_in_table", True)}
     col_data = [{"key": f["key"], "label": field_label(f)} for f in schema]
-    default_keys = _json.dumps([f["key"] for f in schema if f.get("show_in_table", True)])
+    default_keys = [f["key"] for f in schema if f.get("show_in_table", True)]
 
     checkboxes = [
         Label(
@@ -2552,8 +2552,8 @@ def column_manager(schema: list[dict], entity_type: str, visible_cols: list[str]
     _mgr_js = f"""
 (function(){{
   var VIS_KEY='celerp_cols_{entity_type}',ORDER_KEY='celerp_col_order_{entity_type}',WIDTH_KEY='celerp_col_widths_{entity_type}';
-  var ALL={_json.dumps(col_data)};
-  var DEFAULTS={default_keys};
+  var ALL={js_value(col_data)};
+  var DEFAULTS={js_value(default_keys)};
   var btn=document.getElementById('col-mgr-btn'),menu=document.getElementById('col-mgr-menu');
   if(!btn||!menu) return;
   function loadVis(){{try{{return JSON.parse(localStorage.getItem(VIS_KEY)||'null')}}catch(e){{return null}}}}

@@ -9872,7 +9872,7 @@ function celerpUpdateTotals() {{
     // Update per-code tax rows
     const taxContainer = document.getElementById('doc-tax-rows');
     if (taxContainer) {{
-        taxContainer.innerHTML = '';
+        taxContainer.replaceChildren();
         let totalTax = 0;
         Object.entries(taxByCode).forEach(([key, t]) => {{
             const amt = t.amount * _hd.ratio;
@@ -9892,7 +9892,8 @@ function celerpUpdateTotals() {{
                 row.appendChild(lbl);
                 row.appendChild(val);
             }} else {{
-                row.innerHTML = '<span class="total-label">' + t.label + ':</span><span class="total-value">' + _fmt(amt) + '</span>';
+                row.append(celerpNode('span', {{'class': 'total-label'}}, [t.label + ':']),
+                           celerpNode('span', {{'class': 'total-value'}}, [_fmt(amt)]));
             }}
             taxContainer.appendChild(row);
         }});

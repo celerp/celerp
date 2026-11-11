@@ -652,14 +652,14 @@ def _contact_bulk_templates() -> FT:
       body: JSON.stringify({target_contact_id: winner.value, source_contact_ids: sources})
     }).then(function(r) { return r.json(); }).then(function(d) {
       if (d.merged_into) {
-        window.location.href = '/contacts/' + d.merged_into;
+        celerpGo('/contacts/' + encodeURIComponent(d.merged_into));
       } else {
         var res = document.getElementById('bulk-action-result');
-        if (res) res.innerHTML = '<p class="flash flash--error">' + (d.detail || list.dataset.mergeFailed) + '</p>';
+        if (res) res.replaceChildren(celerpNode('p', {'class': 'flash flash--error'}, [d.detail || list.dataset.mergeFailed]));
       }
     }).catch(function(err) {
       var res = document.getElementById('bulk-action-result');
-      if (res) res.innerHTML = '<p class="flash flash--error">' + list.dataset.mergeFailed + '</p>';
+      if (res) res.replaceChildren(celerpNode('p', {'class': 'flash flash--error'}, [list.dataset.mergeFailed]));
     });
   };
   if (window.htmx) htmx.process(list.parentElement);
@@ -799,13 +799,13 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
       }}).then(function(r){{ return r.json(); }}).then(function(d){{
         var res = document.getElementById('bulk-action-result');
         if (d.deleted !== undefined){{
-          res.innerHTML = '<p class="flash flash--success">' + CFG.deletedTpl.replace('{{n}}', d.deleted) + '</p>';
+          res.replaceChildren(celerpNode('p', {{'class': 'flash flash--success'}}, [CFG.deletedTpl.replace('{{n}}', d.deleted)]));
           setTimeout(function(){{ sessionStorage.removeItem('celerp_contact_selection'); window.location.reload(); }}, 800);
         }} else {{
-          res.innerHTML = '<p class="flash flash--error">' + (d.detail || CFG.deleteFailed) + '</p>';
+          res.replaceChildren(celerpNode('p', {{'class': 'flash flash--error'}}, [d.detail || CFG.deleteFailed]));
         }}
       }}).catch(function(err){{
-        document.getElementById('bulk-action-result').innerHTML = '<p class="flash flash--error">' + CFG.deleteFailed + '</p>';
+        document.getElementById('bulk-action-result').replaceChildren(celerpNode('p', {{'class': 'flash flash--error'}}, [CFG.deleteFailed]));
       }});
       }});
       return;
