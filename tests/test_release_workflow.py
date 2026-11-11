@@ -1099,3 +1099,24 @@ def test_a_failed_windows_update_check_uploads_its_logs_and_screen():
     assert "celerp-data\\logs" in shot["run"] and "screen.png" in shot["run"]
     assert upload["uses"].startswith("actions/upload-artifact@")
     assert upload["with"]["path"] == "${{ runner.temp }}/failure"
+
+
+_DRIVE = re.compile(r"ci_update_drive\.py ([\w-]+) ")
+
+
+def test_sign_in_after_refusal_opens_existing_data():
+    """Once a step has been refused on existing data, every later sign-in in that step must open
+    that data: open-data fails on the setup wizard, where sign-in would set up fresh data."""
+    seen = 0
+    for path in sorted(_WORKFLOWS.glob("*.yml")):
+        for job in (yaml.safe_load(path.read_text()) or {}).get("jobs", {}).values():
+            for step in job.get("steps", []):
+                commands = _DRIVE.findall(step.get("run") or "")
+                if not {"refused", "refusal"} & set(commands):
+                    continue
+                first = min(commands.index(c) for c in ("refused", "refusal") if c in commands)
+                later = commands[first:]
+                seen += 1
+                assert "sign-in" not in later, (path.name, step.get("name"), later)
+                assert "open-data" in later, (path.name, step.get("name"), later)
+    assert seen

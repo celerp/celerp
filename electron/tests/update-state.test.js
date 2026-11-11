@@ -919,3 +919,20 @@ test("after the user's check found a release that cannot open the data, a later 
     expect(served.getUpdateState()).toMatchObject({ status: "error", failure: "download", version: "2.9.2" });
     expect(told).toEqual([]);
   });
+
+test("a check while the found release cannot open the data reports its result: a withdrawn release reads as up to date",
+  async function test_check_while_too_old_reports_the_result() {
+    const { updater, served } = releaseFeed("2.9.0");
+    served.downloadOnlyFrom("2.9.1");
+    await served.checkForUser();
+    expect(served.getUpdateState()).toMatchObject({ status: "too-old", version: "2.9.0" });
+    // The release is withdrawn: the next check finds nothing newer.
+    updater.checkForUpdates = jest.fn(async () => {
+      updater.emit("checking-for-update");
+      updater.emit("update-not-available", {});
+      return { updateInfo: {} };
+    });
+    await served.checkForUser();
+    expect(stateOf(served.getUpdateState())).toEqual({ ...IDLE, upToDate: true });
+    expect(updater.downloadUpdate).not.toHaveBeenCalled();
+  });
