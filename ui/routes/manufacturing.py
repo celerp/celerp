@@ -956,12 +956,13 @@ def setup_routes(app):
 
     # ── Work Centers ──────────────────────────────────────────────────────
     async def _wc_table_response(token: str) -> FT:
-        centers, locations = [], []
         try:
             centers = (await api.list_work_centers(token)).get("items", [])
             locations = (await api.get_locations(token)).get("items", [])
-        except APIError:
-            pass
+        except APIError as e:
+            api.raise_if_signed_out(e)
+            # Said where the table was, never an empty table; the next redraw replaces it.
+            return Div(P(error_message(e), cls="flash flash--error"), id="wc-table")
         loc_names = {l.get("id"): l.get("name") for l in locations}
         return _wc_table(centers, loc_names)
 
@@ -983,9 +984,9 @@ def setup_routes(app):
             return P(t("error.session_expired"), cls="cell-error")
         try:
             await api.create_work_center(token, {"name": "New work center"})
-        except APIError:
-            # A "New work center" already exists - just refresh; the user can rename it.
-            pass
+        except APIError as e:
+            api.raise_if_signed_out(e)
+            return await _wc_error_response(token, error_message(e))
         return await _wc_table_response(token)
 
     @app.get("/manufacturing/work-centers/{wc_id}/edit/{field}")

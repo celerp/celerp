@@ -7451,5 +7451,7 @@
   "ai.bills_upsell": "¿Tiene un montón de recibos? Con {plan} se leen todos de una vez, no un archivo cada vez.",
   "settings_menu.err_version_required": "Este cambio debe indicar qué versión del menú lateral reemplaza. Lea primero el menú lateral y envíe su ETag en un encabezado If-Match.",
   "settings_menu.err_changed": "El menú lateral cambió después de que lo leyera, así que este cambio no se guardó. Léalo de nuevo y haga el cambio sobre la versión actual.",
-  "settings_menu.changed_elsewhere": "Otra persona cambió el menú lateral mientras usted guardaba, así que su cambio no se guardó. La lista de abajo muestra el menú tal como está ahora. Haga su cambio de nuevo."
+  "settings_menu.changed_elsewhere": "Otra persona cambió el menú lateral mientras usted guardaba, así que su cambio no se guardó. La lista de abajo muestra el menú tal como está ahora. Haga su cambio de nuevo.",
+  "inventory.bulk_duplicate_refusals": "No se duplicaron: {items}",
+  "inv.reorder_needs_quantity": "Primero establezca una cantidad de reposición para: {items}"
 }

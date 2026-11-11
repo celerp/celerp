@@ -416,12 +416,20 @@ def error_code(e: APIError) -> str:
     return ""
 
 
+def raise_if_signed_out(e: APIError) -> None:
+    """Raise ``e`` again when it is an ended session (401), so the app's handler clears the
+    session cookies and sends the browser to the sign-in page. Not part of error_message:
+    the API also answers 401 for a wrong password on a confirmation prompt, which the
+    routes asking for one show as text."""
+    if e.status == 401:
+        raise e
+
+
 def refusal_response(e: APIError) -> PlainTextResponse:
     """The reply a UI route gives for an APIError it caught: the refusal as short plain
     text with its status, which the page's error banner shows. An ended session is raised
-    again, so the app's handler sends the browser to the sign-in page."""
-    if e.status == 401:
-        raise e
+    again (raise_if_signed_out)."""
+    raise_if_signed_out(e)
     return PlainTextResponse(error_message(e), status_code=e.status)
 
 

@@ -7451,5 +7451,7 @@
   "ai.bills_upsell": "Haben Sie einen Stapel Belege? Mit {plan} werden alle in einem Durchgang gelesen, nicht eine Datei nach der anderen.",
   "settings_menu.err_version_required": "Diese Änderung muss angeben, welche Version des Seitenmenüs sie ersetzt. Lesen Sie zuerst das Seitenmenü und senden Sie sein ETag in einem If-Match-Header.",
   "settings_menu.err_changed": "Das Seitenmenü hat sich geändert, nachdem Sie es gelesen haben, daher wurde diese Änderung nicht gespeichert. Lesen Sie es erneut und nehmen Sie die Änderung an der aktuellen Version vor.",
-  "settings_menu.changed_elsewhere": "Jemand anderes hat das Seitenmenü geändert, während Sie gespeichert haben, daher wurde Ihre Änderung nicht gespeichert. Die Liste unten zeigt das Menü, wie es jetzt ist. Nehmen Sie Ihre Änderung erneut vor."
+  "settings_menu.changed_elsewhere": "Jemand anderes hat das Seitenmenü geändert, während Sie gespeichert haben, daher wurde Ihre Änderung nicht gespeichert. Die Liste unten zeigt das Menü, wie es jetzt ist. Nehmen Sie Ihre Änderung erneut vor.",
+  "inventory.bulk_duplicate_refusals": "Nicht dupliziert: {items}",
+  "inv.reorder_needs_quantity": "Legen Sie zuerst eine Nachbestellmenge fest für: {items}"
 }

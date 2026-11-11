@@ -7451,5 +7451,7 @@
   "ai.bills_upsell": "Une pile de reçus ? Avec {plan}, ils sont tous lus d'un coup, et non un fichier à la fois.",
   "settings_menu.err_version_required": "Cette modification doit indiquer quelle version du menu latéral elle remplace. Lisez d'abord le menu latéral et envoyez son ETag dans un en-tête If-Match.",
   "settings_menu.err_changed": "Le menu latéral a changé après que vous l'avez lu, cette modification n'a donc pas été enregistrée. Relisez-le et apportez la modification à la version actuelle.",
-  "settings_menu.changed_elsewhere": "Quelqu'un d'autre a modifié le menu latéral pendant votre enregistrement, votre modification n'a donc pas été enregistrée. La liste ci-dessous montre le menu tel qu'il est maintenant. Refaites votre modification."
+  "settings_menu.changed_elsewhere": "Quelqu'un d'autre a modifié le menu latéral pendant votre enregistrement, votre modification n'a donc pas été enregistrée. La liste ci-dessous montre le menu tel qu'il est maintenant. Refaites votre modification.",
+  "inventory.bulk_duplicate_refusals": "Non dupliqués : {items}",
+  "inv.reorder_needs_quantity": "Définissez d'abord une quantité de réapprovisionnement pour : {items}"
 }

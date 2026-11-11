@@ -2043,6 +2043,7 @@ def setup_routes(app):
             })
             doc_id = result.get("entity_id") or result.get("id", "")
         except APIError as e:
+            api.raise_if_signed_out(e)
             return Div(P(error_message(e), cls="flash flash--error"), id="modal-container")
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{doc_id}"})
 
@@ -2064,6 +2065,7 @@ def setup_routes(app):
             await api.patch_doc(token, target_id, {"line_items": (doc.get("line_items") or []) + new_lines},
                                 expected_version=doc.get("version"))
         except APIError as e:
+            api.raise_if_signed_out(e)
             return Div(P(error_message(e), cls="flash flash--error"), id="modal-container")
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{target_id}"})
 
@@ -4138,6 +4140,7 @@ celerpUpdateBulkAlloc();
         try:
             result = await api.create_shipment_from_docs(token, doc_ids)
         except APIError as e:
+            api.raise_if_signed_out(e)
             return _action_error(e)
         ship_id = result.get("entity_id") or result.get("id", "")
         return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{ship_id}"})
@@ -4459,6 +4462,7 @@ celerpUpdateBulkAlloc();
         try:
             return _share_panel(entity_id, await api.create_share_link(token, entity_id, expires_at), await _company_today(token))
         except APIError as e:
+            api.raise_if_signed_out(e)
             return _action_error(e)
 
     @app.delete("/docs/{entity_id}/share")
@@ -4970,8 +4974,8 @@ celerpUpdateBulkAlloc();
         entity_ids = [v.strip() for v in form.getlist("selected") if v.strip()]
         if not entity_ids:
             return Div(P(t("flash.no_items_selected"), cls="flash flash--warning"), id="modal-container")
-        line_items = await _line_items_from_inventory(token, entity_ids)
         try:
+            line_items = await _line_items_from_inventory(token, entity_ids)
             result = await api.create_list(token, {
                 "list_type": "quotation",
                 "status": "draft",
@@ -4979,6 +4983,7 @@ celerpUpdateBulkAlloc();
             })
             list_id = result.get("entity_id") or result.get("id", "")
         except APIError as e:
+            api.raise_if_signed_out(e)
             return Div(P(error_message(e), cls="flash flash--error"), id="modal-container")
         return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{list_id}"})
 
@@ -4994,8 +4999,8 @@ celerpUpdateBulkAlloc();
         target_id = str(form.get("target_id", "")).strip()
         if not entity_ids or not target_id:
             return Div(P(t("label.no_items_or_target_selected"), cls="flash flash--warning"), id="modal-container")
-        new_lines = await _line_items_from_inventory(token, entity_ids)
         try:
+            new_lines = await _line_items_from_inventory(token, entity_ids)
             lst = await api.get_list(token, target_id)
             existing_lines = lst.get("line_items") or []
             combined = existing_lines + new_lines
@@ -5008,6 +5013,7 @@ celerpUpdateBulkAlloc();
                 "total": subtotal,
             }, expected_version=lst.get("version"))
         except APIError as e:
+            api.raise_if_signed_out(e)
             return Div(P(error_message(e), cls="flash flash--error"), id="modal-container")
         return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{target_id}"})
 
@@ -5032,8 +5038,14 @@ celerpUpdateBulkAlloc();
             return RedirectResponse("/login", status_code=302)
         try:
             locations = (await api.get_locations(token)).get("items", [])
-        except APIError:
-            locations = []
+        except APIError as e:
+            # A failed read is said as such, never as "no locations".
+            api.raise_if_signed_out(e)
+            return await base_shell(
+                page_header(t("documents.new_audit_title")),
+                P(error_message(e), cls="flash flash--error"),
+                title=page_title("documents.new_audit_title"), nav_active="lists", request=request,
+            )
         if not locations:
             return await base_shell(
                 page_header(t("documents.new_audit_title")),
@@ -5049,7 +5061,7 @@ celerpUpdateBulkAlloc();
                 cls="form-group",
             ),
             Button(t("documents.start_audit"), type="submit", cls="btn btn--primary"),
-            method="post", action="/lists/new-audit", cls="form-card",
+            hx_post="/lists/new-audit", cls="form-card",
         )
         return await base_shell(
             page_header(t("documents.new_audit_title"),
@@ -5061,18 +5073,19 @@ celerpUpdateBulkAlloc();
 
     @app.post("/lists/new-audit")
     async def list_create_audit(request: Request):
+        from starlette.responses import Response as _R
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
         location_id = str(form.get("location_id", "")).strip()
         if not location_id:
-            return RedirectResponse("/lists/new-audit", status_code=303)
+            return api.refusal_response(APIError(400, t("flash.no_location_selected")))
         try:
             res = await api.create_audit(token, location_id)
-        except APIError:
-            return RedirectResponse("/lists/new-audit", status_code=303)
-        return RedirectResponse(f"/lists/{res['id']}", status_code=303)
+        except APIError as e:
+            return api.refusal_response(e)
+        return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{res['id']}"})
 
     @app.get("/lists/{entity_id}")
     async def list_detail(request: Request, entity_id: str):
@@ -5290,6 +5303,7 @@ celerpUpdateBulkAlloc();
             try:
                 await api.change_list_type(token, entity_id, value)
             except APIError as e:
+                api.raise_if_signed_out(e)
                 return _action_error(e)
             return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"})
         if field == "contact_id":

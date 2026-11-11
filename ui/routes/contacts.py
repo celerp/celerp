@@ -1184,8 +1184,9 @@ def setup_routes(app):
             if dup:
                 dup_id = dup.get("entity_id") or dup.get("id", "")
                 return _R("", status_code=204, headers={"HX-Redirect": f"/contacts/{dup_id}"})
-        except APIError:
-            pass
+        except APIError as e:
+            # A check that could not run creates nothing: it exists to stop a second placeholder.
+            return api.refusal_response(e)
         try:
             result = await api.create_contact(token, {"name": default_name, "contact_type": contact_type})
             contact_id = result.get("entity_id") or result.get("id", "")

@@ -7451,5 +7451,7 @@
   "ai.bills_upsell": "Punya setumpuk struk? Dengan {plan}, semuanya dibaca sekaligus, bukan satu berkas demi satu berkas.",
   "settings_menu.err_version_required": "Perubahan ini harus menyebutkan versi menu samping yang digantikannya. Baca menu samping terlebih dahulu dan kirim ETag-nya dalam header If-Match.",
   "settings_menu.err_changed": "Menu samping berubah setelah Anda membacanya, jadi perubahan ini tidak disimpan. Baca lagi dan lakukan perubahan pada versi saat ini.",
-  "settings_menu.changed_elsewhere": "Orang lain mengubah menu samping saat Anda menyimpan, jadi perubahan Anda tidak disimpan. Daftar di bawah menampilkan menu seperti saat ini. Lakukan perubahan Anda lagi."
+  "settings_menu.changed_elsewhere": "Orang lain mengubah menu samping saat Anda menyimpan, jadi perubahan Anda tidak disimpan. Daftar di bawah menampilkan menu seperti saat ini. Lakukan perubahan Anda lagi.",
+  "inventory.bulk_duplicate_refusals": "Tidak diduplikasi: {items}",
+  "inv.reorder_needs_quantity": "Atur jumlah pemesanan ulang terlebih dahulu untuk: {items}"
 }

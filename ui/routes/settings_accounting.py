@@ -1077,7 +1077,8 @@ def setup_routes(app):
                 "rate": rate,
             })
         except APIError as e:
-            return P(str(e.detail), cls="error-banner")
+            api.raise_if_signed_out(e)
+            return P(api.error_message(e), cls="error-banner")
         return _R("", status_code=204, headers={"HX-Redirect": "/settings/accounting?tab=bank-accounts"})
 
     @app.get("/settings/accounting/bank-accounts/{bank_id}/edit")
@@ -1245,7 +1246,8 @@ def setup_routes(app):
             banks_data = await api.get_bank_accounts(token)
             banks = banks_data.get("items", [])
         except APIError as e:
-            return Div(P(str(e.detail), cls="error-banner"), id="rules-list")
+            api.raise_if_signed_out(e)
+            return Div(P(api.error_message(e), cls="error-banner"), id="rules-list")
         return _rules_tab(rules, banks)
 
     @app.delete("/settings/accounting/rules/{rule_id}")
@@ -1327,7 +1329,8 @@ def setup_routes(app):
                 "cash_flow_category": str(form.get("cash_flow_category", "")).strip(),
             })
         except APIError as e:
-            return P(str(e.detail), cls="error-banner")
+            api.raise_if_signed_out(e)
+            return P(api.error_message(e), cls="error-banner")
         return _R("", status_code=204, headers={"HX-Redirect": "/settings/accounting?tab=chart"})
 
     @app.get("/settings/accounting/chart/{code}/edit")

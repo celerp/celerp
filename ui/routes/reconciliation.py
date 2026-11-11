@@ -1063,9 +1063,8 @@ def setup_routes(app):
         try:
             await api.create_recon_expense(token, session_id, line_id, data)
         except APIError as e:
-            if e.status == 401:
-                return Response("", status_code=401, headers={"HX-Redirect": "/login"})
-            return await _fresh_workspace(token, session_id, notice=str(e.detail))
+            api.raise_if_signed_out(e)
+            return await _fresh_workspace(token, session_id, notice=api.error_message(e))
         return await _fresh_workspace(token, session_id)
 
     @app.post("/accounting/reconcile/{session_id}/lines/{line_id}/split-confirm")

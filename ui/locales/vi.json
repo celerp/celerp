@@ -7451,5 +7451,7 @@
   "ai.bills_upsell": "Có cả xấp biên lai? Với {plan}, tất cả được đọc trong một lần, không phải từng tệp một.",
   "settings_menu.err_version_required": "Thay đổi này phải cho biết nó thay thế phiên bản nào của menu bên. Hãy đọc menu bên trước và gửi ETag của nó trong tiêu đề If-Match.",
   "settings_menu.err_changed": "Menu bên đã thay đổi sau khi bạn đọc, nên thay đổi này chưa được lưu. Hãy đọc lại và thực hiện thay đổi trên phiên bản hiện tại.",
-  "settings_menu.changed_elsewhere": "Người khác đã thay đổi menu bên trong lúc bạn đang lưu, nên thay đổi của bạn chưa được lưu. Danh sách bên dưới hiển thị menu như hiện tại. Hãy thực hiện lại thay đổi của bạn."
+  "settings_menu.changed_elsewhere": "Người khác đã thay đổi menu bên trong lúc bạn đang lưu, nên thay đổi của bạn chưa được lưu. Danh sách bên dưới hiển thị menu như hiện tại. Hãy thực hiện lại thay đổi của bạn.",
+  "inventory.bulk_duplicate_refusals": "Không nhân bản được: {items}",
+  "inv.reorder_needs_quantity": "Hãy đặt số lượng đặt hàng lại trước cho: {items}"
 }

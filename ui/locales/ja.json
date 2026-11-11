@@ -7451,5 +7451,7 @@
   "ai.bills_upsell": "領収書がたくさんありますか？{plan}なら1ファイルずつではなく、まとめて一度に読み取れます。",
   "settings_menu.err_version_required": "この変更では、どのバージョンのサイドメニューを置き換えるかを指定する必要があります。先にサイドメニューを読み込み、その ETag を If-Match ヘッダーで送信してください。",
   "settings_menu.err_changed": "読み込んだ後にサイドメニューが変更されたため、この変更は保存されませんでした。もう一度読み込み、現在のバージョンで変更してください。",
-  "settings_menu.changed_elsewhere": "保存中に別のユーザーがサイドメニューを変更したため、変更は保存されませんでした。下の一覧は現在のメニューを表示しています。もう一度変更してください。"
+  "settings_menu.changed_elsewhere": "保存中に別のユーザーがサイドメニューを変更したため、変更は保存されませんでした。下の一覧は現在のメニューを表示しています。もう一度変更してください。",
+  "inventory.bulk_duplicate_refusals": "複製されなかった品目: {items}",
+  "inv.reorder_needs_quantity": "先に再発注数量を設定してください: {items}"
 }

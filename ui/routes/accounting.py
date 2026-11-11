@@ -168,18 +168,25 @@ def setup_routes(app):
                                    lines: list[dict], idem_token: str, error: str | FT | None,
                                    date_from: str = "", date_to: str = "",
                                    date_hint: str | None = None):
+        # A failed settings read is said on the page: the gate below then decides by the
+        # default grants, and a role they deny is not told it lacks a permission never checked.
+        settings_error = None
         try:
             _settings = (await api.get_company(token)).get("settings") or {}
-        except APIError:
-            _settings = {}
+        except APIError as e:
+            api.raise_if_signed_out(e)
+            _settings, settings_error = {}, api.error_message(e)
         if not role_has_permission(_settings, _get_role(request), "manage_accounting"):
             return await base_shell(
                 page_header(t("acct.new_journal_entry", get_lang(request))),
-                no_access_banner(permission="manage_accounting"),
+                P(settings_error, cls="flash flash--error") if settings_error
+                else no_access_banner(permission="manage_accounting"),
                 title=page_title("page.accounting"),
                 nav_active="accounting",
                 request=request,
             )
+        if error is None:
+            error = settings_error
         base_currency = ""
         contacts: list[dict] = []
         contacts_total = 0
@@ -192,8 +199,7 @@ def setup_routes(app):
             contacts = resp.get("items") or []
             contacts_total = int(resp.get("total") or len(contacts))
         except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
+            api.raise_if_signed_out(e)
             accounts = []
             if error is None:
                 error = (no_access_text(e) if e.status == 403
@@ -328,8 +334,7 @@ def setup_routes(app):
                     _href("/accounting", {"tab": "journal", "from": d_from, "to": d_to}),
                     status_code=303)
             except APIError as e:
-                if e.status == 401:
-                    return RedirectResponse("/login", status_code=302)
+                api.raise_if_signed_out(e)
                 if api.error_code(e) == "idempotency_conflict":
                     # Same token, different payload: the original already posted.
                     # A fresh token lets a deliberately corrected resubmit succeed.

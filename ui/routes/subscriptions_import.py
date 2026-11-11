@@ -315,8 +315,9 @@ def setup_routes(app):
                 await api.create_subscription(token, payload)
                 created += 1
             except APIError as e:
+                api.raise_if_signed_out(e)
                 if len(errors) < 10:
-                    errors.append(f"{name}: {e.detail}")
+                    errors.append(f"{name}: {api.error_message(e)}")
 
         await discard_import_csv(token, form, {"errors": errors})
         return import_result_panel(

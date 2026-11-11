@@ -3507,7 +3507,8 @@ function celerpPrintLabel(entityId, templateId) {
         try:
             new = await api.create_writeoff(token, entity_ids)
         except APIError as e:
-            return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
+            api.raise_if_signed_out(e)
+            return Div(P(error_message(e), cls="flash flash--error"), id="bulk-action-result")
         return Response("", status_code=204, headers={"HX-Redirect": f"/lists/{new['id']}"})
 
     # ── Bulk duplicate (create a copy of each selected item) ─────────────
@@ -3526,27 +3527,36 @@ function celerpPrintLabel(entityId, templateId) {
         try:
             settings = (await api.get_company(token)).get("settings") or {}
         except APIError as e:
-            return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
+            api.raise_if_signed_out(e)
+            return Div(P(error_message(e), cls="flash flash--error"), id="bulk-action-result")
         if not role_has_permission(settings, _get_role(request), "edit_inventory"):
             return Div(P(missing_permission_text("edit_inventory"), cls="flash flash--error"), id="bulk-action-result")
         reserved: set[str] = set()
         ok = 0
-        failed = 0
+        refusals: list[str] = []
         for eid in entity_ids:
+            label = eid
             try:
                 source = await api.get_item(token, eid)
+                label = source.get("sku") or source.get("name") or eid
                 new_sku = await _gen_copy_sku(token, str(source.get("sku", "") or ""), reserved=reserved)
                 await api.create_item(token, _duplicate_payload(
                     source, new_sku,
                     can_set_prices=role_has_permission(settings, _get_role(request), "set_inventory_prices"),
                 ))
                 ok += 1
-            except APIError:
-                failed += 1
+            except APIError as e:
+                api.raise_if_signed_out(e)
+                refusals.append(f"{label}: {error_message(e)}")
+        failed = len(refusals)
+        refused = t("inventory.bulk_duplicate_refusals", items="; ".join(refusals)) if refusals else ""
         if ok == 0:
-            return Div(P(t("inventory.bulk_duplicate_failed", n=failed), cls="flash flash--error"), id="bulk-action-result")
-        msg = t("inventory.bulk_duplicated_partial", ok=ok, failed=failed) if failed else t("inventory.bulk_duplicated", n=ok)
-        return _bulk_destructive_success(request, msg, cls="flash--warning" if failed else "flash--success")
+            return Div(P(f'{t("inventory.bulk_duplicate_failed", n=failed)} {refused}', cls="flash flash--error"),
+                       id="bulk-action-result")
+        if failed:
+            return _bulk_destructive_success(request, t("inventory.bulk_duplicated_partial", ok=ok, failed=failed),
+                                             cls="flash--warning", notice=refused)
+        return _bulk_destructive_success(request, t("inventory.bulk_duplicated", n=ok))
 
     # ── Bulk merge (direct — no preview modal) ───────────────────────────
 
@@ -4190,12 +4200,13 @@ function celerpPrintLabel(entityId, templateId) {
                                 payload["contact_name"] = sup
                             result = await api.create_doc(token, payload)
                         except APIError as e:
+                            api.raise_if_signed_out(e)
                             # One supplier group failed. Record it and keep going so the
                             # drafts already created are never discarded: the user is shown
                             # exactly which POs exist and which supplier to retry, rather than
                             # a bare error that invites re-sending the whole selection and
                             # duplicating the drafts that did succeed.
-                            failed.append(f"{label}: {e.detail}")
+                            failed.append(f"{label}: {error_message(e)}")
                             continue
                         # create_doc returns id="doc:<ref_id>"; the part after the
                         # prefix is the human-readable document number (e.g. PO-2608-0003).
@@ -4226,7 +4237,8 @@ function celerpPrintLabel(entityId, templateId) {
                         id="bulk-action-result",
                     )
         except APIError as e:
-            return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
+            api.raise_if_signed_out(e)
+            return Div(P(error_message(e), cls="flash flash--error"), id="bulk-action-result")
         return Div(P(t("inv.unknown_document_type"), cls="flash flash--warning"), id="bulk-action-result")
 
     # ── T3: Item action routes ───────────────────────────────────────────
@@ -4744,7 +4756,8 @@ function celerpPrintLabel(entityId, templateId) {
         try:
             result = await api.create_item(token, payload)
         except APIError as e:
-            return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
+            api.raise_if_signed_out(e)
+            return Div(Span(error_message(e), cls="flash flash--error"), id="item-action-error")
         new_id = result.get("id", "")
         return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{new_id}"})
 

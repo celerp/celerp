@@ -7451,5 +7451,7 @@
   "ai.bills_upsell": "Tem uma pilha de recibos? Com {plan}, todos são lidos de uma vez, não um arquivo por vez.",
   "settings_menu.err_version_required": "Esta alteração deve indicar qual versão do menu lateral ela substitui. Leia primeiro o menu lateral e envie o ETag dele em um cabeçalho If-Match.",
   "settings_menu.err_changed": "O menu lateral mudou depois que você o leu, então esta alteração não foi salva. Leia-o novamente e faça a alteração na versão atual.",
-  "settings_menu.changed_elsewhere": "Outra pessoa alterou o menu lateral enquanto você salvava, então sua alteração não foi salva. A lista abaixo mostra o menu como está agora. Faça sua alteração novamente."
+  "settings_menu.changed_elsewhere": "Outra pessoa alterou o menu lateral enquanto você salvava, então sua alteração não foi salva. A lista abaixo mostra o menu como está agora. Faça sua alteração novamente.",
+  "inventory.bulk_duplicate_refusals": "Não duplicados: {items}",
+  "inv.reorder_needs_quantity": "Defina primeiro uma quantidade de reposição para: {items}"
 }

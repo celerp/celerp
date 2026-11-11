@@ -1339,7 +1339,8 @@ def setup_routes(app):
         try:
             await api.create_user(token, {"name": name, "email": email, "password": password, "role": role})
         except APIError as e:
-            return P(str(e.detail), cls="error-banner")
+            api.raise_if_signed_out(e)
+            return P(api.error_message(e), cls="error-banner")
         # Redirect to users tab on success
         return _R("", status_code=204, headers={"HX-Redirect": "/settings/general?tab=users"})
 
@@ -2405,7 +2406,8 @@ def setup_routes(app):
         try:
             await api.create_category(token, name)
         except APIError as e:
-            return _refusal(e)
+            api.raise_if_signed_out(e)
+            return P(api.error_message(e), cls="cell-error")
         return Response("", status_code=204, headers={"HX-Redirect": "/settings/inventory?tab=categories"})
 
     @app.delete("/settings/categories/{category_key}")
