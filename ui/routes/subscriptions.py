@@ -64,7 +64,7 @@ async def _redrawn(draw, fallback=None, said: str = ""):
     except APIError as e:
         api.raise_if_signed_out(e)
         warning = f"{said} {t('subscriptions.done_not_redrawn')}".strip()
-        return html_response(fallback() if fallback else "", headers=toast_header(warning, "warning"))
+        return html_response(fallback() if fallback else (), headers=toast_header(warning, "warning"))
 
 
 # How a send from the page reads after it, by billing.send_status: the toast it answers with.
@@ -1421,7 +1421,7 @@ def setup_routes(app) -> None:
             except APIError as read_error:
                 api.raise_if_signed_out(read_error)
                 return refusal
-            return HTMLResponse(views, headers={k: v for k, v in refusal.headers.items()
+            return html_response(views, headers={k: v for k, v in refusal.headers.items()
                                                 if k not in ("content-length", "content-type")})
 
         async def draw():
@@ -1431,6 +1431,6 @@ def setup_routes(app) -> None:
             # The version the save stored, for the page's next lines save, as a document's field saves hand it.
             version = {"celerpListVersion": {"version": sub.get("version")}}
             if saved.get("sending_off"):
-                return HTMLResponse(views, headers=toast_header(t("subscriptions.sending_off_manual"), "success", **version))
-            return HTMLResponse(views, headers={"HX-Trigger": json.dumps(version)})
+                return html_response(views, headers=toast_header(t("subscriptions.sending_off_manual"), "success", **version))
+            return html_response(views, headers={"HX-Trigger": json.dumps(version)})
         return await _redrawn(draw, said=t("subscriptions.sending_off_manual") if saved.get("sending_off") else "")

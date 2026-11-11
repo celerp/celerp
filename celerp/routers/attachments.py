@@ -12,6 +12,7 @@ is not routed here.
 
 from __future__ import annotations
 
+import mimetypes
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -19,6 +20,7 @@ from fastapi.responses import FileResponse
 
 from celerp.services.attachments import local_attachment_path
 from celerp.services.auth import get_current_company_id
+from ui.components.encode import inert_media_type
 
 router = APIRouter(prefix="/static/attachments", tags=["attachments"])
 
@@ -39,4 +41,4 @@ async def get_attachment(
     path = local_attachment_path(str(ctx_company_id), filename)
     if path is None:
         raise HTTPException(status_code=404, detail="Not found")
-    return FileResponse(path)
+    return FileResponse(path, media_type=inert_media_type(mimetypes.guess_type(str(path))[0]))

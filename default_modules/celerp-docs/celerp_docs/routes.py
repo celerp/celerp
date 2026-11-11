@@ -100,6 +100,7 @@ from celerp.services.shipping import (
     INCOTERMS_2020, ITEM_AT_ISSUE, REASONS_FOR_EXPORT, customs_backfill, issued_item, item_at_issue)
 from celerp.schemas.numbers import FiniteFloat
 from ui.i18n import doc_type_label, refusal_text, t
+from ui.components.encode import inert_media_type
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -13658,7 +13659,7 @@ async def download_doc_file(
     return FileResponse(
         path=str(dest),
         filename=match["filename"],
-        media_type=match.get("mime", "application/octet-stream"),
+        media_type=inert_media_type(match.get("mime")),
     )
 
 

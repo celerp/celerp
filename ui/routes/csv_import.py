@@ -974,8 +974,13 @@ _INLINE_FIX_JS = """
 })();
 """
 
+
+def _bold_count(sentence: str, n: int) -> tuple:
+    """A translated sentence with its ``{n}`` placeholder as a bold count."""
+    pre, _, post = sentence.partition("{n}")
+    return pre, Strong(str(n)), post
+
 _INLINE_FIX_CSS = """
-<style>
 .csv-fix-panel { margin-top: 12px; }
 .csv-fix-summary { font-size: 13px; margin-bottom: 12px; }
 .csv-fix-summary strong { color: var(--c-orange, #f59e0b); }
@@ -996,7 +1001,6 @@ _INLINE_FIX_CSS = """
   background: rgba(239,68,68,0.06); }
 .csv-ok-count { font-size: 12px; color: var(--c-text2); margin-top: 6px; }
 .csv-fix-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 14px; }
-</style>
 """
 
 
@@ -1131,13 +1135,13 @@ def _fix_errors_panel(
 """
 
     return Div(
-        NotStr(_INLINE_FIX_CSS),
+        Style(_INLINE_FIX_CSS),
         _step_indicator(review_step, has_mapping=has_mapping),
         Div(
             P(
                 # The count is bolded inside the one translated sentence.
-                NotStr(t("import.cells_need_fixing_one" if total_errors == 1 else "import.cells_need_fixing_many",
-                         n=f"<strong>{total_errors}</strong>", rows=len(error_row_indices), total=len(rows))),
+                *_bold_count(t("import.cells_need_fixing_one" if total_errors == 1 else "import.cells_need_fixing_many",
+                               n="{n}", rows=len(error_row_indices), total=len(rows)), total_errors),
                 cls="csv-fix-summary",
             ),
             Div(
@@ -1187,7 +1191,7 @@ def _fix_errors_panel(
             cls="csv-fix-panel",
         ),
         Script(_INLINE_FIX_JS),
-        Script(NotStr(err_nav_js)),
+        Script(err_nav_js),
         id="import-preview",
         cls="import-panel",
     )
@@ -1483,7 +1487,7 @@ def plan_review_panel(
     ready = int(counts.get("create", 0) or 0) + int(counts.get("update", 0) or 0)
     locations = list(plan.get("locations_to_create") or [])
     return Div(
-        NotStr(_INLINE_FIX_CSS),
+        Style(_INLINE_FIX_CSS),
         _step_indicator(3, has_mapping=True),
         Div(
             P(notice, cls="flash flash--warning") if notice else "",

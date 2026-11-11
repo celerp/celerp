@@ -33,7 +33,7 @@ from urllib.parse import urlencode, urlsplit
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse, Response
+from starlette.responses import RedirectResponse, Response
 
 from celerp.accounting_roles import account_label
 from celerp.importers.adapters.base import COMPANY_QUESTION

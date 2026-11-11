@@ -31,7 +31,7 @@ from ui.config import get_token as _token, get_role as _get_role
 from celerp.services.permissions import role_has_permission
 from ui.i18n import t, get_lang
 from ui.routes.reports import _date_filter_bar, _get_company, _parse_dates, _resolve_preset
-from ui.components.encode import html_response
+from ui.components.encode import html_response, inert_media_type
 
 logger = logging.getLogger(__name__)
 
@@ -2150,7 +2150,7 @@ def setup_routes(app):
         from starlette.responses import Response as _R
         return _R(
             content=resp.content,
-            media_type=content_type,
+            media_type=inert_media_type(content_type),
             headers={"Content-Disposition": api.file_disposition(resp, "attachment")},
         )
 

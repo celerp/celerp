@@ -28,6 +28,7 @@ from celerp.services.auth import (
 )
 from celerp.services.permissions import get_current_company_settings, require_permission
 from ui.i18n import t
+from ui.components.encode import inert_media_type
 
 log = logging.getLogger(__name__)
 
@@ -76,9 +77,9 @@ async def connector_media(token: str, request: Request):
         raise HTTPException(status_code=404, detail="Not found")
     headers = {"Cache-Control": "no-store", "Content-Length": str(size)}
     if request.method == "HEAD":
-        return Response(media_type=media.mime, headers=headers)
+        return Response(media_type=inert_media_type(media.mime), headers=headers)
     return StreamingResponse(company_file_chunks(media.company_id, media.url, _MEDIA_READ_BYTES),
-                             media_type=media.mime, headers=headers)
+                             media_type=inert_media_type(media.mime), headers=headers)
 
 
 # ── Request / Response schemas ────────────────────────────────────────────────

@@ -33,7 +33,7 @@ from celerp.services.pricing import ROUNDING_CHOICES
 from ui.i18n import category_label, get_lang, refusal_text, t, tier_label
 from ui.routes.documents import _action_error
 from ui.routes.setup import business_type_label, business_type_options
-from ui.components.encode import html_response, to_markup
+from ui.components.encode import html_response, inert_media_type
 
 
 def _refusal_message(e: APIError) -> str:
@@ -472,9 +472,7 @@ def _register_terms_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str,
 def _toast_response(message: str, *fragments: FT):
     """Swap the given fragments and surface ``message`` as an auto-dismissing error toast,
     so no stale error text persists in the page."""
-    from starlette.responses import HTMLResponse as _HR
-    body = "".join(to_markup(f) for f in fragments)
-    return _HR(body, headers=toast_header(message, "error"))
+    return html_response(fragments, headers=toast_header(message, "error"))
 
 
 def _status_error(status_id: str, message: str, oob: FT | None = None):
@@ -1763,8 +1761,7 @@ def setup_routes(app):
         if not saved.get("taxes_from"):
             return cell
         # Naming the country replaced the company's starting taxes: say so, with the way to them.
-        from starlette.responses import HTMLResponse as _HR
-        return _HR(to_markup(cell), headers=toast_header(
+        return html_response(cell, headers=toast_header(
             t("settings.taxes_set_from_country", country=country_name(saved["taxes_from"])), persist=True,
             action={"href": "/settings/sales?tab=taxes", "label": t("settings.review_taxes")}))
 
@@ -2665,7 +2662,7 @@ def setup_routes(app):
             return html_response(Div(str(exc.detail), cls="flash flash--error"))
         return ClosingStreamingResponse(
             stream,
-            media_type=headers.get("content-type", "application/octet-stream"),
+            media_type=inert_media_type(headers.get("content-type")),
             headers={k.title(): v for k, v in headers.items() if k != "content-type"},
         )
 
@@ -2687,7 +2684,7 @@ def setup_routes(app):
             return html_response(Div(str(exc.detail), cls="flash flash--error"))
         return ClosingStreamingResponse(
             stream,
-            media_type=headers.get("content-type", "application/octet-stream"),
+            media_type=inert_media_type(headers.get("content-type")),
             headers={k.title(): v for k, v in headers.items() if k != "content-type"},
         )
 
@@ -2696,7 +2693,8 @@ def setup_routes(app):
 
         The API answers with a flash (success, or "Import failed" / "Restore
         failed") at HTTP 200 for the HTMX swap; it is relayed verbatim so a
-        failed restore is never reported as a success. On success every session
+        failed restore is never reported as a success. The flash was encoded by the
+        backup module; it is relayed with an inert type, which htmx swaps the same way. On success every session
         has ended, so the browser's session cookies are dropped as well. Any
         other status (403 for anyone but the installation owner) is an error flash.
         """
@@ -2705,7 +2703,7 @@ def setup_routes(app):
         if r.status_code >= 400:
             detail = api.error_text(r, r.text[:200])
             return html_response(Div(detail, cls="flash flash--error", id="backup-flash"))
-        resp = Response(content=r.text, media_type="text/html")
+        resp = Response(content=r.content, media_type=inert_media_type(r.headers.get("content-type")))
         if r.headers.get(SESSION_ENDED_HEADER):
             from ui.config import clear_session_cookies
             clear_session_cookies(resp, request)

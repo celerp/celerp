@@ -1150,13 +1150,13 @@ _CUR_SYMBOLS = {"USD": "$", "CAD": "$", "AUD": "$", "NZD": "$", "EUR": "€", "G
 
 
 _CHART_EMPTY_ICONS = {
-    "line": ('<svg width="46" height="46" viewBox="0 0 46 46" fill="none" stroke="currentColor" '
+    "line": raw_html('<svg width="46" height="46" viewBox="0 0 46 46" fill="none" stroke="currentColor" '
              'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
              '<path d="M7 7 v32 h32" opacity="0.4"/><path d="M12 31 l8 -7 l6 4 l12 -14"/></svg>'),
-    "check": ('<svg width="46" height="46" viewBox="0 0 46 46" fill="none" stroke="currentColor" '
+    "check": raw_html('<svg width="46" height="46" viewBox="0 0 46 46" fill="none" stroke="currentColor" '
               'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
               '<circle cx="23" cy="23" r="16" opacity="0.4"/><path d="M15 23 l5 5 l11 -12"/></svg>'),
-    "bars": ('<svg width="46" height="46" viewBox="0 0 46 46" fill="none" stroke="currentColor" '
+    "bars": raw_html('<svg width="46" height="46" viewBox="0 0 46 46" fill="none" stroke="currentColor" '
              'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
              '<path d="M7 7 v32 h32" opacity="0.4"/>'
              '<rect x="13" y="25" width="5" height="10" fill="currentColor" stroke="none" opacity="0.65"/>'
@@ -1169,7 +1169,7 @@ def _chart_empty(title_key: str, sub_key: str, icon: str) -> FT:
     """A polished empty-state for a chart with no data yet, so a brand-new dashboard
     reads as complete (and self-explanatory) rather than broken or blank."""
     return Div(
-        NotStr(_CHART_EMPTY_ICONS.get(icon, _CHART_EMPTY_ICONS["line"])),
+        _CHART_EMPTY_ICONS.get(icon, _CHART_EMPTY_ICONS["line"]),
         P(t(title_key), cls="chart-empty-title"),
         P(t(sub_key), cls="chart-empty-sub"),
         cls="chart-empty",

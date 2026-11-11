@@ -57,6 +57,7 @@ from celerp.services.auth import (
 from celerp.services.company_lock import hold_company
 from celerp.services.permissions import get_current_company_settings, require_permission
 from ui.i18n import refusal_text, t
+from ui.components.encode import inert_media_type
 
 # AI routes count on Celerp's one limiter, per caller: tighter limits than the global
 # 60/min default, as LLM queries are expensive and uploads have file-size costs.
@@ -294,7 +295,7 @@ async def ai_file(file_id: str, company_id=Depends(get_current_company_id), user
     from celerp.ai.files import upload_dir
     data, meta = _load_file_http(file_id, company_id, user.id)
     bin_path = upload_dir() / f"{file_id}.bin"
-    return FileResponse(bin_path, media_type=meta.get("content_type"))
+    return FileResponse(bin_path, media_type=inert_media_type(meta.get("content_type")))
 
 
 @router.get("/memory", response_model=MemoryResponse)

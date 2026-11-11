@@ -35,7 +35,7 @@ from celerp.config import settings
 from celerp.services.auth import require_install_owner
 from celerp.services.backup import BackupResult
 from ui.i18n import t
-from ui.components.encode import html_response, to_markup
+from ui.components.encode import html_response
 
 router = APIRouter(dependencies=[Depends(require_install_owner)])
 
@@ -77,8 +77,7 @@ def _fmt_date(iso: str) -> str:
 def _flash(msg: str, kind: str = "success") -> Response:
     """Return an HTMX-swappable flash div."""
     from fasthtml.common import Div
-    html = to_markup(Div(msg, cls=f"flash flash--{kind}", id="backup-flash"))
-    return Response(content=html, media_type="text/html")
+    return html_response(Div(msg, cls=f"flash flash--{kind}", id="backup-flash"))
 
 
 def _restore_flash(result, base_msg: str) -> Response:

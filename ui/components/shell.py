@@ -3194,9 +3194,8 @@ def _menu_icon(name: str) -> FT:
     return Span(icon(name), cls="menu-icon")
 
 
-def flash(msg: str, kind: str = "error", raw: bool = False) -> FT:
-    content = NotStr(msg) if raw else msg
-    return Div(content, cls=f"flash flash--{kind}", id="flash")
+def flash(msg: str, kind: str = "error") -> FT:
+    return Div(msg, cls=f"flash flash--{kind}", id="flash")
 
 
 def no_access_text(error=None, *, permission: str | None = None) -> str:

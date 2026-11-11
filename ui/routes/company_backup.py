@@ -48,7 +48,7 @@ from celerp.services.company_handoff_transfer import HandoffDownloadError, downl
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
+from starlette.responses import JSONResponse, RedirectResponse
 
 import ui.api_client as api
 import ui.handoff_opening as opening

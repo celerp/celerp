@@ -1165,7 +1165,7 @@ def _sale_card(asset: dict, sale: dict, currency: str, today: str) -> FT | str:
         parts.append(P(t("fixed_assets.sale_pending_hint", invoice=sale["invoice_number"]), cls="settings-hint"))
         if sale.get("problem"):
             # What finalizing the invoice would meet, and where it is fixed.
-            parts.append(Div(t("fixed_assets.sale_blocked", invoice=sale["invoice_number"]), " ", sale["problem"],
+            parts.append(Div(t("fixed_assets.sale_blocked", invoice=sale["invoice_number"]), " ", str(sale["problem"]),
                              " ", A(t("fixed_assets.open_invoice"), href=_doc_href(sale["invoice_id"])),
                              cls="flash flash--warning"))
     parts.append(_detail_table(rows))

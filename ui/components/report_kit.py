@@ -281,7 +281,7 @@ def print_shell(company: dict, title: str, subtitle: str, body: FT,
         Body(
             report_header(company, title, subtitle) if header else None,
             body,
-            Div(NotStr(f'{t("reports.powered_by")} <a href="https://celerp.com">celerp.com</a>'), cls="report-footer"),
+            Div(t("reports.powered_by"), " ", A("celerp.com", href="https://celerp.com"), cls="report-footer"),
             Script("window.onload = function() { window.print(); }"),
         ),
     )

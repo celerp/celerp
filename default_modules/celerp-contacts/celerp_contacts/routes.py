@@ -37,6 +37,7 @@ from celerp_contacts.migration_sink import SINK
 from celerp_contacts.references import lock_contacts, lock_referencing_records
 from celerp_contacts.search import count_contacts, search_contacts
 from celerp_contacts.services import CRMImportRecord
+from ui.components.encode import inert_media_type
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -389,7 +390,7 @@ async def download_contact_file(
     return FileResponse(
         path=str(dest),
         filename=match["filename"],
-        media_type=match.get("mime", "application/octet-stream"),
+        media_type=inert_media_type(match.get("mime")),
     )
 
 

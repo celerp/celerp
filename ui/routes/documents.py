@@ -49,6 +49,7 @@ from celerp.output.document_context import prepare_document_output
 from ui.components.activity import EVENT_TYPE_LABELS, activity_table
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import files_error, files_section as _shared_doc_files_section, files_session_expired
+from ui.components.encode import html_response, raw_html, to_markup
 from ui.components.doc_money import ATTRS as DOC_MONEY_ATTRS, redraw_trigger as doc_money_redraw
 from ui.components.preview_confirm import FORM_ATTRS as CONFIRMS_PREVIEW, PREVIEW_ATTRS, binding_input, confirmed_binding
 from ui.components.operation_key import (
@@ -520,7 +521,6 @@ from celerp.services.list_behavior import (
     behavior as _list_behavior, status_key as _list_status_key, list_fact, SUPPLIER_DOC_TYPES,
     LIST_TYPES as _REG_LIST_TYPES, LIST_STATUSES as _LIST_STATUSES, DRAFT as _LD, FINALIZED as _LF, CLOSED as _LC,
 )
-from ui.components.encode import html_response, raw_html, to_markup
 
 
 def _list_status_label(state: dict) -> str:
@@ -1352,11 +1352,10 @@ def _action_error(msg: str | dict | APIError, *, persist: bool = False, action: 
     An APIError shows as its refusal, so a refusal resolved on another page links to it.
     ``persist`` and ``action`` are toast_header's; ``triggers`` are further client events fired
     with it."""
-    from starlette.responses import HTMLResponse as _HR
     if isinstance(msg, APIError):
         msg = msg.data if isinstance(msg.data, dict) and msg.data.get("message_key") else error_message(msg)
-    return _HR(
-        "",
+    return html_response(
+        (),
         status_code=200,
         headers={"HX-Reswap": "none",
                  **toast_header(msg, "error", persist=persist, action=action, celerpRestoreCell=True,
@@ -2439,7 +2438,6 @@ def setup_routes(app):
 
         A shipping document prints as a Delivery Note by default; pass
         ?layout=commercial_invoice for the customs rendering of the same record."""
-        from starlette.responses import HTMLResponse as _HR
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
@@ -2448,7 +2446,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 raise
-            return _HR(to_markup(P(error_message(e))), status_code=e.status)
+            return html_response(P(error_message(e)), status_code=e.status)
         layout = request.query_params.get("layout") or None
         lst.setdefault("doc_type", "list")
         if not lst.get("issue_date"):
@@ -2466,8 +2464,8 @@ def setup_routes(app):
                 lst, import_url=await _print_import_url(token, entity_id), auto_print=True,
                 layout=layout, line_identifier=_ident_mode)
         except ValueError as e:
-            return _HR(f"<p>{e}</p>", status_code=422)
-        return _HR(html)
+            return html_response(P(str(e)), status_code=422)
+        return html_response(html)
 
     @app.get("/lists/{entity_id}/items/csv")
     async def list_items_export_csv(request: Request, entity_id: str):
@@ -2490,8 +2488,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 raise
-            from starlette.responses import HTMLResponse as _HR
-            return _HR(to_markup(P(error_message(e))), status_code=e.status)
+            return html_response(P(error_message(e)), status_code=e.status)
         # Inject company fields
         doc = await _merge_company_letterhead(token, doc)
         # Fill any missing customer-facing fields independently from the selected contact.
@@ -2505,8 +2502,7 @@ def setup_routes(app):
         _ident_mode = await _line_identifier_mode(token)
         await _enrich_print_lines(token, doc, _ident_mode)
         _imp = await _print_import_url(token, entity_id)
-        from starlette.responses import HTMLResponse as _HR
-        return _HR(render_doc_print_html(doc, import_url=_imp, auto_print=True, line_identifier=_ident_mode))
+        return html_response(render_doc_print_html(doc, import_url=_imp, auto_print=True, line_identifier=_ident_mode))
 
     @app.get("/docs/{entity_id}/pdf")
     async def doc_pdf_redirect(request: Request, entity_id: str):
@@ -5098,8 +5094,8 @@ celerpUpdateBulkAlloc();
             resp = await api.get_list_page(token, entity_id, offset=_line_offset, limit=_line_limit)
         except APIError as e:
             if e.status == 404:
-                from starlette.responses import HTMLResponse as _HR
-                return _HR(f"<h2>{t('documents.list_not_found')}</h2><p><a href='/lists'>{t('documents.back_to_lists')}</a></p>", status_code=404)
+                return html_response((H2(t("documents.list_not_found")), P(A(t("documents.back_to_lists"), href="/lists"))),
+                                     status_code=404)
             raise
         lst = resp.get("list", {}) or {}
         lst["line_items"] = resp.get("items", []) or []

@@ -29,7 +29,7 @@ from ui.api_client import APIError, _flatten_item_attrs, error_message
 from ui.components.files import files_error, files_section as _shared_files_section, files_session_expired
 from ui.components.operation_key import kept_operation_key, operation_key_vals, required_operation_key
 from ui.components.shell import base_shell, minimal_shell, module_active, page_header, search_help, toast_header, page_title
-from ui.components.encode import html_response, js_value, raw_html
+from ui.components.encode import html_response, inert_media_type, js_value, raw_html
 from ui.components.table import fmt_money, data_table, search_bar, pagination, EMPTY, empty_mark, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum, display_unit, doc_href
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services import import_stage
@@ -2663,7 +2663,7 @@ function celerpPrintLabel(entityId, templateId) {
         if not headers:
             return out
         if isinstance(out, Response):
-            out.headers.update(headers)
+            out.headers["HX-Trigger"] = headers["HX-Trigger"]
             return out
         return (*(out if isinstance(out, tuple) else (out,)), *(HttpHeader(k, v) for k, v in headers.items()))
 
@@ -4853,7 +4853,7 @@ function celerpPrintLabel(entityId, templateId) {
         from starlette.responses import Response as _R
         return _R(
             content=resp.content,
-            media_type=content_type,
+            media_type=inert_media_type(content_type),
             headers={"Content-Disposition": api.file_disposition(resp, "inline")},
         )
 
@@ -4899,7 +4899,7 @@ function celerpPrintLabel(entityId, templateId) {
             return api.refusal_response(e)
         return Response(
             content=resp.content,
-            media_type=resp.headers.get("content-type", "image/jpeg"),
+            media_type=inert_media_type(resp.headers.get("content-type", "image/jpeg")),
             headers={"Cache-Control": resp.headers.get("cache-control", "private, max-age=86400")},
         )
 

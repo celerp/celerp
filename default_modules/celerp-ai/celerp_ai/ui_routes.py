@@ -24,7 +24,7 @@ from ui.components.shell import base_shell, load_error
 from ui.config import get_token as _token, get_role
 from ui.i18n import doc_type_label, refusal_text, t, t_or, get_lang, tier_label
 from ui.security import not_permitted_redirect
-from ui.components.encode import html_response
+from ui.components.encode import html_response, js
 
 # A proposal set larger than this renders as the review table instead of cards.
 TABLE_FROM = 5
@@ -1725,7 +1725,7 @@ def _pending_bubble(poll_url: str, delay_s: float, *children: FT, cls: str, also
     that may save something (``method="post"``) is never a GET."""
     poll = f"load delay:{delay_s:g}s" if delay_s else "load"
     return Div(*children, cls=cls, hx_trigger=", ".join(filter(None, (poll, also_on))),
-               hx_swap="outerHTML", **{f"hx_{method}": poll_url}, **attrs)
+               hx_swap="outerHTML", **({"hx_post": poll_url} if method == "post" else {"hx_get": poll_url}), **attrs)
 
 
 def _job_button(job_id: str, action: str, label: str, conversation_id: str, *, target: str,
@@ -2139,15 +2139,17 @@ def _chat_view(
                 cls="ai-input",
                 id="ai-chat-form",
             ),
-            Script(_chat_script(lang)),
+            Script(_chat_text(lang)),
+            Script(_CHAT_JS),
             cls="ai-chat__main",
         ),
         cls="ai-chat",
     )
 
 
-def _chat_script(lang: str = "en") -> str:
-    text = json.dumps({
+def _chat_text(lang: str = "en") -> str:
+    """The chat page's translated strings, as the global the chat script reads."""
+    return js("var CELERP_AI_TEXT = {0};", {
         "upload_failed": t("ai.upload_failed", lang),
         "upload_network": t("ai.upload_network_error", lang),
         "uploading": t("ai.uploading", lang),
@@ -2155,7 +2157,9 @@ def _chat_script(lang: str = "en") -> str:
         "credits_remaining": t("ai.credits_remaining", lang),
         "quota_unavailable": t("ai.quota_unavailable", lang),
     })
-    return "var CELERP_AI_TEXT = " + text + ";" + r"""
+
+
+_CHAT_JS = r"""
 // ── Sidebar collapse ─────────────────────────────────────────────────────────
 (function() {
     var sidebar = document.getElementById('ai-sidebar');
@@ -2493,7 +2497,7 @@ function _celerpAiUploadFormData(formData, fileNames, receiptEligible) {
 
 
 def _showcase_script() -> FT:
-    js = r"""
+    script = r"""
 (function() {
   var container = document.querySelector('[data-scenarios]');
   if (!container) return;
@@ -2628,4 +2632,4 @@ def _showcase_script() -> FT:
   playScenario(0);
 })();
 """
-    return Script(js)
+    return Script(script)

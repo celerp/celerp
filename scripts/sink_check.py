@@ -319,6 +319,7 @@ def _key(node):
 
 
 MAPPING_ANN = {"dict", "Dict", "Mapping", "MutableMapping"}
+DATA_BASES = {"NamedTuple", "TypedDict", "Enum", "StrEnum", "IntEnum"}
 
 
 class PyScan(ast.NodeVisitor):
@@ -331,6 +332,7 @@ class PyScan(ast.NodeVisitor):
         self.funcs = MODULE_FUNCS.get(module_name(path), {})
         self.locals: list[dict[str, ast.AST]] = []
         self.mapping_params: list[set[str]] = []
+        self.classes: set[str] = set()  # module classes on a data base only: values, not elements
 
     def snip(self, node):
         return (ast.get_source_segment(self.src, node) or "")[:140]
@@ -374,6 +376,8 @@ class PyScan(ast.NodeVisitor):
         for st in node.body:
             if isinstance(st, ast.Assign) and len(st.targets) == 1 and isinstance(st.targets[0], ast.Name):
                 self.consts[st.targets[0].id] = st.value
+            elif isinstance(st, ast.ClassDef) and all(self.leaf(b) in DATA_BASES for b in st.bases):
+                self.classes.add(st.name)
         self.generic_visit(node)
 
     def visit_Import(self, node):
@@ -500,7 +504,7 @@ class PyScan(ast.NodeVisitor):
             elif EVENT_ATTR_RE.match(tg.attr) or self._element_value(tg.value):
                 self._check_attr(tg.attr, value)
         elif isinstance(tg, ast.Subscript) and isinstance(tg.value, ast.Attribute):
-            key = _key(tg.slice)
+            key = _key(self._resolve(tg.slice))
             if tg.value.attr == "headers" and (key is None or key.lower() == "content-type"):
                 hit("PY-HTMLRESP", self.path, line, self.snip(tg))
             elif tg.value.attr == "attrs":
@@ -576,6 +580,8 @@ class PyScan(ast.NodeVisitor):
         """A capitalized callee from the framework or from this repo (components wrap elements);
         a capitalized class imported from any other package (Request, BaseModel) is not one."""
         if not name or not name[0].isupper() or name in RESPONSES:
+            return False
+        if isinstance(func, ast.Name) and func.id in self.classes:
             return False
         q = self.qual(func)
         if q and q.startswith(FRAMEWORK_PREFIXES):

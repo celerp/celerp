@@ -749,10 +749,10 @@ def _marketplace_module_cell(m: dict, lang: str) -> FT:
     if m.get("description"):
         parts.append(Div(m["description"], cls="text-muted small"))
     if m.get("data_access"):
-        parts.append(P(Strong(t("marketplace.data_access", lang)), ": ", m["data_access"], cls="community-disclosure"))
+        parts.append(P(Strong(t("marketplace.data_access", lang)), ": ", str(m["data_access"]), cls="community-disclosure"))
     if m.get("network_calls"):
-        parts.append(P(Strong(t("marketplace.network_calls", lang)), ": ", m["network_calls"], cls="community-disclosure"))
-    parts.append(P(Strong(t("th.license", lang)), ": ", m["license"], cls="community-disclosure"))
+        parts.append(P(Strong(t("marketplace.network_calls", lang)), ": ", str(m["network_calls"]), cls="community-disclosure"))
+    parts.append(P(Strong(t("th.license", lang)), ": ", str(m["license"]), cls="community-disclosure"))
     links = [A(t("marketplace.view_page", lang),
                href=m.get("homepage") or f"https://celerp.com/marketplace/{m['id']}",
                target="_blank", rel="noopener noreferrer")]
@@ -919,10 +919,10 @@ def _community_module_cell(m: dict, lang: str) -> FT:
     if m.get("description"):
         parts.append(Div(m["description"], cls="text-muted small"))
     if m.get("data_access"):
-        parts.append(P(Strong(t("marketplace.data_access", lang)), ": ", m["data_access"], cls="community-disclosure"))
+        parts.append(P(Strong(t("marketplace.data_access", lang)), ": ", str(m["data_access"]), cls="community-disclosure"))
     if m.get("network_calls"):
-        parts.append(P(Strong(t("marketplace.network_calls", lang)), ": ", m["network_calls"], cls="community-disclosure"))
-    parts.append(P(Strong(t("th.license", lang)), ": ", m["license"], cls="community-disclosure"))
+        parts.append(P(Strong(t("marketplace.network_calls", lang)), ": ", str(m["network_calls"]), cls="community-disclosure"))
+    parts.append(P(Strong(t("th.license", lang)), ": ", str(m["license"]), cls="community-disclosure"))
     links = []
     if source := catalog.source_url(m):
         links.append(A(t("marketplace.view_source", lang), href=source, target="_blank", rel="noopener noreferrer"))

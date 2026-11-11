@@ -22,7 +22,7 @@ from ui.i18n import t
 from celerp_fixed_assets.files import ASSET_FILE_TAGS
 from celerp_fixed_assets.ui_routes import (_STACK, _error_box, _error_text, _field, _hx_write, _input, _page,
                                            _refuse_if_switched, _refused, _send, _send_form, _text, _token)
-from ui.components.encode import to_markup
+from ui.components.encode import inert_media_type, to_markup
 
 _CHECKS = "/fixed-assets/checks"
 
@@ -198,7 +198,7 @@ def setup_physical_routes(app) -> None:
             r = await api.fixed_assets_download(token, path)
         except APIError as e:
             return api.refusal_response(e)
-        return Response(r.content, media_type=r.headers.get("content-type", "application/octet-stream"),
+        return Response(r.content, media_type=inert_media_type(r.headers.get("content-type")),
                         headers={k: v for k, v in r.headers.items() if k.lower() == "content-disposition"})
 
     @app.get("/fixed-assets/assets/{asset_id}/files/{file_id}/download")
