@@ -17,8 +17,8 @@ import pytest
 
 from ui.components.encode import safe_url
 
-from ..test_encode import URL_VECTORS
-from .conftest import answer_in_app, set_session_cookies
+from test_encode import URL_VECTORS
+from .conftest import _test_db, answer_in_app, set_session_cookies
 from .test_from_items_tax_e2e import _demo_company
 
 pytestmark = pytest.mark.browser
@@ -44,19 +44,23 @@ def _taxed_company(api_server, ui_server, api, name):
         {"name": name, "rate": 7.0, "tax_type": "both", "is_default": True}])
 
 
-def _hostile_unit(company) -> str:
-    units = company.get("/companies/me/units").json()
-    base = next(u for u in units if u["name"] == "piece")
-    r = company.put("/companies/me/units", json={"units": units + [{**base, "name": _BREAK, "label": _BREAK}]})
-    assert r.status_code == 200, r.text
-    return _BREAK
-
-
-def _split_item(company, unit: str) -> str:
+def _split_item(company) -> str:
+    """An item whose stored unit is hostile: the unit API refuses such a name now, but a record
+    stored before that rule (or by an import) still carries one, so it is written to the projection."""
     r = company.post("/items", json={"name": f"Split {uuid.uuid4().hex[:6]}", "sku": f"SPL-{uuid.uuid4().hex[:6]}",
-                                     "sell_by": unit, "quantity": 20})
+                                     "sell_by": "piece", "quantity": 20})
     assert r.status_code in (200, 201), r.text
-    return r.json()["id"]
+    item_id = r.json()["id"]
+    assert company.post("/items/bulk/make-available", json={"entity_ids": [item_id]}).status_code == 200
+    conn = _test_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE projections SET state = jsonb_set(state::jsonb, '{sell_by}', to_jsonb(%s::text))::json "
+                        "WHERE entity_id = %s", (_BREAK, item_id))
+            assert cur.rowcount == 1
+    finally:
+        conn.close()
+    return item_id
 
 
 def test_tax_name_shown_as_text_on_document_totals(page, api_server, ui_server, api):
@@ -79,7 +83,7 @@ def test_tax_name_shown_as_text_on_document_totals(page, api_server, ui_server, 
 
 def test_sell_by_unit_shown_as_text_in_batch_split(page, api_server, ui_server, api):
     with _demo_company(api_server, ui_server, api, "GB") as (company, ui, token, items):
-        item_id = _split_item(company, _hostile_unit(company))
+        item_id = _split_item(company)
         ctx, tab = _tab(page, ui_server, token)
         try:
             tab.goto(f"/inventory/{item_id}", wait_until="domcontentloaded")
@@ -176,7 +180,7 @@ def test_stored_text_encoded_on_record_pages(page, api_server, ui_server, api):
     with _taxed_company(api_server, ui_server, api, _IMG) as (company, ui, token, items):
         contact = company.post("/crm/contacts", json={
             "name": _IMG, "contact_type": "customer", "notes": _BREAK, "website": "http://[x"}).json()["id"]
-        item_id = _split_item(company, _hostile_unit(company))
+        item_id = _split_item(company)
         doc = company.post("/docs", json={
             "doc_type": "invoice", "status": "draft", "contact_id": contact, "notes": _BREAK,
             "line_items": [{"item_id": items[0]["id"], "sku": items[0]["sku"], "name": _IMG,
