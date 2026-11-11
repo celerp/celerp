@@ -704,3 +704,33 @@ async def test_a_refused_direction_keeps_the_buttons_and_says_why():
     assert "Another company holds this connection." in r.text
     journals = r.text.split('id="connector-flow-celerp-journals"')[1].split("</div>")[0]
     assert "btn--primary" in journals.split(">Both ways<")[0].rsplit("<button", 1)[1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("platform", "role", "expected"), [
+    ("woocommerce", "viewer", "redirect"),
+    ("shopify", "owner", "unknown_connector"),
+])
+async def test_import_next_route_refuses_without_importing(platform, role, expected):
+    """Import as needs the integrations permission and a WooCommerce order; without either
+    the route answers so and imports nothing."""
+    from httpx import ASGITransport, AsyncClient
+    from test_helpers import make_test_token
+    from ui.app import app as ui_app
+    from ui.i18n import t
+
+    importer = AsyncMock(return_value={"number": "WOO-7-2", "doc_id": "doc:woocommerce:order:7"})
+    cookies = {"celerp_token": make_test_token(role=role)}
+    with patch("ui.api_client.get_company", AsyncMock(return_value={
+                "id": "00000000-0000-0000-0000-000000000002", "settings": {}, "current_role": role,
+            })), \
+         patch("ui.api_client.import_woocommerce_order_next", importer):
+        async with AsyncClient(transport=ASGITransport(app=ui_app), base_url="http://ui") as client:
+            client.cookies.update(cookies)
+            r = await client.post(f"/settings/connectors/{platform}/attention/7/import-next")
+    importer.assert_not_awaited()
+    if expected == "redirect":
+        assert r.status_code in (302, 303), r.text
+    else:
+        assert r.status_code == 200, r.text
+        assert t("connectors.unknown_connector", platform=platform) in r.text, r.text

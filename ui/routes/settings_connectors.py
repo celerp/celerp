@@ -2009,13 +2009,11 @@ def setup_routes(app):
         """HTMX: import a WooCommerce order whose number another record holds under the next
         free number, then show the number it took in the entry's place, linked to the order.
         Only WooCommerce orders carry this action."""
-        token = _token(request)
-        if not token:
-            return Span(t("error.session_expired"), cls="flash flash--warning")
         if (r := await _check_permission(request, "manage_integrations")):
             return r
         if platform != "woocommerce":
             return Span(t("connectors.unknown_connector", platform=platform), cls="flash flash--warning")
+        token = _token(request)
         from ui.api_client import APIError, import_woocommerce_order_next
 
         lang = get_lang(request)

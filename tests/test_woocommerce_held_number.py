@@ -163,3 +163,63 @@ async def test_import_as_refuses_an_order_not_waiting_on_a_held_number(store):
     assert t("error.order_number_not_held") in line.text, line.text
     assert store.imports == []
     assert await store.created() == (0, None)
+
+
+async def test_import_as_after_mark_reconciled_still_imports(store):
+    """Mark reconciled then Import as: the person's later choice wins, and the order is
+    booked once under the next free number."""
+    await store.hold("doc:WOO-1001", _HOLDERS["draft"])
+    [entry] = await store.sync()
+    async with ui_signed_in(store.tok) as ui:
+        r = await ui.api.post("/connectors/woocommerce/orders/61/reconciled", json={"signature": entry["signature"]})
+        assert r.status_code == 200, r.text
+        with serving():
+            r = await ui.api.post("/connectors/woocommerce/orders/61/import-next")
+    assert r.status_code == 200, r.text
+    assert r.json() == {"number": "WOO-1001-2", "doc_id": _DOC}
+    assert await store.created() == (1, "WOO-1001-2")
+
+
+async def test_an_imported_order_keeps_its_suffixed_number_when_it_changes(store):
+    """An order imported as WOO-1001-2 keeps that number on later changes, while the
+    holder still keeps WOO-1001: nothing returns to the attention list."""
+    await store.hold("doc:WOO-1001", _HOLDERS["draft"])
+    await store.sync()
+    async with ui_signed_in(store.tok) as ui:
+        with serving():
+            r = await ui.api.post("/connectors/woocommerce/orders/61/import-next")
+    assert r.status_code == 200, r.text
+    store.imports.clear()
+    assert await store.sync({**_ORDER, "status": "on-hold"}) == []
+    assert store.imports == ["61"]
+    assert (await store.created())[1] == "WOO-1001-2"
+
+
+@pytest.mark.parametrize(("order_id", "status"), [("abc", 422), ("61x", 422), ("999", 404)])
+async def test_import_as_refuses_an_order_it_cannot_name(store, order_id, status):
+    """Import as takes a WooCommerce order number on the attention list: anything else is
+    refused and nothing is imported."""
+    await store.hold("doc:WOO-1001", _HOLDERS["draft"])
+    await store.sync()
+    store.imports.clear()
+    async with ui_signed_in(store.tok) as ui:
+        with serving():
+            r = await ui.api.post(f"/connectors/woocommerce/orders/{order_id}/import-next")
+    assert r.status_code == status, r.text
+    assert store.imports == []
+    assert await store.created() == (0, None)
+
+
+async def test_import_as_answers_the_reason_an_order_still_waits(store, monkeypatch):
+    """When the sync Import as runs leaves the order waiting, the person gets the reason
+    it waits on, not a number."""
+    from ui.i18n import refusal_text
+
+    await store.hold("doc:WOO-1001", _HOLDERS["draft"])
+    [entry] = await store.sync()
+    monkeypatch.setattr("celerp_connectors.routes._manual_sync", AsyncMock(return_value=None))
+    async with ui_signed_in(store.tok) as ui:
+        r = await ui.api.post("/connectors/woocommerce/orders/61/import-next")
+    assert r.status_code == 409, r.text
+    assert refusal_text(r.json()["detail"]) == refusal_text(entry["reason"])
+    assert await store.created() == (0, None)
