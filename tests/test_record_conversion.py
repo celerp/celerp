@@ -23,7 +23,7 @@ from test_tax_acceptance_matrix import _demo_company, _tax
 
 # A value of each key a source can hold, so every conversion door is handed all of CONVERSION_KEYS.
 SOURCE = {"discount": 10, "discount_type": "percentage", "shipping": 5, "doc_taxes": [_tax("VAT 7%", 7)],
-          "tax_rate": 3, "tax": 70, "currency": "USD", "payment_terms": "Net 30"}
+          "tax_rate": 3, "tax": 70, "currency": "USD"}
 # A quotation whose tax is an amount with no rate: the money rule keeps that amount as it is.
 UNRATED = [{"tax": 70}, {"tax": 70, "tax_rate": None}]
 
@@ -94,8 +94,10 @@ async def _company(client, session):
 
 
 async def _quotation_doc(client, h, cust, line) -> dict:
+    """A quotation holding every CONVERSION_KEYS value and a payment term (a RECORD_KEYS value)."""
     qid = (await _ok(await client.post("/docs", headers=h, json={
-        "doc_type": "quotation", "contact_id": cust, "line_items": [line], **SOURCE})))["id"]
+        "doc_type": "quotation", "contact_id": cust, "line_items": [line], "payment_terms": "Net 30",
+        **SOURCE})))["id"]
     return await _ok(await client.get(f"/docs/{qid}", headers=h))
 
 
@@ -122,6 +124,7 @@ async def test_a_quotation_document_converts_to_an_invoice_of_the_quoted_total_a
     _kept(inv, quote)
     for key in ("subtotal", "discount_amount", "tax", "total"):
         assert inv[key] == pytest.approx(quote[key]), key
+    assert inv["payment_terms"] == "Net 30"
     assert date.fromisoformat(inv["due_date"]) - date.fromisoformat(inv["issue_date"]) == timedelta(days=30)
 
 

@@ -353,9 +353,9 @@ DOC_MONEY_INPUTS = frozenset({"line_items", "discount", "discount_type", "shippi
 DOC_TOTAL_FIELDS = ("subtotal", "discount_amount", "tax", "total")
 # What a conversion (a quotation to an invoice or memo, a consignment bought) keeps of its source beyond
 # a copy's parties and lines (record_copy.conversion_of): every key document_money reads of it (the money
-# inputs and a tax amount with no rate, which stands when there is no rate to recompute it from) and the
-# term it is paid on.
-CONVERSION_KEYS = (DOC_MONEY_INPUTS - {"line_items"}) | {"tax", "payment_terms"}
+# inputs and a tax amount with no rate, which stands when there is no rate to recompute it from). The term
+# it is paid on travels with every copy (record_copy.RECORD_KEYS).
+CONVERSION_KEYS = (DOC_MONEY_INPUTS - {"line_items"}) | {"tax"}
 
 
 def stored_list_totals(state: dict) -> dict:
