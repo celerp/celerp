@@ -14,7 +14,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from test_helpers import authed_cookies
-from ui.api_client import APIError
+from ui.api_client import APIError, error_message
 from ui.components.shell import no_access_text
 from ui.i18n import t
 
@@ -185,3 +185,131 @@ async def test_work_center_refusal_is_shown():
         with patch("ui.api_client.create_work_center", new=AsyncMock(side_effect=APIError(status, "Session expired"))):
             r = await _ui("post", "/manufacturing/work-centers/new", headers={"HX-Request": "true"})
         assert _signed_out(r), (r.status_code, dict(r.headers))
+
+
+# ── Reorder to a purchase order (J7) ───────────────────────────────────────
+
+_UNITS = [{"name": "piece", "decimals": 0}, {"name": "kg", "decimals": 2}, {"name": "bag"}]
+_PO = {"id": "doc:PO-1", "doc_type": "purchase_order", "status": "draft", "line_items": [], "version": 3}
+
+
+def _item(eid: str, unit: str, reorder_qty=None, **extra) -> dict:
+    item = {"entity_id": eid, "sku": eid.split(":")[-1].upper(), "name": eid, "sell_by": unit,
+            "purchase_conversion_factor": 1, "cost_price": 2}
+    if reorder_qty is not None:
+        item["reorder_qty"] = reorder_qty
+    return {**item, **extra}
+
+
+def _send_to_reads(items: dict, units=_UNITS):
+    get_item = AsyncMock(side_effect=lambda token, eid: items[eid]) if isinstance(items, dict) else items
+    get_units = AsyncMock(return_value=units) if isinstance(units, list) else units
+    return (patch("ui.api_client.get_item", new=get_item),
+            patch("ui.api_client.get_units", new=get_units),
+            patch("ui.api_client.get_document_taxes", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_doc", new=AsyncMock(return_value=_PO)))
+
+
+async def _send_to(doc_type: str, ids: list[str], target: str = ""):
+    body = "&".join([f"selected={i}" for i in ids] + [f"send_to_doc_type={doc_type}", f"send_to_target={target}"])
+    return await _ui("post", "/api/items/send-to", content=body.encode(),
+                     headers={"content-type": "application/x-www-form-urlencoded", "HX-Request": "true"})
+
+
+async def test_reorder_refuses_items_without_reorder_quantity():
+    items = {"item:a": _item("item:a", "piece", 5), "item:b": _item("item:b", "piece")}
+    for target in ("", "doc:PO-1"):
+        create, patch_doc = AsyncMock(return_value={"id": "doc:PO-9"}), AsyncMock(return_value={})
+        a, b, c, d = _send_to_reads(items)
+        with a, b, c, d, patch("ui.api_client.create_doc", new=create), patch("ui.api_client.patch_doc", new=patch_doc):
+            r = await _send_to("purchase_order", ["item:a", "item:b"], target)
+        body = html.unescape(r.text)
+        assert (target, t("inv.reorder_needs_quantity", items="B") in body) == (target, True), body
+        create.assert_not_called()
+        patch_doc.assert_not_called()
+
+
+async def test_reorder_uses_the_api_unit_rule():
+    """A unit in the company list with no decimals key is whole units, as the API reads it."""
+    from ui.routes.documents import _reorder_lines_from_inventory
+    a, b, c, d = _send_to_reads({"item:a": _item("item:a", "bag", 2.5)})
+    with a, b, c, d:
+        lines = await _reorder_lines_from_inventory("tok", ["item:a"])
+    assert lines[0]["quantity"] == 3
+
+
+async def test_reorder_lines_pass_the_api_quantity_rule():
+    """Every unit kind by every reorder quantity: the builder refuses naming the item, or emits a
+    line the API's own quantity rule accepts."""
+    from celerp.services.units import build_unit_map, validate_line_quantity
+    from ui.routes.documents import _reorder_lines_from_inventory
+    unit_map = build_unit_map(_UNITS)
+    for unit in ("piece", "kg", "bag", "unknown-unit", "service"):
+        for reorder_qty in (None, 0.3, 5):
+            item = _item("item:q", unit, reorder_qty)
+            a, b, c, d = _send_to_reads({"item:q": item})
+            with a, b, c, d:
+                try:
+                    lines = await _reorder_lines_from_inventory("tok", ["item:q"])
+                except APIError as e:
+                    assert (unit, reorder_qty, "Q" in error_message(e)) == (unit, reorder_qty, True)
+                    continue
+            line = lines[0]
+            validate_line_quantity(line["quantity"], line["unit"], unit_map)
+
+
+async def test_reorder_shows_a_failed_read_and_creates_nothing():
+    items = {"item:a": _item("item:a", "piece", 5)}
+    failing_reads = [
+        ("units", AsyncMock(side_effect=APIError(500, "Units could not be read."))),
+        ("item", AsyncMock(side_effect=APIError(500, "Item could not be read."))),
+    ]
+    for which, failing in failing_reads:
+        for target in ("", "doc:PO-1"):
+            create, patch_doc = AsyncMock(return_value={"id": "doc:PO-9"}), AsyncMock(return_value={})
+            a, b, c, d = _send_to_reads(failing if which == "item" else items, failing if which == "units" else _UNITS)
+            with a, b, c, d, patch("ui.api_client.create_doc", new=create), patch("ui.api_client.patch_doc", new=patch_doc):
+                r = await _send_to("purchase_order", ["item:a"], target)
+            assert (which, target, "could not be read." in html.unescape(r.text)) == (which, target, True), r.text
+            create.assert_not_called()
+            patch_doc.assert_not_called()
+    a, b, c, d = _send_to_reads(items, AsyncMock(side_effect=APIError(401, "Session expired")))
+    with a, b, c, d:
+        r = await _send_to("purchase_order", ["item:a"], "doc:PO-1")
+    assert _signed_out(r), (r.status_code, dict(r.headers))
+
+
+async def test_line_builder_shows_a_failed_item_read():
+    """The line builder and the supplier grouping read never leave an item out without a word."""
+    failing = AsyncMock(side_effect=APIError(500, "Item could not be read."))
+    for doc_type in ("invoice", "list", "memo", "purchase_order"):
+        create_doc, create_list = AsyncMock(return_value={"id": "doc:X"}), AsyncMock(return_value={"id": "list:X"})
+        a, b, c, d = _send_to_reads(failing)
+        with a, b, c, d, patch("ui.api_client.create_doc", new=create_doc), \
+                patch("ui.api_client.create_list", new=create_list):
+            r = await _send_to(doc_type, ["item:a"])
+        assert (doc_type, "Item could not be read." in html.unescape(r.text)) == (doc_type, True), r.text
+        create_doc.assert_not_called()
+        create_list.assert_not_called()
+
+
+async def test_po_line_suggestion_uses_the_api_unit_rule():
+    from ui.routes.documents import _po_line_suggestions
+    doc = {"line_items": [{"entity_id": "item:a", "quantity": 0}]}
+    with patch("ui.api_client.get_item", new=AsyncMock(return_value=_item("item:a", "bag"))), \
+         patch("ui.api_client.get_reorder_suggestion", new=AsyncMock(return_value={"reorder_qty": 2.5})), \
+         patch("ui.api_client.get_units", new=AsyncMock(return_value=_UNITS)):
+        out = await _po_line_suggestions("tok", doc)
+    assert out == {"item:a": "3"}
+
+
+@pytest.mark.parametrize("key", ["inv.reorder_needs_quantity", "inventory.bulk_duplicate_refusals"])
+async def test_new_messages_in_every_locale(key):
+    """Both new messages are written in every catalog (not left to the English fallback), and
+    each keeps the {items} slot the route fills."""
+    from pathlib import Path
+    catalogs = sorted((Path(__file__).resolve().parents[1] / "ui" / "locales").glob("*.json"))
+    assert len(catalogs) >= 12
+    for path in catalogs:
+        value = json.loads(path.read_text(encoding="utf-8")).get(key) or ""
+        assert (path.stem, "{items}" in value) == (path.stem, True), value
