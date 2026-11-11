@@ -43,15 +43,9 @@ logger = logging.getLogger(__name__)
 _PER_PAGE = 50
 
 
-def _signed_out(e: APIError) -> None:
-    """An ended session goes on to the app's sign-in redirect, never shown as a refusal."""
-    if e.status == 401:
-        raise e
-
-
 def _refused(e: APIError):
     """The API's refusal of an action, shown where the user is."""
-    _signed_out(e)
+    api.raise_if_signed_out(e)
     return _action_error(e)
 
 
@@ -67,7 +61,7 @@ async def _redrawn(draw, fallback=None, said: str = ""):
     try:
         return await draw()
     except APIError as e:
-        _signed_out(e)
+        api.raise_if_signed_out(e)
         warning = f"{said} {t('subscriptions.done_not_redrawn')}".strip()
         return HTMLResponse(to_xml(fallback() if fallback else ""), headers=toast_header(warning, "warning"))
 
@@ -905,13 +899,13 @@ async def _held_and_unread(token: str) -> tuple[list[dict], dict, list[str]]:
     try:
         catch_up = (await api.subscriptions_catch_up(token)).get("items") or []
     except APIError as exc:
-        _signed_out(exc)
+        api.raise_if_signed_out(exc)
         catch_up = []
         errors.append(error_message(exc))
     try:
         summary = await api.subscriptions_summary(token)
     except APIError as exc:
-        _signed_out(exc)
+        api.raise_if_signed_out(exc)
         summary = {}
         errors.append(error_message(exc))
     return catch_up, summary, errors
@@ -1040,7 +1034,7 @@ def setup_routes(app) -> None:
             newer_id = entry.get("doc_id") if entry.get("state") == "billed" else None
             newer = await api.get_doc(token, newer_id) if newer_id and newer_id != doc_id else None
         except APIError as e:
-            _signed_out(e)
+            api.raise_if_signed_out(e)
             return ""
         if k is not None:
             text = (sentence("subscriptions.doc_period_rebilled", newer=newer.get("ref_id") or newer_id)
@@ -1090,7 +1084,7 @@ def setup_routes(app) -> None:
                 try:
                     results.extend((await api.run_subscriptions_catch_up(token, batch)).get("results") or [])
                 except APIError as e:
-                    _signed_out(e)
+                    api.raise_if_signed_out(e)
                     refusals.append(e)
                     results.extend({**item, "ok": False, "error": error_message(e)} for item in batch)
         else:
@@ -1101,7 +1095,7 @@ def setup_routes(app) -> None:
                                                                 "skip", {"reason": reason})
                     results.append({**item, "ok": True, "skipped": True, **done["period"]})
                 except APIError as e:
-                    _signed_out(e)
+                    api.raise_if_signed_out(e)
                     results.append({**item, "ok": False, "error": error_message(e)})
         if refusals and len(refusals) == len(range(0, len(chosen), 50)):
             return _refused(refusals[0])
@@ -1208,7 +1202,7 @@ def setup_routes(app) -> None:
         try:
             items = await _all_agreements(token, direction, review=review)
         except APIError as exc:
-            _signed_out(exc)
+            api.raise_if_signed_out(exc)
             return Div(error_message(exc), id="sub-table", cls="flash flash--warning")
         return _sub_table(_listed(items, _list_state(request.query_params)), direction, review)
 
@@ -1424,7 +1418,7 @@ def setup_routes(app) -> None:
                 views = _stored_schedule_views(entity_id, await api.get_subscription(token, entity_id),
                                                await api.get_subscription_periods(token, entity_id))
             except APIError as read_error:
-                _signed_out(read_error)
+                api.raise_if_signed_out(read_error)
                 return refusal
             return HTMLResponse(views, headers={k: v for k, v in refusal.headers.items()
                                                 if k not in ("content-length", "content-type")})
