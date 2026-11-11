@@ -6171,6 +6171,7 @@
   "notice.imported_doc_cutover.locked": "Pesanan pembelian dan tagihan yang diimpor sebelum pembaruan ini berada di periode terkunci dan belum dapat dikoreksi: {numbers}. Pindahkan kunci periode di Pengaturan > Akuntansi agar ada tanggal terbuka; koreksi dijalankan lagi saat mulai berikutnya.",
   "notice.imported_doc_cutover.failed": "Pesanan pembelian dan tagihan yang diimpor sebelum pembaruan ini tidak dapat dikoreksi: {numbers}. Buka masing-masing dan periksa baris dan pembayarannya; koreksi dijalankan lagi saat mulai berikutnya.",
   "accounting.year_end_invalid": "{value} bukan tanggal. Masukkan hari terakhir tahun yang akan ditutup dengan format YYYY-MM-DD.",
+  "accounting.year_end_before_first": "Tidak ada tahun buku yang berakhir pada atau sebelum {value}. Dengan awal tahun buku perusahaan ini, akhir tahun pertama adalah {year_end}.",
   "accounting.year_end_not_fiscal": "{value} bukan hari terakhir tahun fiskal. Dengan awal tahun fiskal perusahaan ini, akhir tahun terakhir pada atau sebelum tanggal itu adalah {year_end}. Untuk menutup tahun itu, masukkan {year_end}, atau ubah Awal tahun fiskal di Detail Perusahaan.",
   "accounting.fiscal_year_start_invalid": "Awal tahun fiskal perusahaan ini, {value}, bukan hari pertama suatu bulan. Atur Awal tahun fiskal di Detail Perusahaan, lalu tutup tahunnya.",
   "accounting.bank_not_found": "Rekening bank itu tidak ditemukan di perusahaan ini. Pilih salah satu rekening bank perusahaan.",

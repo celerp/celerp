@@ -2,13 +2,13 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
 """The app's own Python sources: the one root list every guard that scans the source reads, so
-no guard stops short of a module."""
+no guard stops short of a module. At the repository root, so a module's own tests import it too."""
 
 from __future__ import annotations
 
 import pathlib
 
-REPO = pathlib.Path(__file__).resolve().parents[1]
+REPO = pathlib.Path(__file__).resolve().parent
 CORE_ROOT = "celerp"
 MODULE_ROOT = "default_modules"
 UI_ROOT = "ui"

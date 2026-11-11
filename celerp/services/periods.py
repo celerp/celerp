@@ -49,8 +49,31 @@ def fiscal_year_start_month(value) -> int:
     return FISCAL_YEAR_STARTS.index(value) + 1
 
 
+def _last_day(index: int) -> date:
+    """The last day of month ``index``; ValueError outside the calendar (years 1 to 9999)."""
+    year, month = divmod(index, 12)
+    return date(year, month + 1, 1).replace(day=calendar.monthrange(year, month + 1)[1])
+
+
+def first_fiscal_year_end(start_month: int) -> date:
+    """The first fiscal year end the calendar holds, in year 1."""
+    return _last_day(12 + (start_month - 2) % 12)
+
+
+def last_fiscal_year_end(day: date, start_month: int) -> date | None:
+    """The latest last day of a fiscal year starting in ``start_month`` on or before ``day``
+    (``day`` itself when it is one); None before first_fiscal_year_end. Only months the
+    calendar holds are built, so no day raises."""
+    index = month_index(day)
+    end_index = index + months_to_fiscal_year_end(index, start_month) - 1
+    if end_index != index or day.day != days_in_month(day):
+        end_index -= 12
+    return _last_day(end_index) if end_index >= 12 else None
+
+
 def fiscal_year_bounds(day: date, start_month: int) -> tuple[date, date]:
-    """The first and last day of the fiscal year starting in ``start_month`` that holds ``day``."""
+    """The first and last day of the fiscal year starting in ``start_month`` that holds ``day``;
+    ValueError when that year leaves the calendar."""
     end_index = month_index(day) + months_to_fiscal_year_end(month_index(day), start_month) - 1
     end_month = date(end_index // 12, end_index % 12 + 1, 1)
     start_index = end_index - 11

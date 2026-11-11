@@ -6171,6 +6171,7 @@
   "notice.imported_doc_cutover.locked": "Estes pedidos de compra e faturas importados antes desta atualização estão num período bloqueado e ainda não puderam ser corrigidos: {numbers}. Mova o bloqueio de período em Configurações > Contabilidade para que exista uma data aberta; a correção é executada novamente no próximo início.",
   "notice.imported_doc_cutover.failed": "Não foi possível corrigir estes pedidos de compra e faturas importados antes desta atualização: {numbers}. Abra cada um e verifique as linhas e os pagamentos; a correção é executada novamente no próximo início.",
   "accounting.year_end_invalid": "{value} não é uma data. Introduza o último dia do ano a encerrar no formato AAAA-MM-DD.",
+  "accounting.year_end_before_first": "Nenhum ano fiscal termina em {value} ou antes. Com o início do ano fiscal desta empresa, o primeiro fim de ano é {year_end}.",
   "accounting.year_end_not_fiscal": "{value} não é o último dia de um ano fiscal. Com o início do ano fiscal desta empresa, o último fim de ano nessa data ou antes é {year_end}. Para encerrar esse ano, introduza {year_end}, ou altere o Início do ano fiscal em Detalhes da empresa.",
   "accounting.fiscal_year_start_invalid": "O início do ano fiscal desta empresa, {value}, não é o primeiro dia de um mês. Defina o Início do ano fiscal em Detalhes da empresa e depois encerre o ano.",
   "accounting.bank_not_found": "Essa conta bancária não foi encontrada nesta empresa. Escolha uma das contas bancárias da empresa.",

@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
-"""Every test that walks the app's source reads its roots from tests/shipped_sources, so no
+"""Every test that walks the app's source reads its roots from shipped_sources, so no
 source guard stops short of a module: a scanner with a root tuple of its own fails, even one that
 lists every root today, since the next root added would pass it by."""
 
@@ -19,7 +19,6 @@ _SHARED = re.compile(r"^\s*from shipped_sources import |^\s*import shipped_sourc
 
 # Files that pass for a stated reason.
 _ALLOWED: dict[str, str] = {
-    "tests/shipped_sources.py": "the one root list itself",
     "tests/test_company_backup.py": "walks a company backup directory, not the source",
     "tests/test_company_backup_lifecycle.py": "walks the data directory's company backups, not the source",
     "tests/test_system_recovery_exact.py": "walks a backup and the recovery staging directory, not the source",
@@ -40,5 +39,5 @@ def test_source_scanners_cover_every_shipped_root():
         source = (REPO / rel).read_text(encoding="utf-8")
         if _WALKS.search(source) and _ROOTS.search(source) and not _SHARED.search(source) and rel not in _ALLOWED:
             flagged.append(rel)
-    assert not flagged, "walk the app's source through tests/shipped_sources:\n" + "\n".join(flagged)
+    assert not flagged, "walk the app's source through shipped_sources:\n" + "\n".join(flagged)
     assert all(_ALLOWED.values())

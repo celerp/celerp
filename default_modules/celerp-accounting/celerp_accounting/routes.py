@@ -27,7 +27,7 @@ from celerp.importers.results import failure_reason
 from celerp.importers.tabular import TabularError, _rows_to_csv, read_table, read_upload_bytes
 from celerp.services.currencies import CURRENCY_CODES
 from celerp.services.ledger_sources import SOURCE_KEYS, record_entry_ids, source_meta
-from celerp.services.periods import fiscal_year_bounds, fiscal_year_start_month
+from celerp.services.periods import first_fiscal_year_end, fiscal_year_start_month, last_fiscal_year_end
 from celerp_accounting import import_service
 from celerp_accounting.account_tree import account_tree_lines
 from celerp_accounting.chart_rules import (
@@ -5353,11 +5353,18 @@ async def close_fiscal_year(
             f"This company's fiscal year start {stored_start} is not the first day of a month. "
             "Set Fiscal year start in Company Details, then close the year.",
             value=str(stored_start))) from None
-    first, end = fiscal_year_bounds(date.fromisoformat(year_end), start_month)
-    if end.isoformat() != year_end:
+    last_end = last_fiscal_year_end(date.fromisoformat(year_end), start_month)
+    if last_end is None:
+        first_end = first_fiscal_year_end(start_month).isoformat()
+        raise HTTPException(status_code=422, detail=refusal(
+            "accounting.year_end_before_first",
+            f"No fiscal year ends on or before {year_end}. With this company's fiscal year start, "
+            f"the first year end is {first_end}.",
+            value=year_end, year_end=first_end))
+    if last_end.isoformat() != year_end:
         # The last fiscal year end on or before the entered date, so following it never
         # closes the open year.
-        suggested = (first - timedelta(days=1)).isoformat()
+        suggested = last_end.isoformat()
         raise HTTPException(status_code=422, detail=refusal(
             "accounting.year_end_not_fiscal",
             f"{year_end} is not the last day of a fiscal year. With this company's fiscal year "

@@ -89,6 +89,29 @@ async def test_close_year_refuses_a_malformed_fiscal_year_start(client, session,
     assert (await _settings(session, cid)).get("lock_date") == lock0
 
 
+@pytest.mark.parametrize("start,entered,key,year_end", [
+    ("01-01", "0001-01-31", "accounting.year_end_before_first", "0001-12-31"),
+    ("04-01", "0001-02-28", "accounting.year_end_before_first", "0001-03-31"),
+    ("04-01", "9999-12-31", "accounting.year_end_not_fiscal", "9999-03-31"),
+    ("01-01", "9999-12-30", "accounting.year_end_not_fiscal", "9998-12-31"),
+])
+async def test_close_year_refuses_a_date_at_the_calendar_edge(client, session, auth, start, entered, key, year_end):
+    """A year end at either end of the calendar is refused like any other date that is not
+    one, naming the year end to enter; before the first year end there is none on or before
+    it, so the refusal names the first. Nothing posts, nothing locks."""
+    cid = auth["company_id"]
+    r = await client.patch("/companies/me/books", headers=auth["headers"], json={"fiscal_year_start": start})
+    assert r.status_code == 200, r.text
+    before, lock0 = await _je_count(session, cid), (await _settings(session, cid)).get("lock_date")
+    r = await client.post("/accounting/close-year", headers=auth["headers"], json={"fiscal_year_end": entered})
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert detail["message_key"] == key
+    assert detail["params"] == {"value": entered, "year_end": year_end}
+    assert await _je_count(session, cid) == before
+    assert (await _settings(session, cid)).get("lock_date") == lock0
+
+
 @pytest.mark.parametrize("start,entered,suggested", [
     ("04-01", "2026-06-30", "2026-03-31"),  # mid-year
     ("04-01", "2026-04-01", "2026-03-31"),  # first day of the year

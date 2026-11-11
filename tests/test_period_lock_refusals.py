@@ -41,7 +41,7 @@ def _close_input_value(html: str) -> str | None:
 
 
 def _assert_tab_kept(html: str, banner: str, close_value: str) -> None:
-    assert 'id="period-lock-content"' in html
+    assert html.count('id="period-lock-content"') == 1, html
     assert "error-banner" in html and banner in html
     assert 'hx-post="/settings/accounting/period-lock"' in html
     assert 'hx-post="/settings/accounting/close-year"' in html
@@ -95,3 +95,17 @@ async def test_close_year_refusal_survives_a_failed_lock_read(ui_client, case):
         banner, value = _REFUSED, "2026-12-31"
     assert r.status_code == 200
     _assert_tab_kept(r.text, banner, value)
+
+
+@pytest.mark.parametrize("path,data,api", [
+    ("/settings/accounting/period-lock", {"lock_date": "2026-01-31"}, {"set_period_lock": AsyncMock(return_value=_LOCK)}),
+    ("/settings/accounting/close-year", {"fiscal_year_end": "2025-12-31"},
+     {"close_fiscal_year": AsyncMock(return_value={"lock_date": "2025-12-31", "net_income": 70})}),
+])
+async def test_a_lock_or_close_that_applies_redraws_the_tab_under_one_id(ui_client, path, data, api):
+    """The tab htmx swaps on every lock and close response carries its id once, the success
+    banner inside it, so the next submit targets the one element."""
+    r = await _post(ui_client, path, data, AsyncMock(return_value=_LOCK), **api)
+    assert r.status_code == 200, r.text
+    assert r.text.count('id="period-lock-content"') == 1, r.text
+    assert 'hx-post="/settings/accounting/close-year"' in r.text

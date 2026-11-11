@@ -6171,6 +6171,7 @@
   "notice.imported_doc_cutover.locked": "Estas órdenes de compra y facturas importadas antes de esta actualización están en un período bloqueado y aún no se pudieron corregir: {numbers}. Mueva el bloqueo de período en Ajustes > Contabilidad para que exista una fecha abierta; la corrección se ejecuta de nuevo en el próximo inicio.",
   "notice.imported_doc_cutover.failed": "Estas órdenes de compra y facturas importadas antes de esta actualización no se pudieron corregir: {numbers}. Abra cada una y revise sus líneas y pagos; la corrección se ejecuta de nuevo en el próximo inicio.",
   "accounting.year_end_invalid": "{value} no es una fecha. Introduzca el último día del año que va a cerrar como AAAA-MM-DD.",
+  "accounting.year_end_before_first": "Ningún ejercicio fiscal termina el {value} o antes. Con el inicio del ejercicio fiscal de esta empresa, el primer cierre de año es el {year_end}.",
   "accounting.year_end_not_fiscal": "{value} no es el último día de un año fiscal. Según el inicio del año fiscal de esta empresa, el último cierre de año en esa fecha o antes es {year_end}. Para cerrar ese año, introduzca {year_end}, o cambie el inicio del año fiscal en Detalles de la empresa.",
   "accounting.fiscal_year_start_invalid": "El inicio del año fiscal de esta empresa, {value}, no es el primer día de un mes. Configure el inicio del año fiscal en Detalles de la empresa y luego cierre el año.",
   "accounting.bank_not_found": "Esa cuenta bancaria no se encontró en esta empresa. Elija una de las cuentas bancarias de la empresa.",

@@ -11,7 +11,7 @@
   "labels.display_label_hint": "Label yang tampil di pratinjau",
   "labels.edit_name": "Ubah: {name}",
   "labels.field_select_placeholder": "-- pilih --",
-  "labels.font_size": "Font",
+  "labels.font_size": "Ukuran huruf",
   "labels.font_size_hint": "Ukuran teks dalam poin (4-72)",
   "labels.height_example": "misalnya 30",
   "labels.name_required": "Nama templat wajib diisi.",

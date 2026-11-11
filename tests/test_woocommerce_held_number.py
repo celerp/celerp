@@ -70,10 +70,8 @@ async def store(real_engine, real_client, monkeypatch):
                              updated_at=datetime.now(timezone.utc), state=state))
             await s.commit()
 
-    async def sync() -> list[dict]:
-        with respx.mock:
-            respx.get("https://store.example.com/wp-json/wc/v3/orders").mock(
-                return_value=httpx.Response(200, json=[_ORDER]))
+    async def sync(order: dict = _ORDER) -> list[dict]:
+        with serving(order):
             await run_sync(connector, cid, "orders", purpose="manual_sync")
         return await attention_entries(cid, "woocommerce", "orders")
 
@@ -89,6 +87,14 @@ async def store(real_engine, real_client, monkeypatch):
 
     return SimpleNamespace(cid=cid, tok=await token(real_engine, user, cid), hold=hold, sync=sync,
                            imports=imports, created=created)
+
+
+def serving(order: dict = _ORDER):
+    """The store answers the order list with ``order``, for a sync the test or a route runs
+    (a refused route runs none)."""
+    mock = respx.mock(assert_all_called=False)
+    mock.get("https://store.example.com/wp-json/wc/v3/orders").mock(return_value=httpx.Response(200, json=[order]))
+    return mock
 
 
 @pytest.mark.parametrize("holder", sorted(_HOLDERS))
@@ -128,7 +134,8 @@ async def test_import_as_books_the_order_once_under_the_next_free_suffix(store, 
     async with ui_signed_in(store.tok) as ui:
         page = await ui.get("/settings/connectors/woocommerce")
         assert t("connectors.attention_import_as", number=expected) in page.text, page.text
-        r = await ui.post(f"{_ATTENTION}/import-next", headers={"HX-Request": "true"})
+        with serving():
+            r = await ui.post(f"{_ATTENTION}/import-next", headers={"HX-Request": "true"})
     assert r.status_code == 200, r.text
     assert t("connectors.attention_imported_as", number=expected) in r.text, r.text
     assert f'href="/docs/{_DOC}"' in r.text, r.text
@@ -140,22 +147,19 @@ async def test_import_as_books_the_order_once_under_the_next_free_suffix(store, 
 async def test_import_as_refuses_an_order_not_waiting_on_a_held_number(store):
     """Import as is the way out of a held number only: an order waiting on anything else is
     refused with that, and nothing is imported."""
-    from ui.i18n import t
+    from ui.i18n import refusal_text, t
 
-    _ORDER_UNKNOWN = {**_ORDER, "line_items": [{"name": "Widget", "sku": "NOPE", "product_id": 5,
-                                                 "quantity": 1, "price": "5.00", "total": "5.00"}]}
-    with respx.mock:
-        respx.get("https://store.example.com/wp-json/wc/v3/orders").mock(
-            return_value=httpx.Response(200, json=[_ORDER_UNKNOWN]))
-        from celerp import connectors
-        from celerp.connectors.sync_runner import run_sync
-        await run_sync(connectors.get("woocommerce"), store.cid, "orders", purpose="manual_sync")
+    unknown = {**_ORDER, "line_items": [{"name": "Widget", "sku": "NOPE", "product_id": 5,
+                                         "quantity": 1, "price": "5.00", "total": "5.00"}]}
+    [entry] = await store.sync(unknown)
+    assert not entry.get("number_held"), entry
     store.imports.clear()
     async with ui_signed_in(store.tok) as ui:
-        r = await ui.api.post("/connectors/woocommerce/orders/61/import-next")
-        assert r.status_code == 409, r.text
-        assert r.json()["detail"] == t("error.order_number_not_held")
-        line = await ui.post(f"{_ATTENTION}/import-next", headers={"HX-Request": "true"})
+        with serving(unknown):
+            r = await ui.api.post("/connectors/woocommerce/orders/61/import-next")
+            line = await ui.post(f"{_ATTENTION}/import-next", headers={"HX-Request": "true"})
+    assert r.status_code == 409, r.text
+    assert refusal_text(r.json()["detail"]) == t("error.order_number_not_held")
     assert t("error.order_number_not_held") in line.text, line.text
     assert store.imports == []
     assert await store.created() == (0, None)

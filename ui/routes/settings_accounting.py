@@ -132,11 +132,14 @@ def _bank_accounts_tab(banks: list[dict]) -> FT:
     )
 
 
-def _period_lock_tab(lock_data: dict, close_value: str = "") -> FT:
+def _period_lock_tab(lock_data: dict, close_value: str = "", banner: FT | None = None) -> FT:
+    """The period lock tab, the element every lock and close response replaces; ``banner``
+    (a refusal or success) heads it, so the tab keeps its one id."""
     lock_date = lock_data.get("lock_date") or ""
     set_at = lock_data.get("lock_date_set_at") or ""
     firm_lock = lock_data.get("firm_lock")
     return Div(
+        banner if banner is not None else "",
         H3(t("page.period_lock"), cls="section-title"),
         P(
             t("settings_accounting.period_lock_help"),
@@ -209,8 +212,7 @@ async def _period_lock_refused(token: str, message: str, close_value: str = "") 
         lock_data = await api.get_period_lock(token)
     except Exception:
         lock_data = {}
-    return Div(P(message, cls="error-banner mb-md"), _period_lock_tab(lock_data, close_value),
-               id="period-lock-content")
+    return _period_lock_tab(lock_data, close_value, P(message, cls="error-banner mb-md"))
 
 
 def _rules_tab(rules: list[dict], banks: list[dict]) -> FT:
@@ -1234,12 +1236,9 @@ def setup_routes(app):
             result = await api.close_fiscal_year(token, fiscal_year_end)
         except APIError as e:
             return await _period_lock_refused(token, str(e.detail), fiscal_year_end)
-        lock_data = {"lock_date": result.get("lock_date")}
-        content = _period_lock_tab(lock_data)
-        # Prepend success message
         net = result.get("net_income", 0)
         msg = t("settings_accounting.fiscal_year_closed", date=fiscal_year_end, net=f"{net:,.2f}")
-        return Div(P(msg, cls="success-banner mb-md"), content, id="period-lock-content")
+        return _period_lock_tab({"lock_date": result.get("lock_date")}, banner=P(msg, cls="success-banner mb-md"))
 
     @app.post("/settings/accounting/rules")
     async def create_rule(request: Request):

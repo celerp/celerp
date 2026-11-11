@@ -40,6 +40,29 @@ def test_fiscal_year_bounds_for_every_start_month(start):
     assert fiscal_year_bounds(date(2024, 2, 29), 3) == (date(2023, 3, 1), date(2024, 2, 29))
 
 
+def _last_end(day: date, start: int) -> date | None:
+    """The plain construction: a fiscal year ends on the last day of the month before its start
+    month, so the latest such day on or before ``day``; None when the calendar holds none."""
+    month = (start - 2) % 12 + 1
+    for year in range(day.year, 0, -1):
+        end = date(year, month, calendar.monthrange(year, month)[1])
+        if end <= day:
+            return end
+    return None
+
+
+@pytest.mark.parametrize("start", range(1, 13))
+def test_last_fiscal_year_end_for_every_start_month_and_calendar_edge(start):
+    """The latest fiscal year end on or before a day, the day itself when it is one, for both
+    edges of every month and at both ends of the calendar, where it is None (no year end yet)
+    or a date, never an overflow."""
+    from celerp.services.periods import last_fiscal_year_end
+
+    days = [*_edges(2023), *_edges(2024), *_edges(1), *_edges(9999), date(2024, 2, 29)]
+    for day in days:
+        assert last_fiscal_year_end(day, start) == _last_end(day, start), (day, start)
+
+
 def test_fiscal_year_start_month_refuses_a_malformed_start():
     """Missing or empty reads as January, the provisioning default; a value that is
     not the first of a month is refused, never guessed."""
@@ -92,5 +115,6 @@ def test_close_year_keys_are_in_every_locale():
     assert len(locales) == 12
     for path in locales:
         catalog = json.loads(path.read_text(encoding="utf-8"))
-        for key in ("accounting.year_end_not_fiscal", "accounting.fiscal_year_start_invalid"):
+        for key in ("accounting.year_end_not_fiscal", "accounting.fiscal_year_start_invalid",
+                    "accounting.year_end_before_first"):
             assert catalog.get(key), (path.name, key)

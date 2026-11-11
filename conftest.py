@@ -1457,7 +1457,7 @@ def events_without_the_company_lock(monkeypatch):
 # `python tests/lock_rank.py check <dir>` judges the merged graph and lists stale debt.
 import importlib.util as _importlib_util
 
-# The test helpers (tests/shipped_sources and the rest), importable from a module's own tests too.
+# The helpers under tests/, importable by name from the test files in its subdirectories.
 _sys.path.append(str(Path(__file__).parent / "tests"))
 
 # Loaded once under its own name, so the checker's tests share this recorder.

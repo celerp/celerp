@@ -166,7 +166,7 @@ def test_a_head_database_restored_into_another_encoding_keeps_its_number_indexes
 
         assert [_valid(dst_url, name) for name in INDEXES] == [True, True, True]
         holders, statements, plan = asyncio.run(_lookups(dst_async, cid, ["leg-space-\u00c9"]))
-        assert holders == [("doc", "LEG-space-\u00c9")]
+        assert [h[:2] for h in holders] == [("doc", "LEG-space-\u00c9")]
         _assert_ascii(statements)
         assert {f"ix_projections_canonical_number_{i}" for i in ("shown", "kept", "key")} <= {
             w for line in plan for w in line.split()}, plan

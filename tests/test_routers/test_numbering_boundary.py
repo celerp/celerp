@@ -1149,7 +1149,9 @@ _REFUSAL_WAY_OUT = {
     (f"{_DOCS}/routes.py", "batch_import_lists"): ("user", "the number and key in the imported file"),
     (f"{_DOCS}/import_service.py", "create_imported_doc"): ("user", "the number and key in the imported file"),
     (f"{_DOCS}/doc_service.py", "upsert_order_from_woocommerce"): (
-        "user", "the WOO- number composed from a store order: renumber the holder and sync again"),
+        "user", "the WOO- number the order's attention line settles: Mark reconciled or Import as WOO-<n>-<k>"),
+    (f"{_DOCS}/doc_service.py", "_woocommerce_order_number"): (
+        "system", "the WOO- number composed from a store order: held elsewhere, the order waits on a person"),
     (f"{_DOCS}/routes.py", "revert_doc_to_draft"): (
         "system", "the order number a bill was converted from: held elsewhere, the bill stays a bill"),
 }
