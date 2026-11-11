@@ -991,6 +991,9 @@
   "POST /connectors/{connector_name}/sync-plan": {
     "path:connector_name": "Connector name identifying the external integration."
   },
+  "POST /connectors/woocommerce/orders/{order_id}/import-next": {
+    "path:order_id": "WooCommerce order ID."
+  },
   "POST /connectors/woocommerce/orders/{order_id}/reconciled": {
     "path:order_id": "WooCommerce order ID."
   },

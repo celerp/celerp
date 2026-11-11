@@ -19,6 +19,7 @@ from starlette.responses import RedirectResponse
 from ui.components.attrs import hx_vals
 from ui.components.shell import secret_input
 from ui.components.activity import relative_time
+from ui.components.table import doc_href
 from ui.i18n import get_lang, refusal_text, t
 from ui.routes.settings import _check_permission, _token, authorize_in_process
 from ui.security import is_safe_authorize_url
@@ -658,8 +659,8 @@ def _attention_item(platform: str, entry: dict, lang: str = "en", error: str | N
     from ui.components.shell import flash
     locked = Span(" ", t("connectors.attention_locked", lang), " ",
                   A(t("page.period_lock", lang), href=PERIOD_LOCK_PATH)) if entry.get("locked") else Span()
-    holder = Span(" ", A(t("connectors.attention_open_holder", lang, holder=held["holder"]), href=f"/{'lists' if held['holder_kind'] == 'list' else 'docs'}/"
-                                              f"{held['holder_id']}")) if held else Span()
+    holder = Span(" ", A(t("connectors.attention_open_holder", lang, holder=held["holder"]),
+                         href=safe_url(doc_href(held["holder_id"])))) if held else Span()
     return Li(
         Strong(str(entry.get("label", record_id))), ": ", refusal_text(entry.get("reason", "")),
         holder, locked, action, flash(error) if error else Span(), id=item_id,
