@@ -25,7 +25,7 @@ from ui.routes.company_backup import SETTINGS as _RESTORE
 from ui.routes.migrations import COMPANY as _MIGRATE
 from ui.routes.setup import has_business_type
 from urllib.parse import urlencode as _urlencode
-from ui.components.encode import raw_html
+from ui.components.encode import js, raw_html
 
 # The invoice lists the receivables cards open: what is overdue, and what still awaits payment.
 _AR_OVERDUE_HREF = "/docs?type=invoice&overdue_only=1"
@@ -1185,15 +1185,15 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict | None,
     # Revenue trend (full-width line chart) — shown whenever there is any invoiced revenue.
     revenue_trend = revenue_trend or []
     rev_has_data = any(float(p.get("total", 0) or 0) > 0 for p in revenue_trend)
-    rev_labels = json.dumps([_MONTH_ABBR[int(p["month"][5:7])] for p in revenue_trend]) if rev_has_data else "[]"
-    rev_data = json.dumps([float(p.get("total", 0) or 0) for p in revenue_trend]) if rev_has_data else "[]"
+    rev_labels = [_MONTH_ABBR[int(p["month"][5:7])] for p in revenue_trend] if rev_has_data else []
+    rev_data = [float(p.get("total", 0) or 0) for p in revenue_trend] if rev_has_data else []
     cur_sym = _CUR_SYMBOLS.get((currency or "USD").upper(), "")
 
     # Open credits are negative, so a bucket can net below zero: any non-zero bucket is data.
     buckets = (ar_aging or {}).get("buckets", {})
     ar_has_data = any(float(v or 0) != 0 for v in buckets.values())
-    ar_labels = json.dumps([t("reports.aging_current") if k == "current" else k for k in buckets]) if ar_has_data else "[]"
-    ar_data = json.dumps([float(v) for v in buckets.values()]) if ar_has_data else "[]"
+    ar_labels = [t("reports.aging_current") if k == "current" else k for k in buckets] if ar_has_data else []
+    ar_data = [float(v) for v in buckets.values()] if ar_has_data else []
 
     # Category keys are schema slugs; chart them under the inventory tabs' display names.
     names = category_names or {}
@@ -1205,8 +1205,8 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict | None,
     if uncategorized > 0:
         cats[t("label.uncategorized")] = uncategorized
     cat_has_data = any(int(v or 0) > 0 for v in cats.values())
-    cat_labels = json.dumps(list(cats.keys())) if cat_has_data else "[]"
-    cat_data = json.dumps([int(v) for v in cats.values()]) if cat_has_data else "[]"
+    cat_labels = list(cats.keys()) if cat_has_data else []
+    cat_data = [int(v) for v in cats.values()] if cat_has_data else []
 
     # The revenue card always shows — with an empty-state when there is no invoiced
     # revenue yet — so the first page a customer lands on never looks broken or bare.
@@ -1237,7 +1237,7 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict | None,
             )
         )
 
-    chart_init = f"""
+    chart_init = js("""
     function initDashboardCharts() {{
       if (typeof Chart === 'undefined') {{ setTimeout(initDashboardCharts, 100); return; }}
       var style = getComputedStyle(document.documentElement);
@@ -1253,24 +1253,24 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict | None,
       var gridColor = style.getPropertyValue('--c-border').trim() || '#333';
 
       var revCtx = document.getElementById('chart-revenue-trend');
-      if (revCtx && {rev_data}.length > 0) {{
+      if (revCtx && {0}.length > 0) {{
         var rg = revCtx.getContext('2d').createLinearGradient(0, 0, 0, 230);
         rg.addColorStop(0, 'rgba(79,142,247,0.30)');
         rg.addColorStop(1, 'rgba(79,142,247,0.00)');
         new Chart(revCtx, {{
           type: 'line',
-          data: {{ labels: {rev_labels}, datasets: [{{
-            label: {json.dumps(t('acct.section_revenue'))}, data: {rev_data}, borderColor: colors[0], backgroundColor: rg,
+          data: {{ labels: {1}, datasets: [{{
+            label: {2}, data: {0}, borderColor: colors[0], backgroundColor: rg,
             fill: true, tension: 0.35, borderWidth: 2.5, pointRadius: 3,
             pointBackgroundColor: colors[0], pointBorderColor: '#fff', pointBorderWidth: 1.5 }}] }},
           options: {{
             responsive: true, maintainAspectRatio: false,
             plugins: {{
               legend: {{ display: false }},
-              tooltip: {{ callbacks: {{ label: function(c) {{ return '{cur_sym}' + c.parsed.y.toLocaleString(); }} }} }}
+              tooltip: {{ callbacks: {{ label: function(c) {{ return {3} + c.parsed.y.toLocaleString(); }} }} }}
             }},
             scales: {{
-              y: {{ beginAtZero: true, ticks: {{ color: textColor, callback: function(v) {{ return '{cur_sym}' + v.toLocaleString(); }} }}, grid: {{ color: gridColor }} }},
+              y: {{ beginAtZero: true, ticks: {{ color: textColor, callback: function(v) {{ return {3} + v.toLocaleString(); }} }}, grid: {{ color: gridColor }} }},
               x: {{ ticks: {{ color: textColor }}, grid: {{ display: false }} }}
             }}
           }}
@@ -1278,14 +1278,14 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict | None,
       }}
 
       var arCtx = document.getElementById('chart-ar-aging');
-      if (arCtx && {ar_labels}.length > 0) {{
+      if (arCtx && {4}.length > 0) {{
         new Chart(arCtx, {{
           type: 'bar',
-          data: {{ labels: {ar_labels}, datasets: [{{ data: {ar_data}, backgroundColor: colors }}] }},
+          data: {{ labels: {4}, datasets: [{{ data: {5}, backgroundColor: colors }}] }},
           options: {{
             responsive: true,
             scales: {{
-              y: {{ beginAtZero: true, ticks: {{ color: textColor, callback: function(v) {{ return '{cur_sym}' + v.toLocaleString(); }} }}, grid: {{ color: gridColor }} }},
+              y: {{ beginAtZero: true, ticks: {{ color: textColor, callback: function(v) {{ return {3} + v.toLocaleString(); }} }}, grid: {{ color: gridColor }} }},
               x: {{ ticks: {{ color: textColor }}, grid: {{ display: false }} }}
             }},
             plugins: {{ legend: {{ display: false }} }}
@@ -1294,10 +1294,10 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict | None,
       }}
 
       var catCtx = document.getElementById('chart-inventory-cat');
-      if (catCtx && {cat_labels}.length > 0) {{
+      if (catCtx && {6}.length > 0) {{
         new Chart(catCtx, {{
           type: 'bar',
-          data: {{ labels: {cat_labels}, datasets: [{{ label: {json.dumps(t('th.items'))}, data: {cat_data}, backgroundColor: colors[0] }}] }},
+          data: {{ labels: {6}, datasets: [{{ label: {7}, data: {8}, backgroundColor: colors[0] }}] }},
           options: {{
             indexAxis: 'y', responsive: true,
             scales: {{ x: {{ beginAtZero: true, ticks: {{ color: textColor, precision: 0 }}, grid: {{ color: gridColor }} }}, y: {{ ticks: {{ color: textColor }}, grid: {{ display: false }} }} }},
@@ -1307,7 +1307,8 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict | None,
       }}
     }}
     initDashboardCharts();
-    """
+    """,
+        rev_data, rev_labels, t('acct.section_revenue'), str(cur_sym), ar_labels, ar_data, cat_labels, t('th.items'), cat_data)
 
     return Div(
         H2(t("page.charts"), cls="section-title"),

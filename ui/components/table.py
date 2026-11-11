@@ -9,7 +9,7 @@ import re
 
 from fasthtml.common import *
 from ui.i18n import t, t_or, field_label
-from ui.components.encode import html_response
+from ui.components.encode import html_response, js
 from celerp.services.field_schema import MIXED_VALUE
 from celerp.services.units import plain_number
 # Canonical definitions live with the shared document renderer; re-exported
@@ -1491,12 +1491,7 @@ def data_row(
     entity_id = row.get("id") or row.get("entity_id", "")
     safe_id = entity_id.replace(":", "-")
     _delete_url = (delete_url_tpl or "/api/items/{entity_id}").format(entity_id=entity_id)
-    # Single-quoted JS string literal so the inline onclick stays all single
-    # quotes: a double quote here (e.g. from json.dumps) forces the whole
-    # attribute to escape its single quotes, mangling the htmx.ajax URL.
-    _confirm_delete_row = (
-        "'" + t("table.confirm_delete_row").replace("\\", "\\\\").replace("'", "\\'") + "'"
-    )
+    _confirm_delete_row = t("table.confirm_delete_row")
     action_cell = [] if not show_row_menu else [
         row_menu(
             safe_id,
@@ -1504,9 +1499,10 @@ def data_row(
             # Only a draft, or one already Deleted, can be deleted (the bulk bar's
             # rule); stock is written off.
             *([Button(t("btn.delete"), cls="row-menu-item row-menu-item--danger",
-                      onclick=f"celerpConfirm({_confirm_delete_row}).then(function(yes){{if(yes)"
-                              f"htmx.ajax('DELETE','{_delete_url}',"
-                              f"{{target:'#row-{safe_id}',swap:'outerHTML'}});}})")]
+                      onclick=js(
+                          "celerpConfirm({0}).then(function(yes){{if(yes)htmx.ajax('DELETE',{1},{{"
+                          "target:'#row-' + {2},swap:'outerHTML'}});}})",
+                          _confirm_delete_row, str(_delete_url), safe_id))]
               if str(row.get("status", "") or "").lower() in ("draft", "deleted") else []),
         )
     ]
@@ -2914,44 +2910,30 @@ def col_resize_script(table_selector: str, storage_key: str):
     fixed — this only resizes, never adds/removes/reorders. The last column has no handle (it is
     pinned to the right edge; resize it by dragging its left neighbour's handle).
     """
-    import json as _json
-    sel = _json.dumps(table_selector)
-    key = _json.dumps(storage_key)
-    js = (
-        "(function(){"
-        "var SEL=" + sel + ",KEY=" + key + ",MIN=3;"  # MIN = floor width per column, in %
-        "function ck(h){var m=(h.className||'').match(/col-[a-z-]+/);return m?m[0]:'';}"
-        "document.querySelectorAll(SEL).forEach(function(t){"
-        "if(t.dataset.colResize)return;t.dataset.colResize='1';"
-        # Only VISIBLE columns participate: a display:none column (e.g. price/tax hidden on a no-money
-        # audit/transfer list) must never be a resize neighbour, or dragging its visible left column
-        # resizes nothing (the qty-can't-grow-into-on-hand bug).
-        "var ths=Array.from(t.querySelectorAll('thead th')).filter(function(h){return getComputedStyle(h).display!=='none';});if(!ths.length)return;"
-        "function tw(){return t.offsetWidth||1;}"
-        "function pct(h){return h.offsetWidth/tw()*100;}"
-        "function save(){var w={};ths.forEach(function(h){var k=ck(h);if(k)w[k]=parseFloat(h.style.width)||pct(h);});try{localStorage.setItem(KEY,JSON.stringify(w));}catch(e){}}"
-        # Baseline: restore saved % per column, else capture the current rendered proportions;
-        # then normalise so the set sums to exactly 100% and fills the table.
-        "requestAnimationFrame(function(){"
-        "var sv=null;try{sv=JSON.parse(localStorage.getItem(KEY)||'null');}catch(e){}"
-        "var ws=ths.map(function(h){var k=ck(h);return(sv&&sv[k]!=null)?sv[k]:pct(h);});"
-        "var s=ws.reduce(function(a,b){return a+b;},0)||1;"
-        "ths.forEach(function(h,i){h.style.width=(ws[i]/s*100)+'%';});"
-        "});"
-        # Handles on every column except the last (which is pinned to the right edge).
-        "ths.forEach(function(h,idx){"
-        "if(idx>=ths.length-1)return;"
-        "if(h.querySelector('.col-resize-handle'))return;"
-        "var d=document.createElement('div');d.className='col-resize-handle';h.style.position='relative';h.appendChild(d);"
-        "d.addEventListener('mousedown',function(e){"
-        "var nx=ths[idx+1],W=tw(),sx=e.pageX,a0=h.offsetWidth/W*100,b0=nx.offsetWidth/W*100,sum=a0+b0;"
-        "document.body.style.cursor='col-resize';"
-        "function mv(ev){var dp=(ev.pageX-sx)/W*100,a=a0+dp,b=b0-dp;"
-        "if(a<MIN){a=MIN;b=sum-MIN;}if(b<MIN){b=MIN;a=sum-MIN;}"
-        "h.style.width=a+'%';nx.style.width=b+'%';}"
-        "function up(){document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);document.body.style.cursor='';save();}"
-        "document.addEventListener('mousemove',mv);document.addEventListener('mouseup',up);e.preventDefault();e.stopPropagation();"
-        "});});});"
-        "})();"
+    # MIN = floor width per column, in %
+    resize_js = (
+        js(
+            "(function(){{var SEL={0},KEY={1},MIN=3;function ck(h){{var m=(h.className||'').match(/col-[a-z-]+/);"
+            "return m?m[0]:'';}}document.querySelectorAll(SEL).forEach(function(t){{"
+            "if(t.dataset.colResize)return;t.dataset.colResize='1';var ths=Array.from(t.querySelectorAll('thead th')).filter(function(h){{"
+            "return getComputedStyle(h).display!=='none';}});if(!ths.length)return;function tw(){{"
+            'return t.offsetWidth||1;}}function pct(h){{return h.offsetWidth/tw()*100;'
+            '}}function save(){{var w={{}};ths.forEach(function(h){{var k=ck(h);if(k)w[k]=parseFloat(h.style.width)||pct(h);'
+            '}});try{{localStorage.setItem(KEY,JSON.stringify(w));}}catch(e){{}}}}requestAnimationFrame(function(){{'
+            "var sv=null;try{{sv=JSON.parse(localStorage.getItem(KEY)||'null');}}catch(e){{"
+            '}}var ws=ths.map(function(h){{var k=ck(h);return(sv&&sv[k]!=null)?sv[k]:pct(h);'
+            '}});var s=ws.reduce(function(a,b){{return a+b;}},0)||1;ths.forEach(function(h,'
+            "i){{h.style.width=(ws[i]/s*100)+'%';}});}});ths.forEach(function(h,idx){{"
+            "if(idx>=ths.length-1)return;if(h.querySelector('.col-resize-handle'))return;"
+            "var d=document.createElement('div');d.className='col-resize-handle';h.style.position='relative';"
+            "h.appendChild(d);d.addEventListener('mousedown',function(e){{var nx=ths[idx+1],"
+            'W=tw(),sx=e.pageX,a0=h.offsetWidth/W*100,b0=nx.offsetWidth/W*100,sum=a0+b0;'
+            "document.body.style.cursor='col-resize';function mv(ev){{var dp=(ev.pageX-sx)/W*100,"
+            'a=a0+dp,b=b0-dp;if(a<MIN){{a=MIN;b=sum-MIN;}}if(b<MIN){{b=MIN;a=sum-MIN;'
+            "}}h.style.width=a+'%';nx.style.width=b+'%';}}function up(){{document.removeEventListener('mousemove',"
+            "mv);document.removeEventListener('mouseup',up);document.body.style.cursor='';"
+            "save();}}document.addEventListener('mousemove',mv);document.addEventListener('mouseup',"
+            'up);e.preventDefault();e.stopPropagation();}});}});}});}})();',
+            table_selector, storage_key)
     )
-    return Script(js)
+    return Script(resize_js)

@@ -37,7 +37,7 @@ from ui.routes.documents import _action_error, persist_then_post
 from ui.routes.reports import _get_company
 from ui.routes.settings import _check_permission
 from ui.i18n import refusal_text, sentence, t
-from ui.components.encode import html_response, to_markup
+from ui.components.encode import as_js, html_response, to_markup
 
 logger = logging.getLogger(__name__)
 
@@ -479,7 +479,7 @@ def _sub_action_controls(entity_id: str, sub: dict, next_bill: str | None = None
     if status == "draft":
         return [
             A(t("subscriptions.set_schedule"), href="#sub-schedule", cls="btn btn--secondary"),
-            Button(t("btn.activate"), cls="btn btn--primary", onclick=persist_then_post(f"/subscriptions/{entity_id}/activate"),
+            Button(t("btn.activate"), cls="btn btn--primary", onclick=as_js(persist_then_post(f"/subscriptions/{entity_id}/activate")),
                    title=t("subscriptions.activate_title")),
             note,
         ], []

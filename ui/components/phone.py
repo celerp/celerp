@@ -15,6 +15,7 @@ Usage:
 from __future__ import annotations
 
 from fasthtml.common import *
+from ui.components.encode import js
 
 
 # Static asset paths (served by Starlette StaticFiles at /static/...)
@@ -64,10 +65,10 @@ def phone_input_td(
     # nationalMode:false  → always shows international format with +
     # separateDialCode:false → dial code is part of the number field (stored in E.164)
     # autoPlaceholder:"aggressive" → shows e.g. "+66 XX XXXX XXXX" as placeholder
-    init_js = f"""
+    init_js = js("""
 (function() {{
-  var inputEl  = document.getElementById({input_id!r});
-  var hiddenEl = document.getElementById({hidden_id!r});
+  var inputEl  = document.getElementById({0});
+  var hiddenEl = document.getElementById({1});
   if (!inputEl || !hiddenEl) return;
   var iti = null;
   function sync() {{ hiddenEl.value = (iti && iti.getNumber()) || inputEl.value; }}
@@ -88,7 +89,8 @@ def phone_input_td(
     }},
   }}) : null; }} catch (e) {{ iti = null; }}
 }})();
-"""
+""",
+        str(input_id), str(hidden_id))
 
     return Td(
         Div(

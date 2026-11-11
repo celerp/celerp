@@ -47,7 +47,7 @@ from ui.routes.reports import (
     _company_today, _date_filter_bar, _page_or_fragment, _parse_dates,
 )
 from celerp.services.money import CURRENCY_DP, DEFAULT_DP, currency_dp
-from ui.components.encode import html_response
+from ui.components.encode import html_response, js
 
 
 def _moved_to(path: str):
@@ -517,13 +517,13 @@ def _journal_entry_form(accounts: list[dict], ts: str, memo: str, lines: list[di
     rows = [_je_line_row(str(i), line, acct_opts, contact_opts) for i, line in enumerate(lines)]
 
     any_fx = any(l.get("currency") for l in lines)
-    js = f"""
-var celerpJeIdx = {len(lines)};
-var celerpJeBase = {_json.dumps(base_currency)};
+    form_js = js("""
+var celerpJeIdx = {0};
+var celerpJeBase = {1};
 // The server's ISO 4217 decimal places, so the preview rounds each amount at the
 // same place the posting will and the two can never disagree.
-var celerpJeDp = {_json.dumps(CURRENCY_DP)};
-var celerpJeDefaultDp = {DEFAULT_DP};
+var celerpJeDp = {2};
+var celerpJeDefaultDp = {3};
 function celerpJeDpOf(cur) {{
     var d = celerpJeDp[(cur || '').toUpperCase()];
     return d === undefined ? celerpJeDefaultDp : d;
@@ -639,22 +639,22 @@ function celerpJeTotals() {{
         var bc = rate > 0 ? celerpJeRound(cv * rate, celerpJeBase) : 0;
         totalDebit += Math.round(bd * basePow);
         totalCredit += Math.round(bc * basePow);
-        dCell.textContent = bd ? celerpJeFmt(bd, celerpJeBase) : {_json.dumps(EMPTY)};
-        cCell.textContent = bc ? celerpJeFmt(bc, celerpJeBase) : {_json.dumps(EMPTY)};
+        dCell.textContent = bd ? celerpJeFmt(bd, celerpJeBase) : {4};
+        cCell.textContent = bc ? celerpJeFmt(bc, celerpJeBase) : {4};
     }});
 
     var baseTag = celerpJeBase ? ' (' + celerpJeBase + ')' : '';
     var d = totalDebit / basePow, c = totalCredit / basePow;
     document.getElementById('je-total-debit').textContent =
-        {_json.dumps(t("acct.total_debit"))} + baseTag + ': ' + celerpJeFmt(d, celerpJeBase);
+        {5} + baseTag + ': ' + celerpJeFmt(d, celerpJeBase);
     document.getElementById('je-total-credit').textContent =
-        {_json.dumps(t("acct.total_credit"))} + baseTag + ': ' + celerpJeFmt(c, celerpJeBase);
+        {6} + baseTag + ': ' + celerpJeFmt(c, celerpJeBase);
 
     // Balance is judged on the converted figures, because those are what the
     // books hold. The server applies the same rule to the same numbers.
     var chip = document.getElementById('je-balance-chip');
     var balanced = totalDebit === totalCredit && totalDebit > 0;
-    chip.textContent = balanced ? {_json.dumps(t("acct.balanced"))} : {_json.dumps(t("acct.out_of_balance"))};
+    chip.textContent = balanced ? {7} : {8};
     chip.className = balanced ? 'val-chip' : 'val-chip val-chip--alert';
 
     // Name the gap while it can still be fixed, so a rate that does not convert
@@ -662,8 +662,8 @@ function celerpJeTotals() {{
     var note = document.getElementById('je-imbalance-note');
     var gap = Math.abs(totalDebit - totalCredit);
     if (gap && (totalDebit > 0 || totalCredit > 0)) {{
-        var short = totalDebit > totalCredit ? {_json.dumps(t("th.credit"))} : {_json.dumps(t("th.debit"))};
-        note.textContent = {_json.dumps(t("acct.imbalance_note"))}
+        var short = totalDebit > totalCredit ? {9} : {10};
+        note.textContent = {11}
             .replace('{{currency}}', celerpJeBase)
             .replace('{{side}}', short)
             .replace('{{amount}}', celerpJeFmt(gap / basePow, celerpJeBase));
@@ -681,7 +681,8 @@ function celerpJeInit() {{
     celerpJeFxToggle(document.getElementById('je-fx-reveal'));
 }}
 if (document.readyState === 'loading') {{ document.addEventListener('DOMContentLoaded', celerpJeInit); }} else {{ celerpJeInit(); }}
-"""
+""",
+        len(lines), base_currency, CURRENCY_DP, DEFAULT_DP, EMPTY, t('acct.total_debit'), t('acct.total_credit'), t('acct.balanced'), t('acct.out_of_balance'), t('th.credit'), t('th.debit'), t('acct.imbalance_note'))
 
     return Div(
         Div(error, cls="error-banner") if error else None,
@@ -762,6 +763,6 @@ if (document.readyState === 'loading') {{ document.addEventListener('DOMContentL
             ),
             method="post", action="/accounting/journal/new",
         ),
-        Script(js),
+        Script(form_js),
     )
 

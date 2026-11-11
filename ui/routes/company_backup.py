@@ -77,7 +77,7 @@ from ui.routes.migrations import (
     wizard_table,
 )
 from ui.streaming import ClosingStreamingResponse
-from ui.components.encode import html_response
+from ui.components.encode import html_response, js
 
 DOWNLOAD = "/company-backup/download"
 SEND = "/settings/company-handoff"
@@ -605,23 +605,24 @@ async def _opening_page(request: Request, mode: WizardMode):
         Noscript(A(t("company_backup.check_again"), href=f"{mode.base}/opening", cls="btn btn--secondary btn--full")),
         Form(Button(t("btn.cancel"), type="submit", cls="btn btn--secondary btn--full"),
              method="post", action=f"{mode.base}/opening/cancel"),
-        Script(f"""
+        Script(js("""
         (function () {{
           var stage = document.getElementById('opening-stage'), bar = document.getElementById('opening-bar');
           setTimeout(function poll() {{
-            fetch({status!r}, {{cache: 'no-store'}}).then(function (r) {{
-              if (r.status === 404) {{ window.location = {opened!r}; return null; }}
+            fetch({0}, {{cache: 'no-store'}}).then(function (r) {{
+              if (r.status === 404) {{ window.location = {1}; return null; }}
               return r.ok ? r.json() : null;
             }}).then(function (s) {{
               if (!s) {{ setTimeout(poll, 2000); return; }}
-              if (s.state !== 'running') {{ window.location = {opened!r}; return; }}
+              if (s.state !== 'running') {{ window.location = {1}; return; }}
               stage.textContent = s.text;
               bar.style.width = (s.percent || 0) + '%';
               setTimeout(poll, 1000);
             }}).catch(function () {{ setTimeout(poll, 2000); }});
           }}, 1000);
         }})();
-        """),
+        """,
+            str(status), str(opened))),
         status_code=200,
         title=_TITLE,
     )
@@ -776,18 +777,19 @@ async def _restarting_page(request: Request, mode: WizardMode, message: str | No
         P(message or t("company_backup.restarting"), cls="form-hint"),
         P(t("company_backup.restart_slow"), cls="flash flash--warning", id="restart-timeout", style="display:none;"),
         A(t("company_backup.check_again"), href=staged, cls="btn btn--secondary btn--full"),
-        Script(f"""
+        Script(js("""
         (function () {{
           var tries = 0, MAX = 40;
           setTimeout(function poll() {{
             if (tries++ >= MAX) {{ document.getElementById('restart-timeout').style.display = ''; return; }}
-            fetch({staged!r}, {{cache: 'no-store'}}).then(function (r) {{
-              if (r.ok && r.headers.get('X-Celerp-Staged')) {{ window.location = {staged!r}; }}
+            fetch({0}, {{cache: 'no-store'}}).then(function (r) {{
+              if (r.ok && r.headers.get('X-Celerp-Staged')) {{ window.location = {0}; }}
               else {{ setTimeout(poll, 1500); }}
             }}).catch(function () {{ setTimeout(poll, 1500); }});
           }}, 2500);
         }})();
-        """),
+        """,
+            str(staged))),
         _cancel(mode),
         status_code=status_code,
         title=_TITLE,

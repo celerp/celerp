@@ -37,7 +37,7 @@ from ui.i18n import t, get_lang, tier_label
 from ui.routes.settings import _token
 from ui.security import is_safe_authorize_url, owner_refusal
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
-from ui.components.encode import html_response, js
+from ui.components.encode import as_js, html_response, js
 
 POLL_MAX = 100   # 100 x 3s = 5 minutes, then stop polling
 
@@ -129,8 +129,8 @@ def _with_next(url: str, next_action: str | None) -> str:
 # and must stay in the DOM while the staged request goes out.
 _DISMISS_GATE_MODAL = ("var d=document.getElementById('account-gate-modal');"
                        "if(d){d.close();d.remove();}")
-_CLOSE_GATE_MODAL = ("var d=document.getElementById('account-gate-modal');"
-                     "if(d){d.close();}")
+_CLOSE_GATE_MODAL = js("var d=document.getElementById('account-gate-modal');"
+                       "if(d){{d.close();}}")
 
 
 def _cancel_parts(lang: str, panel_id: str) -> list:
@@ -446,15 +446,15 @@ def _resume_guard_script(next_action: str, body: str) -> Script:
     resumes. The body runs on htmx:afterSettle, not inline: htmx executes this
     script while inserting the swapped panel, before it wires hx-trigger
     listeners on the sibling resume element, so an event fired inline (or on a
-    0ms timeout) is dropped."""
+    0ms timeout) is dropped. *body* is script built by ``js``."""
     return Script(
-        f"(function(){{var k='celerp_resume::'+{json.dumps(next_action)};"
-        "var last=parseInt(sessionStorage.getItem(k)||'0',10);"
-        "if(Date.now()-last<30000){return;}"
-        "sessionStorage.setItem(k,String(Date.now()));"
-        "document.body.addEventListener('htmx:afterSettle',function h(){"
-        "document.body.removeEventListener('htmx:afterSettle',h);"
-        f"{body}}});}})();")
+        js("(function(){{var k='celerp_resume::'+{0};"
+           "var last=parseInt(sessionStorage.getItem(k)||'0',10);"
+           "if(Date.now()-last<30000){{return;}}"
+           "sessionStorage.setItem(k,String(Date.now()));"
+           "document.body.addEventListener('htmx:afterSettle',function h(){{"
+           "document.body.removeEventListener('htmx:afterSettle',h);", next_action)
+        + as_js(body) + js("}});}})();"))
 
 
 def _resume_parts(next_action: str) -> list:
@@ -465,15 +465,15 @@ def _resume_parts(next_action: str) -> list:
         # render; reload with a one-shot marker the page reads to auto-open
         # the send dialog.
         return [_resume_guard_script(next_action,
-                                     "sessionStorage.setItem('celerp_open_send','1');"
-                                     "location.reload();")]
+                                     js("sessionStorage.setItem('celerp_open_send','1');"
+                                        "location.reload();"))]
     if next_action == "ai":
         # The AI page renders its chat once the account exists; load it fresh.
-        return [_resume_guard_script(next_action, "location.assign('/ai');")]
+        return [_resume_guard_script(next_action, js("location.assign('/ai');"))]
     if next_action in _RESUBMIT_FORMS:
         return [_resume_guard_script(next_action,
-                                     f"var f=document.getElementById('{_RESUBMIT_FORMS[next_action]}');"
-                                     "if(f){f.requestSubmit();}")]
+                                     js("var f=document.getElementById({0});"
+                                        "if(f){{f.requestSubmit();}}", _RESUBMIT_FORMS[next_action]))]
     if next_action.startswith("buy:"):
         _, slug, kind = next_action.split(":")
         fire = Div(id="account-resume",
@@ -489,9 +489,9 @@ def _resume_parts(next_action: str) -> list:
                    hx_trigger="celerp-resume")
     return [fire, _resume_guard_script(
         next_action,
-        _CLOSE_GATE_MODAL +
-        "var el=document.getElementById('account-resume');"
-        "if(el){htmx.trigger(el,'celerp-resume');}")]
+        _CLOSE_GATE_MODAL
+        + js("var el=document.getElementById('account-resume');"
+             "if(el){{htmx.trigger(el,'celerp-resume');}}"))]
 
 
 def _panel_id_from(request: Request) -> str:

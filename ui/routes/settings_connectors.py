@@ -29,7 +29,7 @@ from celerp.connectors.base import (
 )
 from celerp.connectors.ownership import PRODUCT_CHANNEL_PLATFORMS
 from celerp.connectors.sync_runner import CONNECTOR_RESET_ENTITY
-from ui.components.encode import html_response
+from ui.components.encode import html_response, js
 
 log = logging.getLogger(__name__)
 
@@ -1672,7 +1672,7 @@ def setup_routes(app):
         # link, so nothing is silently lost if the popup is blocked (GDR: users must
         # always know what comes next and have a visible way forward).
         return Div(
-            Script(f"window.open({url!r}, '_blank', 'noopener');"),
+            Script(js("window.open({0}, '_blank', 'noopener');", str(url))),
             Span(t("connectors.authorize_opened", lang,
                    default="Opening authorization in a new tab, complete it there, then return here."),
                  cls="flash flash--info"),

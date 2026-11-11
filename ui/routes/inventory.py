@@ -29,7 +29,7 @@ from ui.api_client import APIError, _flatten_item_attrs, error_message
 from ui.components.files import files_error, files_section as _shared_files_section, files_session_expired
 from ui.components.operation_key import kept_operation_key, operation_key_vals, required_operation_key
 from ui.components.shell import base_shell, minimal_shell, module_active, page_header, search_help, toast_header, page_title
-from ui.components.encode import html_response, inert_media_type, js, js_value, raw_html
+from ui.components.encode import html_response, inert_media_type, js, raw_html
 from ui.components.table import fmt_money, data_table, search_bar, pagination, EMPTY, empty_mark, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter, display_enum, display_unit, doc_href
 from ui.config import get_token as _token, get_role as _get_role
 from celerp.services import import_stage
@@ -2549,11 +2549,11 @@ function celerpPrintLabel(entityId, templateId) {
                     str(restore_url))
             )
             add_new_url = "/settings/inventory?tab=locations"
-            import json as _json_loc
-            safe_val = _json_loc.dumps(current_val)  # JSON-encoded to prevent XSS
             onchange_js = (
-                f"if(this.value==='__add_new__'){{"
-                f"window.open('{add_new_url}','_blank');this.value={safe_val};}}"
+                js(
+                    "if(this.value==='__add_new__'){{window.open({0},'_blank');this.value={1};"
+                    '}}',
+                    str(add_new_url), current_val)
             )
             return Td(
                 Select(
@@ -5996,7 +5996,6 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     # JS data for all columns (key, label, visible) — exclude paired secondaries and virtual columns
     _cm_exclude = _PAIRED_SECONDARY_KEYS | {f.get("key") for f in schema if f.get("virtual")}
     col_data = [{"key": f.get("key", ""), "label": field_label(f)} for f in schema if f.get("key") not in _cm_exclude]
-    col_data_js = js_value(col_data)
     # Map: primary_key → [virtual_key, ...] so applyOrderToTable can drag virtual cols alongside primary.
     # Virtual total always follows its paired unit-price column (the primary).
     _vf_map: dict[str, list[str]] = {}
@@ -6004,8 +6003,8 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
         if f.get("virtual") and f.get("paired_with"):
             key, paired = f["key"], f["paired_with"]
             _vf_map.setdefault(paired, []).append(key)
-    virtual_followers_js = js_value(_vf_map)
-    selected_js = js_value(sorted(selected))
+    virtual_followers = _vf_map
+    selected_keys = sorted(selected)
     # Hidden inputs for fallback server save (category, status, sort etc.)
     hidden_state = {k: v for k, v in _base_state(p).items() if k != "cols"}
     hidden_state["_cat_pref"] = cat_pref
@@ -6032,18 +6031,18 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     hidden_inputs = [Input(type="hidden", name=k, value=v) for k, v in hidden_state.items()]
 
     # JS: localStorage key matches data_table's PAGE_KEY for inventory
-    paired_secondaries_js = js_value(list(_PAIRED_TABLE.values()))
+    paired_secondaries = list(_PAIRED_TABLE.values())
 
-    col_mgr_js = f"""
+    col_mgr_js = js("""
 (function() {{
   var LS_VIS_KEY = 'celerp_cols_inventory';
   var LS_ORDER_KEY = 'celerp_col_order_inventory';
-  var CAT_PREF = {js_value(cat_pref)};
-  var ALL_COLS = {col_data_js};
+  var CAT_PREF = {0};
+  var ALL_COLS = {1};
   // Keys that are now merged into their primary column - strip from saved prefs
-  var MERGED_SECONDARIES = {paired_secondaries_js};
+  var MERGED_SECONDARIES = {2};
   // Virtual columns that must move with their primary (e.g. cost_price_total follows cost_price)
-  var VIRTUAL_FOLLOWERS = {virtual_followers_js};
+  var VIRTUAL_FOLLOWERS = {3};
   var btn = document.getElementById('col-mgr-btn');
   var menu = document.getElementById('col-mgr-menu');
   if (!btn || !menu) return;
@@ -6153,7 +6152,7 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
   function saveToServer(visibleKeys) {{
     var form = new FormData();
     visibleKeys.forEach(function(k) {{ form.append('cols', k); }});
-    Object.entries({js_value(hidden_state)}).forEach(function(kv) {{
+    Object.entries({4}).forEach(function(kv) {{
       form.append(kv[0], kv[1]);
     }});
     fetch('/inventory/columns', {{method:'POST', body:form}}).catch(function(){{}});
@@ -6182,7 +6181,7 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     var prefs = loadVis() || {{}};
     // Init prefs from current state if empty
     if (!Object.keys(prefs).length) {{
-      ALL_COLS.forEach(function(c) {{ prefs[c.key] = {selected_js}.indexOf(c.key) !== -1; }});
+      ALL_COLS.forEach(function(c) {{ prefs[c.key] = {5}.indexOf(c.key) !== -1; }});
     }}
     prefs[key] = e.target.checked;
     saveVis(prefs);
@@ -6247,9 +6246,10 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
   }}
 
   // Keep menu closed unless keep_open is set
-  {'menu.style.display = "";' if keep_open else 'menu.style.display = "none";'}
+  menu.style.display = {6};
 }})();
-"""
+""",
+        cat_pref, col_data, paired_secondaries, virtual_followers, hidden_state, selected_keys, '' if keep_open else 'none')
 
     return Div(
         Button(t("btn.manage_columns"), id="col-mgr-btn", cls="btn btn--secondary", type="button"),
@@ -7645,7 +7645,9 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
         is_cost = conventional_key == "cost_price"
         unit_input = Input(type="number", name=conventional_key, id=unit_id, value=unit_val,
                            step="any", min="0", placeholder="--", cls="form-input",
-                           oninput=f"syncPricingTotal('{unit_id}','{total_id}',{qty},{cdp})",
+                           oninput=js(
+                               'syncPricingTotal({0},{1},{2},{3})',
+                               str(unit_id), str(total_id), qty, cdp),
                            onkeydown=enter_commits,
                            **{**_save, **({"hx_include": f"this, #{_PRICING_OPENED[True]}, #{_PRICING_OPENED_VERSION}"}
                                           if is_cost else {})})
@@ -7664,7 +7666,9 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
             carried = ()
         total_input = Input(type="number", id=total_id, value=total_val, step="any", min="0",
                             placeholder="--", cls="form-input", disabled=not has_qty,
-                            oninput=f"syncPricingUnit('{unit_id}','{total_id}',{qty},{cdp},{rdp})",
+                            oninput=js(
+                                'syncPricingUnit({0},{1},{2},{3},{4})',
+                                str(unit_id), str(total_id), qty, cdp, rdp),
                             onkeydown=enter_commits, **total_save)
         return (Td(pl_name, cls="detail-label"), Td(_cur(unit_input), cls="cell--right"), Td(_cur(total_input), *carried, cls="cell--right")), actions
 

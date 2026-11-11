@@ -49,7 +49,7 @@ from celerp.output.document_context import prepare_document_output
 from ui.components.activity import EVENT_TYPE_LABELS, activity_table
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import files_error, files_section as _shared_doc_files_section, files_session_expired
-from ui.components.encode import html_response, js, raw_html, to_markup
+from ui.components.encode import as_js, html_response, js, raw_html, to_markup
 from ui.components.doc_money import ATTRS as DOC_MONEY_ATTRS, redraw_trigger as doc_money_redraw
 from ui.components.preview_confirm import FORM_ATTRS as CONFIRMS_PREVIEW, PREVIEW_ATTRS, binding_input, confirmed_binding
 from ui.components.operation_key import (
@@ -2627,7 +2627,7 @@ def setup_routes(app):
                 ),
                 hx_post="/docs/bulk-payment", hx_swap="none", cls="form-card",
             ),
-            Script(f"""
+            Script(js("""
 function celerpUpdateBulkAlloc() {{
     const amount = parseFloat(document.getElementById('bulk-pay-amount')?.value || 0);
     let remaining = amount;
@@ -2635,11 +2635,12 @@ function celerpUpdateBulkAlloc() {{
         const outstanding = parseFloat(row.dataset.outstanding || 0);
         const alloc = Math.min(remaining, outstanding);
         remaining = Math.max(0, remaining - alloc);
-        row.querySelector('.alloc-amount').textContent = alloc > 0 ? '{currency_symbol(currency)}' + alloc.toFixed({money_dp}) : '--';
+        row.querySelector('.alloc-amount').textContent = alloc > 0 ? {0} + alloc.toFixed({1}) : '--';
     }});
 }}
 celerpUpdateBulkAlloc();
-"""),
+""",
+                str(currency_symbol(currency)), money_dp)),
             id="bulk-payment-panel",
             cls="bulk-payment-panel",
         )
@@ -3087,7 +3088,7 @@ celerpUpdateBulkAlloc();
                 hx_target="closest .editable-cell", hx_swap="outerHTML",
                 hx_trigger="blur delay:200ms", cls="cell-input", autofocus=True,
                 onkeydown=esc_js + enter_js,
-                onblur=f"if(!this.value.trim() && !this.dataset.dirty){{{blur_restore}}}",
+                onblur=js("if(!this.value.trim() && !this.dataset.dirty){{") + blur_restore + js("}}"),
                 oninput="this.dataset.dirty='1'",
                 data_orig=value,
                 placeholder=t("documents.eg_amount"),
@@ -3120,7 +3121,7 @@ celerpUpdateBulkAlloc();
                 hx_target="closest .editable-cell", hx_swap="outerHTML",
                 hx_trigger="blur delay:200ms", cls="cell-input", autofocus=True,
                 onkeydown=esc_js + enter_js,
-                onblur=f"if(!this.value.trim() && !this.dataset.dirty){{{blur_restore}}}",
+                onblur=js("if(!this.value.trim() && !this.dataset.dirty){{") + blur_restore + js("}}"),
                 oninput="this.dataset.dirty='1'",
                 data_orig=value,
                 **({} if not date_min else {"min": date_min}),
@@ -3201,7 +3202,7 @@ celerpUpdateBulkAlloc();
                 hx_target="closest .editable-cell", hx_swap="outerHTML",
                 hx_trigger="blur delay:200ms", cls="cell-input", autofocus=True,
                 onkeydown=esc_js + enter_js,
-                onblur=f"if(!this.value.trim() && !this.dataset.dirty){{{blur_restore}}}",
+                onblur=js("if(!this.value.trim() && !this.dataset.dirty){{") + blur_restore + js("}}"),
                 oninput="this.dataset.dirty='1'",
                 data_orig=value,
             )
@@ -7285,7 +7286,7 @@ def _stored_doc_tax_rows(doc: dict, currency: str | None, can_edit: bool) -> FT:
         amount = float(dtax.get("amount") or 0) if readable else 0.0
         name = (dtax.get("code") or t("documents.tax")) if readable else tax_text(dtax)
         remove = (Button("×", type="button", cls="btn-disc-edit", title=t("btn.remove"),
-                         aria_label=t("documents.remove_doc_tax"), onclick=f"celerpRemoveDocTax({i})")
+                         aria_label=t("documents.remove_doc_tax"), onclick=js('celerpRemoveDocTax({0})', i))
                   if can_edit else "")
         rows.append(Div(
             Span(remove, Span(f"{name}:", cls="total-label"), cls="total-final-left"),
@@ -7530,9 +7531,9 @@ def persist_then_post(url: str, confirm: str | None = None, form: bool = False) 
     form=True, which posts the form's fields): the page's pending line edits are saved first, and
     the action is posted only once they are. With a confirmation the question is asked before
     anything is saved, and Cancel sends nothing."""
-    question = _json.dumps(confirm) if confirm else "null"
-    source = ",this" if form else ""
-    return f"event.preventDefault();_celerpPostOnLines('{url}',{question}{source});"
+    if form:
+        return js("event.preventDefault();_celerpPostOnLines({0},{1},this);", url, confirm or None)
+    return js("event.preventDefault();_celerpPostOnLines({0},{1});", url, confirm or None)
 
 
 def subscription_meta_cells(doc: dict) -> tuple:
@@ -7612,7 +7613,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         side reads the stored lines: while the lines are editable it saves them first
         (persist_then_post), otherwise it posts directly."""
         if can_edit_lines:
-            return {"onsubmit" if form else "onclick": persist_then_post(url, confirm, form)}
+            return {"onsubmit" if form else "onclick": as_js(persist_then_post(url, confirm, form))}
         return {"hx_post": url, "hx_swap": "none", **({"hx_confirm": confirm} if confirm else {})}
 
     can_count_audit = pol["audit"] and status == _LF and _can_edit
@@ -7873,7 +7874,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         if _can_finalize and not suppress_doc_actions:
             action_btns_left.append(
                 Button(finalize_label,
-                       onclick=persist_then_post(f"/docs/{entity_id}/action/finalize"),
+                       onclick=as_js(persist_then_post(f"/docs/{entity_id}/action/finalize")),
                        title=finalize_tip, cls="btn btn--primary")
             )
     if status not in ("void", "draft", "closed") and _can_finalize and not suppress_doc_actions:
@@ -8091,14 +8092,13 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         # fix it (GDR 2d), and stays open until the user dismisses it rather than
         # sitting inline beside the Send action.
         if _send_ok and relay_error:
-            _notice_js = _json.dumps(t("doc.send_relay_error_notice"))
-            _link_js = _json.dumps(t("doc.send_relay_error_link"))
+            _notice_js = t("doc.send_relay_error_notice")
+            _link_js = t("doc.send_relay_error_link")
             action_btns_left.append(Script(
-                "document.addEventListener('DOMContentLoaded',function(){"
-                "if(!window.celerpToast)return;"
-                f"celerpToast({_notice_js},'error',true,"
-                f"{{href:'/settings/cloud',label:{_link_js}}});"
-                "});"))
+                js(
+                    "document.addEventListener('DOMContentLoaded',function(){{if(!window.celerpToast)return;"
+                    "celerpToast({0},'error',true,{{href:'/settings/cloud',label:{1}}});}});",
+                    _notice_js, _link_js)))
         # Mark as Sent (manual, no relay needed): a draft document, or a finalized-not-yet-sent quote.
         _mark_ok = (status == _LF and not _list_sent) if is_list else (status == "draft")
         if _mark_ok:
@@ -8121,7 +8121,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     if _can_share:
         _share_modal_id = f"share-modal-{entity_id.replace(':', '-')}"
         _share_body_id = f"share-body-{entity_id.replace(':', '-')}"
-        _fail_js = _json.dumps(t("doc.share_failed"))
+        _fail_js = t("doc.share_failed")
         # Status dot on the button itself: green when the link is live, red when
         # not, so the state is visible without opening the modal.
         _dot_cls = "share-btn-dot share-btn-dot--live" if share_active else "share-btn-dot"
@@ -8133,9 +8133,11 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                    # A refusal (no permission to share) answers with its toast and no panel,
                    # so the modal opens only when the panel came back.
                    hx_on__after_request=(
-                       "if(event.detail.successful){if(event.detail.xhr.getResponseHeader('HX-Reswap')!=='none')"
-                       f"{{document.getElementById('{_share_modal_id}').showModal()}}}}"
-                       f"else{{window.celerpToast&&celerpToast({_fail_js},'error')}}"),
+                       js(
+                           "if(event.detail.successful){{if(event.detail.xhr.getResponseHeader('HX-Reswap')!=='none'){{"
+                           'document.getElementById({0}).showModal()}}}}else{{window.celerpToast&&celerpToast({1},'
+                           "'error')}}",
+                           str(_share_modal_id), _fail_js)),
                    cls="btn btn--secondary"),
         )
         action_btns_left.append(
@@ -8440,9 +8442,6 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         # reservation state reads back. Inbound drafts (bill, consignment in) have no
         # received items yet and stay without it.
         _draft_show_item_status = doc_type in _FULFILLABLE_DOC_TYPES or is_list
-        # After a line save, status-column drafts put each reserved row's stored badge back.
-        _held_refresh_call = ("        _celerpRefreshHeldBadges().catch(function() {});\n"
-                              if _draft_show_item_status else "")
         # Whether this draft holds any stock: a hold stamped with one of its lines, or a
         # line's own item reserved by it.
         _draft_holds = bool(_holds) or any(
@@ -8921,19 +8920,19 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Span("", id="save-status", cls="save-status"),
                 cls="line-actions gap-sm",
             ),
-            Script(f"""
+            Script(js("""
 /* HTMX outerHTML-swaps this section (list-line-section-*) and re-evaluates this whole
    script, so every top-level binding is a window property (idempotent on re-eval); bare
    `const`/`let` here would throw a redeclaration SyntaxError on the second page and kill
    the pager. Bare reads elsewhere resolve against these same global properties. */
-window._CELERP_EID = {repr(entity_id)};
-window._CELERP_BASE = {'"/lists/"' if is_list else '"/docs/"'};
+window._CELERP_EID = {0};
+window._CELERP_BASE = {1};
 // Did this document render with any line items? Drives whether emptying the table
 // persists (deleting the last line must stick) vs. a blank never-used doc (skip).
-window._celerpHadLines = {'true' if line_items else 'false'};
+window._celerpHadLines = {2};
 // Entity version used by repricing and by List line saves. Refresh it after successful
 // in-tab writes so the next guarded operation pins the state this tab just produced.
-window._celerpEntityVersion = {_json.dumps(doc.get("version"))};
+window._celerpEntityVersion = {3};
 if (!window._celerpEntityVersionListener) {{
     window._celerpEntityVersionListener = function(event) {{
         const version = event.detail && event.detail.version;
@@ -8981,18 +8980,18 @@ function _celerpPatchListField(input, url, persistFirst=false) {{
 /* Stored-array position of the first rendered row. A list renders one bounded page
    of lines, so a save overwrites exactly the positions this page occupies and leaves
    every off-page row untouched. Docs are never paged (offset 0). */
-window._CELERP_LINE_OFFSET = {int(line_offset)};
-window._CELERP_LINE_LIMIT = {int(line_limit)};
+window._CELERP_LINE_OFFSET = {4};
+window._CELERP_LINE_LIMIT = {5};
 /* Length of the stored window this page loaded. A save REPLACES exactly
    [offset, offset+original_count) so a shorter submitted page truncates deleted rows and
    a longer one inserts; after each save it becomes the count just written. */
-window._CELERP_ORIGINAL_COUNT = {len(line_items)};
-window._CELERP_TAXES = {_json.dumps(_taxes_list)};
+window._CELERP_ORIGINAL_COUNT = {6};
+window._CELERP_TAXES = {7};
 /* Currency precision: amounts use _CELERP_CDP decimals, unit prices may use up to _CELERP_RDP. */
-window._CELERP_CDP = {currency_dp(currency)};
+window._CELERP_CDP = {8};
 /* Shipping is part of the document total; the editor's live total adds it like the stored one. */
-window._CELERP_SHIPPING = {float(doc.get("shipping") or 0)!r};
-window._CELERP_RDP = {rate_dp(currency)};
+window._CELERP_SHIPPING = {9};
+window._CELERP_RDP = {10};
 /* Derive a unit price from a target line amount at the FEWEST decimals that still reconciles
    (round(unit * qty) === target). Mirrors the backend money.unit_price_from_total so the stored
    unit price keeps its real precision instead of being truncated to 2 dp (which made qty*price
@@ -9011,60 +9010,17 @@ function _celerpUnitFromTotal(total, qty) {{
     return Math.round(exact * hf) / hf;
 }}
 /* ── Price list / doc-type helpers ── */
-window._CELERP_DOC_TYPE = {repr(doc_type)};
-window._CELERP_DOC_ID = {_json.dumps(entity_id or "")};
-window._CELERP_IS_DRAFT = {repr("true" if is_draft else "false")};
+window._CELERP_DOC_TYPE = {11};
+window._CELERP_DOC_ID = {12};
+window._CELERP_IS_DRAFT = {13};
 // A counting (finalized) audit renders this section too, but its line structure is locked:
 // nothing on it may write the line array.
-window._CELERP_CAN_EDIT_LINES = {"true" if can_edit_lines else "false"};
+window._CELERP_CAN_EDIT_LINES = {14};
 /* Translated UI strings resolved in Python at render time (R2: never splice
    translated text into JS source; hand it over as one config object). */
-window._L = {_json.dumps({
-    "scanning": t("documents.scanning"),
-    "scan_error": t("documents.scan_error"),
-    "scan_add_btn": _scan_btn,
-    "scan_added": _scan_done,
-    "scan_run_committed": t("documents.scan_run_committed"),
-    "scan_reload_needed": t("documents.scan_reload_needed"),
-    "lookup_error": t("documents.lookup_error"),
-    "no_items_yet": t("documents.picker_no_items_yet"),
-    "view_item_details": t("documents.view_item_details"),
-    "no_linked_item": t("documents.no_linked_item"),
-    "view_in_catalog": t("documents.view_in_catalog"),
-    "view_reserving_document": t("documents.view_reserving_document"),
-    "discount": t("doc.discount"),
-    "discount_word": t("label.discount"),
-    "subtotal": t("doc.subtotal"),
-    "net_subtotal": t("documents.net_subtotal"),
-    "double_click_rename": t("documents.double_click_rename"),
-    "save_failed": t("documents.save_failed"),
-    "invalid_qty": t("documents.enter_a_number"),
-    "lines_unsaved": t("documents.lines_unsaved"),
-    "dup_on_doc": t("documents.duplicate_item_on_document"),
-    "reprice_failed": t("documents.reprice_failed"),
-    "reprice_partial_title": t("documents.reprice_partial_title"),
-    "reprice_partial_one": t("documents.reprice_partial_one"),
-    "reprice_partial_many": t("documents.reprice_partial_many"),
-    "reprice_missing_item_tip": t("documents.reprice_missing_item_tip"),
-    "import_failed": t("documents.import_failed"),
-    "allow_split_warn": t("documents.allow_split_warn"),
-    "reserved_conflict_title": t("documents.reserved_conflict_title"),
-    "close": t("btn.close"),
-    "is_reserved_on": t("documents.is_reserved_on"),
-    "another_document": t("documents.another_document"),
-    "reserved_conflict_hint": t("documents.reserved_conflict_hint"),
-    "keep_lines": t("documents.keep_lines"),
-    "remove_from_draft": t("documents.remove_from_draft"),
-    "rows_selected": t("documents.rows_selected"),
-    "no_lines_selected": t("documents.no_lines_selected"),
-    "no_inventory_labels": t("documents.no_inventory_items_labels"),
-    **_line_skip_strings(),
-    "confirm_delete_lines": _count_forms("documents.confirm_delete_lines"),
-    "could_not_set_reserved": t("documents.could_not_set_reserved"),
-    "could_not_set_available": t("documents.could_not_set_available"),
-    "unexpected_error": t("error.unexpected_error_body"),
-})};
-""" + (js("""
+window._L = {15};
+""",
+                str(entity_id), '/lists/' if is_list else '/docs/', bool(line_items), doc.get('version'), int(line_offset), int(line_limit), len(line_items), _taxes_list, currency_dp(currency), float(doc.get('shipping') or 0), rate_dp(currency), str(doc_type), entity_id or '', str('true' if is_draft else 'false'), bool(can_edit_lines), {'scanning': t('documents.scanning'), 'scan_error': t('documents.scan_error'), 'scan_add_btn': _scan_btn, 'scan_added': _scan_done, 'scan_run_committed': t('documents.scan_run_committed'), 'scan_reload_needed': t('documents.scan_reload_needed'), 'lookup_error': t('documents.lookup_error'), 'no_items_yet': t('documents.picker_no_items_yet'), 'view_item_details': t('documents.view_item_details'), 'no_linked_item': t('documents.no_linked_item'), 'view_in_catalog': t('documents.view_in_catalog'), 'view_reserving_document': t('documents.view_reserving_document'), 'discount': t('doc.discount'), 'discount_word': t('label.discount'), 'subtotal': t('doc.subtotal'), 'net_subtotal': t('documents.net_subtotal'), 'double_click_rename': t('documents.double_click_rename'), 'save_failed': t('documents.save_failed'), 'invalid_qty': t('documents.enter_a_number'), 'lines_unsaved': t('documents.lines_unsaved'), 'dup_on_doc': t('documents.duplicate_item_on_document'), 'reprice_failed': t('documents.reprice_failed'), 'reprice_partial_title': t('documents.reprice_partial_title'), 'reprice_partial_one': t('documents.reprice_partial_one'), 'reprice_partial_many': t('documents.reprice_partial_many'), 'reprice_missing_item_tip': t('documents.reprice_missing_item_tip'), 'import_failed': t('documents.import_failed'), 'allow_split_warn': t('documents.allow_split_warn'), 'reserved_conflict_title': t('documents.reserved_conflict_title'), 'close': t('btn.close'), 'is_reserved_on': t('documents.is_reserved_on'), 'another_document': t('documents.another_document'), 'reserved_conflict_hint': t('documents.reserved_conflict_hint'), 'keep_lines': t('documents.keep_lines'), 'remove_from_draft': t('documents.remove_from_draft'), 'rows_selected': t('documents.rows_selected'), 'no_lines_selected': t('documents.no_lines_selected'), 'no_inventory_labels': t('documents.no_inventory_items_labels'), **_line_skip_strings(), 'confirm_delete_lines': _count_forms('documents.confirm_delete_lines'), 'could_not_set_reserved': t('documents.could_not_set_reserved'), 'could_not_set_available': t('documents.could_not_set_available'), 'unexpected_error': t('error.unexpected_error_body')}) + (js("""
 /* Item-status badges, serialized from the Python _STATUS_BADGE dict (the
    authoritative source) so the JS-rendered cell can never drift from it. */
 window._CELERP_STATUS_BADGE = {0};""",
@@ -10317,12 +10273,12 @@ async function _celerpRefreshHeldBadges() {{
         if (cell && now) cell.replaceWith(document.importNode(now, true));
     }});
 }}
-""" if _draft_show_item_status else "") + f"""async function _celerpPersistOnce() {{
+""" if _draft_show_item_status else "") + js("""async function _celerpPersistOnce() {{
     if (!window._CELERP_CAN_EDIT_LINES) return true;
     const revision = window._celerpLineRevision;
     const lines = _celerpCollectLines();
     // The rows the collector sent, in its order, so the saved line ids land on them.
-    const savedRows = Array.from(document.querySelectorAll('#{line_body_id} tr')).filter(_celerpRowHasContent);
+    const savedRows = Array.from(document.querySelectorAll('#' + {0} + ' tr')).filter(_celerpRowHasContent);
     // A null return means the collector aborted on an invalid quantity and has
     // already shown the error: send no request and report the save as failed so
     // callers that gate on a clean save hold position.
@@ -10378,7 +10334,9 @@ async function _celerpRefreshHeldBadges() {{
         // The rows just written become this page's stored window, so a follow-up save
         // in the same view replaces the new window length, not the original one.
         _CELERP_ORIGINAL_COUNT = lines.length;
-{_held_refresh_call}        statusEl.textContent = '✓';
+        // After a line save, status-column drafts put each reserved row's stored badge back.
+        if ({1}) _celerpRefreshHeldBadges().catch(function() {{}});
+        statusEl.textContent = '✓';
         statusEl.style.color = '';
         setTimeout(() => {{ statusEl.textContent = ''; }}, 1500);
         return true;
@@ -10433,7 +10391,7 @@ function _celerpRowUnchanged(row) {{
 }}
 function _celerpMarkStoredRows() {{
     // Rows drawn from stored lines (they carry the line's id) start unchanged.
-    document.querySelectorAll('#{line_body_id} tr').forEach(row => {{
+    document.querySelectorAll('#' + {0} + ' tr').forEach(row => {{
         if (row.querySelector('[data-name="line_id"]')?.value) row.dataset.storedAs = _celerpRowSignature(row);
     }});
 }}
@@ -10444,7 +10402,7 @@ _celerpMarkStoredRows();
 window._celerpLineCellSaves = window._celerpLineCellSaves || new Map();
 if (!window._celerpLineCellsBound) {{
     window._celerpLineCellsBound = true;
-    const lineCell = (el) => (el instanceof Element && el.matches('[hx-patch]') && el.closest('#{line_body_id}')) ? el : null;
+    const lineCell = (el) => (el instanceof Element && el.matches('[hx-patch]') && el.closest('#' + {0})) ? el : null;
     const track = (el, sent) => {{
         if (window._celerpLineCellSaves.has(el)) return;
         const saved = new Promise((resolve) => {{
@@ -10454,7 +10412,7 @@ if (!window._celerpLineCellsBound) {{
             // opening value, so leaving it as refused saves it again rather than restoring the
             // stored value over the reason.
             el.addEventListener('htmx:afterRequest', (e) => {{
-                const body = document.getElementById('{line_body_id}');
+                const body = document.getElementById({2});
                 const answer = document.createElement('template');
                 answer.innerHTML = (e.detail.xhr && e.detail.xhr.responseText) || '';
                 const reason = answer.content.querySelector('[data-cell-unsaved]');
@@ -10486,7 +10444,7 @@ function _celerpLineCellsSaved() {{
    line cell editor whose value differs from the one it opened with, or the reason a line cell save
    stored nothing (data-cell-unsaved, which only that save's answer carries). */
 function _celerpLineCellsUnsaved() {{
-    const body = document.getElementById('{line_body_id}');
+    const body = document.getElementById({2});
     const cells = body ? [...body.querySelectorAll('[hx-patch]')] : [];
     return window._celerpLineCellSaves.size > 0
         || cells.some((el) => el._v !== undefined && el.value !== el._v)
@@ -10528,7 +10486,7 @@ async function celerpPageNav(url) {{
         const ok = await _celerpMutate(_celerpPersistOnce);
         if (!ok) return;
     }}
-    const sel = '#{_list_line_section_id(entity_id)}';
+    const sel = '#' + {3};
     const target = document.querySelector(sel);
     if (target) {{
         // The list route returns the whole page, so extract just the lines section from it
@@ -10546,7 +10504,7 @@ async function celerpPageNav(url) {{
    the rows still on the page, and none left means no dialog (the save after the removal
    is already queued). */
 function _celerpShowReservedConflicts(conflicts) {{
-    const onPage = new Set(Array.from(document.querySelectorAll('#{line_body_id} [data-name="entity_id"]'), i => i.value));
+    const onPage = new Set(Array.from(document.querySelectorAll('#' + {0} + ' [data-name="entity_id"]'), i => i.value));
     conflicts = conflicts.filter(c => !c.entity_id || onPage.has(c.entity_id));
     if (!conflicts.length) return;
     document.getElementById('reserved-conflict-modal')?.remove();
@@ -10599,7 +10557,7 @@ function _celerpShowReservedConflicts(conflicts) {{
     removeBtn.textContent = _L.remove_from_draft;
     removeBtn.onclick = () => {{
         const eids = new Set(conflicts.map(c => c.entity_id).filter(Boolean));
-        document.querySelectorAll('#{line_body_id} tr').forEach(row => {{
+        document.querySelectorAll('#' + {0} + ' tr').forEach(row => {{
             const eid = row.querySelector('[data-name="entity_id"]')?.value;
             if (eid && eids.has(eid)) row.remove();
         }});
@@ -10635,7 +10593,7 @@ function _celerpQuietBlur(el) {{
 if (!window._celerpLineKeysBound) {{
     window._celerpLineKeysBound = true;
     const lineField = (e) => (e.target instanceof HTMLInputElement
-        && e.target.closest('#{line_body_id}')
+        && e.target.closest('#' + {0})
         && !['hidden', 'checkbox'].includes(e.target.type)) ? e.target : null;
     document.addEventListener('focusin', (e) => {{
         const field = lineField(e);
@@ -10696,7 +10654,7 @@ function _celerpApplyRepriceWarnings() {{
     }}
     if (!state || !Array.isArray(state.item_ids) || !state.item_ids.length) return;
     const ids = new Set(state.item_ids);
-    document.querySelectorAll('#{line_body_id} tr').forEach(function(row) {{
+    document.querySelectorAll('#' + {0} + ' tr').forEach(function(row) {{
         const itemId = row.querySelector('[data-name="entity_id"]')?.value || '';
         if (itemId && ids.has(itemId)) {{
             row.classList.add('doc-line--reprice-warning');
@@ -10715,7 +10673,7 @@ if (!window._celerpRepriceWarningAfterSwap) {{
     document.body.addEventListener('htmx:afterSwap', window._celerpRepriceWarningAfterSwap);
 }}
 
-window._CELERP_AUTHORITATIVE_PRICE_LIST = {_json.dumps(_current_pl)};
+window._CELERP_AUTHORITATIVE_PRICE_LIST = {4};
 function _celerpRestorePriceList() {{
     const select = document.getElementById('doc-price-list');
     if (select) select.value = window._CELERP_AUTHORITATIVE_PRICE_LIST;
@@ -10882,12 +10840,12 @@ async function celerpCsvImport(input, entityId) {{
     fd.append('offset', window._CELERP_LINE_OFFSET); fd.append('limit', window._CELERP_LINE_LIMIT);
     celerpLineSelection(rows).forEach(function(kv){{ fd.append(kv[0], kv[1]); }});
     try{{
-      var resp=await celerpFetch('/lists/{entity_id}/set-scanned', {{method:'POST', body:fd}});
+      var resp=await celerpFetch('/lists/' + {5} + '/set-scanned', {{method:'POST', body:fd}});
       var html=await resp.text();
       if(resp.ok){{
-        var tbody=document.getElementById('{line_body_id}');
+        var tbody=document.getElementById({2});
         if(tbody&&html) tbody.outerHTML=html;
-        htmx.process(document.getElementById('{line_body_id}'));
+        htmx.process(document.getElementById({2}));
         var tr=null;
         try{{ tr=JSON.parse(resp.headers.get('HX-Trigger')||'null'); }}catch(e){{}}
         if(tr&&tr.celerpToast&&window.celerpToast) celerpToast(tr.celerpToast.message, tr.celerpToast.type, tr.celerpToast.persist);
@@ -10928,7 +10886,8 @@ async function celerpCsvImport(input, entityId) {{
   }};
   window.liActionChanged=function(action){{ window.liBulkActionSelected(action); }};
 }})();
-"""),
+""",
+    line_body_id, _draft_show_item_status, str(line_body_id), _list_line_section_id(entity_id), _current_pl, entity_id)),
             cls="lines-section",
         )
         if is_list:
@@ -11143,21 +11102,11 @@ async function celerpCsvImport(input, entityId) {{
                     + (" doc-lines--customs" if pol["customs"] else "")
                     + (" doc-lines--audit" if pol["audit"] else ""),
             ),
-            Script(f"""
+            Script(js("""
 (function(){{
   /* Translated UI strings resolved in Python at render time (R2). */
-  const _L = {_json.dumps({
-    "rows_selected": t("documents.rows_selected"),
-    "no_inventory_labels": t("documents.no_inventory_items_labels"),
-    **_line_skip_strings(),
-    "no_lines_selected": t("documents.no_lines_selected"),
-    "could_not_set_shipped": t("documents.could_not_set_shipped"),
-    "could_not_set_reserved": t("documents.could_not_set_reserved"),
-    "could_not_set_available": t("documents.could_not_set_available"),
-    "qty_between": t("documents.qty_between"),
-    "qty_up_to": t("documents.qty_up_to"),
-  })};
-  var table=document.getElementById('{_fin_bulk_id}');
+  const _L = {0};
+  var table=document.getElementById({1});
   var toolbar=document.getElementById('li-bulk-toolbar');
   var countEl=document.getElementById('li-bulk-count');
   var sel=document.getElementById('li-bulk-select');
@@ -11184,8 +11133,8 @@ async function celerpCsvImport(input, entityId) {{
     if(e.target&&e.target.classList.contains('li-select')) _update();
   }});
   liSelectAll(table, document.getElementById('li-select-all'), _update);
-  const _liEid = {repr(entity_id)};
-  const _liBase = {'"/lists/"' if is_list else '"/docs/"'};
+  const _liEid = {2};
+  const _liBase = {3};
   var labelsBtn=document.getElementById('li-bulk-labels-btn');
   var fulfillBtn=document.getElementById('li-bulk-fulfill-btn');
   var reserveBtn=document.getElementById('li-bulk-reserve-btn');
@@ -11291,7 +11240,8 @@ async function celerpCsvImport(input, entityId) {{
     return _liStockAction(_liBase+_liEid+'/set-available', rows, fields, _L.could_not_set_available);
   }}
 }})();
-""") if _fin_show_bulk else None,
+""",
+                {'rows_selected': t('documents.rows_selected'), 'no_inventory_labels': t('documents.no_inventory_items_labels'), **_line_skip_strings(), 'no_lines_selected': t('documents.no_lines_selected'), 'could_not_set_shipped': t('documents.could_not_set_shipped'), 'could_not_set_reserved': t('documents.could_not_set_reserved'), 'could_not_set_available': t('documents.could_not_set_available'), 'qty_between': t('documents.qty_between'), 'qty_up_to': t('documents.qty_up_to')}, str(_fin_bulk_id), str(entity_id), '/lists/' if is_list else '/docs/')) if _fin_show_bulk else None,
             _fin_pager,
         )
         if is_list:

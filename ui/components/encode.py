@@ -121,6 +121,11 @@ def _refuse(template: str, kind: str) -> None:
 class Js(str):
     """Script text built by ``js``: every hole in it is one ``js_value`` literal."""
 
+    def __add__(self, other):
+        """Two scripts joined stay script; anything else joined is a plain string."""
+        joined = str.__add__(self, other)
+        return Js(joined) if isinstance(other, Js) else joined
+
 
 def js_value(value) -> str:
     """*value* as one JavaScript literal that is safe inside a <script> element or a handler."""

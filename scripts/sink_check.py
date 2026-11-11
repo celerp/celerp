@@ -74,6 +74,7 @@ raw_html and js at run time and this check share one position parser.
 from __future__ import annotations
 
 import ast
+import copy
 import importlib.util
 import re
 import subprocess
@@ -112,6 +113,21 @@ MARKUP_RE = re.compile(rf"<(/?(?:{HTML_TAGS}))[\s>/]", re.I)
 UI_ROOTS = ("ui/", "default_modules/")  # where in-repo components wrap elements; core has none
 LOCAL_TOPS: set[str] = set()  # top-level packages of the scanned repo
 MODULE_CONSTS: dict[str, dict[str, ast.AST]] = {}
+
+
+def _inline_consts(table: dict[str, ast.AST]) -> dict[str, ast.AST]:
+    """Each module-level value with the module's other module-level names inlined, so a module
+    that imports it resolves it without the defining module's scope."""
+    class Inline(ast.NodeTransformer):
+        def __init__(self, depth):
+            self.depth = depth
+
+        def visit_Name(self, node):
+            if node.id in table and self.depth < 8:
+                return Inline(self.depth + 1).visit(copy.deepcopy(table[node.id]))
+            return node
+
+    return {k: Inline(0).visit(copy.deepcopy(v)) for k, v in table.items()}
 MODULE_FUNCS: dict[str, dict[str, ast.AST]] = {}
 DYNAMIC_MODULES: dict[str, set[str]] = {}  # names bound to import_module(...) results, per file
 
@@ -900,9 +916,9 @@ def main(argv):
             except SyntaxError:
                 continue
             LOCAL_TOPS.add(module_name(f).split(".")[0])
-            MODULE_CONSTS[module_name(f)] = {
+            MODULE_CONSTS[module_name(f)] = _inline_consts({
                 st.targets[0].id: st.value for st in trees[f].body
-                if isinstance(st, ast.Assign) and len(st.targets) == 1 and isinstance(st.targets[0], ast.Name)}
+                if isinstance(st, ast.Assign) and len(st.targets) == 1 and isinstance(st.targets[0], ast.Name)})
             DYNAMIC_MODULES[f] = {
                 tg.id for sub in ast.walk(trees[f]) if isinstance(sub, ast.Assign)
                 and _framework_import(sub.value)

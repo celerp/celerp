@@ -13,7 +13,7 @@ from fasthtml.common import *
 from ui.components.attrs import hx_vals
 from ui.components.table import searchable_select
 from ui.i18n import t
-from ui.components.encode import html_response, js
+from ui.components.encode import as_js, html_response, js
 
 # Single source of truth for tag slugs - drives both UI and i18n keys
 _DOCUMENT_TAGS: tuple[str, ...] = (
@@ -342,11 +342,11 @@ def files_section(
         # When actions target a different entity, refresh via base_url/_section after mutation
         cross_entity = file_action_base != base_url
 
-        def _write_js(url: str, method: str, body: str) -> str:
-            """JS snippet: send a file write, then show the section it answers with, or (for a
-            cross-entity write) the section re-read from this entity."""
-            refresh = f"'{base_url}/_section'" if cross_entity else "null"
-            return f"celerpFilesFetch('{sid}','{url}',{{method:'{method}',body:{body}}},{refresh});"
+        def _write_js(url: str, method: str) -> str:
+            """JS snippet: send the FormData in ``fd`` as a file write, then show the section it
+            answers with, or (for a cross-entity write) the section re-read from this entity."""
+            refresh = f"{base_url}/_section" if cross_entity else None
+            return js("celerpFilesFetch({0},{1},{{method:{2},body:fd}},{3});", sid, url, method, refresh)
 
         # The Excel funnel reads this explicit value (the tag's display label) rather than the cell's
         # textContent, which for the editable <select> would be every option concatenated.
@@ -363,8 +363,8 @@ def files_section(
                         name="document_tag",
                         cls="form-input form-input--xs file-tag-select",
                         onchange=(
-                            f"(function(sel){{var fd=new FormData();fd.append('document_tag',sel.value);"
-                            + _write_js(f"{file_action_base}/{fid}/tag", "PATCH", "fd") + "})(this)"
+                            js("(function(sel){{var fd=new FormData();fd.append('document_tag',sel.value);")
+                            + as_js(_write_js(f"{file_action_base}/{fid}/tag", "PATCH")) + js("}})(this)")
                         ),
                     ),
                     data_filter_value=_tag_fv,
@@ -388,8 +388,8 @@ def files_section(
 
         if can_describe:
             _desc_fetch = (
-                f"var fd=new FormData();fd.append('description',inp.value);"
-                + _write_js(f"{file_action_base}/{fid}/description", "POST", "fd")
+                js("var fd=new FormData();fd.append('description',inp.value);")
+                + as_js(_write_js(f"{file_action_base}/{fid}/description", "POST"))
             )
             desc_cell = Td(
                 Span(
@@ -398,18 +398,18 @@ def files_section(
                     title=t("label.dblclick_to_edit"),
                     **{
                         "ondblclick": (
-                            f"(function(el){{var inp=document.createElement('input');"
-                            f"inp.type='text';"
-                            f"var cur=el.textContent.trim();inp.value=cur==='--'?'':cur;"
-                            f"inp.className='form-input form-input--sm';inp.style='width:100%';"
-                            f"var cancelled=false;"
-                            f"inp.onblur=function(){{if(cancelled)return;"
-                            + _desc_fetch +
-                            f"}};"
-                            f"inp.onkeydown=function(e){{if(e.key==='Enter')inp.blur();"
-                            f"if(e.key==='Escape'){{cancelled=true;var orig=el.dataset.orig;el.textContent=orig;inp.replaceWith(el);}}}};"
-                            f"el.dataset.orig=el.textContent;el.replaceWith(inp);inp.focus();"
-                            f"}})(this)"
+                            js("(function(el){{var inp=document.createElement('input');"
+                               "inp.type='text';"
+                               "var cur=el.textContent.trim();inp.value=cur==='--'?'':cur;"
+                               "inp.className='form-input form-input--sm';inp.style='width:100%';"
+                               "var cancelled=false;"
+                               "inp.onblur=function(){{if(cancelled)return;")
+                            + as_js(_desc_fetch)
+                            + js("}};"
+                                 "inp.onkeydown=function(e){{if(e.key==='Enter')inp.blur();"
+                                 "if(e.key==='Escape'){{cancelled=true;var orig=el.dataset.orig;el.textContent=orig;inp.replaceWith(el);}}}};"
+                                 "el.dataset.orig=el.textContent;el.replaceWith(inp);inp.focus();"
+                                 "}})(this)")
                         )
                     },
                 ),

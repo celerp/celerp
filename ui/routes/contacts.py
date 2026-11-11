@@ -589,12 +589,12 @@ def _contacts_bulk_toolbar() -> FT:
         Button(t("btn.clear"), id="contact-bulk-clear-btn", cls="btn btn--ghost btn--sm",
                style="display:none",
                onclick=(
-                   "CelerpSelection.clear();"
-                   "CelerpSelection.syncCheckboxes();"
-                   "document.getElementById('contact-bulk-count').textContent=" + _json.dumps(t("doc.0_selected")) + ";"
-                   "document.getElementById('contact-bulk-toolbar').classList.remove('is-active');"
-                   "document.getElementById('contact-bulk-clear-btn').style.display='none';"
-                   "_resetBulkActions();"
+                   js(
+                       "CelerpSelection.clear();CelerpSelection.syncCheckboxes();document.getElementById('contact-bulk-count').textContent={0};"
+                       "document.getElementById('contact-bulk-toolbar').classList.remove('is-active');"
+                       "document.getElementById('contact-bulk-clear-btn').style.display='none';"
+                       '_resetBulkActions();',
+                       t('doc.0_selected'))
                )),
         Select(
             Option(t("inv.action"), value="", disabled=True, selected=True),
@@ -749,12 +749,12 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
     _role = _get_role(request)
     _can_edit = role_has_permission(_settings, _role, "edit_contacts")
     _can_import_export = role_has_permission(_settings, _role, "import_export_data")
-    _bulk_cfg = _json.dumps({
+    _bulk_cfg = {
         "selectedTpl": t("label.n_selected"),
         "confirmDelete": t("contacts.confirm_bulk_delete"),
         "deletedTpl": t("contacts.deleted_count"),
         "deleteFailed": t("contacts.delete_failed"),
-    })
+    }
     return await base_shell(
         page_header(
             label,
@@ -767,9 +767,9 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
         Div(column_manager(schema, et), cls="column-manager-row"),
         _contacts_bulk_toolbar(),
         _contacts_content(contact_type, contacts, q, page, total, per_page, sort, sort_dir, currency),
-        Script(f"""
+        Script(js("""
 (function(){{
-  var CFG = {_bulk_cfg};
+  var CFG = {0};
   function updateContactBulkToolbar(){{
     var n = typeof CelerpSelection !== 'undefined' ? CelerpSelection.count() : 0;
     var toolbar = document.getElementById('contact-bulk-toolbar');
@@ -787,7 +787,7 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
       var ids = typeof CelerpSelection !== 'undefined' ? CelerpSelection.ids() : [];
       if (!ids.length) return;
       var qs = ids.map(function(id){{return 'selected=' + encodeURIComponent(id);}}).join('&');
-      window.location.href = '/contacts/{contact_type}s/export/csv?' + qs;
+      window.location.href = '/contacts/' + {1} + 's/export/csv?' + qs;
       return;
     }}
     if (action === 'delete'){{
@@ -833,7 +833,8 @@ async def _contacts_page_shell(contact_type: str, contacts: list[dict], request:
   document.body.addEventListener('celerpSelectionClear', updateContactBulkToolbar);
   updateContactBulkToolbar();
 }})();
-"""),
+""",
+            _bulk_cfg, contact_type)),
         title=page_title(f"nav.{nav_key}"),
         nav_active=nav_key,
         request=request,

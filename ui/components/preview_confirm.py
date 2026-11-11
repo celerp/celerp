@@ -14,6 +14,7 @@ from __future__ import annotations
 from fasthtml.common import Input
 
 from ui.components.operation_key import FIELD as OPERATION_KEY_FIELD
+from ui.components.encode import js
 
 BINDING = "binding"
 FORM_ATTRS = {"data-confirms-preview": "true"}
@@ -34,12 +35,12 @@ def confirmed_binding(form, wait: str) -> str:
     return binding
 
 
-PREVIEW_CONFIRM_JS = f"""
+PREVIEW_CONFIRM_JS = js("""
 (function(){{
   function formOf(el){{ return el && el.closest ? el.closest('form[data-confirms-preview]') : null; }}
   // The values a preview is worked out for: the form without the binding and the operation key.
   function ask(form){{
-    var f=new FormData(form); f.delete({BINDING!r}); f.delete({OPERATION_KEY_FIELD!r});
+    var f=new FormData(form); f.delete({0}); f.delete({1});
     return new URLSearchParams(f).toString();
   }}
   function allow(form,on){{ form.querySelectorAll('button[type=submit]').forEach(function(b){{ b.disabled=!on; }}); }}
@@ -47,7 +48,7 @@ PREVIEW_CONFIRM_JS = f"""
     if(ask(form)===form._celerpShown) return;
     form._celerpShown=null;
     allow(form,false);
-    form.querySelectorAll('[data-preview] input[name={BINDING}]').forEach(function(el){{ el.remove(); }});
+    form.querySelectorAll('[data-preview] input[name=' + {0} + ']').forEach(function(el){{ el.remove(); }});
   }}
   function preview(e){{
     var el=e.detail.elt, form=formOf(el);
@@ -63,9 +64,10 @@ PREVIEW_CONFIRM_JS = f"""
   }});
   document.addEventListener('htmx:afterSwap',function(e){{
     var form=preview(e); if(!form) return;
-    var el=e.detail.elt, current=el._celerpAsk===ask(form)&&!!el.querySelector('input[name={BINDING}]');
+    var el=e.detail.elt, current=el._celerpAsk===ask(form)&&!!el.querySelector('input[name=' + {0} + ']');
     form._celerpShown=current?el._celerpAsk:null;
     allow(form,current);
   }});
 }})();
-"""
+""",
+    BINDING, OPERATION_KEY_FIELD)
