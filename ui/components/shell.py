@@ -17,6 +17,7 @@ from celerp.services.update import CARD_REASONS, PIP_BLOCKERS, REASON_CODES, rea
 from ui.config import COOKIE_NAME, get_role
 from ui.i18n import t, get_lang, available_langs, lang_label, refusal_text, try_again_pattern
 from ui.components.doc_money import DOC_MONEY_JS
+from ui.components.encode import js_value
 from ui.components.icons import icon
 from ui.components.preview_confirm import PREVIEW_CONFIRM_JS
 from ui.components.table import searchable_select
@@ -1264,26 +1265,20 @@ _TOAST_CONTAINER_HTML = Div(id="toast-container", cls="toast-container")
 
 _NOTIFICATION_JS = """
 // The bell is an unread inbox: it lists only unread notifications, so a
-// dismissed (read) one never reappears on refresh. Escape all server strings
-// (recipient emails and doc numbers flow into titles/bodies).
-function _notifEsc(s) {
-  var d = document.createElement('div');
-  d.textContent = (s == null ? '' : String(s));
-  return d.innerHTML;
-}
-
-function _notifItemHtml(n) {
-  var inner = '<div class="notif-item__title">' + _notifEsc(n.title) + '</div>'
-            + '<div class="notif-item__body">' + _notifEsc(n.body) + '</div>';
+// dismissed (read) one never reappears on refresh. Server strings (recipient
+// emails and doc numbers flow into titles/bodies) are written as text nodes, and
+// a link is kept only when its address stays safe.
+function _notifItem(n) {
+  var inner = [celerpNode('div', {'class': 'notif-item__title'}, [n.title]),
+               celerpNode('div', {'class': 'notif-item__body'}, [n.body])];
   // A referenced document becomes a link; otherwise plain content.
-  var content = n.action_url
-    ? '<a class="notif-item__link" href="' + _notifEsc(n.action_url) + '">' + inner + '</a>'
-    : '<div class="notif-item__link">' + inner + '</div>';
-  return '<div class="notif-item' + (n.read ? '' : ' notif-item--unread')
-    + (n.priority === 'high' ? ' notif-item--high' : '') + '" data-id="' + _notifEsc(n.id) + '">'
-    + content
-    + '<button class="notif-item__dismiss" type="button" title="' + window.__shellI18n.markAsRead + '" aria-label="' + window.__shellI18n.markAsRead + '">&times;</button>'
-    + '</div>';
+  var link = n.action_url && celerpSafeUrl(n.action_url) === n.action_url;
+  var content = celerpNode(link ? 'a' : 'div', {'class': 'notif-item__link', href: link ? n.action_url : null}, inner);
+  var cls = 'notif-item' + (n.read ? '' : ' notif-item--unread') + (n.priority === 'high' ? ' notif-item--high' : '');
+  var label = window.__shellI18n.markAsRead;
+  return celerpNode('div', {'class': cls, 'data-id': n.id}, [
+    content,
+    celerpNode('button', {'class': 'notif-item__dismiss', type: 'button', title: label, 'aria-label': label}, ['\u00d7'])]);
 }
 
 // A found app update is worth one bell count so the user notices it on the
@@ -1310,7 +1305,7 @@ function _renderNotifs(data) {
     if (!data.items || data.items.length === 0) {
       list.innerHTML = '<div class="notif-panel__empty">' + window.__shellI18n.noNotifications + '</div>';
     } else {
-      list.innerHTML = data.items.slice(0, 10).map(_notifItemHtml).join('');
+      list.replaceChildren.apply(list, data.items.slice(0, 10).map(_notifItem));
     }
   }
 }
@@ -2336,14 +2331,9 @@ def try_again_address(request) -> str:
     return "/" + path.lstrip("/")
 
 
-def _js_value(value) -> str:
-    """*value* as a JavaScript literal that is safe inside a <script> element."""
-    return json.dumps(value, ensure_ascii=False).replace("<", "\\u003c")
-
-
 def try_again_script(lang: str) -> str:
     """The script behind _try_again_script_src: which messages get the Try again button, in *lang*."""
-    return f"window.__celerpTryAgainPattern = {_js_value(try_again_pattern(lang))};"
+    return f"window.__celerpTryAgainPattern = {js_value(try_again_pattern(lang))};"
 
 
 def try_again_version(lang: str) -> str:
@@ -2364,7 +2354,8 @@ def client_scripts(lang: str = "en", request=None) -> list:
     config = {**_shell_js_i18n(lang), "tryAgainHref": try_again_address(request)}
     return [
         Script(src="/static/htmx.min.js"),
-        Script(f"window.__shellI18n = {_js_value(config)};"),
+        Script(src="/static/celerp-dom.js"),
+        Script(f"window.__shellI18n = {js_value(config)};"),
         Script(src=_try_again_script_src(lang)),
         Script(_CLIENT_JS),
     ]
