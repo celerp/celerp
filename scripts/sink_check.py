@@ -94,7 +94,9 @@ ENCODER_PATH = "ui/components/encode.py"
 ADMISSION_JS = "ui/static/celerp-dom.js"  # celerpNode, celerpSetUrl, celerpGo
 RAW_PRIMS = {"NotStr", "Safe", "Markup", "__html__", "to_xml", "to_html", "HTMLResponse", "Js"}
 RAW_FRAMEWORK_ONLY = {"raw"}  # an ordinary word: refused only when imported from a framework
-RAW_STRINGS = {"NotStr", "Safe", "Markup", "__html__"}  # a name as a string feeds getattr laundering
+# A name as a string feeds getattr laundering. Compared against or listed in a set literal
+# it cannot reach the object (a set only reaches it through a computed lookup, reported).
+RAW_STRINGS = {"NotStr", "Safe", "Markup", "__html__"}
 ENCODERS_JS = {"js_value", "js", "as_js"}
 ENCODERS_URL = {"safe_url"}
 LOWER_BUILDERS = {"ft", "ft_hx", "ft_html", "ft_datastar"}
@@ -445,12 +447,22 @@ class PyScan(ast.NodeVisitor):
     # ------------------------------------------------ strings
     def visit_Constant(self, node):
         if isinstance(node.value, str):
-            if node.value in RAW_STRINGS:
+            if node.value in RAW_STRINGS and not getattr(node, "_inert_name", False):
                 hit("PY-RAW", self.path, node.lineno, repr(node.value))
             if SCHEME_RE.search(node.value):
                 hit("JS-SCHEME", self.path, node.lineno, repr(node.value))
             if not getattr(node, "_in_fstring", False):
                 self._scan_js_text(node.value, node.lineno)
+
+    def visit_Compare(self, node):
+        for v in (node.left, *node.comparators):
+            v._inert_name = True
+        self.generic_visit(node)
+
+    def visit_Set(self, node):
+        for v in node.elts:
+            v._inert_name = True
+        self.generic_visit(node)
 
     def visit_JoinedStr(self, node):
         for v in node.values:

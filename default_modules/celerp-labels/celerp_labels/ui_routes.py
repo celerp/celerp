@@ -25,10 +25,10 @@ from ui.i18n import t, get_lang, category_label
 
 try:
     from starlette.requests import Request
-    from starlette.responses import HTMLResponse, RedirectResponse
+    from starlette.responses import RedirectResponse
 except ImportError:  # pragma: no cover
     Request = None  # type: ignore[assignment,misc]
-    HTMLResponse = RedirectResponse = None  # type: ignore[assignment,misc]
+    RedirectResponse = None  # type: ignore[assignment,misc]
 
 log = logging.getLogger(__name__)
 
@@ -126,7 +126,7 @@ _FIELD_TYPE_MAP = {k: t for k, _label, t in _COMMON_FIELDS}
 # Default templates live in presets.py (shared with the API, which seeds them on first read).
 from .service import BARCODE_HEIGHT_DEFAULT
 from .service import display_label as _svc_display_label
-from ui.components.encode import html_response, raw_html, safe_url
+from ui.components.encode import html_response, js, safe_url
 
 # The human-readable barcode number is a fallback for keying the code by hand, so it
 # defaults small and leaves the label's vertical space for actual content. A size set
@@ -138,396 +138,18 @@ BARCODE_TEXT_DEFAULT_PT = 6.0
 # preset text sizes; the user changes it in place.
 FIELD_DEFAULT_PT = 6
 
-_LABELS_CSS = """
-<style id="labels-css">
-/* -- Settings page: template list (left) + editor (right) -- */
-.label-settings-layout { display: flex; gap: 16px; align-items: flex-start; }
-.label-settings-layout > .settings-card:first-child { width: 200px; flex-shrink: 0; }
-.label-settings-layout > .settings-card:last-child { flex: 1; min-width: 0; }
-.template-list { list-style: none; padding: 0; margin: 0 0 12px; }
-.template-list-entry { display: flex; align-items: center; gap: 4px; margin-bottom: 4px; }
-.template-list-item {
-  flex: 1; display: flex; flex-direction: column; padding: 6px 10px;
-  border-radius: var(--radius); border: 1px solid var(--c-border);
-  background: var(--c-bg2); color: var(--c-text); text-decoration: none;
-  font-size: 12px; min-width: 0;
-}
-.template-list-item:hover { border-color: var(--c-accent); text-decoration: none; }
-.template-list-item--active { border-color: var(--c-accent); background: rgba(79,142,247,0.08); }
-.template-item-text .text-muted { font-size: 11px; color: var(--c-text2); }
-.template-create-form { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
-.template-create-form .form-input { flex: 1; min-width: 0; }
-
-/* -- Editor: top config bar (stacked: name then format) -- */
-.labels-top-bar {
-  display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; max-width: 320px;
-}
-.labels-top-bar .labels-form-field { display: flex; flex-direction: column; }
-.labels-form-field label { display: block; font-size: 11px; color: var(--c-text2); margin-bottom: 3px; }
-.custom-dims { display: flex; gap: 8px; margin-bottom: 12px; }
-.custom-dims .labels-form-field { flex: 1; }
-
-/* -- Editor: stacked layout (preview on top, fields below) -- */
-.label-editor-layout {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-.label-canvas-panel { display: flex; flex-direction: column; gap: 6px; }
-.label-canvas-panel h4 { font-size: 11px; color: var(--c-text2); margin: 0; }
-.label-canvas {
-  position: relative;
-  border: 2px solid var(--c-accent);
-  background: #fff;
-  overflow: hidden;
-  display: inline-block;
-  cursor: default;
-  min-width: 120px;
-  min-height: 80px;
-}
-.label-field-block {
-  /* A field block must occupy exactly the text it prints. A border and vertical
-     padding make the block taller than its own line, so fields get dragged apart
-     to stop them looking overlapped - and those inflated positions are what gets
-     saved and printed. outline draws the dashed guide without taking up space. */
-  position: absolute; font-size: 9px; line-height: 1;
-  white-space: nowrap; overflow: hidden; color: #111;
-  outline: 1px dashed rgba(0,0,0,0.25); padding: 0 1px;
-  background: rgba(255,255,255,0.9); cursor: move;
-  user-select: none; box-sizing: border-box;
-}
-.label-field-block:hover { border-color: var(--c-accent); }
-/* Barcode preview image block */
-.label-field-block--barcode {
-  display: flex; flex-direction: column; align-items: flex-start;
-  white-space: normal; padding: 0;
-}
-.label-field-block--barcode img { display: block; width: 100%; height: auto; }
-.label-field-block--barcode .bc-text { font-size: 60%; color: #333; margin-top: 1px; }
-.fld-bold-wrap { display: inline-flex; align-items: center; gap: 3px; font-size: 12px;
-                 color: var(--c-text2); cursor: pointer; user-select: none; }
-.fld-bold-wrap input { margin: 0; cursor: pointer; }
-/* QR preview image block */
-.label-field-block--qr {
-  padding: 0; overflow: visible;
-}
-.label-field-block--qr img { display: block; width: 100%; height: 100%; }
-
-/* -- Field list -- */
-.label-fields-panel { max-width: 320px; }
-.field-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
-.field-row-compact {
-  display: grid;
-  grid-template-columns: 1fr 1fr 24px;
-  gap: 3px;
-  align-items: center;
-  background: var(--c-bg3);
-  border: 1px solid var(--c-border);
-  border-radius: var(--radius);
-  padding: 3px 5px;
-  font-size: 12px;
-}
-.fld-label-input {
-  font-size: 11px; color: var(--c-text2); font-style: italic;
-}
-.fld-label-input:focus { color: var(--c-text); font-style: normal; }
-
-/* -- Searchable select -- */
-.searchable-select {
-  position: relative; max-width: 320px; width: 100%; box-sizing: border-box;
-}
-.searchable-select__display {
-  width: 100%; box-sizing: border-box; cursor: pointer;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23888'/%3E%3C/svg%3E");
-  background-repeat: no-repeat; background-position: right 8px center;
-  padding-right: 24px;
-}
-.searchable-select__dropdown {
-  display: none; position: absolute; z-index: 200; top: 100%; left: 0; right: 0;
-  background: var(--c-bg2, #fff); border: 1px solid var(--c-accent, #4a90e2);
-  border-radius: var(--radius, 4px); box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-  max-height: 220px; overflow: hidden; display: none; flex-direction: column;
-}
-.searchable-select__dropdown.open { display: flex; }
-.searchable-select__search {
-  padding: 5px 8px; border: none; border-bottom: 1px solid var(--c-border, #ddd);
-  font-size: 12px; background: var(--c-bg2, #fff); color: var(--c-text, #111);
-  outline: none; width: 100%; box-sizing: border-box;
-}
-.searchable-select__list {
-  overflow-y: auto; flex: 1;
-}
-.searchable-select__option {
-  padding: 5px 10px; cursor: pointer; font-size: 12px; color: var(--c-text, #111);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.searchable-select__option:hover,
-.searchable-select__option[aria-selected="true"] { background: rgba(79,142,247,0.12); }
-.searchable-select__group-label {
-  padding: 3px 8px 1px; font-size: 10px; color: var(--c-text2, #888);
-  text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600;
-  border-top: 1px solid var(--c-border, #ddd); margin-top: 2px;
-}
-.searchable-select__group-label:first-child { border-top: none; margin-top: 0; }
-
-/* -- Actions -- */
-.form-actions { display: flex; gap: 8px; margin-top: 12px; }
-.btn--danger { background: var(--c-red); color: #fff; border-color: var(--c-red); }
-.btn--danger:hover { background: #dc2626; border-color: #dc2626; }
-.btn--outline { background: transparent; color: var(--c-text); border: 1px solid var(--c-border); }
-.btn--outline:hover { border-color: var(--c-accent); color: var(--c-accent); }
-.btn--icon {
-  padding: 1px 5px; font-size: 12px; line-height: 1; flex-shrink: 0;
-  background: transparent; border: 1px solid var(--c-border); color: var(--c-text2);
-}
-.btn--icon:hover { border-color: var(--c-red); color: var(--c-red); }
-.success-banner { background: rgba(34,197,94,0.12); border: 1px solid rgba(34,197,94,0.25); color: var(--c-green); padding: 8px 12px; border-radius: var(--radius); margin-bottom: 10px; font-size: 12px; }
-</style>
-"""
-
-
-def _ft():
-    from fasthtml.common import (
-        A, Button, Div, Form, H2, H3, H4, Input, Label, Li,
-        NotStr, Option, P, Script, Select, Span, Strong,
-        Table, Tbody, Td, Th, Thead, Tr, Ul,
-    )
-    return locals()
-
-
-def _flash(msg: str, kind: str = "success") -> object:
-    ft = _ft()
-    cls = "success-banner" if kind == "success" else "error-banner"
-    return ft["Div"](msg, cls=cls)
-
-
-def _templates_list(templates: list[dict], active_id: str | None = None) -> object:
-    ft = _ft()
-    Div, H3, Ul, Li, A, Button, P, Span, Strong, Form, Input = (
-        ft["Div"], ft["H3"], ft["Ul"], ft["Li"], ft["A"], ft["Button"],
-        ft["P"], ft["Span"], ft["Strong"], ft["Form"], ft["Input"],
-    )
-    items = []
-    for tpl in templates:
-        tid = tpl["id"]
-        is_active = tid == active_id
-        items.append(Li(
-            A(
-                Div(
-                    Strong(tpl["name"]),
-                    Div(tpl.get("format", ""), cls="text-muted"),
-                    cls="template-item-text",
-                ),
-                href=f"/settings/labels/{tid}",
-                cls=f"template-list-item{'  template-list-item--active' if is_active else ''}",
-            ),
-            Button(
-                "x",
-                hx_delete=f"/settings/labels/{tid}",
-                hx_target="#label-settings-root",
-                hx_swap="outerHTML",
-                hx_confirm=t("labels.delete_template_confirm", name=tpl['name']),
-                cls="btn btn--sm btn--icon btn--danger",
-                title=t("btn.delete"),
-            ),
-            cls="template-list-entry",
-        ))
-    return Div(
-        H3(t("page.templates"), cls="section-title"),
-        Ul(*items, cls="template-list") if items else P(t("label.no_templates_yet"), cls="text-muted"),
-        Form(
-            Input(name="name", placeholder=t("labels.new_template_name"), required=True, cls="form-input form-input--sm"),
-            Button(t("btn._add"), type="submit", cls="btn btn--sm btn--primary"),
-            hx_post="/settings/labels",
-            hx_target="#label-settings-root",
-            hx_swap="outerHTML",
-            cls="template-create-form",
-        ),
-        id="template-list-panel",
-        cls="settings-card",
-    )
-
-
-def _build_field_options_js(
-    selected_key: str,
-    global_extra: list[tuple[str, str]] | None,
-    category_attrs: list[tuple[str, str]] | None,
-) -> str:
-    """Return a JS array literal of option-group objects for the searchable select."""
-    import json
-
-    groups = []
-    # Built-in fields (no group label)
-    builtin_opts = [{"k": k, "v": v} for k, v, _t in _COMMON_FIELDS]
-    groups.append({"label": None, "options": builtin_opts})
-    # Global item-schema attributes (custom fields added by company)
-    if global_extra:
-        groups.append({
-            "label": "Attributes",
-            "options": [{"k": k, "v": v} for k, v in global_extra],
-        })
-    # Category attributes
-    if category_attrs:
-        groups.append({
-            "label": "Category Attributes",
-            "options": [{"k": k, "v": v} for k, v in category_attrs],
-        })
-    return json.dumps(groups)
-
-
-def _field_row_compact(
-    idx: int,
-    field: dict,
-    global_extra: list[tuple[str, str]] | None = None,
-    category_attrs: list[tuple[str, str]] | None = None,
-) -> object:
-    """Compact field row: searchable field select + delete button.
-
-    The field key determines the render type (barcode/qr/text) via _FIELD_TYPE_MAP.
-    """
-    ft = _ft()
-    Div, Button, NotStr = ft["Div"], ft["Button"], ft["NotStr"]
-
-    key = field.get("key", "")
-    # Show the leaf of a "Category > Field" path so the editor matches what prints.
-    label_val = _svc_display_label(field.get("label", "") or key).replace("&", "&amp;").replace('"', "&quot;")
-    ftype = field.get("type", "text")
-    x_val = field.get("x", "")
-    y_val = field.get("y", "")
-    font_size = field.get("fontSize", "")
-    barcode_height = field.get("barcode_height", "")
-
-    # Build option groups as JSON for the searchable-select component
-    options_js = _build_field_options_js(key, global_extra, category_attrs)
-    safe_key = key.replace('"', "&quot;")
-    ss_id = f"ss-{idx}"
-
-    return Div(
-        NotStr(
-            f'<div id="{ss_id}" class="searchable-select"'
-            f' data-name="fields[{idx}][key]" data-value="{safe_key}"'
-            f' data-options=\'{options_js}\'>'
-            f'<input type="text" readonly class="form-input form-input--sm searchable-select__display"'
-            f' placeholder="-- select --">'
-            f'<div class="searchable-select__dropdown">'
-            f'<input type="text" class="searchable-select__search" placeholder="Search fields...">'
-            f'<div class="searchable-select__list"></div>'
-            f'</div>'
-            f'<input type="hidden" name="fields[{idx}][key]" value="{safe_key}" class="fld-key">'
-            f'</div>'
-        ),
-        NotStr(
-            f'<input type="text" name="fields[{idx}][label]" value="{label_val}" class="form-input form-input--sm fld-label fld-label-input"'
-            f' placeholder="Display label" title="Label shown on preview" oninput="this._userEdited=true; labelEditorUpdatePreview()">'
-        ),
-        Button(t("btn.u00d7"),
-            type="button",
-            onclick="this.closest('.field-row-compact').remove(); labelEditorUpdatePreview()",
-            cls="btn btn--icon btn--danger",
-            title=t("labels.remove_field"),
-        ),
-        NotStr(
-            f'<input type="hidden" name="fields[{idx}][type]" value="{ftype}" class="fld-type">'
-            f'<input type="hidden" name="fields[{idx}][x]" value="{x_val}" class="fld-x">'
-            f'<input type="hidden" name="fields[{idx}][y]" value="{y_val}" class="fld-y">'
-            f'<input type="number" name="fields[{idx}][fontSize]" value="{font_size}" class="form-input form-input--sm fld-fs"'
-            f' min="4" max="72" placeholder="Font" title="Text size in points (4-72)"'
-            f' style="display:{("" if ftype in ("text", "barcode_text") else "none")};width:60px;"'
-            f' oninput="labelEditorUpdatePreview()">'
-            f'<input type="number" name="fields[{idx}][barcode_height]" value="{barcode_height}" class="form-input form-input--sm fld-bh"'
-            f' min="1" max="30" placeholder="Bar H" title="Barcode bar height (1-30)"'
-            f' style="display:{("" if ftype == "barcode" else "none")};width:60px;"'
-            f' oninput="labelEditorUpdatePreview()">'
-            # Bold has always been stored on the field and honoured by the renderers;
-            # there was simply no way to set it. An unchecked box submits nothing,
-            # which is exactly what the parser expects.
-            f'<label class="fld-bold-wrap" title="Bold this field"'
-            f' style="display:{("" if ftype in ("text", "barcode_text") else "none")};">'
-            f'<input type="checkbox" name="fields[{idx}][bold]" value="true" class="fld-bold"'
-            f'{" checked" if field.get("bold") else ""}'
-            f' onchange="labelEditorUpdatePreview()"><b>B</b></label>'
-        ),
-        cls="field-row-compact",
-        data_idx=str(idx),
-    )
-
-
-def _editor_panel(
-    tpl: dict,
-    global_extra: list[tuple[str, str]] | None = None,
-    category_attrs: list[tuple[str, str]] | None = None,
-) -> object:
-    """Label template editor panel.
-
-    global_extra: additional (key, label) tuples from company item_schema.
-    category_attrs: (key, "Category > label") tuples from category-schemas.
-    """
-    ft = _ft()
-    Div, H3, H4, Form, Input, Label, Select, Option, Button, Script, NotStr, Span, P = (
-        ft["Div"], ft["H3"], ft["H4"], ft["Form"], ft["Input"], ft["Label"],
-        ft["Select"], ft["Option"], ft["Button"], ft["Script"], ft["NotStr"],
-        ft["Span"], ft["P"],
-    )
-
-    tid = tpl["id"]
-    raw_fields = tpl.get("fields") or []
-    field_dicts = [
-        {"key": f, "label": f, "type": "text"} if isinstance(f, str) else f
-        for f in raw_fields
-    ]
-    field_rows = [_field_row_compact(i, fd, global_extra, category_attrs) for i, fd in enumerate(field_dicts)]
-
-    cur_fmt = tpl.get("format", "40x30mm")
-    format_opts = [
-        Option(label, value=val, selected=(val == cur_fmt))
-        for val, label in _FORMAT_OPTIONS
-    ]
-
-    custom_display = "block" if cur_fmt == "custom" else "none"
-    w_mm = tpl.get("width_mm") or ""
-    h_mm = tpl.get("height_mm") or ""
-
-    # Build unified field options for JS (key, label, render type) - used by add-field button
-    all_fields_js_parts = [f'{{k:"{k}",v:"{v}",t:"{rtype}"}}' for k, v, rtype in _COMMON_FIELDS]
-    if global_extra:
-        for fk, fl in global_extra:
-            safe_k = fk.replace('"', '\\"')
-            safe_v = fl.replace('"', '\\"')
-            all_fields_js_parts.append(f'{{k:"{safe_k}",v:"{safe_v}",t:"text"}}')
-    if category_attrs:
-        for fk, fl in category_attrs:
-            safe_k = fk.replace('"', '\\"')
-            safe_v = fl.replace('"', '\\"')
-            all_fields_js_parts.append(f'{{k:"{safe_k}",v:"{safe_v}",t:"text"}}')
-    all_fields_js = "[" + ",".join(all_fields_js_parts) + "]"
-
-    # Option groups JSON for add-field searchable-select
-    import json as _json
-    add_field_groups: list[dict] = [
-        {"label": None, "options": [{"k": k, "v": v} for k, v, _ in _COMMON_FIELDS]},
-    ]
-    if global_extra:
-        add_field_groups.append({"label": "Attributes", "options": [{"k": k, "v": v} for k, v in global_extra]})
-    if category_attrs:
-        add_field_groups.append({"label": "Category Attributes", "options": [{"k": k, "v": v} for k, v in category_attrs]})
-    add_field_groups_js = _json.dumps(add_field_groups)
-
-    # Type map: key -> render type (barcode/qr/text)
-    type_map_js_parts = [f'"{k}":"{t}"' for k, _v, t in _COMMON_FIELDS]
-    type_map_js = "{" + ",".join(type_map_js_parts) + "}"
-
-    sample_data_js = "{" + ", ".join(f'"{k}":"{v}"' for k, v in _SAMPLE_DATA.items()) + "}"
-    format_sizes_js = "{'24x24mm':[24,24],'29x29mm':[29,29],'34x34mm':[34,34],'40x30mm':[40,30],'62x29mm':[62,29],'100x50mm':[100,50],'A4':[210,297],'A5':[148,210],'letter':[216,279]}"
-
-    init_js = NotStr(f"""
-<script>
+# The editor script: holes {0}-{6} are the sample data, the field list, the key to
+# render type map, the format sizes, the add-field option groups and the two field defaults.
+_EDITOR_JS = """
 (function() {{
   var MAX_CANVAS_PX = 400;
-  var sampleData = {sample_data_js};
-  var allFields = {all_fields_js};
-  var typeMap = {type_map_js};
-  var formatSizes = {format_sizes_js};
-  var addFieldGroups = {add_field_groups_js};
+  var sampleData = {0};
+  var allFields = {1};
+  var typeMap = {2};
+  var formatSizes = {3};
+  var addFieldGroups = {4};
+  var FIELD_DEFAULT_PT = {5};
+  var BARCODE_HEIGHT_DEFAULT = {6};
 
   function fieldType(key) {{ return typeMap[key] || 'text'; }}
 
@@ -707,10 +329,10 @@ def _editor_panel(
         '<input type="hidden" name="fields[' + idx + '][type]" value="text" class="fld-type">' +
         '<input type="hidden" name="fields[' + idx + '][x]" value="" class="fld-x">' +
         '<input type="hidden" name="fields[' + idx + '][y]" value="" class="fld-y">' +
-        '<input type="number" name="fields[' + idx + '][fontSize]" value="{FIELD_DEFAULT_PT}" class="form-input form-input--sm fld-fs"' +
+        '<input type="number" name="fields[' + idx + '][fontSize]" value="' + FIELD_DEFAULT_PT + '" class="form-input form-input--sm fld-fs"' +
         ' min="4" max="72" placeholder="Font" title="Text size in points (4-72)"' +
         ' style="width:60px;" oninput="labelEditorUpdatePreview()">' +
-        '<input type="number" name="fields[' + idx + '][barcode_height]" value="{BARCODE_HEIGHT_DEFAULT}" class="form-input form-input--sm fld-bh"' +
+        '<input type="number" name="fields[' + idx + '][barcode_height]" value="' + BARCODE_HEIGHT_DEFAULT + '" class="form-input form-input--sm fld-bh"' +
         ' min="1" max="30" placeholder="Bar H" title="Barcode bar height (1-30)"' +
         ' style="display:none;width:60px;" oninput="labelEditorUpdatePreview()">' +
         '<label class="fld-bold-wrap" title="Bold this field">' +
@@ -893,8 +515,371 @@ def _editor_panel(
     labelEditorUpdatePreview();
   }}
 }})();
-</script>
-""")
+"""
+
+_LABELS_CSS = """
+/* -- Settings page: template list (left) + editor (right) -- */
+.label-settings-layout { display: flex; gap: 16px; align-items: flex-start; }
+.label-settings-layout > .settings-card:first-child { width: 200px; flex-shrink: 0; }
+.label-settings-layout > .settings-card:last-child { flex: 1; min-width: 0; }
+.template-list { list-style: none; padding: 0; margin: 0 0 12px; }
+.template-list-entry { display: flex; align-items: center; gap: 4px; margin-bottom: 4px; }
+.template-list-item {
+  flex: 1; display: flex; flex-direction: column; padding: 6px 10px;
+  border-radius: var(--radius); border: 1px solid var(--c-border);
+  background: var(--c-bg2); color: var(--c-text); text-decoration: none;
+  font-size: 12px; min-width: 0;
+}
+.template-list-item:hover { border-color: var(--c-accent); text-decoration: none; }
+.template-list-item--active { border-color: var(--c-accent); background: rgba(79,142,247,0.08); }
+.template-item-text .text-muted { font-size: 11px; color: var(--c-text2); }
+.template-create-form { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+.template-create-form .form-input { flex: 1; min-width: 0; }
+
+/* -- Editor: top config bar (stacked: name then format) -- */
+.labels-top-bar {
+  display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; max-width: 320px;
+}
+.labels-top-bar .labels-form-field { display: flex; flex-direction: column; }
+.labels-form-field label { display: block; font-size: 11px; color: var(--c-text2); margin-bottom: 3px; }
+.custom-dims { display: flex; gap: 8px; margin-bottom: 12px; }
+.custom-dims .labels-form-field { flex: 1; }
+
+/* -- Editor: stacked layout (preview on top, fields below) -- */
+.label-editor-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.label-canvas-panel { display: flex; flex-direction: column; gap: 6px; }
+.label-canvas-panel h4 { font-size: 11px; color: var(--c-text2); margin: 0; }
+.label-canvas {
+  position: relative;
+  border: 2px solid var(--c-accent);
+  background: #fff;
+  overflow: hidden;
+  display: inline-block;
+  cursor: default;
+  min-width: 120px;
+  min-height: 80px;
+}
+.label-field-block {
+  /* A field block must occupy exactly the text it prints. A border and vertical
+     padding make the block taller than its own line, so fields get dragged apart
+     to stop them looking overlapped - and those inflated positions are what gets
+     saved and printed. outline draws the dashed guide without taking up space. */
+  position: absolute; font-size: 9px; line-height: 1;
+  white-space: nowrap; overflow: hidden; color: #111;
+  outline: 1px dashed rgba(0,0,0,0.25); padding: 0 1px;
+  background: rgba(255,255,255,0.9); cursor: move;
+  user-select: none; box-sizing: border-box;
+}
+.label-field-block:hover { border-color: var(--c-accent); }
+/* Barcode preview image block */
+.label-field-block--barcode {
+  display: flex; flex-direction: column; align-items: flex-start;
+  white-space: normal; padding: 0;
+}
+.label-field-block--barcode img { display: block; width: 100%; height: auto; }
+.label-field-block--barcode .bc-text { font-size: 60%; color: #333; margin-top: 1px; }
+.fld-bold-wrap { display: inline-flex; align-items: center; gap: 3px; font-size: 12px;
+                 color: var(--c-text2); cursor: pointer; user-select: none; }
+.fld-bold-wrap input { margin: 0; cursor: pointer; }
+/* QR preview image block */
+.label-field-block--qr {
+  padding: 0; overflow: visible;
+}
+.label-field-block--qr img { display: block; width: 100%; height: 100%; }
+
+/* -- Field list -- */
+.label-fields-panel { max-width: 320px; }
+.field-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
+.field-row-compact {
+  display: grid;
+  grid-template-columns: 1fr 1fr 24px;
+  gap: 3px;
+  align-items: center;
+  background: var(--c-bg3);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+  padding: 3px 5px;
+  font-size: 12px;
+}
+.fld-label-input {
+  font-size: 11px; color: var(--c-text2); font-style: italic;
+}
+.fld-label-input:focus { color: var(--c-text); font-style: normal; }
+
+/* -- Searchable select -- */
+.searchable-select {
+  position: relative; max-width: 320px; width: 100%; box-sizing: border-box;
+}
+.searchable-select__display {
+  width: 100%; box-sizing: border-box; cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23888'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 8px center;
+  padding-right: 24px;
+}
+.searchable-select__dropdown {
+  display: none; position: absolute; z-index: 200; top: 100%; left: 0; right: 0;
+  background: var(--c-bg2, #fff); border: 1px solid var(--c-accent, #4a90e2);
+  border-radius: var(--radius, 4px); box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  max-height: 220px; overflow: hidden; display: none; flex-direction: column;
+}
+.searchable-select__dropdown.open { display: flex; }
+.searchable-select__search {
+  padding: 5px 8px; border: none; border-bottom: 1px solid var(--c-border, #ddd);
+  font-size: 12px; background: var(--c-bg2, #fff); color: var(--c-text, #111);
+  outline: none; width: 100%; box-sizing: border-box;
+}
+.searchable-select__list {
+  overflow-y: auto; flex: 1;
+}
+.searchable-select__option {
+  padding: 5px 10px; cursor: pointer; font-size: 12px; color: var(--c-text, #111);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.searchable-select__option:hover,
+.searchable-select__option[aria-selected="true"] { background: rgba(79,142,247,0.12); }
+.searchable-select__group-label {
+  padding: 3px 8px 1px; font-size: 10px; color: var(--c-text2, #888);
+  text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600;
+  border-top: 1px solid var(--c-border, #ddd); margin-top: 2px;
+}
+.searchable-select__group-label:first-child { border-top: none; margin-top: 0; }
+
+/* -- Actions -- */
+.form-actions { display: flex; gap: 8px; margin-top: 12px; }
+.btn--danger { background: var(--c-red); color: #fff; border-color: var(--c-red); }
+.btn--danger:hover { background: #dc2626; border-color: #dc2626; }
+.btn--outline { background: transparent; color: var(--c-text); border: 1px solid var(--c-border); }
+.btn--outline:hover { border-color: var(--c-accent); color: var(--c-accent); }
+.btn--icon {
+  padding: 1px 5px; font-size: 12px; line-height: 1; flex-shrink: 0;
+  background: transparent; border: 1px solid var(--c-border); color: var(--c-text2);
+}
+.btn--icon:hover { border-color: var(--c-red); color: var(--c-red); }
+.success-banner { background: rgba(34,197,94,0.12); border: 1px solid rgba(34,197,94,0.25); color: var(--c-green); padding: 8px 12px; border-radius: var(--radius); margin-bottom: 10px; font-size: 12px; }
+"""
+
+
+def _ft():
+    from fasthtml.common import (
+        A, B, Button, Div, Form, H2, H3, H4, Input, Label, Li,
+        Option, P, Script, Select, Span, Strong, Style,
+        Table, Tbody, Td, Th, Thead, Tr, Ul,
+    )
+    return locals()
+
+
+def _flash(msg: str, kind: str = "success") -> object:
+    ft = _ft()
+    cls = "success-banner" if kind == "success" else "error-banner"
+    return ft["Div"](msg, cls=cls)
+
+
+def _templates_list(templates: list[dict], active_id: str | None = None) -> object:
+    ft = _ft()
+    Div, H3, Ul, Li, A, Button, P, Span, Strong, Form, Input = (
+        ft["Div"], ft["H3"], ft["Ul"], ft["Li"], ft["A"], ft["Button"],
+        ft["P"], ft["Span"], ft["Strong"], ft["Form"], ft["Input"],
+    )
+    items = []
+    for tpl in templates:
+        tid = tpl["id"]
+        is_active = tid == active_id
+        items.append(Li(
+            A(
+                Div(
+                    Strong(tpl["name"]),
+                    Div(tpl.get("format", ""), cls="text-muted"),
+                    cls="template-item-text",
+                ),
+                href=f"/settings/labels/{tid}",
+                cls=f"template-list-item{'  template-list-item--active' if is_active else ''}",
+            ),
+            Button(
+                "x",
+                hx_delete=f"/settings/labels/{tid}",
+                hx_target="#label-settings-root",
+                hx_swap="outerHTML",
+                hx_confirm=t("labels.delete_template_confirm", name=tpl['name']),
+                cls="btn btn--sm btn--icon btn--danger",
+                title=t("btn.delete"),
+            ),
+            cls="template-list-entry",
+        ))
+    return Div(
+        H3(t("page.templates"), cls="section-title"),
+        Ul(*items, cls="template-list") if items else P(t("label.no_templates_yet"), cls="text-muted"),
+        Form(
+            Input(name="name", placeholder=t("labels.new_template_name"), required=True, cls="form-input form-input--sm"),
+            Button(t("btn._add"), type="submit", cls="btn btn--sm btn--primary"),
+            hx_post="/settings/labels",
+            hx_target="#label-settings-root",
+            hx_swap="outerHTML",
+            cls="template-create-form",
+        ),
+        id="template-list-panel",
+        cls="settings-card",
+    )
+
+
+def _build_field_options_js(
+    selected_key: str,
+    global_extra: list[tuple[str, str]] | None,
+    category_attrs: list[tuple[str, str]] | None,
+) -> str:
+    """Return a JS array literal of option-group objects for the searchable select."""
+    import json
+
+    groups = []
+    # Built-in fields (no group label)
+    builtin_opts = [{"k": k, "v": v} for k, v, _t in _COMMON_FIELDS]
+    groups.append({"label": None, "options": builtin_opts})
+    # Global item-schema attributes (custom fields added by company)
+    if global_extra:
+        groups.append({
+            "label": "Attributes",
+            "options": [{"k": k, "v": v} for k, v in global_extra],
+        })
+    # Category attributes
+    if category_attrs:
+        groups.append({
+            "label": "Category Attributes",
+            "options": [{"k": k, "v": v} for k, v in category_attrs],
+        })
+    return json.dumps(groups)
+
+
+def _field_row_compact(
+    idx: int,
+    field: dict,
+    global_extra: list[tuple[str, str]] | None = None,
+    category_attrs: list[tuple[str, str]] | None = None,
+) -> object:
+    """Compact field row: searchable field select + delete button.
+
+    The field key determines the render type (barcode/qr/text) via _FIELD_TYPE_MAP.
+    """
+    ft = _ft()
+    B, Button, Div, Input, Label = ft["B"], ft["Button"], ft["Div"], ft["Input"], ft["Label"]
+
+    key = field.get("key", "")
+    # Show the leaf of a "Category > Field" path so the editor matches what prints.
+    label_val = _svc_display_label(field.get("label", "") or key)
+    ftype = field.get("type", "text")
+    is_text = ftype in ("text", "barcode_text")
+
+    # Build option groups as JSON for the searchable-select component
+    options_js = _build_field_options_js(key, global_extra, category_attrs)
+
+    return Div(
+        Div(
+            Input(type="text", readonly=True, cls="form-input form-input--sm searchable-select__display",
+                  placeholder="-- select --"),
+            Div(
+                Input(type="text", cls="searchable-select__search", placeholder="Search fields..."),
+                Div(cls="searchable-select__list"),
+                cls="searchable-select__dropdown",
+            ),
+            Input(type="hidden", name=f"fields[{idx}][key]", value=key, cls="fld-key"),
+            id=f"ss-{idx}", cls="searchable-select",
+            data_name=f"fields[{idx}][key]", data_value=key, data_options=options_js,
+        ),
+        Input(type="text", name=f"fields[{idx}][label]", value=label_val,
+              cls="form-input form-input--sm fld-label fld-label-input",
+              placeholder="Display label", title="Label shown on preview",
+              oninput="this._userEdited=true; labelEditorUpdatePreview()"),
+        Button(t("btn.u00d7"),
+            type="button",
+            onclick="this.closest('.field-row-compact').remove(); labelEditorUpdatePreview()",
+            cls="btn btn--icon btn--danger",
+            title=t("labels.remove_field"),
+        ),
+        Input(type="hidden", name=f"fields[{idx}][type]", value=ftype, cls="fld-type"),
+        Input(type="hidden", name=f"fields[{idx}][x]", value=field.get("x", ""), cls="fld-x"),
+        Input(type="hidden", name=f"fields[{idx}][y]", value=field.get("y", ""), cls="fld-y"),
+        Input(type="number", name=f"fields[{idx}][fontSize]", value=field.get("fontSize", ""),
+              cls="form-input form-input--sm fld-fs",
+              min="4", max="72", placeholder="Font", title="Text size in points (4-72)",
+              style="width:60px;" if is_text else "display:none;width:60px;",
+              oninput="labelEditorUpdatePreview()"),
+        Input(type="number", name=f"fields[{idx}][barcode_height]", value=field.get("barcode_height", ""),
+              cls="form-input form-input--sm fld-bh",
+              min="1", max="30", placeholder="Bar H", title="Barcode bar height (1-30)",
+              style="width:60px;" if ftype == "barcode" else "display:none;width:60px;",
+              oninput="labelEditorUpdatePreview()"),
+        # Bold has always been stored on the field and honoured by the renderers;
+        # there was simply no way to set it. An unchecked box submits nothing,
+        # which is exactly what the parser expects.
+        Label(
+            Input(type="checkbox", name=f"fields[{idx}][bold]", value="true", cls="fld-bold",
+                  checked=bool(field.get("bold")), onchange="labelEditorUpdatePreview()"),
+            B("B"),
+            cls="fld-bold-wrap", title="Bold this field",
+            style=None if is_text else "display:none;",
+        ),
+        cls="field-row-compact",
+        data_idx=str(idx),
+    )
+
+
+def _editor_panel(
+    tpl: dict,
+    global_extra: list[tuple[str, str]] | None = None,
+    category_attrs: list[tuple[str, str]] | None = None,
+) -> object:
+    """Label template editor panel.
+
+    global_extra: additional (key, label) tuples from company item_schema.
+    category_attrs: (key, "Category > label") tuples from category-schemas.
+    """
+    ft = _ft()
+    Div, H3, H4, Form, Input, Label, Select, Option, Button, Script, Span, P = (
+        ft["Div"], ft["H3"], ft["H4"], ft["Form"], ft["Input"], ft["Label"],
+        ft["Select"], ft["Option"], ft["Button"], ft["Script"],
+        ft["Span"], ft["P"],
+    )
+
+    tid = tpl["id"]
+    raw_fields = tpl.get("fields") or []
+    field_dicts = [
+        {"key": f, "label": f, "type": "text"} if isinstance(f, str) else f
+        for f in raw_fields
+    ]
+    field_rows = [_field_row_compact(i, fd, global_extra, category_attrs) for i, fd in enumerate(field_dicts)]
+
+    cur_fmt = tpl.get("format", "40x30mm")
+    format_opts = [
+        Option(label, value=val, selected=(val == cur_fmt))
+        for val, label in _FORMAT_OPTIONS
+    ]
+
+    custom_display = "block" if cur_fmt == "custom" else "none"
+    w_mm = tpl.get("width_mm") or ""
+    h_mm = tpl.get("height_mm") or ""
+
+    # Build unified field options for JS (key, label, render type) - used by add-field button
+    extra = (global_extra or []) + (category_attrs or [])
+    all_fields = [{"k": k, "v": v, "t": rtype} for k, v, rtype in _COMMON_FIELDS]
+    all_fields += [{"k": k, "v": v, "t": "text"} for k, v in extra]
+
+    # Option groups for add-field searchable-select
+    add_field_groups: list[dict] = [
+        {"label": None, "options": [{"k": k, "v": v} for k, v, _ in _COMMON_FIELDS]},
+    ]
+    if global_extra:
+        add_field_groups.append({"label": "Attributes", "options": [{"k": k, "v": v} for k, v in global_extra]})
+    if category_attrs:
+        add_field_groups.append({"label": "Category Attributes", "options": [{"k": k, "v": v} for k, v in category_attrs]})
+
+    # Type map: key -> render type (barcode/qr/text)
+    type_map = {k: rtype for k, _v, rtype in _COMMON_FIELDS}
+    format_sizes = {name: list(mm) for name, mm in _FORMAT_MM.items()}
+
+    init_js = Script(js(_EDITOR_JS, dict(_SAMPLE_DATA), all_fields, type_map, format_sizes, add_field_groups,
+                       FIELD_DEFAULT_PT, BARCODE_HEIGHT_DEFAULT))
 
     return Div(
         H3(t("labels.edit_name", name=tpl['name']), cls="section-title"),
@@ -982,11 +967,11 @@ def _label_settings_root(
     flash_kind: str = "success",
 ) -> object:
     ft = _ft()
-    Div, Script, NotStr = ft["Div"], ft["Script"], ft["NotStr"]
+    Div, Style = ft["Div"], ft["Style"]
     from ui.components.table import breadcrumbs
     crumbs = breadcrumbs([("Inventory", "/inventory"), ("\u2699\ufe0f Inventory Settings", "/settings/inventory"), ("Labels", None)])
     return Div(
-        NotStr(_LABELS_CSS),
+        Style(_LABELS_CSS, id="labels-css"),
         crumbs,
         _flash(flash, flash_kind) if flash else Div(),
         Div(
@@ -1583,19 +1568,14 @@ def setup_ui_routes(app) -> None:
     async def labels_template_options(request: Request):
         """Return <option> elements for label templates (HTMX fragment for bulk toolbar select)."""
         templates = await _fetch_templates(request)
-        from fasthtml.common import Option, NotStr
+        from fasthtml.common import Option
         if not templates:
-            return raw_html('<option value="" disabled selected>No templates - create one in Settings</option>')
-        opts = "".join(
-            f'<option value="{tpl["id"]}">{tpl["name"]}</option>'
-            for tpl in templates
-        )
+            return Option("No templates - create one in Settings", value="", disabled=True, selected=True)
         # Pre-select first template
-        first_id = templates[0]["id"]
-        first_name = templates[0]["name"]
-        return NotStr(f'<option value="{first_id}" selected>{first_name}</option>' +
-                      "".join(f'<option value="{tpl["id"]}">{tpl["name"]}</option>'
-                               for tpl in templates[1:]))
+        return tuple(
+            Option(tpl["name"], value=tpl["id"], selected=(i == 0))
+            for i, tpl in enumerate(templates)
+        )
 
     @app.post("/labels/print-bulk")
     async def labels_print_bulk(request: Request):

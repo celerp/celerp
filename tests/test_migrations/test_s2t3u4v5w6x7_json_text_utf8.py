@@ -265,7 +265,6 @@ _ASCII_DUMPS = {
     ("celerp/services/peer_payments.py", "apply_source_payments"): _DIGEST,
     ("celerp/services/staged_downloads.py", "stage"): _FILE,
     ("celerp/services/update.py", "write_state"): _FILE,
-    ("default_modules/celerp-ai/celerp_ai/ui_routes.py", "_chat_script"): _PAGE,
     ("default_modules/celerp-ai/celerp_ai/ui_routes.py", "_empty_state"): _PAGE,
     ("default_modules/celerp-ai/celerp_ai/ui_routes.py", "_job_button"): _PAGE,
     ("default_modules/celerp-ai/celerp_ai/ui_routes.py", "_resend"): _PAGE,
@@ -297,7 +296,6 @@ _ASCII_DUMPS = {
     ("default_modules/celerp-inventory/celerp_inventory/services.py", "import_preview_hash"): _DIGEST,
     ("default_modules/celerp-inventory/celerp_inventory/services.py", "write_import_batch"): _DIGEST,
     ("default_modules/celerp-labels/celerp_labels/ui_routes.py", "_build_field_options_js"): _PAGE,
-    ("default_modules/celerp-labels/celerp_labels/ui_routes.py", "_editor_panel"): _PAGE,
     ("default_modules/celerp-manufacturing/celerp_manufacturing/movements.py", "_fingerprint"): _DIGEST,
 }
 

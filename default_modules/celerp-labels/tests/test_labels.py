@@ -1118,7 +1118,8 @@ def test_new_field_seeds_default_font_size():
     from fasthtml.common import to_xml
     from celerp_labels.ui_routes import _editor_panel, FIELD_DEFAULT_PT
     html = to_xml(_editor_panel({"id": "t1", "name": "T", "fields": []}))
-    assert f'[fontSize]" value="{FIELD_DEFAULT_PT}" class="form-input form-input--sm fld-fs"' in html
+    assert f"var FIELD_DEFAULT_PT = {FIELD_DEFAULT_PT};" in html
+    assert """[fontSize]" value="' + FIELD_DEFAULT_PT + '" class="form-input form-input--sm fld-fs\"""" in html
 
 
 def test_new_field_seeds_default_barcode_height():
@@ -1128,7 +1129,8 @@ def test_new_field_seeds_default_barcode_height():
     from celerp_labels.ui_routes import _editor_panel
     from celerp_labels.service import BARCODE_HEIGHT_DEFAULT
     html = to_xml(_editor_panel({"id": "t1", "name": "T", "fields": []}))
-    assert f'[barcode_height]" value="{BARCODE_HEIGHT_DEFAULT}" class="form-input form-input--sm fld-bh"' in html
+    assert f"var BARCODE_HEIGHT_DEFAULT = {BARCODE_HEIGHT_DEFAULT};" in html
+    assert """[barcode_height]" value="' + BARCODE_HEIGHT_DEFAULT + '" class="form-input form-input--sm fld-bh\"""" in html
 
 
 def test_measurements_in_field_picker():
