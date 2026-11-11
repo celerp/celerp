@@ -30,7 +30,7 @@ from decimal import Decimal
 
 from celerp.services.money import books_currency
 from celerp_fixed_assets import disposal, notices, projections, runs, setup
-from celerp_fixed_assets.calc.periods import month_index, parse_period, period_label
+from celerp.services.periods import month_index, parse_period, period_label
 from celerp_fixed_assets.projections import money, said
 from celerp_fixed_assets.operations import (
     _continued,

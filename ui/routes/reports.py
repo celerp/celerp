@@ -18,6 +18,7 @@ from ui.components.table import EMPTY, empty_state_cta, fmt_money
 from ui.config import PAYMENT_TERMS_URL, get_token as _token, get_role as _get_role
 from ui.i18n import t, get_lang, category_label
 from celerp.services.business_time import business_today
+from celerp.services.periods import fiscal_year_bounds, fiscal_year_start_month
 from celerp.services.permissions import role_has_permission
 from ui.components.encode import safe_url
 
@@ -227,22 +228,10 @@ def _date_presets(lang: str | None = None) -> list[tuple[str, str]]:
     ]
 
 
-def _fy_start(fiscal_year_start: str, reference: date) -> date:
-    try:
-        month, day = int(fiscal_year_start[:2]), int(fiscal_year_start[3:5])
-    except (ValueError, IndexError):
-        month, day = 1, 1
-    candidate = reference.replace(month=month, day=day)
-    if candidate > reference:
-        candidate = candidate.replace(year=candidate.year - 1)
-    return candidate
-
-
 def _resolve_preset(preset: str, company: dict) -> tuple[str, str]:
     """The (from, to) window a date preset names, ending on the company's today and
     counting fiscal years from its fiscal year start."""
     today = business_today(company.get("timezone"))
-    fiscal_year_start = company.get("fiscal_year_start") or "01-01"
     if preset == "this_month":
         return (today.replace(day=1).isoformat(), today.isoformat())
     if preset == "last_3m":
@@ -251,14 +240,18 @@ def _resolve_preset(preset: str, company: dict) -> tuple[str, str]:
         return ((today - timedelta(days=180)).isoformat(), today.isoformat())
     if preset == "last_12m":
         return ((today - timedelta(days=365)).isoformat(), today.isoformat())
-    if preset == "this_fy":
-        fy_start = _fy_start(fiscal_year_start, today)
-        return (fy_start.isoformat(), today.isoformat())
-    if preset == "last_fy":
-        this_start = _fy_start(fiscal_year_start, today)
-        last_start = _fy_start(fiscal_year_start, this_start - timedelta(days=1))
+    if preset in ("this_fy", "last_fy"):
+        # A malformed start reads as January here: the window shows in the filter's from and
+        # to fields and changes nothing, where a year close refuses the same value.
+        try:
+            start_month = fiscal_year_start_month(company.get("fiscal_year_start"))
+        except ValueError:
+            start_month = 1
+        this_start = fiscal_year_bounds(today, start_month)[0]
+        if preset == "this_fy":
+            return (this_start.isoformat(), today.isoformat())
         last_end = this_start - timedelta(days=1)
-        return (last_start.isoformat(), last_end.isoformat())
+        return (fiscal_year_bounds(last_end, start_month)[0].isoformat(), last_end.isoformat())
     return ("", "")
 
 

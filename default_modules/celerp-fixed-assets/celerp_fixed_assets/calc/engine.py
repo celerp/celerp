@@ -26,7 +26,7 @@ from decimal import Decimal, localcontext
 
 from celerp.services.money import round_money
 from celerp_fixed_assets.calc.methods import MethodInputs
-from celerp_fixed_assets.calc.periods import (
+from celerp.services.periods import (
     fiscal_year_start_index,
     month_index,
     parse_period,

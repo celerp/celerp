@@ -8,7 +8,7 @@ import hashlib
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, File, Form as FastForm, HTTPException, Query, Request, UploadFile
@@ -27,6 +27,7 @@ from celerp.importers.results import failure_reason
 from celerp.importers.tabular import TabularError, _rows_to_csv, read_table, read_upload_bytes
 from celerp.services.currencies import CURRENCY_CODES
 from celerp.services.ledger_sources import SOURCE_KEYS, record_entry_ids, source_meta
+from celerp.services.periods import fiscal_year_bounds, fiscal_year_start_month
 from celerp_accounting import import_service
 from celerp_accounting.account_tree import account_tree_lines
 from celerp_accounting.chart_rules import (
@@ -5343,6 +5344,26 @@ async def close_fiscal_year(
             f"{year_end} is not a date. Enter the last day of the year to close as YYYY-MM-DD.",
             value=year_end)) from None
     company = await locked_company(session, company_id)
+    stored_start = (company.settings or {}).get("fiscal_year_start")
+    try:
+        start_month = fiscal_year_start_month(stored_start)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=refusal(
+            "accounting.fiscal_year_start_invalid",
+            f"This company's fiscal year start {stored_start} is not the first day of a month. "
+            "Set Fiscal year start in Company Details, then close the year.",
+            value=str(stored_start))) from None
+    first, end = fiscal_year_bounds(date.fromisoformat(year_end), start_month)
+    if end.isoformat() != year_end:
+        # The last fiscal year end on or before the entered date, so following it never
+        # closes the open year.
+        suggested = (first - timedelta(days=1)).isoformat()
+        raise HTTPException(status_code=422, detail=refusal(
+            "accounting.year_end_not_fiscal",
+            f"{year_end} is not the last day of a fiscal year. With this company's fiscal year "
+            f"start, the last year end on or before that date is {suggested}. To close that year, "
+            f"enter {suggested}, or change Fiscal year start in Company Details.",
+            value=year_end, year_end=suggested))
     # Build account balances through the year-end date
     posted = await journal_rows(session, company_id)
     balances = _build_balances(posted, None, year_end)

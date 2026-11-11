@@ -7,7 +7,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
-from celerp_fixed_assets.calc.periods import days_in_month, month_index, months_to_fiscal_year_end
+from celerp.services.periods import days_in_month, month_index, months_to_fiscal_year_end
 
 _ONE = Decimal(1)
 _HALF = Decimal("0.5")

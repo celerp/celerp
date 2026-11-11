@@ -6253,6 +6253,8 @@
   "notice.imported_doc_cutover.locked": "These purchase orders and bills imported before this update sit in a locked period and could not be corrected yet: {numbers}. Move the period lock in Settings > Accounting so an open date exists; the correction runs again at the next start.",
   "notice.imported_doc_cutover.failed": "These purchase orders and bills imported before this update could not be corrected: {numbers}. Open each one and check its lines and payments; the correction runs again at the next start.",
   "accounting.year_end_invalid": "{value} is not a date. Enter the last day of the year to close as YYYY-MM-DD.",
+  "accounting.year_end_not_fiscal": "{value} is not the last day of a fiscal year. With this company's fiscal year start, the last year end on or before that date is {year_end}. To close that year, enter {year_end}, or change Fiscal year start in Company Details.",
+  "accounting.fiscal_year_start_invalid": "This company's fiscal year start {value} is not the first day of a month. Set Fiscal year start in Company Details, then close the year.",
   "accounting.bank_not_found": "That bank account was not found in this company. Choose one of the company's bank accounts.",
   "accounting.statement_attachment_refused": "This file cannot be attached. Attach a PDF, image, video, Word or text file of at most 50 MB.",
   "accounting.statement_attachment_not_found": "This statement line has no such attachment. Select Try again to see the attachments it holds, then remove one of those.",

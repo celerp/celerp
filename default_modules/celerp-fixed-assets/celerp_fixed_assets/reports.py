@@ -19,7 +19,7 @@ from decimal import Decimal
 
 from celerp.services.money import books_currency
 from celerp_fixed_assets import projections, recon, runs, setup, taxbooks
-from celerp_fixed_assets.calc.periods import month_index, period_label
+from celerp.services.periods import month_index, period_label
 from celerp_fixed_assets.projections import money
 from celerp_fixed_assets.operations import _dec
 from celerp_fixed_assets.sales import _credited, doc_number

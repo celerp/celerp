@@ -26,7 +26,6 @@ from ui.routes.settings import (
     _TIMEZONES,
     _TZ_SEARCH,
     _FISCAL_MONTHS,
-    _FISCAL_VALUES,
     _tz_offset_str,
     _company_display_cell,
     _user_display_cell,

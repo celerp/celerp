@@ -20,6 +20,7 @@ from ui.components.shell import base_shell, page_header, flash, toast_header, pa
 from ui.components.table import EMPTY, editable_cell, searchable_select, unwrap_address
 from celerp.tax_regimes import country_name, tax_country
 from celerp.services.currencies import KNOWN_CURRENCY_CODES
+from celerp.services.periods import FISCAL_YEAR_STARTS
 from celerp.services.units import plain_number
 from celerp.services.field_schema import SYSTEM_ITEM_KEYS
 from ui.components.currency import currency_combobox_td, currency_label
@@ -199,20 +200,10 @@ _TZ_SEARCH: dict[str, str] = {tz: f"{tz} {_tz_offset_str(tz)}" for tz in _TIMEZO
 
 # (raw fiscal-year-start value -> translation key); labels resolved at render (R1)
 _FISCAL_MONTHS: list[tuple[str, str]] = [
-    ("01-01", "settings.fiscal_month_jan"),
-    ("02-01", "settings.fiscal_month_feb"),
-    ("03-01", "settings.fiscal_month_mar"),
-    ("04-01", "settings.fiscal_month_apr"),
-    ("05-01", "settings.fiscal_month_may"),
-    ("06-01", "settings.fiscal_month_jun"),
-    ("07-01", "settings.fiscal_month_jul"),
-    ("08-01", "settings.fiscal_month_aug"),
-    ("09-01", "settings.fiscal_month_sep"),
-    ("10-01", "settings.fiscal_month_oct"),
-    ("11-01", "settings.fiscal_month_nov"),
-    ("12-01", "settings.fiscal_month_dec"),
+    (v, f"settings.fiscal_month_{m}")
+    for v, m in zip(FISCAL_YEAR_STARTS, ("jan", "feb", "mar", "apr", "may", "jun",
+                                         "jul", "aug", "sep", "oct", "nov", "dec"))
 ]
-_FISCAL_VALUES: frozenset[str] = frozenset(v for v, _ in _FISCAL_MONTHS)
 
 # Fields that use constrained selects/comboboxes instead of free-text input
 _COMPANY_SELECT_FIELDS = frozenset({"currency", "timezone", "fiscal_year_start"})
@@ -1050,7 +1041,7 @@ def setup_routes(app):
         # A withdrawn currency the books are already kept in may be saved unchanged; the API refuses moving to one.
         if field == "currency" and value not in KNOWN_CURRENCY_CODES:
             return P(t("error.invalid_currency", value=repr(value)), cls="cell-error")
-        if field == "fiscal_year_start" and value not in _FISCAL_VALUES:
+        if field == "fiscal_year_start" and value not in FISCAL_YEAR_STARTS:
             return P(t("error.invalid_fiscal_year", value=repr(value)), cls="cell-error")
         if field == "timezone":
             try:

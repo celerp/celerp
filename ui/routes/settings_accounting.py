@@ -132,7 +132,7 @@ def _bank_accounts_tab(banks: list[dict]) -> FT:
     )
 
 
-def _period_lock_tab(lock_data: dict) -> FT:
+def _period_lock_tab(lock_data: dict, close_value: str = "") -> FT:
     lock_date = lock_data.get("lock_date") or ""
     set_at = lock_data.get("lock_date_set_at") or ""
     firm_lock = lock_data.get("firm_lock")
@@ -183,7 +183,7 @@ def _period_lock_tab(lock_data: dict) -> FT:
         Form(
             Div(
                 Label(t("label.fiscal_year_end_date")),
-                Input(type="date", name="fiscal_year_end",
+                Input(type="date", name="fiscal_year_end", value=close_value,
                       cls="form-input max-w-md"),
                 cls="form-field",
             ),
@@ -199,6 +199,18 @@ def _period_lock_tab(lock_data: dict) -> FT:
         id="period-lock-content",
         cls="settings-card",
     )
+
+
+async def _period_lock_refused(token: str, message: str, close_value: str = "") -> FT:
+    """A refused lock or close: the banner above the period lock tab, so both forms stay
+    and the close form keeps the date entered. The lock is read as the tab's own render
+    reads it; a failed read leaves the lock form empty rather than losing the forms."""
+    try:
+        lock_data = await api.get_period_lock(token)
+    except Exception:
+        lock_data = {}
+    return Div(P(message, cls="error-banner mb-md"), _period_lock_tab(lock_data, close_value),
+               id="period-lock-content")
 
 
 def _rules_tab(rules: list[dict], banks: list[dict]) -> FT:
@@ -1206,7 +1218,7 @@ def setup_routes(app):
         try:
             result = await api.set_period_lock(token, lock_date)
         except APIError as e:
-            return Div(P(str(e.detail), cls="error-banner"), id="period-lock-content")
+            return await _period_lock_refused(token, str(e.detail))
         return _period_lock_tab(result)
 
     @app.post("/settings/accounting/close-year")
@@ -1217,11 +1229,11 @@ def setup_routes(app):
         form = await request.form()
         fiscal_year_end = (form.get("fiscal_year_end") or "").strip()
         if not fiscal_year_end:
-            return Div(P(t("acct.fiscal_year_end_date_is_required"), cls="error-banner"), id="period-lock-content")
+            return await _period_lock_refused(token, t("acct.fiscal_year_end_date_is_required"))
         try:
             result = await api.close_fiscal_year(token, fiscal_year_end)
         except APIError as e:
-            return Div(P(str(e.detail), cls="error-banner"), id="period-lock-content")
+            return await _period_lock_refused(token, str(e.detail), fiscal_year_end)
         lock_data = {"lock_date": result.get("lock_date")}
         content = _period_lock_tab(lock_data)
         # Prepend success message

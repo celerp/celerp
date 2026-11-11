@@ -6166,6 +6166,8 @@
   "notice.imported_doc_cutover.locked": "Questi ordini di acquisto e fatture importati prima di questo aggiornamento si trovano in un periodo bloccato e non è stato ancora possibile correggerli: {numbers}. Sposta il blocco del periodo in Impostazioni > Contabilità in modo che esista una data aperta; la correzione viene eseguita di nuovo al prossimo avvio.",
   "notice.imported_doc_cutover.failed": "Non è stato possibile correggere questi ordini di acquisto e fatture importati prima di questo aggiornamento: {numbers}. Apri ciascuno e controlla le righe e i pagamenti; la correzione viene eseguita di nuovo al prossimo avvio.",
   "accounting.year_end_invalid": "{value} non è una data. Inserisci l'ultimo giorno dell'anno da chiudere nel formato AAAA-MM-GG.",
+  "accounting.year_end_not_fiscal": "{value} non è l'ultimo giorno di un anno fiscale. Con l'inizio dell'anno fiscale di questa azienda, l'ultima chiusura d'anno in quella data o prima è il {year_end}. Per chiudere quell'anno inserisci {year_end}, oppure cambia Inizio anno fiscale in Dettagli aziendali.",
+  "accounting.fiscal_year_start_invalid": "L'inizio dell'anno fiscale di questa azienda, {value}, non è il primo giorno di un mese. Imposta Inizio anno fiscale in Dettagli aziendali, poi chiudi l'anno.",
   "accounting.bank_not_found": "Quel conto bancario non è stato trovato in questa azienda. Scegli uno dei conti bancari dell'azienda.",
   "accounting.statement_attachment_refused": "Questo file non può essere allegato. Allega un file PDF, immagine, video, Word o di testo di al massimo 50 MB.",
   "accounting.statement_attachment_not_found": "Questa riga dell'estratto non ha questo allegato. Seleziona Riprova per vedere gli allegati, poi rimuovine uno.",

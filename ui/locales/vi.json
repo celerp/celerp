@@ -6166,6 +6166,8 @@
   "notice.imported_doc_cutover.locked": "Các đơn đặt hàng và hóa đơn này được nhập trước bản cập nhật này nằm trong kỳ đã khóa và chưa thể sửa: {numbers}. Hãy dời khóa kỳ trong Cài đặt > Kế toán để có một ngày còn mở; việc sửa sẽ chạy lại ở lần khởi động tiếp theo.",
   "notice.imported_doc_cutover.failed": "Không thể sửa các đơn đặt hàng và hóa đơn này được nhập trước bản cập nhật này: {numbers}. Hãy mở từng chứng từ và kiểm tra các dòng và khoản thanh toán; việc sửa sẽ chạy lại ở lần khởi động tiếp theo.",
   "accounting.year_end_invalid": "{value} không phải là ngày. Nhập ngày cuối cùng của năm cần khóa sổ theo định dạng YYYY-MM-DD.",
+  "accounting.year_end_not_fiscal": "{value} không phải là ngày cuối cùng của năm tài chính. Theo ngày bắt đầu năm tài chính của công ty này, ngày cuối năm gần nhất vào hoặc trước ngày đó là {year_end}. Để khóa sổ năm đó, hãy nhập {year_end}, hoặc thay đổi Bắt đầu năm tài chính trong Chi tiết công ty.",
+  "accounting.fiscal_year_start_invalid": "Ngày bắt đầu năm tài chính của công ty này, {value}, không phải là ngày đầu tiên của tháng. Hãy đặt Bắt đầu năm tài chính trong Chi tiết công ty, rồi khóa sổ năm.",
   "accounting.bank_not_found": "Không tìm thấy tài khoản ngân hàng đó trong công ty này. Chọn một trong các tài khoản ngân hàng của công ty.",
   "accounting.statement_attachment_refused": "Không thể đính kèm tệp này. Hãy đính kèm tệp PDF, hình ảnh, video, Word hoặc văn bản tối đa 50 MB.",
   "accounting.statement_attachment_not_found": "Dòng sao kê này không có tệp đính kèm đó. Hãy chọn Thử lại để xem các tệp đính kèm, rồi xóa một trong số đó.",
