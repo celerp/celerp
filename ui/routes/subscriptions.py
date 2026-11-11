@@ -621,7 +621,7 @@ _CHOSEN_ROWS_JS = """
   if(window.__celerpChosenRows)return;window.__celerpChosenRows=true;
   document.addEventListener('htmx:configRequest',function(e){
     var f=e.detail.elt.closest('form[data-chosen-rows]');if(!f)return;
-    e.detail.parameters[f.getAttribute('data-chosen-rows')]=JSON.stringify(Array.prototype.map.call(
+    e.detail.parameters.item=JSON.stringify(Array.prototype.map.call(
       f.querySelectorAll('.bulk-select:checked'),function(box){return box.value;}));});
 })();
 """
@@ -629,7 +629,7 @@ _CHOSEN_ROWS_JS = """
 
 def _bulk_form(*children, **attrs) -> FT:
     """A form over a bulk table: its ticked rows post as the one ``item`` field."""
-    return Form(*children, Script(_CHOSEN_ROWS_JS), data_chosen_rows="item", **attrs)
+    return Form(*children, Script(_CHOSEN_ROWS_JS), data_chosen_rows=True, **attrs)
 
 
 def _row_box(value: str, checked: bool = True) -> FT:

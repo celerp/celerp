@@ -76,7 +76,7 @@ if(!window.celerpFilesFetch){
         cur.replaceWith(celerpFragment(body));
         var ns=document.getElementById('files-section-'+sid);
         if(ns&&window.htmx) htmx.process(ns);
-        if(window._celerpDZ&&window._celerpDZ[sid]) window._celerpDZ[sid]();
+        if(window._celerpDZ&&window._celerpDZ.has(sid)) window._celerpDZ.get(sid)();
       });});
   };
   document.addEventListener('htmx:responseError',function(e){
@@ -548,7 +548,7 @@ def files_section(
     # swaps we call it directly after setting outerHTML).
     drop_js = js("""
 (function(){{
-  if(!window._celerpDZ) window._celerpDZ={{}};
+  if(!window._celerpDZ) window._celerpDZ=new Map();
   function initDropZone(){{
     var zone=document.getElementById('file-drop-zone-' + {0});
     var inp=document.getElementById('file-drop-input-' + {0});
@@ -579,7 +579,7 @@ def files_section(
       if(e.dataTransfer.files.length) upload(e.dataTransfer.files[0]);
     }});
   }}
-  window._celerpDZ[{1}]=initDropZone;
+  window._celerpDZ.set({1},initDropZone);
   initDropZone();
   document.addEventListener('htmx:afterSettle',function(e){{
     if(e.detail&&e.detail.target&&e.detail.target.id==='files-section-' + {0}) initDropZone();

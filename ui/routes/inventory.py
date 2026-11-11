@@ -6178,7 +6178,7 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
   menu.addEventListener('change', function(e) {{
     if (e.target.type !== 'checkbox') return;
     var key = e.target.value;
-    var prefs = loadVis() || {{}};
+    var prefs = Object.assign({{}}, loadVis());
     // Init prefs from current state if empty
     if (!Object.keys(prefs).length) {{
       ALL_COLS.forEach(function(c) {{ prefs[c.key] = {5}.indexOf(c.key) !== -1; }});

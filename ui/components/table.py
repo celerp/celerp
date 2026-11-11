@@ -390,7 +390,7 @@ COLUMN_FILTER_JS = """
 (function(){
   if(window.__celerpColFilter)return;window.__celerpColFilter=true;""" + _FILTER_POP_JS + """
   var state=new WeakMap();
-  function active(t){if(!state.has(t))state.set(t,{});return state.get(t);}
+  function active(t){if(!state.has(t))state.set(t,new Map());return state.get(t);}
   function rows(t){return Array.prototype.slice.call(t.querySelectorAll('tbody tr.data-row'));}
   function cellText(r,col){var c=r.children[col];if(!c)return '';var dv=c.getAttribute('data-filter-value');return (dv!==null?dv:c.textContent).trim();}
   function distinct(t,col){var out=[],seen={};rows(t).forEach(function(r){var v=cellText(r,col);if(!(v in seen)){seen[v]=1;out.push(v);}});out.sort();return out;}
@@ -398,8 +398,7 @@ COLUMN_FILTER_JS = """
     var a=active(t);
     rows(t).forEach(function(r){
       var show=true;
-      for(var key in a){
-        var s=a[key];
+      for(var [key,s] of a){
         if(key.indexOf('_range_')===0){
           // Date-range filter: cell must be an ISO date within [from, to].
           var rc=+key.slice(7), cv=cellText(r,rc), ok=/^\\d{4}-\\d{2}-\\d{2}/.test(cv);
@@ -414,7 +413,7 @@ COLUMN_FILTER_JS = """
       r.classList.toggle('dp-row-hidden',!show);
       if(!show){var cb=r.querySelector('.bulk-select');if(cb&&cb.checked)cb.checked=false;}
     });
-    t.querySelectorAll('thead .colfilter').forEach(function(b){b.classList.toggle('colfilter--active',!!a[b.getAttribute('data-col')]);});
+    t.querySelectorAll('thead .colfilter').forEach(function(b){b.classList.toggle('colfilter--active',a.has(b.getAttribute('data-col')));});
     if(window.celerpBulkRefresh)window.celerpBulkRefresh();
     if(window.celerpTableEnhance)window.celerpTableEnhance(t);
   }
@@ -422,10 +421,10 @@ COLUMN_FILTER_JS = """
   function seedDefaults(t){
     var a=active(t);
     t.querySelectorAll('thead .colfilter[data-filter-exclude]').forEach(function(b){
-      var col=b.getAttribute('data-col'); if(col in a) return;
+      var col=b.getAttribute('data-col'); if(a.has(col)) return;
       var ex=b.getAttribute('data-filter-exclude').split('\\u241f');
       var keep=distinct(t,+col).filter(function(v){return ex.indexOf(v)<0;});
-      a[col]=new Set(keep);
+      a.set(col,new Set(keep));
     });
   }
   function refresh(t){ if(t){seedDefaults(t);apply(t);} }
@@ -450,7 +449,7 @@ COLUMN_FILTER_JS = """
     var list=document.createElement('div');list.className='colfilter-list';
     function commit(){
       var checked=[];list.querySelectorAll('input[type=checkbox]').forEach(function(c){if(c.checked)checked.push(c.value);});
-      if(checked.length===values.length){delete a[col];}else{a[col]=new Set(checked);}
+      if(checked.length===values.length){a.delete(col);}else{a.set(col,new Set(checked));}
       selAllCb.checked=(checked.length===values.length);
       selAllCb.indeterminate=(checked.length>0&&checked.length<values.length);
       apply(t);
@@ -458,18 +457,18 @@ COLUMN_FILTER_JS = """
     values.forEach(function(v){
       var lbl=document.createElement('label');lbl.className='colfilter-item';
       var cb=document.createElement('input');cb.type='checkbox';cb.value=v;
-      cb.checked=!a[col]||a[col].has(v);
+      cb.checked=!a.has(col)||a.get(col).has(v);
       cb.addEventListener('change',commit);
       lbl.appendChild(cb);lbl.appendChild(document.createTextNode(' '+(v||i18nBlank)));
       list.appendChild(lbl);
     });
-    selAllCb.checked=!a[col];selAllCb.indeterminate=!!a[col];
+    selAllCb.checked=!a.has(col);selAllCb.indeterminate=a.has(col);
     selAllCb.addEventListener('change',function(){
       list.querySelectorAll('input[type=checkbox]').forEach(function(c){c.checked=selAllCb.checked;});commit();});
     search.addEventListener('input',function(){var q=search.value.toLowerCase();
       list.querySelectorAll('.colfilter-item').forEach(function(it){it.style.display=it.textContent.toLowerCase().indexOf(q)>=0?'':'none';});});
     var clear=document.createElement('button');clear.type='button';clear.className='colfilter-clear';clear.textContent=i18nClearFilter;
-    clear.addEventListener('click',function(){delete a[col];closeAll();apply(t);});
+    clear.addEventListener('click',function(){a.delete(col);closeAll();apply(t);});
     pop.appendChild(search);pop.appendChild(selAll);pop.appendChild(list);pop.appendChild(clear);
     openFilterPop(pop,btn);
     search.focus();
@@ -490,7 +489,7 @@ COLUMN_FILTER_JS = """
     if(!(inp.classList&&inp.classList.contains('js-table-search')))return;
     var t=document.getElementById(inp.getAttribute('data-search-for'));if(!t)return;
     var a=active(t),q=inp.value.trim().toLowerCase();
-    if(q)a['_search_']=q;else delete a['_search_'];
+    if(q)a.set('_search_',q);else a.delete('_search_');
     apply(t);
   });
   // Date-range inputs (date_range_filter): bound to a table column via .daterange wrapper.
@@ -502,7 +501,7 @@ COLUMN_FILTER_JS = """
     var col=wrap.getAttribute('data-daterange-col'),a=active(t);
     var from=(wrap.querySelector('[data-bound=from]')||{}).value||'';
     var to=(wrap.querySelector('[data-bound=to]')||{}).value||'';
-    if(from||to)a['_range_'+col]={from:from,to:to};else delete a['_range_'+col];
+    if(from||to)a.set('_range_'+col,{from:from,to:to});else a.delete('_range_'+col);
     apply(t);
   });
   document.addEventListener('htmx:afterSwap',function(e){
@@ -1775,9 +1774,9 @@ def data_table(
   // Re-apply after HTMX settles so rows added during the swap phase are also covered.
   // Guard with a global flag so repeated IIFE executions (after HTMX swaps) don't
   // accumulate duplicate listeners on document.body.
-  var _VIS_SETTLE_KEY = '__celerpVisSettle_' + {1};
-  if (!window[_VIS_SETTLE_KEY]) {{
-    window[_VIS_SETTLE_KEY] = true;
+  window.__celerpVisSettle = window.__celerpVisSettle || new Set();
+  if (!window.__celerpVisSettle.has({1})) {{
+    window.__celerpVisSettle.add({1});
     document.body.addEventListener('htmx:afterSettle', function(e) {{
       var tid = e.detail && e.detail.target ? e.detail.target.id || '' : '';
       // The whole content, or one row re-rendered in place (data_row draws every column).
@@ -2574,7 +2573,7 @@ def column_manager(schema: list[dict], entity_type: str, visible_cols: list[str]
   document.addEventListener('click',function(e){{if(!btn.contains(e.target)&&!menu.contains(e.target))menu.style.display='none';}});
   menu.addEventListener('change',function(e){{
     if(e.target.type!=='checkbox')return;
-    var k=e.target.value,p=loadVis()||{{}};
+    var k=e.target.value,p=Object.assign({{}},loadVis());
     if(!Object.keys(p).length)ALL.forEach(function(c){{p[c.key]=DEFAULTS.indexOf(c.key)!==-1;}});
     p[k]=e.target.checked;saveVis(p);applyVis(p);
     applyOrderToTable(pickerOrder());

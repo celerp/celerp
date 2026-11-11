@@ -479,10 +479,10 @@ def _local_panel(modules: list[dict], lang: str = "en",
                    for n, lbl, e in load_error_toasts]
         load_error_js = Script(js(
             "(function(){{if(!window.celerpToast)return;"
-            "window.__moduleLoadErrorsShown=window.__moduleLoadErrorsShown||{{}};"
+            "window.__moduleLoadErrorsShown=window.__moduleLoadErrorsShown||new Set();"
             "var errs={0};"
-            "errs.forEach(function(x){{if(window.__moduleLoadErrorsShown[x.key])return;"
-            "window.__moduleLoadErrorsShown[x.key]=1;celerpToast(x.msg,'error',true);}});"
+            "errs.forEach(function(x){{if(window.__moduleLoadErrorsShown.has(x.key))return;"
+            "window.__moduleLoadErrorsShown.add(x.key);celerpToast(x.msg,'error',true);}});"
             "}})();", payload))
     else:
         load_error_js = ""

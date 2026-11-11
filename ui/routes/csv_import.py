@@ -970,7 +970,7 @@ _INLINE_FIX_JS = """
     form.querySelectorAll('[data-row][data-col]').forEach(function(el) {
       fixes[el.dataset.row + '__' + el.dataset.col] = el.value;
     });
-    e.detail.parameters['fixes_json'] = JSON.stringify(fixes);
+    e.detail.parameters.fixes_json = JSON.stringify(fixes);
   });
 })();
 """

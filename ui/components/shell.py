@@ -2904,7 +2904,7 @@ _SIDEBAR_JS = """
       arrow.addEventListener('click', function(e) {
         e.stopPropagation();
         g.classList.toggle('sidebar-group--open');
-        var s = saved(); s[key] = g.classList.contains('sidebar-group--open'); persist(s);
+        var s = Object.assign({}, saved()); s[key] = g.classList.contains('sidebar-group--open'); persist(s);
       });
     }
   });
