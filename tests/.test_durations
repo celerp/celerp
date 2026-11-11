@@ -28783,5 +28783,15 @@
     "tests/test_woocommerce_held_number.py::test_import_as_refuses_an_order_not_waiting_on_a_held_number": 0.7616599909379147,
     "tests/test_woocommerce_held_number.py::test_marked_reconciled_the_order_is_never_retried[draft]": 1.0463467380031943,
     "tests/test_woocommerce_held_number.py::test_marked_reconciled_the_order_is_never_retried[renumbered]": 1.0966852839337662,
-    "tests/test_woocommerce_held_number.py::test_marked_reconciled_the_order_is_never_retried[void]": 0.8845494010602124
+    "tests/test_woocommerce_held_number.py::test_marked_reconciled_the_order_is_never_retried[void]": 0.8845494010602124,
+    "default_modules/celerp-connectors/tests/test_connectors.py::test_a_failed_manual_sync_answers_what_went_wrong[error0-400-Xero refused the contact list.]": 0.5146593709941953,
+    "default_modules/celerp-connectors/tests/test_connectors.py::test_a_failed_manual_sync_answers_what_went_wrong[error1-502-socket closed]": 0.1067789449589327,
+    "tests/test_connectors_proxy.py::test_import_next_route_refuses_without_importing[shopify-owner-unknown_connector]": 0.006688652967568487,
+    "tests/test_connectors_proxy.py::test_import_next_route_refuses_without_importing[woocommerce-viewer-redirect]": 0.007999340014066547,
+    "tests/test_woocommerce_held_number.py::test_an_imported_order_keeps_its_suffixed_number_when_it_changes": 1.3037999640218914,
+    "tests/test_woocommerce_held_number.py::test_import_as_after_mark_reconciled_still_imports": 0.8222793040331453,
+    "tests/test_woocommerce_held_number.py::test_import_as_answers_the_reason_an_order_still_waits": 0.6563878519809805,
+    "tests/test_woocommerce_held_number.py::test_import_as_refuses_an_order_it_cannot_name[61x-422]": 0.6095557649969123,
+    "tests/test_woocommerce_held_number.py::test_import_as_refuses_an_order_it_cannot_name[999-404]": 0.5463394719990902,
+    "tests/test_woocommerce_held_number.py::test_import_as_refuses_an_order_it_cannot_name[abc-422]": 0.6586958069819957
 }
