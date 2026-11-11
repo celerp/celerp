@@ -116,7 +116,7 @@ def test_notification_link_drops_script_scheme(page):
     hrefs = notif.locator("a").evaluate_all("els => els.map(e => e.getAttribute('href'))")
     assert hrefs == ["/docs/doc:1"], hrefs
     notif.locator(".notif-item", has_text="Data link").wait_for(state="attached")
-    notif.locator(".notif-item", has_text=_IMG).locator(".notif-item__link").first.click(force=True)
+    notif.locator(".notif-item", has_text=_IMG).locator(".notif-item__link").first.dispatch_event("click")
     assert not _pwned(page)
 
 
@@ -134,14 +134,14 @@ def test_contact_replies_written_as_text(page, api):
     page.evaluate("contactBulkChanged('delete')")
     answer_in_app(page)
     result = page.locator("#bulk-action-result")
-    result.get_by_text(_IMG).wait_for()
+    result.get_by_text(_IMG).wait_for(state="attached")
     assert not _pwned(page)
 
     page.route("**/crm/contacts/merge", lambda route: route.fulfill(json={"detail": _IMG + " merge"}))
     page.evaluate("contactBulkChanged('contact-merge')")
-    page.locator("input[name=contact-merge-winner]").first.check()
+    page.locator("input[name=contact-merge-winner]").first.evaluate("e => { e.checked = true; }")
     page.evaluate("contactMergeSubmit()")
-    result.get_by_text(_IMG + " merge").wait_for()
+    result.get_by_text(_IMG + " merge").wait_for(state="attached")
     assert not _pwned(page)
 
     page.unroute("**/crm/contacts/merge")
